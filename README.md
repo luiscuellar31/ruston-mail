@@ -4,7 +4,13 @@ Ruston is a native, cross-platform desktop client for Proton Mail, written in Ru
 
 ## Status
 
-Early development.
+Early development. Currently working:
+
+- Proton sign-in, including TOTP and separate mailbox passwords, with saved-session resume
+- Mailbox with system folders, unread counts, pagination, and refresh
+- Conversation reader, in demo mode only; reading conversations from Proton is not implemented yet
+
+Custom folders are not shown yet.
 
 ## Development
 
@@ -24,6 +30,14 @@ RUSTON_DEMO=1 cargo run
 ```
 
 Runs a local, fictional mailbox without connecting to Proton or reading any saved session. Demo conversations are invented, kept only in memory, and never persisted. The Spam folder always fails to load so the error state can be checked. On Windows PowerShell, use `$env:RUSTON_DEMO=1; cargo run`.
+
+### HTTP diagnostics
+
+```sh
+RUSTON_DEBUG_HTTP=1 cargo run
+```
+
+Prints Proton request paths and response status codes to stderr, which helps identify rejected requests. Credentials, tokens, headers, and response bodies are never printed.
 
 ## Acknowledgements
 
