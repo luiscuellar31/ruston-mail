@@ -34,6 +34,7 @@ pub struct Mailbox {
     folder: MailFolder,
     status: ListStatus,
     conversations: Vec<ConversationSummary>,
+    read_conversations: HashSet<String>,
     page_size: u32,
     next_page: u32,
     has_more: bool,
@@ -54,6 +55,7 @@ impl Mailbox {
             folder: MailFolder::Inbox,
             status: ListStatus::Loading(page_request),
             conversations: Vec::new(),
+            read_conversations: HashSet::new(),
             page_size,
             next_page: 0,
             has_more: false,
@@ -106,6 +108,16 @@ impl Mailbox {
     /// Opens a conversation in the reader. Reselecting the open conversation
     /// keeps its expanded messages; selecting another one starts fresh.
     pub fn select_conversation(&mut self, id: String, detail: Option<ConversationDetail>) {
+        if detail.is_some() {
+            self.read_conversations.insert(id.clone());
+            if let Some(conversation) = self
+                .conversations
+                .iter_mut()
+                .find(|conversation| conversation.id == id)
+            {
+                conversation.unread = false;
+            }
+        }
         if self.selected_conversation() != Some(id.as_str()) {
             self.reader = Some(ConversationReader::new(id, detail));
         }
@@ -218,7 +230,12 @@ impl Mailbox {
         }
     }
 
-    fn apply_page(&mut self, page: ConversationPage, append: bool) {
+    fn apply_page(&mut self, mut page: ConversationPage, append: bool) {
+        for conversation in &mut page.conversations {
+            if self.read_conversations.contains(&conversation.id) {
+                conversation.unread = false;
+            }
+        }
         let received = page.conversations.len();
 
         if append {
@@ -389,6 +406,28 @@ mod tests {
         let reader = mailbox.reader().unwrap();
         assert!(!reader.is_expanded("a1"));
         assert!(reader.is_expanded("a2"));
+    }
+
+    #[test]
+    fn opening_available_conversation_marks_it_read() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        mailbox.conversations[0].unread = true;
+        mailbox.conversations[1].unread = true;
+
+        mailbox.select_conversation("a".into(), Some(detail("a", &["a1"])));
+
+        assert!(!mailbox.conversations()[0].unread);
+        assert!(mailbox.conversations()[1].unread);
+
+        mailbox.select_conversation("b".into(), None);
+        assert!(mailbox.conversations()[1].unread);
+
+        let request = mailbox.refresh(3).unwrap();
+        let mut refreshed = page(&["a", "b"], 2).unwrap();
+        refreshed.conversations[0].unread = true;
+        mailbox.finish_page(request.id, Ok(refreshed));
+
+        assert!(!mailbox.conversations()[0].unread);
     }
 
     #[test]
