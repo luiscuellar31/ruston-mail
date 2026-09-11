@@ -75,6 +75,7 @@ pub enum Message {
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
+    MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelResized(pane_grid::ResizeEvent),
 }
 
@@ -231,6 +232,7 @@ impl App {
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_conversation(&request, result));
                 self.handle_mailbox_error(error);
+                return self.mark_opened_read();
             }
             Message::CountsLoaded(request, result) => {
                 let error = self
@@ -241,6 +243,9 @@ impl App {
             }
             Message::ActionFinished(request, result) => {
                 return self.finish_mail_action(request, result);
+            }
+            Message::MarkReadFinished(request, result) => {
+                return self.finish_mark_read(request, result);
             }
             Message::PanelResized(event) => self.panels.resize(event.split, event.ratio),
         }
@@ -611,14 +616,70 @@ impl App {
             }
         };
 
-        // Proton owns the folder counts; reload them after a change.
+        let counts = self.reload_counts();
+        let open_next = next.map_or_else(Task::none, |id| self.select_conversation(id));
+
+        Task::batch([counts, open_next])
+    }
+
+    /// Once an unread Proton row's content is shown, marks it read on Proton.
+    /// Demo rows are already marked read when they are selected.
+    fn mark_opened_read(&mut self) -> Task<Message> {
+        let Some(MailBackend::Proton(service)) = self.backend.clone() else {
+            return Task::none();
+        };
+        let request = self.next_request();
+        let Some(request) = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.start_mark_read(request))
+        else {
+            return Task::none();
+        };
+        let pending = request.clone();
+
+        Task::perform(
+            async move {
+                service
+                    .apply_action(
+                        pending.kind,
+                        &pending.row_id,
+                        pending.folder,
+                        pending.action,
+                    )
+                    .await
+            },
+            move |result| Message::MarkReadFinished(request.clone(), result),
+        )
+    }
+
+    fn finish_mark_read(
+        &mut self,
+        request: ActionRequest,
+        result: Result<(), MailboxError>,
+    ) -> Task<Message> {
+        match self
+            .mailbox
+            .as_mut()
+            .map(|mailbox| mailbox.finish_mark_read(&request, result))
+        {
+            Some(Ok(true)) => self.reload_counts(),
+            // Only an expired session matters; the row simply stays unread.
+            Some(Err(error)) => {
+                self.handle_mailbox_error(Some(error));
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// Proton owns the folder counts; reload them after a change.
+    fn reload_counts(&mut self) -> Task<Message> {
         let counts_request = self.next_request();
         let counts = self
             .active_mailbox()
             .and_then(|mailbox| mailbox.refresh_counts(counts_request));
-        let open_next = next.map_or_else(Task::none, |id| self.select_conversation(id));
 
-        Task::batch([self.fetch_counts(counts), open_next])
+        self.fetch_counts(counts)
     }
 
     fn start_conversation_load(&mut self, id: String) -> Task<Message> {

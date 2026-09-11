@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
@@ -62,6 +62,9 @@ pub struct Mailbox {
     search_query: String,
     action_request: Option<ActionRequest>,
     action_error: Option<MailboxError>,
+    /// Automatic reads in flight, by row, so each response only affects its
+    /// own row and never blocks the action toolbar.
+    pending_reads: HashMap<String, RequestId>,
 }
 
 impl Mailbox {
@@ -85,6 +88,7 @@ impl Mailbox {
             search_query: String::new(),
             action_request: None,
             action_error: None,
+            pending_reads: HashMap::new(),
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -276,6 +280,59 @@ impl Mailbox {
         }
     }
 
+    /// Starts marking the opened row read once its content is shown. Only an
+    /// unread row with no read already in flight qualifies.
+    pub fn start_mark_read(&mut self, request: RequestId) -> Option<ActionRequest> {
+        let ReaderState::Loaded(reader) = &self.reader else {
+            return None;
+        };
+        let row = self
+            .conversations
+            .iter()
+            .find(|row| row.id == reader.conversation_id())?;
+        if !row.unread || self.pending_reads.contains_key(&row.id) {
+            return None;
+        }
+
+        let request = ActionRequest {
+            id: request,
+            row_id: row.id.clone(),
+            kind: row.kind,
+            folder: self.folder,
+            action: MailAction::SetUnread(false),
+        };
+        self.pending_reads
+            .insert(request.row_id.clone(), request.id);
+        Some(request)
+    }
+
+    /// Applies a confirmed automatic read. Returns whether the row changed.
+    /// Stale or failed responses leave it unread, so "Mark read" still works.
+    pub fn finish_mark_read(
+        &mut self,
+        request: &ActionRequest,
+        result: Result<(), MailboxError>,
+    ) -> Result<bool, MailboxError> {
+        if self.pending_reads.get(&request.row_id) != Some(&request.id) {
+            return Ok(false);
+        }
+        self.pending_reads.remove(&request.row_id);
+        result?;
+        if request.folder != self.folder {
+            return Ok(false);
+        }
+
+        let Some(row) = self
+            .conversations
+            .iter_mut()
+            .find(|row| row.id == request.row_id)
+        else {
+            return Ok(false);
+        };
+        row.unread = false;
+        Ok(true)
+    }
+
     /// Starts an action on the selected row. Only one action runs at a time,
     /// and none while the list itself is loading.
     pub fn start_action(
@@ -298,6 +355,10 @@ impl Mailbox {
             action,
         };
         self.action_error = None;
+        // An explicit read or unread wins over an automatic read in flight.
+        if matches!(action, MailAction::SetUnread(_)) {
+            self.pending_reads.remove(&request.row_id);
+        }
         self.action_request = Some(request.clone());
         Some(request)
     }
@@ -1136,6 +1197,115 @@ mod tests {
             .unwrap();
         mailbox.finish_conversation(&request, Ok(detail(selected, &["message"])));
         mailbox
+    }
+
+    fn opened_unread(ids: &[&str], opened: &str) -> Mailbox {
+        let (mut mailbox, request) = open();
+        let rows = ids
+            .iter()
+            .map(|id| ConversationSummary {
+                unread: true,
+                ..summary(id)
+            })
+            .collect();
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                conversations: rows,
+                total: ids.len() as u32,
+            }),
+        );
+        let load = mailbox.start_conversation_load(opened.into(), 82).unwrap();
+        mailbox.finish_conversation(&load, Ok(detail(opened, &["message"])));
+        mailbox
+    }
+
+    #[test]
+    fn opened_unread_rows_are_marked_read_once_confirmed() {
+        let mut mailbox = opened_unread(&["a", "b"], "a");
+
+        let request = mailbox.start_mark_read(3).unwrap();
+        assert_eq!(request.row_id, "a");
+        assert_eq!(request.action, MailAction::SetUnread(false));
+        assert_eq!(mailbox.start_mark_read(4), None);
+        assert!(mailbox.selected_summary().unwrap().unread);
+
+        assert_eq!(mailbox.finish_mark_read(&request, Ok(())), Ok(true));
+        assert!(!mailbox.selected_summary().unwrap().unread);
+        assert_eq!(mailbox.start_mark_read(5), None);
+    }
+
+    #[test]
+    fn reads_wait_for_the_content_to_load() {
+        let (mut mailbox, request) = open();
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                conversations: vec![ConversationSummary {
+                    unread: true,
+                    ..summary("a")
+                }],
+                total: 1,
+            }),
+        );
+        let load = mailbox.start_conversation_load("a".into(), 3).unwrap();
+
+        assert_eq!(mailbox.start_mark_read(4), None);
+
+        mailbox.finish_conversation(&load, Err(MailboxError::Connection));
+        assert_eq!(mailbox.start_mark_read(5), None);
+    }
+
+    #[test]
+    fn failed_or_stale_reads_leave_the_row_unread() {
+        let mut mailbox = opened_unread(&["a"], "a");
+        let request = mailbox.start_mark_read(3).unwrap();
+        let stale = ActionRequest {
+            id: 99,
+            ..request.clone()
+        };
+
+        assert_eq!(mailbox.finish_mark_read(&stale, Ok(())), Ok(false));
+        assert_eq!(
+            mailbox.finish_mark_read(&request, Err(MailboxError::Connection)),
+            Err(MailboxError::Connection)
+        );
+        assert!(mailbox.selected_summary().unwrap().unread);
+        assert!(mailbox.start_mark_read(4).is_some());
+    }
+
+    #[test]
+    fn explicit_unread_wins_over_an_automatic_read() {
+        let mut mailbox = opened_unread(&["a"], "a");
+        let read = mailbox.start_mark_read(3).unwrap();
+        let unread = mailbox
+            .start_action(MailAction::SetUnread(true), 4)
+            .unwrap();
+
+        assert_eq!(mailbox.finish_mark_read(&read, Ok(())), Ok(false));
+        assert!(mailbox.selected_summary().unwrap().unread);
+        assert_eq!(mailbox.finish_action(&unread, Ok(())), Ok(None));
+        assert!(mailbox.selected_summary().unwrap().unread);
+    }
+
+    #[test]
+    fn reads_after_a_folder_switch_change_nothing() {
+        let mut mailbox = opened_unread(&["a"], "a");
+        let request = mailbox.start_mark_read(3).unwrap();
+        mailbox.select_folder(MailFolder::Sent, 4);
+        mailbox.finish_page(
+            4,
+            Ok(ConversationPage {
+                conversations: vec![ConversationSummary {
+                    unread: true,
+                    ..summary("a")
+                }],
+                total: 1,
+            }),
+        );
+
+        assert_eq!(mailbox.finish_mark_read(&request, Ok(())), Ok(false));
+        assert!(mailbox.conversations()[0].unread);
     }
 
     #[test]
