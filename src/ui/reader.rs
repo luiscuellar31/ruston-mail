@@ -5,7 +5,7 @@ use iced::{Element, Fill};
 
 use super::mailbox::{DETAIL_SIZE, PANE_PADDING, SPACING};
 use crate::app::{ConversationReader, Mailbox, Message};
-use crate::mail::{ConversationDetail, MailAddress, MailMessage, MessageBody};
+use crate::mail::{ConversationDetail, ConversationSummary, MailAddress, MailMessage, MessageBody};
 
 const SUBJECT_SIZE: f32 = 22.0;
 const MESSAGE_SPACING: f32 = 12.0;
@@ -13,11 +13,16 @@ const TOGGLE_WIDTH: f32 = 16.0;
 /// Words of the body shown in a collapsed message's header.
 const PREVIEW_WORDS: usize = 40;
 
-pub(super) fn view(mailbox: &Mailbox) -> Element<'_, Message> {
+pub(super) fn view(mailbox: &Mailbox, demo_actions: bool) -> Element<'_, Message> {
     let content = match mailbox.reader() {
         None => placeholder("Select a conversation to read it."),
         Some(reader) => match reader.detail() {
-            Some(detail) => conversation(reader, detail),
+            Some(detail) => conversation(
+                reader,
+                detail,
+                mailbox.selected_summary().filter(|_| demo_actions),
+                !mailbox.is_busy(),
+            ),
             None => placeholder("Conversation reading is not available yet."),
         },
     };
@@ -35,8 +40,10 @@ fn placeholder(message: &str) -> Element<'_, Message> {
 fn conversation<'a>(
     reader: &'a ConversationReader,
     detail: &'a ConversationDetail,
+    summary: Option<&'a ConversationSummary>,
+    actions_enabled: bool,
 ) -> Element<'a, Message> {
-    let header = column![
+    let mut header = column![
         text(detail.subject.as_deref().unwrap_or("(No subject)"))
             .size(SUBJECT_SIZE)
             .wrapping(Wrapping::WordOrGlyph),
@@ -45,6 +52,9 @@ fn conversation<'a>(
             .style(text::secondary),
     ]
     .spacing(4);
+    if let Some(summary) = summary {
+        header = header.push(action_toolbar(summary, actions_enabled));
+    }
 
     let mut messages = Column::new().spacing(MESSAGE_SPACING);
     if detail.messages.is_empty() {
@@ -63,6 +73,39 @@ fn conversation<'a>(
     .spacing(SPACING)
     .height(Fill)
     .into()
+}
+
+fn action_toolbar(summary: &ConversationSummary, enabled: bool) -> Element<'_, Message> {
+    let (read_label, read_message) = if summary.unread {
+        ("Mark read", Message::MarkSelectedRead)
+    } else {
+        ("Mark unread", Message::MarkSelectedUnread)
+    };
+    let (star_label, star_message) = if summary.starred {
+        ("Unstar", Message::UnstarSelected)
+    } else {
+        ("Star", Message::StarSelected)
+    };
+
+    row![
+        action_button("Archive", Message::ArchiveSelected, enabled),
+        action_button("Spam", Message::MoveSelectedToSpam, enabled),
+        action_button("Trash", Message::MoveSelectedToTrash, enabled),
+        action_button(read_label, read_message, enabled),
+        action_button(star_label, star_message, enabled),
+    ]
+    .spacing(4)
+    .wrap()
+    .vertical_spacing(4)
+    .into()
+}
+
+fn action_button(label: &str, message: Message, enabled: bool) -> Element<'_, Message> {
+    button(text(label).size(DETAIL_SIZE))
+        .padding([4, 8])
+        .style(button::secondary)
+        .on_press_maybe(enabled.then_some(message))
+        .into()
 }
 
 fn message_card(message: &MailMessage, expanded: bool) -> Element<'_, Message> {

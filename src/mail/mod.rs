@@ -17,14 +17,18 @@ pub use service::{AuthError, LoginRequest};
 pub enum MailBackend {
     Proton(Arc<ProtonMailService>),
     /// Local fictional mailbox for UI development; never contacts Proton.
-    Demo,
+    Demo(demo::DemoMailbox),
 }
 
 impl MailBackend {
+    pub fn demo() -> Self {
+        Self::Demo(demo::DemoMailbox::new())
+    }
+
     pub fn page_size(&self) -> u32 {
         match self {
             Self::Proton(_) => proton::PAGE_SIZE,
-            Self::Demo => demo::PAGE_SIZE,
+            Self::Demo(_) => demo::PAGE_SIZE,
         }
     }
 
@@ -36,14 +40,14 @@ impl MailBackend {
     ) -> Result<ConversationPage, MailboxError> {
         match self {
             Self::Proton(service) => service.list_conversations(folder, page, page_size).await,
-            Self::Demo => demo::list_conversations(folder, page, page_size, demo::now()),
+            Self::Demo(service) => service.list_conversations(folder, page, page_size, demo::now()),
         }
     }
 
     pub async fn conversation_counts(&self) -> Result<MailboxCounts, MailboxError> {
         match self {
             Self::Proton(service) => service.conversation_counts().await,
-            Self::Demo => Ok(demo::counts()),
+            Self::Demo(service) => Ok(service.counts()),
         }
     }
 
@@ -52,7 +56,7 @@ impl MailBackend {
     pub fn conversation_detail(&self, id: &str) -> Option<ConversationDetail> {
         match self {
             Self::Proton(_) => None,
-            Self::Demo => demo::conversation_detail(id, demo::now()),
+            Self::Demo(service) => service.conversation_detail(id, demo::now()),
         }
     }
 }

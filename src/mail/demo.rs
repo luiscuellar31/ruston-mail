@@ -4,6 +4,7 @@
 //! All names and addresses are invented; addresses use the reserved
 //! `example.*` domains.
 
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
@@ -13,9 +14,6 @@ use super::{
 
 /// Small enough that the demo Inbox needs several pages.
 pub const PAGE_SIZE: u32 = 10;
-
-/// This folder always fails to load, to exercise the error state.
-pub const FAILING_FOLDER: MailFolder = MailFolder::Spam;
 
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
@@ -122,6 +120,8 @@ const GARDEN_VOLUNTEERS: &[&str] = &[
 
 struct Fixture {
     folder: MailFolder,
+    /// Whether the demo user sent the original conversation.
+    outgoing: bool,
     /// Senders, or recipients in Sent and Drafts. Empty means unknown.
     correspondents: &'static str,
     subject: &'static str,
@@ -133,6 +133,97 @@ struct Fixture {
     bodies: Vec<&'static str>,
     /// Replaces the generated recipients of every message.
     to: &'static [&'static str],
+}
+
+/// Process-local mutable state for the offline mailbox.
+#[derive(Clone)]
+pub struct DemoMailbox {
+    fixtures: Arc<Mutex<Vec<Fixture>>>,
+}
+
+impl Default for DemoMailbox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DemoMailbox {
+    pub fn new() -> Self {
+        Self {
+            fixtures: Arc::new(Mutex::new(fixtures())),
+        }
+    }
+
+    pub fn list_conversations(
+        &self,
+        folder: MailFolder,
+        page: u32,
+        page_size: u32,
+        now: i64,
+    ) -> Result<ConversationPage, MailboxError> {
+        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        Ok(list_from(&fixtures, folder, page, page_size, now))
+    }
+
+    pub fn counts(&self) -> MailboxCounts {
+        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        counts_from(&fixtures)
+    }
+
+    pub fn conversation_detail(&self, id: &str, now: i64) -> Option<ConversationDetail> {
+        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        detail_from(&fixtures, id, now)
+    }
+
+    pub fn snapshot(
+        &self,
+        folder: MailFolder,
+        page_size: u32,
+        now: i64,
+    ) -> (ConversationPage, MailboxCounts) {
+        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        (
+            list_from(&fixtures, folder, 0, page_size, now),
+            counts_from(&fixtures),
+        )
+    }
+
+    pub fn set_unread(&self, id: &str, unread: bool) -> bool {
+        self.update(id, |fixture| fixture.unread = unread)
+    }
+
+    pub fn set_starred(&self, id: &str, starred: bool) -> bool {
+        self.update(id, |fixture| fixture.starred = starred)
+    }
+
+    pub fn archive(&self, id: &str) -> bool {
+        self.move_to(id, MailFolder::Archive)
+    }
+
+    pub fn move_to_trash(&self, id: &str) -> bool {
+        self.move_to(id, MailFolder::Trash)
+    }
+
+    pub fn move_to_spam(&self, id: &str) -> bool {
+        self.move_to(id, MailFolder::Spam)
+    }
+
+    fn move_to(&self, id: &str, folder: MailFolder) -> bool {
+        self.update(id, |fixture| fixture.folder = folder)
+    }
+
+    fn update(&self, id: &str, update: impl FnOnce(&mut Fixture)) -> bool {
+        let Some(index) = fixture_index(id) else {
+            return false;
+        };
+        let mut fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        let Some(fixture) = fixtures.get_mut(index) else {
+            return false;
+        };
+
+        update(fixture);
+        true
+    }
 }
 
 impl Fixture {
@@ -175,6 +266,7 @@ fn mail(
 ) -> Fixture {
     Fixture {
         folder,
+        outgoing: matches!(folder, MailFolder::Sent | MailFolder::Drafts),
         correspondents,
         subject,
         age,
@@ -555,18 +647,13 @@ fn in_folder(fixture: &Fixture, folder: MailFolder) -> bool {
     fixture.folder == folder || (folder == MailFolder::Starred && fixture.starred)
 }
 
-/// One zero-based page of a folder, newest first, relative to `now` (Unix seconds).
-pub fn list_conversations(
+fn list_from(
+    fixtures: &[Fixture],
     folder: MailFolder,
     page: u32,
     page_size: u32,
     now: i64,
-) -> Result<ConversationPage, MailboxError> {
-    if folder == FAILING_FOLDER {
-        return Err(MailboxError::Unavailable);
-    }
-
-    let fixtures = fixtures();
+) -> ConversationPage {
     let mut matching: Vec<_> = fixtures
         .iter()
         .enumerate()
@@ -583,15 +670,13 @@ pub fn list_conversations(
         .map(|(index, fixture)| summary(index, fixture, now))
         .collect();
 
-    Ok(ConversationPage {
+    ConversationPage {
         conversations,
         total,
-    })
+    }
 }
 
-pub fn counts() -> MailboxCounts {
-    let fixtures = fixtures();
-
+fn counts_from(fixtures: &[Fixture]) -> MailboxCounts {
     MailFolder::ALL
         .into_iter()
         .map(|folder| {
@@ -604,11 +689,9 @@ pub fn counts() -> MailboxCounts {
         .collect()
 }
 
-/// The full thread of a demo conversation, oldest message first, generated
-/// deterministically from its fixture.
-pub fn conversation_detail(id: &str, now: i64) -> Option<ConversationDetail> {
-    let index: usize = id.strip_prefix("demo-")?.parse().ok()?;
-    let fixture = fixtures().into_iter().nth(index)?;
+fn detail_from(fixtures: &[Fixture], id: &str, now: i64) -> Option<ConversationDetail> {
+    let index = fixture_index(id)?;
+    let fixture = fixtures.get(index)?;
     let participants: Vec<MailAddress> = fixture
         .correspondents
         .split(", ")
@@ -617,7 +700,7 @@ pub fn conversation_detail(id: &str, now: i64) -> Option<ConversationDetail> {
         .collect();
     let count = fixture.message_count();
     let messages = (0..count)
-        .map(|position| message(&fixture, &participants, index, position, count, now))
+        .map(|position| message(fixture, &participants, index, position, count, now))
         .collect();
 
     Some(ConversationDetail {
@@ -625,6 +708,10 @@ pub fn conversation_detail(id: &str, now: i64) -> Option<ConversationDetail> {
         subject: non_empty(fixture.subject),
         messages,
     })
+}
+
+fn fixture_index(id: &str) -> Option<usize> {
+    id.strip_prefix("demo-")?.parse().ok()
 }
 
 pub fn now() -> i64 {
@@ -658,8 +745,7 @@ fn message(
     let newer = count - 1 - position;
     // Messages alternate between the demo user and the other participants;
     // the newest one is the demo user's only in Sent and Drafts.
-    let outgoing = matches!(fixture.folder, MailFolder::Sent | MailFolder::Drafts);
-    let from_demo_user = newer.is_multiple_of(2) == outgoing;
+    let from_demo_user = newer.is_multiple_of(2) == fixture.outgoing;
 
     let (sender, mut recipients) = if from_demo_user {
         (demo_user(), participants.to_vec())
@@ -742,18 +828,22 @@ mod tests {
     const NOW: i64 = 1_789_000_000;
 
     fn page(folder: MailFolder, page: u32) -> ConversationPage {
-        list_conversations(folder, page, PAGE_SIZE, NOW).unwrap()
+        DemoMailbox::new()
+            .list_conversations(folder, page, PAGE_SIZE, NOW)
+            .unwrap()
     }
 
     fn detail(index: usize) -> ConversationDetail {
-        conversation_detail(&format!("demo-{index}"), NOW).unwrap()
+        DemoMailbox::new()
+            .conversation_detail(&format!("demo-{index}"), NOW)
+            .unwrap()
     }
 
     #[test]
     fn counts_are_deterministic() {
-        let counts = counts();
+        let counts = DemoMailbox::new().counts();
 
-        assert_eq!(counts, super::counts());
+        assert_eq!(counts, DemoMailbox::new().counts());
         assert_eq!(counts.unread(MailFolder::Inbox), Some(6));
         assert_eq!(counts.unread(MailFolder::Starred), Some(1));
         assert_eq!(counts.unread(MailFolder::Archive), Some(1));
@@ -792,15 +882,14 @@ mod tests {
     }
 
     #[test]
-    fn trash_is_empty_and_spam_fails() {
+    fn trash_starts_empty_and_spam_is_available() {
         let trash = page(MailFolder::Trash, 0);
+        let spam = page(MailFolder::Spam, 0);
 
         assert_eq!(trash.total, 0);
         assert!(trash.conversations.is_empty());
-        assert_eq!(
-            list_conversations(MailFolder::Spam, 0, PAGE_SIZE, NOW).unwrap_err(),
-            MailboxError::Unavailable
-        );
+        assert_eq!(spam.total, 2);
+        assert_eq!(spam.conversations.len(), 2);
     }
 
     #[test]
@@ -840,10 +929,16 @@ mod tests {
                     .windows(2)
                     .all(|pair| pair[0].time < pair[1].time)
             );
-            assert_eq!(detail, super::conversation_detail(&detail.id, NOW).unwrap());
+            assert_eq!(
+                detail,
+                DemoMailbox::new()
+                    .conversation_detail(&detail.id, NOW)
+                    .unwrap()
+            );
         }
-        assert_eq!(conversation_detail("demo-999", NOW), None);
-        assert_eq!(conversation_detail("other", NOW), None);
+        let mailbox = DemoMailbox::new();
+        assert_eq!(mailbox.conversation_detail("demo-999", NOW), None);
+        assert_eq!(mailbox.conversation_detail("other", NOW), None);
     }
 
     #[test]
@@ -901,5 +996,104 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn read_actions_update_state_and_counts_idempotently() {
+        let mailbox = DemoMailbox::new();
+
+        assert_eq!(mailbox.counts().unread(MailFolder::Inbox), Some(6));
+        assert!(mailbox.set_unread("demo-0", false));
+        assert!(!state_page(&mailbox, MailFolder::Inbox).conversations[0].unread);
+        assert_eq!(mailbox.counts().unread(MailFolder::Inbox), Some(5));
+
+        assert!(mailbox.set_unread("demo-0", false));
+        assert_eq!(mailbox.counts().unread(MailFolder::Inbox), Some(5));
+        assert!(mailbox.set_unread("demo-0", true));
+        assert!(mailbox.set_unread("demo-0", true));
+        assert_eq!(mailbox.counts().unread(MailFolder::Inbox), Some(6));
+    }
+
+    #[test]
+    fn star_actions_update_visibility_and_counts_idempotently() {
+        let mailbox = DemoMailbox::new();
+
+        assert!(mailbox.set_starred("demo-1", true));
+        assert!(mailbox.set_starred("demo-1", true));
+        let starred = state_page(&mailbox, MailFolder::Starred);
+        assert_eq!(starred.total, 6);
+        assert!(starred.conversations.iter().any(|c| c.id == "demo-1"));
+        assert_eq!(mailbox.counts().unread(MailFolder::Starred), Some(2));
+
+        assert!(mailbox.set_starred("demo-1", false));
+        assert!(mailbox.set_starred("demo-1", false));
+        assert_eq!(state_page(&mailbox, MailFolder::Starred).total, 5);
+        assert_eq!(mailbox.counts().unread(MailFolder::Starred), Some(1));
+    }
+
+    #[test]
+    fn archive_moves_conversation_and_preserves_content() {
+        let mailbox = DemoMailbox::new();
+        let detail = mailbox.conversation_detail("demo-0", NOW).unwrap();
+
+        assert!(mailbox.archive("demo-0"));
+
+        assert!(!contains(&mailbox, MailFolder::Inbox, "demo-0"));
+        assert!(contains(&mailbox, MailFolder::Archive, "demo-0"));
+        assert_eq!(mailbox.conversation_detail("demo-0", NOW), Some(detail));
+    }
+
+    #[test]
+    fn trash_moves_conversation_without_deleting_it() {
+        let mailbox = DemoMailbox::new();
+
+        assert!(mailbox.move_to_trash("demo-3"));
+
+        assert!(!contains(&mailbox, MailFolder::Inbox, "demo-3"));
+        assert!(contains(&mailbox, MailFolder::Trash, "demo-3"));
+        assert!(mailbox.conversation_detail("demo-3", NOW).is_some());
+    }
+
+    #[test]
+    fn spam_moves_conversation_without_network_behavior() {
+        let mailbox = DemoMailbox::new();
+
+        assert!(mailbox.move_to_spam("demo-4"));
+
+        assert!(!contains(&mailbox, MailFolder::Inbox, "demo-4"));
+        assert!(contains(&mailbox, MailFolder::Spam, "demo-4"));
+    }
+
+    #[test]
+    fn derived_counts_match_every_folder_after_repeated_actions() {
+        let mailbox = DemoMailbox::new();
+        assert!(mailbox.set_unread("demo-0", false));
+        assert!(mailbox.set_unread("demo-0", false));
+        assert!(mailbox.set_starred("demo-1", true));
+        assert!(mailbox.set_starred("demo-1", true));
+        assert!(mailbox.archive("demo-2"));
+        assert!(mailbox.move_to_trash("demo-3"));
+        assert!(mailbox.move_to_spam("demo-4"));
+
+        let counts = mailbox.counts();
+        for folder in MailFolder::ALL {
+            let unread = state_page(&mailbox, folder)
+                .conversations
+                .iter()
+                .filter(|conversation| conversation.unread)
+                .count() as u32;
+            assert_eq!(counts.unread(folder), Some(unread), "{folder:?}");
+        }
+    }
+
+    fn state_page(mailbox: &DemoMailbox, folder: MailFolder) -> ConversationPage {
+        mailbox.list_conversations(folder, 0, 1_000, NOW).unwrap()
+    }
+
+    fn contains(mailbox: &DemoMailbox, folder: MailFolder, id: &str) -> bool {
+        state_page(mailbox, folder)
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == id)
     }
 }

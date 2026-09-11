@@ -34,7 +34,6 @@ pub struct Mailbox {
     folder: MailFolder,
     status: ListStatus,
     conversations: Vec<ConversationSummary>,
-    read_conversations: HashSet<String>,
     page_size: u32,
     next_page: u32,
     has_more: bool,
@@ -55,7 +54,6 @@ impl Mailbox {
             folder: MailFolder::Inbox,
             status: ListStatus::Loading(page_request),
             conversations: Vec::new(),
-            read_conversations: HashSet::new(),
             page_size,
             next_page: 0,
             has_more: false,
@@ -94,6 +92,13 @@ impl Mailbox {
             .map(ConversationReader::conversation_id)
     }
 
+    pub fn selected_summary(&self) -> Option<&ConversationSummary> {
+        let selected = self.selected_conversation()?;
+        self.conversations
+            .iter()
+            .find(|conversation| conversation.id == selected)
+    }
+
     pub fn reader(&self) -> Option<&ConversationReader> {
         self.reader.as_ref()
     }
@@ -108,16 +113,6 @@ impl Mailbox {
     /// Opens a conversation in the reader. Reselecting the open conversation
     /// keeps its expanded messages; selecting another one starts fresh.
     pub fn select_conversation(&mut self, id: String, detail: Option<ConversationDetail>) {
-        if detail.is_some() {
-            self.read_conversations.insert(id.clone());
-            if let Some(conversation) = self
-                .conversations
-                .iter_mut()
-                .find(|conversation| conversation.id == id)
-            {
-                conversation.unread = false;
-            }
-        }
         if self.selected_conversation() != Some(id.as_str()) {
             self.reader = Some(ConversationReader::new(id, detail));
         }
@@ -172,6 +167,51 @@ impl Mailbox {
 
         self.counts_request = Some(request);
         Some(request)
+    }
+
+    pub fn loaded_conversation_limit(&self) -> u32 {
+        self.page_size.saturating_mul(self.next_page.max(1))
+    }
+
+    /// Replaces demo data after a local action. Returns the next conversation
+    /// to open when the selected one left the current folder.
+    pub fn apply_action_snapshot(
+        &mut self,
+        page: ConversationPage,
+        counts: MailboxCounts,
+    ) -> Option<String> {
+        let selected = self.selected_conversation().map(str::to_owned);
+        let selected_index = selected
+            .as_deref()
+            .and_then(|id| {
+                self.conversations
+                    .iter()
+                    .position(|conversation| conversation.id == id)
+            })
+            .unwrap_or(0);
+        let total = page.total;
+
+        self.conversations = page.conversations;
+        self.counts = Some(counts);
+        self.counts_request = None;
+        self.status = ListStatus::Loaded;
+        self.has_more = self.conversations.len() < total as usize;
+
+        let selected_left = selected.as_deref().is_some_and(|id| {
+            !self
+                .conversations
+                .iter()
+                .any(|conversation| conversation.id == id)
+        });
+        if !selected_left {
+            return None;
+        }
+
+        self.reader = None;
+        let next_index = selected_index.min(self.conversations.len().saturating_sub(1));
+        self.conversations
+            .get(next_index)
+            .map(|conversation| conversation.id.clone())
     }
 
     /// Applies a page response. Returns the error of an accepted failed
@@ -230,12 +270,7 @@ impl Mailbox {
         }
     }
 
-    fn apply_page(&mut self, mut page: ConversationPage, append: bool) {
-        for conversation in &mut page.conversations {
-            if self.read_conversations.contains(&conversation.id) {
-                conversation.unread = false;
-            }
-        }
+    fn apply_page(&mut self, page: ConversationPage, append: bool) {
         let received = page.conversations.len();
 
         if append {
@@ -406,28 +441,6 @@ mod tests {
         let reader = mailbox.reader().unwrap();
         assert!(!reader.is_expanded("a1"));
         assert!(reader.is_expanded("a2"));
-    }
-
-    #[test]
-    fn opening_available_conversation_marks_it_read() {
-        let mut mailbox = loaded_inbox(&["a", "b"], 2);
-        mailbox.conversations[0].unread = true;
-        mailbox.conversations[1].unread = true;
-
-        mailbox.select_conversation("a".into(), Some(detail("a", &["a1"])));
-
-        assert!(!mailbox.conversations()[0].unread);
-        assert!(mailbox.conversations()[1].unread);
-
-        mailbox.select_conversation("b".into(), None);
-        assert!(mailbox.conversations()[1].unread);
-
-        let request = mailbox.refresh(3).unwrap();
-        let mut refreshed = page(&["a", "b"], 2).unwrap();
-        refreshed.conversations[0].unread = true;
-        mailbox.finish_page(request.id, Ok(refreshed));
-
-        assert!(!mailbox.conversations()[0].unread);
     }
 
     #[test]

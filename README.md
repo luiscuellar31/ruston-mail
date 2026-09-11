@@ -9,6 +9,7 @@ Early development. Currently working:
 - Proton sign-in, including TOTP and separate mailbox passwords, with saved-session resume
 - Mailbox with system folders, unread counts, pagination, and refresh
 - Conversation reader, in demo mode only; reading conversations from Proton is not implemented yet
+- Read, star, archive, trash, and spam actions in demo mode
 
 Custom folders are not shown yet.
 
@@ -29,7 +30,7 @@ cargo test
 RUSTON_DEMO=1 cargo run
 ```
 
-Runs a local, fictional mailbox without connecting to Proton or reading any saved session. Demo conversations are invented, kept only in memory, and never persisted. The Spam folder always fails to load so the error state can be checked. On Windows PowerShell, use `$env:RUSTON_DEMO=1; cargo run`.
+Runs a local, fictional mailbox without connecting to Proton or reading any saved session. Demo conversations and mailbox actions stay in memory and reset when Ruston exits. On Windows PowerShell, use `$env:RUSTON_DEMO=1; cargo run`.
 
 ### HTTP diagnostics
 

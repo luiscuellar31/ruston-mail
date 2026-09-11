@@ -23,7 +23,7 @@ pub(super) fn view<'a>(
         let content = match panel {
             Panel::Sidebar => sidebar(app, mailbox, email, signing_out),
             Panel::Conversations => conversation_pane(mailbox),
-            Panel::Reader => super::reader::view(mailbox),
+            Panel::Reader => super::reader::view(mailbox, app.is_demo()),
         };
         pane_grid::Content::new(content).style(pane_background)
     })
