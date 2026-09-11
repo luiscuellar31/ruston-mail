@@ -4299,7 +4299,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 [[package]]
 name = "proton-core"
 version = "0.1.1"
-source = "git+https://github.com/luiscuellar31/protonmail-rs.git?branch=fix%2Fcaptcha-chrome-hv#acac4aa50f6c1d5780b02189a0e87d35617171e6"
+source = "git+https://github.com/luiscuellar31/protonmail-rs.git?branch=fix%2Fcaptcha-chrome-hv#a556d7226c0d6a20a37640c17ffb227d50860482"
 dependencies = [
  "ammonia",
  "async-trait",
@@ -4910,6 +4910,7 @@ dependencies = [
  "futures",
  "iced",
  "proton-core",
+ "tokio",
  "tracing-subscriber",
 ]
 

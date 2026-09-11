@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
     ConversationDetail, ConversationPage, ConversationSummary, MailFolder, MailboxCounts,
-    MailboxError,
+    MailboxError, SummaryKind,
 };
 
 /// Identifies an asynchronous mailbox request. Only the response matching the
@@ -23,6 +23,7 @@ pub struct PageRequest {
 pub struct ReaderRequest {
     pub id: RequestId,
     pub conversation_id: String,
+    pub kind: SummaryKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,17 +160,18 @@ impl Mailbox {
         conversation_id: String,
         request: RequestId,
     ) -> Option<ReaderRequest> {
-        if self.selected_conversation() == Some(conversation_id.as_str())
-            || !self
-                .visible_conversations()
-                .any(|conversation| conversation.id == conversation_id)
-        {
+        if self.selected_conversation() == Some(conversation_id.as_str()) {
             return None;
         }
+        let kind = self
+            .visible_conversations()
+            .find(|conversation| conversation.id == conversation_id)?
+            .kind;
 
         let request = ReaderRequest {
             id: request,
             conversation_id,
+            kind,
         };
         self.reader = ReaderState::Loading {
             conversation_id: request.conversation_id.clone(),
@@ -185,9 +187,15 @@ impl Mailbox {
         else {
             return None;
         };
+        let kind = self
+            .conversations
+            .iter()
+            .find(|conversation| &conversation.id == conversation_id)?
+            .kind;
         let request = ReaderRequest {
             id: request,
             conversation_id: conversation_id.clone(),
+            kind,
         };
         self.reader = ReaderState::Loading {
             conversation_id: request.conversation_id.clone(),
@@ -412,10 +420,28 @@ impl Mailbox {
                 self.reader = ReaderState::Empty;
             }
         }
+        // Rows split out of a conversation carry their own, older times.
+        sort_newest_first(&mut self.conversations);
 
         self.has_more = received > 0
             && u64::from(self.next_page) * u64::from(self.page_size) < u64::from(page.total);
     }
+}
+
+/// Newest first, stable, so rows already in order never move. A row without
+/// a time stays right after the row that preceded it, since only the server
+/// knows where it belongs.
+fn sort_newest_first(rows: &mut Vec<ConversationSummary>) {
+    let mut previous = i64::MAX;
+    let mut keyed: Vec<_> = rows
+        .drain(..)
+        .map(|row| {
+            previous = row.time.unwrap_or(previous);
+            (previous, row)
+        })
+        .collect();
+    keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+    rows.extend(keyed.into_iter().map(|(_, row)| row));
 }
 
 fn matches_search(conversation: &ConversationSummary, query: &str) -> bool {
@@ -446,6 +472,7 @@ mod tests {
     fn summary(id: &str) -> ConversationSummary {
         ConversationSummary {
             id: id.to_owned(),
+            kind: SummaryKind::Conversation,
             subject: None,
             correspondents: None,
             participants: Vec::new(),
@@ -466,6 +493,7 @@ mod tests {
     ) -> ConversationSummary {
         ConversationSummary {
             id: id.to_owned(),
+            kind: SummaryKind::Conversation,
             subject: Some(subject.to_owned()),
             correspondents: Some(name.to_owned()),
             participants: vec![MailAddress {
@@ -809,6 +837,7 @@ mod tests {
             ReaderRequest {
                 id: 3,
                 conversation_id: "a".into(),
+                kind: SummaryKind::Conversation,
             }
         );
         assert_eq!(
@@ -906,6 +935,134 @@ mod tests {
                 request: 4,
             }
         );
+    }
+
+    fn message_row(id: &str) -> ConversationSummary {
+        ConversationSummary {
+            kind: SummaryKind::Message,
+            ..searchable_summary(id, "Bank", "bank@example.com", "Statement", "")
+        }
+    }
+
+    #[test]
+    fn message_rows_load_as_single_messages() {
+        let (mut mailbox, request) = open();
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                conversations: vec![message_row("m1"), summary("c1")],
+                total: 2,
+            }),
+        );
+
+        let message = mailbox.start_conversation_load("m1".into(), 3).unwrap();
+        assert_eq!(message.kind, SummaryKind::Message);
+        mailbox.finish_conversation(&message, Err(MailboxError::Connection));
+        assert_eq!(
+            mailbox.retry_conversation(4).unwrap().kind,
+            SummaryKind::Message
+        );
+
+        let conversation = mailbox.start_conversation_load("c1".into(), 5).unwrap();
+        assert_eq!(conversation.kind, SummaryKind::Conversation);
+    }
+
+    #[test]
+    fn stale_classified_page_cannot_replace_newer_folder() {
+        let (mut mailbox, inbox) = open();
+        mailbox.select_folder(MailFolder::Sent, 3);
+
+        let stale = mailbox.finish_page(
+            inbox.id,
+            Ok(ConversationPage {
+                conversations: vec![message_row("m1"), message_row("m2")],
+                total: 1,
+            }),
+        );
+
+        assert_eq!(stale, None);
+        assert_eq!(mailbox.status(), ListStatus::Loading(3));
+        assert!(mailbox.conversations().is_empty());
+    }
+
+    #[test]
+    fn split_rows_are_searchable_and_leave_counts_alone() {
+        let (mut mailbox, request) = open();
+        let counts: MailboxCounts = [(MailFolder::Inbox, 2)].into_iter().collect();
+        mailbox.finish_counts(2, Ok(counts.clone()));
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                conversations: vec![message_row("m1"), message_row("m2"), summary("c1")],
+                total: 2,
+            }),
+        );
+
+        mailbox.set_search_query("bank".into());
+
+        let visible: Vec<_> = mailbox
+            .visible_conversations()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(visible, ["m1", "m2"]);
+        assert_eq!(mailbox.counts(), Some(&counts));
+    }
+
+    #[test]
+    fn rows_without_a_time_keep_their_place() {
+        let timed = |id: &str, time| ConversationSummary {
+            time: Some(time),
+            ..summary(id)
+        };
+        let (mut mailbox, request) = open();
+
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                conversations: vec![
+                    timed("c1", 50),
+                    summary("undated"),
+                    timed("m1", 10),
+                    timed("c2", 30),
+                ],
+                total: 4,
+            }),
+        );
+
+        assert_eq!(ids(&mailbox), ["c1", "undated", "c2", "m1"]);
+    }
+
+    #[test]
+    fn rows_stay_newest_first_across_pages() {
+        let timed = |id: &str, time| ConversationSummary {
+            time: Some(time),
+            ..summary(id)
+        };
+        let (mut mailbox, request) = open();
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                conversations: vec![
+                    timed("c1", 50),
+                    timed("m1", 40),
+                    timed("m2", 10),
+                    timed("c2", 30),
+                ],
+                total: 120,
+            }),
+        );
+        assert_eq!(ids(&mailbox), ["c1", "m1", "c2", "m2"]);
+
+        let more = mailbox.load_more(3).unwrap();
+        mailbox.finish_page(
+            more.id,
+            Ok(ConversationPage {
+                conversations: vec![timed("c3", 20)],
+                total: 120,
+            }),
+        );
+
+        assert_eq!(ids(&mailbox), ["c1", "m1", "c2", "c3", "m2"]);
     }
 
     #[test]

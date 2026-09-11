@@ -3,12 +3,13 @@ mod html;
 mod model;
 mod proton;
 mod service;
+mod threading;
 
 use std::sync::Arc;
 
 pub use model::{
     ConversationDetail, ConversationPage, ConversationSummary, MailAddress, MailFolder,
-    MailMessage, MailboxCounts, MailboxError, MessageBody,
+    MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
 };
 #[cfg(test)]
 pub use proton::Reply;
@@ -54,10 +55,18 @@ impl MailBackend {
         }
     }
 
-    /// Loads the full conversation through the active backend.
-    pub async fn conversation_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
+    /// Loads what a mailbox row opens in the reader.
+    pub async fn conversation_detail(
+        &self,
+        kind: SummaryKind,
+        id: &str,
+    ) -> Result<ConversationDetail, MailboxError> {
         match self {
-            Self::Proton(service) => service.conversation_detail(id).await,
+            Self::Proton(service) => match kind {
+                SummaryKind::Conversation => service.conversation_detail(id).await,
+                SummaryKind::Message => service.message_detail(id).await,
+            },
+            // Demo rows are always whole conversations.
             Self::Demo(service) => service.conversation_detail(id, demo::now()),
         }
     }

@@ -17,4 +17,5 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures = "0.3"
 iced = { version = "0.14", features = ["tokio"] }
 proton-core = { git = "https://github.com/luiscuellar31/protonmail-rs.git", branch = "fix/captcha-chrome-hv" }
+tokio = { version = "1", features = ["time"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }

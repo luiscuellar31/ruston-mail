@@ -36,10 +36,22 @@ impl MailFolder {
     }
 }
 
+/// What a mailbox row opens in the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryKind {
+    /// A Proton conversation shown as one thread.
+    Conversation,
+    /// One message that Ruston shows on its own instead of inside its Proton
+    /// conversation.
+    Message,
+}
+
 /// The conversation metadata shown in the mailbox list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationSummary {
+    /// Conversation ID, or message ID for `SummaryKind::Message` rows.
     pub id: String,
+    pub kind: SummaryKind,
     pub subject: Option<String>,
     /// Senders, or recipients in Sent and Drafts.
     pub correspondents: Option<String>,

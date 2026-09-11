@@ -643,10 +643,10 @@ impl App {
         let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
             return Task::none();
         };
-        let conversation_id = request.conversation_id.clone();
+        let (kind, id) = (request.kind, request.conversation_id.clone());
 
         Task::perform(
-            async move { backend.conversation_detail(&conversation_id).await },
+            async move { backend.conversation_detail(kind, &id).await },
             move |result| Message::ConversationLoaded(request.clone(), result),
         )
     }
@@ -746,6 +746,7 @@ mod tests {
             } => ReaderRequest {
                 id: *request,
                 conversation_id: conversation_id.clone(),
+                kind: crate::mail::SummaryKind::Conversation,
             },
             _ => panic!("expected pending reader request"),
         }
@@ -755,6 +756,23 @@ mod tests {
         let request = pending_reader_request(app);
         let result = demo_service(app).conversation_detail(&request.conversation_id, NOW);
         let _ = app.update(Message::ConversationLoaded(request, result));
+    }
+
+    #[test]
+    fn rerender_inputs_issue_no_mailbox_requests() {
+        let mut app = loaded_demo_app();
+        let requests = app.last_request;
+        let split = *app.panels().layout().splits().next().unwrap();
+
+        for message in [
+            Message::SearchChanged("alex".into()),
+            Message::PanelResized(pane_grid::ResizeEvent { split, ratio: 0.3 }),
+            Message::SearchChanged(String::new()),
+        ] {
+            assert_eq!(app.update(message).units(), 0);
+        }
+
+        assert_eq!(app.last_request, requests);
     }
 
     fn loaded_demo_app() -> App {

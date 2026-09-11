@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     ConversationDetail, ConversationPage, ConversationSummary, MailAddress, MailFolder,
-    MailMessage, MailboxCounts, MailboxError, MessageBody,
+    MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
 };
 
 /// Small enough that the demo Inbox needs several pages.
@@ -729,6 +729,7 @@ pub fn now() -> i64 {
 fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
     ConversationSummary {
         id: format!("demo-{index}"),
+        kind: SummaryKind::Conversation,
         subject: non_empty(fixture.subject),
         correspondents: non_empty(fixture.correspondents),
         participants: fixture_participants(fixture),

@@ -1,21 +1,36 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
-use proton_core::model::enums::label_ids;
+use futures::{SinkExt, StreamExt, TryStreamExt, stream};
+use proton_core::model::enums::{label_ids, message_flag};
 use proton_core::{
     Client, Conversation, Error, HvChallenge, HvResolver, LabelCount, LoginOptions,
     MessageMetadata, Recipient, TotpPrompt,
 };
 
+use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, LoginRequest,
-    MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, html,
+    MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
+    html,
 };
 
 /// Conversations requested per page from Proton.
 pub const PAGE_SIZE: u32 = 50;
+
+/// Conversations whose message metadata is inspected at the same time while
+/// a page loads.
+const METADATA_CONCURRENCY: usize = 4;
+
+/// Longest wait for the conversation list of a page.
+const LIST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Time shared by all metadata inspections of one page. Conversations still
+/// pending when it runs out keep Proton's grouping, so a slow or stuck
+/// request cannot hold the page back.
+const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
 const PROFILE: &str = "ruston";
 const SIGN_IN_CANCELLED: &str = "sign-in cancelled";
@@ -96,6 +111,7 @@ impl<T> Reply<T> {
 pub struct ProtonMailService {
     client: Client,
     email: Option<String>,
+    own_addresses: OwnAddresses,
 }
 
 impl ProtonMailService {
@@ -151,26 +167,61 @@ impl ProtonMailService {
         self.email.as_deref()
     }
 
-    /// Lists one zero-based page of a folder's conversations, newest first.
+    /// Lists one zero-based page of a folder's conversations. Conversations
+    /// whose list metadata leaves the grouping in doubt have their message
+    /// metadata inspected, a few at a time and within `INSPECTION_BUDGET`.
     pub async fn list_conversations(
         &self,
         folder: MailFolder,
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
-        let (total, conversations) = self
-            .client
-            .list_conversations(label_id(folder), page, page_size, false)
-            .await
-            .map_err(map_mailbox_error)?;
+        let listed = tokio::time::timeout(
+            LIST_TIMEOUT,
+            self.client
+                .list_conversations(label_id(folder), page, page_size, false),
+        )
+        .await
+        .map_err(|_| MailboxError::Connection)?;
+        let (total, conversations) = listed.map_err(map_mailbox_error)?;
+
+        let deadline = tokio::time::Instant::now() + INSPECTION_BUDGET;
+        let rows: Vec<Vec<ConversationSummary>> = stream::iter(conversations)
+            .map(|conversation| self.rows(conversation, folder, deadline))
+            .buffered(METADATA_CONCURRENCY)
+            .try_collect()
+            .await?;
 
         Ok(ConversationPage {
-            conversations: conversations
-                .into_iter()
-                .map(|conversation| summarize(conversation, folder))
-                .collect(),
+            conversations: rows.into_iter().flatten().collect(),
             total,
         })
+    }
+
+    /// One row for the conversation, or one per message when it is only
+    /// repeated inbound mail.
+    async fn rows(
+        &self,
+        conversation: Conversation,
+        folder: MailFolder,
+        deadline: tokio::time::Instant,
+    ) -> Result<Vec<ConversationSummary>, MailboxError> {
+        let senders: Vec<String> = conversation
+            .senders
+            .iter()
+            .map(|sender| threading::normalize_address(&sender.address))
+            .collect();
+        if !threading::needs_inspection(conversation.num_messages, &senders, &self.own_addresses) {
+            return Ok(vec![summarize(conversation, folder)]);
+        }
+
+        let inspection = tokio::time::timeout_at(
+            deadline,
+            self.client.conversation_messages(&conversation.id),
+        )
+        .await
+        .ok();
+        inspected_rows(conversation, inspection, folder, &self.own_addresses)
     }
 
     pub async fn conversation_counts(&self) -> Result<MailboxCounts, MailboxError> {
@@ -204,10 +255,35 @@ impl ProtonMailService {
         })
     }
 
+    /// Fetches and decrypts one message that the list shows on its own.
+    pub async fn message_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
+        let message = self
+            .client
+            .read_message(id)
+            .await
+            .map_err(map_mailbox_error)?;
+        let subject = message.meta.subject.trim().to_owned();
+
+        Ok(ConversationDetail {
+            id: id.to_owned(),
+            subject: (!subject.is_empty()).then_some(subject),
+            messages: vec![mail_message(message.meta, message.body, &message.mime_type)],
+        })
+    }
+
     fn from_client(client: Client) -> Self {
         let email = client.primary_email().map(str::to_owned);
+        let own_addresses = client
+            .addresses()
+            .iter()
+            .map(|address| threading::normalize_address(&address.email))
+            .collect();
 
-        Self { client, email }
+        Self {
+            client,
+            email,
+            own_addresses,
+        }
     }
 }
 
@@ -351,6 +427,88 @@ fn summarize(conversation: Conversation, folder: MailFolder) -> ConversationSumm
         starred,
         message_count: u32::try_from(conversation.num_messages).unwrap_or(0),
         id: conversation.id,
+        kind: SummaryKind::Conversation,
+    }
+}
+
+/// Rows for a conversation whose messages were inspected. `None` means the
+/// inspection ran out of time.
+fn inspected_rows(
+    conversation: Conversation,
+    inspection: Option<proton_core::Result<Vec<MessageMetadata>>>,
+    folder: MailFolder,
+    own: &OwnAddresses,
+) -> Result<Vec<ConversationSummary>, MailboxError> {
+    match inspection.map(|result| result.map_err(map_mailbox_error)) {
+        Some(Ok(messages)) => Ok(split_rows(conversation, messages, folder, own)),
+        // An expired session ends the page load like any other request.
+        Some(Err(MailboxError::SessionExpired)) => Err(MailboxError::SessionExpired),
+        // Any other failure, or no answer in time, keeps Proton's grouping.
+        Some(Err(_)) | None => Ok(vec![summarize(conversation, folder)]),
+    }
+}
+
+/// Applies the threading policy to a conversation's message metadata: rows
+/// for its messages in `folder` when it is only repeated inbound mail,
+/// otherwise the conversation itself.
+fn split_rows(
+    conversation: Conversation,
+    messages: Vec<MessageMetadata>,
+    folder: MailFolder,
+    own: &OwnAddresses,
+) -> Vec<ConversationSummary> {
+    let facts: Vec<MessageFacts> = messages
+        .iter()
+        .map(|message| MessageFacts {
+            sender: threading::normalize_address(&message.sender.address),
+            answered: [
+                message_flag::REPLIED,
+                message_flag::REPLIED_ALL,
+                message_flag::FORWARDED,
+            ]
+            .into_iter()
+            .any(|flag| message_flag::has(message.flags, flag)),
+        })
+        .collect();
+    if !threading::is_repeated_inbound(&facts, own) {
+        return vec![summarize(conversation, folder)];
+    }
+
+    let mut rows: Vec<_> = messages
+        .into_iter()
+        .filter(|message| message.label_ids.iter().any(|id| id == label_id(folder)))
+        .map(message_summary)
+        .collect();
+    // Label data disagreeing with the conversation list: keep Proton's row.
+    if rows.is_empty() {
+        return vec![summarize(conversation, folder)];
+    }
+    rows.sort_by_key(|row| std::cmp::Reverse(row.time));
+    rows
+}
+
+/// A row for one message split out of a conversation. Only inbound mail is
+/// ever split, so the sender is the correspondent in every folder.
+fn message_summary(message: MessageMetadata) -> ConversationSummary {
+    let correspondents = display_names(std::slice::from_ref(&message.sender));
+    let participants = std::iter::once(&message.sender)
+        .chain(&message.to_list)
+        .chain(&message.cc_list)
+        .map(mail_address)
+        .collect();
+    let subject = message.subject.trim();
+
+    ConversationSummary {
+        subject: (!subject.is_empty()).then(|| subject.to_owned()),
+        correspondents,
+        participants,
+        preview: None,
+        time: (message.time > 0).then_some(message.time),
+        unread: message.unread != 0,
+        starred: message.label_ids.iter().any(|id| id == label_ids::STARRED),
+        message_count: 1,
+        id: message.id,
+        kind: SummaryKind::Message,
     }
 }
 
@@ -629,6 +787,152 @@ mod tests {
         ));
     }
 
+    const BANK: &str = "notifications@bank.example.com";
+    const ME: &str = "me@proton.me";
+
+    fn own() -> OwnAddresses {
+        [ME.to_owned()].into_iter().collect()
+    }
+
+    fn metadata(id: &str, sender: &str, time: i64, labels: &[&str]) -> MessageMetadata {
+        MessageMetadata {
+            id: id.into(),
+            sender: person("", sender),
+            subject: format!("Subject {id}"),
+            time,
+            unread: 1,
+            label_ids: labels.iter().map(|label| (*label).to_owned()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn bank_conversation() -> Conversation {
+        Conversation {
+            id: "conversation".into(),
+            subject: "Account statement".into(),
+            num_messages: 3,
+            senders: vec![person("", BANK)],
+            labels: vec![label(label_ids::INBOX)],
+            ..Default::default()
+        }
+    }
+
+    fn ids(rows: &[ConversationSummary]) -> Vec<&str> {
+        rows.iter().map(|row| row.id.as_str()).collect()
+    }
+
+    #[test]
+    fn inspection_failures_keep_grouping_but_expired_sessions_fail() {
+        let grouped = |inspection| {
+            inspected_rows(bank_conversation(), inspection, MailFolder::Inbox, &own())
+                .map(|rows| ids(&rows).join(","))
+        };
+
+        assert_eq!(grouped(None), Ok("conversation".into()));
+        assert_eq!(
+            grouped(Some(Err(Error::Other("unexpected".into())))),
+            Ok("conversation".into())
+        );
+        assert_eq!(
+            grouped(Some(Err(api_error(500)))),
+            Ok("conversation".into())
+        );
+        assert_eq!(
+            grouped(Some(Err(Error::Unauthorized))),
+            Err(MailboxError::SessionExpired)
+        );
+        assert_eq!(
+            grouped(Some(Err(api_error(401)))),
+            Err(MailboxError::SessionExpired)
+        );
+    }
+
+    #[test]
+    fn repeated_inbound_mail_becomes_individual_rows() {
+        let messages = vec![
+            metadata("m1", BANK, 10, &[label_ids::INBOX]),
+            metadata("m2", BANK, 30, &[label_ids::INBOX, label_ids::STARRED]),
+            metadata("m3", BANK, 20, &[label_ids::INBOX]),
+        ];
+
+        let rows = split_rows(bank_conversation(), messages, MailFolder::Inbox, &own());
+
+        assert_eq!(ids(&rows), ["m2", "m3", "m1"]);
+        assert!(rows.iter().all(|row| row.kind == SummaryKind::Message));
+        assert!(rows.iter().all(|row| row.message_count == 1 && row.unread));
+        assert!(rows[0].starred && !rows[1].starred);
+        assert_eq!(rows[0].subject.as_deref(), Some("Subject m2"));
+        assert_eq!(rows[0].correspondents.as_deref(), Some(BANK));
+    }
+
+    #[test]
+    fn split_rows_only_include_messages_in_the_folder() {
+        let messages = vec![
+            metadata("m1", BANK, 10, &[label_ids::INBOX]),
+            metadata("m2", BANK, 20, &[label_ids::TRASH]),
+        ];
+
+        let rows = split_rows(bank_conversation(), messages, MailFolder::Inbox, &own());
+
+        assert_eq!(ids(&rows), ["m1"]);
+    }
+
+    #[test]
+    fn exchanges_and_answered_mail_stay_one_conversation() {
+        let reply = vec![
+            metadata("m1", BANK, 10, &[label_ids::INBOX]),
+            metadata("m2", ME, 20, &[label_ids::SENT]),
+        ];
+        let mut answered = metadata("m3", BANK, 30, &[label_ids::INBOX]);
+        answered.flags = message_flag::REPLIED;
+        let flagged = vec![metadata("m1", BANK, 10, &[label_ids::INBOX]), answered];
+
+        for messages in [reply, flagged] {
+            let rows = split_rows(bank_conversation(), messages, MailFolder::Inbox, &own());
+
+            assert_eq!(ids(&rows), ["conversation"]);
+            assert_eq!(rows[0].kind, SummaryKind::Conversation);
+        }
+    }
+
+    #[test]
+    fn classification_ignores_subjects() {
+        let mut same_subject = vec![
+            metadata("m1", BANK, 10, &[label_ids::INBOX]),
+            metadata("m2", ME, 20, &[label_ids::INBOX]),
+        ];
+        for message in &mut same_subject {
+            message.subject = "Statement".into();
+        }
+        let different_subjects = vec![
+            metadata("m1", BANK, 10, &[label_ids::INBOX]),
+            metadata("m2", BANK, 20, &[label_ids::INBOX]),
+        ];
+
+        let grouped = split_rows(bank_conversation(), same_subject, MailFolder::Inbox, &own());
+        let split = split_rows(
+            bank_conversation(),
+            different_subjects,
+            MailFolder::Inbox,
+            &own(),
+        );
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(split.len(), 2);
+    }
+
+    #[test]
+    fn missing_folder_labels_fall_back_to_the_conversation() {
+        let messages = vec![
+            metadata("m1", BANK, 10, &[label_ids::ARCHIVE]),
+            metadata("m2", BANK, 20, &[label_ids::ARCHIVE]),
+        ];
+
+        let rows = split_rows(bank_conversation(), messages, MailFolder::Inbox, &own());
+
+        assert_eq!(ids(&rows), ["conversation"]);
+    }
+
     #[test]
     fn conversation_maps_to_summary() {
         let conversation = Conversation {
@@ -651,6 +955,7 @@ mod tests {
             summary,
             ConversationSummary {
                 id: "conversation".into(),
+                kind: SummaryKind::Conversation,
                 subject: Some("Quarterly report".into()),
                 correspondents: Some("Ada, bob@example.com".into()),
                 participants: vec![
