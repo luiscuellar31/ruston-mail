@@ -1,12 +1,13 @@
 use chrono::{DateTime, Datelike, Local, TimeZone};
 use iced::widget::text::Wrapping;
-use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text};
-use iced::{Center, Element, Fill, FillPortion};
+use iced::widget::{Column, button, column, container, pane_grid, row, scrollable, space, text};
+use iced::{Center, Element, Fill, Theme};
 
-use crate::app::{App, ListStatus, Mailbox, Message};
+use crate::app::{
+    App, DIVIDER_GRAB, DIVIDER_WIDTH, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, Panel,
+};
 use crate::mail::{ConversationSummary, MailFolder};
 
-const SIDEBAR_WIDTH: f32 = 220.0;
 pub(super) const PANE_PADDING: f32 = 16.0;
 pub(super) const SPACING: f32 = 8.0;
 pub(super) const DETAIL_SIZE: f32 = 12.0;
@@ -18,15 +19,35 @@ pub(super) fn view<'a>(
     email: Option<&'a str>,
     signing_out: bool,
 ) -> Element<'a, Message> {
-    row![
-        sidebar(app, mailbox, email, signing_out),
-        rule::vertical(1),
-        conversation_pane(mailbox),
-        rule::vertical(1),
-        super::reader::view(mailbox),
-    ]
-    .height(Fill)
-    .into()
+    let panels = pane_grid(app.panels(), move |_pane, panel, _maximized| {
+        let content = match panel {
+            Panel::Sidebar => sidebar(app, mailbox, email, signing_out),
+            Panel::Conversations => conversation_pane(mailbox),
+            Panel::Reader => super::reader::view(mailbox),
+        };
+        pane_grid::Content::new(content).style(pane_background)
+    })
+    .spacing(DIVIDER_WIDTH)
+    .min_size(MIN_PANEL_WIDTH)
+    .on_resize(DIVIDER_GRAB, Message::PanelResized);
+
+    // Panels paint the normal background, so the gaps between them show this
+    // color as thin dividers, like the previous fixed rules.
+    container(panels).style(divider_background).into()
+}
+
+fn pane_background(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme.palette().background.into()),
+        ..container::Style::default()
+    }
+}
+
+fn divider_background(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(theme.extended_palette().background.strong.color.into()),
+        ..container::Style::default()
+    }
 }
 
 fn sidebar<'a>(
@@ -74,7 +95,7 @@ fn sidebar<'a>(
         ]
         .spacing(16),
     )
-    .width(SIDEBAR_WIDTH)
+    .width(Fill)
     .height(Fill)
     .padding(PANE_PADDING)
     .into()
@@ -138,7 +159,7 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
     };
 
     container(column![header, body].spacing(12))
-        .width(FillPortion(3))
+        .width(Fill)
         .height(Fill)
         .padding(PANE_PADDING)
         .into()

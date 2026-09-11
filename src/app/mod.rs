@@ -1,15 +1,18 @@
+mod layout;
 mod mailbox;
 mod reader;
 
 use std::sync::Arc;
 
 use iced::Task;
+use iced::widget::pane_grid;
 
 use crate::mail::{
     AuthError, ConversationPage, LoginRequest, MailBackend, MailFolder, MailboxCounts,
     MailboxError, ProtonMailService, ResumeOutcome, SignInOutcome,
 };
 
+pub use layout::{DIVIDER_GRAB, DIVIDER_WIDTH, MIN_PANEL_WIDTH, Panel};
 pub use mailbox::{ListStatus, Mailbox};
 use mailbox::{PageRequest, RequestId};
 pub use reader::ConversationReader;
@@ -51,6 +54,7 @@ pub enum Message {
     LoadMoreConversations,
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
+    PanelResized(pane_grid::ResizeEvent),
 }
 
 #[derive(Default)]
@@ -81,6 +85,9 @@ pub struct App {
     backend: Option<MailBackend>,
     mailbox: Option<Mailbox>,
     last_request: RequestId,
+    /// Mailbox panel sizes. Pure layout state: kept for the life of the app
+    /// and never touched by mailbox or authentication changes.
+    panels: pane_grid::State<Panel>,
 }
 
 impl App {
@@ -105,6 +112,7 @@ impl App {
             backend: None,
             mailbox: None,
             last_request: 0,
+            panels: layout::default_panels(),
         }
     }
 
@@ -169,6 +177,7 @@ impl App {
                     .and_then(|mailbox| mailbox.finish_counts(request, result));
                 self.handle_mailbox_error(error);
             }
+            Message::PanelResized(event) => self.panels.resize(event.split, event.ratio),
         }
 
         Task::none()
@@ -184,6 +193,10 @@ impl App {
 
     pub fn is_demo(&self) -> bool {
         matches!(self.backend, Some(MailBackend::Demo))
+    }
+
+    pub fn panels(&self) -> &pane_grid::State<Panel> {
+        &self.panels
     }
 
     pub fn username(&self) -> &str {
@@ -612,6 +625,42 @@ mod tests {
         let _ = app.update(Message::SelectFolder(MailFolder::Sent));
 
         assert!(app.mailbox().unwrap().reader().is_none());
+    }
+
+    #[test]
+    fn resizing_panels_only_changes_layout() {
+        let (mut app, _) = App::boot(true);
+        deliver_demo_page(&mut app, 1, 0);
+        let _ = app.update(Message::SelectConversation("demo-0".into()));
+        let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
+        let requests = app.last_request;
+        let window = iced::Size::new(1_100.0, 700.0);
+        let widths = |panels: &pane_grid::State<Panel>| {
+            panels
+                .layout()
+                .pane_regions(DIVIDER_WIDTH, MIN_PANEL_WIDTH, window)
+        };
+        let default_widths = widths(app.panels());
+        let splits: Vec<_> = app.panels().layout().splits().copied().collect();
+
+        for (split, ratio) in splits.into_iter().zip([0.35, 0.6]) {
+            let task = app.update(Message::PanelResized(pane_grid::ResizeEvent {
+                split,
+                ratio,
+            }));
+            assert_eq!(task.units(), 0);
+        }
+
+        assert_ne!(widths(app.panels()), default_widths);
+        assert_eq!(app.last_request, requests);
+        assert!(app.is_demo());
+        let mailbox = app.mailbox().unwrap();
+        assert_eq!(mailbox.folder(), MailFolder::Inbox);
+        assert_eq!(mailbox.status(), ListStatus::Loaded);
+        assert_eq!(mailbox.conversations().len(), 10);
+        let reader = mailbox.reader().unwrap();
+        assert_eq!(reader.conversation_id(), "demo-0");
+        assert!(reader.is_expanded("demo-0-0"));
     }
 
     #[test]

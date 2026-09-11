@@ -1,7 +1,7 @@
 use chrono::{Local, TimeZone};
 use iced::widget::text::Wrapping;
 use iced::widget::{Column, button, column, container, row, rule, scrollable, text};
-use iced::{Element, Fill, FillPortion};
+use iced::{Element, Fill};
 
 use super::mailbox::{DETAIL_SIZE, PANE_PADDING, SPACING};
 use crate::app::{ConversationReader, Mailbox, Message};
@@ -22,7 +22,7 @@ pub(super) fn view(mailbox: &Mailbox) -> Element<'_, Message> {
         },
     };
 
-    container(content).width(FillPortion(4)).height(Fill).into()
+    container(content).width(Fill).height(Fill).into()
 }
 
 fn placeholder(message: &str) -> Element<'_, Message> {
