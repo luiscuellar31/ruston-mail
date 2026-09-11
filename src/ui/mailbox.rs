@@ -7,9 +7,9 @@ use crate::app::{App, ListStatus, Mailbox, Message};
 use crate::mail::{ConversationSummary, MailFolder};
 
 const SIDEBAR_WIDTH: f32 = 220.0;
-const PANE_PADDING: f32 = 16.0;
-const SPACING: f32 = 8.0;
-const DETAIL_SIZE: f32 = 12.0;
+pub(super) const PANE_PADDING: f32 = 16.0;
+pub(super) const SPACING: f32 = 8.0;
+pub(super) const DETAIL_SIZE: f32 = 12.0;
 const UNREAD_MARKER_WIDTH: f32 = 12.0;
 
 pub(super) fn view<'a>(
@@ -23,7 +23,7 @@ pub(super) fn view<'a>(
         rule::vertical(1),
         conversation_pane(mailbox),
         rule::vertical(1),
-        reading_pane(mailbox),
+        super::reader::view(mailbox),
     ]
     .height(Fill)
     .into()
@@ -240,20 +240,6 @@ fn conversation_row<'a>(
             }
         })
         .on_press(Message::SelectConversation(conversation.id.clone()))
-        .into()
-}
-
-fn reading_pane(mailbox: &Mailbox) -> Element<'_, Message> {
-    let placeholder = if mailbox.selected_conversation().is_some() {
-        "Conversation reading will be implemented next."
-    } else {
-        "Select a conversation to read it."
-    };
-
-    container(text(placeholder).style(text::secondary))
-        .center_x(FillPortion(4))
-        .center_y(Fill)
-        .padding(PANE_PADDING)
         .into()
 }
 

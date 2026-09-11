@@ -5,7 +5,10 @@ mod service;
 
 use std::sync::Arc;
 
-pub use model::{ConversationPage, ConversationSummary, MailFolder, MailboxCounts, MailboxError};
+pub use model::{
+    ConversationDetail, ConversationPage, ConversationSummary, MailAddress, MailFolder,
+    MailMessage, MailboxCounts, MailboxError, MessageBody,
+};
 pub use proton::{ProtonMailService, ResumeOutcome, SignInOutcome};
 pub use service::{AuthError, LoginRequest};
 
@@ -41,6 +44,15 @@ impl MailBackend {
         match self {
             Self::Proton(service) => service.conversation_counts().await,
             Self::Demo => Ok(demo::counts()),
+        }
+    }
+
+    /// The full conversation for the reader, when this backend can provide it.
+    /// Reading conversations from Proton is not implemented yet.
+    pub fn conversation_detail(&self, id: &str) -> Option<ConversationDetail> {
+        match self {
+            Self::Proton(_) => None,
+            Self::Demo => demo::conversation_detail(id, demo::now()),
         }
     }
 }

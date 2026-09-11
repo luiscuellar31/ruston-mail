@@ -1,6 +1,10 @@
 use std::collections::HashSet;
 
-use crate::mail::{ConversationPage, ConversationSummary, MailFolder, MailboxCounts, MailboxError};
+use super::reader::ConversationReader;
+use crate::mail::{
+    ConversationDetail, ConversationPage, ConversationSummary, MailFolder, MailboxCounts,
+    MailboxError,
+};
 
 /// Identifies an asynchronous mailbox request. Only the response matching the
 /// request currently in flight is applied; anything else is stale.
@@ -35,7 +39,7 @@ pub struct Mailbox {
     has_more: bool,
     counts: Option<MailboxCounts>,
     counts_request: Option<RequestId>,
-    selected_conversation: Option<String>,
+    reader: Option<ConversationReader>,
 }
 
 impl Mailbox {
@@ -55,7 +59,7 @@ impl Mailbox {
             has_more: false,
             counts: None,
             counts_request: Some(counts_request),
-            selected_conversation: None,
+            reader: None,
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -83,7 +87,13 @@ impl Mailbox {
     }
 
     pub fn selected_conversation(&self) -> Option<&str> {
-        self.selected_conversation.as_deref()
+        self.reader
+            .as_ref()
+            .map(ConversationReader::conversation_id)
+    }
+
+    pub fn reader(&self) -> Option<&ConversationReader> {
+        self.reader.as_ref()
     }
 
     pub fn is_busy(&self) -> bool {
@@ -93,8 +103,18 @@ impl Mailbox {
         )
     }
 
-    pub fn select_conversation(&mut self, id: String) {
-        self.selected_conversation = Some(id);
+    /// Opens a conversation in the reader. Reselecting the open conversation
+    /// keeps its expanded messages; selecting another one starts fresh.
+    pub fn select_conversation(&mut self, id: String, detail: Option<ConversationDetail>) {
+        if self.selected_conversation() != Some(id.as_str()) {
+            self.reader = Some(ConversationReader::new(id, detail));
+        }
+    }
+
+    pub fn toggle_message(&mut self, message_id: &str) {
+        if let Some(reader) = &mut self.reader {
+            reader.toggle(message_id);
+        }
     }
 
     pub fn select_folder(&mut self, folder: MailFolder, request: RequestId) -> Option<PageRequest> {
@@ -106,7 +126,7 @@ impl Mailbox {
         self.conversations.clear();
         self.next_page = 0;
         self.has_more = false;
-        self.selected_conversation = None;
+        self.reader = None;
         self.status = ListStatus::Loading(request);
         Some(self.page_request(request, 0))
     }
@@ -213,10 +233,13 @@ impl Mailbox {
         } else {
             self.conversations = page.conversations;
             self.next_page = 1;
-            if let Some(selected) = &self.selected_conversation
-                && !self.conversations.iter().any(|c| &c.id == selected)
+            if let Some(reader) = &self.reader
+                && !self
+                    .conversations
+                    .iter()
+                    .any(|c| c.id == reader.conversation_id())
             {
-                self.selected_conversation = None;
+                self.reader = None;
             }
         }
 
@@ -228,6 +251,7 @@ impl Mailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail::{MailAddress, MailMessage, MessageBody};
 
     const PAGE_SIZE: u32 = 50;
 
@@ -248,6 +272,24 @@ mod tests {
             conversations: ids.iter().map(|id| summary(id)).collect(),
             total,
         })
+    }
+
+    fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
+        ConversationDetail {
+            id: id.to_owned(),
+            subject: None,
+            messages: message_ids
+                .iter()
+                .enumerate()
+                .map(|(time, message_id)| MailMessage {
+                    id: (*message_id).to_owned(),
+                    sender: MailAddress::default(),
+                    recipients: Vec::new(),
+                    time: Some(time as i64),
+                    body: MessageBody::PlainText(String::new()),
+                })
+                .collect(),
+        }
     }
 
     fn ids(mailbox: &Mailbox) -> Vec<&str> {
@@ -283,6 +325,7 @@ mod tests {
         );
         assert_eq!(mailbox.status(), ListStatus::Loading(1));
         assert_eq!(mailbox.counts(), None);
+        assert!(mailbox.reader().is_none());
     }
 
     #[test]
@@ -311,7 +354,7 @@ mod tests {
     #[test]
     fn folder_switch_resets_pagination() {
         let mut mailbox = loaded_inbox(&["a"], 200);
-        mailbox.select_conversation("a".into());
+        mailbox.select_conversation("a".into(), None);
 
         let request = mailbox.select_folder(MailFolder::Sent, 3).unwrap();
 
@@ -321,6 +364,7 @@ mod tests {
         assert!(mailbox.conversations().is_empty());
         assert!(!mailbox.has_more());
         assert_eq!(mailbox.selected_conversation(), None);
+        assert!(mailbox.reader().is_none());
     }
 
     #[test]
@@ -329,6 +373,22 @@ mod tests {
 
         assert_eq!(mailbox.select_folder(MailFolder::Inbox, 3), None);
         assert_eq!(ids(&mailbox), ["a"]);
+    }
+
+    #[test]
+    fn reselecting_keeps_expansion_and_switching_resets_it() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        mailbox.select_conversation("a".into(), Some(detail("a", &["a1", "a2"])));
+        mailbox.toggle_message("a1");
+
+        mailbox.select_conversation("a".into(), Some(detail("a", &["a1", "a2"])));
+        assert!(mailbox.reader().unwrap().is_expanded("a1"));
+
+        mailbox.select_conversation("b".into(), Some(detail("b", &["b1"])));
+        mailbox.select_conversation("a".into(), Some(detail("a", &["a1", "a2"])));
+        let reader = mailbox.reader().unwrap();
+        assert!(!reader.is_expanded("a1"));
+        assert!(reader.is_expanded("a2"));
     }
 
     #[test]
@@ -418,7 +478,7 @@ mod tests {
     #[test]
     fn refresh_replaces_list_only_after_success() {
         let mut mailbox = loaded_inbox(&["a", "b"], 2);
-        mailbox.select_conversation("b".into());
+        mailbox.select_conversation("b".into(), None);
 
         let request = mailbox.refresh(3).unwrap();
         assert_eq!(request.page, 0);
@@ -429,6 +489,17 @@ mod tests {
 
         assert_eq!(ids(&mailbox), ["c", "b"]);
         assert_eq!(mailbox.selected_conversation(), Some("b"));
+    }
+
+    #[test]
+    fn refresh_closes_reader_when_conversation_disappears() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        mailbox.select_conversation("b".into(), None);
+
+        let request = mailbox.refresh(3).unwrap();
+        mailbox.finish_page(request.id, page(&["a"], 1));
+
+        assert!(mailbox.reader().is_none());
     }
 
     #[test]

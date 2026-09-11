@@ -50,6 +50,47 @@ pub struct ConversationSummary {
     pub message_count: u32,
 }
 
+/// A mail address. Either part may be missing in server data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MailAddress {
+    pub name: Option<String>,
+    pub address: String,
+}
+
+impl MailAddress {
+    /// The display name, falling back to the address. `None` when both are empty.
+    pub fn display_name(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .or((!self.address.is_empty()).then_some(self.address.as_str()))
+    }
+}
+
+/// A message body. Only plain text is supported for now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageBody {
+    PlainText(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailMessage {
+    pub id: String,
+    pub sender: MailAddress,
+    pub recipients: Vec<MailAddress>,
+    /// Unix timestamp in seconds.
+    pub time: Option<i64>,
+    pub body: MessageBody,
+}
+
+/// A conversation with its messages, as shown in the reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationDetail {
+    pub id: String,
+    pub subject: Option<String>,
+    pub messages: Vec<MailMessage>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConversationPage {
     pub conversations: Vec<ConversationSummary>,

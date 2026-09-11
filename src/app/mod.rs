@@ -1,4 +1,5 @@
 mod mailbox;
+mod reader;
 
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use crate::mail::{
 
 pub use mailbox::{ListStatus, Mailbox};
 use mailbox::{PageRequest, RequestId};
+pub use reader::ConversationReader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInStep {
@@ -44,6 +46,7 @@ pub enum Message {
     LogoutFinished(Result<(), AuthError>),
     SelectFolder(MailFolder),
     SelectConversation(String),
+    ToggleMessageExpanded(String),
     RefreshMailbox,
     LoadMoreConversations,
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
@@ -137,8 +140,17 @@ impl App {
             Message::LogoutFinished(result) => self.finish_logout(result),
             Message::SelectFolder(folder) => return self.select_folder(folder),
             Message::SelectConversation(id) => {
+                let detail = self
+                    .backend
+                    .as_ref()
+                    .and_then(|backend| backend.conversation_detail(&id));
                 if let Some(mailbox) = self.active_mailbox() {
-                    mailbox.select_conversation(id);
+                    mailbox.select_conversation(id, detail);
+                }
+            }
+            Message::ToggleMessageExpanded(id) => {
+                if let Some(mailbox) = self.active_mailbox() {
+                    mailbox.toggle_message(&id);
                 }
             }
             Message::RefreshMailbox => return self.refresh_mailbox(),
@@ -545,6 +557,61 @@ mod tests {
             app.mailbox().unwrap().selected_conversation(),
             Some("demo-3")
         );
+    }
+
+    #[test]
+    fn no_selection_has_no_reader() {
+        let (mut app, _) = App::boot(true);
+        deliver_demo_page(&mut app, 1, 0);
+
+        assert!(app.mailbox().unwrap().reader().is_none());
+    }
+
+    #[test]
+    fn demo_selection_opens_reader_with_newest_message_expanded() {
+        let (mut app, _) = App::boot(true);
+        deliver_demo_page(&mut app, 1, 0);
+
+        let _ = app.update(Message::SelectConversation("demo-0".into()));
+
+        let reader = app.mailbox().unwrap().reader().unwrap();
+        assert_eq!(reader.conversation_id(), "demo-0");
+        assert_eq!(reader.detail().unwrap().messages.len(), 3);
+        assert!(reader.is_expanded("demo-0-2"));
+        assert!(!reader.is_expanded("demo-0-0"));
+    }
+
+    #[test]
+    fn toggling_messages_and_switching_conversations() {
+        let (mut app, _) = App::boot(true);
+        deliver_demo_page(&mut app, 1, 0);
+        let _ = app.update(Message::SelectConversation("demo-0".into()));
+
+        let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
+        let reader = app.mailbox().unwrap().reader().unwrap();
+        assert!(reader.is_expanded("demo-0-0"));
+        assert!(reader.is_expanded("demo-0-2"));
+
+        let _ = app.update(Message::SelectConversation("demo-2".into()));
+        let _ = app.update(Message::SelectConversation("demo-0".into()));
+        assert!(
+            !app.mailbox()
+                .unwrap()
+                .reader()
+                .unwrap()
+                .is_expanded("demo-0-0")
+        );
+    }
+
+    #[test]
+    fn folder_switch_closes_reader() {
+        let (mut app, _) = App::boot(true);
+        deliver_demo_page(&mut app, 1, 0);
+        let _ = app.update(Message::SelectConversation("demo-0".into()));
+
+        let _ = app.update(Message::SelectFolder(MailFolder::Sent));
+
+        assert!(app.mailbox().unwrap().reader().is_none());
     }
 
     #[test]
