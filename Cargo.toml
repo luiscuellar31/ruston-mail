@@ -13,5 +13,5 @@ name = "ruston"
 path = "src/main.rs"
 
 [dependencies]
-iced = "0.14"
+iced = { version = "0.14", features = ["tokio"] }
 proton-core = "0.1.1"
