@@ -1,8 +1,7 @@
 use chrono::{DateTime, Datelike, Local, TimeZone};
-use iced::font::Weight;
 use iced::widget::text::Wrapping;
 use iced::widget::{Column, button, column, container, row, rule, scrollable, space, text};
-use iced::{Center, Element, Fill, FillPortion, Font};
+use iced::{Center, Element, Fill, FillPortion};
 
 use crate::app::{App, ListStatus, Mailbox, Message};
 use crate::mail::{ConversationSummary, MailFolder};
@@ -11,10 +10,7 @@ const SIDEBAR_WIDTH: f32 = 220.0;
 const PANE_PADDING: f32 = 16.0;
 const SPACING: f32 = 8.0;
 const DETAIL_SIZE: f32 = 12.0;
-const BOLD: Font = Font {
-    weight: Weight::Bold,
-    ..Font::DEFAULT
-};
+const UNREAD_MARKER_WIDTH: f32 = 12.0;
 
 pub(super) fn view<'a>(
     app: &'a App,
@@ -46,17 +42,22 @@ fn sidebar<'a>(
     )
     .spacing(2);
 
+    let (account, logout_label) = if app.is_demo() {
+        ("Demo mode · fictional mail", "Exit demo")
+    } else {
+        (email.unwrap_or("Proton Mail account"), "Sign out")
+    };
     let logout = button(text(if signing_out {
         "Signing out…"
     } else {
-        "Sign out"
+        logout_label
     }))
     .width(Fill)
     .style(button::secondary)
     .on_press_maybe((!signing_out).then_some(Message::Logout));
 
     let mut footer = column![
-        text(email.unwrap_or("Proton Mail account")).size(DETAIL_SIZE),
+        text(account).size(DETAIL_SIZE).style(text::secondary),
         logout
     ]
     .spacing(SPACING);
@@ -88,7 +89,7 @@ fn folder_button(mailbox: &Mailbox, folder: MailFolder) -> Element<'_, Message> 
 
     let mut label = row![text(folder.name()).width(Fill)].spacing(SPACING);
     if let Some(unread) = unread {
-        label = label.push(text(unread.to_string()).font(BOLD));
+        label = label.push(text(unread.to_string()));
     }
 
     button(label)
@@ -177,7 +178,10 @@ fn conversation_list(mailbox: &Mailbox) -> Element<'_, Message> {
     if let ListStatus::Failed(error) = mailbox.status() {
         content = content.push(text(error.message()).style(text::danger));
     }
-    content.push(scrollable(list).height(Fill)).into()
+    // The gap keeps the scrollbar from covering row details.
+    content
+        .push(scrollable(list).height(Fill).spacing(SPACING))
+        .into()
 }
 
 fn conversation_row<'a>(
@@ -185,11 +189,6 @@ fn conversation_row<'a>(
     selected: bool,
     now: &DateTime<Local>,
 ) -> Element<'a, Message> {
-    let font = if conversation.unread {
-        BOLD
-    } else {
-        Font::DEFAULT
-    };
     let correspondents = conversation
         .correspondents
         .as_deref()
@@ -200,6 +199,22 @@ fn conversation_row<'a>(
         .map(|time| format_time(time, now))
         .unwrap_or_default();
 
+    // Unread uses a marker rather than bold: with the default sans-serif family,
+    // bold text rendered in an unrelated fallback face on macOS, so weight is
+    // not a reliable cue across platforms.
+    let marker = container(
+        text(if conversation.unread { "●" } else { "" })
+            .size(DETAIL_SIZE)
+            .style(move |theme| {
+                if selected {
+                    text::default(theme)
+                } else {
+                    text::primary(theme)
+                }
+            }),
+    )
+    .width(UNREAD_MARKER_WIDTH);
+
     let mut details = row![].spacing(6).align_y(Center);
     if conversation.message_count > 1 {
         details = details.push(text(conversation.message_count.to_string()).size(DETAIL_SIZE));
@@ -208,17 +223,13 @@ fn conversation_row<'a>(
         details = details.push(text("★").size(DETAIL_SIZE));
     }
 
-    let content = column![
-        row![
-            single_line(correspondents, font),
-            text(time).size(DETAIL_SIZE)
-        ]
-        .spacing(SPACING),
-        row![single_line(subject, font), details].spacing(SPACING),
+    let lines = column![
+        row![single_line(correspondents), text(time).size(DETAIL_SIZE)].spacing(SPACING),
+        row![single_line(subject), details].spacing(SPACING),
     ]
     .spacing(4);
 
-    button(content)
+    button(row![marker, lines].spacing(4).align_y(Center))
         .width(Fill)
         .padding([8, 10])
         .style(move |theme, status| {
@@ -251,8 +262,8 @@ fn centered(content: Element<'_, Message>) -> Element<'_, Message> {
 }
 
 /// A clipped, non-wrapping line so long values never push other row content.
-fn single_line(content: &str, font: Font) -> Element<'_, Message> {
-    container(text(content).font(font).wrapping(Wrapping::None))
+fn single_line(content: &str) -> Element<'_, Message> {
+    container(text(content).wrapping(Wrapping::None))
         .width(Fill)
         .clip(true)
         .into()

@@ -9,9 +9,9 @@ use crate::app::{App, AuthState, Message};
 const WINDOW_SIZE: Size = Size::new(1_100.0, 700.0);
 const MIN_WINDOW_SIZE: Size = Size::new(820.0, 480.0);
 
-pub fn run() -> iced::Result {
-    iced::application(App::boot, App::update, view)
-        .title("Ruston")
+pub fn run(demo: bool) -> iced::Result {
+    iced::application(move || App::boot(demo), App::update, view)
+        .title(if demo { "Ruston (demo)" } else { "Ruston" })
         .window(window::Settings {
             size: WINDOW_SIZE,
             min_size: Some(MIN_WINDOW_SIZE),

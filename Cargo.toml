@@ -16,3 +16,4 @@ path = "src/main.rs"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 iced = { version = "0.14", features = ["tokio"] }
 proton-core = "0.1.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }

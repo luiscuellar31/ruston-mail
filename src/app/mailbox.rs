@@ -2,8 +2,6 @@ use std::collections::HashSet;
 
 use crate::mail::{ConversationPage, ConversationSummary, MailFolder, MailboxCounts, MailboxError};
 
-pub const PAGE_SIZE: u32 = 50;
-
 /// Identifies an asynchronous mailbox request. Only the response matching the
 /// request currently in flight is applied; anything else is stale.
 pub type RequestId = u64;
@@ -14,6 +12,7 @@ pub struct PageRequest {
     pub folder: MailFolder,
     /// Zero-based server page.
     pub page: u32,
+    pub page_size: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +30,7 @@ pub struct Mailbox {
     folder: MailFolder,
     status: ListStatus,
     conversations: Vec<ConversationSummary>,
+    page_size: u32,
     next_page: u32,
     has_more: bool,
     counts: Option<MailboxCounts>,
@@ -41,11 +41,16 @@ pub struct Mailbox {
 impl Mailbox {
     /// Opens the Inbox, returning the first page to fetch. Counts are fetched
     /// under `counts_request`.
-    pub fn open(page_request: RequestId, counts_request: RequestId) -> (Self, PageRequest) {
+    pub fn open(
+        page_size: u32,
+        page_request: RequestId,
+        counts_request: RequestId,
+    ) -> (Self, PageRequest) {
         let mailbox = Self {
             folder: MailFolder::Inbox,
             status: ListStatus::Loading(page_request),
             conversations: Vec::new(),
+            page_size,
             next_page: 0,
             has_more: false,
             counts: None,
@@ -189,6 +194,7 @@ impl Mailbox {
             id,
             folder: self.folder,
             page,
+            page_size: self.page_size,
         }
     }
 
@@ -215,13 +221,15 @@ impl Mailbox {
         }
 
         self.has_more = received > 0
-            && u64::from(self.next_page) * u64::from(PAGE_SIZE) < u64::from(page.total);
+            && u64::from(self.next_page) * u64::from(self.page_size) < u64::from(page.total);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PAGE_SIZE: u32 = 50;
 
     fn summary(id: &str) -> ConversationSummary {
         ConversationSummary {
@@ -250,22 +258,27 @@ mod tests {
             .collect()
     }
 
+    fn open() -> (Mailbox, PageRequest) {
+        Mailbox::open(PAGE_SIZE, 1, 2)
+    }
+
     fn loaded_inbox(ids: &[&str], total: u32) -> Mailbox {
-        let (mut mailbox, request) = Mailbox::open(1, 2);
+        let (mut mailbox, request) = open();
         mailbox.finish_page(request.id, page(ids, total));
         mailbox
     }
 
     #[test]
     fn opening_loads_first_inbox_page_with_unknown_counts() {
-        let (mailbox, request) = Mailbox::open(1, 2);
+        let (mailbox, request) = open();
 
         assert_eq!(
             request,
             PageRequest {
                 id: 1,
                 folder: MailFolder::Inbox,
-                page: 0
+                page: 0,
+                page_size: PAGE_SIZE,
             }
         );
         assert_eq!(mailbox.status(), ListStatus::Loading(1));
@@ -283,7 +296,7 @@ mod tests {
 
     #[test]
     fn loading_then_error() {
-        let (mut mailbox, request) = Mailbox::open(1, 2);
+        let (mut mailbox, request) = open();
 
         let error = mailbox.finish_page(request.id, Err(MailboxError::Connection));
 
@@ -320,7 +333,7 @@ mod tests {
 
     #[test]
     fn stale_response_does_not_replace_current_folder() {
-        let (mut mailbox, inbox) = Mailbox::open(1, 2);
+        let (mut mailbox, inbox) = open();
         let sent = mailbox.select_folder(MailFolder::Sent, 3).unwrap();
 
         assert_eq!(mailbox.finish_page(inbox.id, page(&["inbox"], 1)), None);
@@ -334,7 +347,7 @@ mod tests {
 
     #[test]
     fn stale_error_is_ignored() {
-        let (mut mailbox, inbox) = Mailbox::open(1, 2);
+        let (mut mailbox, inbox) = open();
         mailbox.select_folder(MailFolder::Sent, 3);
 
         assert_eq!(
@@ -359,6 +372,19 @@ mod tests {
         assert_eq!(ids(&mailbox), ["a", "b", "c"]);
         assert!(mailbox.has_more());
         assert_eq!(mailbox.load_more(4).unwrap().page, 2);
+    }
+
+    #[test]
+    fn page_size_controls_whether_more_pages_exist() {
+        let (mut mailbox, request) = Mailbox::open(2, 1, 2);
+        mailbox.finish_page(request.id, page(&["a", "b"], 3));
+        assert!(mailbox.has_more());
+
+        let request = mailbox.load_more(3).unwrap();
+        assert_eq!(request.page_size, 2);
+        mailbox.finish_page(request.id, page(&["c"], 3));
+
+        assert!(!mailbox.has_more());
     }
 
     #[test]
@@ -418,7 +444,7 @@ mod tests {
 
     #[test]
     fn counts_apply_once_and_prevent_duplicate_requests() {
-        let (mut mailbox, _) = Mailbox::open(1, 2);
+        let (mut mailbox, _) = open();
         assert_eq!(mailbox.refresh_counts(3), None);
 
         let counts: MailboxCounts = [(MailFolder::Inbox, 4)].into_iter().collect();

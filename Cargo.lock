@@ -4910,6 +4910,7 @@ dependencies = [
  "chrono",
  "iced",
  "proton-core",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -5,12 +5,12 @@ use std::sync::Arc;
 use iced::Task;
 
 use crate::mail::{
-    AuthError, ConversationPage, LoginRequest, MailFolder, MailboxCounts, MailboxError,
-    ProtonMailService, ResumeOutcome, SignInOutcome,
+    AuthError, ConversationPage, LoginRequest, MailBackend, MailFolder, MailboxCounts,
+    MailboxError, ProtonMailService, ResumeOutcome, SignInOutcome,
 };
 
 pub use mailbox::{ListStatus, Mailbox};
-use mailbox::{PAGE_SIZE, PageRequest, RequestId};
+use mailbox::{PageRequest, RequestId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInStep {
@@ -75,17 +75,23 @@ pub struct App {
     auth_state: AuthState,
     login_form: LoginForm,
     auth_error: Option<AuthError>,
-    mail_service: Option<Arc<ProtonMailService>>,
+    backend: Option<MailBackend>,
     mailbox: Option<Mailbox>,
     last_request: RequestId,
 }
 
 impl App {
-    pub fn boot() -> (Self, Task<Message>) {
-        (
-            Self::new(),
-            Task::perform(ProtonMailService::resume(), Message::SessionChecked),
-        )
+    /// In demo mode the app opens a local fictional mailbox and never starts
+    /// the Proton session resume.
+    pub fn boot(demo: bool) -> (Self, Task<Message>) {
+        let mut app = Self::new();
+        let task = if demo {
+            app.open_mailbox(MailBackend::Demo, None)
+        } else {
+            Task::perform(ProtonMailService::resume(), Message::SessionChecked)
+        };
+
+        (app, task)
     }
 
     fn new() -> Self {
@@ -93,7 +99,7 @@ impl App {
             auth_state: AuthState::CheckingSession,
             login_form: LoginForm::default(),
             auth_error: None,
-            mail_service: None,
+            backend: None,
             mailbox: None,
             last_request: 0,
         }
@@ -164,6 +170,10 @@ impl App {
         self.mailbox.as_ref()
     }
 
+    pub fn is_demo(&self) -> bool {
+        matches!(self.backend, Some(MailBackend::Demo))
+    }
+
     pub fn username(&self) -> &str {
         &self.login_form.username
     }
@@ -180,8 +190,8 @@ impl App {
         &self.login_form.mailbox_password
     }
 
-    pub fn error_message(&self) -> Option<&'static str> {
-        self.auth_error.map(AuthError::message)
+    pub fn error_message(&self) -> Option<String> {
+        self.auth_error.map(|error| error.to_string())
     }
 
     fn sign_in(&mut self) -> Task<Message> {
@@ -269,14 +279,19 @@ impl App {
 
     fn set_authenticated(&mut self, service: Arc<ProtonMailService>) -> Task<Message> {
         let email = service.email().map(str::to_owned);
+        self.open_mailbox(MailBackend::Proton(service), email)
+    }
+
+    fn open_mailbox(&mut self, backend: MailBackend, email: Option<String>) -> Task<Message> {
         self.login_form.clear_all();
         self.auth_error = None;
-        self.mail_service = Some(service);
+        let page_size = backend.page_size();
+        self.backend = Some(backend);
         self.auth_state = AuthState::Authenticated { email };
 
         let page_request = self.next_request();
         let counts_request = self.next_request();
-        let (mailbox, page) = Mailbox::open(page_request, counts_request);
+        let (mailbox, page) = Mailbox::open(page_size, page_request, counts_request);
         self.mailbox = Some(mailbox);
 
         Task::batch([
@@ -289,9 +304,17 @@ impl App {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
             return Task::none();
         }
-        let Some(service) = self.mail_service.clone() else {
-            self.auth_state = AuthState::SignedOut;
-            return Task::none();
+        let service = match &self.backend {
+            Some(MailBackend::Proton(service)) => service.clone(),
+            // Leaving demo mode has no Proton session to revoke.
+            Some(MailBackend::Demo) => {
+                self.close_mailbox(None);
+                return Task::none();
+            }
+            None => {
+                self.auth_state = AuthState::SignedOut;
+                return Task::none();
+            }
         };
 
         self.auth_error = None;
@@ -309,23 +332,25 @@ impl App {
         }
 
         match result {
-            Ok(()) => {
-                self.mail_service = None;
-                self.mailbox = None;
-                self.login_form.clear_all();
-                self.auth_error = None;
-                self.auth_state = AuthState::SignedOut;
-            }
+            Ok(()) => self.close_mailbox(None),
             Err(error) => {
-                let email = self
-                    .mail_service
-                    .as_ref()
-                    .and_then(|service| service.email())
-                    .map(str::to_owned);
+                let email = match &self.backend {
+                    Some(MailBackend::Proton(service)) => service.email().map(str::to_owned),
+                    _ => None,
+                };
                 self.auth_error = Some(error);
                 self.auth_state = AuthState::Authenticated { email };
             }
         }
+    }
+
+    /// Drops the backend and all mailbox data and returns to the login screen.
+    fn close_mailbox(&mut self, error: Option<AuthError>) {
+        self.backend = None;
+        self.mailbox = None;
+        self.login_form.clear_all();
+        self.auth_error = error;
+        self.auth_state = AuthState::SignedOut;
     }
 
     fn next_request(&mut self) -> RequestId {
@@ -372,14 +397,14 @@ impl App {
     }
 
     fn fetch_page(&self, request: Option<PageRequest>) -> Task<Message> {
-        let (Some(request), Some(service)) = (request, self.mail_service.clone()) else {
+        let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
             return Task::none();
         };
 
         Task::perform(
             async move {
-                service
-                    .list_conversations(request.folder, request.page, PAGE_SIZE)
+                backend
+                    .list_conversations(request.folder, request.page, request.page_size)
                     .await
             },
             move |result| Message::ConversationsLoaded(request.id, result),
@@ -387,23 +412,19 @@ impl App {
     }
 
     fn fetch_counts(&self, request: Option<RequestId>) -> Task<Message> {
-        let (Some(request), Some(service)) = (request, self.mail_service.clone()) else {
+        let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
             return Task::none();
         };
 
         Task::perform(
-            async move { service.conversation_counts().await },
+            async move { backend.conversation_counts().await },
             move |result| Message::CountsLoaded(request, result),
         )
     }
 
     fn handle_mailbox_error(&mut self, error: Option<MailboxError>) {
         if error == Some(MailboxError::SessionExpired) {
-            self.mail_service = None;
-            self.mailbox = None;
-            self.login_form.clear_all();
-            self.auth_error = Some(AuthError::SessionExpired);
-            self.auth_state = AuthState::SignedOut;
+            self.close_mailbox(Some(AuthError::SessionExpired));
         }
     }
 }
@@ -420,13 +441,28 @@ fn optional_unmodified(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail::demo;
+
+    const NOW: i64 = 1_789_000_000;
 
     fn authenticated_app() -> App {
         let mut app = App::new();
         app.auth_state = AuthState::Authenticated { email: None };
-        app.mailbox = Some(Mailbox::open(1, 2).0);
+        app.mailbox = Some(Mailbox::open(50, 1, 2).0);
         app.last_request = 2;
         app
+    }
+
+    /// Delivers the demo page a request would produce, as the async task would.
+    fn deliver_demo_page(app: &mut App, request: RequestId, page: u32) {
+        let folder = app.mailbox().unwrap().folder();
+        let result = demo::list_conversations(folder, page, demo::PAGE_SIZE, NOW);
+        let _ = app.update(Message::ConversationsLoaded(request, result));
+    }
+
+    fn deliver_latest_demo_page(app: &mut App, page: u32) {
+        let request = app.last_request;
+        deliver_demo_page(app, request, page);
     }
 
     #[test]
@@ -434,6 +470,95 @@ mod tests {
         let app = App::new();
 
         assert_eq!(app.auth_state, AuthState::CheckingSession);
+    }
+
+    #[test]
+    fn normal_startup_checks_the_proton_session() {
+        let (app, _) = App::boot(false);
+
+        assert_eq!(app.auth_state, AuthState::CheckingSession);
+        assert!(!app.is_demo());
+        assert!(app.backend.is_none());
+        assert!(app.mailbox.is_none());
+    }
+
+    #[test]
+    fn demo_startup_opens_mailbox_without_session_resume() {
+        let (app, _) = App::boot(true);
+
+        assert!(app.is_demo());
+        assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
+        let mailbox = app.mailbox().unwrap();
+        assert_eq!(mailbox.folder(), MailFolder::Inbox);
+        assert_eq!(mailbox.status(), ListStatus::Loading(1));
+    }
+
+    #[test]
+    fn demo_mailbox_uses_production_pagination() {
+        let (mut app, _) = App::boot(true);
+        deliver_demo_page(&mut app, 1, 0);
+        let _ = app.update(Message::CountsLoaded(2, Ok(demo::counts())));
+
+        let mailbox = app.mailbox().unwrap();
+        assert_eq!(mailbox.conversations().len(), 10);
+        assert!(mailbox.has_more());
+        assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Inbox), Some(6));
+
+        for page in 1..=3 {
+            let _ = app.update(Message::LoadMoreConversations);
+            deliver_latest_demo_page(&mut app, page);
+        }
+
+        let mailbox = app.mailbox().unwrap();
+        assert_eq!(mailbox.conversations().len(), 34);
+        assert!(!mailbox.has_more());
+        assert_eq!(mailbox.status(), ListStatus::Loaded);
+    }
+
+    #[test]
+    fn demo_empty_folder_and_simulated_failure() {
+        let (mut app, _) = App::boot(true);
+
+        let _ = app.update(Message::SelectFolder(MailFolder::Trash));
+        deliver_latest_demo_page(&mut app, 0);
+        let mailbox = app.mailbox().unwrap();
+        assert_eq!(mailbox.status(), ListStatus::Loaded);
+        assert!(mailbox.conversations().is_empty());
+
+        let _ = app.update(Message::SelectFolder(demo::FAILING_FOLDER));
+        deliver_latest_demo_page(&mut app, 0);
+        assert_eq!(
+            app.mailbox().unwrap().status(),
+            ListStatus::Failed(MailboxError::Unavailable)
+        );
+        assert!(app.is_demo());
+    }
+
+    #[test]
+    fn demo_selection_is_local() {
+        let (mut app, _) = App::boot(true);
+        deliver_demo_page(&mut app, 1, 0);
+
+        let _ = app.update(Message::SelectConversation("demo-3".into()));
+
+        assert_eq!(
+            app.mailbox().unwrap().selected_conversation(),
+            Some("demo-3")
+        );
+    }
+
+    #[test]
+    fn exiting_demo_clears_mailbox_and_opens_login() {
+        let (mut app, _) = App::boot(true);
+        deliver_demo_page(&mut app, 1, 0);
+
+        let _ = app.update(Message::Logout);
+
+        assert_eq!(app.auth_state, AuthState::SignedOut);
+        assert_eq!(app.auth_error, None);
+        assert!(app.backend.is_none());
+        assert!(app.mailbox.is_none());
+        assert!(!app.is_demo());
     }
 
     #[test]

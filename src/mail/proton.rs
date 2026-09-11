@@ -8,6 +8,9 @@ use super::{
     MailboxError,
 };
 
+/// Conversations requested per page from Proton.
+pub const PAGE_SIZE: u32 = 50;
+
 const PROFILE: &str = "ruston";
 const TOTP_REQUIRED: &str = "account requires 2FA but no TOTP code was provided";
 const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox password";

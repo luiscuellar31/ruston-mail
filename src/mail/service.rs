@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthError {
     UsernameRequired,
@@ -16,9 +18,9 @@ pub enum AuthError {
     AuthenticationUnavailable,
 }
 
-impl AuthError {
-    pub fn message(self) -> &'static str {
-        match self {
+impl fmt::Display for AuthError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
             Self::UsernameRequired => "Enter your Proton username or email.",
             Self::PasswordRequired => "Enter your Proton password.",
             Self::TotpRequired => "Enter your authentication code.",
@@ -35,11 +37,20 @@ impl AuthError {
             }
             Self::SessionUnavailable => "Ruston could not access the saved Proton session.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
-            Self::Service { .. } => "Proton Mail rejected the request. Try again later.",
+            // Only the status and code are shown; Proton's message and raw body
+            // are never surfaced.
+            Self::Service { http_status, code } => {
+                return write!(
+                    f,
+                    "Proton Mail rejected the request. (HTTP {http_status}, code {code})"
+                );
+            }
             Self::AuthenticationUnavailable => {
                 "Ruston could not complete authentication. Try again."
             }
-        }
+        };
+
+        f.write_str(message)
     }
 }
 
@@ -63,5 +74,35 @@ impl LoginRequest {
             totp,
             mailbox_password,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_error_shows_status_and_code() {
+        let error = AuthError::Service {
+            http_status: 422,
+            code: 5003,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "Proton Mail rejected the request. (HTTP 422, code 5003)"
+        );
+    }
+
+    #[test]
+    fn other_errors_keep_their_messages() {
+        assert_eq!(
+            AuthError::InvalidCredentials.to_string(),
+            "The username or password is incorrect."
+        );
+        assert_eq!(
+            AuthError::HumanVerificationRequired.to_string(),
+            "Proton requires human verification. Ruston does not support this flow yet."
+        );
     }
 }
