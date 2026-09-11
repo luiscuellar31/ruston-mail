@@ -1,0 +1,17 @@
+[package]
+name = "ruston-mail"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Unofficial native desktop client for Proton Mail"
+license = "MIT"
+repository = "https://github.com/luiscuellar31/ruston-mail"
+default-run = "ruston"
+
+[[bin]]
+name = "ruston"
+path = "src/main.rs"
+
+[dependencies]
+iced = "0.14"
+proton-core = "0.1.1"
