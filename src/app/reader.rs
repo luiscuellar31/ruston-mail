@@ -1,42 +1,65 @@
 use std::collections::HashSet;
 
-use crate::mail::ConversationDetail;
+use crate::mail::{ConversationDetail, MailboxError};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ReaderState {
+    #[default]
+    Empty,
+    Loading {
+        conversation_id: String,
+        request: u64,
+    },
+    Loaded(ConversationReader),
+    Failed {
+        conversation_id: String,
+        error: MailboxError,
+    },
+}
+
+impl ReaderState {
+    pub fn conversation_id(&self) -> Option<&str> {
+        match self {
+            Self::Empty => None,
+            Self::Loading {
+                conversation_id, ..
+            }
+            | Self::Failed {
+                conversation_id, ..
+            } => Some(conversation_id),
+            Self::Loaded(reader) => Some(reader.conversation_id()),
+        }
+    }
+}
 
 /// Reader state for the selected conversation. Which messages are expanded is
 /// view state, so it lives here rather than in the mail models.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationReader {
-    conversation_id: String,
-    /// `None` when the backend cannot read conversations yet.
-    detail: Option<ConversationDetail>,
+    detail: ConversationDetail,
     expanded: HashSet<String>,
 }
 
 impl ConversationReader {
     /// Orders messages oldest first and expands only the newest one.
-    pub fn new(conversation_id: String, mut detail: Option<ConversationDetail>) -> Self {
-        if let Some(detail) = &mut detail {
-            detail.messages.sort_by_key(|message| message.time);
-        }
+    pub fn new(mut detail: ConversationDetail) -> Self {
+        detail.messages.sort_by_key(|message| message.time);
         let expanded = detail
-            .as_ref()
-            .and_then(|detail| detail.messages.last())
+            .messages
+            .last()
             .map(|message| message.id.clone())
             .into_iter()
             .collect();
 
-        Self {
-            conversation_id,
-            detail,
-            expanded,
-        }
+        Self { detail, expanded }
     }
 
     pub fn conversation_id(&self) -> &str {
-        &self.conversation_id
+        &self.detail.id
     }
 
-    pub fn detail(&self) -> Option<&ConversationDetail> {
-        self.detail.as_ref()
+    pub fn detail(&self) -> &ConversationDetail {
+        &self.detail
     }
 
     pub fn is_expanded(&self, message_id: &str) -> bool {
@@ -46,8 +69,9 @@ impl ConversationReader {
     pub fn toggle(&mut self, message_id: &str) {
         let known = self
             .detail
-            .as_ref()
-            .is_some_and(|detail| detail.messages.iter().any(|m| m.id == message_id));
+            .messages
+            .iter()
+            .any(|message| message.id == message_id);
         if known && !self.expanded.remove(message_id) {
             self.expanded.insert(message_id.to_owned());
         }
@@ -75,13 +99,12 @@ mod tests {
             subject: None,
             messages,
         };
-        ConversationReader::new("conversation".into(), Some(detail))
+        ConversationReader::new(detail)
     }
 
     fn order(reader: &ConversationReader) -> Vec<&str> {
         reader
             .detail()
-            .unwrap()
             .messages
             .iter()
             .map(|m| m.id.as_str())
@@ -122,12 +145,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_empty_detail_has_nothing_expanded() {
-        let unavailable = ConversationReader::new("conversation".into(), None);
+    fn empty_detail_has_nothing_expanded() {
         let empty = reader(Vec::new());
 
-        assert!(unavailable.detail().is_none());
-        assert!(empty.detail().unwrap().messages.is_empty());
+        assert!(empty.detail().messages.is_empty());
         assert!(empty.expanded.is_empty());
+    }
+
+    #[test]
+    fn reader_state_starts_empty() {
+        assert_eq!(ReaderState::default(), ReaderState::Empty);
+        assert_eq!(ReaderState::Empty.conversation_id(), None);
     }
 }

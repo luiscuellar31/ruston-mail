@@ -43,6 +43,10 @@ pub struct ConversationSummary {
     pub subject: Option<String>,
     /// Senders, or recipients in Sent and Drafts.
     pub correspondents: Option<String>,
+    /// Locally available senders and recipients used by mailbox search.
+    pub participants: Vec<MailAddress>,
+    /// Locally available conversation snippet. `None` when the backend omits it.
+    pub preview: Option<String>,
     /// Unix timestamp in seconds.
     pub time: Option<i64>,
     pub unread: bool,
@@ -133,6 +137,15 @@ impl MailboxError {
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service => "Proton Mail could not load this folder. Try again later.",
             Self::Unavailable => "Ruston could not load this folder. Try again.",
+        }
+    }
+
+    pub fn conversation_message(self) -> &'static str {
+        match self {
+            Self::Connection => "Ruston could not connect to load this conversation.",
+            Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::Service => "Proton Mail could not load this conversation. Try again later.",
+            Self::Unavailable => "Ruston could not load this conversation. Try again.",
         }
     }
 }

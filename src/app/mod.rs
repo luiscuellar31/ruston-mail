@@ -8,14 +8,15 @@ use iced::Task;
 use iced::widget::pane_grid;
 
 use crate::mail::{
-    AuthError, ConversationPage, LoginRequest, MailBackend, MailFolder, MailboxCounts,
-    MailboxError, ProtonMailService, ResumeOutcome, SignInOutcome, demo::DemoMailbox,
+    AuthError, ConversationDetail, ConversationPage, LoginRequest, MailBackend, MailFolder,
+    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInOutcome,
+    demo::DemoMailbox,
 };
 
 pub use layout::{DIVIDER_GRAB, DIVIDER_WIDTH, MIN_PANEL_WIDTH, Panel};
-pub use mailbox::{ListStatus, Mailbox};
+pub use mailbox::{ListStatus, Mailbox, ReaderRequest};
 use mailbox::{PageRequest, RequestId};
-pub use reader::ConversationReader;
+pub use reader::{ConversationReader, ReaderState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInStep {
@@ -49,6 +50,8 @@ pub enum Message {
     LogoutFinished(Result<(), AuthError>),
     SelectFolder(MailFolder),
     SelectConversation(String),
+    RetryConversation,
+    SearchChanged(String),
     ToggleMessageExpanded(String),
     ArchiveSelected,
     MoveSelectedToSpam,
@@ -60,6 +63,7 @@ pub enum Message {
     RefreshMailbox,
     LoadMoreConversations,
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
+    ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
     PanelResized(pane_grid::ResizeEvent),
 }
@@ -164,6 +168,12 @@ impl App {
             Message::LogoutFinished(result) => self.finish_logout(result),
             Message::SelectFolder(folder) => return self.select_folder(folder),
             Message::SelectConversation(id) => return self.select_conversation(id),
+            Message::RetryConversation => return self.retry_conversation(),
+            Message::SearchChanged(query) => {
+                if let Some(mailbox) = self.active_mailbox() {
+                    mailbox.set_search_query(query);
+                }
+            }
             Message::ToggleMessageExpanded(id) => {
                 if let Some(mailbox) = self.active_mailbox() {
                     mailbox.toggle_message(&id);
@@ -197,6 +207,13 @@ impl App {
                     .and_then(|mailbox| mailbox.finish_page(request, result));
                 self.handle_mailbox_error(error);
             }
+            Message::ConversationLoaded(request, result) => {
+                let error = self
+                    .mailbox
+                    .as_mut()
+                    .and_then(|mailbox| mailbox.finish_conversation(&request, result));
+                self.handle_mailbox_error(error);
+            }
             Message::CountsLoaded(request, result) => {
                 let error = self
                     .mailbox
@@ -220,6 +237,10 @@ impl App {
 
     pub fn is_demo(&self) -> bool {
         matches!(self.backend, Some(MailBackend::Demo(_)))
+    }
+
+    pub fn mailbox_actions_available(&self) -> bool {
+        self.is_demo()
     }
 
     pub fn panels(&self) -> &pane_grid::State<Panel> {
@@ -422,18 +443,14 @@ impl App {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
             return Task::none();
         }
-        match self.backend.clone() {
-            Some(MailBackend::Demo(service)) => self.open_demo_conversation(&service, id),
-            Some(backend @ MailBackend::Proton(_)) => {
-                let detail = backend.conversation_detail(&id);
-                if let Some(mailbox) = self.active_mailbox() {
-                    mailbox.select_conversation(id, detail);
-                }
+        if let Some(MailBackend::Demo(service)) = self.backend.clone() {
+            if !service.set_unread(&id, false) {
+                return Task::none();
             }
-            None => {}
+            self.apply_demo_snapshot(&service);
         }
 
-        Task::none()
+        self.start_conversation_load(id)
     }
 
     fn apply_demo_action(&mut self, action: DemoAction) -> Task<Message> {
@@ -458,21 +475,28 @@ impl App {
             DemoAction::SetStarred(starred) => service.set_starred(&id, starred),
         };
         if applied && let Some(next) = self.apply_demo_snapshot(&service) {
-            self.open_demo_conversation(&service, next);
+            return self.select_conversation(next);
         }
 
         Task::none()
     }
 
-    fn open_demo_conversation(&mut self, service: &DemoMailbox, id: String) {
-        if !service.set_unread(&id, false) {
-            return;
-        }
-        let detail = service.conversation_detail(&id, crate::mail::demo::now());
-        self.apply_demo_snapshot(service);
-        if let Some(mailbox) = self.active_mailbox() {
-            mailbox.select_conversation(id, detail);
-        }
+    fn start_conversation_load(&mut self, id: String) -> Task<Message> {
+        let request = self.next_request();
+        let request = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.start_conversation_load(id, request));
+
+        self.fetch_conversation(request)
+    }
+
+    fn retry_conversation(&mut self) -> Task<Message> {
+        let request = self.next_request();
+        let request = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.retry_conversation(request));
+
+        self.fetch_conversation(request)
     }
 
     fn apply_demo_snapshot(&mut self, service: &DemoMailbox) -> Option<String> {
@@ -540,6 +564,18 @@ impl App {
         )
     }
 
+    fn fetch_conversation(&self, request: Option<ReaderRequest>) -> Task<Message> {
+        let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
+            return Task::none();
+        };
+        let conversation_id = request.conversation_id.clone();
+
+        Task::perform(
+            async move { backend.conversation_detail(&conversation_id).await },
+            move |result| Message::ConversationLoaded(request.clone(), result),
+        )
+    }
+
     fn handle_mailbox_error(&mut self, error: Option<MailboxError>) {
         if error == Some(MailboxError::SessionExpired) {
             self.close_mailbox(Some(AuthError::SessionExpired));
@@ -588,6 +624,25 @@ mod tests {
             Some(MailBackend::Demo(service)) => service.clone(),
             _ => panic!("expected demo backend"),
         }
+    }
+
+    fn pending_reader_request(app: &App) -> ReaderRequest {
+        match app.mailbox().unwrap().reader_state() {
+            ReaderState::Loading {
+                conversation_id,
+                request,
+            } => ReaderRequest {
+                id: *request,
+                conversation_id: conversation_id.clone(),
+            },
+            _ => panic!("expected pending reader request"),
+        }
+    }
+
+    fn deliver_selected_demo_detail(app: &mut App) {
+        let request = pending_reader_request(app);
+        let result = demo_service(app).conversation_detail(&request.conversation_id, NOW);
+        let _ = app.update(Message::ConversationLoaded(request, result));
     }
 
     fn loaded_demo_app() -> App {
@@ -681,11 +736,48 @@ mod tests {
     }
 
     #[test]
+    fn selecting_only_queues_a_detail_request() {
+        let mut app = loaded_demo_app();
+        let status = app.mailbox().unwrap().status();
+        let counts = app.mailbox().unwrap().counts().cloned();
+        let conversation_ids: Vec<_> = app
+            .mailbox()
+            .unwrap()
+            .conversations()
+            .iter()
+            .map(|conversation| conversation.id.clone())
+            .collect();
+
+        let task = app.update(Message::SelectConversation("demo-3".into()));
+
+        assert_eq!(task.units(), 1);
+        assert_eq!(app.last_request, 3);
+        let mailbox = app.mailbox().unwrap();
+        assert_eq!(mailbox.status(), status);
+        assert_eq!(mailbox.counts().cloned(), counts);
+        assert_eq!(
+            mailbox
+                .conversations()
+                .iter()
+                .map(|conversation| conversation.id.clone())
+                .collect::<Vec<_>>(),
+            conversation_ids
+        );
+        assert!(matches!(
+            mailbox.reader_state(),
+            ReaderState::Loading {
+                conversation_id,
+                request: 3,
+            } if conversation_id == "demo-3"
+        ));
+    }
+
+    #[test]
     fn no_selection_has_no_reader() {
         let (mut app, _) = App::boot(true);
         deliver_demo_page(&mut app, 1, 0);
 
-        assert!(app.mailbox().unwrap().reader().is_none());
+        assert_eq!(app.mailbox().unwrap().reader_state(), &ReaderState::Empty);
     }
 
     #[test]
@@ -694,10 +786,12 @@ mod tests {
         deliver_demo_page(&mut app, 1, 0);
 
         let _ = app.update(Message::SelectConversation("demo-0".into()));
+        deliver_selected_demo_detail(&mut app);
 
         let reader = app.mailbox().unwrap().reader().unwrap();
         assert_eq!(reader.conversation_id(), "demo-0");
-        assert_eq!(reader.detail().unwrap().messages.len(), 3);
+        assert_eq!(reader.detail().id, reader.conversation_id());
+        assert_eq!(reader.detail().messages.len(), 3);
         assert!(reader.is_expanded("demo-0-2"));
         assert!(!reader.is_expanded("demo-0-0"));
     }
@@ -707,6 +801,7 @@ mod tests {
         let (mut app, _) = App::boot(true);
         deliver_demo_page(&mut app, 1, 0);
         let _ = app.update(Message::SelectConversation("demo-0".into()));
+        deliver_selected_demo_detail(&mut app);
 
         let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
         let reader = app.mailbox().unwrap().reader().unwrap();
@@ -714,7 +809,9 @@ mod tests {
         assert!(reader.is_expanded("demo-0-2"));
 
         let _ = app.update(Message::SelectConversation("demo-2".into()));
+        deliver_selected_demo_detail(&mut app);
         let _ = app.update(Message::SelectConversation("demo-0".into()));
+        deliver_selected_demo_detail(&mut app);
         assert!(
             !app.mailbox()
                 .unwrap()
@@ -736,9 +833,37 @@ mod tests {
     }
 
     #[test]
+    fn detail_failure_and_retry_use_a_new_request() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SelectConversation("demo-3".into()));
+        let first = pending_reader_request(&app);
+        let _ = app.update(Message::ConversationLoaded(
+            first.clone(),
+            Err(MailboxError::Connection),
+        ));
+        assert!(matches!(
+            app.mailbox().unwrap().reader_state(),
+            ReaderState::Failed {
+                conversation_id,
+                error: MailboxError::Connection,
+            } if conversation_id == "demo-3"
+        ));
+
+        let task = app.update(Message::RetryConversation);
+        let retry = pending_reader_request(&app);
+
+        assert_eq!(task.units(), 1);
+        assert!(retry.id > first.id);
+        assert_eq!(retry.conversation_id, first.conversation_id);
+    }
+
+    #[test]
     fn demo_read_actions_update_row_and_count_idempotently() {
         let mut app = loaded_demo_app();
+        let _ = app.update(Message::SearchChanged("design review".into()));
         let _ = app.update(Message::SelectConversation("demo-0".into()));
+        deliver_selected_demo_detail(&mut app);
+        let detail = app.mailbox().unwrap().reader().unwrap().detail().clone();
 
         assert!(!app.mailbox().unwrap().conversations()[0].unread);
         assert_eq!(
@@ -752,6 +877,8 @@ mod tests {
 
         let _ = app.update(Message::MarkSelectedUnread);
         let _ = app.update(Message::MarkSelectedUnread);
+        assert_eq!(app.mailbox().unwrap().search_query(), "design review");
+        assert_eq!(app.mailbox().unwrap().visible_conversations().count(), 1);
         assert!(app.mailbox().unwrap().conversations()[0].unread);
         assert_eq!(
             app.mailbox()
@@ -764,6 +891,8 @@ mod tests {
 
         let _ = app.update(Message::MarkSelectedRead);
         let _ = app.update(Message::MarkSelectedRead);
+        let _ = app.update(Message::StarSelected);
+        assert_eq!(app.mailbox().unwrap().reader().unwrap().detail(), &detail);
         assert!(!app.mailbox().unwrap().conversations()[0].unread);
         assert_eq!(
             app.mailbox()
@@ -779,6 +908,7 @@ mod tests {
     fn demo_star_actions_update_starred_folder_and_selection() {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SelectConversation("demo-1".into()));
+        deliver_selected_demo_detail(&mut app);
         let _ = app.update(Message::StarSelected);
         let _ = app.update(Message::StarSelected);
         assert!(app.mailbox().unwrap().conversations()[1].starred);
@@ -794,6 +924,7 @@ mod tests {
         );
 
         let _ = app.update(Message::SelectConversation("demo-1".into()));
+        deliver_selected_demo_detail(&mut app);
         let _ = app.update(Message::UnstarSelected);
         let mailbox = app.mailbox().unwrap();
         assert!(
@@ -802,7 +933,6 @@ mod tests {
                 .iter()
                 .all(|conversation| conversation.id != "demo-1")
         );
-        assert!(mailbox.reader().is_some());
         assert!(
             mailbox
                 .selected_conversation()
@@ -811,9 +941,26 @@ mod tests {
     }
 
     #[test]
+    fn starred_search_reflects_unstar_immediately() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SelectFolder(MailFolder::Starred));
+        deliver_latest_demo_page(&mut app, 0);
+        let _ = app.update(Message::SearchChanged("offsite".into()));
+        let _ = app.update(Message::SelectConversation("demo-2".into()));
+
+        let _ = app.update(Message::UnstarSelected);
+
+        let mailbox = app.mailbox().unwrap();
+        assert_eq!(mailbox.search_query(), "offsite");
+        assert_eq!(mailbox.visible_conversations().count(), 0);
+        assert_eq!(mailbox.selected_conversation(), None);
+    }
+
+    #[test]
     fn demo_archive_removes_selected_and_opens_next() {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SelectConversation("demo-0".into()));
+        deliver_selected_demo_detail(&mut app);
 
         let _ = app.update(Message::ArchiveSelected);
 
@@ -838,6 +985,25 @@ mod tests {
     }
 
     #[test]
+    fn moving_selected_conversation_invalidates_its_pending_detail() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SelectConversation("demo-0".into()));
+        let stale = pending_reader_request(&app);
+
+        let task = app.update(Message::ArchiveSelected);
+        let current = pending_reader_request(&app);
+        let stale_detail = demo_service(&app).conversation_detail("demo-0", NOW);
+        let _ = app.update(Message::ConversationLoaded(stale, stale_detail));
+
+        assert_eq!(task.units(), 1);
+        assert_eq!(
+            app.mailbox().unwrap().selected_conversation(),
+            Some("demo-1")
+        );
+        assert_eq!(pending_reader_request(&app), current);
+    }
+
+    #[test]
     fn demo_trash_and_spam_moves_update_folders() {
         for (message, folder) in [
             (Message::MoveSelectedToTrash, MailFolder::Trash),
@@ -845,6 +1011,7 @@ mod tests {
         ] {
             let mut app = loaded_demo_app();
             let _ = app.update(Message::SelectConversation("demo-3".into()));
+            deliver_selected_demo_detail(&mut app);
             let _ = app.update(message);
             assert!(
                 app.mailbox()
@@ -863,6 +1030,28 @@ mod tests {
                     .iter()
                     .any(|conversation| conversation.id == "demo-3")
             );
+        }
+    }
+
+    #[test]
+    fn inbox_search_reflects_folder_moves_immediately() {
+        for message in [
+            Message::ArchiveSelected,
+            Message::MoveSelectedToTrash,
+            Message::MoveSelectedToSpam,
+        ] {
+            let mut app = loaded_demo_app();
+            let _ = app.update(Message::SearchChanged("blue notebook".into()));
+            assert_eq!(app.mailbox().unwrap().visible_conversations().count(), 1);
+            let _ = app.update(Message::SelectConversation("demo-3".into()));
+            deliver_selected_demo_detail(&mut app);
+
+            let _ = app.update(message);
+
+            let mailbox = app.mailbox().unwrap();
+            assert_eq!(mailbox.search_query(), "blue notebook");
+            assert_eq!(mailbox.visible_conversations().count(), 0);
+            assert_eq!(mailbox.selected_conversation(), None);
         }
     }
 
@@ -888,6 +1077,7 @@ mod tests {
         let (mut app, _) = App::boot(true);
         deliver_demo_page(&mut app, 1, 0);
         let _ = app.update(Message::SelectConversation("demo-0".into()));
+        deliver_selected_demo_detail(&mut app);
         let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
         let requests = app.last_request;
         let window = iced::Size::new(1_100.0, 700.0);

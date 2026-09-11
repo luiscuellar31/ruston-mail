@@ -4,7 +4,7 @@ use iced::widget::{Column, button, column, container, row, rule, scrollable, tex
 use iced::{Element, Fill};
 
 use super::mailbox::{DETAIL_SIZE, PANE_PADDING, SPACING};
-use crate::app::{ConversationReader, Mailbox, Message};
+use crate::app::{ConversationReader, Mailbox, Message, ReaderState};
 use crate::mail::{ConversationDetail, ConversationSummary, MailAddress, MailMessage, MessageBody};
 
 const SUBJECT_SIZE: f32 = 22.0;
@@ -13,21 +13,33 @@ const TOGGLE_WIDTH: f32 = 16.0;
 /// Words of the body shown in a collapsed message's header.
 const PREVIEW_WORDS: usize = 40;
 
-pub(super) fn view(mailbox: &Mailbox, demo_actions: bool) -> Element<'_, Message> {
-    let content = match mailbox.reader() {
-        None => placeholder("Select a conversation to read it."),
-        Some(reader) => match reader.detail() {
-            Some(detail) => conversation(
-                reader,
-                detail,
-                mailbox.selected_summary().filter(|_| demo_actions),
-                !mailbox.is_busy(),
-            ),
-            None => placeholder("Conversation reading is not available yet."),
-        },
+pub(super) fn view(mailbox: &Mailbox, actions_available: bool) -> Element<'_, Message> {
+    let content = match mailbox.reader_state() {
+        ReaderState::Empty => placeholder("Select a conversation to read it."),
+        ReaderState::Loading { .. } => placeholder("Loading conversation…"),
+        ReaderState::Failed { error, .. } => load_error(*error),
+        ReaderState::Loaded(reader) => conversation(
+            reader,
+            reader.detail(),
+            mailbox.selected_summary().filter(|_| actions_available),
+            !mailbox.is_busy(),
+        ),
     };
 
     container(content).width(Fill).height(Fill).into()
+}
+
+fn load_error(error: crate::mail::MailboxError) -> Element<'static, Message> {
+    container(
+        column![
+            text(error.conversation_message()),
+            button(text("Retry")).on_press(Message::RetryConversation),
+        ]
+        .spacing(SPACING),
+    )
+    .center(Fill)
+    .padding(PANE_PADDING)
+    .into()
 }
 
 fn placeholder(message: &str) -> Element<'_, Message> {

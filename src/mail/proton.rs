@@ -4,8 +4,8 @@ use proton_core::model::enums::label_ids;
 use proton_core::{Client, Conversation, Error, LabelCount, LoginOptions, Recipient};
 
 use super::{
-    AuthError, ConversationPage, ConversationSummary, LoginRequest, MailFolder, MailboxCounts,
-    MailboxError,
+    AuthError, ConversationDetail, ConversationPage, ConversationSummary, LoginRequest,
+    MailAddress, MailFolder, MailboxCounts, MailboxError,
 };
 
 /// Conversations requested per page from Proton.
@@ -111,6 +111,12 @@ impl ProtonMailService {
         Ok(map_counts(&counts))
     }
 
+    /// Pending mapping of proton-core's decrypted message bodies into
+    /// Ruston-owned reader models.
+    pub async fn conversation_detail(&self, _id: &str) -> Result<ConversationDetail, MailboxError> {
+        Err(MailboxError::Unavailable)
+    }
+
     fn from_client(client: Client) -> Self {
         let email = client.primary_email().map(str::to_owned);
 
@@ -150,16 +156,31 @@ fn summarize(conversation: Conversation, folder: MailFolder) -> ConversationSumm
         MailFolder::Sent | MailFolder::Drafts => &conversation.recipients,
         _ => &conversation.senders,
     };
+    let participants = conversation
+        .senders
+        .iter()
+        .chain(&conversation.recipients)
+        .map(mail_address)
+        .collect();
     let subject = conversation.subject.trim();
 
     ConversationSummary {
         subject: (!subject.is_empty()).then(|| subject.to_owned()),
         correspondents: display_names(correspondents),
+        participants,
+        preview: None,
         time: (time > 0).then_some(time),
         unread: unread > 0,
         starred,
         message_count: u32::try_from(conversation.num_messages).unwrap_or(0),
         id: conversation.id,
+    }
+}
+
+fn mail_address(person: &Recipient) -> MailAddress {
+    MailAddress {
+        name: (!person.name.trim().is_empty()).then(|| person.name.trim().to_owned()),
+        address: person.address.trim().to_owned(),
     }
 }
 
@@ -363,6 +384,17 @@ mod tests {
                 id: "conversation".into(),
                 subject: Some("Quarterly report".into()),
                 correspondents: Some("Ada, bob@example.com".into()),
+                participants: vec![
+                    MailAddress {
+                        name: Some("Ada".into()),
+                        address: "ada@example.com".into(),
+                    },
+                    MailAddress {
+                        name: None,
+                        address: "bob@example.com".into(),
+                    },
+                ],
+                preview: None,
                 time: Some(1_700_000_000),
                 unread: true,
                 starred: true,

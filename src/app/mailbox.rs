@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::reader::ConversationReader;
+use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
     ConversationDetail, ConversationPage, ConversationSummary, MailFolder, MailboxCounts,
     MailboxError,
@@ -17,6 +17,12 @@ pub struct PageRequest {
     /// Zero-based server page.
     pub page: u32,
     pub page_size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReaderRequest {
+    pub id: RequestId,
+    pub conversation_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +45,8 @@ pub struct Mailbox {
     has_more: bool,
     counts: Option<MailboxCounts>,
     counts_request: Option<RequestId>,
-    reader: Option<ConversationReader>,
+    reader: ReaderState,
+    search_query: String,
 }
 
 impl Mailbox {
@@ -59,7 +66,8 @@ impl Mailbox {
             has_more: false,
             counts: None,
             counts_request: Some(counts_request),
-            reader: None,
+            reader: ReaderState::Empty,
+            search_query: String::new(),
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -74,8 +82,36 @@ impl Mailbox {
         self.status
     }
 
+    #[cfg(test)]
     pub fn conversations(&self) -> &[ConversationSummary] {
         &self.conversations
+    }
+
+    pub fn visible_conversations(&self) -> impl Iterator<Item = &ConversationSummary> {
+        let query = self.search_query.trim().to_lowercase();
+        self.conversations
+            .iter()
+            .filter(move |conversation| matches_search(conversation, &query))
+    }
+
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    pub fn is_searching(&self) -> bool {
+        !self.search_query.trim().is_empty()
+    }
+
+    pub fn set_search_query(&mut self, query: String) {
+        self.search_query = query;
+        let selected_is_hidden = self.selected_conversation().is_some_and(|selected| {
+            !self
+                .visible_conversations()
+                .any(|conversation| conversation.id == selected)
+        });
+        if selected_is_hidden {
+            self.reader = ReaderState::Empty;
+        }
     }
 
     pub fn counts(&self) -> Option<&MailboxCounts> {
@@ -87,9 +123,7 @@ impl Mailbox {
     }
 
     pub fn selected_conversation(&self) -> Option<&str> {
-        self.reader
-            .as_ref()
-            .map(ConversationReader::conversation_id)
+        self.reader.conversation_id()
     }
 
     pub fn selected_summary(&self) -> Option<&ConversationSummary> {
@@ -99,8 +133,16 @@ impl Mailbox {
             .find(|conversation| conversation.id == selected)
     }
 
+    #[cfg(test)]
     pub fn reader(&self) -> Option<&ConversationReader> {
-        self.reader.as_ref()
+        match &self.reader {
+            ReaderState::Loaded(reader) => Some(reader),
+            _ => None,
+        }
+    }
+
+    pub fn reader_state(&self) -> &ReaderState {
+        &self.reader
     }
 
     pub fn is_busy(&self) -> bool {
@@ -110,16 +152,93 @@ impl Mailbox {
         )
     }
 
-    /// Opens a conversation in the reader. Reselecting the open conversation
-    /// keeps its expanded messages; selecting another one starts fresh.
-    pub fn select_conversation(&mut self, id: String, detail: Option<ConversationDetail>) {
-        if self.selected_conversation() != Some(id.as_str()) {
-            self.reader = Some(ConversationReader::new(id, detail));
+    /// Starts loading a visible conversation. Reselecting the current
+    /// conversation keeps its loaded or in-flight state.
+    pub fn start_conversation_load(
+        &mut self,
+        conversation_id: String,
+        request: RequestId,
+    ) -> Option<ReaderRequest> {
+        if self.selected_conversation() == Some(conversation_id.as_str())
+            || !self
+                .visible_conversations()
+                .any(|conversation| conversation.id == conversation_id)
+        {
+            return None;
+        }
+
+        let request = ReaderRequest {
+            id: request,
+            conversation_id,
+        };
+        self.reader = ReaderState::Loading {
+            conversation_id: request.conversation_id.clone(),
+            request: request.id,
+        };
+        Some(request)
+    }
+
+    pub fn retry_conversation(&mut self, request: RequestId) -> Option<ReaderRequest> {
+        let ReaderState::Failed {
+            conversation_id, ..
+        } = &self.reader
+        else {
+            return None;
+        };
+        let request = ReaderRequest {
+            id: request,
+            conversation_id: conversation_id.clone(),
+        };
+        self.reader = ReaderState::Loading {
+            conversation_id: request.conversation_id.clone(),
+            request: request.id,
+        };
+        Some(request)
+    }
+
+    /// Applies only the response for the current reader request. A mismatched
+    /// detail ID is rejected to preserve the reader-selection invariant.
+    pub fn finish_conversation(
+        &mut self,
+        request: &ReaderRequest,
+        result: Result<ConversationDetail, MailboxError>,
+    ) -> Option<MailboxError> {
+        let accepted = matches!(
+            &self.reader,
+            ReaderState::Loading {
+                conversation_id,
+                request: current,
+            } if conversation_id == &request.conversation_id && current == &request.id
+        );
+        if !accepted {
+            return None;
+        }
+
+        match result {
+            Ok(detail) if detail.id == request.conversation_id => {
+                self.reader = ReaderState::Loaded(ConversationReader::new(detail));
+                None
+            }
+            Ok(_) => {
+                let error = MailboxError::Unavailable;
+                self.reader = ReaderState::Failed {
+                    conversation_id: request.conversation_id.clone(),
+                    error,
+                };
+                Some(error)
+            }
+            Err(error) => {
+                self.reader = ReaderState::Failed {
+                    conversation_id: request.conversation_id.clone(),
+                    error,
+                };
+                Some(error)
+            }
         }
     }
 
     pub fn toggle_message(&mut self, message_id: &str) {
-        if let Some(reader) = &mut self.reader {
+        if let ReaderState::Loaded(reader) = &mut self.reader {
             reader.toggle(message_id);
         }
     }
@@ -133,7 +252,7 @@ impl Mailbox {
         self.conversations.clear();
         self.next_page = 0;
         self.has_more = false;
-        self.reader = None;
+        self.reader = ReaderState::Empty;
         self.status = ListStatus::Loading(request);
         Some(self.page_request(request, 0))
     }
@@ -184,8 +303,7 @@ impl Mailbox {
         let selected_index = selected
             .as_deref()
             .and_then(|id| {
-                self.conversations
-                    .iter()
+                self.visible_conversations()
                     .position(|conversation| conversation.id == id)
             })
             .unwrap_or(0);
@@ -199,18 +317,17 @@ impl Mailbox {
 
         let selected_left = selected.as_deref().is_some_and(|id| {
             !self
-                .conversations
-                .iter()
+                .visible_conversations()
                 .any(|conversation| conversation.id == id)
         });
         if !selected_left {
             return None;
         }
 
-        self.reader = None;
-        let next_index = selected_index.min(self.conversations.len().saturating_sub(1));
-        self.conversations
-            .get(next_index)
+        self.reader = ReaderState::Empty;
+        let next_index = selected_index.min(self.visible_conversations().count().saturating_sub(1));
+        self.visible_conversations()
+            .nth(next_index)
             .map(|conversation| conversation.id.clone())
     }
 
@@ -285,19 +402,38 @@ impl Mailbox {
         } else {
             self.conversations = page.conversations;
             self.next_page = 1;
-            if let Some(reader) = &self.reader
-                && !self
+            let selected_left = self.selected_conversation().is_some_and(|selected| {
+                !self
                     .conversations
                     .iter()
-                    .any(|c| c.id == reader.conversation_id())
-            {
-                self.reader = None;
+                    .any(|conversation| conversation.id == selected)
+            });
+            if selected_left {
+                self.reader = ReaderState::Empty;
             }
         }
 
         self.has_more = received > 0
             && u64::from(self.next_page) * u64::from(self.page_size) < u64::from(page.total);
     }
+}
+
+fn matches_search(conversation: &ConversationSummary, query: &str) -> bool {
+    query.is_empty()
+        || conversation
+            .subject
+            .as_deref()
+            .into_iter()
+            .chain(conversation.correspondents.as_deref())
+            .chain(conversation.preview.as_deref())
+            .any(|value| value.to_lowercase().contains(query))
+        || conversation.participants.iter().any(|participant| {
+            participant
+                .name
+                .as_deref()
+                .is_some_and(|name| name.to_lowercase().contains(query))
+                || participant.address.to_lowercase().contains(query)
+        })
 }
 
 #[cfg(test)]
@@ -312,6 +448,31 @@ mod tests {
             id: id.to_owned(),
             subject: None,
             correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: None,
+            unread: false,
+            starred: false,
+            message_count: 1,
+        }
+    }
+
+    fn searchable_summary(
+        id: &str,
+        name: &str,
+        address: &str,
+        subject: &str,
+        preview: &str,
+    ) -> ConversationSummary {
+        ConversationSummary {
+            id: id.to_owned(),
+            subject: Some(subject.to_owned()),
+            correspondents: Some(name.to_owned()),
+            participants: vec![MailAddress {
+                name: Some(name.to_owned()),
+                address: address.to_owned(),
+            }],
+            preview: Some(preview.to_owned()),
             time: None,
             unread: false,
             starred: false,
@@ -362,6 +523,63 @@ mod tests {
         mailbox
     }
 
+    fn load_detail(
+        mailbox: &mut Mailbox,
+        conversation_id: &str,
+        conversation: ConversationDetail,
+        request: RequestId,
+    ) {
+        let request = mailbox
+            .start_conversation_load(conversation_id.into(), request)
+            .unwrap();
+        assert_eq!(
+            mailbox.finish_conversation(&request, Ok(conversation)),
+            None
+        );
+    }
+
+    fn searchable_mailbox() -> Mailbox {
+        let (mut mailbox, request) = open();
+        let conversations = vec![
+            searchable_summary(
+                "sender",
+                "Alice Stone",
+                "alice@example.com",
+                "Quarterly roadmap",
+                "Budget approval is ready",
+            ),
+            searchable_summary(
+                "subject",
+                "Bob Chen",
+                "bob@example.com",
+                "Rust project plan",
+                "Milestones for next month",
+            ),
+            searchable_summary(
+                "preview",
+                "Carol Diaz",
+                "carol@example.com",
+                "Release notes",
+                "Launch checklist is complete",
+            ),
+        ];
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                total: conversations.len() as u32,
+                conversations,
+            }),
+        );
+        mailbox
+    }
+
+    fn visible_ids(mailbox: &Mailbox) -> Vec<&str> {
+        mailbox
+            .visible_conversations()
+            .map(|conversation| conversation.id.as_str())
+            .collect()
+    }
+
     #[test]
     fn opening_loads_first_inbox_page_with_unknown_counts() {
         let (mailbox, request) = open();
@@ -406,7 +624,7 @@ mod tests {
     #[test]
     fn folder_switch_resets_pagination() {
         let mut mailbox = loaded_inbox(&["a"], 200);
-        mailbox.select_conversation("a".into(), None);
+        mailbox.start_conversation_load("a".into(), 9);
 
         let request = mailbox.select_folder(MailFolder::Sent, 3).unwrap();
 
@@ -430,14 +648,14 @@ mod tests {
     #[test]
     fn reselecting_keeps_expansion_and_switching_resets_it() {
         let mut mailbox = loaded_inbox(&["a", "b"], 2);
-        mailbox.select_conversation("a".into(), Some(detail("a", &["a1", "a2"])));
+        load_detail(&mut mailbox, "a", detail("a", &["a1", "a2"]), 3);
         mailbox.toggle_message("a1");
 
-        mailbox.select_conversation("a".into(), Some(detail("a", &["a1", "a2"])));
+        assert_eq!(mailbox.start_conversation_load("a".into(), 4), None);
         assert!(mailbox.reader().unwrap().is_expanded("a1"));
 
-        mailbox.select_conversation("b".into(), Some(detail("b", &["b1"])));
-        mailbox.select_conversation("a".into(), Some(detail("a", &["a1", "a2"])));
+        load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
+        load_detail(&mut mailbox, "a", detail("a", &["a1", "a2"]), 6);
         let reader = mailbox.reader().unwrap();
         assert!(!reader.is_expanded("a1"));
         assert!(reader.is_expanded("a2"));
@@ -530,7 +748,7 @@ mod tests {
     #[test]
     fn refresh_replaces_list_only_after_success() {
         let mut mailbox = loaded_inbox(&["a", "b"], 2);
-        mailbox.select_conversation("b".into(), None);
+        mailbox.start_conversation_load("b".into(), 9);
 
         let request = mailbox.refresh(3).unwrap();
         assert_eq!(request.page, 0);
@@ -546,7 +764,7 @@ mod tests {
     #[test]
     fn refresh_closes_reader_when_conversation_disappears() {
         let mut mailbox = loaded_inbox(&["a", "b"], 2);
-        mailbox.select_conversation("b".into(), None);
+        mailbox.start_conversation_load("b".into(), 9);
 
         let request = mailbox.refresh(3).unwrap();
         mailbox.finish_page(request.id, page(&["a"], 1));
@@ -578,5 +796,268 @@ mod tests {
         assert_eq!(mailbox.finish_counts(2, Ok(MailboxCounts::default())), None);
         assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Inbox), Some(4));
         assert_eq!(mailbox.refresh_counts(3), Some(3));
+    }
+
+    #[test]
+    fn selecting_conversation_starts_detail_loading() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+
+        let request = mailbox.start_conversation_load("a".into(), 3).unwrap();
+
+        assert_eq!(
+            request,
+            ReaderRequest {
+                id: 3,
+                conversation_id: "a".into(),
+            }
+        );
+        assert_eq!(
+            mailbox.reader_state(),
+            &ReaderState::Loading {
+                conversation_id: "a".into(),
+                request: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn successful_detail_response_populates_matching_reader() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        let request = mailbox.start_conversation_load("a".into(), 3).unwrap();
+
+        assert_eq!(
+            mailbox.finish_conversation(&request, Ok(detail("a", &["a1"]))),
+            None
+        );
+
+        let reader = mailbox.reader().unwrap();
+        assert_eq!(mailbox.selected_conversation(), Some("a"));
+        assert_eq!(reader.detail().id, "a");
+    }
+
+    #[test]
+    fn mismatched_detail_id_is_rejected() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        let request = mailbox.start_conversation_load("a".into(), 3).unwrap();
+
+        assert_eq!(
+            mailbox.finish_conversation(&request, Ok(detail("b", &["b1"]))),
+            Some(MailboxError::Unavailable)
+        );
+        assert_eq!(
+            mailbox.reader_state(),
+            &ReaderState::Failed {
+                conversation_id: "a".into(),
+                error: MailboxError::Unavailable,
+            }
+        );
+    }
+
+    #[test]
+    fn newer_selection_ignores_stale_detail_response() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        let request_a = mailbox.start_conversation_load("a".into(), 3).unwrap();
+        let request_b = mailbox.start_conversation_load("b".into(), 4).unwrap();
+
+        assert_eq!(
+            mailbox.finish_conversation(&request_a, Ok(detail("a", &["a1"]))),
+            None
+        );
+        assert_eq!(mailbox.selected_conversation(), Some("b"));
+        assert!(mailbox.reader().is_none());
+
+        mailbox.finish_conversation(&request_b, Ok(detail("b", &["b1"])));
+        assert_eq!(mailbox.reader().unwrap().detail().id, "b");
+    }
+
+    #[test]
+    fn folder_switch_invalidates_outstanding_detail_request() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        let detail_request = mailbox.start_conversation_load("a".into(), 3).unwrap();
+
+        mailbox.select_folder(MailFolder::Archive, 4);
+        mailbox.finish_conversation(&detail_request, Ok(detail("a", &["a1"])));
+
+        assert_eq!(mailbox.reader_state(), &ReaderState::Empty);
+        assert_eq!(mailbox.selected_conversation(), None);
+    }
+
+    #[test]
+    fn failed_detail_can_retry_with_new_request() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        let first = mailbox.start_conversation_load("a".into(), 3).unwrap();
+        mailbox.finish_conversation(&first, Err(MailboxError::Connection));
+        assert_eq!(
+            mailbox.reader_state(),
+            &ReaderState::Failed {
+                conversation_id: "a".into(),
+                error: MailboxError::Connection,
+            }
+        );
+
+        let retry = mailbox.retry_conversation(4).unwrap();
+
+        assert_eq!(retry.id, 4);
+        assert_eq!(retry.conversation_id, "a");
+        assert_eq!(
+            mailbox.reader_state(),
+            &ReaderState::Loading {
+                conversation_id: "a".into(),
+                request: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn search_does_not_mutate_loaded_detail() {
+        let mut mailbox = searchable_mailbox();
+        let conversation = detail("subject", &["message"]);
+        load_detail(&mut mailbox, "subject", conversation.clone(), 3);
+
+        mailbox.set_search_query("rust".into());
+        assert_eq!(mailbox.reader().unwrap().detail(), &conversation);
+
+        mailbox.set_search_query(String::new());
+        assert_eq!(mailbox.reader().unwrap().detail(), &conversation);
+    }
+
+    #[test]
+    fn empty_search_returns_normal_folder_contents() {
+        let mailbox = searchable_mailbox();
+
+        assert_eq!(visible_ids(&mailbox), ["sender", "subject", "preview"]);
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let mut mailbox = searchable_mailbox();
+
+        mailbox.set_search_query("rUsT".into());
+
+        assert_eq!(visible_ids(&mailbox), ["subject"]);
+    }
+
+    #[test]
+    fn search_matches_sender_name() {
+        let mut mailbox = searchable_mailbox();
+
+        mailbox.set_search_query("alice stone".into());
+
+        assert_eq!(visible_ids(&mailbox), ["sender"]);
+    }
+
+    #[test]
+    fn search_matches_sender_email() {
+        let mut mailbox = searchable_mailbox();
+
+        mailbox.set_search_query("alice@example.com".into());
+
+        assert_eq!(visible_ids(&mailbox), ["sender"]);
+    }
+
+    #[test]
+    fn search_matches_subject() {
+        let mut mailbox = searchable_mailbox();
+
+        mailbox.set_search_query("project plan".into());
+
+        assert_eq!(visible_ids(&mailbox), ["subject"]);
+    }
+
+    #[test]
+    fn search_matches_preview() {
+        let mut mailbox = searchable_mailbox();
+
+        mailbox.set_search_query("launch checklist".into());
+
+        assert_eq!(visible_ids(&mailbox), ["preview"]);
+    }
+
+    #[test]
+    fn search_ignores_surrounding_whitespace() {
+        let mut mailbox = searchable_mailbox();
+
+        mailbox.set_search_query("  rust  ".into());
+
+        assert_eq!(visible_ids(&mailbox), ["subject"]);
+    }
+
+    #[test]
+    fn search_excludes_non_matching_conversations() {
+        let mut mailbox = searchable_mailbox();
+
+        mailbox.set_search_query("no such conversation".into());
+
+        assert!(visible_ids(&mailbox).is_empty());
+    }
+
+    #[test]
+    fn search_applies_to_the_selected_folder() {
+        let mut mailbox = searchable_mailbox();
+        mailbox.set_search_query("rust".into());
+        let request = mailbox.select_folder(MailFolder::Archive, 3).unwrap();
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                conversations: vec![searchable_summary(
+                    "archived",
+                    "Archived Sender",
+                    "archive@example.com",
+                    "Archived Rust notes",
+                    "Old project",
+                )],
+                total: 1,
+            }),
+        );
+
+        assert_eq!(mailbox.folder(), MailFolder::Archive);
+        assert_eq!(visible_ids(&mailbox), ["archived"]);
+    }
+
+    #[test]
+    fn clearing_search_restores_normal_results() {
+        let mut mailbox = searchable_mailbox();
+        mailbox.set_search_query("rust".into());
+
+        mailbox.set_search_query(String::new());
+
+        assert_eq!(visible_ids(&mailbox), ["sender", "subject", "preview"]);
+    }
+
+    #[test]
+    fn no_match_clears_hidden_reader_selection() {
+        let mut mailbox = searchable_mailbox();
+        mailbox.start_conversation_load("sender".into(), 3);
+
+        mailbox.set_search_query("rust".into());
+
+        assert_eq!(mailbox.selected_conversation(), None);
+        assert_eq!(visible_ids(&mailbox), ["subject"]);
+    }
+
+    #[test]
+    fn search_does_not_change_mailbox_counts() {
+        let mut mailbox = searchable_mailbox();
+        let counts: MailboxCounts = [(MailFolder::Inbox, 7)].into_iter().collect();
+        mailbox.finish_counts(2, Ok(counts.clone()));
+
+        mailbox.set_search_query("rust".into());
+        mailbox.set_search_query("missing".into());
+        mailbox.set_search_query(String::new());
+
+        assert_eq!(mailbox.counts(), Some(&counts));
+    }
+
+    #[test]
+    fn repeated_search_does_not_mutate_source_conversations() {
+        let mut mailbox = searchable_mailbox();
+        let original = mailbox.conversations().to_vec();
+
+        for query in ["rust", "alice", "missing", ""] {
+            mailbox.set_search_query(query.into());
+            let _ = mailbox.visible_conversations().count();
+        }
+
+        assert_eq!(mailbox.conversations(), original);
     }
 }

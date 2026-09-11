@@ -170,9 +170,13 @@ impl DemoMailbox {
         counts_from(&fixtures)
     }
 
-    pub fn conversation_detail(&self, id: &str, now: i64) -> Option<ConversationDetail> {
+    pub fn conversation_detail(
+        &self,
+        id: &str,
+        now: i64,
+    ) -> Result<ConversationDetail, MailboxError> {
         let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
-        detail_from(&fixtures, id, now)
+        detail_from(&fixtures, id, now).ok_or(MailboxError::Unavailable)
     }
 
     pub fn snapshot(
@@ -727,11 +731,43 @@ fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
         id: format!("demo-{index}"),
         subject: non_empty(fixture.subject),
         correspondents: non_empty(fixture.correspondents),
+        participants: fixture_participants(fixture),
+        preview: fixture
+            .bodies
+            .last()
+            .and_then(|body| non_empty(&preview(body))),
         time: Some(now - fixture.age),
         unread: fixture.unread,
         starred: fixture.starred,
         message_count: u32::try_from(fixture.message_count()).unwrap_or(u32::MAX),
     }
+}
+
+fn fixture_participants(fixture: &Fixture) -> Vec<MailAddress> {
+    std::iter::once(demo_user())
+        .chain(
+            fixture
+                .correspondents
+                .split(", ")
+                .filter(|participant| !participant.is_empty())
+                .map(participant_address),
+        )
+        .chain(
+            fixture
+                .to
+                .iter()
+                .map(|address| participant_address(address)),
+        )
+        .collect()
+}
+
+fn preview(body: &str) -> String {
+    body.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect()
 }
 
 fn message(
@@ -937,8 +973,14 @@ mod tests {
             );
         }
         let mailbox = DemoMailbox::new();
-        assert_eq!(mailbox.conversation_detail("demo-999", NOW), None);
-        assert_eq!(mailbox.conversation_detail("other", NOW), None);
+        assert_eq!(
+            mailbox.conversation_detail("demo-999", NOW),
+            Err(MailboxError::Unavailable)
+        );
+        assert_eq!(
+            mailbox.conversation_detail("other", NOW),
+            Err(MailboxError::Unavailable)
+        );
     }
 
     #[test]
@@ -949,6 +991,20 @@ mod tests {
             detail.messages.last().unwrap().time,
             Some(NOW - 12 * MINUTE)
         );
+    }
+
+    #[test]
+    fn summaries_keep_only_a_bounded_preview() {
+        let summary = state_page(&DemoMailbox::new(), MailFolder::Inbox)
+            .conversations
+            .into_iter()
+            .find(|conversation| conversation.id == "demo-5")
+            .unwrap();
+        let preview = summary.preview.unwrap();
+        let MessageBody::PlainText(body) = &detail(5).messages[0].body;
+
+        assert!(preview.chars().count() <= 200);
+        assert!(body.len() > preview.len());
     }
 
     #[test]
@@ -1040,7 +1096,7 @@ mod tests {
 
         assert!(!contains(&mailbox, MailFolder::Inbox, "demo-0"));
         assert!(contains(&mailbox, MailFolder::Archive, "demo-0"));
-        assert_eq!(mailbox.conversation_detail("demo-0", NOW), Some(detail));
+        assert_eq!(mailbox.conversation_detail("demo-0", NOW), Ok(detail));
     }
 
     #[test]
@@ -1051,7 +1107,7 @@ mod tests {
 
         assert!(!contains(&mailbox, MailFolder::Inbox, "demo-3"));
         assert!(contains(&mailbox, MailFolder::Trash, "demo-3"));
-        assert!(mailbox.conversation_detail("demo-3", NOW).is_some());
+        assert!(mailbox.conversation_detail("demo-3", NOW).is_ok());
     }
 
     #[test]

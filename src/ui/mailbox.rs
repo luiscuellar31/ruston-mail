@@ -1,6 +1,8 @@
 use chrono::{DateTime, Datelike, Local, TimeZone};
 use iced::widget::text::Wrapping;
-use iced::widget::{Column, button, column, container, pane_grid, row, scrollable, space, text};
+use iced::widget::{
+    Column, button, column, container, pane_grid, row, scrollable, space, text, text_input,
+};
 use iced::{Center, Element, Fill, Theme};
 
 use crate::app::{
@@ -23,7 +25,7 @@ pub(super) fn view<'a>(
         let content = match panel {
             Panel::Sidebar => sidebar(app, mailbox, email, signing_out),
             Panel::Conversations => conversation_pane(mailbox),
-            Panel::Reader => super::reader::view(mailbox, app.is_demo()),
+            Panel::Reader => super::reader::view(mailbox, app.mailbox_actions_available()),
         };
         pane_grid::Content::new(content).style(pane_background)
     })
@@ -141,7 +143,23 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
     .spacing(SPACING)
     .align_y(Center);
 
-    let body = match (mailbox.status(), mailbox.conversations().is_empty()) {
+    let input = text_input("Search mail…", mailbox.search_query()).on_input(Message::SearchChanged);
+    let search: Element<'_, Message> = if mailbox.search_query().is_empty() {
+        input.into()
+    } else {
+        row![
+            input,
+            button(text("Clear"))
+                .style(button::secondary)
+                .on_press(Message::SearchChanged(String::new())),
+        ]
+        .spacing(SPACING)
+        .into()
+    };
+
+    let no_visible_conversations = mailbox.visible_conversations().next().is_none();
+
+    let body = match (mailbox.status(), no_visible_conversations) {
         (ListStatus::Loading(_), _) => centered(text("Loading conversations…").into()),
         (ListStatus::Failed(error), true) => centered(
             column![
@@ -152,13 +170,14 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
             .align_x(Center)
             .into(),
         ),
+        (_, true) if mailbox.is_searching() => centered(text("No conversations found.").into()),
         (_, true) => {
             centered(text(format!("No conversations in {}.", mailbox.folder().name())).into())
         }
         _ => conversation_list(mailbox),
     };
 
-    container(column![header, body].spacing(12))
+    container(column![header, search, body].spacing(12))
         .width(Fill)
         .height(Fill)
         .padding(PANE_PADDING)
@@ -168,7 +187,7 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
 fn conversation_list(mailbox: &Mailbox) -> Element<'_, Message> {
     let now = Local::now();
     let selected = mailbox.selected_conversation();
-    let mut list = Column::with_children(mailbox.conversations().iter().map(|conversation| {
+    let mut list = Column::with_children(mailbox.visible_conversations().map(|conversation| {
         conversation_row(
             conversation,
             selected == Some(conversation.id.as_str()),

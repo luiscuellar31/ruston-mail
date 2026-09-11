@@ -51,11 +51,10 @@ impl MailBackend {
         }
     }
 
-    /// The full conversation for the reader, when this backend can provide it.
-    /// Reading conversations from Proton is not implemented yet.
-    pub fn conversation_detail(&self, id: &str) -> Option<ConversationDetail> {
+    /// Loads the full conversation through the active backend.
+    pub async fn conversation_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
         match self {
-            Self::Proton(_) => None,
+            Self::Proton(service) => service.conversation_detail(id).await,
             Self::Demo(service) => service.conversation_detail(id, demo::now()),
         }
     }

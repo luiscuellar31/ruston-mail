@@ -8,7 +8,8 @@ Early development. Currently working:
 
 - Proton sign-in, including TOTP and separate mailbox passwords, with saved-session resume
 - Mailbox with system folders, unread counts, pagination, and refresh
-- Conversation reader, in demo mode only; reading conversations from Proton is not implemented yet
+- Local filtering of loaded conversations by participant, subject, and preview
+- Async conversation reader; demo details work and Proton detail mapping remains pending
 - Read, star, archive, trash, and spam actions in demo mode
 
 Custom folders are not shown yet.
