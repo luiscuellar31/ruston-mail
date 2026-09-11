@@ -1,14 +1,19 @@
 use std::sync::Arc;
 
-use proton_core::{Client, Error, LoginOptions};
+use proton_core::model::enums::label_ids;
+use proton_core::{Client, Conversation, Error, LabelCount, LoginOptions, Recipient};
 
-use super::{AuthError, LoginRequest};
+use super::{
+    AuthError, ConversationPage, ConversationSummary, LoginRequest, MailFolder, MailboxCounts,
+    MailboxError,
+};
 
 const PROFILE: &str = "ruston";
 const TOTP_REQUIRED: &str = "account requires 2FA but no TOTP code was provided";
 const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox password";
 const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
 const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
+const MAX_LISTED_CORRESPONDENTS: usize = 3;
 
 #[derive(Clone)]
 pub enum ResumeOutcome {
@@ -71,10 +76,127 @@ impl ProtonMailService {
         self.email.as_deref()
     }
 
+    /// Lists one zero-based page of a folder's conversations, newest first.
+    pub async fn list_conversations(
+        &self,
+        folder: MailFolder,
+        page: u32,
+        page_size: u32,
+    ) -> Result<ConversationPage, MailboxError> {
+        let (total, conversations) = self
+            .client
+            .list_conversations(label_id(folder), page, page_size, false)
+            .await
+            .map_err(map_mailbox_error)?;
+
+        Ok(ConversationPage {
+            conversations: conversations
+                .into_iter()
+                .map(|conversation| summarize(conversation, folder))
+                .collect(),
+            total,
+        })
+    }
+
+    pub async fn conversation_counts(&self) -> Result<MailboxCounts, MailboxError> {
+        let counts = self
+            .client
+            .conversation_counts()
+            .await
+            .map_err(map_mailbox_error)?;
+
+        Ok(map_counts(&counts))
+    }
+
     fn from_client(client: Client) -> Self {
         let email = client.primary_email().map(str::to_owned);
 
         Self { client, email }
+    }
+}
+
+fn label_id(folder: MailFolder) -> &'static str {
+    match folder {
+        MailFolder::Inbox => label_ids::INBOX,
+        MailFolder::Drafts => label_ids::DRAFTS,
+        MailFolder::Sent => label_ids::SENT,
+        MailFolder::Starred => label_ids::STARRED,
+        MailFolder::Archive => label_ids::ARCHIVE,
+        MailFolder::Spam => label_ids::SPAM,
+        MailFolder::Trash => label_ids::TRASH,
+    }
+}
+
+fn summarize(conversation: Conversation, folder: MailFolder) -> ConversationSummary {
+    // Per-label context describes the conversation as seen from this folder.
+    let context = conversation
+        .labels
+        .iter()
+        .find(|label| label.id == label_id(folder));
+    let unread = context
+        .and_then(|label| label.context_num_unread)
+        .unwrap_or(conversation.num_unread);
+    let time = context
+        .and_then(|label| label.context_time)
+        .unwrap_or(conversation.time);
+    let starred = conversation
+        .labels
+        .iter()
+        .any(|label| label.id == label_ids::STARRED);
+    let correspondents = match folder {
+        MailFolder::Sent | MailFolder::Drafts => &conversation.recipients,
+        _ => &conversation.senders,
+    };
+    let subject = conversation.subject.trim();
+
+    ConversationSummary {
+        subject: (!subject.is_empty()).then(|| subject.to_owned()),
+        correspondents: display_names(correspondents),
+        time: (time > 0).then_some(time),
+        unread: unread > 0,
+        starred,
+        message_count: u32::try_from(conversation.num_messages).unwrap_or(0),
+        id: conversation.id,
+    }
+}
+
+fn display_names(people: &[Recipient]) -> Option<String> {
+    let mut names = people.iter().filter_map(|person| {
+        [person.name.trim(), person.address.trim()]
+            .into_iter()
+            .find(|value| !value.is_empty())
+    });
+    let listed: Vec<&str> = names.by_ref().take(MAX_LISTED_CORRESPONDENTS).collect();
+    if listed.is_empty() {
+        return None;
+    }
+
+    let mut display = listed.join(", ");
+    if names.next().is_some() {
+        display.push_str(", …");
+    }
+    Some(display)
+}
+
+fn map_counts(counts: &[LabelCount]) -> MailboxCounts {
+    MailFolder::ALL
+        .into_iter()
+        .filter_map(|folder| {
+            let count = counts
+                .iter()
+                .find(|count| count.label_id == label_id(folder))?;
+            Some((folder, u32::try_from(count.unread).unwrap_or(0)))
+        })
+        .collect()
+}
+
+fn map_mailbox_error(error: Error) -> MailboxError {
+    match error {
+        Error::Unauthorized => MailboxError::SessionExpired,
+        Error::Api(error) if error.http_status == 401 => MailboxError::SessionExpired,
+        Error::Http(_) => MailboxError::Connection,
+        Error::Api(_) | Error::HumanVerification(_) => MailboxError::Service,
+        _ => MailboxError::Unavailable,
     }
 }
 
@@ -135,7 +257,35 @@ fn mentions_credentials(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use proton_core::ApiError;
+    use proton_core::model::ConversationLabel;
+
     use super::*;
+
+    fn person(name: &str, address: &str) -> Recipient {
+        Recipient {
+            name: name.into(),
+            address: address.into(),
+            contact_id: None,
+            is_proton: None,
+        }
+    }
+
+    fn label(id: &str) -> ConversationLabel {
+        ConversationLabel {
+            id: id.into(),
+            ..Default::default()
+        }
+    }
+
+    fn api_error(http_status: u16) -> Error {
+        Error::Api(ApiError {
+            http_status,
+            code: 0,
+            message: String::new(),
+            raw_body: String::new(),
+        })
+    }
 
     #[test]
     fn missing_totp_has_a_structured_outcome() {
@@ -184,5 +334,127 @@ mod tests {
             outcome,
             SignInOutcome::Failed(AuthError::InvalidMailboxPassword)
         ));
+    }
+
+    #[test]
+    fn conversation_maps_to_summary() {
+        let conversation = Conversation {
+            id: "conversation".into(),
+            subject: "  Quarterly report ".into(),
+            time: 1_700_000_000,
+            num_messages: 3,
+            num_unread: 1,
+            senders: vec![
+                person("Ada", "ada@example.com"),
+                person("", "bob@example.com"),
+            ],
+            labels: vec![label(label_ids::INBOX), label(label_ids::STARRED)],
+            ..Default::default()
+        };
+
+        let summary = summarize(conversation, MailFolder::Inbox);
+
+        assert_eq!(
+            summary,
+            ConversationSummary {
+                id: "conversation".into(),
+                subject: Some("Quarterly report".into()),
+                correspondents: Some("Ada, bob@example.com".into()),
+                time: Some(1_700_000_000),
+                unread: true,
+                starred: true,
+                message_count: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_subject_sender_and_time_are_absent() {
+        let conversation = Conversation {
+            id: "conversation".into(),
+            subject: " ".into(),
+            num_messages: -1,
+            senders: vec![person(" ", "")],
+            ..Default::default()
+        };
+
+        let summary = summarize(conversation, MailFolder::Inbox);
+
+        assert_eq!(summary.subject, None);
+        assert_eq!(summary.correspondents, None);
+        assert_eq!(summary.time, None);
+        assert_eq!(summary.message_count, 0);
+        assert!(!summary.unread);
+        assert!(!summary.starred);
+    }
+
+    #[test]
+    fn folder_context_overrides_conversation_totals() {
+        let mut sent = label(label_ids::SENT);
+        sent.context_num_unread = Some(0);
+        sent.context_time = Some(42);
+        let conversation = Conversation {
+            id: "conversation".into(),
+            time: 99,
+            num_unread: 2,
+            senders: vec![person("Sender", "")],
+            recipients: vec![person("Recipient", "")],
+            labels: vec![sent],
+            ..Default::default()
+        };
+
+        let summary = summarize(conversation, MailFolder::Sent);
+
+        assert!(!summary.unread);
+        assert_eq!(summary.time, Some(42));
+        assert_eq!(summary.correspondents.as_deref(), Some("Recipient"));
+    }
+
+    #[test]
+    fn long_correspondent_lists_are_shortened() {
+        let people: Vec<_> = ["A", "B", "C", "D"]
+            .into_iter()
+            .map(|name| person(name, ""))
+            .collect();
+
+        assert_eq!(display_names(&people).as_deref(), Some("A, B, C, …"));
+    }
+
+    #[test]
+    fn counts_map_only_known_folders() {
+        let counts = [
+            LabelCount {
+                label_id: label_ids::INBOX.into(),
+                total: 10,
+                unread: 4,
+            },
+            LabelCount {
+                label_id: "custom".into(),
+                total: 1,
+                unread: 1,
+            },
+        ];
+
+        let counts = map_counts(&counts);
+
+        assert_eq!(counts.unread(MailFolder::Inbox), Some(4));
+        assert_eq!(counts.unread(MailFolder::Trash), None);
+    }
+
+    #[test]
+    fn expired_session_errors_are_distinguished() {
+        assert_eq!(
+            map_mailbox_error(Error::Unauthorized),
+            MailboxError::SessionExpired
+        );
+        assert_eq!(
+            map_mailbox_error(api_error(401)),
+            MailboxError::SessionExpired
+        );
+        assert_eq!(map_mailbox_error(api_error(500)), MailboxError::Service);
+        assert_eq!(
+            map_mailbox_error(Error::Other("unexpected".into())),
+            MailboxError::Unavailable
+        );
     }
 }

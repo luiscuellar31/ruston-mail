@@ -11,6 +11,7 @@ pub enum AuthError {
     HumanVerificationRequired,
     SecurityKeyUnsupported,
     SessionUnavailable,
+    SessionExpired,
     Service { http_status: u16, code: i64 },
     AuthenticationUnavailable,
 }
@@ -33,6 +34,7 @@ impl AuthError {
                 "This account requires FIDO2/WebAuthn, which Ruston does not support yet."
             }
             Self::SessionUnavailable => "Ruston could not access the saved Proton session.",
+            Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service { .. } => "Proton Mail rejected the request. Try again later.",
             Self::AuthenticationUnavailable => {
                 "Ruston could not complete authentication. Try again."

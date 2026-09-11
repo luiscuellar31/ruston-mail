@@ -1,8 +1,16 @@
+mod mailbox;
+
 use std::sync::Arc;
 
 use iced::Task;
 
-use crate::mail::{AuthError, LoginRequest, ProtonMailService, ResumeOutcome, SignInOutcome};
+use crate::mail::{
+    AuthError, ConversationPage, LoginRequest, MailFolder, MailboxCounts, MailboxError,
+    ProtonMailService, ResumeOutcome, SignInOutcome,
+};
+
+pub use mailbox::{ListStatus, Mailbox};
+use mailbox::{PAGE_SIZE, PageRequest, RequestId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInStep {
@@ -34,6 +42,12 @@ pub enum Message {
     SignInFinished(SignInOutcome),
     Logout,
     LogoutFinished(Result<(), AuthError>),
+    SelectFolder(MailFolder),
+    SelectConversation(String),
+    RefreshMailbox,
+    LoadMoreConversations,
+    ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
+    CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
 }
 
 #[derive(Default)]
@@ -62,6 +76,8 @@ pub struct App {
     login_form: LoginForm,
     auth_error: Option<AuthError>,
     mail_service: Option<Arc<ProtonMailService>>,
+    mailbox: Option<Mailbox>,
+    last_request: RequestId,
 }
 
 impl App {
@@ -78,6 +94,8 @@ impl App {
             login_form: LoginForm::default(),
             auth_error: None,
             mail_service: None,
+            mailbox: None,
+            last_request: 0,
         }
     }
 
@@ -107,10 +125,32 @@ impl App {
                     self.auth_state = AuthState::SignedOut;
                 }
             }
-            Message::SessionChecked(outcome) => self.finish_session_check(outcome),
-            Message::SignInFinished(outcome) => self.finish_sign_in(outcome),
+            Message::SessionChecked(outcome) => return self.finish_session_check(outcome),
+            Message::SignInFinished(outcome) => return self.finish_sign_in(outcome),
             Message::Logout => return self.logout(),
             Message::LogoutFinished(result) => self.finish_logout(result),
+            Message::SelectFolder(folder) => return self.select_folder(folder),
+            Message::SelectConversation(id) => {
+                if let Some(mailbox) = self.active_mailbox() {
+                    mailbox.select_conversation(id);
+                }
+            }
+            Message::RefreshMailbox => return self.refresh_mailbox(),
+            Message::LoadMoreConversations => return self.load_more_conversations(),
+            Message::ConversationsLoaded(request, result) => {
+                let error = self
+                    .mailbox
+                    .as_mut()
+                    .and_then(|mailbox| mailbox.finish_page(request, result));
+                self.handle_mailbox_error(error);
+            }
+            Message::CountsLoaded(request, result) => {
+                let error = self
+                    .mailbox
+                    .as_mut()
+                    .and_then(|mailbox| mailbox.finish_counts(request, result));
+                self.handle_mailbox_error(error);
+            }
         }
 
         Task::none()
@@ -118,6 +158,10 @@ impl App {
 
     pub fn auth_state(&self) -> &AuthState {
         &self.auth_state
+    }
+
+    pub fn mailbox(&self) -> Option<&Mailbox> {
+        self.mailbox.as_ref()
     }
 
     pub fn username(&self) -> &str {
@@ -177,20 +221,22 @@ impl App {
         Task::perform(ProtonMailService::sign_in(request), Message::SignInFinished)
     }
 
-    fn finish_session_check(&mut self, outcome: ResumeOutcome) {
+    fn finish_session_check(&mut self, outcome: ResumeOutcome) -> Task<Message> {
         match outcome {
-            ResumeOutcome::Authenticated(service) => self.set_authenticated(service),
+            ResumeOutcome::Authenticated(service) => return self.set_authenticated(service),
             ResumeOutcome::SignedOut => self.auth_state = AuthState::SignedOut,
             ResumeOutcome::Failed(error) => {
                 self.auth_error = Some(error);
                 self.auth_state = AuthState::SignedOut;
             }
         }
+
+        Task::none()
     }
 
-    fn finish_sign_in(&mut self, outcome: SignInOutcome) {
+    fn finish_sign_in(&mut self, outcome: SignInOutcome) -> Task<Message> {
         match outcome {
-            SignInOutcome::Authenticated(service) => self.set_authenticated(service),
+            SignInOutcome::Authenticated(service) => return self.set_authenticated(service),
             SignInOutcome::NeedsTotp => {
                 self.login_form.totp.clear();
                 self.auth_error = None;
@@ -217,14 +263,26 @@ impl App {
                 self.auth_state = AuthState::SignedOut;
             }
         }
+
+        Task::none()
     }
 
-    fn set_authenticated(&mut self, service: Arc<ProtonMailService>) {
+    fn set_authenticated(&mut self, service: Arc<ProtonMailService>) -> Task<Message> {
         let email = service.email().map(str::to_owned);
         self.login_form.clear_all();
         self.auth_error = None;
         self.mail_service = Some(service);
         self.auth_state = AuthState::Authenticated { email };
+
+        let page_request = self.next_request();
+        let counts_request = self.next_request();
+        let (mailbox, page) = Mailbox::open(page_request, counts_request);
+        self.mailbox = Some(mailbox);
+
+        Task::batch([
+            self.fetch_page(Some(page)),
+            self.fetch_counts(Some(counts_request)),
+        ])
     }
 
     fn logout(&mut self) -> Task<Message> {
@@ -245,9 +303,15 @@ impl App {
     }
 
     fn finish_logout(&mut self, result: Result<(), AuthError>) {
+        // The session may have expired while signing out.
+        if self.auth_state != AuthState::SigningOut {
+            return;
+        }
+
         match result {
             Ok(()) => {
                 self.mail_service = None;
+                self.mailbox = None;
                 self.login_form.clear_all();
                 self.auth_error = None;
                 self.auth_state = AuthState::SignedOut;
@@ -261,6 +325,85 @@ impl App {
                 self.auth_error = Some(error);
                 self.auth_state = AuthState::Authenticated { email };
             }
+        }
+    }
+
+    fn next_request(&mut self) -> RequestId {
+        self.last_request += 1;
+        self.last_request
+    }
+
+    /// Mailbox actions are accepted only while fully authenticated.
+    fn active_mailbox(&mut self) -> Option<&mut Mailbox> {
+        match self.auth_state {
+            AuthState::Authenticated { .. } => self.mailbox.as_mut(),
+            _ => None,
+        }
+    }
+
+    fn select_folder(&mut self, folder: MailFolder) -> Task<Message> {
+        let request = self.next_request();
+        let page = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.select_folder(folder, request));
+
+        self.fetch_page(page)
+    }
+
+    fn refresh_mailbox(&mut self) -> Task<Message> {
+        let page_request = self.next_request();
+        let counts_request = self.next_request();
+        let Some(mailbox) = self.active_mailbox() else {
+            return Task::none();
+        };
+        let page = mailbox.refresh(page_request);
+        let counts = mailbox.refresh_counts(counts_request);
+
+        Task::batch([self.fetch_page(page), self.fetch_counts(counts)])
+    }
+
+    fn load_more_conversations(&mut self) -> Task<Message> {
+        let request = self.next_request();
+        let page = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.load_more(request));
+
+        self.fetch_page(page)
+    }
+
+    fn fetch_page(&self, request: Option<PageRequest>) -> Task<Message> {
+        let (Some(request), Some(service)) = (request, self.mail_service.clone()) else {
+            return Task::none();
+        };
+
+        Task::perform(
+            async move {
+                service
+                    .list_conversations(request.folder, request.page, PAGE_SIZE)
+                    .await
+            },
+            move |result| Message::ConversationsLoaded(request.id, result),
+        )
+    }
+
+    fn fetch_counts(&self, request: Option<RequestId>) -> Task<Message> {
+        let (Some(request), Some(service)) = (request, self.mail_service.clone()) else {
+            return Task::none();
+        };
+
+        Task::perform(
+            async move { service.conversation_counts().await },
+            move |result| Message::CountsLoaded(request, result),
+        )
+    }
+
+    fn handle_mailbox_error(&mut self, error: Option<MailboxError>) {
+        if error == Some(MailboxError::SessionExpired) {
+            self.mail_service = None;
+            self.mailbox = None;
+            self.login_form.clear_all();
+            self.auth_error = Some(AuthError::SessionExpired);
+            self.auth_state = AuthState::SignedOut;
         }
     }
 }
@@ -277,6 +420,14 @@ fn optional_unmodified(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn authenticated_app() -> App {
+        let mut app = App::new();
+        app.auth_state = AuthState::Authenticated { email: None };
+        app.mailbox = Some(Mailbox::open(1, 2).0);
+        app.last_request = 2;
+        app
+    }
 
     #[test]
     fn initial_state_checks_saved_session() {
@@ -339,12 +490,62 @@ mod tests {
     }
 
     #[test]
-    fn successful_logout_opens_login() {
-        let mut app = App::new();
+    fn successful_logout_opens_login_and_clears_mailbox() {
+        let mut app = authenticated_app();
         app.auth_state = AuthState::SigningOut;
 
         let _ = app.update(Message::LogoutFinished(Ok(())));
 
         assert_eq!(app.auth_state, AuthState::SignedOut);
+        assert!(app.mailbox.is_none());
+    }
+
+    #[test]
+    fn expired_session_signs_out_and_clears_mailbox() {
+        let mut app = authenticated_app();
+
+        let _ = app.update(Message::ConversationsLoaded(
+            1,
+            Err(MailboxError::SessionExpired),
+        ));
+
+        assert_eq!(app.auth_state, AuthState::SignedOut);
+        assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
+        assert!(app.mailbox.is_none());
+    }
+
+    #[test]
+    fn stale_expired_session_response_is_ignored() {
+        let mut app = authenticated_app();
+
+        let _ = app.update(Message::ConversationsLoaded(
+            99,
+            Err(MailboxError::SessionExpired),
+        ));
+
+        assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
+        assert!(app.mailbox.is_some());
+    }
+
+    #[test]
+    fn logout_result_after_session_expiry_is_ignored() {
+        let mut app = authenticated_app();
+        app.auth_state = AuthState::SigningOut;
+        let _ = app.update(Message::CountsLoaded(2, Err(MailboxError::SessionExpired)));
+
+        let _ = app.update(Message::LogoutFinished(Err(AuthError::Connection)));
+
+        assert_eq!(app.auth_state, AuthState::SignedOut);
+        assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
+    }
+
+    #[test]
+    fn mailbox_actions_are_ignored_while_signing_out() {
+        let mut app = authenticated_app();
+        app.auth_state = AuthState::SigningOut;
+
+        let _ = app.update(Message::SelectFolder(MailFolder::Trash));
+
+        assert_eq!(app.mailbox().unwrap().folder(), MailFolder::Inbox);
     }
 }

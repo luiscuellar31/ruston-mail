@@ -1,21 +1,23 @@
 mod login;
+mod mailbox;
 
-use iced::widget::{button, column, container, row, text};
-use iced::{Element, Fill, Size};
+use iced::widget::{column, container, text};
+use iced::{Element, Fill, Size, window};
 
 use crate::app::{App, AuthState, Message};
 
 const WINDOW_SIZE: Size = Size::new(1_100.0, 700.0);
-const SIDEBAR_WIDTH: f32 = 240.0;
-const SIDEBAR_PADDING: f32 = 28.0;
-const CONTENT_PADDING: f32 = 48.0;
-const CONTENT_SPACING: f32 = 20.0;
+const MIN_WINDOW_SIZE: Size = Size::new(820.0, 480.0);
 
 pub fn run() -> iced::Result {
     iced::application(App::boot, App::update, view)
         .title("Ruston")
-        .window_size(WINDOW_SIZE)
-        .resizable(true)
+        .window(window::Settings {
+            size: WINDOW_SIZE,
+            min_size: Some(MIN_WINDOW_SIZE),
+            resizable: true,
+            ..window::Settings::default()
+        })
         .run()
 }
 
@@ -42,53 +44,8 @@ fn authenticated_view<'a>(
     email: Option<&'a str>,
     signing_out: bool,
 ) -> Element<'a, Message> {
-    let sidebar = container(
-        column![
-            text("Ruston").size(32),
-            text("Mail").size(18),
-            text("Connected to Proton Mail").size(14),
-        ]
-        .spacing(CONTENT_SPACING),
-    )
-    .width(SIDEBAR_WIDTH)
-    .height(Fill)
-    .padding(SIDEBAR_PADDING)
-    .style(container::dark);
-
-    let account = email
-        .map(|email| text(email).size(16))
-        .unwrap_or_else(|| text("Proton Mail account").size(16));
-    let logout = button(text(if signing_out {
-        "Signing out…"
-    } else {
-        "Sign out"
-    }))
-    .on_press_maybe((!signing_out).then_some(Message::Logout));
-
-    let mut content = column![
-        text("Welcome to Ruston").size(30),
-        account,
-        container(
-            column![
-                text("Authentication complete").size(20),
-                text("Mailbox support is coming next."),
-            ]
-            .spacing(12),
-        )
-        .padding(24)
-        .style(container::rounded_box),
-        logout,
-    ]
-    .spacing(CONTENT_SPACING);
-
-    if let Some(error) = app.error_message() {
-        content = content.push(text(error).size(14));
+    match app.mailbox() {
+        Some(mailbox) => mailbox::view(app, mailbox, email, signing_out),
+        None => status_view("Opening mailbox…"),
     }
-
-    let content = container(content)
-        .width(Fill)
-        .height(Fill)
-        .padding(CONTENT_PADDING);
-
-    row![sidebar, content].into()
 }

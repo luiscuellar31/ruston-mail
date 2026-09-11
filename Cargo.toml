@@ -13,5 +13,6 @@ name = "ruston"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 iced = { version = "0.14", features = ["tokio"] }
 proton-core = "0.1.1"
