@@ -1,4 +1,5 @@
 pub mod demo;
+mod html;
 mod model;
 mod proton;
 mod service;
@@ -9,7 +10,9 @@ pub use model::{
     ConversationDetail, ConversationPage, ConversationSummary, MailAddress, MailFolder,
     MailMessage, MailboxCounts, MailboxError, MessageBody,
 };
-pub use proton::{ProtonMailService, ResumeOutcome, SignInOutcome};
+#[cfg(test)]
+pub use proton::Reply;
+pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
 pub use service::{AuthError, LoginRequest};
 
 /// The source of mailbox data for an open mailbox.

@@ -1,4 +1,4 @@
-use iced::widget::{Column, button, column, container, text, text_input};
+use iced::widget::{Column, button, column, container, row, text, text_input};
 use iced::{Element, Fill};
 
 use crate::app::{App, AuthState, Message, SignInStep};
@@ -8,6 +8,10 @@ const CARD_PADDING: f32 = 32.0;
 const FIELD_SPACING: f32 = 18.0;
 
 pub(super) fn view(app: &App) -> Element<'_, Message> {
+    if matches!(app.auth_state(), AuthState::NeedsHumanVerification { .. }) {
+        return verification_view(app);
+    }
+
     let (step, busy) = match app.auth_state() {
         AuthState::SigningIn(step) => (*step, true),
         AuthState::NeedsTotp => (SignInStep::Totp, false),
@@ -53,6 +57,45 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         );
     }
 
+    centered_card(card)
+}
+
+fn verification_view(app: &App) -> Element<'_, Message> {
+    let mut card = column![
+        text("Ruston").size(36),
+        text("Verify you are human").size(24),
+        text(
+            "Proton wants to confirm this sign-in. Complete the check in your browser, \
+             then continue here."
+        ),
+        text("If no page opened, open it again or copy the link into your browser.").size(14),
+        row![
+            button(text("Open page")).on_press(Message::OpenVerificationPage),
+            button(text("Copy link")).on_press(Message::CopyVerificationLink),
+        ]
+        .spacing(8),
+    ]
+    .spacing(FIELD_SPACING);
+
+    if let Some(error) = app.error_message() {
+        card = card.push(text(error).size(14));
+    }
+
+    centered_card(
+        card.push(
+            button(text("I completed the verification"))
+                .width(Fill)
+                .on_press(Message::Submit),
+        )
+        .push(
+            button(text("Back"))
+                .width(Fill)
+                .on_press(Message::CancelChallenge),
+        ),
+    )
+}
+
+fn centered_card(card: Column<'_, Message>) -> Element<'_, Message> {
     container(
         container(card)
             .width(CARD_WIDTH)

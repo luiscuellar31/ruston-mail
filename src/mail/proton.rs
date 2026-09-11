@@ -1,18 +1,26 @@
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use futures::SinkExt;
+use futures::channel::{mpsc, oneshot};
 use proton_core::model::enums::label_ids;
-use proton_core::{Client, Conversation, Error, LabelCount, LoginOptions, Recipient};
+use proton_core::{
+    Client, Conversation, Error, HvChallenge, HvResolver, LabelCount, LoginOptions,
+    MessageMetadata, Recipient, TotpPrompt,
+};
 
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, LoginRequest,
-    MailAddress, MailFolder, MailboxCounts, MailboxError,
+    MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, html,
 };
 
 /// Conversations requested per page from Proton.
 pub const PAGE_SIZE: u32 = 50;
 
 const PROFILE: &str = "ruston";
-const TOTP_REQUIRED: &str = "account requires 2FA but no TOTP code was provided";
+const SIGN_IN_CANCELLED: &str = "sign-in cancelled";
+/// Proton's standalone human-verification page.
+const VERIFY_ORIGIN: &str = "https://verify.proton.me";
 const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox password";
 const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
 const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
@@ -28,9 +36,61 @@ pub enum ResumeOutcome {
 #[derive(Clone)]
 pub enum SignInOutcome {
     Authenticated(Arc<ProtonMailService>),
-    NeedsTotp,
     NeedsMailboxPassword,
+    /// The user abandoned a prompt.
+    Cancelled,
     Failed(AuthError),
+}
+
+/// Something the user must provide while a sign-in is still running.
+#[derive(Clone)]
+pub enum SignInPrompt {
+    /// Enter the current TOTP code.
+    Totp(Reply<String>),
+    /// Complete Proton's check at `url` in a browser, then confirm.
+    HumanVerification { url: String, done: Reply<()> },
+}
+
+impl SignInPrompt {
+    /// Abandons the prompt; the waiting sign-in ends as cancelled.
+    pub fn cancel(self) {
+        match self {
+            Self::Totp(reply) => reply.cancel(),
+            Self::HumanVerification { done, .. } => done.cancel(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum SignInEvent {
+    Prompt(SignInPrompt),
+    Finished(SignInOutcome),
+}
+
+/// A one-time answer to a sign-in prompt. Clones share one answer slot, so it
+/// can travel inside UI messages; only the first answer is delivered.
+#[derive(Clone)]
+pub struct Reply<T>(Arc<Mutex<Option<oneshot::Sender<T>>>>);
+
+impl<T> Reply<T> {
+    pub(crate) fn channel() -> (Self, oneshot::Receiver<T>) {
+        let (sender, receiver) = oneshot::channel();
+        (Self(Arc::new(Mutex::new(Some(sender)))), receiver)
+    }
+
+    pub fn send(&self, value: T) {
+        if let Some(sender) = self.take() {
+            let _ = sender.send(value);
+        }
+    }
+
+    pub fn cancel(&self) {
+        drop(self.take());
+    }
+
+    fn take(&self) -> Option<oneshot::Sender<T>> {
+        self.0.lock().ok()?.take()
+    }
 }
 
 pub struct ProtonMailService {
@@ -50,9 +110,13 @@ impl ProtonMailService {
         }
     }
 
-    pub async fn sign_in(request: LoginRequest) -> SignInOutcome {
+    /// Signs in with a single login attempt. When Proton asks for a TOTP code
+    /// or human verification, a prompt goes out through `events` and the login
+    /// waits for its answer. Always ends by sending `SignInEvent::Finished`.
+    pub async fn sign_in(request: LoginRequest, mut events: mpsc::Sender<SignInEvent>) {
         let has_totp = request.totp.is_some();
         let has_mailbox_password = request.mailbox_password.is_some();
+        let prompted_totp = Arc::new(AtomicBool::new(false));
         let options = LoginOptions {
             username: request.username,
             password: request.password,
@@ -61,14 +125,22 @@ impl ProtonMailService {
             profile: PROFILE.to_owned(),
             base_url: None,
             app_version: None,
-            user_agent: None,
-            hv: None,
+            user_agent: Some(user_agent()),
+            hv: Some(human_verification(events.clone())),
         };
+        let totp_prompt = totp_prompt(events.clone(), prompted_totp.clone());
 
-        match Client::login(options).await {
+        let outcome = match Client::login_with_totp_prompt(options, totp_prompt).await {
             Ok(client) => SignInOutcome::Authenticated(Arc::new(Self::from_client(client))),
-            Err(error) => map_sign_in_error(error, has_totp, has_mailbox_password),
-        }
+            Err(error) => {
+                let has_totp = has_totp || prompted_totp.load(Ordering::Relaxed);
+                map_sign_in_error(error, has_totp, has_mailbox_password)
+            }
+        };
+        let _ = events.send(SignInEvent::Finished(outcome)).await;
+        // The client keeps the verification resolver; closing the channel ends
+        // the sign-in stream and makes any later prompt fail as cancelled.
+        events.close_channel();
     }
 
     pub async fn logout(&self) -> Result<(), AuthError> {
@@ -111,10 +183,25 @@ impl ProtonMailService {
         Ok(map_counts(&counts))
     }
 
-    /// Pending mapping of proton-core's decrypted message bodies into
-    /// Ruston-owned reader models.
-    pub async fn conversation_detail(&self, _id: &str) -> Result<ConversationDetail, MailboxError> {
-        Err(MailboxError::Unavailable)
+    /// Fetches and decrypts a conversation for the reader, oldest message
+    /// first. proton-core already sanitizes HTML bodies; they are shown as
+    /// plain text until Ruston renders HTML.
+    pub async fn conversation_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
+        let (conversation, messages) = self
+            .client
+            .read_conversation(id)
+            .await
+            .map_err(map_mailbox_error)?;
+        let subject = conversation.subject.trim();
+
+        Ok(ConversationDetail {
+            id: id.to_owned(),
+            subject: (!subject.is_empty()).then(|| subject.to_owned()),
+            messages: messages
+                .into_iter()
+                .map(|message| mail_message(message.meta, message.body, &message.mime_type))
+                .collect(),
+        })
     }
 
     fn from_client(client: Client) -> Self {
@@ -122,6 +209,96 @@ impl ProtonMailService {
 
         Self { client, email }
     }
+}
+
+/// An honest client identity, like protonmail-cli's.
+fn user_agent() -> String {
+    format!(
+        "ruston/{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS
+    )
+}
+
+/// Asks for the TOTP code only when Proton requires it, after any human
+/// verification, so the code is still fresh.
+fn totp_prompt(events: mpsc::Sender<SignInEvent>, prompted: Arc<AtomicBool>) -> TotpPrompt {
+    Arc::new(move || {
+        let events = events.clone();
+        let prompted = prompted.clone();
+        Box::pin(async move {
+            let code = ask(events, SignInPrompt::Totp).await?;
+            prompted.store(true, Ordering::Relaxed);
+            Ok(code)
+        })
+    })
+}
+
+/// Proton Bridge's external-browser flow: the verification page attaches the
+/// solved captcha to the challenge, so the retry echoes the challenge token.
+fn human_verification(events: mpsc::Sender<SignInEvent>) -> HvResolver {
+    Arc::new(move |challenge: HvChallenge| {
+        let events = events.clone();
+        Box::pin(async move {
+            let captcha = challenge.methods.is_empty()
+                || challenge.methods.iter().any(|method| method == "captcha");
+            if !captcha {
+                return Err(Error::HumanVerification(challenge));
+            }
+            let url = verification_url(&challenge.web_url, &challenge.token);
+            ask(events, |done| SignInPrompt::HumanVerification { url, done }).await?;
+            Ok((challenge.token, "captcha".to_owned()))
+        })
+    })
+}
+
+/// Sends a prompt to the UI and waits for the answer.
+async fn ask<T: Send + 'static>(
+    mut events: mpsc::Sender<SignInEvent>,
+    prompt: impl FnOnce(Reply<T>) -> SignInPrompt,
+) -> proton_core::Result<T> {
+    let (reply, answer) = Reply::channel();
+    events
+        .send(SignInEvent::Prompt(prompt(reply)))
+        .await
+        .map_err(|_| cancelled())?;
+    answer.await.map_err(|_| cancelled())
+}
+
+fn cancelled() -> Error {
+    Error::Other(SIGN_IN_CANCELLED.to_owned())
+}
+
+/// The verification page for a challenge. The server's `WebUrl` host is kept
+/// only when it is an https `proton.me` host; anything else uses the default.
+fn verification_url(web_url: &str, token: &str) -> String {
+    let origin = web_url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .filter(|host| {
+            host.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+                && (*host == "proton.me" || host.ends_with(".proton.me"))
+        })
+        .map_or_else(
+            || VERIFY_ORIGIN.to_owned(),
+            |host| format!("https://{host}"),
+        );
+
+    format!("{origin}/?methods=captcha&token={}", percent_encode(token))
+}
+
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
 }
 
 fn label_id(folder: MailFolder) -> &'static str {
@@ -184,6 +361,28 @@ fn mail_address(person: &Recipient) -> MailAddress {
     }
 }
 
+fn mail_message(meta: MessageMetadata, body: String, mime_type: &str) -> MailMessage {
+    let body = if mime_type.to_ascii_lowercase().starts_with("text/html") {
+        html::to_plain_text(&body)
+    } else {
+        body
+    };
+
+    MailMessage {
+        sender: mail_address(&meta.sender),
+        recipients: meta
+            .to_list
+            .iter()
+            .chain(&meta.cc_list)
+            .chain(&meta.bcc_list)
+            .map(mail_address)
+            .collect(),
+        time: (meta.time > 0).then_some(meta.time),
+        body: MessageBody::PlainText(body),
+        id: meta.id,
+    }
+}
+
 fn display_names(people: &[Recipient]) -> Option<String> {
     let mut names = people.iter().filter_map(|person| {
         [person.name.trim(), person.address.trim()]
@@ -226,7 +425,7 @@ fn map_mailbox_error(error: Error) -> MailboxError {
 
 fn map_sign_in_error(error: Error, has_totp: bool, has_mailbox_password: bool) -> SignInOutcome {
     match error {
-        Error::Other(message) if message.contains(TOTP_REQUIRED) => SignInOutcome::NeedsTotp,
+        Error::Other(message) if message == SIGN_IN_CANCELLED => SignInOutcome::Cancelled,
         Error::Other(message) if message.contains(MAILBOX_PASSWORD_REQUIRED) => {
             SignInOutcome::NeedsMailboxPassword
         }
@@ -312,10 +511,80 @@ mod tests {
     }
 
     #[test]
-    fn missing_totp_has_a_structured_outcome() {
-        let outcome = map_sign_in_error(Error::Other(TOTP_REQUIRED.into()), false, false);
+    fn decrypted_messages_map_to_reader_models() {
+        let meta = MessageMetadata {
+            id: "message".into(),
+            sender: person("", "alex@example.com"),
+            to_list: vec![person("Demo", "demo@example.com")],
+            cc_list: vec![person("", "team@example.org")],
+            bcc_list: vec![person("", "archive@example.net")],
+            time: 1_700_000_000,
+            ..Default::default()
+        };
 
-        assert!(matches!(outcome, SignInOutcome::NeedsTotp));
+        let message = mail_message(meta, "<p>Hello &amp; welcome</p>".into(), "text/html");
+
+        assert_eq!(message.id, "message");
+        assert_eq!(message.sender.name, None);
+        assert_eq!(message.sender.address, "alex@example.com");
+        assert_eq!(message.recipients.len(), 3);
+        assert_eq!(message.time, Some(1_700_000_000));
+        assert_eq!(
+            message.body,
+            MessageBody::PlainText("Hello & welcome".into())
+        );
+    }
+
+    #[test]
+    fn plain_text_bodies_are_kept_verbatim() {
+        let body = "Line <one>\n\n  indented & raw";
+
+        let message = mail_message(MessageMetadata::default(), body.into(), "text/plain");
+
+        assert_eq!(message.body, MessageBody::PlainText(body.into()));
+        assert_eq!(message.time, None);
+    }
+
+    #[test]
+    fn abandoned_prompt_is_a_cancelled_outcome() {
+        let outcome = map_sign_in_error(cancelled(), false, false);
+
+        assert!(matches!(outcome, SignInOutcome::Cancelled));
+    }
+
+    #[test]
+    fn verification_page_stays_on_proton() {
+        assert_eq!(
+            verification_url("", "a b/c"),
+            "https://verify.proton.me/?methods=captcha&token=a%20b%2Fc"
+        );
+        assert_eq!(
+            verification_url("https://verify-api.proton.me/x?y=1", "t"),
+            "https://verify-api.proton.me/?methods=captcha&token=t"
+        );
+        for untrusted in [
+            "http://verify.proton.me/",
+            "https://proton.me.example.com/",
+            "https://evil@verify.proton.me/",
+            "https://example.com/",
+        ] {
+            assert!(
+                verification_url(untrusted, "t").starts_with("https://verify.proton.me/?"),
+                "{untrusted}"
+            );
+        }
+    }
+
+    #[test]
+    fn replies_are_delivered_once_or_cancelled() {
+        let (reply, mut answer) = Reply::channel();
+        reply.clone().send(1);
+        reply.send(2);
+        assert_eq!(answer.try_recv(), Ok(Some(1)));
+
+        let (reply, mut answer) = Reply::<u8>::channel();
+        reply.cancel();
+        assert!(answer.try_recv().is_err());
     }
 
     #[test]

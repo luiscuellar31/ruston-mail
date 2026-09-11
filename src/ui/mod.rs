@@ -28,7 +28,8 @@ fn view(app: &App) -> Element<'_, Message> {
         AuthState::SignedOut
         | AuthState::SigningIn(_)
         | AuthState::NeedsTotp
-        | AuthState::NeedsMailboxPassword => login::view(app),
+        | AuthState::NeedsMailboxPassword
+        | AuthState::NeedsHumanVerification { .. } => login::view(app),
         AuthState::Authenticated { email } => authenticated_view(app, email.as_deref(), false),
         AuthState::SigningOut => authenticated_view(app, None, true),
     }

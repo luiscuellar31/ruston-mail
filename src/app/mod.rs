@@ -9,8 +9,8 @@ use iced::widget::pane_grid;
 
 use crate::mail::{
     AuthError, ConversationDetail, ConversationPage, LoginRequest, MailBackend, MailFolder,
-    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInOutcome,
-    demo::DemoMailbox,
+    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome,
+    SignInPrompt, demo::DemoMailbox,
 };
 
 pub use layout::{DIVIDER_GRAB, DIVIDER_WIDTH, MIN_PANEL_WIDTH, Panel};
@@ -32,7 +32,13 @@ pub enum AuthState {
     SigningIn(SignInStep),
     NeedsTotp,
     NeedsMailboxPassword,
-    Authenticated { email: Option<String> },
+    /// Waiting for the user to finish Proton's check in the browser.
+    NeedsHumanVerification {
+        url: String,
+    },
+    Authenticated {
+        email: Option<String>,
+    },
     SigningOut,
 }
 
@@ -46,6 +52,9 @@ pub enum Message {
     CancelChallenge,
     SessionChecked(ResumeOutcome),
     SignInFinished(SignInOutcome),
+    SignInPrompt(SignInPrompt),
+    OpenVerificationPage,
+    CopyVerificationLink,
     Logout,
     LogoutFinished(Result<(), AuthError>),
     SelectFolder(MailFolder),
@@ -102,6 +111,8 @@ pub struct App {
     auth_state: AuthState,
     login_form: LoginForm,
     auth_error: Option<AuthError>,
+    /// The question a running sign-in is waiting on, if any.
+    pending_prompt: Option<SignInPrompt>,
     backend: Option<MailBackend>,
     mailbox: Option<Mailbox>,
     last_request: RequestId,
@@ -129,6 +140,7 @@ impl App {
             auth_state: AuthState::CheckingSession,
             login_form: LoginForm::default(),
             auth_error: None,
+            pending_prompt: None,
             backend: None,
             mailbox: None,
             last_request: 0,
@@ -157,6 +169,9 @@ impl App {
             Message::Submit => return self.sign_in(),
             Message::CancelChallenge => {
                 if !matches!(self.auth_state, AuthState::SigningIn(_)) {
+                    if let Some(prompt) = self.pending_prompt.take() {
+                        prompt.cancel();
+                    }
                     self.login_form.clear_sensitive();
                     self.auth_error = None;
                     self.auth_state = AuthState::SignedOut;
@@ -164,6 +179,17 @@ impl App {
             }
             Message::SessionChecked(outcome) => return self.finish_session_check(outcome),
             Message::SignInFinished(outcome) => return self.finish_sign_in(outcome),
+            Message::SignInPrompt(prompt) => return self.show_prompt(prompt),
+            Message::OpenVerificationPage => {
+                if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
+                    return open_verification_page(url.clone());
+                }
+            }
+            Message::CopyVerificationLink => {
+                if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
+                    return iced::clipboard::write(url.clone());
+                }
+            }
             Message::Logout => return self.logout(),
             Message::LogoutFinished(result) => self.finish_logout(result),
             Message::SelectFolder(folder) => return self.select_folder(folder),
@@ -268,6 +294,10 @@ impl App {
     }
 
     fn sign_in(&mut self) -> Task<Message> {
+        if let Some(prompt) = self.pending_prompt.take() {
+            return self.answer_prompt(prompt);
+        }
+
         let step = match self.auth_state {
             AuthState::SignedOut => SignInStep::Credentials,
             AuthState::NeedsTotp => SignInStep::Totp,
@@ -301,7 +331,55 @@ impl App {
         self.auth_error = None;
         self.auth_state = AuthState::SigningIn(step);
 
-        Task::perform(ProtonMailService::sign_in(request), Message::SignInFinished)
+        sign_in_task(request)
+    }
+
+    /// Shows a question from the running sign-in. Prompts that arrive when no
+    /// sign-in is running are cancelled.
+    fn show_prompt(&mut self, prompt: SignInPrompt) -> Task<Message> {
+        if !matches!(self.auth_state, AuthState::SigningIn(_)) {
+            prompt.cancel();
+            return Task::none();
+        }
+
+        self.auth_error = None;
+        let task = match &prompt {
+            SignInPrompt::Totp(_) => {
+                self.login_form.totp.clear();
+                self.auth_state = AuthState::NeedsTotp;
+                Task::none()
+            }
+            SignInPrompt::HumanVerification { url, .. } => {
+                self.auth_state = AuthState::NeedsHumanVerification { url: url.clone() };
+                open_verification_page(url.clone())
+            }
+        };
+        self.pending_prompt = Some(prompt);
+        task
+    }
+
+    fn answer_prompt(&mut self, prompt: SignInPrompt) -> Task<Message> {
+        match prompt {
+            SignInPrompt::Totp(reply) => {
+                let code = self.login_form.totp.trim().to_owned();
+                if code.is_empty() {
+                    self.auth_error = Some(AuthError::TotpRequired);
+                    self.pending_prompt = Some(SignInPrompt::Totp(reply));
+                    return Task::none();
+                }
+                // Codes expire; never keep one for a later attempt.
+                self.login_form.totp.clear();
+                reply.send(code);
+                self.auth_state = AuthState::SigningIn(SignInStep::Totp);
+            }
+            SignInPrompt::HumanVerification { done, .. } => {
+                done.send(());
+                self.auth_state = AuthState::SigningIn(SignInStep::Credentials);
+            }
+        }
+
+        self.auth_error = None;
+        Task::none()
     }
 
     fn finish_session_check(&mut self, outcome: ResumeOutcome) -> Task<Message> {
@@ -320,11 +398,8 @@ impl App {
     fn finish_sign_in(&mut self, outcome: SignInOutcome) -> Task<Message> {
         match outcome {
             SignInOutcome::Authenticated(service) => return self.set_authenticated(service),
-            SignInOutcome::NeedsTotp => {
-                self.login_form.totp.clear();
-                self.auth_error = None;
-                self.auth_state = AuthState::NeedsTotp;
-            }
+            // The user already left with Back.
+            SignInOutcome::Cancelled => {}
             SignInOutcome::NeedsMailboxPassword => {
                 self.login_form.mailbox_password.clear();
                 self.auth_error = None;
@@ -581,6 +656,43 @@ impl App {
             self.close_mailbox(Some(AuthError::SessionExpired));
         }
     }
+}
+
+/// Runs one sign-in, forwarding its prompts and final outcome as messages.
+fn sign_in_task(request: LoginRequest) -> Task<Message> {
+    Task::run(
+        iced::stream::channel(1, async move |events| {
+            ProtonMailService::sign_in(request, events).await;
+        }),
+        |event| match event {
+            SignInEvent::Prompt(prompt) => Message::SignInPrompt(prompt),
+            SignInEvent::Finished(outcome) => Message::SignInFinished(outcome),
+        },
+    )
+}
+
+// ponytail: launch failures are ignored; the page offers "Copy link" instead.
+fn open_verification_page(url: String) -> Task<Message> {
+    Task::future(async move {
+        let _ = open_url(&url);
+    })
+    .discard()
+}
+
+/// Opens `url` in the default browser without going through a shell.
+fn open_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+
+    command.arg(url).spawn().map(drop)
 }
 
 fn optional_trimmed(value: &str) -> Option<String> {
@@ -1133,19 +1245,78 @@ mod tests {
         assert_eq!(app.auth_error, None);
     }
 
-    #[test]
-    fn totp_requirement_opens_totp_step() {
+    fn signing_in_app() -> App {
         let mut app = App::new();
+        app.auth_state = AuthState::SigningIn(SignInStep::Credentials);
         app.login_form.username = "username sentinel".into();
         app.login_form.password = "password sentinel".into();
-        app.login_form.totp = "totp sentinel".into();
+        app
+    }
 
-        let _ = app.update(Message::SignInFinished(SignInOutcome::NeedsTotp));
+    #[test]
+    fn totp_prompt_is_answered_within_the_same_sign_in() {
+        let mut app = signing_in_app();
+        let (reply, mut answer) = crate::mail::Reply::channel();
 
+        let _ = app.update(Message::SignInPrompt(SignInPrompt::Totp(reply)));
         assert_eq!(app.auth_state, AuthState::NeedsTotp);
         assert_eq!(app.login_form.username, "username sentinel");
         assert_eq!(app.login_form.password, "password sentinel");
+
+        let _ = app.update(Message::Submit);
+        assert_eq!(app.auth_error, Some(AuthError::TotpRequired));
+        assert_eq!(answer.try_recv(), Ok(None));
+
+        let _ = app.update(Message::TotpChanged(" 123456 ".into()));
+        let _ = app.update(Message::Submit);
+        assert_eq!(answer.try_recv(), Ok(Some("123456".to_owned())));
+        assert_eq!(app.auth_state, AuthState::SigningIn(SignInStep::Totp));
         assert!(app.login_form.totp.is_empty());
+    }
+
+    #[test]
+    fn human_verification_waits_for_confirmation() {
+        let mut app = signing_in_app();
+        let (done, mut answer) = crate::mail::Reply::channel();
+        let url = "https://verify.proton.me/?methods=captcha&token=t".to_owned();
+
+        let _ = app.update(Message::SignInPrompt(SignInPrompt::HumanVerification {
+            url: url.clone(),
+            done,
+        }));
+        assert_eq!(app.auth_state, AuthState::NeedsHumanVerification { url });
+        assert_eq!(answer.try_recv(), Ok(None));
+
+        let _ = app.update(Message::Submit);
+        assert_eq!(answer.try_recv(), Ok(Some(())));
+        assert!(matches!(app.auth_state, AuthState::SigningIn(_)));
+    }
+
+    #[test]
+    fn going_back_cancels_the_pending_prompt() {
+        let mut app = signing_in_app();
+        let (reply, mut answer) = crate::mail::Reply::<String>::channel();
+        let _ = app.update(Message::SignInPrompt(SignInPrompt::Totp(reply)));
+
+        let _ = app.update(Message::CancelChallenge);
+        assert_eq!(app.auth_state, AuthState::SignedOut);
+        assert!(answer.try_recv().is_err());
+
+        let _ = app.update(Message::SignInFinished(SignInOutcome::Cancelled));
+        assert_eq!(app.auth_state, AuthState::SignedOut);
+        assert_eq!(app.auth_error, None);
+    }
+
+    #[test]
+    fn prompts_without_a_running_sign_in_are_cancelled() {
+        let mut app = App::new();
+        app.auth_state = AuthState::SignedOut;
+        let (reply, mut answer) = crate::mail::Reply::<String>::channel();
+
+        let _ = app.update(Message::SignInPrompt(SignInPrompt::Totp(reply)));
+
+        assert_eq!(app.auth_state, AuthState::SignedOut);
+        assert!(answer.try_recv().is_err());
     }
 
     #[test]
