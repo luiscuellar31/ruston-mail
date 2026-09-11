@@ -134,6 +134,28 @@ impl FromIterator<(MailFolder, u32)> for MailboxCounts {
     }
 }
 
+/// A change the user applies to the selected mailbox row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailAction {
+    Archive,
+    MoveToSpam,
+    MoveToTrash,
+    SetUnread(bool),
+    SetStarred(bool),
+}
+
+impl MailAction {
+    /// The folder a move sends the row to; `None` for flag changes.
+    pub fn destination(self) -> Option<MailFolder> {
+        match self {
+            Self::Archive => Some(MailFolder::Archive),
+            Self::MoveToSpam => Some(MailFolder::Spam),
+            Self::MoveToTrash => Some(MailFolder::Trash),
+            Self::SetUnread(_) | Self::SetStarred(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailboxError {
     Connection,
@@ -158,6 +180,15 @@ impl MailboxError {
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service => "Proton Mail could not load this conversation. Try again later.",
             Self::Unavailable => "Ruston could not load this conversation. Try again.",
+        }
+    }
+
+    pub fn action_message(self) -> &'static str {
+        match self {
+            Self::Connection => "Ruston could not connect to update this conversation.",
+            Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::Service => "Proton Mail could not update this conversation. Try again later.",
+            Self::Unavailable => "Ruston could not update this conversation. Try again.",
         }
     }
 }

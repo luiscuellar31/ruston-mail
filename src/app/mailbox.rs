@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
-    ConversationDetail, ConversationPage, ConversationSummary, MailFolder, MailboxCounts,
-    MailboxError, SummaryKind,
+    ConversationDetail, ConversationPage, ConversationSummary, MailAction, MailFolder,
+    MailboxCounts, MailboxError, SummaryKind,
 };
 
 /// Identifies an asynchronous mailbox request. Only the response matching the
@@ -24,6 +24,18 @@ pub struct ReaderRequest {
     pub id: RequestId,
     pub conversation_id: String,
     pub kind: SummaryKind,
+}
+
+/// An action sent to the backend for one row, remembered so only its own
+/// response is applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionRequest {
+    pub id: RequestId,
+    pub row_id: String,
+    pub kind: SummaryKind,
+    /// The folder the action was started from.
+    pub folder: MailFolder,
+    pub action: MailAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +60,8 @@ pub struct Mailbox {
     counts_request: Option<RequestId>,
     reader: ReaderState,
     search_query: String,
+    action_request: Option<ActionRequest>,
+    action_error: Option<MailboxError>,
 }
 
 impl Mailbox {
@@ -69,6 +83,8 @@ impl Mailbox {
             counts_request: Some(counts_request),
             reader: ReaderState::Empty,
             search_query: String::new(),
+            action_request: None,
+            action_error: None,
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -146,6 +162,14 @@ impl Mailbox {
         &self.reader
     }
 
+    pub fn action_pending(&self) -> bool {
+        self.action_request.is_some()
+    }
+
+    pub fn action_error(&self) -> Option<MailboxError> {
+        self.action_error
+    }
+
     pub fn is_busy(&self) -> bool {
         matches!(
             self.status,
@@ -167,6 +191,7 @@ impl Mailbox {
             .visible_conversations()
             .find(|conversation| conversation.id == conversation_id)?
             .kind;
+        self.action_error = None;
 
         let request = ReaderRequest {
             id: request,
@@ -251,6 +276,95 @@ impl Mailbox {
         }
     }
 
+    /// Starts an action on the selected row. Only one action runs at a time,
+    /// and none while the list itself is loading.
+    pub fn start_action(
+        &mut self,
+        action: MailAction,
+        request: RequestId,
+    ) -> Option<ActionRequest> {
+        if self.is_busy() || self.action_request.is_some() {
+            return None;
+        }
+        let (row_id, kind) = self
+            .selected_summary()
+            .map(|summary| (summary.id.clone(), summary.kind))?;
+
+        let request = ActionRequest {
+            id: request,
+            row_id,
+            kind,
+            folder: self.folder,
+            action,
+        };
+        self.action_error = None;
+        self.action_request = Some(request.clone());
+        Some(request)
+    }
+
+    /// Applies an action once the backend confirmed it. Returns the row to
+    /// open next when the selected one left the folder, or the error of an
+    /// accepted failed response. Stale responses change nothing.
+    pub fn finish_action(
+        &mut self,
+        request: &ActionRequest,
+        result: Result<(), MailboxError>,
+    ) -> Result<Option<String>, MailboxError> {
+        if self.action_request.as_ref() != Some(request) {
+            return Ok(None);
+        }
+        self.action_request = None;
+        if let Err(error) = result {
+            self.action_error = Some(error);
+            return Err(error);
+        }
+        // After a folder switch these rows no longer contain the acted-on row.
+        if request.folder != self.folder {
+            return Ok(None);
+        }
+
+        let leaves_folder = match request.action {
+            MailAction::SetStarred(starred) => !starred && request.folder == MailFolder::Starred,
+            MailAction::SetUnread(_) => false,
+            moved => moved.destination() != Some(request.folder),
+        };
+        if leaves_folder {
+            return Ok(self.remove_row(&request.row_id));
+        }
+
+        if let Some(row) = self
+            .conversations
+            .iter_mut()
+            .find(|row| row.id == request.row_id)
+        {
+            match request.action {
+                MailAction::SetUnread(unread) => row.unread = unread,
+                MailAction::SetStarred(starred) => row.starred = starred,
+                MailAction::Archive | MailAction::MoveToSpam | MailAction::MoveToTrash => {}
+            }
+        }
+        Ok(None)
+    }
+
+    /// Removes a row. When it was selected, clears the reader and returns the
+    /// visible row that took its place.
+    fn remove_row(&mut self, row_id: &str) -> Option<String> {
+        let was_selected = self.selected_conversation() == Some(row_id);
+        let index = self
+            .visible_conversations()
+            .position(|row| row.id == row_id);
+        self.conversations.retain(|row| row.id != row_id);
+        if !was_selected {
+            return None;
+        }
+
+        self.reader = ReaderState::Empty;
+        let last = self.visible_conversations().count().checked_sub(1)?;
+        self.visible_conversations()
+            .nth(index?.min(last))
+            .map(|row| row.id.clone())
+    }
+
     pub fn select_folder(&mut self, folder: MailFolder, request: RequestId) -> Option<PageRequest> {
         if folder == self.folder {
             return None;
@@ -261,6 +375,7 @@ impl Mailbox {
         self.next_page = 0;
         self.has_more = false;
         self.reader = ReaderState::Empty;
+        self.action_error = None;
         self.status = ListStatus::Loading(request);
         Some(self.page_request(request, 0))
     }
@@ -1006,6 +1121,133 @@ mod tests {
             .collect();
         assert_eq!(visible, ["m1", "m2"]);
         assert_eq!(mailbox.counts(), Some(&counts));
+    }
+
+    fn selected_in(folder: MailFolder, ids: &[&str], selected: &str) -> Mailbox {
+        let (mut mailbox, inbox) = open();
+        let request = if folder == MailFolder::Inbox {
+            inbox.id
+        } else {
+            mailbox.select_folder(folder, 80).unwrap().id
+        };
+        mailbox.finish_page(request, page(ids, ids.len() as u32));
+        let request = mailbox
+            .start_conversation_load(selected.into(), 82)
+            .unwrap();
+        mailbox.finish_conversation(&request, Ok(detail(selected, &["message"])));
+        mailbox
+    }
+
+    #[test]
+    fn one_action_runs_at_a_time_on_the_selected_row() {
+        let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+
+        let request = mailbox
+            .start_action(MailAction::SetStarred(true), 3)
+            .unwrap();
+
+        assert_eq!(request.row_id, "a");
+        assert_eq!(request.folder, MailFolder::Inbox);
+        assert!(mailbox.action_pending());
+        assert_eq!(mailbox.start_action(MailAction::Archive, 4), None);
+    }
+
+    #[test]
+    fn actions_wait_for_the_list_to_load() {
+        let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
+        mailbox.refresh(3);
+
+        assert_eq!(mailbox.start_action(MailAction::Archive, 4), None);
+        assert!(!mailbox.action_pending());
+    }
+
+    #[test]
+    fn confirmed_flag_changes_update_the_row() {
+        let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+
+        let unread = mailbox
+            .start_action(MailAction::SetUnread(true), 3)
+            .unwrap();
+        assert_eq!(mailbox.finish_action(&unread, Ok(())), Ok(None));
+        let star = mailbox
+            .start_action(MailAction::SetStarred(true), 4)
+            .unwrap();
+        assert_eq!(mailbox.finish_action(&star, Ok(())), Ok(None));
+
+        let row = mailbox.selected_summary().unwrap();
+        assert!(row.unread && row.starred);
+        assert!(!mailbox.action_pending());
+    }
+
+    #[test]
+    fn confirmed_moves_remove_the_row_and_open_the_next() {
+        let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b", "c"], "b");
+
+        let request = mailbox.start_action(MailAction::Archive, 3).unwrap();
+
+        assert_eq!(
+            mailbox.finish_action(&request, Ok(())),
+            Ok(Some("c".into()))
+        );
+        assert_eq!(ids(&mailbox), ["a", "c"]);
+        assert_eq!(mailbox.reader_state(), &ReaderState::Empty);
+    }
+
+    #[test]
+    fn moving_into_the_current_folder_keeps_the_row() {
+        let mut mailbox = selected_in(MailFolder::Archive, &["a"], "a");
+
+        let request = mailbox.start_action(MailAction::Archive, 3).unwrap();
+
+        assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+        assert_eq!(ids(&mailbox), ["a"]);
+    }
+
+    #[test]
+    fn unstarring_in_starred_removes_the_row() {
+        let mut mailbox = selected_in(MailFolder::Starred, &["a", "b"], "b");
+
+        let request = mailbox
+            .start_action(MailAction::SetStarred(false), 3)
+            .unwrap();
+
+        assert_eq!(
+            mailbox.finish_action(&request, Ok(())),
+            Ok(Some("a".into()))
+        );
+        assert_eq!(ids(&mailbox), ["a"]);
+    }
+
+    #[test]
+    fn failed_actions_keep_rows_and_report_the_error() {
+        let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+        let request = mailbox.start_action(MailAction::MoveToTrash, 3).unwrap();
+
+        let result = mailbox.finish_action(&request, Err(MailboxError::Service));
+
+        assert_eq!(result, Err(MailboxError::Service));
+        assert_eq!(ids(&mailbox), ["a", "b"]);
+        assert_eq!(mailbox.action_error(), Some(MailboxError::Service));
+        assert!(!mailbox.action_pending());
+    }
+
+    #[test]
+    fn stale_or_moved_action_responses_change_nothing() {
+        let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+        let request = mailbox.start_action(MailAction::Archive, 3).unwrap();
+        let stale = ActionRequest {
+            id: 99,
+            ..request.clone()
+        };
+
+        assert_eq!(mailbox.finish_action(&stale, Ok(())), Ok(None));
+        assert_eq!(ids(&mailbox), ["a", "b"]);
+        assert!(mailbox.action_pending());
+
+        mailbox.select_folder(MailFolder::Sent, 4);
+        mailbox.finish_page(4, page(&["a"], 1));
+        assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+        assert_eq!(ids(&mailbox), ["a"]);
     }
 
     #[test]

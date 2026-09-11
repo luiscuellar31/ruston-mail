@@ -10,6 +10,7 @@ use proton_core::{
     MessageMetadata, Recipient, TotpPrompt,
 };
 
+use super::MailAction;
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, LoginRequest,
@@ -31,6 +32,9 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 /// pending when it runs out keep Proton's grouping, so a slow or stuck
 /// request cannot hold the page back.
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
+
+/// Longest wait for a mailbox action such as archive or star.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 const PROFILE: &str = "ruston";
 const SIGN_IN_CANCELLED: &str = "sign-in cancelled";
@@ -271,6 +275,48 @@ impl ProtonMailService {
         })
     }
 
+    /// Applies a user action to one row: its whole conversation, or the single
+    /// message the list shows on its own. Moves relabel; nothing is deleted.
+    pub async fn apply_action(
+        &self,
+        kind: SummaryKind,
+        id: &str,
+        folder: MailFolder,
+        action: MailAction,
+    ) -> Result<(), MailboxError> {
+        let ids = [id.to_owned()];
+        let client = &self.client;
+        let call = async {
+            match (kind, action_call(action)) {
+                (SummaryKind::Conversation, ActionCall::Move(label)) => {
+                    client.move_conversations(&ids, label).await
+                }
+                (SummaryKind::Conversation, ActionCall::MarkRead(read)) => {
+                    client
+                        .mark_conversations_read(&ids, read, label_id(folder))
+                        .await
+                }
+                (SummaryKind::Conversation, ActionCall::Star(starred)) => {
+                    client.star_conversations(&ids, starred).await
+                }
+                (SummaryKind::Message, ActionCall::Move(label)) => {
+                    client.move_messages(&ids, label).await
+                }
+                (SummaryKind::Message, ActionCall::MarkRead(read)) => {
+                    client.mark_messages_read(&ids, read).await
+                }
+                (SummaryKind::Message, ActionCall::Star(starred)) => {
+                    client.star_messages(&ids, starred).await
+                }
+            }
+        };
+
+        tokio::time::timeout(ACTION_TIMEOUT, call)
+            .await
+            .map_err(|_| MailboxError::Connection)?
+            .map_err(map_mailbox_error)
+    }
+
     fn from_client(client: Client) -> Self {
         let email = client.primary_email().map(str::to_owned);
         let own_addresses = client
@@ -375,6 +421,25 @@ fn percent_encode(value: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The Proton operation behind a mailbox action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionCall {
+    /// Relabel into a system folder; never a permanent delete.
+    Move(&'static str),
+    MarkRead(bool),
+    Star(bool),
+}
+
+fn action_call(action: MailAction) -> ActionCall {
+    match action {
+        MailAction::Archive => ActionCall::Move(label_ids::ARCHIVE),
+        MailAction::MoveToSpam => ActionCall::Move(label_ids::SPAM),
+        MailAction::MoveToTrash => ActionCall::Move(label_ids::TRASH),
+        MailAction::SetUnread(unread) => ActionCall::MarkRead(!unread),
+        MailAction::SetStarred(starred) => ActionCall::Star(starred),
+    }
 }
 
 fn label_id(folder: MailFolder) -> &'static str {
@@ -819,6 +884,34 @@ mod tests {
 
     fn ids(rows: &[ConversationSummary]) -> Vec<&str> {
         rows.iter().map(|row| row.id.as_str()).collect()
+    }
+
+    #[test]
+    fn actions_map_to_relabels_and_flags_never_deletes() {
+        assert_eq!(
+            action_call(MailAction::Archive),
+            ActionCall::Move(label_ids::ARCHIVE)
+        );
+        assert_eq!(
+            action_call(MailAction::MoveToSpam),
+            ActionCall::Move(label_ids::SPAM)
+        );
+        assert_eq!(
+            action_call(MailAction::MoveToTrash),
+            ActionCall::Move(label_ids::TRASH)
+        );
+        assert_eq!(
+            action_call(MailAction::SetUnread(true)),
+            ActionCall::MarkRead(false)
+        );
+        assert_eq!(
+            action_call(MailAction::SetUnread(false)),
+            ActionCall::MarkRead(true)
+        );
+        assert_eq!(
+            action_call(MailAction::SetStarred(true)),
+            ActionCall::Star(true)
+        );
     }
 
     #[test]

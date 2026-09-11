@@ -8,7 +8,7 @@ mod threading;
 use std::sync::Arc;
 
 pub use model::{
-    ConversationDetail, ConversationPage, ConversationSummary, MailAddress, MailFolder,
+    ConversationDetail, ConversationPage, ConversationSummary, MailAction, MailAddress, MailFolder,
     MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
 };
 #[cfg(test)]

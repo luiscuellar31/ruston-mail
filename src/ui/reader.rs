@@ -22,7 +22,8 @@ pub(super) fn view(mailbox: &Mailbox, actions_available: bool) -> Element<'_, Me
             reader,
             reader.detail(),
             mailbox.selected_summary().filter(|_| actions_available),
-            !mailbox.is_busy(),
+            !mailbox.is_busy() && !mailbox.action_pending(),
+            mailbox.action_error(),
         ),
     };
 
@@ -54,6 +55,7 @@ fn conversation<'a>(
     detail: &'a ConversationDetail,
     summary: Option<&'a ConversationSummary>,
     actions_enabled: bool,
+    action_error: Option<crate::mail::MailboxError>,
 ) -> Element<'a, Message> {
     let mut header = column![
         text(detail.subject.as_deref().unwrap_or("(No subject)"))
@@ -66,6 +68,13 @@ fn conversation<'a>(
     .spacing(4);
     if let Some(summary) = summary {
         header = header.push(action_toolbar(summary, actions_enabled));
+        if let Some(error) = action_error {
+            header = header.push(
+                text(error.action_message())
+                    .size(DETAIL_SIZE)
+                    .style(text::danger),
+            );
+        }
     }
 
     let mut messages = Column::new().spacing(MESSAGE_SPACING);

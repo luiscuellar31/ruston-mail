@@ -8,13 +8,13 @@ use iced::Task;
 use iced::widget::pane_grid;
 
 use crate::mail::{
-    AuthError, ConversationDetail, ConversationPage, LoginRequest, MailBackend, MailFolder,
-    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome,
-    SignInPrompt, demo::DemoMailbox,
+    AuthError, ConversationDetail, ConversationPage, LoginRequest, MailAction, MailBackend,
+    MailFolder, MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInEvent,
+    SignInOutcome, SignInPrompt, demo::DemoMailbox,
 };
 
 pub use layout::{DIVIDER_GRAB, DIVIDER_WIDTH, MIN_PANEL_WIDTH, Panel};
-pub use mailbox::{ListStatus, Mailbox, ReaderRequest};
+pub use mailbox::{ActionRequest, ListStatus, Mailbox, ReaderRequest};
 use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
@@ -74,16 +74,8 @@ pub enum Message {
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
+    ActionFinished(ActionRequest, Result<(), MailboxError>),
     PanelResized(pane_grid::ResizeEvent),
-}
-
-#[derive(Clone, Copy)]
-enum DemoAction {
-    Archive,
-    MoveToSpam,
-    MoveToTrash,
-    SetUnread(bool),
-    SetStarred(bool),
 }
 
 #[derive(Default)]
@@ -205,24 +197,24 @@ impl App {
                     mailbox.toggle_message(&id);
                 }
             }
-            Message::ArchiveSelected => return self.apply_demo_action(DemoAction::Archive),
+            Message::ArchiveSelected => return self.apply_action(MailAction::Archive),
             Message::MoveSelectedToSpam => {
-                return self.apply_demo_action(DemoAction::MoveToSpam);
+                return self.apply_action(MailAction::MoveToSpam);
             }
             Message::MoveSelectedToTrash => {
-                return self.apply_demo_action(DemoAction::MoveToTrash);
+                return self.apply_action(MailAction::MoveToTrash);
             }
             Message::MarkSelectedRead => {
-                return self.apply_demo_action(DemoAction::SetUnread(false));
+                return self.apply_action(MailAction::SetUnread(false));
             }
             Message::MarkSelectedUnread => {
-                return self.apply_demo_action(DemoAction::SetUnread(true));
+                return self.apply_action(MailAction::SetUnread(true));
             }
             Message::StarSelected => {
-                return self.apply_demo_action(DemoAction::SetStarred(true));
+                return self.apply_action(MailAction::SetStarred(true));
             }
             Message::UnstarSelected => {
-                return self.apply_demo_action(DemoAction::SetStarred(false));
+                return self.apply_action(MailAction::SetStarred(false));
             }
             Message::RefreshMailbox => return self.refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),
@@ -247,6 +239,9 @@ impl App {
                     .and_then(|mailbox| mailbox.finish_counts(request, result));
                 self.handle_mailbox_error(error);
             }
+            Message::ActionFinished(request, result) => {
+                return self.finish_mail_action(request, result);
+            }
             Message::PanelResized(event) => self.panels.resize(event.split, event.ratio),
         }
 
@@ -266,7 +261,7 @@ impl App {
     }
 
     pub fn mailbox_actions_available(&self) -> bool {
-        self.is_demo()
+        self.backend.is_some()
     }
 
     pub fn panels(&self) -> &pane_grid::State<Panel> {
@@ -528,14 +523,23 @@ impl App {
         self.start_conversation_load(id)
     }
 
-    fn apply_demo_action(&mut self, action: DemoAction) -> Task<Message> {
-        let Some(MailBackend::Demo(service)) = self.backend.clone() else {
+    fn apply_action(&mut self, action: MailAction) -> Task<Message> {
+        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
             return Task::none();
-        };
+        }
+        match self.backend.clone() {
+            Some(MailBackend::Demo(service)) => self.apply_demo_action(&service, action),
+            Some(MailBackend::Proton(service)) => self.start_proton_action(service, action),
+            None => Task::none(),
+        }
+    }
+
+    /// Demo actions change local data at once and reload the folder snapshot.
+    fn apply_demo_action(&mut self, service: &DemoMailbox, action: MailAction) -> Task<Message> {
         let Some(mailbox) = self.mailbox.as_ref() else {
             return Task::none();
         };
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) || mailbox.is_busy() {
+        if mailbox.is_busy() {
             return Task::none();
         }
         let Some(id) = mailbox.selected_conversation().map(str::to_owned) else {
@@ -543,17 +547,78 @@ impl App {
         };
 
         let applied = match action {
-            DemoAction::Archive => service.archive(&id),
-            DemoAction::MoveToSpam => service.move_to_spam(&id),
-            DemoAction::MoveToTrash => service.move_to_trash(&id),
-            DemoAction::SetUnread(unread) => service.set_unread(&id, unread),
-            DemoAction::SetStarred(starred) => service.set_starred(&id, starred),
+            MailAction::Archive => service.archive(&id),
+            MailAction::MoveToSpam => service.move_to_spam(&id),
+            MailAction::MoveToTrash => service.move_to_trash(&id),
+            MailAction::SetUnread(unread) => service.set_unread(&id, unread),
+            MailAction::SetStarred(starred) => service.set_starred(&id, starred),
         };
-        if applied && let Some(next) = self.apply_demo_snapshot(&service) {
+        if applied && let Some(next) = self.apply_demo_snapshot(service) {
             return self.select_conversation(next);
         }
 
         Task::none()
+    }
+
+    /// Proton actions run asynchronously; the list changes only once Proton
+    /// confirms them.
+    fn start_proton_action(
+        &mut self,
+        service: Arc<ProtonMailService>,
+        action: MailAction,
+    ) -> Task<Message> {
+        let request = self.next_request();
+        let Some(request) = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.start_action(action, request))
+        else {
+            return Task::none();
+        };
+        let pending = request.clone();
+
+        Task::perform(
+            async move {
+                service
+                    .apply_action(
+                        pending.kind,
+                        &pending.row_id,
+                        pending.folder,
+                        pending.action,
+                    )
+                    .await
+            },
+            move |result| Message::ActionFinished(request.clone(), result),
+        )
+    }
+
+    fn finish_mail_action(
+        &mut self,
+        request: ActionRequest,
+        result: Result<(), MailboxError>,
+    ) -> Task<Message> {
+        let Some(outcome) = self
+            .mailbox
+            .as_mut()
+            .map(|mailbox| mailbox.finish_action(&request, result))
+        else {
+            return Task::none();
+        };
+        let next = match outcome {
+            Ok(next) => next,
+            Err(error) => {
+                self.handle_mailbox_error(Some(error));
+                return Task::none();
+            }
+        };
+
+        // Proton owns the folder counts; reload them after a change.
+        let counts_request = self.next_request();
+        let counts = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.refresh_counts(counts_request));
+        let open_next = next.map_or_else(Task::none, |id| self.select_conversation(id));
+
+        Task::batch([self.fetch_counts(counts), open_next])
     }
 
     fn start_conversation_load(&mut self, id: String) -> Task<Message> {
