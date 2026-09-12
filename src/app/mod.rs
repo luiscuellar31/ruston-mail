@@ -816,10 +816,14 @@ impl App {
     }
 
     /// Drops the backend and all mailbox data and returns to the login screen.
+    /// Everything the last session put on screen goes with it: what comes
+    /// back is a sign-in, and after it a mailbox, not whatever was open when
+    /// the session ended.
     fn close_mailbox(&mut self, error: Option<AuthError>) {
         self.backend = None;
         self.mailbox = None;
         self.pending_link = None;
+        self.showing_settings = false;
         self.login_form.clear_all();
         self.auth_error = error;
         self.auth_state = AuthState::SignedOut;
@@ -1532,6 +1536,18 @@ mod tests {
             text: None,
             repeat: false,
         }));
+    }
+
+    #[test]
+    fn signing_out_from_the_settings_page_comes_back_to_the_mailbox() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::ShowSettings(true));
+
+        let _ = app.update(Message::Logout);
+
+        // Otherwise signing back in lands on the settings page again, with
+        // no sign that it was ever left open.
+        assert!(!app.showing_settings());
     }
 
     #[test]
