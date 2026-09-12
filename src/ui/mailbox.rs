@@ -5,6 +5,7 @@ use iced::widget::{
 };
 use iced::{Center, Element, Fill, Theme};
 
+use super::{DETAIL_SIZE, detail_text};
 use crate::app::{
     App, CONVERSATION_LIST, DIVIDER_GRAB, DIVIDER_WIDTH, ListStatus, MIN_PANEL_WIDTH, Mailbox,
     Message, Panel, SEARCH_INPUT, UndoMove,
@@ -13,7 +14,6 @@ use crate::mail::{ConversationSummary, MailFolder};
 
 pub(super) const PANE_PADDING: f32 = 16.0;
 pub(super) const SPACING: f32 = 8.0;
-pub(super) const DETAIL_SIZE: f32 = 12.0;
 const UNREAD_MARKER_WIDTH: f32 = 12.0;
 
 pub(super) fn view<'a>(
@@ -82,11 +82,7 @@ fn sidebar<'a>(
     .style(button::secondary)
     .on_press_maybe((!signing_out).then_some(Message::Logout));
 
-    let mut footer = column![
-        text(account).size(DETAIL_SIZE).style(text::secondary),
-        logout
-    ]
-    .spacing(SPACING);
+    let mut footer = column![detail_text(account), logout].spacing(SPACING);
     if let Some(error) = app.error_message() {
         footer = footer.push(text(error).size(DETAIL_SIZE).style(text::danger));
     }
@@ -164,11 +160,7 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
                 .spacing(SPACING),
             )
             // Search never reaches the server, so it says what it covers.
-            .push(
-                text(search_scope_label(mailbox.loaded_count()))
-                    .size(DETAIL_SIZE)
-                    .style(text::secondary),
-            );
+            .push(detail_text(search_scope_label(mailbox.loaded_count())));
     }
 
     let no_visible_conversations = mailbox.visible_conversations().next().is_none();

@@ -8,7 +8,8 @@ use iced::widget::{
 use iced::{Element, Fill, Font, Padding};
 
 use super::APP_FONT;
-use super::mailbox::{DETAIL_SIZE, PANE_PADDING, SPACING};
+use super::mailbox::{PANE_PADDING, SPACING};
+use super::{DETAIL_SIZE, detail_text};
 use crate::app::{ConversationReader, Mailbox, Message, PendingLink, READER_BODY, ReaderState};
 use crate::mail::{
     BlockKind, ConversationDetail, ConversationSummary, MailAction, MailAddress, MailFolder,
@@ -63,10 +64,7 @@ fn link_prompt(link: &PendingLink) -> Element<'_, Message> {
     container(
         column![
             text(format!("Open a link to {}?", link.target)).wrapping(Wrapping::WordOrGlyph),
-            text(link.url.as_str())
-                .size(DETAIL_SIZE)
-                .style(text::secondary)
-                .wrapping(Wrapping::WordOrGlyph),
+            detail_text(link.url.as_str()).wrapping(Wrapping::WordOrGlyph),
             row![
                 button(text("Open")).on_press(Message::OpenLink),
                 button(text("Copy link"))
@@ -118,9 +116,7 @@ fn conversation<'a>(
         text(detail.subject.as_deref().unwrap_or("(No subject)"))
             .size(SUBJECT_SIZE)
             .wrapping(Wrapping::WordOrGlyph),
-        text(message_count_label(detail.messages.len()))
-            .size(DETAIL_SIZE)
-            .style(text::secondary),
+        detail_text(message_count_label(detail.messages.len())),
     ]
     .spacing(4);
     if let Some(summary) = summary {
@@ -221,14 +217,9 @@ fn message_card<'a>(
         }
     } else {
         identity = identity.push(
-            container(
-                text(preview(&message.body))
-                    .size(DETAIL_SIZE)
-                    .style(text::secondary)
-                    .wrapping(Wrapping::None),
-            )
-            .width(Fill)
-            .clip(true),
+            container(detail_text(preview(&message.body)).wrapping(Wrapping::None))
+                .width(Fill)
+                .clip(true),
         );
     }
 
@@ -237,7 +228,7 @@ fn message_card<'a>(
         row![
             text(if expanded { "▾" } else { "▸" }).width(TOGGLE_WIDTH),
             identity.width(Fill),
-            text(time).size(DETAIL_SIZE).style(text::secondary),
+            detail_text(time),
         ]
         .spacing(SPACING),
     )
@@ -429,9 +420,7 @@ fn block(block: &RichBlock) -> Element<'_, Message> {
         .padding(SPACING)
         .style(container::rounded_box)
         .into(),
-        BlockKind::Image { description } => text(format!("[Image: {description}]"))
-            .size(DETAIL_SIZE)
-            .style(text::secondary)
+        BlockKind::Image { description } => detail_text(format!("[Image: {description}]"))
             .wrapping(Wrapping::WordOrGlyph)
             .into(),
         BlockKind::Rule => rule::horizontal(1).into(),
@@ -493,11 +482,7 @@ fn heading_size(level: u8) -> f32 {
 }
 
 fn detail_line<'a>(content: String) -> Element<'a, Message> {
-    text(content)
-        .size(DETAIL_SIZE)
-        .style(text::secondary)
-        .wrapping(Wrapping::WordOrGlyph)
-        .into()
+    detail_text(content).wrapping(Wrapping::WordOrGlyph).into()
 }
 
 /// Reports the files a message carries. Ruston Mail cannot open them yet, and

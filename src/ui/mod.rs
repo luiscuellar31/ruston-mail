@@ -3,11 +3,16 @@ mod mailbox;
 mod reader;
 mod selectable;
 
-use iced::widget::{column, container, text};
+use iced::widget::text::IntoFragment;
+use iced::widget::{Text, column, container, text};
 use iced::{Element, Fill, Font, Size, window};
 
 use crate::app::{App, AuthState, Message};
 use crate::mail::MailFolder;
+
+/// Size of the small print: times, counts, addresses and every other line
+/// that supports the one above it.
+pub(super) const DETAIL_SIZE: f32 = 12.0;
 
 const WINDOW_SIZE: Size = Size::new(1_100.0, 700.0);
 const MIN_WINDOW_SIZE: Size = Size::new(820.0, 480.0);
@@ -58,6 +63,12 @@ fn title_label(unread: Option<u32>, demo: bool) -> String {
         Some(unread) => format!("{name} ({unread})"),
         None => name.to_owned(),
     }
+}
+
+/// Small secondary text. Both panes share it so their detail lines cannot
+/// drift apart; callers still choose their own wrapping and width.
+pub(super) fn detail_text<'a>(content: impl IntoFragment<'a>) -> Text<'a> {
+    text(content).size(DETAIL_SIZE).style(text::secondary)
 }
 
 fn view(app: &App) -> Element<'_, Message> {
