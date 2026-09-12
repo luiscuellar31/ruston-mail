@@ -5,7 +5,7 @@
 //! sender cannot steer the write anywhere else, and an existing file is never
 //! overwritten.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Tried before giving up on a name, which only happens when a hundred files
 /// already share it.
@@ -50,11 +50,20 @@ fn safe_name(name: &str) -> String {
         .trim()
         .trim_start_matches('.');
 
-    if name.is_empty() {
-        "attachment".to_owned()
-    } else {
+    if is_plain_file_name(name) {
         name.to_owned()
+    } else {
+        "attachment".to_owned()
     }
+}
+
+/// Whether this is a name and nothing more. Stripping separators is not
+/// enough on its own: Windows reads `C:report.pdf` as a place on another
+/// drive, and joining it to the downloads folder does not bring it back.
+fn is_plain_file_name(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
 /// The first free name: `report.pdf`, then `report (2).pdf`, and so on. An
@@ -91,6 +100,33 @@ mod tests {
         assert_eq!(safe_name(""), "attachment");
         // An ordinary name is left exactly as the sender wrote it.
         assert_eq!(safe_name("Q3 report.pdf"), "Q3 report.pdf");
+
+        // Whatever the sender sends, what comes back is a name and nothing
+        // more, so joining it to the downloads folder cannot leave it.
+        for name in [
+            "../../etc/passwd",
+            "C:report.pdf",
+            r"C:\Windows\evil.exe",
+            r"\\server\share\file",
+            ".",
+            "..",
+            "/",
+        ] {
+            assert!(
+                is_plain_file_name(&safe_name(name)),
+                "{name} did not reduce to a plain file name"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_qualified_name_does_not_pass_for_a_file_name() {
+        // On Windows this is a path on drive C, not a file called `C:report`.
+        // Everywhere else it is an ordinary, if odd, name.
+        assert_eq!(is_plain_file_name("C:report.pdf"), !cfg!(windows));
+        assert!(is_plain_file_name("report.pdf"));
+        assert!(!is_plain_file_name(""));
+        assert!(!is_plain_file_name("."));
     }
 
     #[test]
