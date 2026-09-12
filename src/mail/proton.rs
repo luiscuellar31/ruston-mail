@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,16 +26,14 @@ pub const PAGE_SIZE: u32 = 50;
 /// a page loads.
 const METADATA_CONCURRENCY: usize = 4;
 
-/// Longest wait for the conversation list of a page.
-const LIST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest wait for any Proton request a view is waiting on. Without it a
+/// stuck call leaves the view loading forever, with no way back.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Time shared by all metadata inspections of one page. Conversations still
 /// pending when it runs out keep Proton's grouping, so a slow or stuck
 /// request cannot hold the page back.
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
-
-/// Longest wait for a mailbox action such as archive or star.
-const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 const PROFILE: &str = "ruston";
 const SIGN_IN_CANCELLED: &str = "sign-in cancelled";
@@ -180,14 +179,12 @@ impl ProtonMailService {
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
-        let listed = tokio::time::timeout(
-            LIST_TIMEOUT,
-            self.client
-                .list_conversations(label_id(folder), page, page_size, false),
-        )
-        .await
-        .map_err(|_| MailboxError::Connection)?;
-        let (total, conversations) = listed.map_err(map_mailbox_error)?;
+        let (total, conversations) =
+            timed(
+                self.client
+                    .list_conversations(label_id(folder), page, page_size, false),
+            )
+            .await?;
 
         let deadline = tokio::time::Instant::now() + INSPECTION_BUDGET;
         let rows: Vec<Vec<ConversationSummary>> = stream::iter(conversations)
@@ -229,24 +226,16 @@ impl ProtonMailService {
     }
 
     pub async fn conversation_counts(&self) -> Result<MailboxCounts, MailboxError> {
-        let counts = self
-            .client
-            .conversation_counts()
-            .await
-            .map_err(map_mailbox_error)?;
+        let counts = timed(self.client.conversation_counts()).await?;
 
         Ok(map_counts(&counts))
     }
 
     /// Fetches and decrypts a conversation for the reader, oldest message
-    /// first. proton-core already sanitizes HTML bodies; they are shown as
-    /// plain text until Ruston renders HTML.
+    /// first. proton-core sanitizes HTML bodies before Ruston Mail parses
+    /// them; nothing here runs scripts or loads remote content.
     pub async fn conversation_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
-        let (conversation, messages) = self
-            .client
-            .read_conversation(id)
-            .await
-            .map_err(map_mailbox_error)?;
+        let (conversation, messages) = timed(self.client.read_conversation(id)).await?;
         let subject = conversation.subject.trim();
 
         Ok(ConversationDetail {
@@ -261,11 +250,7 @@ impl ProtonMailService {
 
     /// Fetches and decrypts one message that the list shows on its own.
     pub async fn message_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
-        let message = self
-            .client
-            .read_message(id)
-            .await
-            .map_err(map_mailbox_error)?;
+        let message = timed(self.client.read_message(id)).await?;
         let subject = message.meta.subject.trim().to_owned();
 
         Ok(ConversationDetail {
@@ -311,10 +296,7 @@ impl ProtonMailService {
             }
         };
 
-        tokio::time::timeout(ACTION_TIMEOUT, call)
-            .await
-            .map_err(|_| MailboxError::Connection)?
-            .map_err(map_mailbox_error)
+        timed(call).await
     }
 
     fn from_client(client: Client) -> Self {
@@ -331,6 +313,15 @@ impl ProtonMailService {
             own_addresses,
         }
     }
+}
+
+/// Runs one Proton request under `REQUEST_TIMEOUT`. A call that outlives it
+/// fails as a connection error, which every view offers to retry.
+async fn timed<T>(call: impl Future<Output = proton_core::Result<T>>) -> Result<T, MailboxError> {
+    tokio::time::timeout(REQUEST_TIMEOUT, call)
+        .await
+        .map_err(|_| MailboxError::Connection)?
+        .map_err(map_mailbox_error)
 }
 
 /// An honest client identity, like protonmail-cli's.
