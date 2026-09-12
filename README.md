@@ -5,7 +5,8 @@ instead of a bundled browser. It is unofficial and not affiliated with Proton.
 
 This is early software. It reads mail; it does not write it yet. What it does
 do, it tries to do without surprises: it never loads remote images, never
-opens a link without telling you where it goes, and never deletes anything.
+deletes anything, and tells you where a link goes before opening it — that
+last one you can turn off, the other two are not up for negotiation.
 
 ## What it does today
 
@@ -13,14 +14,17 @@ You sign in with your Proton account, including a two-factor code and a
 separate mailbox password if you use one. The session is remembered, so the
 next launch goes straight to the mailbox.
 
-The mailbox shows the system folders with their unread counts, loads more
-conversations as you ask for them, and lets you filter what is already loaded
-by sender, subject or preview. The three panes can be dragged to whatever
-widths suit you.
+The mailbox shows the system folders with their unread counts and loads more
+conversations as you ask for them. Typing in the search field narrows what is
+already loaded, by sender, subject or preview; pressing Enter hands the same
+words to Proton, which searches every folder and the whole history and answers
+in one batch. Emptying the field brings the folder back. The three panes can be
+dragged to whatever widths suit you, and they stay that way next time.
 
-Opening a conversation marks it read and shows its messages oldest first, with
-the newest one expanded. HTML mail is drawn with real text rather than a web
-view: headings, lists, quotes, preformatted blocks. Quoted replies start folded
+Opening a conversation marks it read, unless you would rather it did not, and
+shows its messages oldest first, with the newest one expanded. HTML mail is
+drawn with real text rather than a web view: headings, lists, quotes,
+preformatted blocks. Quoted replies start folded
 so a long thread stays readable. Images are not downloaded — you get their
 description in place, which keeps the sender from learning you opened the mail.
 Plain text bodies can be selected and copied straight away; formatted ones have
@@ -32,14 +36,25 @@ appears when the mail came from a real folder, since Starred and Sent are not
 places anything can be returned to. Nothing is ever permanently deleted — a
 move is a move.
 
+A message that carries files lists them with their sizes, and each one can be
+saved to your downloads folder. Inline parts are left out: those belong to the
+body, which is why they are not offered as files.
+
+### Settings
+
+Two choices have behaviour behind them: whether opening mail marks it read, and
+whether a link is confirmed before it opens. Everything else worth keeping —
+the window size, the pane widths, the folder you left off in — is remembered on
+its own, with nothing to set.
+
 ### Keyboard
 
 | Key | What it does |
 | --- | --- |
 | `j` / `↓` | Open the next conversation |
 | `k` / `↑` | Open the previous one |
-| `Enter` | Open the selected conversation, or retry it after a failure |
-| `Esc` | Back out: the link prompt, then the search, then the reader |
+| `Enter` | Open the selected conversation, or retry a failed one. In the search field, search all mail |
+| `Esc` | Back out one layer: settings, link prompt, search, reader |
 | `Cmd`/`Ctrl` + `R` | Refresh the folder |
 | `Cmd`/`Ctrl` + `F` | Jump to the search field |
 
@@ -49,17 +64,23 @@ takes never reaches the mailbox.
 ## What it cannot do yet
 
 - Write mail. There is no compose, reply or forward.
-- Open attachments. It tells you a message carries files and how many, and
-  stops there.
 - Show custom folders and labels. Only Proton's system folders appear.
-- Search the server. Search reads the conversations already loaded, and says
-  so under the field, so load more if you are looking for something older.
+- Open an attachment where it sits. It saves the file; opening it is your
+  file manager's job.
+- Page through search results. Proton answers a search in one batch, so a very
+  common word may not reach as far back as you expect.
 
 ## Where your mail lives
 
 Session tokens go to the operating system's keychain, never to disk in the
 clear. Session metadata — which account, which profile — sits in the platform
-config directory.
+config directory, next to a `settings.json` holding the preferences above. A
+damaged or hand-edited settings file costs you your window size, nothing more:
+it falls back to the defaults rather than refusing to start.
+
+Saved attachments go to your downloads folder under the name the sender chose,
+reduced to a bare file name so nothing can be written elsewhere, and they never
+replace a file that is already there.
 
 Mail is not stored anywhere. `proton-core` can keep a local database of message
 metadata, but that belongs to its sync feature, which Ruston Mail does not use:
