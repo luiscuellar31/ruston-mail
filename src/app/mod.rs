@@ -460,7 +460,7 @@ impl App {
             self.login_form.username.trim().to_owned(),
             self.login_form.password.clone(),
             optional_trimmed(&self.login_form.totp),
-            optional_unmodified(&self.login_form.mailbox_password),
+            non_empty(&self.login_form.mailbox_password),
         );
         self.auth_error = None;
         self.auth_state = AuthState::SigningIn(step);
@@ -1057,7 +1057,9 @@ fn optional_trimmed(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-fn optional_unmodified(value: &str) -> Option<String> {
+/// Same rule as `mail::demo::non_empty`, kept under the same name on purpose:
+/// a mailbox password is taken exactly as typed, spaces included.
+fn non_empty(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
