@@ -824,6 +824,10 @@ impl App {
         self.mailbox = None;
         self.pending_link = None;
         self.showing_settings = false;
+        // These are one account's own names. The next sign-in may be someone
+        // else, and until their folders arrive the sidebar would be showing
+        // the previous account's.
+        self.folders.clear();
         self.login_form.clear_all();
         self.auth_error = error;
         self.auth_state = AuthState::SignedOut;
@@ -1536,6 +1540,22 @@ mod tests {
             text: None,
             repeat: false,
         }));
+    }
+
+    #[test]
+    fn signing_out_takes_the_account_folders_with_it() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::FoldersLoaded(Ok(vec![
+            Folder::custom("kZ9", "Invoices"),
+            Folder::label("wN2", "Receipts"),
+        ])));
+        assert_eq!(app.folders().len(), 2);
+
+        let _ = app.update(Message::Logout);
+
+        // The next sign-in can be a different account, and its sidebar must
+        // not open showing names that belong to the last one.
+        assert!(app.folders().is_empty());
     }
 
     #[test]
