@@ -163,8 +163,11 @@ impl ProtonMailService {
         events.close_channel();
     }
 
+    /// Revokes the session with Proton. A signing-out view has no way back,
+    /// so this is bound like every other call: a stuck request reports a
+    /// connection failure and leaves the mailbox open rather than hanging.
     pub async fn logout(&self) -> Result<(), AuthError> {
-        self.client.logout().await.map_err(map_error)
+        timed_with(self.client.logout(), AuthError::Connection, map_error).await
     }
 
     pub fn email(&self) -> Option<&str> {
@@ -406,10 +409,21 @@ impl ProtonMailService {
 /// Runs one Proton request under `REQUEST_TIMEOUT`. A call that outlives it
 /// fails as a connection error, which every view offers to retry.
 async fn timed<T>(call: impl Future<Output = proton_core::Result<T>>) -> Result<T, MailboxError> {
+    timed_with(call, MailboxError::Connection, map_mailbox_error).await
+}
+
+/// The bound itself, for calls that report something other than a mailbox
+/// error. Every call a view waits on goes through here: without it a stuck
+/// request leaves that view waiting with no way back.
+async fn timed_with<T, E>(
+    call: impl Future<Output = proton_core::Result<T>>,
+    timed_out: E,
+    failed: impl FnOnce(Error) -> E,
+) -> Result<T, E> {
     tokio::time::timeout(REQUEST_TIMEOUT, call)
         .await
-        .map_err(|_| MailboxError::Connection)?
-        .map_err(map_mailbox_error)
+        .map_err(|_| timed_out)?
+        .map_err(failed)
 }
 
 /// An honest client identity, like protonmail-cli's.
