@@ -690,6 +690,9 @@ impl Mailbox {
             MailAction::SetStarred(starred) => {
                 !starred && request.folder.system() == Some(MailFolder::Starred)
             }
+            // Taking a label away while reading that label's own view is the
+            // one way a label change empties a row out of the list.
+            MailAction::SetLabel { label, on } => !on && *label == request.folder,
             MailAction::SetUnread(_) => false,
             moved => moved.destination() != Some(&request.folder),
         };
@@ -707,8 +710,16 @@ impl Mailbox {
             match request.action {
                 MailAction::SetUnread(unread) => row.unread = unread,
                 MailAction::SetStarred(starred) => row.starred = starred,
-                MailAction::MoveTo(_) => {}
+                MailAction::MoveTo(_) | MailAction::SetLabel { .. } => {}
             }
+        }
+        // The reader shows which labels the open conversation carries, and it
+        // is the row that was just acted on.
+        if let (MailAction::SetLabel { label, on }, ReaderState::Loaded(reader)) =
+            (&request.action, &mut self.reader)
+            && reader.conversation_id() == request.row_id
+        {
+            reader.set_label(label, *on);
         }
         Ok(None)
     }
@@ -1050,6 +1061,7 @@ mod tests {
         ConversationDetail {
             id: id.to_owned(),
             subject: None,
+            labels: Vec::new(),
             messages: message_ids
                 .iter()
                 .enumerate()
@@ -1320,6 +1332,63 @@ mod tests {
     }
 
     #[test]
+    fn a_label_leaves_the_row_where_it_is() {
+        let receipts = Folder::label("wN2", "Receipts");
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+
+        let request = mailbox
+            .start_action(
+                MailAction::SetLabel {
+                    label: receipts.clone(),
+                    on: true,
+                },
+                4,
+            )
+            .unwrap();
+        assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+
+        // The row keeps its place in the Inbox, and the reader shows the
+        // label without loading the conversation again.
+        assert!(mailbox.has_row("a"));
+        assert!(
+            mailbox
+                .reader()
+                .expect("the conversation is still open")
+                .detail()
+                .carries(&receipts)
+        );
+        assert!(mailbox.undo().is_none());
+    }
+
+    #[test]
+    fn taking_a_label_away_inside_its_own_view_empties_the_row_out() {
+        let receipts = Folder::label("wN2", "Receipts");
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        let page_request = mailbox.select_folder(receipts.clone(), 2).unwrap();
+        mailbox.finish_page(page_request.id, page(&["r1", "r2"], 2));
+        load_detail(&mut mailbox, "r1", detail("r1", &["m1"]), 3);
+
+        let request = mailbox
+            .start_action(
+                MailAction::SetLabel {
+                    label: receipts,
+                    on: false,
+                },
+                4,
+            )
+            .unwrap();
+
+        // Nothing in this view carries the label any more, so reading moves
+        // on to the row that took its place.
+        assert_eq!(
+            mailbox.finish_action(&request, Ok(())),
+            Ok(Some("r2".into()))
+        );
+        assert!(!mailbox.has_row("r1"));
+    }
+
+    #[test]
     fn flags_and_labels_offer_nothing_to_undo() {
         // A flag change moves nothing.
         let mut mailbox = loaded_inbox(&["a"], 1);
@@ -1336,6 +1405,21 @@ mod tests {
         load_detail(&mut mailbox, "s1", detail("s1", &["m1"]), 5);
         let request = mailbox
             .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 6)
+            .unwrap();
+        let _ = mailbox.finish_action(&request, Ok(()));
+
+        assert!(mailbox.undo().is_none());
+
+        // A label the account made behaves the same: the row keeps the label
+        // and moves out of whatever folder it was really in, which this view
+        // never knew.
+        let page_request = mailbox
+            .select_folder(Folder::label("wN2", "Receipts"), 7)
+            .unwrap();
+        mailbox.finish_page(page_request.id, page(&["r1"], 1));
+        load_detail(&mut mailbox, "r1", detail("r1", &["m1"]), 8);
+        let request = mailbox
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 9)
             .unwrap();
         let _ = mailbox.finish_action(&request, Ok(()));
 

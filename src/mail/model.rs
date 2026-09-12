@@ -44,8 +44,19 @@ impl MailFolder {
     }
 }
 
+/// What a place the account made is: somewhere mail lives, or a name mail
+/// carries while living somewhere else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomKind {
+    /// A folder: mail is in it, and moving a row elsewhere takes it out.
+    #[default]
+    Folder,
+    /// A label: mail keeps its folder and carries this name as well.
+    Label,
+}
+
 /// A place mail can be listed from: one of Proton's system folders, or a
-/// folder the account owns.
+/// folder or label the account owns.
 ///
 /// The wire identifier lives in the Proton layer, not here: this type says
 /// which place is meant, and that layer says what to call it on the network.
@@ -58,11 +69,33 @@ pub enum Folder {
     Custom {
         id: String,
         name: String,
+        /// Missing from settings written before labels were listed, which
+        /// held folders only.
+        #[serde(default)]
+        kind: CustomKind,
     },
 }
 
 impl Folder {
     pub const INBOX: Self = Self::System(MailFolder::Inbox);
+
+    /// A folder the account made.
+    pub fn custom(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::Custom {
+            id: id.into(),
+            name: name.into(),
+            kind: CustomKind::Folder,
+        }
+    }
+
+    /// A label the account made.
+    pub fn label(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::Custom {
+            id: id.into(),
+            name: name.into(),
+            kind: CustomKind::Label,
+        }
+    }
 
     pub fn name(&self) -> &str {
         match self {
@@ -80,10 +113,31 @@ impl Folder {
         }
     }
 
+    /// What Proton calls a place the account made. Proton's own folders are
+    /// named by the Proton layer instead, so this is `None` for them.
+    pub fn custom_id(&self) -> Option<&str> {
+        match self {
+            Self::System(_) => None,
+            Self::Custom { id, .. } => Some(id),
+        }
+    }
+
+    /// What kind of place the account made this one as; `None` for Proton's
+    /// own folders.
+    pub fn kind(&self) -> Option<CustomKind> {
+        match self {
+            Self::System(_) => None,
+            Self::Custom { kind, .. } => Some(*kind),
+        }
+    }
+
     /// Whether mail actually lives here, so a row can be moved back into it.
-    /// A folder the account made is always a real place.
+    /// A label is a name mail carries, not a place it sits in.
     pub fn is_location(&self) -> bool {
-        self.system().is_none_or(MailFolder::is_location)
+        match self {
+            Self::System(folder) => folder.is_location(),
+            Self::Custom { kind, .. } => *kind == CustomKind::Folder,
+        }
     }
 }
 
@@ -288,6 +342,31 @@ pub struct ConversationDetail {
     pub id: String,
     pub subject: Option<String>,
     pub messages: Vec<MailMessage>,
+    /// What Proton says this conversation is filed and labelled under. The
+    /// account's own name for each one lives in the folder list, so only the
+    /// identifiers are kept here.
+    pub labels: Vec<String>,
+}
+
+impl ConversationDetail {
+    /// Whether the conversation carries a label the account made.
+    pub fn carries(&self, label: &Folder) -> bool {
+        label
+            .custom_id()
+            .is_some_and(|id| self.labels.iter().any(|carried| carried == id))
+    }
+
+    /// Records a label the conversation was just given or had taken away, so
+    /// the reader shows the change without asking the server again.
+    pub fn set_label(&mut self, label: &Folder, on: bool) {
+        let Some(id) = label.custom_id() else {
+            return;
+        };
+        self.labels.retain(|carried| carried != id);
+        if on {
+            self.labels.push(id.to_owned());
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -326,6 +405,12 @@ pub enum MailAction {
     MoveTo(Folder),
     SetUnread(bool),
     SetStarred(bool),
+    /// Gives the row a label the account made, or takes it away. The row
+    /// stays in whatever folder it is already in.
+    SetLabel {
+        label: Folder,
+        on: bool,
+    },
 }
 
 impl MailAction {
@@ -333,7 +418,9 @@ impl MailAction {
     pub fn destination(&self) -> Option<&Folder> {
         match self {
             Self::MoveTo(folder) => Some(folder),
-            Self::SetUnread(_) | Self::SetStarred(_) => None,
+            // A label leaves the row where it is, so there is nothing to
+            // take back.
+            Self::SetUnread(_) | Self::SetStarred(_) | Self::SetLabel { .. } => None,
         }
     }
 }
@@ -390,10 +477,7 @@ mod tests {
 
     #[test]
     fn a_custom_folder_survives_a_round_trip() {
-        let folder = Folder::Custom {
-            id: "kZ9".to_owned(),
-            name: "Invoices".to_owned(),
-        };
+        let folder = Folder::custom("kZ9", "Invoices");
 
         let text = serde_json::to_string(&folder).unwrap();
         assert_eq!(serde_json::from_str::<Folder>(&text).unwrap(), folder);
@@ -405,6 +489,66 @@ mod tests {
         assert!(folder.is_location());
         assert!(!Folder::System(MailFolder::Starred).is_location());
         assert!(Folder::INBOX.is_location());
+    }
+
+    #[test]
+    fn a_label_survives_a_round_trip_and_is_not_a_location() {
+        let label = Folder::label("wN2", "Receipts");
+
+        let text = serde_json::to_string(&label).unwrap();
+        assert_eq!(serde_json::from_str::<Folder>(&text).unwrap(), label);
+
+        assert_eq!(label.name(), "Receipts");
+        assert_eq!(label.kind(), Some(CustomKind::Label));
+        // Mail keeps its folder while carrying a label, so a row that leaves
+        // the folder it sits in cannot be put back through the label view.
+        assert!(!label.is_location());
+    }
+
+    #[test]
+    fn a_folder_written_before_labels_were_listed_still_reads() {
+        // Files in the wild hold the id and name only.
+        let stored: Folder = serde_json::from_str(r#"{"id": "kZ9", "name": "Invoices"}"#).unwrap();
+
+        assert_eq!(stored, Folder::custom("kZ9", "Invoices"));
+    }
+
+    #[test]
+    fn a_conversation_remembers_the_labels_it_carries() {
+        let receipts = Folder::label("wN2", "Receipts");
+        let mut detail = ConversationDetail {
+            id: "c".to_owned(),
+            subject: None,
+            messages: Vec::new(),
+            labels: vec!["0".to_owned()],
+        };
+
+        assert!(!detail.carries(&receipts));
+        detail.set_label(&receipts, true);
+        assert!(detail.carries(&receipts));
+
+        // Giving the same label again records it once, not twice.
+        detail.set_label(&receipts, true);
+        assert_eq!(detail.labels.iter().filter(|id| *id == "wN2").count(), 1);
+
+        detail.set_label(&receipts, false);
+        assert!(!detail.carries(&receipts));
+        // Proton's own folders are named in the Proton layer, so asking about
+        // one here answers no rather than guessing at an identifier.
+        assert!(!detail.carries(&Folder::INBOX));
+        // Through all of it the folder the mail sits in is left alone.
+        assert_eq!(detail.labels, ["0"]);
+    }
+
+    #[test]
+    fn a_label_change_is_not_a_move() {
+        let action = MailAction::SetLabel {
+            label: Folder::label("wN2", "Receipts"),
+            on: true,
+        };
+
+        // Nothing left its folder, so there is nothing to take back.
+        assert_eq!(action.destination(), None);
     }
 
     fn spans(text: &str) -> Vec<RichSpan> {

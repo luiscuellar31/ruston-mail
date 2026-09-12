@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::mail::{ConversationDetail, MailboxError};
+use crate::mail::{ConversationDetail, Folder, MailboxError};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ReaderState {
@@ -69,6 +69,12 @@ impl ConversationReader {
         &self.detail
     }
 
+    /// Records a label the open conversation was just given or had taken
+    /// away, so the reader shows it without loading the thread again.
+    pub fn set_label(&mut self, label: &Folder, on: bool) {
+        self.detail.set_label(label, on);
+    }
+
     pub fn is_expanded(&self, message_id: &str) -> bool {
         self.expanded.contains(message_id)
     }
@@ -126,6 +132,7 @@ mod tests {
             id: "conversation".into(),
             subject: None,
             messages,
+            labels: Vec::new(),
         };
         ConversationReader::new(detail)
     }

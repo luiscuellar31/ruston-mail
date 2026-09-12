@@ -14,12 +14,18 @@ You sign in with your Proton account, including a two-factor code and a
 separate mailbox password if you use one. The session is remembered, so the
 next launch goes straight to the mailbox.
 
-The mailbox shows the system folders with their unread counts and loads more
+The mailbox shows Proton's own folders, the folders you made and, under a
+heading of their own, your labels, each with its unread count, and loads more
 conversations as you ask for them. Typing in the search field narrows what is
 already loaded, by sender, subject or preview; pressing Enter hands the same
 words to Proton, which searches every folder and the whole history and answers
 in one batch. Emptying the field brings the folder back. The three panes can be
 dragged to whatever widths suit you, and they stay that way next time.
+
+Your labels also sit above an open conversation: press one to give the thread
+that label, press it again to take it away. Either way the mail stays in
+whatever folder it is already in, which is what makes a label different from
+a move.
 
 Opening a conversation marks it read, unless you would rather it did not, and
 shows its messages oldest first, with the newest one expanded. HTML mail is
@@ -64,11 +70,12 @@ takes never reaches the mailbox.
 ## What it cannot do yet
 
 - Write mail. There is no compose, reply or forward.
-- Show custom folders and labels. Only Proton's system folders appear.
 - Open an attachment where it sits. It saves the file; opening it is your
   file manager's job.
 - Page through search results. Proton answers a search in one batch, so a very
   common word may not reach as far back as you expect.
+- Make, rename or delete a folder or a label. It shows and uses the ones your
+  account already has.
 
 ## Where your mail lives
 

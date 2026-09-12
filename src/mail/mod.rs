@@ -8,9 +8,9 @@ mod threading;
 use std::sync::Arc;
 
 pub use model::{
-    BlockKind, ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAction,
-    MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
-    RichBlock, RichBody, RichSpan, SummaryKind,
+    BlockKind, ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder,
+    MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError,
+    MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
 };
 #[cfg(test)]
 pub use proton::Reply;

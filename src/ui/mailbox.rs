@@ -10,7 +10,7 @@ use crate::app::{
     App, CONVERSATION_LIST, DIVIDER_GRAB, DIVIDER_WIDTH, ListStatus, MIN_PANEL_WIDTH, Mailbox,
     Message, Panel, SEARCH_INPUT, UndoMove,
 };
-use crate::mail::{ConversationSummary, Folder, MailFolder};
+use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
 
 pub(super) const PANE_PADDING: f32 = 16.0;
 pub(super) const SPACING: f32 = 8.0;
@@ -28,6 +28,7 @@ pub(super) fn view<'a>(
             Panel::Conversations => conversation_pane(mailbox),
             Panel::Reader => super::reader::view(
                 mailbox,
+                app.folders(),
                 app.mailbox_actions_available(),
                 app.pending_link(),
                 app.saved_attachment(),
@@ -64,14 +65,35 @@ fn sidebar<'a>(
     email: Option<&'a str>,
     signing_out: bool,
 ) -> Element<'a, Message> {
+    // Folders are places mail lives, so they follow Proton's own without a
+    // break. Labels are names mail carries, and get a heading of their own.
+    let places = |kind| {
+        app.folders()
+            .iter()
+            .filter(move |folder| folder.kind() == Some(kind))
+            .cloned()
+    };
     let folders = Column::with_children(
         MailFolder::ALL
             .into_iter()
             .map(Folder::System)
-            .chain(app.folders().iter().cloned())
+            .chain(places(CustomKind::Folder))
             .map(|folder| folder_button(mailbox, folder)),
     )
     .spacing(2);
+    let labels: Vec<Folder> = places(CustomKind::Label).collect();
+    let labels = (!labels.is_empty()).then(|| {
+        column![
+            detail_text("Labels"),
+            Column::with_children(
+                labels
+                    .into_iter()
+                    .map(|label| folder_button(mailbox, label)),
+            )
+            .spacing(2),
+        ]
+        .spacing(4)
+    });
 
     let (account, logout_label) = if app.is_demo() {
         ("Demo mode · fictional mail", "Exit demo")
@@ -97,19 +119,16 @@ fn sidebar<'a>(
         footer = footer.push(text(error).size(DETAIL_SIZE).style(text::danger));
     }
 
-    container(
-        column![
-            text("Ruston Mail").size(24),
-            folders,
-            space().height(Fill),
-            footer
-        ]
-        .spacing(16),
-    )
-    .width(Fill)
-    .height(Fill)
-    .padding(PANE_PADDING)
-    .into()
+    let mut body = column![text("Ruston Mail").size(24), folders].spacing(16);
+    if let Some(labels) = labels {
+        body = body.push(labels);
+    }
+
+    container(body.push(space().height(Fill)).push(footer))
+        .width(Fill)
+        .height(Fill)
+        .padding(PANE_PADDING)
+        .into()
 }
 
 fn folder_button(mailbox: &Mailbox, folder: Folder) -> Element<'_, Message> {

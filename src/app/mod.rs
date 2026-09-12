@@ -856,6 +856,8 @@ impl App {
             MailAction::MoveTo(folder) => service.move_to(&id, folder),
             MailAction::SetUnread(unread) => service.set_unread(&id, *unread),
             MailAction::SetStarred(starred) => service.set_starred(&id, *starred),
+            // The demo account owns no labels, so the reader offers none.
+            MailAction::SetLabel { .. } => false,
         };
         if applied {
             // Demo actions never reach `finish_action`, so the offer to take
@@ -1487,13 +1489,14 @@ mod tests {
         let mut app = loaded_demo_app();
         assert!(app.folders().is_empty(), "the demo account has none");
 
-        let invoices = Folder::Custom {
-            id: "kZ9".to_owned(),
-            name: "Invoices".to_owned(),
-        };
-        let _ = app.update(Message::FoldersLoaded(Ok(vec![invoices.clone()])));
+        let invoices = Folder::custom("kZ9", "Invoices");
+        let receipts = Folder::label("wN2", "Receipts");
+        let _ = app.update(Message::FoldersLoaded(Ok(vec![
+            invoices.clone(),
+            receipts.clone(),
+        ])));
 
-        assert_eq!(app.folders(), [invoices]);
+        assert_eq!(app.folders(), [invoices, receipts]);
     }
 
     #[test]

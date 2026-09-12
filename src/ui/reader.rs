@@ -15,8 +15,9 @@ use super::{DETAIL_SIZE, detail_text};
 use crate::app::{ConversationReader, Mailbox, Message, PendingLink, READER_BODY, ReaderState};
 use crate::downloads::SaveError;
 use crate::mail::{
-    BlockKind, ConversationDetail, ConversationSummary, Folder, MailAction, MailAddress,
-    MailAttachment, MailFolder, MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
+    BlockKind, ConversationDetail, ConversationSummary, CustomKind, Folder, MailAction,
+    MailAddress, MailAttachment, MailFolder, MailMessage, MessageBody, RichBlock, RichBody,
+    RichSpan,
 };
 
 const SUBJECT_SIZE: f32 = 22.0;
@@ -38,6 +39,7 @@ const READING_WIDTH: f32 = 680.0;
 
 pub(super) fn view<'a>(
     mailbox: &'a Mailbox,
+    places: &'a [Folder],
     actions_available: bool,
     pending_link: Option<&'a PendingLink>,
     saved_attachment: Option<Result<&'a Path, SaveError>>,
@@ -49,6 +51,7 @@ pub(super) fn view<'a>(
         ReaderState::Loaded(reader) => conversation(
             reader,
             reader.detail(),
+            places,
             mailbox.selected_summary().filter(|_| actions_available),
             !mailbox.is_busy() && !mailbox.action_pending(),
             mailbox.action_error(),
@@ -122,6 +125,7 @@ fn placeholder(message: &str) -> Element<'_, Message> {
 fn conversation<'a>(
     reader: &'a ConversationReader,
     detail: &'a ConversationDetail,
+    places: &'a [Folder],
     summary: Option<&'a ConversationSummary>,
     actions_enabled: bool,
     action_error: Option<crate::mail::MailboxError>,
@@ -136,6 +140,9 @@ fn conversation<'a>(
     .spacing(4);
     if let Some(summary) = summary {
         header = header.push(action_toolbar(summary, actions_enabled));
+        if let Some(labels) = label_toggles(detail, places, actions_enabled) {
+            header = header.push(labels);
+        }
         if let Some(error) = action_error {
             header = header.push(
                 text(error.action_message())
@@ -202,6 +209,58 @@ fn action_toolbar(summary: &ConversationSummary, enabled: bool) -> Element<'_, M
     .wrap()
     .vertical_spacing(4)
     .into()
+}
+
+/// The labels the account made, each showing whether the open conversation
+/// carries it and turning it on or off when pressed. `None` when the account
+/// has made no labels, so the row does not take up space for nothing.
+fn label_toggles<'a>(
+    detail: &ConversationDetail,
+    places: &'a [Folder],
+    enabled: bool,
+) -> Option<Element<'a, Message>> {
+    let labels: Vec<&Folder> = places
+        .iter()
+        .filter(|place| place.kind() == Some(CustomKind::Label))
+        .collect();
+    if labels.is_empty() {
+        return None;
+    }
+
+    Some(
+        Row::with_children(labels.into_iter().map(|label| {
+            let carried = detail.carries(label);
+            let action = MailAction::SetLabel {
+                label: label.clone(),
+                on: !carried,
+            };
+
+            label_toggle(label.name(), carried, action, enabled)
+        }))
+        .spacing(4)
+        .wrap()
+        .vertical_spacing(4)
+        .into(),
+    )
+}
+
+/// A label the conversation carries reads as pressed, so the row says what is
+/// on as much as what can be turned on.
+fn label_toggle(
+    name: &str,
+    carried: bool,
+    action: MailAction,
+    enabled: bool,
+) -> Element<'_, Message> {
+    button(text(name).size(DETAIL_SIZE))
+        .padding([4, 8])
+        .style(if carried {
+            button::primary
+        } else {
+            button::text
+        })
+        .on_press_maybe(enabled.then(|| Message::ApplyAction(action)))
+        .into()
 }
 
 fn action_button(label: &str, message: Message, enabled: bool) -> Element<'_, Message> {

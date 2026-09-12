@@ -226,12 +226,17 @@ impl ProtonMailService {
         inspected_rows(conversation, inspection, folder, &self.own_addresses)
     }
 
-    /// The folders the account made, so the sidebar can show more than
-    /// Proton's seven.
+    /// The folders and labels the account made, so the sidebar can show more
+    /// than Proton's seven. Both are places to list mail from; only a folder
+    /// is somewhere mail lives.
     pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
         let folders = timed(self.client.list_folders()).await?;
+        let labels = timed(self.client.list_labels()).await?;
 
-        Ok(mail_folders(folders))
+        Ok(custom_places(folders, Folder::custom)
+            .into_iter()
+            .chain(custom_places(labels, Folder::label))
+            .collect())
     }
 
     pub async fn conversation_counts(
@@ -249,10 +254,16 @@ impl ProtonMailService {
     pub async fn conversation_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
         let (conversation, messages) = timed(self.client.read_conversation(id)).await?;
         let subject = conversation.subject.trim();
+        let labels = conversation
+            .labels
+            .into_iter()
+            .map(|label| label.id)
+            .collect();
 
         Ok(ConversationDetail {
             id: id.to_owned(),
             subject: (!subject.is_empty()).then(|| subject.to_owned()),
+            labels,
             messages: messages
                 .into_iter()
                 .map(|message| {
@@ -271,10 +282,12 @@ impl ProtonMailService {
     pub async fn message_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
         let message = timed(self.client.read_message(id)).await?;
         let subject = message.meta.subject.trim().to_owned();
+        let labels = message.meta.label_ids.clone();
 
         Ok(ConversationDetail {
             id: id.to_owned(),
             subject: (!subject.is_empty()).then_some(subject),
+            labels,
             messages: vec![mail_message(
                 message.meta,
                 message.body,
@@ -351,6 +364,22 @@ impl ProtonMailService {
                 }
                 (SummaryKind::Message, ActionCall::Star(starred)) => {
                     client.star_messages(&ids, starred).await
+                }
+                (SummaryKind::Conversation, ActionCall::Label(label, on)) => {
+                    // Proton labels messages, not conversations, so a thread
+                    // is relabelled one message at a time. Asking for the
+                    // thread's messages costs one listing and no decryption.
+                    let thread: Vec<String> = client
+                        .conversation_messages(id)
+                        .await?
+                        .into_iter()
+                        .map(|message| message.id)
+                        .collect();
+
+                    set_label(client, &thread, label, on).await
+                }
+                (SummaryKind::Message, ActionCall::Label(label, on)) => {
+                    set_label(client, &ids, label, on).await
                 }
             }
         };
@@ -481,6 +510,26 @@ enum ActionCall<'a> {
     Move(&'a str),
     MarkRead(bool),
     Star(bool),
+    /// Add or remove a label the account made, leaving the folder alone.
+    Label(&'a str, bool),
+}
+
+/// Adds or removes one label across the messages given. An empty thread is
+/// nothing to relabel, and asking Proton to do it anyway would only fail.
+async fn set_label(
+    client: &Client,
+    ids: &[String],
+    label: &str,
+    on: bool,
+) -> Result<(), proton_core::Error> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    if on {
+        client.apply_label(ids, label).await
+    } else {
+        client.remove_label(ids, label).await
+    }
 }
 
 fn action_call(action: &MailAction) -> ActionCall<'_> {
@@ -488,6 +537,7 @@ fn action_call(action: &MailAction) -> ActionCall<'_> {
         MailAction::MoveTo(folder) => ActionCall::Move(label_id(folder)),
         MailAction::SetUnread(unread) => ActionCall::MarkRead(!unread),
         MailAction::SetStarred(starred) => ActionCall::Star(*starred),
+        MailAction::SetLabel { label, on } => ActionCall::Label(label_id(label), *on),
     }
 }
 
@@ -723,15 +773,13 @@ fn map_counts(counts: &[LabelCount], folders: &[Folder]) -> MailboxCounts {
         .collect()
 }
 
-/// The folders the account made, as the sidebar shows them. Proton returns
-/// labels and folders separately; only folders are places mail lives.
-fn mail_folders(labels: Vec<Label>) -> Vec<Folder> {
+/// The places the account made, as the sidebar shows them. Proton returns
+/// folders and labels from separate endpoints, and `make` says which of the
+/// two this batch is.
+fn custom_places(labels: Vec<Label>, make: fn(String, String) -> Folder) -> Vec<Folder> {
     labels
         .into_iter()
-        .map(|label| Folder::Custom {
-            id: label.id,
-            name: label.name,
-        })
+        .map(|label| make(label.id, label.name))
         .collect()
 }
 
@@ -1017,11 +1065,25 @@ mod tests {
         );
 
         // A folder the account made carries its own id straight through.
-        let custom = MailAction::MoveTo(Folder::Custom {
-            id: "kZ9".to_owned(),
-            name: "Invoices".to_owned(),
-        });
+        let custom = MailAction::MoveTo(Folder::custom("kZ9", "Invoices"));
         assert_eq!(action_call(&custom), ActionCall::Move("kZ9"));
+
+        // A label change names the label and says which way it goes.
+        let receipts = Folder::label("wN2", "Receipts");
+        assert_eq!(
+            action_call(&MailAction::SetLabel {
+                label: receipts.clone(),
+                on: true,
+            }),
+            ActionCall::Label("wN2", true)
+        );
+        assert_eq!(
+            action_call(&MailAction::SetLabel {
+                label: receipts,
+                on: false,
+            }),
+            ActionCall::Label("wN2", false)
+        );
         assert_eq!(
             action_call(&MailAction::SetUnread(true)),
             ActionCall::MarkRead(false)
@@ -1260,10 +1322,7 @@ mod tests {
             },
         ];
 
-        let invoices = Folder::Custom {
-            id: "custom".to_owned(),
-            name: "Invoices".to_owned(),
-        };
+        let invoices = Folder::custom("custom", "Invoices");
         let mapped = map_counts(&counts, std::slice::from_ref(&invoices));
 
         assert_eq!(mapped.unread(&Folder::INBOX), Some(4));

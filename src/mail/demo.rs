@@ -760,6 +760,8 @@ fn detail_from(fixtures: &[Fixture], id: &str, now: i64) -> Option<ConversationD
         id: id.to_owned(),
         subject: non_empty(fixture.subject),
         messages,
+        // The demo account owns no labels, so nothing carries one.
+        labels: Vec::new(),
     })
 }
 
