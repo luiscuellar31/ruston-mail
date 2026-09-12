@@ -165,6 +165,17 @@ impl DemoMailbox {
         Ok(list_from(&fixtures, folder, page, page_size, now))
     }
 
+    /// Searches every folder, the way the server does for a real account.
+    pub fn search(
+        &self,
+        query: &str,
+        limit: u32,
+        now: i64,
+    ) -> Result<ConversationPage, MailboxError> {
+        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        Ok(search_from(&fixtures, query, limit, now))
+    }
+
     pub fn counts(&self) -> MailboxCounts {
         let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
         counts_from(&fixtures)
@@ -635,6 +646,43 @@ fn fixtures() -> Vec<Fixture> {
     ]
 }
 
+/// Rows matching `query` from anywhere in the mailbox, newest first. Folders
+/// are ignored on purpose: a search that stopped at the open folder would not
+/// be a search.
+fn search_from(fixtures: &[Fixture], query: &str, limit: u32, now: i64) -> ConversationPage {
+    let query = query.trim().to_lowercase();
+    let mut matching: Vec<_> = fixtures
+        .iter()
+        .enumerate()
+        .filter(|(_, fixture)| matches_query(fixture, &query))
+        .collect();
+    matching.sort_by_key(|(_, fixture)| fixture.age);
+
+    let conversations: Vec<_> = matching
+        .into_iter()
+        .take(limit as usize)
+        .map(|(index, fixture)| summary(index, fixture, now))
+        .collect();
+
+    ConversationPage {
+        total: conversations.len() as u32,
+        conversations,
+    }
+}
+
+/// The same places the mailbox search looks: who wrote it, what it is about,
+/// and what it says.
+fn matches_query(fixture: &Fixture, query: &str) -> bool {
+    if query.is_empty() {
+        return false;
+    }
+
+    [fixture.subject, fixture.correspondents]
+        .into_iter()
+        .chain(fixture.bodies.iter().copied())
+        .any(|value| value.to_lowercase().contains(query))
+}
+
 fn in_folder(fixture: &Fixture, folder: MailFolder) -> bool {
     fixture.folder == folder || (folder == MailFolder::Starred && fixture.starred)
 }
@@ -854,6 +902,49 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_789_000_000;
+
+    #[test]
+    fn search_reaches_every_folder() {
+        let mailbox = DemoMailbox::new();
+        let inbox = mailbox
+            .list_conversations(MailFolder::Inbox, 0, PAGE_SIZE, NOW)
+            .unwrap();
+        // Taken from the data rather than written here, so the test survives
+        // any rewrite of the fictional mail.
+        let row = inbox
+            .conversations
+            .iter()
+            .find(|row| row.subject.is_some())
+            .expect("the demo inbox has mail with subjects");
+        let id = row.id.clone();
+        let word = row
+            .subject
+            .as_deref()
+            .unwrap()
+            .split_whitespace()
+            .find(|word| word.len() >= 4)
+            .expect("a subject has a word to search for")
+            .to_owned();
+
+        let found = mailbox.search(&word, PAGE_SIZE, NOW).unwrap();
+        assert!(found.conversations.iter().any(|found| found.id == id));
+
+        // The row keeps turning up once it has left the Inbox: a search that
+        // stopped at the open folder would not be a search.
+        assert!(mailbox.move_to(&id, MailFolder::Archive));
+        let found = mailbox.search(&word, PAGE_SIZE, NOW).unwrap();
+        assert!(found.conversations.iter().any(|found| found.id == id));
+
+        // An empty query matches nothing, and the limit is honoured.
+        assert!(
+            mailbox
+                .search("   ", PAGE_SIZE, NOW)
+                .unwrap()
+                .conversations
+                .is_empty()
+        );
+        assert!(mailbox.search(&word, 1, NOW).unwrap().conversations.len() <= 1);
+    }
 
     fn page(folder: MailFolder, page: u32) -> ConversationPage {
         DemoMailbox::new()

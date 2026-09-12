@@ -9,7 +9,7 @@ use proton_core::model::enums::{label_ids, message_flag};
 use proton_core::model::message::Attachment;
 use proton_core::{
     Client, Conversation, Error, HvChallenge, HvResolver, LabelCount, LoginOptions,
-    MessageMetadata, Recipient, TotpPrompt,
+    MessageMetadata, Recipient, SearchOpts, TotpPrompt,
 };
 
 use super::MailAction;
@@ -270,6 +270,31 @@ impl ProtonMailService {
                 &message.mime_type,
                 message.attachments,
             )],
+        })
+    }
+
+    /// Asks Proton for conversations matching `query`, across every folder.
+    ///
+    /// The server answers with one batch and no total, so the result is a
+    /// complete page: there is nothing more to load after it.
+    pub async fn search(&self, query: &str, limit: u32) -> Result<ConversationPage, MailboxError> {
+        let options = SearchOpts {
+            keyword: Some(query.to_owned()),
+            limit: Some(limit),
+            ..SearchOpts::default()
+        };
+        let found = timed(self.client.search_conversations(&options)).await?;
+
+        // Results span folders, so there is no one folder to read them from.
+        // Inbox is the perspective that describes incoming mail by its sender.
+        let conversations: Vec<ConversationSummary> = found
+            .into_iter()
+            .map(|conversation| summarize(conversation, MailFolder::Inbox))
+            .collect();
+
+        Ok(ConversationPage {
+            total: u32::try_from(conversations.len()).unwrap_or(u32::MAX),
+            conversations,
         })
     }
 

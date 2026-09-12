@@ -152,7 +152,8 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
 
     let input = text_input("Search mail…", mailbox.search_query())
         .id(SEARCH_INPUT)
-        .on_input(Message::SearchChanged);
+        .on_input(Message::SearchChanged)
+        .on_submit(Message::SearchSubmitted);
     let mut search = column![].spacing(4);
     if mailbox.search_query().is_empty() {
         search = search.push(input);
@@ -167,8 +168,10 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
                 ]
                 .spacing(SPACING),
             )
-            // Search never reaches the server, so it says what it covers.
-            .push(detail_text(search_scope_label(mailbox.loaded_count())));
+            .push(detail_text(search_scope_label(
+                mailbox.search_results(),
+                mailbox.loaded_count(),
+            )));
     }
 
     let no_visible_conversations = mailbox.visible_conversations().next().is_none();
@@ -184,13 +187,22 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
             .align_x(Center)
             .into(),
         ),
-        // Search only covers what is loaded, so the way out of an empty
-        // result is loading more. Saying so beats a dead end.
+        // The server has already looked everywhere, so there is nothing to
+        // suggest beyond trying different words.
+        (_, true) if mailbox.search_results().is_some() => centered(
+            text("Proton found no mail matching that.")
+                .style(text::secondary)
+                .wrapping(Wrapping::WordOrGlyph)
+                .into(),
+        ),
+        // Typing only narrows what is loaded, so the ways out are loading
+        // more or asking the server. Saying so beats a dead end.
         (_, true) if mailbox.is_searching() => {
             let mut empty = column![
                 text("No matches in the conversations loaded so far.")
                     .style(text::secondary)
-                    .wrapping(Wrapping::WordOrGlyph)
+                    .wrapping(Wrapping::WordOrGlyph),
+                detail_text("Press Enter to search all of your mail."),
             ]
             .spacing(SPACING)
             .align_x(Center);
@@ -330,11 +342,17 @@ fn undo_bar(undo: &UndoMove) -> Element<'_, Message> {
     .into()
 }
 
-/// Says how far a search reaches, since it only reads loaded conversations.
-fn search_scope_label(loaded: usize) -> String {
-    match loaded {
-        1 => "Searching the 1 conversation loaded so far.".to_owned(),
-        loaded => format!("Searching the {loaded} conversations loaded so far."),
+/// Says what the list is showing: results the server found, or the narrowing
+/// of what is loaded, which is all typing can reach on its own.
+fn search_scope_label(results: Option<&str>, loaded: usize) -> String {
+    match (results, loaded) {
+        (Some(query), _) => format!("Showing what the server found for “{query}”."),
+        (None, 1) => {
+            "Narrowing the 1 conversation loaded so far. Press Enter to search all mail.".to_owned()
+        }
+        (None, loaded) => format!(
+            "Narrowing the {loaded} conversations loaded so far. Press Enter to search all mail."
+        ),
     }
 }
 
@@ -391,15 +409,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn search_scope_says_how_far_it_reaches() {
-        assert_eq!(
-            search_scope_label(1),
-            "Searching the 1 conversation loaded so far."
-        );
-        assert_eq!(
-            search_scope_label(50),
-            "Searching the 50 conversations loaded so far."
-        );
+    fn search_scope_says_what_the_list_is_showing() {
+        // Typing only narrows what is loaded, and says how to reach further.
+        let narrowing = search_scope_label(None, 50);
+        assert!(narrowing.contains("50 conversations loaded so far"));
+        assert!(narrowing.contains("Enter"));
+        assert!(search_scope_label(None, 1).contains("1 conversation loaded"));
+
+        // Results came from the server, so there is nothing further to reach.
+        let found = search_scope_label(Some("invoice"), 50);
+        assert!(found.contains("invoice"));
+        assert!(!found.contains("Enter"));
     }
 
     #[test]

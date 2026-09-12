@@ -26,7 +26,9 @@ pub use layout::{
     CONVERSATION_LIST, DIVIDER_GRAB, DIVIDER_WIDTH, MIN_PANEL_WIDTH, Panel, READER_BODY,
     SEARCH_INPUT,
 };
-pub use mailbox::{ActionRequest, ListStatus, Mailbox, ReaderRequest, Step, UndoMove};
+pub use mailbox::{
+    ActionRequest, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
+};
 use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
@@ -77,6 +79,9 @@ pub enum Message {
     SelectConversation(String),
     RetryConversation,
     SearchChanged(String),
+    /// Asks the server for everything matching what was typed, across folders.
+    SearchSubmitted,
+    SearchLoaded(SearchRequest, Result<ConversationPage, MailboxError>),
     ToggleMessageExpanded(String),
     /// Folds or unfolds one quoted passage of a message.
     ToggleQuoteExpanded(String, usize),
@@ -328,6 +333,14 @@ impl App {
                 if let Some(mailbox) = self.active_mailbox() {
                     mailbox.set_search_query(query);
                 }
+            }
+            Message::SearchSubmitted => return self.start_search(),
+            Message::SearchLoaded(request, result) => {
+                let error = self
+                    .mailbox
+                    .as_mut()
+                    .and_then(|mailbox| mailbox.finish_search(&request, result));
+                self.handle_mailbox_error(error);
             }
             Message::ToggleMessageExpanded(id) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -1024,6 +1037,33 @@ impl App {
             .and_then(|mailbox| mailbox.select_folder(folder, request));
 
         self.fetch_page(page)
+    }
+
+    /// Runs what is typed in the search field against the server, which sees
+    /// every folder and every conversation, not just the loaded ones.
+    fn start_search(&mut self) -> Task<Message> {
+        let request = self.next_request();
+        let Some(request) = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.start_search(request))
+        else {
+            return Task::none();
+        };
+
+        self.fetch_search(request)
+    }
+
+    fn fetch_search(&self, request: SearchRequest) -> Task<Message> {
+        let Some(backend) = self.backend.clone() else {
+            return Task::none();
+        };
+        let query = request.query.clone();
+        let limit = backend.page_size();
+
+        Task::perform(
+            async move { backend.search(&query, limit).await },
+            move |result| Message::SearchLoaded(request.clone(), result),
+        )
     }
 
     fn refresh_mailbox(&mut self) -> Task<Message> {

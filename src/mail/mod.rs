@@ -56,6 +56,15 @@ impl MailBackend {
         }
     }
 
+    /// Searches every folder for `query`. Unlike a folder listing, the answer
+    /// is one complete batch: there are no further pages to ask for.
+    pub async fn search(&self, query: &str, limit: u32) -> Result<ConversationPage, MailboxError> {
+        match self {
+            Self::Proton(service) => service.search(query, limit).await,
+            Self::Demo(service) => service.search(query, limit, demo::now()),
+        }
+    }
+
     /// Fetches one attachment's contents. The demo mailbox carries no files.
     pub async fn download_attachment(
         &self,

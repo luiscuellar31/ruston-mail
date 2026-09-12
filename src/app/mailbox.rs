@@ -69,6 +69,20 @@ pub enum ListStatus {
     Failed(MailboxError),
 }
 
+/// One server search: what was asked, and what came back. Results replace the
+/// folder listing while they are shown, and never merge into it.
+struct SearchState {
+    query: String,
+    rows: Vec<ConversationSummary>,
+}
+
+/// A search sent to the backend, remembered so only its own answer is applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRequest {
+    pub id: RequestId,
+    pub query: String,
+}
+
 pub struct Mailbox {
     folder: MailFolder,
     status: ListStatus,
@@ -83,6 +97,10 @@ pub struct Mailbox {
     /// the text it renders, so a selectable body lives in an editor buffer.
     selectable: HashMap<String, text_editor::Content>,
     search_query: String,
+    /// Results of the last server search, while they are on screen.
+    search: Option<SearchState>,
+    /// The search in flight, so a late answer to an abandoned one is ignored.
+    search_request: Option<RequestId>,
     action_request: Option<ActionRequest>,
     action_error: Option<MailboxError>,
     /// The last move, while it can still be taken back.
@@ -112,6 +130,8 @@ impl Mailbox {
             reader: ReaderState::Empty,
             selectable: HashMap::new(),
             search_query: String::new(),
+            search: None,
+            search_request: None,
             action_request: None,
             action_error: None,
             undo: None,
@@ -135,11 +155,22 @@ impl Mailbox {
         &self.conversations
     }
 
+    /// The rows on screen: search results when a search is showing, otherwise
+    /// the loaded folder narrowed by what is typed in the search field.
     pub fn visible_conversations(&self) -> impl Iterator<Item = &ConversationSummary> {
-        let query = self.search_query.trim().to_lowercase();
-        self.conversations
-            .iter()
+        let (rows, query) = match &self.search {
+            // Results already match, so nothing is filtered out of them.
+            Some(search) => (&search.rows, String::new()),
+            None => (&self.conversations, self.search_query.trim().to_lowercase()),
+        };
+
+        rows.iter()
             .filter(move |conversation| matches_search(conversation, &query))
+    }
+
+    /// The query whose results are on screen, if any.
+    pub fn search_results(&self) -> Option<&str> {
+        self.search.as_ref().map(|search| search.query.as_str())
     }
 
     pub fn search_query(&self) -> &str {
@@ -150,8 +181,79 @@ impl Mailbox {
         !self.search_query.trim().is_empty()
     }
 
+    /// Sends the typed query to the backend, which looks past the loaded rows
+    /// and past the open folder. Returns `None` for an empty query, which
+    /// simply leaves the results behind.
+    pub fn start_search(&mut self, request: RequestId) -> Option<SearchRequest> {
+        let query = self.search_query.trim().to_owned();
+        if query.is_empty() {
+            self.clear_search();
+            return None;
+        }
+
+        self.search_request = Some(request);
+        self.status = ListStatus::Loading(request);
+
+        Some(SearchRequest { id: request, query })
+    }
+
+    /// Applies the answer to the search still in flight; anything else is a
+    /// leftover from a query the user has moved on from.
+    pub fn finish_search(
+        &mut self,
+        request: &SearchRequest,
+        result: Result<ConversationPage, MailboxError>,
+    ) -> Option<MailboxError> {
+        if self.search_request != Some(request.id) {
+            return None;
+        }
+        self.search_request = None;
+
+        match result {
+            Ok(page) => {
+                self.search = Some(SearchState {
+                    query: request.query.clone(),
+                    rows: page.conversations,
+                });
+                self.status = ListStatus::Loaded;
+                self.close_reader_if_hidden();
+                None
+            }
+            Err(error) => {
+                self.status = ListStatus::Failed(error);
+                Some(error)
+            }
+        }
+    }
+
+    /// Goes back to the folder listing, leaving any results behind.
+    pub fn clear_search(&mut self) {
+        self.search = None;
+        self.search_request = None;
+        if matches!(self.status, ListStatus::Failed(_)) {
+            self.status = ListStatus::Loaded;
+        }
+        self.close_reader_if_hidden();
+    }
+
+    /// Closes the reader when what it holds is no longer on screen.
+    fn close_reader_if_hidden(&mut self) {
+        let hidden = self.selected_conversation().is_some_and(|selected| {
+            !self
+                .visible_conversations()
+                .any(|conversation| conversation.id == selected)
+        });
+        if hidden {
+            self.set_reader(ReaderState::Empty);
+        }
+    }
+
     pub fn set_search_query(&mut self, query: String) {
         self.search_query = query;
+        // Emptying the field is how someone leaves the results behind.
+        if self.search_query.trim().is_empty() {
+            self.clear_search();
+        }
         let selected_is_hidden = self.selected_conversation().is_some_and(|selected| {
             !self
                 .visible_conversations()
@@ -170,9 +272,12 @@ impl Mailbox {
         self.has_more
     }
 
-    /// Whether the loaded list holds this row, hidden by a search or not.
+    /// Whether the rows on screen hold this one, hidden by typing or not.
     pub fn has_row(&self, row_id: &str) -> bool {
-        self.conversations.iter().any(|row| row.id == row_id)
+        match &self.search {
+            Some(search) => search.rows.iter().any(|row| row.id == row_id),
+            None => self.conversations.iter().any(|row| row.id == row_id),
+        }
     }
 
     /// How many conversations are loaded, which is all a search can look at.
@@ -644,6 +749,9 @@ impl Mailbox {
         self.action_error = None;
         // The offer belongs to the folder it was made in.
         self.undo = None;
+        // So do search results: a folder is a different question.
+        self.search = None;
+        self.search_request = None;
         self.status = ListStatus::Loading(request);
         Some(self.page_request(request, 0))
     }
@@ -664,7 +772,8 @@ impl Mailbox {
     }
 
     pub fn load_more(&mut self, request: RequestId) -> Option<PageRequest> {
-        if self.is_busy() || !self.has_more {
+        // A search answers in one batch, so there is no next page to ask for.
+        if self.is_busy() || !self.has_more || self.search.is_some() {
             return None;
         }
 
@@ -1110,6 +1219,56 @@ mod tests {
             conversations,
             total,
         })
+    }
+
+    #[test]
+    fn server_results_replace_the_folder_listing() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 120);
+        mailbox.set_search_query("invoice".into());
+
+        let request = mailbox.start_search(3).expect("a query reaches the server");
+        assert_eq!(request.query, "invoice");
+
+        // Results stand on their own: what came back is not narrowed again.
+        assert_eq!(mailbox.finish_search(&request, page(&["found"], 1)), None);
+        assert_eq!(visible_ids(&mailbox), ["found"]);
+        assert_eq!(mailbox.search_results(), Some("invoice"));
+
+        // The server answers in one batch, so there is no next page to ask
+        // for, even though the folder behind the results has more.
+        assert_eq!(mailbox.load_more(4), None);
+
+        // Emptying the field puts the folder back.
+        mailbox.set_search_query(String::new());
+        assert_eq!(visible_ids(&mailbox), ["a", "b"]);
+        assert_eq!(mailbox.search_results(), None);
+    }
+
+    #[test]
+    fn an_abandoned_search_never_lands() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        mailbox.set_search_query("invoice".into());
+        let abandoned = mailbox.start_search(3).unwrap();
+
+        // The user gave up before the answer came back.
+        mailbox.set_search_query(String::new());
+
+        assert_eq!(mailbox.finish_search(&abandoned, page(&["found"], 1)), None);
+        assert_eq!(visible_ids(&mailbox), ["a"]);
+        assert!(mailbox.search_results().is_none());
+    }
+
+    #[test]
+    fn an_empty_query_leaves_the_results_behind() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        mailbox.set_search_query("invoice".into());
+        let request = mailbox.start_search(3).unwrap();
+        let _ = mailbox.finish_search(&request, page(&["found"], 1));
+
+        mailbox.set_search_query("   ".into());
+
+        assert!(mailbox.start_search(4).is_none());
+        assert_eq!(visible_ids(&mailbox), ["a"]);
     }
 
     #[test]
