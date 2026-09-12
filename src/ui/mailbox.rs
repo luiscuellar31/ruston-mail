@@ -118,11 +118,14 @@ fn sidebar(
         {
             messages.push(Message::Logout);
         }
+        // Same frame and height as Sign out below it, outlined instead of
+        // filled: one button, plainly a different kind of action.
         if ui
             .add(
                 egui::Button::new("Settings")
-                    .frame(false)
-                    .min_size(egui::vec2(ui.available_width(), 30.0)),
+                    .min_size(egui::vec2(ui.available_width(), 32.0))
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::new(1.0, theme::ACCENT)),
             )
             .clicked()
         {
