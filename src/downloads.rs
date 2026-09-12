@@ -17,6 +17,10 @@ pub enum SaveError {
     NoFolder,
     /// The folder exists but the file could not be written.
     Failed,
+    /// Nothing was written because nothing arrived. It belongs here so that
+    /// one answer covers the whole of saving a file, from asking Proton for
+    /// it to putting it on disk.
+    NotFetched,
 }
 
 impl SaveError {
@@ -24,6 +28,7 @@ impl SaveError {
         match self {
             Self::NoFolder => "Ruston Mail could not find a downloads folder to save into.",
             Self::Failed => "Ruston Mail could not save the file.",
+            Self::NotFetched => "Ruston Mail could not download the file from Proton.",
         }
     }
 }

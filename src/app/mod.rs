@@ -263,7 +263,7 @@ impl App {
                     // Writing happens off the interface thread, where a large
                     // file cannot stall a redraw.
                     Ok((name, contents)) => downloads::save(&name, &contents),
-                    Err(_) => Err(SaveError::Failed),
+                    Err(_) => Err(SaveError::NotFetched),
                 }
             },
             Message::AttachmentSaved,
