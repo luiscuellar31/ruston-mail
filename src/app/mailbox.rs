@@ -531,6 +531,13 @@ impl Mailbox {
         }
     }
 
+    /// Shows or hides the labels the open conversation does not carry.
+    pub fn toggle_labels(&mut self) {
+        if let ReaderState::Loaded(reader) = &mut self.reader {
+            reader.toggle_labels();
+        }
+    }
+
     pub fn toggle_quote(&mut self, message_id: &str, index: usize) {
         if let ReaderState::Loaded(reader) = &mut self.reader {
             reader.toggle_quote(message_id, index);

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use chrono::{Local, TimeZone};
 use iced::font::{self, Weight};
-use iced::widget::text::{LineHeight, Span, Wrapping};
+use iced::widget::text::{IntoFragment, LineHeight, Span, Wrapping};
 use iced::widget::{
     Column, Row, button, column, container, rich_text, row, rule, scrollable, span, text,
     text_editor,
@@ -29,6 +29,9 @@ const BLOCK_SPACING: f32 = 10.0;
 const LIST_MARKER_WIDTH: f32 = 28.0;
 const LIST_INDENT: f32 = 18.0;
 const QUOTE_INDENT: f32 = 12.0;
+/// Labels shown at once. Past this the row would crowd out the mail it sits
+/// above, so the ones the conversation does not carry wait behind a button.
+const LABELS_SHOWN: usize = 8;
 /// Deeper quotes share this level's box so indentation stays readable.
 const MAX_QUOTE_DEPTH: u8 = 4;
 /// Bodies are set larger and looser than the interface around them, and stop
@@ -142,7 +145,9 @@ fn conversation<'a>(
     .spacing(4);
     if let Some(summary) = summary {
         header = header.push(action_toolbar(summary, actions_enabled));
-        if let Some(labels) = label_toggles(detail, places, actions_enabled) {
+        if let Some(labels) =
+            label_toggles(detail, places, actions_enabled, reader.is_showing_labels())
+        {
             header = header.push(labels);
         }
         if let Some(error) = action_error {
@@ -216,10 +221,15 @@ fn action_toolbar(summary: &ConversationSummary, enabled: bool) -> Element<'_, M
 /// The labels the account made, each showing whether the open conversation
 /// carries it and turning it on or off when pressed. `None` when the account
 /// has made no labels, so the row does not take up space for nothing.
+///
+/// An account with more labels than fit shows only the ones this
+/// conversation carries, and puts the rest behind a button: a wall of names
+/// above every conversation is worse than a press to reach them.
 fn label_toggles<'a>(
     detail: &ConversationDetail,
     places: &'a [Folder],
     enabled: bool,
+    showing_all: bool,
 ) -> Option<Element<'a, Message>> {
     let labels: Vec<&Folder> = places
         .iter()
@@ -229,25 +239,41 @@ fn label_toggles<'a>(
         return None;
     }
 
-    Some(
-        Row::with_children(labels.into_iter().map(|label| {
-            let carried = detail.carries(label);
-            let action = MailAction::SetLabel {
-                label: label.clone(),
-                on: !carried,
-            };
+    let crowded = labels.len() > LABELS_SHOWN;
+    let shown = labels
+        .iter()
+        .copied()
+        .filter(|label| shows_label(detail.carries(label), crowded, showing_all));
+    let mut row = Row::with_children(shown.map(|label| {
+        let carried = detail.carries(label);
+        let action = MailAction::SetLabel {
+            label: label.clone(),
+            on: !carried,
+        };
 
-            label_toggle(label.name(), carried, action, enabled)
-        }))
-        .spacing(4)
-        .wrap()
-        .vertical_spacing(4)
-        .into(),
-    )
+        label_toggle(label.name(), carried, action, enabled)
+    }));
+    if crowded {
+        let label = if showing_all {
+            "Fewer labels".to_owned()
+        } else {
+            format!("All {} labels", labels.len())
+        };
+        row = row.push(action_button(label, Message::ToggleLabelsShown, true));
+    }
+
+    Some(row.spacing(4).wrap().vertical_spacing(4).into())
 }
 
 /// A label the conversation carries reads as pressed, so the row says what is
 /// on as much as what can be turned on.
+/// Whether a label belongs in the row as it stands. A conversation always
+/// shows what it carries; the rest are there too until the account has more
+/// labels than the row can hold, and then only when they are asked for.
+fn shows_label(carried: bool, crowded: bool, showing_all: bool) -> bool {
+    carried || !crowded || showing_all
+}
+
 fn label_toggle(
     name: &str,
     carried: bool,
@@ -265,7 +291,11 @@ fn label_toggle(
         .into()
 }
 
-fn action_button(label: &str, message: Message, enabled: bool) -> Element<'_, Message> {
+fn action_button<'a>(
+    label: impl IntoFragment<'a>,
+    message: Message,
+    enabled: bool,
+) -> Element<'a, Message> {
     button(text(label).size(DETAIL_SIZE))
         .padding([4, 8])
         .style(button::secondary)
@@ -695,6 +725,21 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+
+    #[test]
+    fn a_crowded_label_row_keeps_only_what_the_conversation_carries() {
+        // Few enough labels: every one is on show, carried or not.
+        assert!(shows_label(false, false, false));
+        assert!(shows_label(true, false, false));
+
+        // Too many: what the conversation carries stays, the rest wait.
+        assert!(shows_label(true, true, false));
+        assert!(!shows_label(false, true, false));
+
+        // Until they are asked for, and then the whole set is there.
+        assert!(shows_label(false, true, true));
+        assert!(shows_label(true, true, true));
+    }
 
     fn address(name: Option<&str>, email: &str) -> MailAddress {
         MailAddress {

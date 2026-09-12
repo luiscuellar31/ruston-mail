@@ -85,6 +85,8 @@ pub enum Message {
     ToggleMessageExpanded(String),
     /// Folds or unfolds one quoted passage of a message.
     ToggleQuoteExpanded(String, usize),
+    /// Shows or hides the labels the open conversation does not carry.
+    ToggleLabelsShown,
     /// Shows one message as selectable text, or goes back to the formatted body.
     ToggleTextSelection(String),
     /// A click, drag or keyboard interaction inside one selectable body.
@@ -375,6 +377,11 @@ impl App {
             Message::ToggleQuoteExpanded(id, index) => {
                 if let Some(mailbox) = self.active_mailbox() {
                     mailbox.toggle_quote(&id, index);
+                }
+            }
+            Message::ToggleLabelsShown => {
+                if let Some(mailbox) = self.active_mailbox() {
+                    mailbox.toggle_labels();
                 }
             }
             Message::ToggleTextSelection(id) => {

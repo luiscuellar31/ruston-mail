@@ -41,6 +41,10 @@ pub struct ConversationReader {
     expanded: HashSet<String>,
     /// Unfolded quoted passages, as (message id, position in that message).
     expanded_quotes: HashSet<(String, usize)>,
+    /// Whether the labels the conversation does not carry are on show. It
+    /// belongs to the open conversation, so moving on puts the row back the
+    /// way it usually reads.
+    showing_labels: bool,
 }
 
 impl ConversationReader {
@@ -58,6 +62,7 @@ impl ConversationReader {
             detail,
             expanded,
             expanded_quotes: HashSet::new(),
+            showing_labels: false,
         }
     }
 
@@ -67,6 +72,14 @@ impl ConversationReader {
 
     pub fn detail(&self) -> &ConversationDetail {
         &self.detail
+    }
+
+    pub fn is_showing_labels(&self) -> bool {
+        self.showing_labels
+    }
+
+    pub fn toggle_labels(&mut self) {
+        self.showing_labels = !self.showing_labels;
     }
 
     /// Records a label the open conversation was just given or had taken
@@ -135,6 +148,22 @@ mod tests {
             labels: Vec::new(),
         };
         ConversationReader::new(detail)
+    }
+
+    #[test]
+    fn the_label_picker_belongs_to_the_open_conversation() {
+        let mut reader = reader(vec![message("a", 1)]);
+        assert!(!reader.is_showing_labels());
+
+        reader.toggle_labels();
+        assert!(reader.is_showing_labels());
+        reader.toggle_labels();
+        assert!(!reader.is_showing_labels());
+
+        // Moving on puts the row back the way it usually reads.
+        reader.toggle_labels();
+        let next = ConversationReader::new(reader.detail().clone());
+        assert!(!next.is_showing_labels());
     }
 
     fn order(reader: &ConversationReader) -> Vec<&str> {
