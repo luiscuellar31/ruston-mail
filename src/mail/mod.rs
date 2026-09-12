@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 pub use model::{
     BlockKind, ConversationDetail, ConversationPage, ConversationSummary, MailAction, MailAddress,
-    MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, RichBlock, RichBody,
-    RichSpan, SummaryKind,
+    MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, RichBlock,
+    RichBody, RichSpan, SummaryKind,
 };
 #[cfg(test)]
 pub use proton::Reply;
@@ -53,6 +53,18 @@ impl MailBackend {
         match self {
             Self::Proton(service) => service.conversation_counts().await,
             Self::Demo(service) => Ok(service.counts()),
+        }
+    }
+
+    /// Fetches one attachment's contents. The demo mailbox carries no files.
+    pub async fn download_attachment(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<(String, Vec<u8>), MailboxError> {
+        match self {
+            Self::Proton(service) => service.download_attachment(message_id, attachment_id).await,
+            Self::Demo(_) => Err(MailboxError::Unavailable),
         }
     }
 

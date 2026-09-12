@@ -2,6 +2,7 @@ mod layout;
 mod mailbox;
 mod reader;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use iced::keyboard::{self, Key, Modifiers};
@@ -9,6 +10,7 @@ use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::{pane_grid, text_editor};
 use iced::{Size, Subscription, Task, window};
 
+use crate::downloads::{self, SaveError};
 use crate::settings::{self, Settings};
 
 /// How far the window must change before its new size is worth storing.
@@ -99,6 +101,10 @@ pub enum Message {
     Keyboard(keyboard::Event),
     /// The window changed size, which is worth remembering for next time.
     WindowResized(Size),
+    /// Fetches one attachment and saves it, by message and attachment id.
+    SaveAttachment(String, String),
+    /// Where an attachment landed, or why it did not.
+    AttachmentSaved(Result<PathBuf, SaveError>),
     /// Opens or closes the settings page.
     ShowSettings(bool),
     /// Marks opened mail as read, or leaves it unread.
@@ -186,6 +192,8 @@ pub struct App {
     settings: Settings,
     /// Whether the settings page is covering the mailbox.
     showing_settings: bool,
+    /// What became of the last attachment someone asked to save.
+    saved_attachment: Option<Result<PathBuf, SaveError>>,
 }
 
 impl App {
@@ -215,7 +223,40 @@ impl App {
             panels: layout::panels(settings.panels),
             settings,
             showing_settings: false,
+            saved_attachment: None,
         }
+    }
+
+    /// Where the last saved attachment landed, or why it did not.
+    pub fn saved_attachment(&self) -> Option<Result<&Path, SaveError>> {
+        self.saved_attachment
+            .as_ref()
+            .map(|outcome| outcome.as_deref().map_err(|error| *error))
+    }
+
+    /// Fetches one attachment and writes it to the downloads folder. The
+    /// download is the slow half, so the reader says what happened afterwards
+    /// rather than blocking on it.
+    fn save_attachment(&mut self, message_id: String, attachment_id: String) -> Task<Message> {
+        let Some(backend) = self.backend.clone() else {
+            return Task::none();
+        };
+        self.saved_attachment = None;
+
+        Task::perform(
+            async move {
+                match backend
+                    .download_attachment(&message_id, &attachment_id)
+                    .await
+                {
+                    // Writing happens off the interface thread, where a large
+                    // file cannot stall a redraw.
+                    Ok((name, contents)) => downloads::save(&name, &contents),
+                    Err(_) => Err(SaveError::Failed),
+                }
+            },
+            Message::AttachmentSaved,
+        )
     }
 
     pub fn settings(&self) -> &Settings {
@@ -379,6 +420,10 @@ impl App {
                     });
                 }
             }
+            Message::SaveAttachment(message_id, attachment_id) => {
+                return self.save_attachment(message_id, attachment_id);
+            }
+            Message::AttachmentSaved(outcome) => self.saved_attachment = Some(outcome),
             Message::ShowSettings(showing) => self.showing_settings = showing,
             Message::SetMarkReadOnOpen(on) => {
                 self.remember(|settings| settings.mark_read_on_open = on);
@@ -970,6 +1015,7 @@ impl App {
 
     fn select_folder(&mut self, folder: MailFolder) -> Task<Message> {
         self.pending_link = None;
+        self.saved_attachment = None;
         // The folder someone left off in is the one they want on the next run.
         self.remember(|settings| settings.folder = folder);
         let request = self.next_request();

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use chrono::{Local, TimeZone};
 use iced::font::{self, Weight};
 use iced::widget::text::{LineHeight, Span, Wrapping};
@@ -11,9 +13,10 @@ use super::APP_FONT;
 use super::mailbox::{PANE_PADDING, SPACING};
 use super::{DETAIL_SIZE, detail_text};
 use crate::app::{ConversationReader, Mailbox, Message, PendingLink, READER_BODY, ReaderState};
+use crate::downloads::SaveError;
 use crate::mail::{
-    BlockKind, ConversationDetail, ConversationSummary, MailAction, MailAddress, MailFolder,
-    MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
+    BlockKind, ConversationDetail, ConversationSummary, MailAction, MailAddress, MailAttachment,
+    MailFolder, MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
 };
 
 const SUBJECT_SIZE: f32 = 22.0;
@@ -37,6 +40,7 @@ pub(super) fn view<'a>(
     mailbox: &'a Mailbox,
     actions_available: bool,
     pending_link: Option<&'a PendingLink>,
+    saved_attachment: Option<Result<&'a Path, SaveError>>,
 ) -> Element<'a, Message> {
     let content = match mailbox.reader_state() {
         ReaderState::Empty => placeholder("Select a conversation to read it."),
@@ -50,6 +54,17 @@ pub(super) fn view<'a>(
             mailbox.action_error(),
             mailbox,
         ),
+    };
+    let content = match saved_attachment {
+        Some(outcome) => column![
+            container(saved_attachment_line(outcome))
+                .width(Fill)
+                .padding([4, PANE_PADDING as u16]),
+            content
+        ]
+        .height(Fill)
+        .into(),
+        None => content,
     };
     let content = match pending_link {
         Some(link) => column![link_prompt(link), content].height(Fill).into(),
@@ -212,8 +227,8 @@ fn message_card<'a>(
             "To: {}",
             recipients_label(&message.recipients)
         )));
-        if let Some(label) = attachments_label(message.attachments) {
-            identity = identity.push(detail_line(label));
+        for attachment in &message.attachments {
+            identity = identity.push(attachment_row(&message.id, attachment));
         }
     } else {
         identity = identity.push(
@@ -485,15 +500,61 @@ fn detail_line<'a>(content: String) -> Element<'a, Message> {
     detail_text(content).wrapping(Wrapping::WordOrGlyph).into()
 }
 
-/// Reports the files a message carries. Ruston Mail cannot open them yet, and
-/// says so rather than leaving the reader looking for a button.
-fn attachments_label(count: u32) -> Option<String> {
-    match count {
-        0 => None,
-        1 => Some("📎 1 attachment — opening files is not supported yet".to_owned()),
-        count => Some(format!(
-            "📎 {count} attachments — opening files is not supported yet"
-        )),
+/// One file on a message: what it is called, how big it is, and a way to keep
+/// it. Contents are fetched only when asked for.
+fn attachment_row<'a>(message_id: &str, attachment: &'a MailAttachment) -> Element<'a, Message> {
+    let save = Message::SaveAttachment(message_id.to_owned(), attachment.id.clone());
+
+    row![
+        detail_text(format!("📎 {}", attachment.name))
+            .width(Fill)
+            .wrapping(Wrapping::None),
+        detail_text(size_label(attachment.size)),
+        button(text("Save").size(DETAIL_SIZE))
+            .padding([2, 8])
+            .style(button::secondary)
+            .on_press(save),
+    ]
+    .spacing(SPACING)
+    .align_y(iced::Center)
+    .into()
+}
+
+/// A size someone can read at a glance, rather than a byte count.
+fn size_label(bytes: u64) -> String {
+    const UNIT: f64 = 1024.0;
+    let bytes = bytes as f64;
+
+    for (limit, suffix) in [
+        (UNIT, "KB"),
+        (UNIT * UNIT, "MB"),
+        (UNIT * UNIT * UNIT, "GB"),
+    ] {
+        if bytes < limit * UNIT {
+            let value = bytes / limit;
+            // One decimal below ten, where the difference is worth seeing.
+            return if value < 10.0 {
+                format!("{value:.1} {suffix}")
+            } else {
+                format!("{value:.0} {suffix}")
+            };
+        }
+    }
+
+    format!("{:.0} GB", bytes / (UNIT * UNIT * UNIT))
+}
+
+/// Says where a saved attachment landed, since nothing else on screen would.
+fn saved_attachment_line(outcome: Result<&Path, SaveError>) -> Element<'_, Message> {
+    match outcome {
+        Ok(path) => detail_text(format!("Saved to {}", path.display()))
+            .wrapping(Wrapping::WordOrGlyph)
+            .into(),
+        Err(error) => text(error.message())
+            .size(DETAIL_SIZE)
+            .style(text::danger)
+            .wrapping(Wrapping::WordOrGlyph)
+            .into(),
     }
 }
 
@@ -634,18 +695,13 @@ mod tests {
     }
 
     #[test]
-    fn attachments_are_reported_only_when_present() {
-        assert_eq!(attachments_label(0), None);
-        assert!(
-            attachments_label(1)
-                .unwrap()
-                .starts_with("📎 1 attachment ")
-        );
-        assert!(
-            attachments_label(3)
-                .unwrap()
-                .starts_with("📎 3 attachments ")
-        );
+    fn sizes_read_at_a_glance() {
+        assert_eq!(size_label(0), "0.0 KB");
+        assert_eq!(size_label(1_024), "1.0 KB");
+        assert_eq!(size_label(20 * 1_024), "20 KB");
+        assert_eq!(size_label(1_024 * 1_024), "1.0 MB");
+        assert_eq!(size_label(15 * 1_024 * 1_024), "15 MB");
+        assert_eq!(size_label(3 * 1_024 * 1_024 * 1_024), "3.0 GB");
     }
 
     #[test]

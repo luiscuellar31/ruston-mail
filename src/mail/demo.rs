@@ -806,7 +806,7 @@ fn message(
         recipients,
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),
         body: MessageBody::PlainText(fixture.bodies[position].to_owned()),
-        attachments: 0,
+        attachments: Vec::new(),
     }
 }
 

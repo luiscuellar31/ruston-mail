@@ -1,4 +1,5 @@
 mod app;
+mod downloads;
 mod mail;
 mod settings;
 mod ui;

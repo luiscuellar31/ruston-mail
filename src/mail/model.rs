@@ -216,8 +216,19 @@ pub struct MailMessage {
     /// Unix timestamp in seconds.
     pub time: Option<i64>,
     pub body: MessageBody,
-    /// Files the message carries. They are reported, never downloaded.
-    pub attachments: u32,
+    /// Files the message carries, without their contents: those are fetched
+    /// only when someone asks to save one.
+    pub attachments: Vec<MailAttachment>,
+}
+
+/// A file on a message. Inline parts, which belong to the body rather than to
+/// the reader, are left out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailAttachment {
+    pub id: String,
+    pub name: String,
+    /// Size in bytes, as the server reports it.
+    pub size: u64,
 }
 
 /// A conversation with its messages, as shown in the reader.

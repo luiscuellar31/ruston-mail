@@ -942,7 +942,7 @@ mod tests {
                     recipients: Vec::new(),
                     time: Some(time as i64),
                     body: MessageBody::PlainText(String::new()),
-                    attachments: 0,
+                    attachments: Vec::new(),
                 })
                 .collect(),
         }

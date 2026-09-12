@@ -6,6 +6,7 @@ use std::time::Duration;
 use futures::channel::{mpsc, oneshot};
 use futures::{SinkExt, StreamExt, TryStreamExt, stream};
 use proton_core::model::enums::{label_ids, message_flag};
+use proton_core::model::message::Attachment;
 use proton_core::{
     Client, Conversation, Error, HvChallenge, HvResolver, LabelCount, LoginOptions,
     MessageMetadata, Recipient, TotpPrompt,
@@ -15,8 +16,8 @@ use super::MailAction;
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, LoginRequest,
-    MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
-    html,
+    MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
+    SummaryKind, html,
 };
 
 /// Conversations requested per page from Proton.
@@ -243,7 +244,14 @@ impl ProtonMailService {
             subject: (!subject.is_empty()).then(|| subject.to_owned()),
             messages: messages
                 .into_iter()
-                .map(|message| mail_message(message.meta, message.body, &message.mime_type))
+                .map(|message| {
+                    mail_message(
+                        message.meta,
+                        message.body,
+                        &message.mime_type,
+                        message.attachments,
+                    )
+                })
                 .collect(),
         })
     }
@@ -256,8 +264,23 @@ impl ProtonMailService {
         Ok(ConversationDetail {
             id: id.to_owned(),
             subject: (!subject.is_empty()).then_some(subject),
-            messages: vec![mail_message(message.meta, message.body, &message.mime_type)],
+            messages: vec![mail_message(
+                message.meta,
+                message.body,
+                &message.mime_type,
+                message.attachments,
+            )],
         })
+    }
+
+    /// Fetches and decrypts one attachment, returning the name the sender gave
+    /// it and its contents. Nothing is written to disk here.
+    pub async fn download_attachment(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<(String, Vec<u8>), MailboxError> {
+        timed(self.client.download_attachment(message_id, attachment_id)).await
     }
 
     /// Applies a user action to one row: its whole conversation, or the single
@@ -568,6 +591,14 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
     }
 }
 
+fn mail_attachment(attachment: Attachment) -> MailAttachment {
+    MailAttachment {
+        id: attachment.id,
+        name: attachment.name,
+        size: attachment.size,
+    }
+}
+
 fn mail_address(person: &Recipient) -> MailAddress {
     MailAddress {
         name: (!person.name.trim().is_empty()).then(|| person.name.trim().to_owned()),
@@ -575,7 +606,12 @@ fn mail_address(person: &Recipient) -> MailAddress {
     }
 }
 
-fn mail_message(meta: MessageMetadata, body: String, mime_type: &str) -> MailMessage {
+fn mail_message(
+    meta: MessageMetadata,
+    body: String,
+    mime_type: &str,
+    attachments: Vec<Attachment>,
+) -> MailMessage {
     let body = if mime_type.to_ascii_lowercase().starts_with("text/html") {
         MessageBody::Rich(html::parse(&body))
     } else {
@@ -583,7 +619,13 @@ fn mail_message(meta: MessageMetadata, body: String, mime_type: &str) -> MailMes
     };
 
     MailMessage {
-        attachments: u32::try_from(meta.num_attachments).unwrap_or(0),
+        // Inline parts are the body's own images, which Ruston Mail never
+        // loads; only real attachments belong in the reader.
+        attachments: attachments
+            .into_iter()
+            .filter(|attachment| !attachment.is_inline())
+            .map(mail_attachment)
+            .collect(),
         sender: mail_address(&meta.sender),
         recipients: meta
             .to_list
@@ -737,7 +779,12 @@ mod tests {
             ..Default::default()
         };
 
-        let message = mail_message(meta, "<p>Hello &amp; welcome</p>".into(), "text/html");
+        let message = mail_message(
+            meta,
+            "<p>Hello &amp; welcome</p>".into(),
+            "text/html",
+            Vec::new(),
+        );
 
         assert_eq!(message.id, "message");
         assert_eq!(message.sender.name, None);
@@ -754,7 +801,12 @@ mod tests {
     fn plain_text_bodies_are_kept_verbatim() {
         let body = "Line <one>\n\n  indented & raw";
 
-        let message = mail_message(MessageMetadata::default(), body.into(), "text/plain");
+        let message = mail_message(
+            MessageMetadata::default(),
+            body.into(),
+            "text/plain",
+            Vec::new(),
+        );
 
         assert_eq!(message.body, MessageBody::PlainText(body.into()));
         assert_eq!(message.time, None);

@@ -26,9 +26,12 @@ pub(super) fn view<'a>(
         let content = match panel {
             Panel::Sidebar => sidebar(app, mailbox, email, signing_out),
             Panel::Conversations => conversation_pane(mailbox),
-            Panel::Reader => {
-                super::reader::view(mailbox, app.mailbox_actions_available(), app.pending_link())
-            }
+            Panel::Reader => super::reader::view(
+                mailbox,
+                app.mailbox_actions_available(),
+                app.pending_link(),
+                app.saved_attachment(),
+            ),
         };
         pane_grid::Content::new(content).style(pane_background)
     })
