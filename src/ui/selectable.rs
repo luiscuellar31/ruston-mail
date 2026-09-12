@@ -14,7 +14,14 @@ use iced::{Border, Color, Element, Fill, Theme};
 use super::reader::{BODY_LINE_HEIGHT, BODY_SIZE};
 use crate::app::Message;
 
-pub(super) fn read_only(content: &text_editor::Content) -> Element<'_, Message> {
+pub(super) fn read_only<'a>(
+    message_id: &str,
+    content: &'a text_editor::Content,
+) -> Element<'a, Message> {
+    // Several bodies can be on screen at once, so each interaction carries the
+    // message it belongs to.
+    let message_id = message_id.to_owned();
+
     // The editor draws its own padding and frame; the container around it
     // already spaces the body, so both are removed here.
     container(
@@ -24,7 +31,7 @@ pub(super) fn read_only(content: &text_editor::Content) -> Element<'_, Message> 
             .line_height(BODY_LINE_HEIGHT)
             .wrapping(Wrapping::WordOrGlyph)
             .style(plain)
-            .on_action(Message::SelectText),
+            .on_action(move |action| Message::SelectText(message_id.clone(), action)),
     )
     .width(Fill)
     .into()

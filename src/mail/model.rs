@@ -94,6 +94,11 @@ pub enum MessageBody {
 }
 
 impl MessageBody {
+    /// Whether the body is plain text, with no formatting to lose.
+    pub fn is_plain(&self) -> bool {
+        matches!(self, Self::PlainText(_))
+    }
+
     /// The body as plain text, for copying out.
     pub fn plain_text(&self) -> String {
         match self {

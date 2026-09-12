@@ -51,13 +51,6 @@ pub enum ListStatus {
     Failed(MailboxError),
 }
 
-/// A message body copied into an editor buffer so it can be selected and
-/// copied. Iced 0.14 cannot select plain text widgets.
-struct TextSelection {
-    message_id: String,
-    content: text_editor::Content,
-}
-
 pub struct Mailbox {
     folder: MailFolder,
     status: ListStatus,
@@ -68,8 +61,9 @@ pub struct Mailbox {
     counts: Option<MailboxCounts>,
     counts_request: Option<RequestId>,
     reader: ReaderState,
-    /// The body currently offered as selectable text, if any.
-    selection: Option<TextSelection>,
+    /// Bodies shown as selectable text, by message. Iced 0.14 cannot select
+    /// the text it renders, so a selectable body lives in an editor buffer.
+    selectable: HashMap<String, text_editor::Content>,
     search_query: String,
     action_request: Option<ActionRequest>,
     action_error: Option<MailboxError>,
@@ -96,7 +90,7 @@ impl Mailbox {
             counts: None,
             counts_request: Some(counts_request),
             reader: ReaderState::Empty,
-            selection: None,
+            selectable: HashMap::new(),
             search_query: String::new(),
             action_request: None,
             action_error: None,
@@ -218,7 +212,7 @@ impl Mailbox {
             conversation_id: request.conversation_id.clone(),
             request: request.id,
         };
-        self.selection = None;
+        self.selectable.clear();
         Some(request)
     }
 
@@ -243,7 +237,7 @@ impl Mailbox {
             conversation_id: request.conversation_id.clone(),
             request: request.id,
         };
-        self.selection = None;
+        self.selectable.clear();
         Some(request)
     }
 
@@ -267,7 +261,22 @@ impl Mailbox {
 
         match result {
             Ok(detail) if detail.id == request.conversation_id => {
-                self.reader = ReaderState::Loaded(ConversationReader::new(detail));
+                let reader = ConversationReader::new(detail);
+                // A plain body loses nothing inside an editor, so it arrives
+                // selectable. HTML bodies wait until the user asks.
+                self.selectable = reader
+                    .detail()
+                    .messages
+                    .iter()
+                    .filter(|message| message.body.is_plain())
+                    .map(|message| {
+                        (
+                            message.id.clone(),
+                            text_editor::Content::with_text(&message.body.plain_text()),
+                        )
+                    })
+                    .collect();
+                self.reader = ReaderState::Loaded(reader);
                 None
             }
             Ok(_) => {
@@ -301,18 +310,16 @@ impl Mailbox {
     }
 
     /// The message shown as selectable text, with its editor buffer.
-    pub fn selection(&self) -> Option<(&str, &text_editor::Content)> {
-        let selection = self.selection.as_ref()?;
-
-        Some((&selection.message_id, &selection.content))
+    /// The editor buffer of a body shown as selectable text, if it has one.
+    pub fn selectable_body(&self, message_id: &str) -> Option<&text_editor::Content> {
+        self.selectable.get(message_id)
     }
 
     /// Shows one message as selectable text, or goes back to the formatted
-    /// body. Only one message at a time: each editor copies the body into its
-    /// own buffer, so keeping one per message would duplicate every body.
+    /// body. Plain bodies are already selectable, so this is meant for HTML
+    /// ones, where selecting trades away the formatting.
     pub fn toggle_selection(&mut self, message_id: &str) {
-        if self.selection().is_some_and(|(id, _)| id == message_id) {
-            self.selection = None;
+        if self.selectable.remove(message_id).is_some() {
             return;
         }
         let ReaderState::Loaded(reader) = &self.reader else {
@@ -327,20 +334,20 @@ impl Mailbox {
             return;
         };
 
-        self.selection = Some(TextSelection {
-            message_id: message.id.clone(),
-            content: text_editor::Content::with_text(&message.body.plain_text()),
-        });
+        self.selectable.insert(
+            message.id.clone(),
+            text_editor::Content::with_text(&message.body.plain_text()),
+        );
     }
 
-    /// Applies a reader interaction to the selected body. Edits are dropped:
+    /// Applies a reader interaction to one selectable body. Edits are dropped:
     /// the reader shows mail, it never changes it.
-    pub fn select_text(&mut self, action: text_editor::Action) {
+    pub fn select_text(&mut self, message_id: &str, action: text_editor::Action) {
         if action.is_edit() {
             return;
         }
-        if let Some(selection) = &mut self.selection {
-            selection.content.perform(action);
+        if let Some(content) = self.selectable.get_mut(message_id) {
+            content.perform(action);
         }
     }
 
@@ -707,7 +714,7 @@ mod tests {
     use iced::widget::text_editor::{Action, Edit};
 
     use super::*;
-    use crate::mail::{MailAddress, MailMessage, MessageBody};
+    use crate::mail::{MailAddress, MailMessage, MessageBody, RichBody};
 
     const PAGE_SIZE: u32 = 50;
 
@@ -851,47 +858,63 @@ mod tests {
     }
 
     #[test]
-    fn selected_text_is_read_only_and_covers_one_message() {
+    fn plain_bodies_arrive_selectable_and_stay_read_only() {
         let mut mailbox = loaded_inbox(&["a", "b"], 2);
         let mut conversation = detail("a", &["a1", "a2"]);
         conversation.messages[0].body = MessageBody::PlainText("Hello Alex".into());
         load_detail(&mut mailbox, "a", conversation, 3);
 
-        mailbox.toggle_selection("a1");
-        let (id, content) = mailbox.selection().unwrap();
-        assert_eq!(id, "a1");
+        let content = mailbox.selectable_body("a1").unwrap();
         assert_eq!(content.text().trim_end(), "Hello Alex");
 
         // Selecting and moving are allowed; edits never reach the buffer.
-        mailbox.select_text(Action::SelectAll);
-        mailbox.select_text(Action::Edit(Edit::Insert('x')));
-        mailbox.select_text(Action::Edit(Edit::Backspace));
-        mailbox.select_text(Action::Edit(Edit::Paste("spam".to_owned().into())));
+        mailbox.select_text("a1", Action::SelectAll);
+        mailbox.select_text("a1", Action::Edit(Edit::Insert('x')));
+        mailbox.select_text("a1", Action::Edit(Edit::Backspace));
+        mailbox.select_text("a1", Action::Edit(Edit::Paste("spam".to_owned().into())));
         assert_eq!(
-            mailbox.selection().unwrap().1.text().trim_end(),
+            mailbox.selectable_body("a1").unwrap().text().trim_end(),
             "Hello Alex"
         );
 
-        // One at a time, and the same message closes it again.
-        mailbox.toggle_selection("a2");
-        assert_eq!(mailbox.selection().map(|(id, _)| id), Some("a2"));
-        mailbox.toggle_selection("a2");
-        assert!(mailbox.selection().is_none());
-
+        // Bodies switch one at a time, and an unknown one is ignored.
+        mailbox.toggle_selection("a1");
+        assert!(mailbox.selectable_body("a1").is_none());
+        assert!(mailbox.selectable_body("a2").is_some());
         mailbox.toggle_selection("missing");
-        assert!(mailbox.selection().is_none());
+        assert!(mailbox.selectable_body("missing").is_none());
     }
 
     #[test]
-    fn opening_another_conversation_drops_the_selection() {
+    fn a_formatted_body_switches_to_selectable_text() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        let mut conversation = detail("a", &["a1", "a2"]);
+        conversation.messages[1].body = MessageBody::Rich(RichBody::default());
+        load_detail(&mut mailbox, "a", conversation, 2);
+
+        // The plain body is selectable already; the formatted one is not.
+        assert!(mailbox.selectable_body("a1").is_some());
+        assert!(mailbox.selectable_body("a2").is_none());
+
+        mailbox.toggle_selection("a2");
+        assert!(mailbox.selectable_body("a2").is_some());
+
+        mailbox.toggle_selection("a2");
+        assert!(mailbox.selectable_body("a2").is_none());
+        // The plain body never left.
+        assert!(mailbox.selectable_body("a1").is_some());
+    }
+
+    #[test]
+    fn opening_another_conversation_drops_selectable_bodies() {
         let mut mailbox = loaded_inbox(&["a", "b"], 2);
         load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
-        mailbox.toggle_selection("a1");
-        assert!(mailbox.selection().is_some());
+        assert!(mailbox.selectable_body("a1").is_some());
 
         load_detail(&mut mailbox, "b", detail("b", &["b1"]), 4);
 
-        assert!(mailbox.selection().is_none());
+        assert!(mailbox.selectable_body("a1").is_none());
+        assert!(mailbox.selectable_body("b1").is_some());
     }
 
     #[test]

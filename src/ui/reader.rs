@@ -46,7 +46,7 @@ pub(super) fn view<'a>(
             mailbox.selected_summary().filter(|_| actions_available),
             !mailbox.is_busy() && !mailbox.action_pending(),
             mailbox.action_error(),
-            mailbox.selection(),
+            mailbox,
         ),
     };
     let content = match pending_link {
@@ -111,7 +111,7 @@ fn conversation<'a>(
     summary: Option<&'a ConversationSummary>,
     actions_enabled: bool,
     action_error: Option<crate::mail::MailboxError>,
-    selection: Option<(&'a str, &'a text_editor::Content)>,
+    mailbox: &'a Mailbox,
 ) -> Element<'a, Message> {
     let mut header = column![
         text(detail.subject.as_deref().unwrap_or("(No subject)"))
@@ -138,10 +138,8 @@ fn conversation<'a>(
         messages = messages.push(text("This conversation has no messages.").style(text::secondary));
     }
     for message in &detail.messages {
-        let selected = selection
-            .filter(|(id, _)| *id == message.id)
-            .map(|(_, content)| content);
-        messages = messages.push(message_card(message, reader, selected));
+        let selectable = mailbox.selectable_body(&message.id);
+        messages = messages.push(message_card(message, reader, selectable));
     }
 
     scrollable(
@@ -239,11 +237,19 @@ fn message_card<'a>(
     let mut card = column![header];
     if expanded {
         let body = match selection {
-            Some(content) => super::selectable::read_only(content),
+            Some(content) => super::selectable::read_only(&message.id, content),
             None => message_body(message, reader),
         };
+        // A plain body is selectable as it is. Only an HTML one has to trade
+        // its formatting for selection, so only it offers the switch — above
+        // the body, where it is seen on opening instead of after scrolling.
+        let mut content = Column::new().spacing(SPACING);
+        if !message.body.is_plain() {
+            content = content.push(selection_button(&message.id, selection.is_some()));
+        }
+        content = content.push(body);
         card = card.push(rule::horizontal(1)).push(
-            container(column![selection_button(&message.id, selection.is_some()), body].spacing(6))
+            container(content)
                 .width(Fill)
                 .max_width(READING_WIDTH)
                 .padding(MESSAGE_SPACING),
@@ -256,8 +262,8 @@ fn message_card<'a>(
         .into()
 }
 
-/// Switches one body between the formatted view and selectable plain text.
-/// Selecting drops styles and links, so it stays off until asked for.
+/// Switches one HTML body between the formatted view and selectable plain
+/// text. Selecting drops styles and links, so it stays off until asked for.
 fn selection_button(message_id: &str, selecting: bool) -> Element<'_, Message> {
     let label = if selecting {
         "Show formatted text"
@@ -266,8 +272,8 @@ fn selection_button(message_id: &str, selecting: bool) -> Element<'_, Message> {
     };
 
     button(text(label).size(DETAIL_SIZE))
-        .padding([2, 8])
-        .style(button::text)
+        .padding([4, 8])
+        .style(button::secondary)
         .on_press(Message::ToggleTextSelection(message_id.to_owned()))
         .into()
 }

@@ -70,8 +70,8 @@ pub enum Message {
     ToggleQuoteExpanded(String, usize),
     /// Shows one message as selectable text, or goes back to the formatted body.
     ToggleTextSelection(String),
-    /// A click, drag or keyboard interaction inside the selectable body.
-    SelectText(text_editor::Action),
+    /// A click, drag or keyboard interaction inside one selectable body.
+    SelectText(String, text_editor::Action),
     ArchiveSelected,
     MoveSelectedToSpam,
     MoveSelectedToTrash,
@@ -221,9 +221,9 @@ impl App {
                     mailbox.toggle_selection(&id);
                 }
             }
-            Message::SelectText(action) => {
+            Message::SelectText(id, action) => {
                 if let Some(mailbox) = self.active_mailbox() {
-                    mailbox.select_text(action);
+                    mailbox.select_text(&id, action);
                 }
             }
             Message::ArchiveSelected => return self.apply_action(MailAction::Archive),
@@ -1161,6 +1161,28 @@ mod tests {
         deliver_demo_page(&mut app, 1, 0);
 
         assert_eq!(app.mailbox().unwrap().reader_state(), &ReaderState::Empty);
+    }
+
+    #[test]
+    fn opened_plain_bodies_are_selectable_without_asking() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SelectConversation("demo-0".into()));
+        deliver_selected_demo_detail(&mut app);
+
+        // Demo bodies are plain text, so they arrive ready to select.
+        let content = app
+            .mailbox()
+            .unwrap()
+            .selectable_body("demo-0-2")
+            .expect("a plain body is selectable");
+        assert!(!content.text().trim().is_empty());
+
+        // The switch still works both ways through the message path.
+        let _ = app.update(Message::ToggleTextSelection("demo-0-2".into()));
+        assert!(app.mailbox().unwrap().selectable_body("demo-0-2").is_none());
+
+        let _ = app.update(Message::ToggleTextSelection("demo-0-2".into()));
+        assert!(app.mailbox().unwrap().selectable_body("demo-0-2").is_some());
     }
 
     #[test]
