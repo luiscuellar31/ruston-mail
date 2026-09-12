@@ -1,151 +1,108 @@
-use iced::widget::Id;
-use iced::widget::pane_grid::{self, Axis, Configuration, Node};
-
 use crate::settings::Panels;
-
-/// Scroll targets the app commands after a selection changes. They are named
-/// here, rather than in the views, so `update` can reach them without the app
-/// layer depending on the interface.
-pub const CONVERSATION_LIST: Id = Id::new("conversation-list");
-pub const READER_BODY: Id = Id::new("reader-body");
-/// The search field, which a keyboard shortcut focuses.
-pub const SEARCH_INPUT: Id = Id::new("search-input");
-
-/// The mailbox panels, left to right.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Panel {
-    Sidebar,
-    Conversations,
-    Reader,
-}
 
 /// Width of the draggable divider between panels.
 pub const DIVIDER_WIDTH: f32 = 1.0;
 
-/// Extra grab area around each divider, split evenly on both sides.
-pub const DIVIDER_GRAB: f32 = 8.0;
-
-/// Narrowest width a panel can be dragged or squeezed to. Iced enforces it
-/// when laying out, so stored split ratios never produce a smaller panel.
+/// Narrowest width a panel can be dragged or squeezed to.
 pub const MIN_PANEL_WIDTH: f32 = 200.0;
 
-/// Builds the three panes at the given split positions: where the sidebar
-/// ends, and where the conversation list ends within the rest.
-pub fn panels(ratios: Panels) -> pane_grid::State<Panel> {
-    pane_grid::State::with_configuration(Configuration::Split {
-        axis: Axis::Vertical,
-        ratio: ratios.sidebar,
-        a: Box::new(Configuration::Pane(Panel::Sidebar)),
-        b: Box::new(Configuration::Split {
-            axis: Axis::Vertical,
-            ratio: ratios.conversations,
-            a: Box::new(Configuration::Pane(Panel::Conversations)),
-            b: Box::new(Configuration::Pane(Panel::Reader)),
-        }),
-    })
+/// Sidebar, conversation list and reader widths for a window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelWidths {
+    pub sidebar: f32,
+    pub conversations: f32,
+    pub reader: f32,
 }
 
-#[cfg(test)]
-pub fn default_panels() -> pane_grid::State<Panel> {
-    panels(Panels::default())
+/// Applies the persisted split ratios while ensuring that all panes remain
+/// usable. The renderer only consumes these dimensions; it does not own them.
+pub fn widths(ratios: Panels, window_width: f32) -> PanelWidths {
+    let available = (window_width - 2.0 * DIVIDER_WIDTH).max(3.0 * MIN_PANEL_WIDTH);
+    let sidebar =
+        (available * ratios.sidebar).clamp(MIN_PANEL_WIDTH, available - 2.0 * MIN_PANEL_WIDTH);
+    let remaining = available - sidebar;
+    let conversations =
+        (remaining * ratios.conversations).clamp(MIN_PANEL_WIDTH, remaining - MIN_PANEL_WIDTH);
+
+    PanelWidths {
+        sidebar,
+        conversations,
+        reader: remaining - conversations,
+    }
 }
 
-/// Reads the split positions back out of the layout, so they can be kept for
-/// the next run. A layout that is not the expected pair of splits, which no
-/// code path builds, reports the defaults rather than guessing.
-pub fn ratios(panels: &pane_grid::State<Panel>) -> Panels {
-    let Node::Split { ratio, b, .. } = panels.layout() else {
-        return Panels::default();
-    };
-    let Node::Split {
-        ratio: conversations,
-        ..
-    } = b.as_ref()
-    else {
-        return Panels::default();
-    };
+/// Converts actual widths back to the stable nested ratios used by the
+/// existing settings file.
+pub fn ratios(sidebar: f32, conversations: f32, window_width: f32) -> Panels {
+    let available = (window_width - 2.0 * DIVIDER_WIDTH).max(1.0);
+    let sidebar_ratio = (sidebar / available).clamp(0.1, 0.9);
+    let remaining = (available - sidebar).max(1.0);
 
     Panels {
-        sidebar: *ratio,
-        conversations: *conversations,
+        sidebar: sidebar_ratio,
+        conversations: (conversations / remaining).clamp(0.1, 0.9),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use iced::Size;
-
     use super::*;
 
-    const DEFAULT_WINDOW: Size = Size::new(1_100.0, 700.0);
-    /// The narrowest window that fits every panel at its minimum width.
-    const TIGHTEST_WINDOW: Size = Size::new(3.0 * MIN_PANEL_WIDTH + 2.0 * DIVIDER_WIDTH, 480.0);
-    const LARGE_WINDOW: Size = Size::new(2_560.0, 1_440.0);
-
-    /// Sidebar, conversation list and reader widths for a window size.
-    fn widths(panels: &pane_grid::State<Panel>, window: Size) -> [f32; 3] {
-        let regions = panels
-            .layout()
-            .pane_regions(DIVIDER_WIDTH, MIN_PANEL_WIDTH, window);
-        let width = |panel| {
-            panels
-                .iter()
-                .find(|(_, kind)| **kind == panel)
-                .map(|(pane, _)| regions[pane].width)
-                .unwrap()
-        };
-
-        [
-            width(Panel::Sidebar),
-            width(Panel::Conversations),
-            width(Panel::Reader),
-        ]
-    }
-
-    fn resize_every_split(panels: &mut pane_grid::State<Panel>, ratio: f32) {
-        let splits: Vec<_> = panels.layout().splits().copied().collect();
-        for split in splits {
-            panels.resize(split, ratio);
-        }
-    }
+    const DEFAULT_WINDOW: f32 = 1_100.0;
+    const TIGHTEST_WINDOW: f32 = 3.0 * MIN_PANEL_WIDTH + 2.0 * DIVIDER_WIDTH;
 
     #[test]
     fn default_layout_matches_previous_proportions() {
-        let panels = default_panels();
-        let [sidebar, conversations, reader] = widths(&panels, DEFAULT_WINDOW);
+        let widths = widths(Panels::default(), DEFAULT_WINDOW);
 
-        assert_eq!(panels.len(), 3);
-        assert_eq!(sidebar, 220.0);
-        assert!(conversations < reader);
+        assert_eq!(widths.sidebar, 219.6);
+        assert!(widths.conversations < widths.reader);
         assert_eq!(
-            sidebar + conversations + reader + 2.0 * DIVIDER_WIDTH,
-            DEFAULT_WINDOW.width
+            widths.sidebar + widths.conversations + widths.reader + 2.0 * DIVIDER_WIDTH,
+            DEFAULT_WINDOW
         );
     }
 
     #[test]
     fn panels_never_collapse_below_the_minimum() {
-        for ratio in [0.0, 0.5, 1.0] {
-            let mut panels = default_panels();
-            resize_every_split(&mut panels, ratio);
-
-            for window in [TIGHTEST_WINDOW, DEFAULT_WINDOW, LARGE_WINDOW] {
-                for width in widths(&panels, window) {
-                    assert!(
-                        width >= MIN_PANEL_WIDTH,
-                        "{width} px at ratio {ratio} in {window:?}"
-                    );
+        for ratios in [
+            Panels {
+                sidebar: 0.0,
+                conversations: 0.0,
+            },
+            Panels {
+                sidebar: 0.5,
+                conversations: 0.5,
+            },
+            Panels {
+                sidebar: 1.0,
+                conversations: 1.0,
+            },
+        ] {
+            for window in [TIGHTEST_WINDOW, DEFAULT_WINDOW, 2_560.0] {
+                let widths = widths(ratios, window);
+                for width in [widths.sidebar, widths.conversations, widths.reader] {
+                    assert!(width >= MIN_PANEL_WIDTH, "{width} px in {window} px");
                 }
             }
         }
     }
 
     #[test]
-    fn reader_takes_the_extra_space_of_a_larger_window() {
-        let panels = default_panels();
-        let [_, _, default_reader] = widths(&panels, DEFAULT_WINDOW);
-        let [_, _, large_reader] = widths(&panels, LARGE_WINDOW);
+    fn widths_and_ratios_round_trip() {
+        let expected = Panels::default();
+        let actual = widths(expected, DEFAULT_WINDOW);
+        let restored = ratios(actual.sidebar, actual.conversations, DEFAULT_WINDOW);
 
-        assert!(large_reader > default_reader);
+        assert!((restored.sidebar - expected.sidebar).abs() < f32::EPSILON);
+        assert!((restored.conversations - expected.conversations).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn reader_takes_the_extra_space_of_a_larger_window() {
+        let normal = widths(Panels::default(), DEFAULT_WINDOW);
+        let large = widths(Panels::default(), 2_560.0);
+
+        assert!(large.reader > normal.reader);
     }
 }

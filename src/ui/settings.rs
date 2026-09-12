@@ -1,67 +1,62 @@
-//! The settings page.
-//!
-//! Only choices with behaviour behind them appear here. Sizes and the open
-//! folder are remembered on their own, without anything to set.
+use eframe::egui::{self, Align, Layout};
 
-use iced::widget::{button, checkbox, column, container, row, scrollable, text};
-use iced::{Element, Fill};
-
-use super::mailbox::{PANE_PADDING, SPACING};
-use super::{DETAIL_SIZE, detail_text};
+use super::{mailbox::detail, theme};
 use crate::app::Message;
 use crate::settings::Settings;
 
 const PAGE_WIDTH: f32 = 620.0;
 
-pub(super) fn view(settings: &Settings) -> Element<'_, Message> {
-    let header = row![
-        text("Settings").size(24).width(Fill),
-        button(text("Done").size(DETAIL_SIZE))
-            .padding([4, 8])
-            .style(button::secondary)
-            .on_press(Message::ShowSettings(false)),
-    ]
-    .spacing(SPACING);
+pub(super) fn show(root: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
+    egui::CentralPanel::default().show(root, |ui| {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.set_max_width(PAGE_WIDTH);
+            ui.horizontal(|ui| {
+                ui.heading(egui::RichText::new("Settings").size(24.0));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Done").clicked() {
+                        messages.push(Message::ShowSettings(false));
+                    }
+                });
+            });
+            ui.add_space(18.0);
 
-    let reading = column![
-        text("Reading").size(16),
-        checkbox(settings.mark_read_on_open)
-            .label("Mark mail as read when I open it")
-            .on_toggle(Message::SetMarkReadOnOpen),
-        detail_text("With this off, mail stays unread until you mark it yourself."),
-    ]
-    .spacing(6);
+            section(ui, "Reading", |ui| {
+                let mut on = settings.mark_read_on_open;
+                if ui.checkbox(&mut on, "Mark mail as read when I open it").changed() {
+                    messages.push(Message::SetMarkReadOnOpen(on));
+                }
+                detail(ui, "With this off, mail stays unread until you mark it yourself.");
+            });
+            ui.add_space(14.0);
+            section(ui, "Links and images", |ui| {
+                let mut on = settings.confirm_links;
+                if ui.checkbox(&mut on, "Ask before opening a link").changed() {
+                    messages.push(Message::SetConfirmLinks(on));
+                }
+                detail(
+                    ui,
+                    "The prompt shows the real destination, which helps expose misleading links.",
+                );
+                detail(
+                    ui,
+                    "Images in mail are never downloaded. This protects your privacy from tracking pixels.",
+                );
+            });
+            ui.add_space(14.0);
+            section(ui, "Remembered automatically", |ui| {
+                detail(
+                    ui,
+                    "Window size, pane widths and the last folder return the way you left them.",
+                );
+            });
+        });
+    });
+}
 
-    let safety = column![
-        text("Links and images").size(16),
-        checkbox(settings.confirm_links)
-            .label("Ask before opening a link")
-            .on_toggle(Message::SetConfirmLinks),
-        detail_text(
-            "The prompt shows the real destination, which is how a link that \
-             reads like your bank gives itself away."
-        ),
-        detail_text(
-            "Images in mail are never downloaded. That cannot be turned off yet, \
-             and it is what keeps a sender from learning you opened their mail."
-        ),
-    ]
-    .spacing(6);
-
-    let remembered = column![
-        text("Remembered on their own").size(16),
-        detail_text(
-            "The window size, the width of the panes and the folder you were \
-             last reading come back the way you left them."
-        ),
-    ]
-    .spacing(6);
-
-    scrollable(
-        container(column![header, reading, safety, remembered].spacing(24))
-            .max_width(PAGE_WIDTH)
-            .padding(PANE_PADDING),
-    )
-    .height(Fill)
-    .into()
+fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
+    theme::card().show(ui, |ui| {
+        ui.heading(egui::RichText::new(title).size(17.0));
+        ui.add_space(4.0);
+        content(ui);
+    });
 }

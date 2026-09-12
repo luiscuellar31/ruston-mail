@@ -1,17 +1,27 @@
-use iced::widget::{Column, button, column, container, row, text, text_input};
-use iced::{Element, Fill};
+use eframe::egui;
 
+use super::theme;
 use crate::app::{App, AuthState, Message, SignInStep};
 
 const CARD_WIDTH: f32 = 420.0;
-const CARD_PADDING: f32 = 32.0;
-const FIELD_SPACING: f32 = 18.0;
 
-pub(super) fn view(app: &App) -> Element<'_, Message> {
-    if matches!(app.auth_state(), AuthState::NeedsHumanVerification { .. }) {
-        return verification_view(app);
-    }
+pub(super) fn show(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
+    egui::CentralPanel::default().show(root, |ui| {
+        ui.centered_and_justified(|ui| {
+            ui.set_max_width(CARD_WIDTH);
+            theme::card().show(ui, |ui| {
+                ui.set_width(CARD_WIDTH - 56.0);
+                if matches!(app.auth_state(), AuthState::NeedsHumanVerification { .. }) {
+                    verification(ui, app, messages);
+                } else {
+                    sign_in(ui, app, messages);
+                }
+            });
+        });
+    });
+}
 
+fn sign_in(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
     let (step, busy) = match app.auth_state() {
         AuthState::SigningIn(step) => (*step, true),
         AuthState::NeedsTotp => (SignInStep::Totp, false),
@@ -19,12 +29,65 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         _ => (SignInStep::Credentials, false),
     };
 
-    let fields = match step {
-        SignInStep::Credentials => credentials_fields(app, busy),
-        SignInStep::Totp => totp_fields(app, busy),
-        SignInStep::MailboxPassword => mailbox_password_fields(app, busy),
-    };
-    let submit_label = if busy {
+    brand(ui);
+    ui.add_space(10.0);
+    ui.heading("Sign in to Proton Mail");
+    ui.add_space(14.0);
+
+    match step {
+        SignInStep::Credentials => {
+            edit_field(
+                ui,
+                "Username or email",
+                "name@proton.me",
+                app.username(),
+                false,
+                busy,
+                Message::UsernameChanged,
+                messages,
+            );
+            edit_field(
+                ui,
+                "Password",
+                "Password",
+                app.password(),
+                true,
+                busy,
+                Message::PasswordChanged,
+                messages,
+            );
+        }
+        SignInStep::Totp => {
+            ui.label("Enter the code from your authenticator app.");
+            edit_field(
+                ui,
+                "Two-factor code",
+                "123456",
+                app.totp(),
+                false,
+                busy,
+                Message::TotpChanged,
+                messages,
+            );
+        }
+        SignInStep::MailboxPassword => {
+            ui.label("This account uses a separate mailbox password.");
+            edit_field(
+                ui,
+                "Mailbox password",
+                "Mailbox password",
+                app.mailbox_password(),
+                true,
+                busy,
+                Message::MailboxPasswordChanged,
+                messages,
+            );
+        }
+    }
+
+    error(ui, app);
+    ui.add_space(6.0);
+    let submit = if busy {
         "Signing in…"
     } else {
         match step {
@@ -33,143 +96,102 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
             SignInStep::MailboxPassword => "Unlock mailbox",
         }
     };
-    let submit = button(text(submit_label))
-        .width(Fill)
-        .on_press_maybe((!busy).then_some(Message::Submit));
-
-    let mut card = column![
-        text("Ruston Mail").size(36),
-        text("Sign in to Proton Mail").size(24),
-        fields,
-    ]
-    .spacing(FIELD_SPACING);
-
-    if let Some(error) = app.error_message() {
-        card = card.push(text(error).size(14));
-    }
-
-    card = card.push(submit);
-    if step != SignInStep::Credentials {
-        card = card.push(
-            button(text("Back"))
-                .width(Fill)
-                .on_press_maybe((!busy).then_some(Message::CancelChallenge)),
-        );
-    }
-
-    centered_card(card)
-}
-
-fn verification_view(app: &App) -> Element<'_, Message> {
-    let mut card = column![
-        text("Ruston Mail").size(36),
-        text("Verify you are human").size(24),
-        text(
-            "Proton wants to confirm this sign-in. Complete the check in your browser, \
-             then continue here."
-        ),
-        text("If no page opened, open it again or copy the link into your browser.").size(14),
-        row![
-            button(text("Open page")).on_press(Message::OpenVerificationPage),
-            button(text("Copy link")).on_press(Message::CopyVerificationLink),
-        ]
-        .spacing(8),
-    ]
-    .spacing(FIELD_SPACING);
-
-    if let Some(error) = app.error_message() {
-        card = card.push(text(error).size(14));
-    }
-
-    centered_card(
-        card.push(
-            button(text("I completed the verification"))
-                .width(Fill)
-                .on_press(Message::Submit),
+    if ui
+        .add_enabled(
+            !busy,
+            egui::Button::new(submit).min_size(egui::vec2(ui.available_width(), 36.0)),
         )
-        .push(
-            button(text("Back"))
-                .width(Fill)
-                .on_press(Message::CancelChallenge),
-        ),
-    )
+        .clicked()
+    {
+        messages.push(Message::Submit);
+    }
+    if step != SignInStep::Credentials
+        && ui
+            .add_enabled(!busy, egui::Button::new("Back").frame(false))
+            .clicked()
+    {
+        messages.push(Message::CancelChallenge);
+    }
 }
 
-fn centered_card(card: Column<'_, Message>) -> Element<'_, Message> {
-    container(
-        container(card)
-            .width(CARD_WIDTH)
-            .padding(CARD_PADDING)
-            .style(container::rounded_box),
-    )
-    .center(Fill)
-    .into()
+fn verification(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
+    brand(ui);
+    ui.add_space(10.0);
+    ui.heading("Verify you are human");
+    ui.add_space(10.0);
+    ui.label(
+        "Proton wants to confirm this sign-in. Complete the check in your browser, then continue here.",
+    );
+    ui.label(
+        egui::RichText::new("If no page opened, open it again or copy the link into your browser.")
+            .small()
+            .color(theme::MUTED),
+    );
+    ui.horizontal(|ui| {
+        if ui.button("Open page").clicked() {
+            messages.push(Message::OpenVerificationPage);
+        }
+        if ui.button("Copy link").clicked() {
+            messages.push(Message::CopyVerificationLink);
+        }
+    });
+    error(ui, app);
+    ui.add_space(8.0);
+    if ui
+        .add_sized(
+            [ui.available_width(), 36.0],
+            egui::Button::new("I completed the verification"),
+        )
+        .clicked()
+    {
+        messages.push(Message::Submit);
+    }
+    if ui.button("Back").clicked() {
+        messages.push(Message::CancelChallenge);
+    }
 }
 
-fn credentials_fields(app: &App, busy: bool) -> Column<'_, Message> {
-    column![
-        labeled_input(
-            "Username or email",
-            "name@proton.me",
-            app.username(),
-            busy,
-            Message::UsernameChanged,
-            false,
-        ),
-        labeled_input(
-            "Password",
-            "Password",
-            app.password(),
-            busy,
-            Message::PasswordChanged,
-            true,
-        ),
-    ]
-    .spacing(FIELD_SPACING)
-}
-
-fn totp_fields(app: &App, busy: bool) -> Column<'_, Message> {
-    column![
-        text("Enter the code from your authenticator app."),
-        labeled_input(
-            "Two-factor code",
-            "123456",
-            app.totp(),
-            busy,
-            Message::TotpChanged,
-            false,
-        ),
-    ]
-    .spacing(FIELD_SPACING)
-}
-
-fn mailbox_password_fields(app: &App, busy: bool) -> Column<'_, Message> {
-    column![
-        text("This account uses a separate mailbox password."),
-        labeled_input(
-            "Mailbox password",
-            "Mailbox password",
-            app.mailbox_password(),
-            busy,
-            Message::MailboxPasswordChanged,
-            true,
-        ),
-    ]
-    .spacing(FIELD_SPACING)
-}
-
-fn labeled_input<'a>(
-    label: &'a str,
-    placeholder: &'a str,
-    value: &'a str,
+#[allow(clippy::too_many_arguments)]
+fn edit_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    hint: &str,
+    current: &str,
+    password: bool,
     busy: bool,
-    on_input: fn(String) -> Message,
-    secure: bool,
-) -> Element<'a, Message> {
-    let input = text_input(placeholder, value)
-        .secure(secure)
-        .on_input_maybe((!busy).then_some(on_input))
-        .on_submit_maybe((!busy).then_some(Message::Submit));
+    changed: fn(String) -> Message,
+    messages: &mut Vec<Message>,
+) {
+    ui.label(egui::RichText::new(label).small().color(theme::MUTED));
+    let mut value = current.to_owned();
+    let response = ui.add_enabled(
+        !busy,
+        egui::TextEdit::singleline(&mut value)
+            .hint_text(hint)
+            .password(password)
+            .desired_width(f32::INFINITY),
+    );
+    if response.changed() {
+        messages.push(changed(value));
+    }
+    if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !busy {
+        messages.push(Message::Submit);
+    }
+    ui.add_space(8.0);
+}
 
-    column![text(label).size(14), input].spacing(8).into()
+fn brand(ui: &mut egui::Ui) {
+    ui.label(
+        egui::RichText::new("R")
+            .size(24.0)
+            .strong()
+            .color(theme::ACCENT),
+    );
+    ui.heading(egui::RichText::new("Ruston Mail").size(32.0));
+}
+
+fn error(ui: &mut egui::Ui, app: &App) {
+    if let Some(error) = app.error_message() {
+        ui.label(egui::RichText::new(error).color(theme::DANGER));
+    }
 }

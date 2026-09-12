@@ -1,292 +1,327 @@
 use chrono::{DateTime, Datelike, Local, TimeZone};
-use iced::widget::text::Wrapping;
-use iced::widget::{
-    Column, button, column, container, pane_grid, row, scrollable, space, text, text_input,
-};
-use iced::{Center, Element, Fill, Theme};
+use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
-use super::{DETAIL_SIZE, detail_text};
-use crate::app::{
-    App, CONVERSATION_LIST, DIVIDER_GRAB, DIVIDER_WIDTH, ListStatus, MIN_PANEL_WIDTH, Mailbox,
-    Message, Panel, SEARCH_INPUT, UndoMove,
-};
+use super::{UiState, reader, theme};
+use crate::app::{App, ListStatus, Mailbox, Message, panel_ratios, panel_widths};
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
 
-pub(super) const PANE_PADDING: f32 = 16.0;
-pub(super) const SPACING: f32 = 8.0;
-const UNREAD_MARKER_WIDTH: f32 = 12.0;
+/// One of the few marks egui's bundled fonts carry; the paperclip beside it
+/// in a row has to be drawn instead (see [`theme::paint_clip`]).
+const STAR: &str = "★";
 
-pub(super) fn view<'a>(
-    app: &'a App,
-    mailbox: &'a Mailbox,
-    email: Option<&'a str>,
+pub(super) fn show(
+    root: &mut egui::Ui,
+    app: &App,
+    email: Option<&str>,
     signing_out: bool,
-) -> Element<'a, Message> {
-    let panels = pane_grid(app.panels(), move |_pane, panel, _maximized| {
-        let content = match panel {
-            Panel::Sidebar => sidebar(app, mailbox, email, signing_out),
-            Panel::Conversations => conversation_pane(mailbox),
-            Panel::Reader => super::reader::view(
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    let mailbox = app.mailbox().expect("authenticated mailbox");
+    let window_width = root.available_width();
+    let widths = panel_widths(app.panels(), window_width);
+
+    let sidebar = egui::Panel::left("mailbox-sidebar")
+        .default_size(widths.sidebar)
+        .size_range(200.0..=(window_width - 400.0).max(200.0))
+        .resizable(true)
+        .frame(theme::panel_frame(theme::SIDEBAR))
+        .show(root, |ui| {
+            sidebar(ui, app, mailbox, email, signing_out, messages)
+        });
+
+    let remaining = (window_width - sidebar.response.rect.width()).max(400.0);
+    let conversations = egui::Panel::left("conversation-list")
+        .default_size(widths.conversations)
+        .size_range(200.0..=(remaining - 200.0).max(200.0))
+        .resizable(true)
+        .frame(theme::panel_frame(theme::PANEL))
+        .show(root, |ui| conversation_pane(ui, mailbox, state, messages));
+
+    egui::CentralPanel::default()
+        .frame(theme::panel_frame(theme::PANEL))
+        .show(root, |ui| {
+            reader::show(
+                ui,
                 mailbox,
                 app.folders(),
                 app.mailbox_actions_available(),
                 app.pending_link(),
                 app.saving_attachment(),
                 app.saved_attachment(),
-            ),
-        };
-        pane_grid::Content::new(content).style(pane_background)
-    })
-    .spacing(DIVIDER_WIDTH)
-    .min_size(MIN_PANEL_WIDTH)
-    .on_resize(DIVIDER_GRAB, Message::PanelResized);
+                state,
+                messages,
+            );
+        });
 
-    // Panels paint the normal background, so the gaps between them show this
-    // color as thin dividers, like the previous fixed rules.
-    container(panels).style(divider_background).into()
-}
-
-fn pane_background(theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(theme.palette().background.into()),
-        ..container::Style::default()
+    let actual = panel_ratios(
+        sidebar.response.rect.width(),
+        conversations.response.rect.width(),
+        window_width,
+    );
+    let stored = app.panels();
+    if (actual.sidebar - stored.sidebar).abs() > 0.002
+        || (actual.conversations - stored.conversations).abs() > 0.002
+    {
+        messages.push(Message::PanelsResized(actual));
     }
 }
 
-fn divider_background(theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(theme.extended_palette().background.strong.color.into()),
-        ..container::Style::default()
-    }
-}
-
-fn sidebar<'a>(
-    app: &'a App,
-    mailbox: &'a Mailbox,
-    email: Option<&'a str>,
+fn sidebar(
+    ui: &mut egui::Ui,
+    app: &App,
+    mailbox: &Mailbox,
+    email: Option<&str>,
     signing_out: bool,
-) -> Element<'a, Message> {
-    // Folders are places mail lives, so they follow Proton's own without a
-    // break. Labels are names mail carries, and get a heading of their own.
-    let places = |kind| {
+    messages: &mut Vec<Message>,
+) {
+    ui.heading(egui::RichText::new("Ruston Mail").size(23.0));
+    ui.add_space(12.0);
+
+    for folder in MailFolder::ALL.into_iter().map(Folder::System).chain(
         app.folders()
             .iter()
-            .filter(move |folder| folder.kind() == Some(kind))
-            .cloned()
-    };
-    let folders = Column::with_children(
-        MailFolder::ALL
-            .into_iter()
-            .map(Folder::System)
-            .chain(places(CustomKind::Folder))
-            .map(|folder| folder_button(mailbox, folder)),
-    )
-    .spacing(2);
-    let labels: Vec<Folder> = places(CustomKind::Label).collect();
-    let labels = (!labels.is_empty()).then(|| {
-        column![
-            detail_text("Labels"),
-            Column::with_children(
-                labels
-                    .into_iter()
-                    .map(|label| folder_button(mailbox, label)),
+            .filter(|folder| folder.kind() == Some(CustomKind::Folder))
+            .cloned(),
+    ) {
+        folder_button(ui, mailbox, folder, messages);
+    }
+
+    let labels: Vec<_> = app
+        .folders()
+        .iter()
+        .filter(|folder| folder.kind() == Some(CustomKind::Label))
+        .cloned()
+        .collect();
+    if !labels.is_empty() {
+        ui.add_space(14.0);
+        detail(ui, "LABELS");
+        for label in labels {
+            folder_button(ui, mailbox, label, messages);
+        }
+    }
+
+    ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+        let logout_label = if signing_out {
+            "Signing out…"
+        } else if app.is_demo() {
+            "Exit demo"
+        } else {
+            "Sign out"
+        };
+        if ui
+            .add_enabled(
+                !signing_out,
+                egui::Button::new(logout_label).min_size(egui::vec2(ui.available_width(), 32.0)),
             )
-            .spacing(2),
-        ]
-        .spacing(4)
+            .clicked()
+        {
+            messages.push(Message::Logout);
+        }
+        if ui
+            .add(
+                egui::Button::new("Settings")
+                    .frame(false)
+                    .min_size(egui::vec2(ui.available_width(), 30.0)),
+            )
+            .clicked()
+        {
+            messages.push(Message::ShowSettings(true));
+        }
+        if let Some(error) = app.error_message() {
+            ui.label(egui::RichText::new(error).small().color(theme::DANGER));
+        }
+        detail(
+            ui,
+            if app.is_demo() {
+                "Demo mode · fictional mail"
+            } else {
+                email.unwrap_or("Proton Mail account")
+            },
+        );
     });
-
-    let (account, logout_label) = if app.is_demo() {
-        ("Demo mode · fictional mail", "Exit demo")
-    } else {
-        (email.unwrap_or("Proton Mail account"), "Sign out")
-    };
-    let logout = button(text(if signing_out {
-        "Signing out…"
-    } else {
-        logout_label
-    }))
-    .width(Fill)
-    .style(button::secondary)
-    .on_press_maybe((!signing_out).then_some(Message::Logout));
-
-    let settings = button(text("Settings"))
-        .width(Fill)
-        .style(button::text)
-        .on_press(Message::ShowSettings(true));
-
-    let mut footer = column![detail_text(account), settings, logout].spacing(SPACING);
-    if let Some(error) = app.error_message() {
-        footer = footer.push(text(error).size(DETAIL_SIZE).style(text::danger));
-    }
-
-    let mut body = column![text("Ruston Mail").size(24), folders].spacing(16);
-    if let Some(labels) = labels {
-        body = body.push(labels);
-    }
-
-    container(body.push(space().height(Fill)).push(footer))
-        .width(Fill)
-        .height(Fill)
-        .padding(PANE_PADDING)
-        .into()
 }
 
-fn folder_button(mailbox: &Mailbox, folder: Folder) -> Element<'_, Message> {
+fn folder_button(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    folder: Folder,
+    messages: &mut Vec<Message>,
+) {
     let selected = &folder == mailbox.folder();
     let unread = mailbox
         .counts()
         .and_then(|counts| counts.unread(&folder))
-        .filter(|&unread| unread > 0);
-
-    let mut label = row![text(folder.name().to_owned()).width(Fill)].spacing(SPACING);
-    if let Some(unread) = unread {
-        label = label.push(text(unread.to_string()));
+        .filter(|count| *count > 0);
+    let mut button = egui::Button::new(folder.name())
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .min_size(egui::vec2(ui.available_width(), 31.0))
+        .frame(selected);
+    if selected {
+        button = button
+            .fill(theme::ACCENT_SOFT)
+            .stroke(Stroke::new(1.0, theme::ACCENT));
     }
-
-    button(label)
-        .width(Fill)
-        .style(move |theme, status| {
-            if selected {
-                button::primary(theme, status)
-            } else {
-                button::text(theme, status)
-            }
-        })
-        .on_press(Message::SelectFolder(folder))
-        .into()
-}
-
-fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
-    let refresh_label = if matches!(mailbox.status(), ListStatus::Refreshing(_)) {
-        "Refreshing…"
-    } else {
-        "Refresh"
-    };
-    let header = row![
-        text(mailbox.folder().name()).size(22).width(Fill),
-        button(text(refresh_label))
-            .style(button::secondary)
-            .on_press_maybe((!mailbox.is_busy()).then_some(Message::RefreshMailbox)),
-    ]
-    .spacing(SPACING)
-    .align_y(Center);
-
-    let input = text_input("Search mail…", mailbox.search_query())
-        .id(SEARCH_INPUT)
-        .on_input(Message::SearchChanged)
-        .on_submit(Message::SearchSubmitted);
-    let mut search = column![].spacing(4);
-    if mailbox.search_query().is_empty() {
-        search = search.push(input);
-    } else {
-        search = search
-            .push(
-                row![
-                    input,
-                    button(text("Clear"))
-                        .style(button::secondary)
-                        .on_press(Message::SearchChanged(String::new())),
-                ]
-                .spacing(SPACING),
+    let response = ui.add(button);
+    if let Some(count) = unread {
+        // Painted at the panel edge rather than padded into the label, which
+        // left the count wherever the folder's name happened to end.
+        ui.painter().text(
+            egui::pos2(response.rect.right() - 10.0, response.rect.center().y),
+            Align2::RIGHT_CENTER,
+            count.to_string(),
+            FontId::proportional(12.0),
+            theme::MUTED,
+        );
+        let name = folder.name().to_owned();
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                true,
+                format!("{name}, {count} unread"),
             )
-            .push(detail_text(search_scope_label(
-                mailbox.search_results(),
-                mailbox.loaded_count(),
-            )));
+        });
     }
-
-    let no_visible_conversations = mailbox.visible_conversations().next().is_none();
-
-    let body = match (mailbox.status(), no_visible_conversations) {
-        (ListStatus::Loading(_), _) => centered(text("Loading conversations…").into()),
-        (ListStatus::Failed(error), true) => centered(
-            column![
-                text(error.message()),
-                button(text("Try again")).on_press(Message::RefreshMailbox),
-            ]
-            .spacing(SPACING)
-            .align_x(Center)
-            .into(),
-        ),
-        // The server has already looked everywhere, so there is nothing to
-        // suggest beyond trying different words.
-        (_, true) if mailbox.search_results().is_some() => centered(
-            text("Proton found no mail matching that.")
-                .style(text::secondary)
-                .wrapping(Wrapping::WordOrGlyph)
-                .into(),
-        ),
-        // Typing only narrows what is loaded, so the ways out are loading
-        // more or asking the server. Saying so beats a dead end.
-        (_, true) if mailbox.is_searching() => {
-            let mut empty = column![
-                text("No matches in the conversations loaded so far.")
-                    .style(text::secondary)
-                    .wrapping(Wrapping::WordOrGlyph),
-                detail_text("Press Enter to search all of your mail."),
-            ]
-            .spacing(SPACING)
-            .align_x(Center);
-            if let Some(more) = load_more(mailbox) {
-                empty = empty.push(more);
-            }
-            centered(empty.into())
-        }
-        (_, true) => {
-            centered(text(format!("No conversations in {}.", mailbox.folder().name())).into())
-        }
-        _ => conversation_list(mailbox),
-    };
-
-    let mut pane = column![header, search].spacing(12);
-    if let Some(undo) = mailbox.undo() {
-        pane = pane.push(undo_bar(undo));
+    if response.clicked() {
+        messages.push(Message::SelectFolder(folder));
     }
-
-    container(pane.push(body).spacing(12))
-        .width(Fill)
-        .height(Fill)
-        .padding(PANE_PADDING)
-        .into()
 }
 
-fn conversation_list(mailbox: &Mailbox) -> Element<'_, Message> {
+fn conversation_pane(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    ui.horizontal(|ui| {
+        ui.heading(egui::RichText::new(mailbox.folder().name()).size(21.0));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let refreshing = matches!(mailbox.status(), ListStatus::Refreshing(_));
+            if ui
+                .add_enabled(
+                    !mailbox.is_busy(),
+                    egui::Button::new(if refreshing {
+                        "Refreshing…"
+                    } else {
+                        "Refresh"
+                    }),
+                )
+                .clicked()
+            {
+                messages.push(Message::RefreshMailbox);
+            }
+        });
+    });
+    ui.add_space(6.0);
+
+    let mut query = mailbox.search_query().to_owned();
+    ui.horizontal(|ui| {
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut query)
+                .id(egui::Id::new("mail-search"))
+                .hint_text("Search mail…")
+                .desired_width(f32::INFINITY),
+        );
+        if state.focus_search {
+            response.request_focus();
+            state.focus_search = false;
+        }
+        if response.changed() {
+            messages.push(Message::SearchChanged(query.clone()));
+        }
+        if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            messages.push(Message::SearchSubmitted);
+        }
+        if !query.is_empty() && ui.button("Clear").clicked() {
+            messages.push(Message::SearchChanged(String::new()));
+        }
+    });
+    if !mailbox.search_query().is_empty() {
+        detail(
+            ui,
+            &search_scope_label(mailbox.search_results(), mailbox.loaded_count()),
+        );
+    }
+    if let Some(undo) = mailbox.undo() {
+        ui.add_space(4.0);
+        theme::card().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("Moved to {}.", undo.to.name()));
+                if ui.small_button("Undo").clicked() {
+                    messages.push(Message::UndoMove);
+                }
+            });
+        });
+    }
+    ui.add_space(4.0);
+
+    let empty = mailbox.visible_conversations().next().is_none();
+    match (mailbox.status(), empty) {
+        (ListStatus::Loading(_), _) => centered(ui, "Loading conversations…"),
+        (ListStatus::Failed(error), true) => {
+            centered(ui, error.message());
+            if ui.button("Try again").clicked() {
+                messages.push(Message::RefreshMailbox);
+            }
+        }
+        (_, true) if mailbox.search_results().is_some() => {
+            centered(ui, "Proton found no mail matching that.");
+        }
+        (_, true) if mailbox.is_searching() => {
+            centered(ui, "No matches in the conversations loaded so far.");
+            detail(ui, "Press Enter to search all of your mail.");
+            load_more(ui, mailbox, messages);
+        }
+        (_, true) => centered(
+            ui,
+            &format!("No conversations in {}.", mailbox.folder().name()),
+        ),
+        _ => conversation_list(ui, mailbox, state, messages),
+    }
+}
+
+fn conversation_list(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
     let now = Local::now();
     let selected = mailbox.selected_conversation();
-    let mut list = Column::with_children(mailbox.visible_conversations().map(|conversation| {
-        conversation_row(
-            conversation,
-            selected == Some(conversation.id.as_str()),
-            &now,
-        )
-    }))
-    .spacing(2);
-
-    if let Some(more) = load_more(mailbox) {
-        list = list.push(container(more).center_x(Fill).padding(SPACING));
-    }
-
-    let mut content = column![].spacing(SPACING);
-    if let ListStatus::Failed(error) = mailbox.status() {
-        content = content.push(text(error.message()).style(text::danger));
-    }
-    // The gap keeps the scrollbar from covering row details.
-    content
-        .push(
-            scrollable(list)
-                .id(CONVERSATION_LIST)
-                .height(Fill)
-                .spacing(SPACING),
-        )
-        .into()
+    egui::ScrollArea::vertical()
+        .id_salt("conversation-scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for conversation in mailbox.visible_conversations() {
+                let response = ui
+                    .push_id(&conversation.id, |ui| {
+                        conversation_row(
+                            ui,
+                            conversation,
+                            selected == Some(conversation.id.as_str()),
+                            &now,
+                        )
+                    })
+                    .inner;
+                if state.reveal_conversation.as_deref() == Some(conversation.id.as_str()) {
+                    response.scroll_to_me(Some(Align::Center));
+                    state.reveal_conversation = None;
+                }
+                if response.clicked() {
+                    messages.push(Message::SelectConversation(conversation.id.clone()));
+                }
+                ui.add_space(2.0);
+            }
+            load_more(ui, mailbox, messages);
+        });
 }
 
-fn conversation_row<'a>(
-    conversation: &'a ConversationSummary,
+fn conversation_row(
+    ui: &mut egui::Ui,
+    conversation: &ConversationSummary,
     selected: bool,
     now: &DateTime<Local>,
-) -> Element<'a, Message> {
+) -> egui::Response {
     let correspondents = conversation
         .correspondents
         .as_deref()
@@ -296,76 +331,135 @@ fn conversation_row<'a>(
         .time
         .map(|time| format_time(time, now))
         .unwrap_or_default();
+    let fill = if selected {
+        theme::ACCENT_SOFT
+    } else {
+        Color32::TRANSPARENT
+    };
+    let stroke = if selected {
+        Stroke::new(1.0, theme::ACCENT)
+    } else {
+        Stroke::NONE
+    };
 
-    // Unread uses a marker rather than bold: with the default sans-serif family,
-    // bold text rendered in an unrelated fallback face on macOS, so weight is
-    // not a reliable cue across platforms.
-    let marker = container(
-        text(if conversation.unread { "●" } else { "" })
-            .size(DETAIL_SIZE)
-            .style(move |theme| {
-                if selected {
-                    text::default(theme)
-                } else {
-                    text::primary(theme)
-                }
-            }),
-    )
-    .width(UNREAD_MARKER_WIDTH);
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 54.0), Sense::click());
+    let hovered_fill = if response.hovered() && !selected {
+        Color32::from_rgb(28, 29, 36)
+    } else {
+        fill
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(8),
+        hovered_fill,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
 
-    let mut details = row![].spacing(6).align_y(Center);
-    if conversation.message_count > 1 {
-        details = details.push(text(conversation.message_count.to_string()).size(DETAIL_SIZE));
+    if conversation.unread {
+        // On the sender line: at the row's centre it reads as belonging to
+        // neither line.
+        ui.painter().circle_filled(
+            egui::pos2(rect.left() + 7.0, rect.top() + 13.0),
+            3.5,
+            theme::ACCENT,
+        );
     }
-    if conversation.has_attachments {
-        details = details.push(text("📎").size(DETAIL_SIZE));
+
+    let meta_width = 70.0;
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 18.0, rect.top() + 5.0),
+        egui::pos2(rect.right() - meta_width - 8.0, rect.bottom() - 5.0),
+    );
+    let painter = ui.painter_at(rect);
+    theme::paint_truncated_text(
+        &painter,
+        content_rect.left_top(),
+        correspondents,
+        FontId::proportional(14.0),
+        ui.visuals().strong_text_color(),
+        content_rect.width(),
+    );
+    theme::paint_truncated_text(
+        &painter,
+        content_rect.left_top() + egui::vec2(0.0, 25.0),
+        subject,
+        FontId::proportional(14.0),
+        theme::MUTED,
+        content_rect.width(),
+    );
+
+    let meta_font = FontId::proportional(11.0);
+    painter.text(
+        egui::pos2(rect.right() - 8.0, rect.top() + 7.0),
+        Align2::RIGHT_TOP,
+        time,
+        meta_font.clone(),
+        theme::MUTED,
+    );
+
+    let mut facts = Vec::new();
+    if conversation.message_count > 1 {
+        facts.push(conversation.message_count.to_string());
     }
     if conversation.starred {
-        details = details.push(text("★").size(DETAIL_SIZE));
+        facts.push(STAR.to_owned());
+    }
+    let bottom = rect.bottom() - 7.0;
+    let facts_left = painter
+        .text(
+            egui::pos2(rect.right() - 8.0, bottom),
+            Align2::RIGHT_BOTTOM,
+            facts.join(" · "),
+            meta_font,
+            theme::MUTED,
+        )
+        .left();
+    if conversation.has_attachments {
+        theme::paint_clip(
+            &painter,
+            egui::pos2(facts_left - 9.0, bottom - 6.75),
+            theme::MUTED,
+        );
     }
 
-    let lines = column![
-        row![single_line(correspondents), text(time).size(DETAIL_SIZE)].spacing(SPACING),
-        row![single_line(subject), details].spacing(SPACING),
-    ]
-    .spacing(4);
-
-    button(row![marker, lines].spacing(4).align_y(Center))
-        .width(Fill)
-        .padding([8, 10])
-        .style(move |theme, status| {
-            if selected {
-                button::primary(theme, status)
-            } else {
-                button::text(theme, status)
-            }
-        })
-        .on_press(Message::SelectConversation(conversation.id.clone()))
-        .into()
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("{correspondents}: {subject}"),
+        )
+    });
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Offers to take back the last move, until the next action replaces it.
-fn undo_bar(undo: &UndoMove) -> Element<'_, Message> {
-    container(
-        row![
-            text(format!("Moved to {}.", undo.to.name()))
-                .size(DETAIL_SIZE)
-                .width(Fill),
-            button(text("Undo").size(DETAIL_SIZE))
-                .padding([2, 8])
-                .style(button::secondary)
-                .on_press(Message::UndoMove),
-        ]
-        .spacing(SPACING)
-        .align_y(Center),
-    )
-    .padding([4, 8])
-    .style(container::rounded_box)
-    .into()
+fn load_more(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) {
+    if matches!(mailbox.status(), ListStatus::LoadingMore(_)) {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Loading more…");
+        });
+    } else if mailbox.has_more()
+        && ui
+            .add_enabled(!mailbox.is_busy(), egui::Button::new("Load more"))
+            .clicked()
+    {
+        messages.push(Message::LoadMoreConversations);
+    }
 }
 
-/// Says what the list is showing: results the server found, or the narrowing
-/// of what is loaded, which is all typing can reach on its own.
+fn centered(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(24.0);
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new(text).color(theme::MUTED));
+    });
+}
+
+pub(super) fn detail(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).small().color(theme::MUTED));
+}
+
 fn search_scope_label(results: Option<&str>, loaded: usize) -> String {
     match (results, loaded) {
         (Some(query), _) => format!("Showing what the server found for “{query}”."),
@@ -378,34 +472,6 @@ fn search_scope_label(results: Option<&str>, loaded: usize) -> String {
     }
 }
 
-/// The control that extends the loaded list, when there is more to load.
-fn load_more(mailbox: &Mailbox) -> Option<Element<'_, Message>> {
-    if matches!(mailbox.status(), ListStatus::LoadingMore(_)) {
-        return Some(text("Loading more…").into());
-    }
-
-    mailbox.has_more().then(|| {
-        button(text("Load more"))
-            .style(button::secondary)
-            .on_press_maybe((!mailbox.is_busy()).then_some(Message::LoadMoreConversations))
-            .into()
-    })
-}
-
-fn centered(content: Element<'_, Message>) -> Element<'_, Message> {
-    container(content).center(Fill).into()
-}
-
-/// A clipped, non-wrapping line so long values never push other row content.
-fn single_line(content: &str) -> Element<'_, Message> {
-    container(text(content).wrapping(Wrapping::None))
-        .width(Fill)
-        .clip(true)
-        .into()
-}
-
-/// Formats a Unix timestamp relative to `now`: time today, month and day this
-/// year, full date otherwise.
 fn format_time<Tz: TimeZone>(timestamp: i64, now: &DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
@@ -420,7 +486,6 @@ where
     } else {
         "%Y-%m-%d"
     };
-
     time.format(format).to_string()
 }
 
@@ -432,13 +497,10 @@ mod tests {
 
     #[test]
     fn search_scope_says_what_the_list_is_showing() {
-        // Typing only narrows what is loaded, and says how to reach further.
         let narrowing = search_scope_label(None, 50);
         assert!(narrowing.contains("50 conversations loaded so far"));
         assert!(narrowing.contains("Enter"));
         assert!(search_scope_label(None, 1).contains("1 conversation loaded"));
-
-        // Results came from the server, so there is nothing further to reach.
         let found = search_scope_label(Some("invoice"), 50);
         assert!(found.contains("invoice"));
         assert!(!found.contains("Enter"));
@@ -452,9 +514,58 @@ mod tests {
                 .unwrap()
                 .timestamp()
         };
-
         assert_eq!(format_time(at(2026, 9, 11, 9, 5), &now), "09:05");
         assert_eq!(format_time(at(2026, 3, 2, 9, 5), &now), "Mar 2");
         assert_eq!(format_time(at(2025, 12, 31, 9, 5), &now), "2025-12-31");
+    }
+
+    #[test]
+    fn long_correspondents_cannot_widen_the_conversation_pane() {
+        let conversation = ConversationSummary {
+            id: "long-row".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: Some("A subject that also needs to stay bounded".into()),
+            correspondents: Some("A very long correspondent name that must be truncated".into()),
+            participants: Vec::new(),
+            preview: None,
+            time: None,
+            unread: true,
+            starred: false,
+            message_count: 1,
+            has_attachments: false,
+        };
+        let context = egui::Context::default();
+        let now = Local::now();
+        let render = |input| {
+            let mut result = (egui::Rect::NOTHING, false);
+            context
+                .run_ui(input, |ui| {
+                    ui.set_width(280.0);
+                    let response = conversation_row(ui, &conversation, false, &now);
+                    result = (response.rect, response.clicked());
+                })
+                .drop_without_applying_deltas();
+            result
+        };
+
+        let (rect, _) = render(egui::RawInput::default());
+        assert_eq!(rect.width(), 280.0);
+        let position = rect.center();
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        render(egui::RawInput {
+            events: vec![egui::Event::PointerMoved(position), pointer(true)],
+            ..Default::default()
+        });
+        let (_, clicked) = render(egui::RawInput {
+            events: vec![egui::Event::PointerMoved(position), pointer(false)],
+            ..Default::default()
+        });
+
+        assert!(clicked);
     }
 }

@@ -1,111 +1,245 @@
 mod login;
 mod mailbox;
 mod reader;
-mod selectable;
 mod settings;
+mod theme;
 
-use iced::widget::text::IntoFragment;
-use iced::widget::{Text, column, container, text};
-use iced::{Element, Fill, Font, Size, window};
+use eframe::egui;
 
-use crate::app::{App, AuthState, Message};
+use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect};
 use crate::mail::Folder;
-use crate::settings::Settings;
+use crate::runtime::Runtime;
+use crate::settings::{Settings, Window};
 
-/// Size of the small print: times, counts, addresses and every other line
-/// that supports the one above it.
-pub(super) const DETAIL_SIZE: f32 = 12.0;
+const MIN_WINDOW_SIZE: [f32; 2] = [820.0, 480.0];
 
-const MIN_WINDOW_SIZE: Size = Size::new(820.0, 480.0);
-
-/// A system family with a real bold face. The toolkit's own default family is
-/// usually not installed, and its fallback chain can draw bold text in an
-/// unrelated monospace face.
-#[cfg(target_os = "macos")]
-const APP_FONT: Font = Font::with_name("Helvetica Neue");
-#[cfg(target_os = "windows")]
-const APP_FONT: Font = Font::with_name("Segoe UI");
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const APP_FONT: Font = Font::DEFAULT;
-
-pub fn run(demo: bool) -> iced::Result {
-    let settings = Settings::load();
-    let size = Size::new(settings.window.width, settings.window.height);
-
-    iced::application(move || App::boot(demo, settings.clone()), App::update, view)
-        .title(move |app: &App| window_title(app, demo))
-        .subscription(App::subscription)
-        .default_font(APP_FONT)
-        .window(window::Settings {
-            size,
-            min_size: Some(MIN_WINDOW_SIZE),
-            resizable: true,
-            ..window::Settings::default()
-        })
-        .run()
+#[derive(Default)]
+pub(super) struct UiState {
+    focus_search: bool,
+    scroll_reader_top: bool,
+    reveal_conversation: Option<String>,
 }
 
-/// The window title, carrying the unread count so it is readable from the
-/// dock or task bar. Inbox, not the open folder: it is the one people watch.
+pub fn run(demo: bool) -> eframe::Result {
+    let settings = Settings::load();
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([settings.window.width, settings.window.height])
+            .with_min_inner_size(MIN_WINDOW_SIZE),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Ruston Mail",
+        options,
+        Box::new(move |creation| Ok(Box::new(DesktopApp::new(creation, demo, settings)))),
+    )
+}
+
+struct DesktopApp {
+    app: App,
+    runtime: Runtime,
+    ui: UiState,
+    demo: bool,
+    title: String,
+}
+
+impl DesktopApp {
+    fn new(creation: &eframe::CreationContext<'_>, demo: bool, settings: Settings) -> Self {
+        theme::install(&creation.egui_ctx);
+        let runtime = Runtime::new().expect("failed to start background runtime");
+        runtime.attach(&creation.egui_ctx);
+        let (app, effects) = App::boot(demo, settings);
+        let mut desktop = Self {
+            app,
+            runtime,
+            ui: UiState::default(),
+            demo,
+            title: String::new(),
+        };
+        desktop.execute(effects, &creation.egui_ctx);
+        desktop
+    }
+
+    fn dispatch(&mut self, message: Message, context: &egui::Context) {
+        let effects = self.app.update(message);
+        self.execute(effects, context);
+    }
+
+    fn execute(&mut self, effects: Effects, context: &egui::Context) {
+        for effect in self.runtime.execute(effects) {
+            match effect {
+                UiEffect::CopyText(text) => context.copy_text(text),
+                UiEffect::FocusSearch => self.ui.focus_search = true,
+                UiEffect::ScrollReaderTop => self.ui.scroll_reader_top = true,
+                UiEffect::RevealConversation(id) => self.ui.reveal_conversation = Some(id),
+            }
+        }
+        context.request_repaint();
+    }
+
+    fn drain_runtime(&mut self, context: &egui::Context) {
+        let messages: Vec<_> = self.runtime.drain().collect();
+        for message in messages {
+            self.dispatch(message, context);
+        }
+    }
+
+    fn remember_window_size(&mut self, context: &egui::Context) {
+        let Some(size) = context.input(|input| input.viewport().inner_rect.map(|rect| rect.size()))
+        else {
+            return;
+        };
+        self.dispatch(
+            Message::WindowResized(Window {
+                width: size.x,
+                height: size.y,
+            }),
+            context,
+        );
+    }
+
+    fn keyboard_shortcuts(&mut self, context: &egui::Context) {
+        if !matches!(self.app.auth_state(), AuthState::Authenticated { .. }) {
+            return;
+        }
+
+        let wants_text = context.egui_wants_keyboard_input();
+        let presses = context.input(|input| {
+            let command = input.modifiers.command;
+            let mut presses = Vec::new();
+            if command && input.key_pressed(egui::Key::R) {
+                presses.push(key(Key::Character('r'), true));
+            }
+            if command && input.key_pressed(egui::Key::F) {
+                presses.push(key(Key::Character('f'), true));
+            }
+            if input.key_pressed(egui::Key::Escape) {
+                presses.push(key(Key::Escape, false));
+            }
+            if !wants_text && !command && !input.modifiers.alt && !input.modifiers.shift {
+                if input.key_pressed(egui::Key::ArrowDown) {
+                    presses.push(key(Key::ArrowDown, false));
+                } else if input.key_pressed(egui::Key::ArrowUp) {
+                    presses.push(key(Key::ArrowUp, false));
+                } else if input.key_pressed(egui::Key::Enter) {
+                    presses.push(key(Key::Enter, false));
+                } else {
+                    for event in &input.events {
+                        if let egui::Event::Text(text) = event
+                            && let Some(character @ ('j' | 'k')) = text.chars().next()
+                        {
+                            presses.push(key(Key::Character(character), false));
+                            break;
+                        }
+                    }
+                }
+            }
+            presses
+        });
+
+        for press in presses {
+            self.dispatch(Message::KeyPressed(press), context);
+        }
+    }
+
+    fn update_title(&mut self, context: &egui::Context) {
+        let title = window_title(&self.app, self.demo);
+        if title != self.title {
+            self.title.clone_from(&title);
+            context.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
+    }
+}
+
+impl eframe::App for DesktopApp {
+    fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        self.runtime.attach(context);
+        self.drain_runtime(context);
+        self.remember_window_size(context);
+        self.keyboard_shortcuts(context);
+        self.update_title(context);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let context = ui.ctx().clone();
+        let mut messages = Vec::new();
+        match self.app.auth_state() {
+            AuthState::CheckingSession => status_view(ui, "Opening Ruston Mail…"),
+            AuthState::SignedOut
+            | AuthState::SigningIn(_)
+            | AuthState::NeedsTotp
+            | AuthState::NeedsMailboxPassword
+            | AuthState::NeedsHumanVerification { .. } => login::show(ui, &self.app, &mut messages),
+            AuthState::Authenticated { email } => {
+                if self.app.showing_settings() {
+                    settings::show(ui, self.app.settings(), &mut messages);
+                } else if self.app.mailbox().is_some() {
+                    mailbox::show(
+                        ui,
+                        &self.app,
+                        email.as_deref(),
+                        false,
+                        &mut self.ui,
+                        &mut messages,
+                    );
+                } else {
+                    status_view(ui, "Opening mailbox…");
+                }
+            }
+            AuthState::SigningOut => {
+                if self.app.mailbox().is_some() {
+                    mailbox::show(ui, &self.app, None, true, &mut self.ui, &mut messages);
+                } else {
+                    status_view(ui, "Signing out…");
+                }
+            }
+        }
+
+        for message in messages {
+            self.dispatch(message, &context);
+        }
+    }
+}
+
+fn key(key: Key, command: bool) -> KeyPress {
+    KeyPress {
+        key,
+        command,
+        other_modifier: false,
+    }
+}
+
+fn status_view(root: &mut egui::Ui, message: &str) {
+    egui::CentralPanel::default().show(root, |ui| {
+        ui.centered_and_justified(|ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading(egui::RichText::new("Ruston Mail").size(36.0));
+                ui.add_space(16.0);
+                ui.label(message);
+                ui.add_space(12.0);
+                ui.spinner();
+            });
+        });
+    });
+}
+
 fn window_title(app: &App, demo: bool) -> String {
     let unread = app
         .mailbox()
         .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX));
-
     title_label(unread, demo)
 }
 
-/// An empty inbox says nothing, so the count appears only when it matters.
 fn title_label(unread: Option<u32>, demo: bool) -> String {
     let name = if demo {
         "Ruston Mail (demo)"
     } else {
         "Ruston Mail"
     };
-
     match unread.filter(|unread| *unread > 0) {
         Some(unread) => format!("{name} ({unread})"),
         None => name.to_owned(),
-    }
-}
-
-/// Small secondary text. Both panes share it so their detail lines cannot
-/// drift apart; callers still choose their own wrapping and width.
-pub(super) fn detail_text<'a>(content: impl IntoFragment<'a>) -> Text<'a> {
-    text(content).size(DETAIL_SIZE).style(text::secondary)
-}
-
-fn view(app: &App) -> Element<'_, Message> {
-    match app.auth_state() {
-        AuthState::CheckingSession => status_view("Opening Ruston Mail…"),
-        AuthState::SignedOut
-        | AuthState::SigningIn(_)
-        | AuthState::NeedsTotp
-        | AuthState::NeedsMailboxPassword
-        | AuthState::NeedsHumanVerification { .. } => login::view(app),
-        AuthState::Authenticated { email } => authenticated_view(app, email.as_deref(), false),
-        AuthState::SigningOut => authenticated_view(app, None, true),
-    }
-}
-
-fn status_view(message: &str) -> Element<'_, Message> {
-    container(column![text("Ruston Mail").size(36), text(message)].spacing(16))
-        .center(Fill)
-        .into()
-}
-
-fn authenticated_view<'a>(
-    app: &'a App,
-    email: Option<&'a str>,
-    signing_out: bool,
-) -> Element<'a, Message> {
-    if app.showing_settings() {
-        return settings::view(app.settings());
-    }
-
-    match app.mailbox() {
-        Some(mailbox) => mailbox::view(app, mailbox, email, signing_out),
-        None => status_view("Opening mailbox…"),
     }
 }
 

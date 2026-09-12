@@ -206,12 +206,8 @@ pub enum MessageBody {
 }
 
 impl MessageBody {
-    /// Whether the body is plain text, with no formatting to lose.
-    pub fn is_plain(&self) -> bool {
-        matches!(self, Self::PlainText(_))
-    }
-
     /// The body as plain text, for copying out.
+    #[cfg(test)]
     pub fn plain_text(&self) -> String {
         match self {
             Self::PlainText(text) => text.clone(),
@@ -244,6 +240,7 @@ impl RichBody {
 
     /// The body as plain text, one block per line, for copying out. Styles and
     /// links are dropped; structure is kept with markers and quote prefixes.
+    #[cfg(test)]
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
         for block in &self.blocks {
@@ -267,6 +264,7 @@ impl RichBody {
     }
 }
 
+#[cfg(test)]
 fn join(spans: &[RichSpan]) -> String {
     spans.iter().map(|span| span.text.as_str()).collect()
 }

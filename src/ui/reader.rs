@@ -1,18 +1,11 @@
 use std::path::Path;
 
 use chrono::{Local, TimeZone};
-use iced::font::{self, Weight};
-use iced::widget::text::{IntoFragment, LineHeight, Span, Wrapping};
-use iced::widget::{
-    Column, Row, button, column, container, rich_text, row, rule, scrollable, span, text,
-    text_editor,
-};
-use iced::{Element, Fill, Font, Padding};
+use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Sense, Stroke};
 
-use super::APP_FONT;
-use super::mailbox::{PANE_PADDING, SPACING};
-use super::{DETAIL_SIZE, detail_text};
-use crate::app::{ConversationReader, Mailbox, Message, PendingLink, READER_BODY, ReaderState};
+use super::mailbox::detail;
+use super::{UiState, theme};
+use crate::app::{ConversationReader, Mailbox, Message, PendingLink, ReaderState};
 use crate::downloads::SaveError;
 use crate::mail::{
     BlockKind, ConversationDetail, ConversationSummary, CustomKind, Folder, MailAction,
@@ -21,168 +14,165 @@ use crate::mail::{
 };
 
 const SUBJECT_SIZE: f32 = 22.0;
-const MESSAGE_SPACING: f32 = 12.0;
-const TOGGLE_WIDTH: f32 = 16.0;
-/// Words of the body shown in a collapsed message's header.
 const PREVIEW_WORDS: usize = 40;
-const BLOCK_SPACING: f32 = 10.0;
-const LIST_MARKER_WIDTH: f32 = 28.0;
-const LIST_INDENT: f32 = 18.0;
-const QUOTE_INDENT: f32 = 12.0;
-/// Labels shown at once. Past this the row would crowd out the mail it sits
-/// above, so the ones the conversation does not carry wait behind a button.
 const LABELS_SHOWN: usize = 8;
-/// Deeper quotes share this level's box so indentation stays readable.
 const MAX_QUOTE_DEPTH: u8 = 4;
-/// Bodies are set larger and looser than the interface around them, and stop
-/// short of the pane's full width: long lines are tiring to read.
-pub(super) const BODY_SIZE: f32 = 15.0;
-pub(super) const BODY_LINE_HEIGHT: LineHeight = LineHeight::Relative(1.45);
+const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
+const MARKER_WIDTH: f32 = 12.0;
 
-pub(super) fn view<'a>(
-    mailbox: &'a Mailbox,
-    places: &'a [Folder],
+#[allow(clippy::too_many_arguments)]
+pub(super) fn show(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    places: &[Folder],
     actions_available: bool,
-    pending_link: Option<&'a PendingLink>,
-    saving_attachment: Option<&'a str>,
-    saved_attachment: Option<Result<&'a Path, SaveError>>,
-) -> Element<'a, Message> {
-    let content = match mailbox.reader_state() {
-        ReaderState::Empty => placeholder("Select a conversation to read it."),
-        ReaderState::Loading { .. } => placeholder("Loading conversation…"),
-        ReaderState::Failed { error, .. } => load_error(*error),
-        ReaderState::Loaded(reader) => conversation(
-            reader,
-            places,
-            mailbox.selected_summary().filter(|_| actions_available),
-            !mailbox.is_busy() && !mailbox.action_pending(),
-            mailbox.action_error(),
-            mailbox,
-            saving_attachment,
-        ),
-    };
-    let content = match saved_attachment {
-        Some(outcome) => column![
-            container(saved_attachment_line(outcome))
-                .width(Fill)
-                .padding([4, PANE_PADDING as u16]),
-            content
-        ]
-        .height(Fill)
-        .into(),
-        None => content,
-    };
-    let content = match pending_link {
-        Some(link) => column![link_prompt(link), content].height(Fill).into(),
-        None => content,
-    };
+    pending_link: Option<&PendingLink>,
+    saving_attachment: Option<&str>,
+    saved_attachment: Option<Result<&Path, SaveError>>,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    if let Some(outcome) = saved_attachment {
+        let (text, color) = match outcome {
+            Ok(path) => (format!("Saved to {}", path.display()), theme::SUCCESS),
+            Err(error) => (error.message().to_owned(), theme::DANGER),
+        };
+        ui.label(egui::RichText::new(text).small().color(color));
+        ui.separator();
+    }
+    if let Some(link) = pending_link {
+        link_prompt(ui, link, messages);
+        ui.add_space(8.0);
+    }
 
-    container(content).width(Fill).height(Fill).into()
-}
-
-/// Asks before opening a link, showing where it really goes.
-fn link_prompt(link: &PendingLink) -> Element<'_, Message> {
-    container(
-        column![
-            text(format!("Open a link to {}?", link.target)).wrapping(Wrapping::WordOrGlyph),
-            detail_text(link.url.as_str()).wrapping(Wrapping::WordOrGlyph),
-            row![
-                button(text("Open")).on_press(Message::OpenLink),
-                button(text("Copy link"))
-                    .style(button::secondary)
-                    .on_press(Message::CopyLink),
-                button(text("Cancel"))
-                    .style(button::text)
-                    .on_press(Message::DismissLink),
-            ]
-            .spacing(SPACING),
-        ]
-        .spacing(6),
-    )
-    .width(Fill)
-    .padding(PANE_PADDING)
-    .style(container::bordered_box)
-    .into()
-}
-
-fn load_error(error: crate::mail::MailboxError) -> Element<'static, Message> {
-    container(
-        column![
-            text(error.conversation_message()),
-            button(text("Retry")).on_press(Message::RetryConversation),
-        ]
-        .spacing(SPACING),
-    )
-    .center(Fill)
-    .padding(PANE_PADDING)
-    .into()
-}
-
-fn placeholder(message: &str) -> Element<'_, Message> {
-    container(text(message).style(text::secondary))
-        .center(Fill)
-        .padding(PANE_PADDING)
-        .into()
-}
-
-fn conversation<'a>(
-    reader: &'a ConversationReader,
-    places: &'a [Folder],
-    summary: Option<&'a ConversationSummary>,
-    actions_enabled: bool,
-    action_error: Option<crate::mail::MailboxError>,
-    mailbox: &'a Mailbox,
-    saving_attachment: Option<&'a str>,
-) -> Element<'a, Message> {
-    let detail = reader.detail();
-    let mut header = column![
-        text(detail.subject.as_deref().unwrap_or("(No subject)"))
-            .size(SUBJECT_SIZE)
-            .wrapping(Wrapping::WordOrGlyph),
-        detail_text(message_count_label(detail.messages.len())),
-    ]
-    .spacing(4);
-    if let Some(summary) = summary {
-        header = header.push(action_toolbar(summary, actions_enabled));
-        if let Some(labels) =
-            label_toggles(detail, places, actions_enabled, reader.is_showing_labels())
-        {
-            header = header.push(labels);
+    match mailbox.reader_state() {
+        ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
+        ReaderState::Loading { .. } => {
+            ui.centered_and_justified(|ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Loading conversation…");
+                });
+            });
         }
-        if let Some(error) = action_error {
-            header = header.push(
-                text(error.action_message())
-                    .size(DETAIL_SIZE)
-                    .style(text::danger),
+        ReaderState::Failed { error, .. } => {
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(error.conversation_message());
+                    if ui.button("Retry").clicked() {
+                        messages.push(Message::RetryConversation);
+                    }
+                });
+            });
+        }
+        ReaderState::Loaded(reader) => {
+            conversation(
+                ui,
+                reader,
+                places,
+                mailbox.selected_summary().filter(|_| actions_available),
+                !mailbox.is_busy() && !mailbox.action_pending(),
+                mailbox.action_error(),
+                saving_attachment,
+                state,
+                messages,
             );
         }
     }
-
-    let mut messages = Column::new().spacing(MESSAGE_SPACING);
-    if detail.messages.is_empty() {
-        messages = messages.push(text("This conversation has no messages.").style(text::secondary));
-    }
-    for message in &detail.messages {
-        let selectable = mailbox.selectable_body(&message.id);
-        messages = messages.push(message_card(message, reader, selectable, saving_attachment));
-    }
-
-    scrollable(
-        column![header, messages]
-            .spacing(16)
-            .padding(PANE_PADDING)
-            .width(Fill),
-    )
-    .id(READER_BODY)
-    .spacing(SPACING)
-    .height(Fill)
-    .into()
 }
 
-fn action_toolbar(summary: &ConversationSummary, enabled: bool) -> Element<'_, Message> {
-    // Each button is a label and the action it applies to the open row, so
-    // adding one is a line in this table rather than a message of its own.
+fn link_prompt(ui: &mut egui::Ui, link: &PendingLink, messages: &mut Vec<Message>) {
+    theme::card()
+        .fill(theme::ACCENT_SOFT)
+        .stroke(Stroke::new(1.0, theme::ACCENT))
+        .show(ui, |ui| {
+            ui.label(format!("Open a link to {}?", link.target));
+            ui.add(egui::Label::new(egui::RichText::new(&link.url).small()).wrap());
+            ui.horizontal(|ui| {
+                if ui.button("Open").clicked() {
+                    messages.push(Message::OpenLink);
+                }
+                if ui.button("Copy link").clicked() {
+                    messages.push(Message::CopyLink);
+                }
+                if ui.button("Cancel").clicked() {
+                    messages.push(Message::DismissLink);
+                }
+            });
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn conversation(
+    ui: &mut egui::Ui,
+    reader: &ConversationReader,
+    places: &[Folder],
+    summary: Option<&ConversationSummary>,
+    actions_enabled: bool,
+    action_error: Option<crate::mail::MailboxError>,
+    saving_attachment: Option<&str>,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    let mut scroll = egui::ScrollArea::vertical()
+        .id_salt("reader-scroll")
+        .auto_shrink([false, false]);
+    if std::mem::take(&mut state.scroll_reader_top) {
+        scroll = scroll.vertical_scroll_offset(0.0);
+    }
+    let content_width = ui.available_width().min(READING_WIDTH);
+    scroll.show(ui, |ui| {
+        ui.set_width(content_width);
+        let detail_data = reader.detail();
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(detail_data.subject.as_deref().unwrap_or("(No subject)"))
+                    .size(SUBJECT_SIZE)
+                    .strong(),
+            )
+            .selectable(true)
+            .wrap(),
+        );
+        detail(ui, &message_count_label(detail_data.messages.len()));
+        ui.add_space(8.0);
+
+        if let Some(summary) = summary {
+            action_toolbar(ui, summary, actions_enabled, messages);
+            label_toggles(
+                ui,
+                detail_data,
+                places,
+                actions_enabled,
+                reader.is_showing_labels(),
+                messages,
+            );
+            if let Some(error) = action_error {
+                ui.label(
+                    egui::RichText::new(error.action_message())
+                        .small()
+                        .color(theme::DANGER),
+                );
+            }
+        }
+        ui.add_space(8.0);
+
+        if detail_data.messages.is_empty() {
+            detail(ui, "This conversation has no messages.");
+        }
+        for message in &detail_data.messages {
+            message_card(ui, message, reader, saving_attachment, messages);
+            ui.add_space(12.0);
+        }
+    });
+}
+
+fn action_toolbar(
+    ui: &mut egui::Ui,
+    summary: &ConversationSummary,
+    enabled: bool,
+    messages: &mut Vec<Message>,
+) {
     let read = if summary.unread {
         ("Mark read", MailAction::SetUnread(false))
     } else {
@@ -206,228 +196,259 @@ fn action_toolbar(summary: &ConversationSummary, enabled: bool) -> Element<'_, M
         read,
         star,
     ];
-
-    Row::with_children(
-        actions
-            .into_iter()
-            .map(|(label, action)| action_button(label, Message::ApplyAction(action), enabled)),
-    )
-    .spacing(4)
-    .wrap()
-    .vertical_spacing(4)
-    .into()
+    ui.horizontal_wrapped(|ui| {
+        for (label, action) in actions {
+            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                messages.push(Message::ApplyAction(action));
+            }
+        }
+    });
 }
 
-/// The labels the account made, each showing whether the open conversation
-/// carries it and turning it on or off when pressed. `None` when the account
-/// has made no labels, so the row does not take up space for nothing.
-///
-/// An account with more labels than fit shows only the ones this
-/// conversation carries, and puts the rest behind a button: a wall of names
-/// above every conversation is worse than a press to reach them.
-fn label_toggles<'a>(
-    detail: &ConversationDetail,
-    places: &'a [Folder],
+fn label_toggles(
+    ui: &mut egui::Ui,
+    conversation: &ConversationDetail,
+    places: &[Folder],
     enabled: bool,
     showing_all: bool,
-) -> Option<Element<'a, Message>> {
-    let labels: Vec<&Folder> = places
+    messages: &mut Vec<Message>,
+) {
+    let labels: Vec<_> = places
         .iter()
         .filter(|place| place.kind() == Some(CustomKind::Label))
         .collect();
     if labels.is_empty() {
-        return None;
+        return;
     }
-
     let crowded = labels.len() > LABELS_SHOWN;
-    let shown = labels
-        .iter()
-        .copied()
-        .filter(|label| shows_label(detail.carries(label), crowded, showing_all));
-    let mut row = Row::with_children(shown.map(|label| {
-        let carried = detail.carries(label);
-        let action = MailAction::SetLabel {
-            label: label.clone(),
-            on: !carried,
-        };
-
-        label_toggle(label.name(), carried, action, enabled)
-    }));
-    if crowded {
-        let label = if showing_all {
-            "Fewer labels".to_owned()
-        } else {
-            format!("All {} labels", labels.len())
-        };
-        row = row.push(action_button(label, Message::ToggleLabelsShown, true));
-    }
-
-    Some(row.spacing(4).wrap().vertical_spacing(4).into())
+    ui.horizontal_wrapped(|ui| {
+        for label in labels
+            .iter()
+            .copied()
+            .filter(|label| shows_label(conversation.carries(label), crowded, showing_all))
+        {
+            let carried = conversation.carries(label);
+            let button = egui::Button::new(label.name()).selected(carried).small();
+            if ui.add_enabled(enabled, button).clicked() {
+                messages.push(Message::ApplyAction(MailAction::SetLabel {
+                    label: label.clone(),
+                    on: !carried,
+                }));
+            }
+        }
+        if crowded
+            && ui
+                .small_button(if showing_all {
+                    "Fewer labels".to_owned()
+                } else {
+                    format!("All {} labels", labels.len())
+                })
+                .clicked()
+        {
+            messages.push(Message::ToggleLabelsShown);
+        }
+    });
 }
 
-/// A label the conversation carries reads as pressed, so the row says what is
-/// on as much as what can be turned on.
-/// Whether a label belongs in the row as it stands. A conversation always
-/// shows what it carries; the rest are there too until the account has more
-/// labels than the row can hold, and then only when they are asked for.
 fn shows_label(carried: bool, crowded: bool, showing_all: bool) -> bool {
     carried || !crowded || showing_all
 }
 
-fn label_toggle(
-    name: &str,
-    carried: bool,
-    action: MailAction,
-    enabled: bool,
-) -> Element<'_, Message> {
-    button(text(name).size(DETAIL_SIZE))
-        .padding([4, 8])
-        .style(if carried {
-            button::primary
-        } else {
-            button::text
-        })
-        .on_press_maybe(enabled.then(|| Message::ApplyAction(action)))
-        .into()
-}
-
-fn action_button<'a>(
-    label: impl IntoFragment<'a>,
-    message: Message,
-    enabled: bool,
-) -> Element<'a, Message> {
-    button(text(label).size(DETAIL_SIZE))
-        .padding([4, 8])
-        .style(button::secondary)
-        .on_press_maybe(enabled.then_some(message))
-        .into()
-}
-
-fn message_card<'a>(
-    message: &'a MailMessage,
+fn message_card(
+    ui: &mut egui::Ui,
+    message: &MailMessage,
     reader: &ConversationReader,
-    selection: Option<&'a text_editor::Content>,
     saving_attachment: Option<&str>,
-) -> Element<'a, Message> {
+    messages: &mut Vec<Message>,
+) {
     let expanded = reader.is_expanded(&message.id);
+    ui.push_id(&message.id, |ui| {
+        theme::card().show(ui, |ui| {
+            if message_header(ui, message, expanded).clicked() {
+                messages.push(Message::ToggleMessageExpanded(message.id.clone()));
+            }
+            if expanded {
+                for attachment in &message.attachments {
+                    attachment_row(ui, &message.id, attachment, saving_attachment, messages);
+                }
+                ui.separator();
+                theme::selectable_text(ui, |ui| {
+                    message_body(ui, message, reader, messages);
+                });
+            }
+        });
+    });
+}
+
+/// The whole header is one disclosure control. Copy selection is enabled only
+/// below it, so clicking a sender or preview reliably expands the message.
+fn message_header(ui: &mut egui::Ui, message: &MailMessage, expanded: bool) -> egui::Response {
+    let height = if expanded { 66.0 } else { 44.0 };
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
+    let icon_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
+    let points = chevron_points(icon_center, expanded);
+    let color = if response.hovered() {
+        Color32::WHITE
+    } else {
+        theme::MUTED
+    };
+    ui.painter()
+        .line_segment([points[0], points[1]], Stroke::new(1.5, color));
+    ui.painter()
+        .line_segment([points[1], points[2]], Stroke::new(1.5, color));
+
+    let date_width = 122.0_f32.min(rect.width() * 0.3);
+    let copy_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 22.0, rect.top()),
+        egui::pos2(rect.right() - date_width - 8.0, rect.bottom()),
+    );
+    let painter = ui.painter_at(rect);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
+    theme::paint_truncated_text(
+        &painter,
+        copy_rect.left_top(),
+        sender,
+        FontId::proportional(14.0),
+        ui.visuals().strong_text_color(),
+        copy_rect.width(),
+    );
+    if expanded {
+        if message.sender.name.is_some() && !message.sender.address.is_empty() {
+            header_detail(
+                &painter,
+                copy_rect.left_top() + egui::vec2(0.0, 20.0),
+                &message.sender.address,
+                copy_rect.width(),
+            );
+        }
+        header_detail(
+            &painter,
+            copy_rect.left_top() + egui::vec2(0.0, 39.0),
+            &format!("To: {}", recipients_label(&message.recipients)),
+            copy_rect.width(),
+        );
+    } else {
+        theme::paint_truncated_text(
+            &painter,
+            copy_rect.left_top() + egui::vec2(0.0, 22.0),
+            &preview(&message.body),
+            FontId::proportional(14.0),
+            theme::MUTED,
+            copy_rect.width(),
+        );
+    }
+
     let time = message
         .time
         .map(|time| format_message_time(time, &Local))
         .unwrap_or_default();
+    painter.text(
+        egui::pos2(rect.right(), rect.top() + 2.0),
+        Align2::RIGHT_TOP,
+        time,
+        FontId::proportional(11.0),
+        theme::MUTED,
+    );
 
-    let mut identity = column![text(sender).wrapping(Wrapping::WordOrGlyph)].spacing(2);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::CollapsingHeader, true, sender)
+    });
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if expanded { "Collapse" } else { "Expand" })
+}
+
+fn header_detail(painter: &egui::Painter, position: egui::Pos2, text: &str, width: f32) {
+    theme::paint_truncated_text(
+        painter,
+        position,
+        text,
+        FontId::proportional(11.0),
+        theme::MUTED,
+        width,
+    );
+}
+
+fn chevron_points(center: egui::Pos2, expanded: bool) -> [egui::Pos2; 3] {
     if expanded {
-        if message.sender.name.is_some() && !message.sender.address.is_empty() {
-            identity = identity.push(detail_line(message.sender.address.clone()));
-        }
-        identity = identity.push(detail_line(format!(
-            "To: {}",
-            recipients_label(&message.recipients)
-        )));
-        for attachment in &message.attachments {
-            let saving = saving_attachment.is_some();
-            let this_one = saving_attachment == Some(attachment.id.as_str());
-            identity = identity.push(attachment_row(&message.id, attachment, saving, this_one));
-        }
-    } else {
-        identity = identity.push(
-            container(detail_text(preview(&message.body)).wrapping(Wrapping::None))
-                .width(Fill)
-                .clip(true),
-        );
-    }
-
-    // The arrow shows the state in addition to the body being visible.
-    let header = button(
-        row![
-            text(if expanded { "▾" } else { "▸" }).width(TOGGLE_WIDTH),
-            identity.width(Fill),
-            detail_text(time),
+        [
+            center + egui::vec2(-4.0, -2.0),
+            center + egui::vec2(0.0, 2.0),
+            center + egui::vec2(4.0, -2.0),
         ]
-        .spacing(SPACING),
-    )
-    .width(Fill)
-    .padding(10)
-    .style(button::text)
-    .on_press(Message::ToggleMessageExpanded(message.id.clone()));
-
-    let mut card = column![header];
-    if expanded {
-        let body = match selection {
-            Some(content) => super::selectable::read_only(&message.id, content),
-            None => message_body(message, reader),
-        };
-        // A plain body is selectable as it is. Only an HTML one has to trade
-        // its formatting for selection, so only it offers the switch — above
-        // the body, where it is seen on opening instead of after scrolling.
-        let mut content = Column::new().spacing(SPACING);
-        if !message.body.is_plain() {
-            content = content.push(selection_button(&message.id, selection.is_some()));
-        }
-        content = content.push(body);
-        card = card.push(rule::horizontal(1)).push(
-            container(content)
-                .width(Fill)
-                .max_width(READING_WIDTH)
-                .padding(MESSAGE_SPACING),
-        );
-    }
-
-    container(card)
-        .width(Fill)
-        .style(container::bordered_box)
-        .into()
-}
-
-/// Switches one HTML body between the formatted view and selectable plain
-/// text. Selecting drops styles and links, so it stays off until asked for.
-fn selection_button(message_id: &str, selecting: bool) -> Element<'_, Message> {
-    let label = if selecting {
-        "Show formatted text"
     } else {
-        "Select text"
-    };
-
-    button(text(label).size(DETAIL_SIZE))
-        .padding([4, 8])
-        .style(button::secondary)
-        .on_press(Message::ToggleTextSelection(message_id.to_owned()))
-        .into()
-}
-
-fn message_body<'a>(message: &'a MailMessage, reader: &ConversationReader) -> Element<'a, Message> {
-    match &message.body {
-        MessageBody::PlainText(content) => text(content.as_str())
-            .size(BODY_SIZE)
-            .line_height(BODY_LINE_HEIGHT)
-            .wrapping(Wrapping::WordOrGlyph)
-            .into(),
-        MessageBody::Rich(rich) => rich_body(rich, &message.id, reader),
+        [
+            center + egui::vec2(-2.0, -4.0),
+            center + egui::vec2(2.0, 0.0),
+            center + egui::vec2(-2.0, 4.0),
+        ]
     }
 }
 
-/// Lays out a body, folding each run of quoted blocks behind a toggle.
-fn rich_body<'a>(
-    rich: &'a RichBody,
-    message_id: &'a str,
+fn attachment_row(
+    ui: &mut egui::Ui,
+    message_id: &str,
+    attachment: &MailAttachment,
+    saving_attachment: Option<&str>,
+    messages: &mut Vec<Message>,
+) {
+    let saving = saving_attachment.is_some();
+    let this_one = saving_attachment == Some(attachment.id.as_str());
+    ui.horizontal(|ui| {
+        detail(ui, &format!("Attachment: {}", attachment.name));
+        detail(ui, &size_label(attachment.size));
+        if ui
+            .add_enabled(
+                !saving,
+                egui::Button::new(if this_one { "Saving…" } else { "Save" }).small(),
+            )
+            .clicked()
+        {
+            messages.push(Message::SaveAttachment(
+                message_id.to_owned(),
+                attachment.id.clone(),
+            ));
+        }
+    });
+}
+
+fn message_body(
+    ui: &mut egui::Ui,
+    message: &MailMessage,
     reader: &ConversationReader,
-) -> Element<'a, Message> {
-    if rich.blocks.is_empty() {
-        return text("This message has no text.")
-            .style(text::secondary)
-            .into();
+    messages: &mut Vec<Message>,
+) {
+    match &message.body {
+        MessageBody::PlainText(content) => {
+            ui.add(
+                egui::Label::new(egui::RichText::new(content).size(BODY_SIZE))
+                    .selectable(true)
+                    .wrap(),
+            );
+        }
+        MessageBody::Rich(body) => rich_body(ui, body, &message.id, reader, messages),
     }
-    // A message that is nothing but quoted text, such as a forward, has no
-    // text of its own to keep in view, so folding it would hide everything.
-    if rich.blocks.iter().all(|block| block.quote_depth > 0) {
-        return blocks(&rich.blocks, 0);
+}
+
+fn rich_body(
+    ui: &mut egui::Ui,
+    body: &RichBody,
+    message_id: &str,
+    reader: &ConversationReader,
+    messages: &mut Vec<Message>,
+) {
+    if body.blocks.is_empty() {
+        detail(ui, "This message has no text.");
+        return;
+    }
+    if body.blocks.iter().all(|block| block.quote_depth > 0) {
+        blocks(ui, &body.blocks, 0, messages);
+        return;
     }
 
-    let mut column = Column::new().spacing(BLOCK_SPACING).width(Fill);
-    let mut rest = &rich.blocks[..];
+    let mut rest = &body.blocks[..];
     let mut quote = 0;
-
     while let Some(first) = rest.first() {
         if first.quote_depth > 0 {
             let run = rest
@@ -435,157 +456,165 @@ fn rich_body<'a>(
                 .take_while(|block| block.quote_depth > 0)
                 .count();
             let expanded = reader.is_quote_expanded(message_id, quote);
-            column = column.push(quote_fold(&rest[..run], message_id, quote, expanded));
+            if ui
+                .small_button(if expanded {
+                    "Hide quoted text"
+                } else {
+                    "Show quoted text"
+                })
+                .clicked()
+            {
+                messages.push(Message::ToggleQuoteExpanded(message_id.to_owned(), quote));
+            }
+            if expanded {
+                quote_box(ui, |ui| blocks(ui, &rest[..run], 1, messages));
+            }
             quote += 1;
             rest = &rest[run..];
         } else {
-            column = column.push(block(first));
+            block(ui, first, messages);
             rest = &rest[1..];
         }
+        ui.add_space(8.0);
     }
-
-    column.into()
 }
 
-fn quote_fold<'a>(
-    quoted: &'a [RichBlock],
-    message_id: &str,
-    index: usize,
-    expanded: bool,
-) -> Element<'a, Message> {
-    let label = if expanded {
-        "Hide quoted text"
-    } else {
-        "Show quoted text"
-    };
-    let toggle = button(text(label).size(DETAIL_SIZE))
-        .padding([2, 8])
-        .style(button::secondary)
-        .on_press(Message::ToggleQuoteExpanded(message_id.to_owned(), index));
-
-    let mut fold = column![toggle].spacing(BLOCK_SPACING);
-    if expanded {
-        fold = fold.push(quote_box(blocks(quoted, 1)));
-    }
-
-    fold.into()
-}
-
-/// Lays out blocks at one quote depth; each run of deeper blocks shares one
-/// quote box, so a quoted reply reads as a single unit.
-fn blocks(blocks: &[RichBlock], depth: u8) -> Element<'_, Message> {
-    let mut column = Column::new().spacing(BLOCK_SPACING).width(Fill);
-    let mut rest = blocks;
-
+fn blocks(ui: &mut egui::Ui, rich_blocks: &[RichBlock], depth: u8, messages: &mut Vec<Message>) {
+    let mut rest = rich_blocks;
     while let Some(first) = rest.first() {
         if first.quote_depth > depth && depth < MAX_QUOTE_DEPTH {
             let run = rest
                 .iter()
                 .take_while(|block| block.quote_depth > depth)
                 .count();
-            column = column.push(quote_box(self::blocks(&rest[..run], depth + 1)));
+            quote_box(ui, |ui| blocks(ui, &rest[..run], depth + 1, messages));
             rest = &rest[run..];
         } else {
-            column = column.push(block(first));
+            block(ui, first, messages);
             rest = &rest[1..];
         }
+        ui.add_space(8.0);
     }
-
-    column.into()
 }
 
-fn quote_box(content: Element<'_, Message>) -> Element<'_, Message> {
-    container(content)
-        .width(Fill)
-        .padding(Padding {
-            left: QUOTE_INDENT,
-            ..Padding::new(SPACING)
-        })
-        .style(container::bordered_box)
-        .into()
+fn quote_box(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(Color32::from_rgb(27, 28, 35))
+        .stroke(Stroke::new(1.0, theme::BORDER))
+        .inner_margin(10)
+        .show(ui, content);
 }
 
-fn block(block: &RichBlock) -> Element<'_, Message> {
+fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
     match &block.kind {
-        BlockKind::Paragraph(spans) => rich_line(spans, None),
-        BlockKind::Heading { level, spans } => rich_line(spans, Some(*level)),
+        BlockKind::Paragraph(spans) => rich_line(ui, spans, None, messages),
+        BlockKind::Heading { level, spans } => rich_line(ui, spans, Some(*level), messages),
         BlockKind::ListItem {
             marker,
             depth,
             spans,
-        } => row![
-            text(marker.as_str())
-                .size(BODY_SIZE)
-                .width(LIST_MARKER_WIDTH),
-            rich_line(spans, None),
-        ]
-        .spacing(4)
-        .padding(Padding {
-            left: LIST_INDENT * f32::from(depth.saturating_sub(1)),
-            ..Padding::ZERO
-        })
-        .into(),
-        BlockKind::Preformatted(content) => container(
-            text(content.as_str())
-                .size(BODY_SIZE)
-                .font(Font::MONOSPACE)
-                .wrapping(Wrapping::WordOrGlyph),
-        )
-        .width(Fill)
-        .padding(SPACING)
-        .style(container::rounded_box)
-        .into(),
-        BlockKind::Image { description } => detail_text(format!("[Image: {description}]"))
-            .wrapping(Wrapping::WordOrGlyph)
-            .into(),
-        BlockKind::Rule => rule::horizontal(1).into(),
+        } => {
+            ui.horizontal_top(|ui| {
+                ui.add_space(18.0 * f32::from(depth.saturating_sub(1)));
+                // The marker gets a column of its own, so a wrapped item
+                // continues under its own text rather than under the marker.
+                // It stays a label so that it copies out with the item.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(MARKER_WIDTH, 0.0),
+                    Layout::right_to_left(Align::TOP),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(marker).size(BODY_SIZE))
+                                .selectable(true),
+                        );
+                    },
+                );
+                ui.vertical(|ui| rich_line(ui, spans, None, messages));
+            });
+        }
+        BlockKind::Preformatted(content) => {
+            egui::Frame::new()
+                .fill(Color32::from_rgb(18, 19, 24))
+                .corner_radius(6)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(content).monospace().size(BODY_SIZE))
+                            .selectable(true)
+                            .wrap(),
+                    );
+                });
+        }
+        BlockKind::Image { description } => {
+            // Remote images are never fetched; the description stands in for
+            // one, as a placeholder rather than a footnote.
+            egui::Frame::new()
+                .stroke(Stroke::new(1.0, theme::BORDER))
+                .corner_radius(6)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("Image not loaded: {description}"))
+                                .size(BODY_SIZE - 2.0)
+                                .color(theme::MUTED),
+                        )
+                        .selectable(true)
+                        .wrap(),
+                    );
+                });
+        }
+        BlockKind::Rule => {
+            ui.separator();
+        }
     }
 }
 
-fn rich_line(spans: &[RichSpan], heading: Option<u8>) -> Element<'_, Message> {
-    let mut line = rich_text(
-        spans
-            .iter()
-            .map(|piece| rich_span(piece, heading.is_some()))
-            .collect::<Vec<_>>(),
-    )
-    .size(BODY_SIZE)
-    .line_height(BODY_LINE_HEIGHT)
-    .wrapping(Wrapping::WordOrGlyph)
-    .width(Fill)
-    .on_link_click(Message::LinkClicked);
-    if let Some(level) = heading {
-        line = line.size(heading_size(level));
-    }
-
-    line.into()
+fn rich_line(
+    ui: &mut egui::Ui,
+    spans: &[RichSpan],
+    heading: Option<u8>,
+    messages: &mut Vec<Message>,
+) {
+    ui.horizontal_wrapped(|ui| rich_spans(ui, spans, heading, messages));
 }
 
-fn rich_span(piece: &RichSpan, heading: bool) -> Span<'_, String, Font> {
-    let base = if piece.code {
-        Font::MONOSPACE
-    } else {
-        APP_FONT
-    };
-    let font = Font {
-        weight: if piece.strong || heading {
-            Weight::Bold
+fn rich_spans(
+    ui: &mut egui::Ui,
+    spans: &[RichSpan],
+    heading: Option<u8>,
+    messages: &mut Vec<Message>,
+) {
+    ui.spacing_mut().item_spacing.x = 0.0;
+    for span in spans {
+        let mut text =
+            egui::RichText::new(&span.text).size(heading.map(heading_size).unwrap_or(BODY_SIZE));
+        if span.strong || heading.is_some() {
+            text = text.strong();
+        }
+        if span.emphasis {
+            text = text.italics();
+        }
+        if span.code {
+            // Monospace runs wider and taller than the proportional face at
+            // the same point size, so it is set a little smaller to sit on
+            // the same line as the words around it.
+            text = text
+                .monospace()
+                .size(BODY_SIZE - 1.5)
+                .background_color(Color32::from_rgb(18, 19, 24));
+        }
+        if span.struck {
+            text = text.strikethrough();
+        }
+        if let Some(link) = &span.link {
+            if ui.add(egui::Link::new(text)).clicked() {
+                messages.push(Message::LinkClicked(link.clone()));
+            }
         } else {
-            base.weight
-        },
-        style: if piece.emphasis {
-            font::Style::Italic
-        } else {
-            base.style
-        },
-        ..base
-    };
-
-    span(piece.text.as_str())
-        .font(font)
-        .underline(piece.link.is_some())
-        .strikethrough(piece.struck)
-        .link_maybe(piece.link.clone())
+            ui.add(egui::Label::new(text).selectable(true).wrap());
+        }
+    }
 }
 
 fn heading_size(level: u8) -> f32 {
@@ -596,42 +625,15 @@ fn heading_size(level: u8) -> f32 {
     }
 }
 
-fn detail_line<'a>(content: String) -> Element<'a, Message> {
-    detail_text(content).wrapping(Wrapping::WordOrGlyph).into()
+fn placeholder(ui: &mut egui::Ui, message: &str) {
+    ui.centered_and_justified(|ui| {
+        ui.label(egui::RichText::new(message).color(theme::MUTED));
+    });
 }
 
-/// One file on a message: what it is called, how big it is, and a way to keep
-/// it. Contents are fetched only when asked for, one at a time, so pressing
-/// twice cannot write the same file under two names.
-fn attachment_row<'a>(
-    message_id: &str,
-    attachment: &'a MailAttachment,
-    saving: bool,
-    this_one: bool,
-) -> Element<'a, Message> {
-    let save = Message::SaveAttachment(message_id.to_owned(), attachment.id.clone());
-    let label = if this_one { "Saving…" } else { "Save" };
-
-    row![
-        detail_text(format!("📎 {}", attachment.name))
-            .width(Fill)
-            .wrapping(Wrapping::None),
-        detail_text(size_label(attachment.size)),
-        button(text(label).size(DETAIL_SIZE))
-            .padding([2, 8])
-            .style(button::secondary)
-            .on_press_maybe((!saving).then_some(save)),
-    ]
-    .spacing(SPACING)
-    .align_y(iced::Center)
-    .into()
-}
-
-/// A size someone can read at a glance, rather than a byte count.
 fn size_label(bytes: u64) -> String {
     const UNIT: f64 = 1024.0;
     let bytes = bytes as f64;
-
     for (limit, suffix) in [
         (UNIT, "KB"),
         (UNIT * UNIT, "MB"),
@@ -639,7 +641,6 @@ fn size_label(bytes: u64) -> String {
     ] {
         if bytes < limit * UNIT {
             let value = bytes / limit;
-            // One decimal below ten, where the difference is worth seeing.
             return if value < 10.0 {
                 format!("{value:.1} {suffix}")
             } else {
@@ -647,22 +648,7 @@ fn size_label(bytes: u64) -> String {
             };
         }
     }
-
     format!("{:.0} GB", bytes / (UNIT * UNIT * UNIT))
-}
-
-/// Says where a saved attachment landed, since nothing else on screen would.
-fn saved_attachment_line(outcome: Result<&Path, SaveError>) -> Element<'_, Message> {
-    match outcome {
-        Ok(path) => detail_text(format!("Saved to {}", path.display()))
-            .wrapping(Wrapping::WordOrGlyph)
-            .into(),
-        Err(error) => text(error.message())
-            .size(DETAIL_SIZE)
-            .style(text::danger)
-            .wrapping(Wrapping::WordOrGlyph)
-            .into(),
-    }
 }
 
 fn message_count_label(count: usize) -> String {
@@ -673,7 +659,6 @@ fn message_count_label(count: usize) -> String {
     }
 }
 
-/// The first words of the body on one line.
 fn preview(body: &MessageBody) -> String {
     let words: Vec<&str> = match body {
         MessageBody::PlainText(content) => content.split_whitespace().take(PREVIEW_WORDS).collect(),
@@ -683,7 +668,6 @@ fn preview(body: &MessageBody) -> String {
             .take(PREVIEW_WORDS)
             .collect(),
     };
-
     words.join(" ")
 }
 
@@ -701,7 +685,6 @@ fn recipients_label(recipients: &[MailAddress]) -> String {
     if recipients.is_empty() {
         return "(no recipients)".to_owned();
     }
-
     recipients
         .iter()
         .map(address_label)
@@ -709,7 +692,6 @@ fn recipients_label(recipients: &[MailAddress]) -> String {
         .join(", ")
 }
 
-/// A complete local date and time, e.g. `Sep 11, 2026 at 09:42`.
 fn format_message_time<Tz: TimeZone>(timestamp: i64, zone: &Tz) -> String
 where
     Tz::Offset: std::fmt::Display,
@@ -728,17 +710,11 @@ mod tests {
 
     #[test]
     fn a_crowded_label_row_keeps_only_what_the_conversation_carries() {
-        // Few enough labels: every one is on show, carried or not.
         assert!(shows_label(false, false, false));
         assert!(shows_label(true, false, false));
-
-        // Too many: what the conversation carries stays, the rest wait.
         assert!(shows_label(true, true, false));
         assert!(!shows_label(false, true, false));
-
-        // Until they are asked for, and then the whole set is there.
         assert!(shows_label(false, true, true));
-        assert!(shows_label(true, true, true));
     }
 
     fn address(name: Option<&str>, email: &str) -> MailAddress {
@@ -764,7 +740,6 @@ mod tests {
             .with_ymd_and_hms(2026, 9, 11, 9, 42, 0)
             .unwrap()
             .timestamp();
-
         assert_eq!(
             format_message_time(timestamp, &Utc),
             "Sep 11, 2026 at 09:42"
@@ -794,9 +769,7 @@ mod tests {
         let recipients: Vec<_> = (0..12)
             .map(|index| address(None, &format!("person{index}@example.com")))
             .collect();
-
         let label = recipients_label(&recipients);
-
         for recipient in &recipients {
             assert!(label.contains(&recipient.address));
         }
@@ -810,7 +783,6 @@ mod tests {
         let rich = MessageBody::Rich(RichBody {
             blocks: vec![paragraph("Hello  there"), paragraph("again")],
         });
-
         assert_eq!(preview(&body), "Hi Alex, First line. Second line.");
         assert_eq!(preview(&long).split(' ').count(), PREVIEW_WORDS);
         assert_eq!(preview(&rich), "Hello there again");
@@ -831,5 +803,59 @@ mod tests {
         assert_eq!(message_count_label(0), "No messages");
         assert_eq!(message_count_label(1), "1 message");
         assert_eq!(message_count_label(7), "7 messages");
+    }
+
+    #[test]
+    fn message_header_is_one_full_width_click_target() {
+        let message = MailMessage {
+            id: "message".into(),
+            sender: address(Some("Alex Rivera"), "alex@example.com"),
+            recipients: Vec::new(),
+            time: None,
+            body: MessageBody::PlainText("Preview".into()),
+            attachments: Vec::new(),
+        };
+        let context = egui::Context::default();
+        let render = |input| {
+            let mut result = (egui::Rect::NOTHING, false);
+            context
+                .run_ui(input, |ui| {
+                    ui.set_width(320.0);
+                    let response = message_header(ui, &message, false);
+                    result = (response.rect, response.clicked());
+                })
+                .drop_without_applying_deltas();
+            result
+        };
+
+        let (rect, _) = render(egui::RawInput::default());
+        assert_eq!(rect.width(), 320.0);
+        let position = rect.center();
+        let pointer = |pressed| egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        render(egui::RawInput {
+            events: vec![egui::Event::PointerMoved(position), pointer(true)],
+            ..Default::default()
+        });
+        let (_, clicked) = render(egui::RawInput {
+            events: vec![egui::Event::PointerMoved(position), pointer(false)],
+            ..Default::default()
+        });
+
+        assert!(clicked);
+    }
+
+    #[test]
+    fn disclosure_chevron_changes_direction_without_a_font_glyph() {
+        let center = egui::pos2(10.0, 10.0);
+        let closed = chevron_points(center, false);
+        let open = chevron_points(center, true);
+
+        assert!(closed[1].x > closed[0].x && closed[1].x > closed[2].x);
+        assert!(open[1].y > open[0].y && open[1].y > open[2].y);
     }
 }

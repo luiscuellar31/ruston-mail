@@ -1,3 +1,4 @@
+mod effect;
 mod layout;
 mod mailbox;
 mod reader;
@@ -5,30 +6,21 @@ mod reader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iced::keyboard::{self, Key, Modifiers};
-use iced::widget::operation::{self, RelativeOffset};
-use iced::widget::{pane_grid, text_editor};
-use iced::{Size, Subscription, Task, window};
-
 use crate::downloads::{self, SaveError};
-use crate::settings::{self, Settings};
+use crate::settings::{Panels, Settings, Window};
 
 /// How far the window must change before its new size is worth storing.
 const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, ConversationDetail, ConversationPage, Folder, LoginRequest, MailAction, MailBackend,
-    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome,
-    SignInPrompt, demo::DemoMailbox,
+    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInOutcome, SignInPrompt,
+    demo::DemoMailbox,
 };
 
-pub use layout::{
-    CONVERSATION_LIST, DIVIDER_GRAB, DIVIDER_WIDTH, MIN_PANEL_WIDTH, Panel, READER_BODY,
-    SEARCH_INPUT,
-};
-pub use mailbox::{
-    ActionRequest, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
-};
+pub use effect::{Effect, Effects, UiEffect};
+pub use layout::{ratios as panel_ratios, widths as panel_widths};
+pub use mailbox::{ActionRequest, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step};
 use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
@@ -87,10 +79,6 @@ pub enum Message {
     ToggleQuoteExpanded(String, usize),
     /// Shows or hides the labels the open conversation does not carry.
     ToggleLabelsShown,
-    /// Shows one message as selectable text, or goes back to the formatted body.
-    ToggleTextSelection(String),
-    /// A click, drag or keyboard interaction inside one selectable body.
-    SelectText(String, text_editor::Action),
     /// Applies one action to the selected row. Adding an action is a line in
     /// the toolbar rather than a message and an arm of its own.
     ApplyAction(MailAction),
@@ -105,11 +93,11 @@ pub enum Message {
     FoldersLoaded(Result<Vec<Folder>, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
-    PanelResized(pane_grid::ResizeEvent),
+    PanelsResized(Panels),
     /// A key the focused widget did not take.
-    Keyboard(keyboard::Event),
+    KeyPressed(KeyPress),
     /// The window changed size, which is worth remembering for next time.
-    WindowResized(Size),
+    WindowResized(Window),
     /// Fetches one attachment and saves it, by message and attachment id.
     SaveAttachment(String, String),
     /// Where an attachment landed, or why it did not.
@@ -137,29 +125,41 @@ enum Shortcut {
 
 /// The meaning of a key press, or `None` when it is not a shortcut. Plain
 /// keys carry no modifiers, so typing never moves the mailbox underneath.
-fn shortcut(key: Key<&str>, modifiers: Modifiers) -> Option<Shortcut> {
-    if modifiers.command() {
-        return match key {
-            Key::Character("r") => Some(Shortcut::Refresh),
-            Key::Character("f") => Some(Shortcut::Search),
+fn shortcut(press: KeyPress) -> Option<Shortcut> {
+    if press.command {
+        return match press.key {
+            Key::Character('r') => Some(Shortcut::Refresh),
+            Key::Character('f') => Some(Shortcut::Search),
             _ => None,
         };
     }
-    if !modifiers.is_empty() {
+    if press.other_modifier {
         return None;
     }
 
-    match key {
-        Key::Named(keyboard::key::Named::ArrowDown) | Key::Character("j") => {
-            Some(Shortcut::Move(Step::Next))
-        }
-        Key::Named(keyboard::key::Named::ArrowUp) | Key::Character("k") => {
-            Some(Shortcut::Move(Step::Previous))
-        }
-        Key::Named(keyboard::key::Named::Enter) => Some(Shortcut::Open),
-        Key::Named(keyboard::key::Named::Escape) => Some(Shortcut::Dismiss),
+    match press.key {
+        Key::ArrowDown | Key::Character('j') => Some(Shortcut::Move(Step::Next)),
+        Key::ArrowUp | Key::Character('k') => Some(Shortcut::Move(Step::Previous)),
+        Key::Enter => Some(Shortcut::Open),
+        Key::Escape => Some(Shortcut::Dismiss),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Character(char),
+    ArrowDown,
+    ArrowUp,
+    Enter,
+    Escape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyPress {
+    pub key: Key,
+    pub command: bool,
+    pub other_modifier: bool,
 }
 
 #[derive(Default)]
@@ -194,9 +194,6 @@ pub struct App {
     backend: Option<MailBackend>,
     mailbox: Option<Mailbox>,
     last_request: RequestId,
-    /// Mailbox panel sizes. Pure layout state: kept for the life of the app
-    /// and never touched by mailbox or authentication changes.
-    panels: pane_grid::State<Panel>,
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
     folders: Vec<Folder>,
@@ -215,12 +212,12 @@ pub struct App {
 impl App {
     /// In demo mode the app opens a local fictional mailbox and never starts
     /// the Proton session resume.
-    pub fn boot(demo: bool, settings: Settings) -> (Self, Task<Message>) {
+    pub fn boot(demo: bool, settings: Settings) -> (Self, Effects) {
         let mut app = Self::new(settings);
         let task = if demo {
             app.open_mailbox(MailBackend::demo(), None)
         } else {
-            Task::perform(ProtonMailService::resume(), Message::SessionChecked)
+            Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
         };
 
         (app, task)
@@ -236,7 +233,6 @@ impl App {
             backend: None,
             mailbox: None,
             last_request: 0,
-            panels: layout::panels(settings.panels),
             folders: Vec::new(),
             settings,
             showing_settings: false,
@@ -260,17 +256,17 @@ impl App {
     /// Fetches one attachment and writes it to the downloads folder. The
     /// download is the slow half, so the reader says what happened afterwards
     /// rather than blocking on it.
-    fn save_attachment(&mut self, message_id: String, attachment_id: String) -> Task<Message> {
+    fn save_attachment(&mut self, message_id: String, attachment_id: String) -> Effects {
         let Some(backend) = self.backend.clone() else {
-            return Task::none();
+            return Effects::none();
         };
         if self.saving_attachment.is_some() {
-            return Task::none();
+            return Effects::none();
         }
         self.saved_attachment = None;
         self.saving_attachment = Some(attachment_id.clone());
 
-        Task::perform(
+        Effects::perform(
             async move {
                 match backend
                     .download_attachment(&message_id, &attachment_id)
@@ -309,7 +305,7 @@ impl App {
         }
     }
 
-    pub fn update(&mut self, message: Message) -> Task<Message> {
+    pub fn update(&mut self, message: Message) -> Effects {
         match message {
             Message::UsernameChanged(username) => {
                 self.login_form.username = username;
@@ -348,7 +344,7 @@ impl App {
             }
             Message::CopyVerificationLink => {
                 if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
-                    return iced::clipboard::write(url.clone());
+                    return Effects::ui(UiEffect::CopyText(url.clone()));
                 }
             }
             Message::Logout => return self.logout(),
@@ -384,16 +380,6 @@ impl App {
                     mailbox.toggle_labels();
                 }
             }
-            Message::ToggleTextSelection(id) => {
-                if let Some(mailbox) = self.active_mailbox() {
-                    mailbox.toggle_selection(&id);
-                }
-            }
-            Message::SelectText(id, action) => {
-                if let Some(mailbox) = self.active_mailbox() {
-                    mailbox.select_text(&id, action);
-                }
-            }
             Message::ApplyAction(action) => return self.apply_action(action),
             Message::UndoMove => return self.undo_move(),
             Message::RefreshMailbox => return self.refresh_mailbox(),
@@ -421,7 +407,7 @@ impl App {
                 }
                 // Counts were asked for before the folders were known, so ask
                 // again now that they are.
-                return Task::batch([self.reconcile_open_folder(), self.reload_counts()]);
+                return Effects::batch([self.reconcile_open_folder(), self.reload_counts()]);
             }
             Message::CountsLoaded(request, result) => {
                 let error = self
@@ -438,7 +424,7 @@ impl App {
             }
             Message::LinkClicked(target) => {
                 let Some(link) = PendingLink::parse(&target) else {
-                    return Task::none();
+                    return Effects::none();
                 };
                 if !self.settings.confirm_links {
                     return open_in_browser(link.url);
@@ -452,23 +438,21 @@ impl App {
             }
             Message::CopyLink => {
                 if let Some(link) = self.pending_link.take() {
-                    return iced::clipboard::write(link.url);
+                    return Effects::ui(UiEffect::CopyText(link.url));
                 }
             }
             Message::DismissLink => self.pending_link = None,
-            Message::PanelResized(event) => {
-                self.panels.resize(event.split, event.ratio);
-                let panels = layout::ratios(&self.panels);
+            Message::PanelsResized(panels) => {
                 self.remember(|settings| settings.panels = panels);
             }
-            Message::Keyboard(event) => return self.handle_key(event),
+            Message::KeyPressed(press) => return self.handle_key(press),
             // A drag reports many sizes; only a real change is worth a write.
             Message::WindowResized(size) => {
                 let moved = (size.width - self.settings.window.width).abs() >= RESIZE_STEP
                     || (size.height - self.settings.window.height).abs() >= RESIZE_STEP;
                 if moved {
                     self.remember(|settings| {
-                        settings.window = settings::Window {
+                        settings.window = Window {
                             width: size.width,
                             height: size.height,
                         };
@@ -493,37 +477,19 @@ impl App {
             Message::SetConfirmLinks(on) => self.remember(|settings| settings.confirm_links = on),
         }
 
-        Task::none()
+        Effects::none()
     }
 
-    /// Keyboard shortcuts, and only once a mailbox is open. `listen` reports
-    /// just the keys no focused widget took, so typing in the search field
-    /// never reaches the list.
-    pub fn subscription(&self) -> Subscription<Message> {
-        // The window is worth following whatever the app is showing.
-        let resized = window::resize_events().map(|(_, size)| Message::WindowResized(size));
-
-        match self.auth_state {
-            AuthState::Authenticated { .. } => {
-                Subscription::batch([keyboard::listen().map(Message::Keyboard), resized])
-            }
-            _ => resized,
-        }
-    }
-
-    fn handle_key(&mut self, event: keyboard::Event) -> Task<Message> {
-        let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-            return Task::none();
-        };
-        let Some(shortcut) = shortcut(key.as_ref(), modifiers) else {
-            return Task::none();
+    fn handle_key(&mut self, press: KeyPress) -> Effects {
+        let Some(shortcut) = shortcut(press) else {
+            return Effects::none();
         };
         // Only the topmost thing on screen takes a key. The mailbox sits
         // under the settings page and under the link prompt, so while either
         // is up the one shortcut still worth anything backs out of it.
         let covered = self.showing_settings || self.pending_link.is_some();
         if covered && shortcut != Shortcut::Dismiss {
-            return Task::none();
+            return Effects::none();
         }
 
         match shortcut {
@@ -532,10 +498,10 @@ impl App {
                     .active_mailbox()
                     .and_then(|mailbox| mailbox.neighbour(step))
                 else {
-                    return Task::none();
+                    return Effects::none();
                 };
 
-                Task::batch([self.reveal_in_list(&next), self.select_conversation(next)])
+                Effects::batch([self.reveal_in_list(&next), self.select_conversation(next)])
             }
             Shortcut::Open => {
                 let Some(selected) = self
@@ -544,7 +510,7 @@ impl App {
                     .and_then(|mailbox| mailbox.selected_conversation())
                     .map(str::to_owned)
                 else {
-                    return Task::none();
+                    return Effects::none();
                 };
 
                 self.select_conversation(selected)
@@ -553,10 +519,10 @@ impl App {
             Shortcut::Dismiss => {
                 if self.showing_settings {
                     self.showing_settings = false;
-                    return Task::none();
+                    return Effects::none();
                 }
                 if self.pending_link.take().is_some() {
-                    return Task::none();
+                    return Effects::none();
                 }
                 if let Some(mailbox) = self.active_mailbox() {
                     if mailbox.is_searching() {
@@ -566,10 +532,10 @@ impl App {
                     }
                 }
 
-                Task::none()
+                Effects::none()
             }
             Shortcut::Refresh => self.refresh_mailbox(),
-            Shortcut::Search => operation::focus(SEARCH_INPUT),
+            Shortcut::Search => Effects::ui(UiEffect::FocusSearch),
         }
     }
 
@@ -589,8 +555,8 @@ impl App {
         self.backend.is_some()
     }
 
-    pub fn panels(&self) -> &pane_grid::State<Panel> {
-        &self.panels
+    pub fn panels(&self) -> Panels {
+        self.settings.panels
     }
 
     pub fn pending_link(&self) -> Option<&PendingLink> {
@@ -617,7 +583,7 @@ impl App {
         self.auth_error.map(|error| error.to_string())
     }
 
-    fn sign_in(&mut self) -> Task<Message> {
+    fn sign_in(&mut self) -> Effects {
         if let Some(prompt) = self.pending_prompt.take() {
             return self.answer_prompt(prompt);
         }
@@ -626,24 +592,24 @@ impl App {
             AuthState::SignedOut => SignInStep::Credentials,
             AuthState::NeedsTotp => SignInStep::Totp,
             AuthState::NeedsMailboxPassword => SignInStep::MailboxPassword,
-            _ => return Task::none(),
+            _ => return Effects::none(),
         };
 
         if self.login_form.username.trim().is_empty() {
             self.auth_error = Some(AuthError::UsernameRequired);
-            return Task::none();
+            return Effects::none();
         }
         if self.login_form.password.is_empty() {
             self.auth_error = Some(AuthError::PasswordRequired);
-            return Task::none();
+            return Effects::none();
         }
         if step == SignInStep::Totp && self.login_form.totp.trim().is_empty() {
             self.auth_error = Some(AuthError::TotpRequired);
-            return Task::none();
+            return Effects::none();
         }
         if step == SignInStep::MailboxPassword && self.login_form.mailbox_password.is_empty() {
             self.auth_error = Some(AuthError::MailboxPasswordRequired);
-            return Task::none();
+            return Effects::none();
         }
 
         let request = LoginRequest::new(
@@ -660,10 +626,10 @@ impl App {
 
     /// Shows a question from the running sign-in. Prompts that arrive when no
     /// sign-in is running are cancelled.
-    fn show_prompt(&mut self, prompt: SignInPrompt) -> Task<Message> {
+    fn show_prompt(&mut self, prompt: SignInPrompt) -> Effects {
         if !matches!(self.auth_state, AuthState::SigningIn(_)) {
             prompt.cancel();
-            return Task::none();
+            return Effects::none();
         }
 
         self.auth_error = None;
@@ -671,7 +637,7 @@ impl App {
             SignInPrompt::Totp(_) => {
                 self.login_form.totp.clear();
                 self.auth_state = AuthState::NeedsTotp;
-                Task::none()
+                Effects::none()
             }
             SignInPrompt::HumanVerification { url, .. } => {
                 self.auth_state = AuthState::NeedsHumanVerification { url: url.clone() };
@@ -682,14 +648,14 @@ impl App {
         task
     }
 
-    fn answer_prompt(&mut self, prompt: SignInPrompt) -> Task<Message> {
+    fn answer_prompt(&mut self, prompt: SignInPrompt) -> Effects {
         match prompt {
             SignInPrompt::Totp(reply) => {
                 let code = self.login_form.totp.trim().to_owned();
                 if code.is_empty() {
                     self.auth_error = Some(AuthError::TotpRequired);
                     self.pending_prompt = Some(SignInPrompt::Totp(reply));
-                    return Task::none();
+                    return Effects::none();
                 }
                 // Codes expire; never keep one for a later attempt.
                 self.login_form.totp.clear();
@@ -703,10 +669,10 @@ impl App {
         }
 
         self.auth_error = None;
-        Task::none()
+        Effects::none()
     }
 
-    fn finish_session_check(&mut self, outcome: ResumeOutcome) -> Task<Message> {
+    fn finish_session_check(&mut self, outcome: ResumeOutcome) -> Effects {
         match outcome {
             ResumeOutcome::Authenticated(service) => return self.set_authenticated(service),
             ResumeOutcome::SignedOut => self.auth_state = AuthState::SignedOut,
@@ -716,10 +682,10 @@ impl App {
             }
         }
 
-        Task::none()
+        Effects::none()
     }
 
-    fn finish_sign_in(&mut self, outcome: SignInOutcome) -> Task<Message> {
+    fn finish_sign_in(&mut self, outcome: SignInOutcome) -> Effects {
         match outcome {
             SignInOutcome::Authenticated(service) => return self.set_authenticated(service),
             // The user already left with Back.
@@ -746,15 +712,15 @@ impl App {
             }
         }
 
-        Task::none()
+        Effects::none()
     }
 
-    fn set_authenticated(&mut self, service: Arc<ProtonMailService>) -> Task<Message> {
+    fn set_authenticated(&mut self, service: Arc<ProtonMailService>) -> Effects {
         let email = service.email().map(str::to_owned);
         self.open_mailbox(MailBackend::Proton(service), email)
     }
 
-    fn open_mailbox(&mut self, backend: MailBackend, email: Option<String>) -> Task<Message> {
+    fn open_mailbox(&mut self, backend: MailBackend, email: Option<String>) -> Effects {
         self.login_form.clear_all();
         self.auth_error = None;
         let page_size = backend.page_size();
@@ -775,33 +741,33 @@ impl App {
         let (mailbox, page) = Mailbox::open(folder, page_size, page_request, counts_request);
         self.mailbox = Some(mailbox);
 
-        Task::batch([
+        Effects::batch([
             self.fetch_page(Some(page)),
             self.fetch_counts(Some(counts_request)),
             self.fetch_folders(),
         ])
     }
 
-    fn logout(&mut self) -> Task<Message> {
+    fn logout(&mut self) -> Effects {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
-            return Task::none();
+            return Effects::none();
         }
         let service = match &self.backend {
             Some(MailBackend::Proton(service)) => service.clone(),
             // Leaving demo mode has no Proton session to revoke.
             Some(MailBackend::Demo(_)) => {
                 self.close_mailbox(None);
-                return Task::none();
+                return Effects::none();
             }
             None => {
                 self.auth_state = AuthState::SignedOut;
-                return Task::none();
+                return Effects::none();
             }
         };
 
         self.auth_error = None;
         self.auth_state = AuthState::SigningOut;
-        Task::perform(
+        Effects::perform(
             async move { service.logout().await },
             Message::LogoutFinished,
         )
@@ -860,14 +826,14 @@ impl App {
         }
     }
 
-    fn select_conversation(&mut self, id: String) -> Task<Message> {
+    fn select_conversation(&mut self, id: String) -> Effects {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
-            return Task::none();
+            return Effects::none();
         }
         self.pending_link = None;
         if let Some(MailBackend::Demo(service)) = self.backend.clone() {
             if !service.set_unread(&id, false) {
-                return Task::none();
+                return Effects::none();
             }
             self.apply_demo_snapshot(&service);
         }
@@ -875,30 +841,30 @@ impl App {
         self.start_conversation_load(id)
     }
 
-    fn apply_action(&mut self, action: MailAction) -> Task<Message> {
+    fn apply_action(&mut self, action: MailAction) -> Effects {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
-            return Task::none();
+            return Effects::none();
         }
         match self.backend.clone() {
             Some(MailBackend::Demo(service)) => self.apply_demo_action(&service, action),
             Some(MailBackend::Proton(service)) => self.start_proton_action(service, action),
-            None => Task::none(),
+            None => Effects::none(),
         }
     }
 
     /// Demo actions change local data at once and reload the folder snapshot.
-    fn apply_demo_action(&mut self, service: &DemoMailbox, action: MailAction) -> Task<Message> {
+    fn apply_demo_action(&mut self, service: &DemoMailbox, action: MailAction) -> Effects {
         let Some(mailbox) = self.mailbox.as_ref() else {
-            return Task::none();
+            return Effects::none();
         };
         if mailbox.is_busy() {
-            return Task::none();
+            return Effects::none();
         }
         let Some((id, kind)) = mailbox
             .selected_summary()
             .map(|summary| (summary.id.clone(), summary.kind))
         else {
-            return Task::none();
+            return Effects::none();
         };
 
         let applied = match &action {
@@ -920,14 +886,14 @@ impl App {
             }
         }
 
-        Task::none()
+        Effects::none()
     }
 
     /// Puts the last moved conversation back. The row has left the list, so
     /// the action names it directly instead of going through the selection.
-    fn undo_move(&mut self) -> Task<Message> {
+    fn undo_move(&mut self) -> Effects {
         let Some(undo) = self.active_mailbox().and_then(Mailbox::take_undo) else {
-            return Task::none();
+            return Effects::none();
         };
         let action = MailAction::MoveTo(undo.from.clone());
 
@@ -937,18 +903,18 @@ impl App {
                     self.apply_demo_snapshot(&service);
                 }
 
-                Task::none()
+                Effects::none()
             }
             Some(MailBackend::Proton(service)) => {
                 let request = self.next_request();
                 let Some(request) = self.active_mailbox().and_then(|mailbox| {
                     mailbox.start_action_on(undo.row_id, undo.kind, action, request)
                 }) else {
-                    return Task::none();
+                    return Effects::none();
                 };
                 run_action(service, request, Message::ActionFinished)
             }
-            None => Task::none(),
+            None => Effects::none(),
         }
     }
 
@@ -958,13 +924,13 @@ impl App {
         &mut self,
         service: Arc<ProtonMailService>,
         action: MailAction,
-    ) -> Task<Message> {
+    ) -> Effects {
         let request = self.next_request();
         let Some(request) = self
             .active_mailbox()
             .and_then(|mailbox| mailbox.start_action(action, request))
         else {
-            return Task::none();
+            return Effects::none();
         };
         run_action(service, request, Message::ActionFinished)
     }
@@ -973,19 +939,19 @@ impl App {
         &mut self,
         request: ActionRequest,
         result: Result<(), MailboxError>,
-    ) -> Task<Message> {
+    ) -> Effects {
         let Some(outcome) = self
             .mailbox
             .as_mut()
             .map(|mailbox| mailbox.finish_action(&request, result))
         else {
-            return Task::none();
+            return Effects::none();
         };
         let next = match outcome {
             Ok(next) => next,
             Err(error) => {
                 self.handle_mailbox_error(Some(error));
-                return Task::none();
+                return Effects::none();
             }
         };
 
@@ -1001,28 +967,28 @@ impl App {
         }
 
         let counts = self.reload_counts();
-        let open_next = next.map_or_else(Task::none, |id| {
-            Task::batch([self.reveal_in_list(&id), self.select_conversation(id)])
+        let open_next = next.map_or_else(Effects::none, |id| {
+            Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
         });
 
-        Task::batch([counts, open_next])
+        Effects::batch([counts, open_next])
     }
 
     /// Once an unread Proton row's content is shown, marks it read on Proton.
     /// Demo rows are already marked read when they are selected.
-    fn mark_opened_read(&mut self) -> Task<Message> {
+    fn mark_opened_read(&mut self) -> Effects {
         if !self.settings.mark_read_on_open {
-            return Task::none();
+            return Effects::none();
         }
         let Some(MailBackend::Proton(service)) = self.backend.clone() else {
-            return Task::none();
+            return Effects::none();
         };
         let request = self.next_request();
         let Some(request) = self
             .active_mailbox()
             .and_then(|mailbox| mailbox.start_mark_read(request))
         else {
-            return Task::none();
+            return Effects::none();
         };
         run_action(service, request, Message::MarkReadFinished)
     }
@@ -1031,7 +997,7 @@ impl App {
         &mut self,
         request: ActionRequest,
         result: Result<(), MailboxError>,
-    ) -> Task<Message> {
+    ) -> Effects {
         match self
             .mailbox
             .as_mut()
@@ -1041,14 +1007,14 @@ impl App {
             // Only an expired session matters; the row simply stays unread.
             Some(Err(error)) => {
                 self.handle_mailbox_error(Some(error));
-                Task::none()
+                Effects::none()
             }
-            _ => Task::none(),
+            _ => Effects::none(),
         }
     }
 
     /// Proton owns the folder counts; reload them after a change.
-    fn reload_counts(&mut self) -> Task<Message> {
+    fn reload_counts(&mut self) -> Effects {
         let counts_request = self.next_request();
         let counts = self
             .active_mailbox()
@@ -1057,38 +1023,38 @@ impl App {
         self.fetch_counts(counts)
     }
 
-    fn start_conversation_load(&mut self, id: String) -> Task<Message> {
+    fn start_conversation_load(&mut self, id: String) -> Effects {
         let request = self.next_request();
         let request = self
             .active_mailbox()
             .and_then(|mailbox| mailbox.start_conversation_load(id, request));
         if request.is_none() {
-            return Task::none();
+            return Effects::none();
         }
 
         // A new conversation starts at its top, not where the last one was
         // left; the reader pane keeps its scroll offset otherwise.
-        Task::batch([
-            operation::snap_to(READER_BODY, RelativeOffset::START),
+        Effects::batch([
+            Effects::ui(UiEffect::ScrollReaderTop),
             self.fetch_conversation(request),
         ])
     }
 
     /// Brings a row the app opened on its own into view. A row the user
     /// clicked is already on screen, so only these are worth scrolling to.
-    fn reveal_in_list(&self, row_id: &str) -> Task<Message> {
-        let Some(y) = self
+    fn reveal_in_list(&self, row_id: &str) -> Effects {
+        let visible = self
             .mailbox
             .as_ref()
-            .and_then(|mailbox| mailbox.visible_position(row_id))
-        else {
-            return Task::none();
-        };
+            .is_some_and(|mailbox| mailbox.visible_position(row_id).is_some());
+        if !visible {
+            return Effects::none();
+        }
 
-        operation::snap_to(CONVERSATION_LIST, RelativeOffset { x: 0.0, y })
+        Effects::ui(UiEffect::RevealConversation(row_id.to_owned()))
     }
 
-    fn retry_conversation(&mut self) -> Task<Message> {
+    fn retry_conversation(&mut self) -> Effects {
         let request = self.next_request();
         let request = self
             .active_mailbox()
@@ -1110,18 +1076,18 @@ impl App {
     /// opened from the settings file, which may name a folder or label that
     /// has since been renamed or removed, and a name nothing answers to would
     /// sit in the header with no matching button beside it.
-    fn reconcile_open_folder(&mut self) -> Task<Message> {
+    fn reconcile_open_folder(&mut self) -> Effects {
         let Some(open) = self
             .mailbox
             .as_ref()
             .map(|mailbox| mailbox.folder().clone())
         else {
-            return Task::none();
+            return Effects::none();
         };
         // Proton's own folders are always there, so only the account's own
         // can have gone stale.
         let Some(id) = open.custom_id() else {
-            return Task::none();
+            return Effects::none();
         };
         let current = self
             .folders
@@ -1134,7 +1100,7 @@ impl App {
             return self.select_folder(Folder::INBOX);
         };
         if current == open {
-            return Task::none();
+            return Effects::none();
         }
 
         // The same place under a new name holds the same mail, so taking the
@@ -1145,7 +1111,7 @@ impl App {
         }
         self.remember_folder(&current);
 
-        Task::none()
+        Effects::none()
     }
 
     /// Keeps the folder to open on the next run. Demo mail is fictional, so
@@ -1157,7 +1123,7 @@ impl App {
         }
     }
 
-    fn select_folder(&mut self, folder: Folder) -> Task<Message> {
+    fn select_folder(&mut self, folder: Folder) -> Effects {
         self.pending_link = None;
         self.saved_attachment = None;
         self.remember_folder(&folder);
@@ -1171,44 +1137,44 @@ impl App {
 
     /// Runs what is typed in the search field against the server, which sees
     /// every folder and every conversation, not just the loaded ones.
-    fn start_search(&mut self) -> Task<Message> {
+    fn start_search(&mut self) -> Effects {
         let request = self.next_request();
         let Some(request) = self
             .active_mailbox()
             .and_then(|mailbox| mailbox.start_search(request))
         else {
-            return Task::none();
+            return Effects::none();
         };
 
         self.fetch_search(request)
     }
 
-    fn fetch_search(&self, request: SearchRequest) -> Task<Message> {
+    fn fetch_search(&self, request: SearchRequest) -> Effects {
         let Some(backend) = self.backend.clone() else {
-            return Task::none();
+            return Effects::none();
         };
         let query = request.query.clone();
         let limit = backend.page_size();
 
-        Task::perform(
+        Effects::perform(
             async move { backend.search(&query, limit).await },
             move |result| Message::SearchLoaded(request.clone(), result),
         )
     }
 
-    fn refresh_mailbox(&mut self) -> Task<Message> {
+    fn refresh_mailbox(&mut self) -> Effects {
         let page_request = self.next_request();
         let counts_request = self.next_request();
         let Some(mailbox) = self.active_mailbox() else {
-            return Task::none();
+            return Effects::none();
         };
         let page = mailbox.refresh(page_request);
         let counts = mailbox.refresh_counts(counts_request);
 
-        Task::batch([self.fetch_page(page), self.fetch_counts(counts)])
+        Effects::batch([self.fetch_page(page), self.fetch_counts(counts)])
     }
 
-    fn load_more_conversations(&mut self) -> Task<Message> {
+    fn load_more_conversations(&mut self) -> Effects {
         let request = self.next_request();
         let page = self
             .active_mailbox()
@@ -1217,15 +1183,15 @@ impl App {
         self.fetch_page(page)
     }
 
-    fn fetch_page(&self, request: Option<PageRequest>) -> Task<Message> {
+    fn fetch_page(&self, request: Option<PageRequest>) -> Effects {
         let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
-            return Task::none();
+            return Effects::none();
         };
 
         let (id, folder, page, page_size) =
             (request.id, request.folder, request.page, request.page_size);
 
-        Task::perform(
+        Effects::perform(
             async move { backend.list_conversations(&folder, page, page_size).await },
             move |result| Message::ConversationsLoaded(id, result),
         )
@@ -1233,37 +1199,37 @@ impl App {
 
     /// Asks once for the folders the account made. They change rarely, so
     /// nothing re-fetches them until the mailbox is opened again.
-    fn fetch_folders(&self) -> Task<Message> {
+    fn fetch_folders(&self) -> Effects {
         let Some(backend) = self.backend.clone() else {
-            return Task::none();
+            return Effects::none();
         };
 
-        Task::perform(
+        Effects::perform(
             async move { backend.list_folders().await },
             Message::FoldersLoaded,
         )
     }
 
-    fn fetch_counts(&self, request: Option<RequestId>) -> Task<Message> {
+    fn fetch_counts(&self, request: Option<RequestId>) -> Effects {
         let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
-            return Task::none();
+            return Effects::none();
         };
 
         let folders = self.folders.clone();
 
-        Task::perform(
+        Effects::perform(
             async move { backend.conversation_counts(&folders).await },
             move |result| Message::CountsLoaded(request, result),
         )
     }
 
-    fn fetch_conversation(&self, request: Option<ReaderRequest>) -> Task<Message> {
+    fn fetch_conversation(&self, request: Option<ReaderRequest>) -> Effects {
         let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
-            return Task::none();
+            return Effects::none();
         };
         let (kind, id) = (request.kind, request.conversation_id.clone());
 
-        Task::perform(
+        Effects::perform(
             async move { backend.conversation_detail(kind, &id).await },
             move |result| Message::ConversationLoaded(request.clone(), result),
         )
@@ -1308,10 +1274,10 @@ fn run_action(
     service: Arc<ProtonMailService>,
     request: ActionRequest,
     finished: fn(ActionRequest, Result<(), MailboxError>) -> Message,
-) -> Task<Message> {
+) -> Effects {
     let pending = request.clone();
 
-    Task::perform(
+    Effects::perform(
         async move {
             service
                 .apply_action(
@@ -1327,24 +1293,15 @@ fn run_action(
 }
 
 /// Runs one sign-in, forwarding its prompts and final outcome as messages.
-fn sign_in_task(request: LoginRequest) -> Task<Message> {
-    Task::run(
-        iced::stream::channel(1, async move |events| {
-            ProtonMailService::sign_in(request, events).await;
-        }),
-        |event| match event {
-            SignInEvent::Prompt(prompt) => Message::SignInPrompt(prompt),
-            SignInEvent::Finished(outcome) => Message::SignInFinished(outcome),
-        },
-    )
+fn sign_in_task(request: LoginRequest) -> Effects {
+    Effects::sign_in(request)
 }
 
 // ponytail: launch failures are ignored; the page offers "Copy link" instead.
-fn open_in_browser(url: String) -> Task<Message> {
-    Task::future(async move {
+fn open_in_browser(url: String) -> Effects {
+    Effects::background(async move {
         let _ = open_url(&url);
     })
-    .discard()
 }
 
 /// Opens `url` in the default browser without going through a shell.
@@ -1496,77 +1453,60 @@ mod tests {
         assert!(app.showing_settings());
 
         // Escape backs out of the page before anything underneath it.
-        let _ = app.update(Message::Keyboard(keyboard::Event::KeyPressed {
-            key: Key::Named(keyboard::key::Named::Escape),
-            modified_key: Key::Named(keyboard::key::Named::Escape),
-            physical_key: keyboard::key::Physical::Unidentified(
-                keyboard::key::NativeCode::Unidentified,
-            ),
-            location: keyboard::Location::Standard,
-            modifiers: Modifiers::default(),
-            text: None,
-            repeat: false,
-        }));
+        press(&mut app, Key::Escape);
 
         assert!(!app.showing_settings());
     }
 
     #[test]
     fn keys_map_to_mailbox_shortcuts() {
-        let plain = Modifiers::default();
-        let command = Modifiers::COMMAND;
-        let down = || Key::Named(keyboard::key::Named::ArrowDown);
+        let plain = |key| KeyPress {
+            key,
+            command: false,
+            other_modifier: false,
+        };
+        let command = |key| KeyPress {
+            key,
+            command: true,
+            other_modifier: false,
+        };
 
         assert_eq!(
-            shortcut(Key::Character("j"), plain),
+            shortcut(plain(Key::Character('j'))),
             Some(Shortcut::Move(Step::Next))
         );
-        assert_eq!(shortcut(down(), plain), Some(Shortcut::Move(Step::Next)));
         assert_eq!(
-            shortcut(Key::Character("k"), plain),
+            shortcut(plain(Key::ArrowDown)),
+            Some(Shortcut::Move(Step::Next))
+        );
+        assert_eq!(
+            shortcut(plain(Key::Character('k'))),
             Some(Shortcut::Move(Step::Previous))
         );
+        assert_eq!(shortcut(plain(Key::Enter)), Some(Shortcut::Open));
+        assert_eq!(shortcut(plain(Key::Escape)), Some(Shortcut::Dismiss));
         assert_eq!(
-            shortcut(Key::Named(keyboard::key::Named::Enter), plain),
-            Some(Shortcut::Open)
-        );
-        assert_eq!(
-            shortcut(Key::Named(keyboard::key::Named::Escape), plain),
-            Some(Shortcut::Dismiss)
-        );
-        assert_eq!(
-            shortcut(Key::Character("r"), command),
+            shortcut(command(Key::Character('r'))),
             Some(Shortcut::Refresh)
         );
         assert_eq!(
-            shortcut(Key::Character("f"), command),
+            shortcut(command(Key::Character('f'))),
             Some(Shortcut::Search)
         );
 
         // A modifier turns a plain shortcut into somebody else's business.
-        assert_eq!(shortcut(Key::Character("j"), command), None);
-        assert_eq!(shortcut(down(), command), None);
-        assert_eq!(shortcut(Key::Character("r"), plain), None);
-        assert_eq!(shortcut(Key::Character("z"), plain), None);
+        assert_eq!(shortcut(command(Key::Character('j'))), None);
+        assert_eq!(shortcut(command(Key::ArrowDown)), None);
+        assert_eq!(shortcut(plain(Key::Character('r'))), None);
+        assert_eq!(shortcut(plain(Key::Character('z'))), None);
     }
 
     /// Sends a plain key press, as the window would when no field took it.
-    fn press(app: &mut App, key: Key<&str>) {
-        let named = match key {
-            Key::Character(c) => Key::Character(c.into()),
-            Key::Named(named) => Key::Named(named),
-            Key::Unidentified => Key::Unidentified,
-        };
-        let _ = app.update(Message::Keyboard(keyboard::Event::KeyPressed {
-            key: named.clone(),
-            modified_key: named,
-            physical_key: keyboard::key::Physical::Unidentified(
-                keyboard::key::NativeCode::Unidentified,
-            ),
-            location: keyboard::Location::Standard,
-            modifiers: Modifiers::default(),
-            text: None,
-            repeat: false,
+    fn press(app: &mut App, key: Key) {
+        let _ = app.update(Message::KeyPressed(KeyPress {
+            key,
+            command: false,
+            other_modifier: false,
         }));
     }
 
@@ -1618,7 +1558,7 @@ mod tests {
     #[test]
     fn keys_do_not_reach_a_covered_mailbox() {
         let mut app = loaded_demo_app();
-        press(&mut app, Key::Character("j"));
+        press(&mut app, Key::Character('j'));
         let opened = app
             .mailbox()
             .unwrap()
@@ -1630,16 +1570,16 @@ mod tests {
         // Stepping the list underneath the settings page would change the
         // selection out of sight, and ask Proton for a conversation nobody
         // can see.
-        press(&mut app, Key::Character("j"));
+        press(&mut app, Key::Character('j'));
         assert_eq!(
             app.mailbox().unwrap().selected_conversation(),
             opened.as_deref()
         );
 
         // Escape still backs out of the page, and the list answers again.
-        press(&mut app, Key::Named(keyboard::key::Named::Escape));
+        press(&mut app, Key::Escape);
         assert!(!app.showing_settings());
-        press(&mut app, Key::Character("j"));
+        press(&mut app, Key::Character('j'));
         assert_ne!(
             app.mailbox().unwrap().selected_conversation(),
             opened.as_deref()
@@ -1649,7 +1589,7 @@ mod tests {
     #[test]
     fn keys_do_not_reach_the_mailbox_under_a_link_prompt() {
         let mut app = loaded_demo_app();
-        press(&mut app, Key::Character("j"));
+        press(&mut app, Key::Character('j'));
         let opened = app
             .mailbox()
             .unwrap()
@@ -1659,13 +1599,13 @@ mod tests {
         let _ = app.update(Message::LinkClicked("https://example.com/".to_owned()));
         assert!(app.pending_link().is_some());
 
-        press(&mut app, Key::Character("j"));
+        press(&mut app, Key::Character('j'));
         assert_eq!(
             app.mailbox().unwrap().selected_conversation(),
             opened.as_deref()
         );
 
-        press(&mut app, Key::Named(keyboard::key::Named::Escape));
+        press(&mut app, Key::Escape);
         assert!(app.pending_link().is_none());
     }
 
@@ -1674,7 +1614,7 @@ mod tests {
         let mut app = loaded_demo_app();
 
         // Nothing is open, so the first key opens the first conversation.
-        press(&mut app, Key::Character("j"));
+        press(&mut app, Key::Character('j'));
         let selected = |app: &App| {
             app.mailbox()
                 .unwrap()
@@ -1683,17 +1623,17 @@ mod tests {
         };
         assert_eq!(selected(&app).as_deref(), Some("demo-0"));
 
-        press(&mut app, Key::Character("j"));
+        press(&mut app, Key::Character('j'));
         assert_eq!(selected(&app).as_deref(), Some("demo-1"));
 
-        press(&mut app, Key::Character("k"));
+        press(&mut app, Key::Character('k'));
         assert_eq!(selected(&app).as_deref(), Some("demo-0"));
 
         // The list has an end, and Escape closes the reader.
-        press(&mut app, Key::Character("k"));
+        press(&mut app, Key::Character('k'));
         assert_eq!(selected(&app).as_deref(), Some("demo-0"));
 
-        press(&mut app, Key::Named(keyboard::key::Named::Escape));
+        press(&mut app, Key::Escape);
         assert_eq!(selected(&app), None);
     }
 
@@ -1810,11 +1750,12 @@ mod tests {
     fn rerender_inputs_issue_no_mailbox_requests() {
         let mut app = loaded_demo_app();
         let requests = app.last_request;
-        let split = *app.panels().layout().splits().next().unwrap();
-
         for message in [
             Message::SearchChanged("alex".into()),
-            Message::PanelResized(pane_grid::ResizeEvent { split, ratio: 0.3 }),
+            Message::PanelsResized(Panels {
+                sidebar: 0.3,
+                ..app.panels()
+            }),
             Message::SearchChanged(String::new()),
         ] {
             assert_eq!(app.update(message).units(), 0);
@@ -1961,28 +1902,6 @@ mod tests {
         deliver_demo_page(&mut app, 1, 0);
 
         assert_eq!(app.mailbox().unwrap().reader_state(), &ReaderState::Empty);
-    }
-
-    #[test]
-    fn opened_plain_bodies_are_selectable_without_asking() {
-        let mut app = loaded_demo_app();
-        let _ = app.update(Message::SelectConversation("demo-0".into()));
-        deliver_selected_demo_detail(&mut app);
-
-        // Demo bodies are plain text, so they arrive ready to select.
-        let content = app
-            .mailbox()
-            .unwrap()
-            .selectable_body("demo-0-2")
-            .expect("a plain body is selectable");
-        assert!(!content.text().trim().is_empty());
-
-        // The switch still works both ways through the message path.
-        let _ = app.update(Message::ToggleTextSelection("demo-0-2".into()));
-        assert!(app.mailbox().unwrap().selectable_body("demo-0-2").is_none());
-
-        let _ = app.update(Message::ToggleTextSelection("demo-0-2".into()));
-        assert!(app.mailbox().unwrap().selectable_body("demo-0-2").is_some());
     }
 
     #[test]
@@ -2410,24 +2329,14 @@ mod tests {
         deliver_selected_demo_detail(&mut app);
         let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
         let requests = app.last_request;
-        let window = iced::Size::new(1_100.0, 700.0);
-        let widths = |panels: &pane_grid::State<Panel>| {
-            panels
-                .layout()
-                .pane_regions(DIVIDER_WIDTH, MIN_PANEL_WIDTH, window)
-        };
-        let default_widths = widths(app.panels());
-        let splits: Vec<_> = app.panels().layout().splits().copied().collect();
+        let default_panels = app.panels();
+        let task = app.update(Message::PanelsResized(Panels {
+            sidebar: 0.35,
+            conversations: 0.6,
+        }));
+        assert_eq!(task.units(), 0);
 
-        for (split, ratio) in splits.into_iter().zip([0.35, 0.6]) {
-            let task = app.update(Message::PanelResized(pane_grid::ResizeEvent {
-                split,
-                ratio,
-            }));
-            assert_eq!(task.units(), 0);
-        }
-
-        assert_ne!(widths(app.panels()), default_widths);
+        assert_ne!(app.panels(), default_panels);
         assert_eq!(app.last_request, requests);
         assert!(app.is_demo());
         let mailbox = app.mailbox().unwrap();

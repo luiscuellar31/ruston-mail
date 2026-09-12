@@ -1,6 +1,7 @@
 mod app;
 mod downloads;
 mod mail;
+mod runtime;
 mod settings;
 mod ui;
 
@@ -19,7 +20,7 @@ const DEBUG_HTTP_FILTER: &str = "proton_core::http=debug";
 /// Set to `1` to open a local fictional mailbox instead of Proton.
 const DEMO_ENV: &str = "RUSTON_DEMO";
 
-fn main() -> iced::Result {
+fn main() -> eframe::Result {
     if std::env::var_os(DEBUG_HTTP_ENV).is_some() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::new(DEBUG_HTTP_FILTER))

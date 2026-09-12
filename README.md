@@ -34,8 +34,8 @@ drawn with real text rather than a web view: headings, lists, quotes,
 preformatted blocks. Quoted replies start folded
 so a long thread stays readable. Images are not downloaded — you get their
 description in place, which keeps the sender from learning you opened the mail.
-Plain text bodies can be selected and copied straight away; formatted ones have
-a button that swaps them for selectable text.
+Plain and formatted message text can be selected and copied directly, including
+across styled spans, without giving up headings, emphasis or links.
 
 You can archive, star, mark read or unread, and move mail to spam or trash.
 After a move, a bar offers to put it back where it came from; that offer only
@@ -103,6 +103,9 @@ application. A signed, installed app is asked once.
 ## Building it
 
 Rust 1.96 or newer.
+
+The native interface uses `egui`/`eframe`; mail rendering stays deliberately
+separate from the Proton and mailbox state layers.
 
 ```sh
 cargo run
