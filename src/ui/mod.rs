@@ -212,14 +212,12 @@ fn key(key: Key, command: bool) -> KeyPress {
 
 fn status_view(root: &mut egui::Ui, message: &str) {
     egui::CentralPanel::default().show(root, |ui| {
-        ui.centered_and_justified(|ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading(egui::RichText::new("Ruston Mail").size(36.0));
-                ui.add_space(16.0);
-                ui.label(message);
-                ui.add_space(12.0);
-                ui.spinner();
-            });
+        theme::centered_group(ui, |ui| {
+            ui.heading(egui::RichText::new("Ruston Mail").size(36.0));
+            ui.add_space(16.0);
+            ui.label(message);
+            ui.add_space(12.0);
+            ui.spinner();
         });
     });
 }

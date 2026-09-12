@@ -55,7 +55,7 @@ pub(super) fn show(
     match mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
         ReaderState::Loading { .. } => {
-            ui.centered_and_justified(|ui| {
+            theme::centered_group(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label("Loading conversation…");
@@ -63,13 +63,11 @@ pub(super) fn show(
             });
         }
         ReaderState::Failed { error, .. } => {
-            ui.centered_and_justified(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(error.conversation_message());
-                    if ui.button("Retry").clicked() {
-                        messages.push(Message::RetryConversation);
-                    }
-                });
+            theme::centered_group(ui, |ui| {
+                ui.label(error.conversation_message());
+                if ui.button("Retry").clicked() {
+                    messages.push(Message::RetryConversation);
+                }
             });
         }
         ReaderState::Loaded(reader) => {

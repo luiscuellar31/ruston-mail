@@ -42,6 +42,41 @@ pub fn selectable_text<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)
     .inner
 }
 
+/// Puts a group of widgets in the middle of the space left in `ui`, on both
+/// axes, and answers with the group's response.
+///
+/// egui centres a single widget with `centered_and_justified`, but not a
+/// group: a top-down layout starts its cursor at the top of its rect whatever
+/// its `main_align`, so nesting a vertical layout inside a justified one only
+/// stretches the group and leaves it at the top. The height has to be known
+/// first, so the group is laid out once in an invisible sizing pass. That pass
+/// gets a child of its own, which — unlike `Ui::scope` — leaves the parent's
+/// cursor where it was, and an id of its own, so the two passes cannot clash.
+/// Being invisible it is also disabled, so a button in the group cannot report
+/// a click twice.
+///
+/// Both axes are placed from the measurement, not just the height. A layout
+/// centres the widgets it places itself, but it does not move a nested one:
+/// left to `vertical_centered`, a group built around a `ui.horizontal` row
+/// would stay against the left edge.
+pub fn centered_group(ui: &mut egui::Ui, mut content: impl FnMut(&mut egui::Ui)) -> egui::Response {
+    let mut measure = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("centered-group-measure")
+            .sizing_pass()
+            .invisible(),
+    );
+    measure.vertical_centered(|ui| content(ui));
+    let size = measure.min_rect().size();
+
+    let outer = ui.available_rect_before_wrap();
+    let rect = egui::Align2::CENTER_CENTER.align_size_within_rect(size.min(outer.size()), outer);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.vertical_centered(content);
+    })
+    .response
+}
+
 /// Paints one left-aligned line without creating a child widget that could
 /// intercept clicks from its containing row.
 pub fn paint_truncated_text(
@@ -103,6 +138,67 @@ pub fn card() -> egui::Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lays `content` out through [`centered_group`] in a 400x600 panel and
+    /// answers with the group's rectangle and the panel's.
+    fn centered(content: impl FnMut(&mut egui::Ui) + Copy) -> (egui::Rect, egui::Rect) {
+        let context = egui::Context::default();
+        let panel = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 600.0));
+        let mut result = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(panel),
+                    ..Default::default()
+                },
+                |ui| {
+                    let available = ui.available_rect_before_wrap();
+                    result = (centered_group(ui, content).rect, available);
+                },
+            )
+            .drop_without_applying_deltas();
+        result
+    }
+
+    fn assert_centered(group: egui::Rect, available: egui::Rect) {
+        assert!(group.height() > 0.0, "the group was never laid out");
+        assert!(group.height() < available.height(), "it filled the height");
+        assert!(group.width() < available.width(), "it filled the width");
+        for (axis, group, available) in [
+            ("vertically", group.center().y, available.center().y),
+            ("horizontally", group.center().x, available.center().x),
+        ] {
+            assert!(
+                (group - available).abs() <= 1.0,
+                "the group is not centered {axis}: {group} against {available}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_centered_group_of_widgets_sits_in_the_middle_of_the_space_it_is_given() {
+        let (group, available) = centered(|ui| {
+            ui.heading("Ruston Mail");
+            ui.label("Opening Ruston Mail…");
+            ui.spinner();
+        });
+
+        assert_centered(group, available);
+    }
+
+    #[test]
+    fn a_centered_group_built_from_a_row_is_centered_too() {
+        // A nested layout is not moved by the one around it, so this is the
+        // case that stays against the left edge if only the height is placed.
+        let (group, available) = centered(|ui| {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Loading conversation…");
+            });
+        });
+
+        assert_centered(group, available);
+    }
 
     #[test]
     fn selection_is_limited_to_mail_content() {
