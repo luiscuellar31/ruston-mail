@@ -200,19 +200,7 @@ impl DemoMailbox {
         self.update(id, |fixture| fixture.starred = starred)
     }
 
-    pub fn archive(&self, id: &str) -> bool {
-        self.move_to(id, MailFolder::Archive)
-    }
-
-    pub fn move_to_trash(&self, id: &str) -> bool {
-        self.move_to(id, MailFolder::Trash)
-    }
-
-    pub fn move_to_spam(&self, id: &str) -> bool {
-        self.move_to(id, MailFolder::Spam)
-    }
-
-    fn move_to(&self, id: &str, folder: MailFolder) -> bool {
+    pub fn move_to(&self, id: &str, folder: MailFolder) -> bool {
         self.update(id, |fixture| fixture.folder = folder)
     }
 
@@ -741,6 +729,8 @@ fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
         unread: fixture.unread,
         starred: fixture.starred,
         message_count: u32::try_from(fixture.message_count()).unwrap_or(u32::MAX),
+        // The fictional mailbox carries no files.
+        has_attachments: false,
     }
 }
 
@@ -816,6 +806,7 @@ fn message(
         recipients,
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),
         body: MessageBody::PlainText(fixture.bodies[position].to_owned()),
+        attachments: 0,
     }
 }
 
@@ -1095,7 +1086,7 @@ mod tests {
         let mailbox = DemoMailbox::new();
         let detail = mailbox.conversation_detail("demo-0", NOW).unwrap();
 
-        assert!(mailbox.archive("demo-0"));
+        assert!(mailbox.move_to("demo-0", MailFolder::Archive));
 
         assert!(!contains(&mailbox, MailFolder::Inbox, "demo-0"));
         assert!(contains(&mailbox, MailFolder::Archive, "demo-0"));
@@ -1106,7 +1097,7 @@ mod tests {
     fn trash_moves_conversation_without_deleting_it() {
         let mailbox = DemoMailbox::new();
 
-        assert!(mailbox.move_to_trash("demo-3"));
+        assert!(mailbox.move_to("demo-3", MailFolder::Trash));
 
         assert!(!contains(&mailbox, MailFolder::Inbox, "demo-3"));
         assert!(contains(&mailbox, MailFolder::Trash, "demo-3"));
@@ -1117,7 +1108,7 @@ mod tests {
     fn spam_moves_conversation_without_network_behavior() {
         let mailbox = DemoMailbox::new();
 
-        assert!(mailbox.move_to_spam("demo-4"));
+        assert!(mailbox.move_to("demo-4", MailFolder::Spam));
 
         assert!(!contains(&mailbox, MailFolder::Inbox, "demo-4"));
         assert!(contains(&mailbox, MailFolder::Spam, "demo-4"));
@@ -1130,9 +1121,9 @@ mod tests {
         assert!(mailbox.set_unread("demo-0", false));
         assert!(mailbox.set_starred("demo-1", true));
         assert!(mailbox.set_starred("demo-1", true));
-        assert!(mailbox.archive("demo-2"));
-        assert!(mailbox.move_to_trash("demo-3"));
-        assert!(mailbox.move_to_spam("demo-4"));
+        assert!(mailbox.move_to("demo-2", MailFolder::Archive));
+        assert!(mailbox.move_to("demo-3", MailFolder::Trash));
+        assert!(mailbox.move_to("demo-4", MailFolder::Spam));
 
         let counts = mailbox.counts();
         for folder in MailFolder::ALL {

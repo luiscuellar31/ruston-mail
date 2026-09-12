@@ -117,6 +117,7 @@ mod tests {
             recipients: Vec::new(),
             time: Some(time),
             body: MessageBody::PlainText(String::new()),
+            attachments: 0,
         }
     }
 

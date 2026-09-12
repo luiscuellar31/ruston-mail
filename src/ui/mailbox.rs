@@ -6,7 +6,8 @@ use iced::widget::{
 use iced::{Center, Element, Fill, Theme};
 
 use crate::app::{
-    App, DIVIDER_GRAB, DIVIDER_WIDTH, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, Panel,
+    App, CONVERSATION_LIST, DIVIDER_GRAB, DIVIDER_WIDTH, ListStatus, MIN_PANEL_WIDTH, Mailbox,
+    Message, Panel, SEARCH_INPUT, UndoMove,
 };
 use crate::mail::{ConversationSummary, MailFolder};
 
@@ -145,19 +146,30 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
     .spacing(SPACING)
     .align_y(Center);
 
-    let input = text_input("Search mail…", mailbox.search_query()).on_input(Message::SearchChanged);
-    let search: Element<'_, Message> = if mailbox.search_query().is_empty() {
-        input.into()
+    let input = text_input("Search mail…", mailbox.search_query())
+        .id(SEARCH_INPUT)
+        .on_input(Message::SearchChanged);
+    let mut search = column![].spacing(4);
+    if mailbox.search_query().is_empty() {
+        search = search.push(input);
     } else {
-        row![
-            input,
-            button(text("Clear"))
-                .style(button::secondary)
-                .on_press(Message::SearchChanged(String::new())),
-        ]
-        .spacing(SPACING)
-        .into()
-    };
+        search = search
+            .push(
+                row![
+                    input,
+                    button(text("Clear"))
+                        .style(button::secondary)
+                        .on_press(Message::SearchChanged(String::new())),
+                ]
+                .spacing(SPACING),
+            )
+            // Search never reaches the server, so it says what it covers.
+            .push(
+                text(search_scope_label(mailbox.loaded_count()))
+                    .size(DETAIL_SIZE)
+                    .style(text::secondary),
+            );
+    }
 
     let no_visible_conversations = mailbox.visible_conversations().next().is_none();
 
@@ -193,7 +205,12 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
         _ => conversation_list(mailbox),
     };
 
-    container(column![header, search, body].spacing(12))
+    let mut pane = column![header, search].spacing(12);
+    if let Some(undo) = mailbox.undo() {
+        pane = pane.push(undo_bar(undo));
+    }
+
+    container(pane.push(body).spacing(12))
         .width(Fill)
         .height(Fill)
         .padding(PANE_PADDING)
@@ -222,7 +239,12 @@ fn conversation_list(mailbox: &Mailbox) -> Element<'_, Message> {
     }
     // The gap keeps the scrollbar from covering row details.
     content
-        .push(scrollable(list).height(Fill).spacing(SPACING))
+        .push(
+            scrollable(list)
+                .id(CONVERSATION_LIST)
+                .height(Fill)
+                .spacing(SPACING),
+        )
         .into()
 }
 
@@ -261,6 +283,9 @@ fn conversation_row<'a>(
     if conversation.message_count > 1 {
         details = details.push(text(conversation.message_count.to_string()).size(DETAIL_SIZE));
     }
+    if conversation.has_attachments {
+        details = details.push(text("📎").size(DETAIL_SIZE));
+    }
     if conversation.starred {
         details = details.push(text("★").size(DETAIL_SIZE));
     }
@@ -283,6 +308,34 @@ fn conversation_row<'a>(
         })
         .on_press(Message::SelectConversation(conversation.id.clone()))
         .into()
+}
+
+/// Offers to take back the last move, until the next action replaces it.
+fn undo_bar(undo: &UndoMove) -> Element<'_, Message> {
+    container(
+        row![
+            text(format!("Moved to {}.", undo.to.name()))
+                .size(DETAIL_SIZE)
+                .width(Fill),
+            button(text("Undo").size(DETAIL_SIZE))
+                .padding([2, 8])
+                .style(button::secondary)
+                .on_press(Message::UndoMove),
+        ]
+        .spacing(SPACING)
+        .align_y(Center),
+    )
+    .padding([4, 8])
+    .style(container::rounded_box)
+    .into()
+}
+
+/// Says how far a search reaches, since it only reads loaded conversations.
+fn search_scope_label(loaded: usize) -> String {
+    match loaded {
+        1 => "Searching the 1 conversation loaded so far.".to_owned(),
+        loaded => format!("Searching the {loaded} conversations loaded so far."),
+    }
 }
 
 /// The control that extends the loaded list, when there is more to load.
@@ -336,6 +389,18 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+
+    #[test]
+    fn search_scope_says_how_far_it_reaches() {
+        assert_eq!(
+            search_scope_label(1),
+            "Searching the 1 conversation loaded so far."
+        );
+        assert_eq!(
+            search_scope_label(50),
+            "Searching the 50 conversations loaded so far."
+        );
+    }
 
     #[test]
     fn times_are_formatted_relative_to_now() {

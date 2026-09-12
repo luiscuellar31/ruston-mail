@@ -23,6 +23,12 @@ impl MailFolder {
         Self::Trash,
     ];
 
+    /// Whether mail actually lives in this folder, so a row can be moved back
+    /// into it. Starred is a label, and Sent and Drafts describe origin.
+    pub fn is_location(self) -> bool {
+        matches!(self, Self::Inbox | Self::Archive | Self::Spam | Self::Trash)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Inbox => "Inbox",
@@ -64,6 +70,8 @@ pub struct ConversationSummary {
     pub unread: bool,
     pub starred: bool,
     pub message_count: u32,
+    /// Whether any message carries a file. Ruston Mail never downloads them.
+    pub has_attachments: bool,
 }
 
 /// A mail address. Either part may be missing in server data.
@@ -209,6 +217,8 @@ pub struct MailMessage {
     /// Unix timestamp in seconds.
     pub time: Option<i64>,
     pub body: MessageBody,
+    /// Files the message carries. They are reported, never downloaded.
+    pub attachments: u32,
 }
 
 /// A conversation with its messages, as shown in the reader.
@@ -249,9 +259,8 @@ impl FromIterator<(MailFolder, u32)> for MailboxCounts {
 /// A change the user applies to the selected mailbox row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailAction {
-    Archive,
-    MoveToSpam,
-    MoveToTrash,
+    /// Relabels the row into a folder; nothing is ever deleted.
+    MoveTo(MailFolder),
     SetUnread(bool),
     SetStarred(bool),
 }
@@ -260,9 +269,7 @@ impl MailAction {
     /// The folder a move sends the row to; `None` for flag changes.
     pub fn destination(self) -> Option<MailFolder> {
         match self {
-            Self::Archive => Some(MailFolder::Archive),
-            Self::MoveToSpam => Some(MailFolder::Spam),
-            Self::MoveToTrash => Some(MailFolder::Trash),
+            Self::MoveTo(folder) => Some(folder),
             Self::SetUnread(_) | Self::SetStarred(_) => None,
         }
     }

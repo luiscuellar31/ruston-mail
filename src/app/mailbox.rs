@@ -40,6 +40,24 @@ pub struct ActionRequest {
     pub action: MailAction,
 }
 
+/// A move the user can take back: the row, and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndoMove {
+    pub row_id: String,
+    pub kind: SummaryKind,
+    /// The folder the row was moved out of, and goes back to.
+    pub from: MailFolder,
+    /// Where it was moved, which is what the offer says.
+    pub to: MailFolder,
+}
+
+/// Which way the keyboard moves through the conversation list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Next,
+    Previous,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListStatus {
     /// First page of the selected folder in flight; nothing to show yet.
@@ -67,6 +85,8 @@ pub struct Mailbox {
     search_query: String,
     action_request: Option<ActionRequest>,
     action_error: Option<MailboxError>,
+    /// The last move, while it can still be taken back.
+    undo: Option<UndoMove>,
     /// Automatic reads in flight, by row, so each response only affects its
     /// own row and never blocks the action toolbar.
     pending_reads: HashMap<String, RequestId>,
@@ -94,6 +114,7 @@ impl Mailbox {
             search_query: String::new(),
             action_request: None,
             action_error: None,
+            undo: None,
             pending_reads: HashMap::new(),
         };
         let page = mailbox.page_request(page_request, 0);
@@ -147,6 +168,48 @@ impl Mailbox {
 
     pub fn has_more(&self) -> bool {
         self.has_more
+    }
+
+    /// How many conversations are loaded, which is all a search can look at.
+    pub fn loaded_count(&self) -> usize {
+        self.conversations.len()
+    }
+
+    /// The visible row one step away from the selected one, or the first
+    /// visible row when nothing is open yet. `None` at either end of the list.
+    pub fn neighbour(&self, step: Step) -> Option<String> {
+        let rows: Vec<&str> = self
+            .visible_conversations()
+            .map(|row| row.id.as_str())
+            .collect();
+        let current = self
+            .selected_conversation()
+            .and_then(|selected| rows.iter().position(|row| *row == selected));
+
+        let index = match (current, step) {
+            (None, _) => 0,
+            (Some(index), Step::Next) => index + 1,
+            (Some(0), Step::Previous) => return None,
+            (Some(index), Step::Previous) => index - 1,
+        };
+
+        rows.get(index).map(|id| (*id).to_owned())
+    }
+
+    /// Closes the reader without touching the list, as Escape does.
+    pub fn close_reader(&mut self) {
+        self.set_reader(ReaderState::Empty);
+    }
+
+    /// Where a row sits among the visible ones, as a fraction from 0 to 1.
+    /// `None` when it is not visible or is the only row.
+    pub fn visible_position(&self, row_id: &str) -> Option<f32> {
+        let index = self
+            .visible_conversations()
+            .position(|row| row.id == row_id)?;
+        let last = self.visible_conversations().count().checked_sub(1)?;
+
+        (last > 0).then(|| index as f32 / last as f32)
     }
 
     pub fn selected_conversation(&self) -> Option<&str> {
@@ -411,6 +474,33 @@ impl Mailbox {
         Ok(true)
     }
 
+    /// The move the user can still take back, if any.
+    pub fn undo(&self) -> Option<&UndoMove> {
+        self.undo.as_ref()
+    }
+
+    /// Remembers a move so it can be taken back, replacing any earlier offer.
+    /// Only moves out of a real folder qualify: Starred is a label, and Sent
+    /// and Drafts describe where mail came from, so there is nowhere to put it
+    /// back. Both backends record the offer here, since demo actions never
+    /// reach `finish_action`.
+    pub fn offer_undo(&mut self, row_id: &str, kind: SummaryKind, action: MailAction) {
+        self.undo = match action.destination() {
+            Some(to) if self.folder.is_location() && to != self.folder => Some(UndoMove {
+                row_id: row_id.to_owned(),
+                kind,
+                from: self.folder,
+                to,
+            }),
+            _ => None,
+        };
+    }
+
+    /// Claims the offer, so it is made only once.
+    pub fn take_undo(&mut self) -> Option<UndoMove> {
+        self.undo.take()
+    }
+
     /// Starts an action on the selected row. Only one action runs at a time,
     /// and none while the list itself is loading.
     pub fn start_action(
@@ -418,12 +508,25 @@ impl Mailbox {
         action: MailAction,
         request: RequestId,
     ) -> Option<ActionRequest> {
-        if self.is_busy() || self.action_request.is_some() {
-            return None;
-        }
         let (row_id, kind) = self
             .selected_summary()
             .map(|summary| (summary.id.clone(), summary.kind))?;
+
+        self.start_action_on(row_id, kind, action, request)
+    }
+
+    /// Starts an action on a row by name, for rows the list no longer shows,
+    /// such as one being moved back where it came from.
+    pub fn start_action_on(
+        &mut self,
+        row_id: String,
+        kind: SummaryKind,
+        action: MailAction,
+        request: RequestId,
+    ) -> Option<ActionRequest> {
+        if self.is_busy() || self.action_request.is_some() {
+            return None;
+        }
 
         let request = ActionRequest {
             id: request,
@@ -433,6 +536,8 @@ impl Mailbox {
             action,
         };
         self.action_error = None;
+        // Only the last move can be taken back, and only until the next one.
+        self.undo = None;
         // An explicit read or unread wins over an automatic read in flight.
         if matches!(action, MailAction::SetUnread(_)) {
             self.pending_reads.remove(&request.row_id);
@@ -468,6 +573,8 @@ impl Mailbox {
             moved => moved.destination() != Some(request.folder),
         };
         if leaves_folder {
+            self.offer_undo(&request.row_id, request.kind, request.action);
+
             return Ok(self.remove_row(&request.row_id));
         }
 
@@ -479,7 +586,7 @@ impl Mailbox {
             match request.action {
                 MailAction::SetUnread(unread) => row.unread = unread,
                 MailAction::SetStarred(starred) => row.starred = starred,
-                MailAction::Archive | MailAction::MoveToSpam | MailAction::MoveToTrash => {}
+                MailAction::MoveTo(_) => {}
             }
         }
         Ok(None)
@@ -515,6 +622,8 @@ impl Mailbox {
         self.has_more = false;
         self.set_reader(ReaderState::Empty);
         self.action_error = None;
+        // The offer belongs to the folder it was made in.
+        self.undo = None;
         self.status = ListStatus::Loading(request);
         Some(self.page_request(request, 0))
     }
@@ -766,6 +875,7 @@ mod tests {
             unread: false,
             starred: false,
             message_count: 1,
+            has_attachments: false,
         }
     }
 
@@ -790,6 +900,7 @@ mod tests {
             unread: false,
             starred: false,
             message_count: 1,
+            has_attachments: false,
         }
     }
 
@@ -813,6 +924,7 @@ mod tests {
                     recipients: Vec::new(),
                     time: Some(time as i64),
                     body: MessageBody::PlainText(String::new()),
+                    attachments: 0,
                 })
                 .collect(),
         }
@@ -980,6 +1092,89 @@ mod tests {
             conversations,
             total,
         })
+    }
+
+    #[test]
+    fn a_move_out_of_a_folder_can_be_taken_back() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+        let request = mailbox
+            .start_action(MailAction::MoveTo(MailFolder::Archive), 4)
+            .unwrap();
+        assert!(mailbox.undo().is_none());
+
+        assert_eq!(
+            mailbox.finish_action(&request, Ok(())),
+            Ok(Some("b".into()))
+        );
+
+        let undo = mailbox.undo().expect("a move out of the Inbox undoes");
+        assert_eq!(undo.row_id, "a");
+        assert_eq!(undo.from, MailFolder::Inbox);
+        assert_eq!(undo.to, MailFolder::Archive);
+
+        // The offer is claimed once, and the next action replaces it.
+        assert!(mailbox.take_undo().is_some());
+        assert!(mailbox.undo().is_none());
+    }
+
+    #[test]
+    fn flags_and_labels_offer_nothing_to_undo() {
+        // A flag change moves nothing.
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        load_detail(&mut mailbox, "a", detail("a", &["a1"]), 2);
+        let request = mailbox
+            .start_action(MailAction::SetStarred(true), 3)
+            .unwrap();
+        let _ = mailbox.finish_action(&request, Ok(()));
+        assert!(mailbox.undo().is_none());
+
+        // Starred is a label, so there is no folder to put the row back into.
+        let page_request = mailbox.select_folder(MailFolder::Starred, 4).unwrap();
+        mailbox.finish_page(page_request.id, page(&["s1"], 1));
+        load_detail(&mut mailbox, "s1", detail("s1", &["m1"]), 5);
+        let request = mailbox
+            .start_action(MailAction::MoveTo(MailFolder::Archive), 6)
+            .unwrap();
+        let _ = mailbox.finish_action(&request, Ok(()));
+
+        assert!(mailbox.undo().is_none());
+    }
+
+    #[test]
+    fn the_keyboard_steps_through_visible_rows() {
+        let mut mailbox = loaded_inbox(&["a", "b", "c"], 3);
+
+        // Nothing open yet, so either direction starts at the top.
+        assert_eq!(mailbox.neighbour(Step::Next).as_deref(), Some("a"));
+        assert_eq!(mailbox.neighbour(Step::Previous).as_deref(), Some("a"));
+
+        load_detail(&mut mailbox, "b", detail("b", &["b1"]), 4);
+        assert_eq!(mailbox.neighbour(Step::Next).as_deref(), Some("c"));
+        assert_eq!(mailbox.neighbour(Step::Previous).as_deref(), Some("a"));
+
+        // The ends stop rather than wrap around.
+        load_detail(&mut mailbox, "c", detail("c", &["c1"]), 5);
+        assert_eq!(mailbox.neighbour(Step::Next), None);
+        load_detail(&mut mailbox, "a", detail("a", &["a1"]), 6);
+        assert_eq!(mailbox.neighbour(Step::Previous), None);
+    }
+
+    #[test]
+    fn visible_position_places_a_row_between_the_ends() {
+        let mut mailbox = loaded_inbox(&["a", "b", "c"], 3);
+
+        assert_eq!(mailbox.visible_position("a"), Some(0.0));
+        assert_eq!(mailbox.visible_position("b"), Some(0.5));
+        assert_eq!(mailbox.visible_position("c"), Some(1.0));
+        assert_eq!(mailbox.visible_position("missing"), None);
+
+        // Positions follow what is on screen, not what is loaded.
+        mailbox.set_search_query("nothing matches this".into());
+        assert_eq!(mailbox.visible_position("b"), None);
+
+        // A single row has nowhere to scroll to.
+        assert_eq!(loaded_inbox(&["only"], 1).visible_position("only"), None);
     }
 
     #[test]
@@ -1606,7 +1801,10 @@ mod tests {
         assert_eq!(request.row_id, "a");
         assert_eq!(request.folder, MailFolder::Inbox);
         assert!(mailbox.action_pending());
-        assert_eq!(mailbox.start_action(MailAction::Archive, 4), None);
+        assert_eq!(
+            mailbox.start_action(MailAction::MoveTo(MailFolder::Archive), 4),
+            None
+        );
     }
 
     #[test]
@@ -1614,7 +1812,10 @@ mod tests {
         let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
         mailbox.refresh(3);
 
-        assert_eq!(mailbox.start_action(MailAction::Archive, 4), None);
+        assert_eq!(
+            mailbox.start_action(MailAction::MoveTo(MailFolder::Archive), 4),
+            None
+        );
         assert!(!mailbox.action_pending());
     }
 
@@ -1640,7 +1841,9 @@ mod tests {
     fn confirmed_moves_remove_the_row_and_open_the_next() {
         let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b", "c"], "b");
 
-        let request = mailbox.start_action(MailAction::Archive, 3).unwrap();
+        let request = mailbox
+            .start_action(MailAction::MoveTo(MailFolder::Archive), 3)
+            .unwrap();
 
         assert_eq!(
             mailbox.finish_action(&request, Ok(())),
@@ -1654,7 +1857,9 @@ mod tests {
     fn moving_into_the_current_folder_keeps_the_row() {
         let mut mailbox = selected_in(MailFolder::Archive, &["a"], "a");
 
-        let request = mailbox.start_action(MailAction::Archive, 3).unwrap();
+        let request = mailbox
+            .start_action(MailAction::MoveTo(MailFolder::Archive), 3)
+            .unwrap();
 
         assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
         assert_eq!(ids(&mailbox), ["a"]);
@@ -1678,7 +1883,9 @@ mod tests {
     #[test]
     fn failed_actions_keep_rows_and_report_the_error() {
         let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
-        let request = mailbox.start_action(MailAction::MoveToTrash, 3).unwrap();
+        let request = mailbox
+            .start_action(MailAction::MoveTo(MailFolder::Trash), 3)
+            .unwrap();
 
         let result = mailbox.finish_action(&request, Err(MailboxError::Service));
 
@@ -1691,7 +1898,9 @@ mod tests {
     #[test]
     fn stale_or_moved_action_responses_change_nothing() {
         let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
-        let request = mailbox.start_action(MailAction::Archive, 3).unwrap();
+        let request = mailbox
+            .start_action(MailAction::MoveTo(MailFolder::Archive), 3)
+            .unwrap();
         let stale = ActionRequest {
             id: 99,
             ..request.clone()

@@ -1,4 +1,13 @@
+use iced::widget::Id;
 use iced::widget::pane_grid::{self, Axis, Configuration};
+
+/// Scroll targets the app commands after a selection changes. They are named
+/// here, rather than in the views, so `update` can reach them without the app
+/// layer depending on the interface.
+pub const CONVERSATION_LIST: Id = Id::new("conversation-list");
+pub const READER_BODY: Id = Id::new("reader-body");
+/// The search field, which a keyboard shortcut focuses.
+pub const SEARCH_INPUT: Id = Id::new("search-input");
 
 /// The mailbox panels, left to right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

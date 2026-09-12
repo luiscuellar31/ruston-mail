@@ -425,9 +425,7 @@ enum ActionCall {
 
 fn action_call(action: MailAction) -> ActionCall {
     match action {
-        MailAction::Archive => ActionCall::Move(label_ids::ARCHIVE),
-        MailAction::MoveToSpam => ActionCall::Move(label_ids::SPAM),
-        MailAction::MoveToTrash => ActionCall::Move(label_ids::TRASH),
+        MailAction::MoveTo(folder) => ActionCall::Move(label_id(folder)),
         MailAction::SetUnread(unread) => ActionCall::MarkRead(!unread),
         MailAction::SetStarred(starred) => ActionCall::Star(starred),
     }
@@ -482,6 +480,7 @@ fn summarize(conversation: Conversation, folder: MailFolder) -> ConversationSumm
         unread: unread > 0,
         starred,
         message_count: u32::try_from(conversation.num_messages).unwrap_or(0),
+        has_attachments: conversation.num_attachments > 0,
         id: conversation.id,
         kind: SummaryKind::Conversation,
     }
@@ -563,6 +562,7 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
         unread: message.unread != 0,
         starred: message.label_ids.iter().any(|id| id == label_ids::STARRED),
         message_count: 1,
+        has_attachments: message.num_attachments > 0,
         id: message.id,
         kind: SummaryKind::Message,
     }
@@ -583,6 +583,7 @@ fn mail_message(meta: MessageMetadata, body: String, mime_type: &str) -> MailMes
     };
 
     MailMessage {
+        attachments: u32::try_from(meta.num_attachments).unwrap_or(0),
         sender: mail_address(&meta.sender),
         recipients: meta
             .to_list
@@ -880,16 +881,20 @@ mod tests {
     #[test]
     fn actions_map_to_relabels_and_flags_never_deletes() {
         assert_eq!(
-            action_call(MailAction::Archive),
+            action_call(MailAction::MoveTo(MailFolder::Archive)),
             ActionCall::Move(label_ids::ARCHIVE)
         );
         assert_eq!(
-            action_call(MailAction::MoveToSpam),
+            action_call(MailAction::MoveTo(MailFolder::Spam)),
             ActionCall::Move(label_ids::SPAM)
         );
         assert_eq!(
-            action_call(MailAction::MoveToTrash),
+            action_call(MailAction::MoveTo(MailFolder::Trash)),
             ActionCall::Move(label_ids::TRASH)
+        );
+        assert_eq!(
+            action_call(MailAction::MoveTo(MailFolder::Inbox)),
+            ActionCall::Move(label_ids::INBOX)
         );
         assert_eq!(
             action_call(MailAction::SetUnread(true)),
@@ -1057,6 +1062,7 @@ mod tests {
                 unread: true,
                 starred: true,
                 message_count: 3,
+                has_attachments: false,
             }
         );
     }

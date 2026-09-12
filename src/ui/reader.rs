@@ -8,7 +8,7 @@ use iced::{Element, Fill, Font, Padding};
 
 use super::APP_FONT;
 use super::mailbox::{DETAIL_SIZE, PANE_PADDING, SPACING};
-use crate::app::{ConversationReader, Mailbox, Message, PendingLink, ReaderState};
+use crate::app::{ConversationReader, Mailbox, Message, PendingLink, READER_BODY, ReaderState};
 use crate::mail::{
     BlockKind, ConversationDetail, ConversationSummary, MailAddress, MailMessage, MessageBody,
     RichBlock, RichBody, RichSpan,
@@ -148,6 +148,7 @@ fn conversation<'a>(
             .padding(PANE_PADDING)
             .width(Fill),
     )
+    .id(READER_BODY)
     .spacing(SPACING)
     .height(Fill)
     .into()
@@ -207,6 +208,9 @@ fn message_card<'a>(
             "To: {}",
             recipients_label(&message.recipients)
         )));
+        if let Some(label) = attachments_label(message.attachments) {
+            identity = identity.push(detail_line(label));
+        }
     } else {
         identity = identity.push(
             container(
@@ -488,6 +492,18 @@ fn detail_line<'a>(content: String) -> Element<'a, Message> {
         .into()
 }
 
+/// Reports the files a message carries. Ruston Mail cannot open them yet, and
+/// says so rather than leaving the reader looking for a button.
+fn attachments_label(count: u32) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("📎 1 attachment — opening files is not supported yet".to_owned()),
+        count => Some(format!(
+            "📎 {count} attachments — opening files is not supported yet"
+        )),
+    }
+}
+
 fn message_count_label(count: usize) -> String {
     match count {
         0 => "No messages".to_owned(),
@@ -622,6 +638,21 @@ mod tests {
         assert_eq!(preview(&body), "Hi Alex, First line. Second line.");
         assert_eq!(preview(&long).split(' ').count(), PREVIEW_WORDS);
         assert_eq!(preview(&rich), "Hello there again");
+    }
+
+    #[test]
+    fn attachments_are_reported_only_when_present() {
+        assert_eq!(attachments_label(0), None);
+        assert!(
+            attachments_label(1)
+                .unwrap()
+                .starts_with("📎 1 attachment ")
+        );
+        assert!(
+            attachments_label(3)
+                .unwrap()
+                .starts_with("📎 3 attachments ")
+        );
     }
 
     #[test]

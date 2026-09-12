@@ -4,8 +4,10 @@ mod reader;
 
 use std::sync::Arc;
 
-use iced::Task;
+use iced::keyboard::{self, Key, Modifiers};
+use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::{pane_grid, text_editor};
+use iced::{Subscription, Task};
 
 use crate::mail::{
     AuthError, ConversationDetail, ConversationPage, LoginRequest, MailAction, MailBackend,
@@ -13,8 +15,11 @@ use crate::mail::{
     SignInOutcome, SignInPrompt, demo::DemoMailbox,
 };
 
-pub use layout::{DIVIDER_GRAB, DIVIDER_WIDTH, MIN_PANEL_WIDTH, Panel};
-pub use mailbox::{ActionRequest, ListStatus, Mailbox, ReaderRequest};
+pub use layout::{
+    CONVERSATION_LIST, DIVIDER_GRAB, DIVIDER_WIDTH, MIN_PANEL_WIDTH, Panel, READER_BODY,
+    SEARCH_INPUT,
+};
+pub use mailbox::{ActionRequest, ListStatus, Mailbox, ReaderRequest, Step, UndoMove};
 use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
@@ -75,6 +80,8 @@ pub enum Message {
     ArchiveSelected,
     MoveSelectedToSpam,
     MoveSelectedToTrash,
+    /// Puts the last moved conversation back where it came from.
+    UndoMove,
     MarkSelectedRead,
     MarkSelectedUnread,
     StarSelected,
@@ -87,6 +94,48 @@ pub enum Message {
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelResized(pane_grid::ResizeEvent),
+    /// A key the focused widget did not take.
+    Keyboard(keyboard::Event),
+}
+
+/// What a key press means to the mailbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shortcut {
+    /// Open the conversation one step away in the list.
+    Move(Step),
+    /// Open the selected conversation, which also retries a failed one.
+    Open,
+    /// Back out of the topmost thing on screen.
+    Dismiss,
+    Refresh,
+    Search,
+}
+
+/// The meaning of a key press, or `None` when it is not a shortcut. Plain
+/// keys carry no modifiers, so typing never moves the mailbox underneath.
+fn shortcut(key: Key<&str>, modifiers: Modifiers) -> Option<Shortcut> {
+    if modifiers.command() {
+        return match key {
+            Key::Character("r") => Some(Shortcut::Refresh),
+            Key::Character("f") => Some(Shortcut::Search),
+            _ => None,
+        };
+    }
+    if !modifiers.is_empty() {
+        return None;
+    }
+
+    match key {
+        Key::Named(keyboard::key::Named::ArrowDown) | Key::Character("j") => {
+            Some(Shortcut::Move(Step::Next))
+        }
+        Key::Named(keyboard::key::Named::ArrowUp) | Key::Character("k") => {
+            Some(Shortcut::Move(Step::Previous))
+        }
+        Key::Named(keyboard::key::Named::Enter) => Some(Shortcut::Open),
+        Key::Named(keyboard::key::Named::Escape) => Some(Shortcut::Dismiss),
+        _ => None,
+    }
 }
 
 #[derive(Default)]
@@ -226,13 +275,16 @@ impl App {
                     mailbox.select_text(&id, action);
                 }
             }
-            Message::ArchiveSelected => return self.apply_action(MailAction::Archive),
+            Message::ArchiveSelected => {
+                return self.apply_action(MailAction::MoveTo(MailFolder::Archive));
+            }
             Message::MoveSelectedToSpam => {
-                return self.apply_action(MailAction::MoveToSpam);
+                return self.apply_action(MailAction::MoveTo(MailFolder::Spam));
             }
             Message::MoveSelectedToTrash => {
-                return self.apply_action(MailAction::MoveToTrash);
+                return self.apply_action(MailAction::MoveTo(MailFolder::Trash));
             }
+            Message::UndoMove => return self.undo_move(),
             Message::MarkSelectedRead => {
                 return self.apply_action(MailAction::SetUnread(false));
             }
@@ -288,9 +340,71 @@ impl App {
             }
             Message::DismissLink => self.pending_link = None,
             Message::PanelResized(event) => self.panels.resize(event.split, event.ratio),
+            Message::Keyboard(event) => return self.handle_key(event),
         }
 
         Task::none()
+    }
+
+    /// Keyboard shortcuts, and only once a mailbox is open. `listen` reports
+    /// just the keys no focused widget took, so typing in the search field
+    /// never reaches the list.
+    pub fn subscription(&self) -> Subscription<Message> {
+        match self.auth_state {
+            AuthState::Authenticated { .. } => keyboard::listen().map(Message::Keyboard),
+            _ => Subscription::none(),
+        }
+    }
+
+    fn handle_key(&mut self, event: keyboard::Event) -> Task<Message> {
+        let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+            return Task::none();
+        };
+        let Some(shortcut) = shortcut(key.as_ref(), modifiers) else {
+            return Task::none();
+        };
+
+        match shortcut {
+            Shortcut::Move(step) => {
+                let Some(next) = self
+                    .active_mailbox()
+                    .and_then(|mailbox| mailbox.neighbour(step))
+                else {
+                    return Task::none();
+                };
+
+                Task::batch([self.reveal_in_list(&next), self.select_conversation(next)])
+            }
+            Shortcut::Open => {
+                let Some(selected) = self
+                    .mailbox
+                    .as_ref()
+                    .and_then(|mailbox| mailbox.selected_conversation())
+                    .map(str::to_owned)
+                else {
+                    return Task::none();
+                };
+
+                self.select_conversation(selected)
+            }
+            // One layer at a time, starting with the most recent.
+            Shortcut::Dismiss => {
+                if self.pending_link.take().is_some() {
+                    return Task::none();
+                }
+                if let Some(mailbox) = self.active_mailbox() {
+                    if mailbox.is_searching() {
+                        mailbox.set_search_query(String::new());
+                    } else {
+                        mailbox.close_reader();
+                    }
+                }
+
+                Task::none()
+            }
+            Shortcut::Refresh => self.refresh_mailbox(),
+            Shortcut::Search => operation::focus(SEARCH_INPUT),
+        }
     }
 
     pub fn auth_state(&self) -> &AuthState {
@@ -593,22 +707,73 @@ impl App {
         if mailbox.is_busy() {
             return Task::none();
         }
-        let Some(id) = mailbox.selected_conversation().map(str::to_owned) else {
+        let Some((id, kind)) = mailbox
+            .selected_summary()
+            .map(|summary| (summary.id.clone(), summary.kind))
+        else {
             return Task::none();
         };
 
         let applied = match action {
-            MailAction::Archive => service.archive(&id),
-            MailAction::MoveToSpam => service.move_to_spam(&id),
-            MailAction::MoveToTrash => service.move_to_trash(&id),
+            MailAction::MoveTo(folder) => service.move_to(&id, folder),
             MailAction::SetUnread(unread) => service.set_unread(&id, unread),
             MailAction::SetStarred(starred) => service.set_starred(&id, starred),
         };
-        if applied && let Some(next) = self.apply_demo_snapshot(service) {
-            return self.select_conversation(next);
+        if applied {
+            // Demo actions never reach `finish_action`, so the offer to take
+            // the move back is recorded here instead.
+            if let Some(mailbox) = self.active_mailbox() {
+                mailbox.offer_undo(&id, kind, action);
+            }
+            if let Some(next) = self.apply_demo_snapshot(service) {
+                return self.select_conversation(next);
+            }
         }
 
         Task::none()
+    }
+
+    /// Puts the last moved conversation back. The row has left the list, so
+    /// the action names it directly instead of going through the selection.
+    fn undo_move(&mut self) -> Task<Message> {
+        let Some(undo) = self.active_mailbox().and_then(Mailbox::take_undo) else {
+            return Task::none();
+        };
+        let action = MailAction::MoveTo(undo.from);
+
+        match self.backend.clone() {
+            Some(MailBackend::Demo(service)) => {
+                if service.move_to(&undo.row_id, undo.from) {
+                    self.apply_demo_snapshot(&service);
+                }
+
+                Task::none()
+            }
+            Some(MailBackend::Proton(service)) => {
+                let request = self.next_request();
+                let Some(request) = self.active_mailbox().and_then(|mailbox| {
+                    mailbox.start_action_on(undo.row_id, undo.kind, action, request)
+                }) else {
+                    return Task::none();
+                };
+                let pending = request.clone();
+
+                Task::perform(
+                    async move {
+                        service
+                            .apply_action(
+                                pending.kind,
+                                &pending.row_id,
+                                pending.folder,
+                                pending.action,
+                            )
+                            .await
+                    },
+                    move |result| Message::ActionFinished(request.clone(), result),
+                )
+            }
+            None => Task::none(),
+        }
     }
 
     /// Proton actions run asynchronously; the list changes only once Proton
@@ -662,8 +827,20 @@ impl App {
             }
         };
 
+        // A row moved into the folder on screen, such as one put back, is not
+        // in the loaded list; a reload is what brings it into view.
+        let arrived = self
+            .mailbox
+            .as_ref()
+            .is_some_and(|mailbox| request.action.destination() == Some(mailbox.folder()));
+        if arrived {
+            return self.refresh_mailbox();
+        }
+
         let counts = self.reload_counts();
-        let open_next = next.map_or_else(Task::none, |id| self.select_conversation(id));
+        let open_next = next.map_or_else(Task::none, |id| {
+            Task::batch([self.reveal_in_list(&id), self.select_conversation(id)])
+        });
 
         Task::batch([counts, open_next])
     }
@@ -733,8 +910,30 @@ impl App {
         let request = self
             .active_mailbox()
             .and_then(|mailbox| mailbox.start_conversation_load(id, request));
+        if request.is_none() {
+            return Task::none();
+        }
 
-        self.fetch_conversation(request)
+        // A new conversation starts at its top, not where the last one was
+        // left; the reader pane keeps its scroll offset otherwise.
+        Task::batch([
+            operation::snap_to(READER_BODY, RelativeOffset::START),
+            self.fetch_conversation(request),
+        ])
+    }
+
+    /// Brings a row the app opened on its own into view. A row the user
+    /// clicked is already on screen, so only these are worth scrolling to.
+    fn reveal_in_list(&self, row_id: &str) -> Task<Message> {
+        let Some(y) = self
+            .mailbox
+            .as_ref()
+            .and_then(|mailbox| mailbox.visible_position(row_id))
+        else {
+            return Task::none();
+        };
+
+        operation::snap_to(CONVERSATION_LIST, RelativeOffset { x: 0.0, y })
     }
 
     fn retry_conversation(&mut self) -> Task<Message> {
@@ -958,6 +1157,92 @@ mod tests {
     }
 
     #[test]
+    fn keys_map_to_mailbox_shortcuts() {
+        let plain = Modifiers::default();
+        let command = Modifiers::COMMAND;
+        let down = || Key::Named(keyboard::key::Named::ArrowDown);
+
+        assert_eq!(
+            shortcut(Key::Character("j"), plain),
+            Some(Shortcut::Move(Step::Next))
+        );
+        assert_eq!(shortcut(down(), plain), Some(Shortcut::Move(Step::Next)));
+        assert_eq!(
+            shortcut(Key::Character("k"), plain),
+            Some(Shortcut::Move(Step::Previous))
+        );
+        assert_eq!(
+            shortcut(Key::Named(keyboard::key::Named::Enter), plain),
+            Some(Shortcut::Open)
+        );
+        assert_eq!(
+            shortcut(Key::Named(keyboard::key::Named::Escape), plain),
+            Some(Shortcut::Dismiss)
+        );
+        assert_eq!(
+            shortcut(Key::Character("r"), command),
+            Some(Shortcut::Refresh)
+        );
+        assert_eq!(
+            shortcut(Key::Character("f"), command),
+            Some(Shortcut::Search)
+        );
+
+        // A modifier turns a plain shortcut into somebody else's business.
+        assert_eq!(shortcut(Key::Character("j"), command), None);
+        assert_eq!(shortcut(down(), command), None);
+        assert_eq!(shortcut(Key::Character("r"), plain), None);
+        assert_eq!(shortcut(Key::Character("z"), plain), None);
+    }
+
+    #[test]
+    fn the_keyboard_walks_the_conversation_list() {
+        let mut app = loaded_demo_app();
+
+        let press = |app: &mut App, key: Key<&str>| {
+            let named = match key {
+                Key::Character(c) => Key::Character(c.into()),
+                Key::Named(named) => Key::Named(named),
+                Key::Unidentified => Key::Unidentified,
+            };
+            let _ = app.update(Message::Keyboard(keyboard::Event::KeyPressed {
+                key: named.clone(),
+                modified_key: named,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: Modifiers::default(),
+                text: None,
+                repeat: false,
+            }));
+        };
+
+        // Nothing is open, so the first key opens the first conversation.
+        press(&mut app, Key::Character("j"));
+        let selected = |app: &App| {
+            app.mailbox()
+                .unwrap()
+                .selected_conversation()
+                .map(str::to_owned)
+        };
+        assert_eq!(selected(&app).as_deref(), Some("demo-0"));
+
+        press(&mut app, Key::Character("j"));
+        assert_eq!(selected(&app).as_deref(), Some("demo-1"));
+
+        press(&mut app, Key::Character("k"));
+        assert_eq!(selected(&app).as_deref(), Some("demo-0"));
+
+        // The list has an end, and Escape closes the reader.
+        press(&mut app, Key::Character("k"));
+        assert_eq!(selected(&app).as_deref(), Some("demo-0"));
+
+        press(&mut app, Key::Named(keyboard::key::Named::Escape));
+        assert_eq!(selected(&app), None);
+    }
+
+    #[test]
     fn only_web_and_mail_links_are_offered() {
         let web = PendingLink::parse(" https://Example.com/path?x=1 ").unwrap();
         assert_eq!(web.target, "example.com");
@@ -1133,7 +1418,9 @@ mod tests {
 
         let task = app.update(Message::SelectConversation("demo-3".into()));
 
-        assert_eq!(task.units(), 1);
+        // The detail request and the scroll back to the top of the reader.
+        // `last_request` is what proves only one of them reaches the backend.
+        assert_eq!(task.units(), 2);
         assert_eq!(app.last_request, 3);
         let mailbox = app.mailbox().unwrap();
         assert_eq!(mailbox.status(), status);
@@ -1400,12 +1687,37 @@ mod tests {
         let stale_detail = demo_service(&app).conversation_detail("demo-0", NOW);
         let _ = app.update(Message::ConversationLoaded(stale, stale_detail));
 
-        assert_eq!(task.units(), 1);
+        // Opening the next conversation: its detail request and the scroll
+        // back to the top of the reader.
+        assert_eq!(task.units(), 2);
         assert_eq!(
             app.mailbox().unwrap().selected_conversation(),
             Some("demo-1")
         );
         assert_eq!(pending_reader_request(&app), current);
+    }
+
+    #[test]
+    fn undoing_a_demo_move_puts_the_conversation_back() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SelectConversation("demo-3".into()));
+        deliver_selected_demo_detail(&mut app);
+
+        let _ = app.update(Message::ArchiveSelected);
+        let has_row = |app: &App| {
+            app.mailbox()
+                .unwrap()
+                .conversations()
+                .iter()
+                .any(|conversation| conversation.id == "demo-3")
+        };
+        assert!(!has_row(&app));
+        assert!(app.mailbox().unwrap().undo().is_some());
+
+        let _ = app.update(Message::UndoMove);
+
+        assert!(has_row(&app));
+        assert!(app.mailbox().unwrap().undo().is_none());
     }
 
     #[test]
