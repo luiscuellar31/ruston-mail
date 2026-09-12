@@ -273,8 +273,11 @@ impl Mailbox {
         self.counts.as_ref()
     }
 
+    /// Whether the list can be extended. A search answers in one batch, so
+    /// while its results are what is on screen there is no next page to ask
+    /// for, however many the open folder still has waiting.
     pub fn has_more(&self) -> bool {
-        self.has_more
+        self.search.is_none() && self.has_more
     }
 
     /// Whether the rows on screen hold this one, hidden by typing or not.
@@ -841,8 +844,7 @@ impl Mailbox {
     }
 
     pub fn load_more(&mut self, request: RequestId) -> Option<PageRequest> {
-        // A search answers in one batch, so there is no next page to ask for.
-        if self.is_busy() || !self.has_more || self.search.is_some() {
+        if self.is_busy() || !self.has_more() {
             return None;
         }
 
@@ -1493,6 +1495,26 @@ mod tests {
         );
         assert!(!mailbox.has_row("a"));
         assert!(mailbox.conversations().is_empty());
+    }
+
+    #[test]
+    fn results_on_screen_offer_no_next_page() {
+        // A total past one page is what leaves a next page to ask for.
+        let mut mailbox = loaded_inbox(&["a"], PAGE_SIZE * 3);
+        assert!(mailbox.has_more(), "the folder has more pages waiting");
+
+        mailbox.set_search_query("report".to_owned());
+        let search = mailbox.start_search(3).unwrap();
+        assert_eq!(mailbox.finish_search(&search, page(&["found"], 1)), None);
+
+        // The server answered in one batch, so offering to load more would
+        // offer something nothing can ask for.
+        assert!(!mailbox.has_more());
+        assert!(mailbox.load_more(4).is_none());
+
+        // The folder's own pages are still there once the results are gone.
+        mailbox.clear_search();
+        assert!(mailbox.has_more());
     }
 
     #[test]
