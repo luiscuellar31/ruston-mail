@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::mail::MailFolder;
+use crate::mail::Folder;
 
 const FILE: &str = "settings.json";
 
@@ -24,7 +24,7 @@ pub struct Settings {
     pub window: Window,
     pub panels: Panels,
     /// The folder to open on start, which is the last one that was read.
-    pub folder: MailFolder,
+    pub folder: Folder,
     /// Mark a conversation as read as soon as it is opened.
     pub mark_read_on_open: bool,
     /// Ask where a link goes before opening it.
@@ -41,7 +41,7 @@ impl Default for Settings {
         Self {
             window: Window::default(),
             panels: Panels::default(),
-            folder: MailFolder::Inbox,
+            folder: Folder::INBOX,
             // Both default to the behaviour the app had before it could be
             // configured, so an upgrade changes nothing on its own.
             mark_read_on_open: true,
@@ -119,6 +119,17 @@ impl Settings {
         let _ = std::fs::write(path, text);
     }
 
+    /// Settings for one run that open a given folder. Tests build them this
+    /// way because `stored` stays private: nothing outside `load` may mark
+    /// settings as belonging in someone's file.
+    #[cfg(test)]
+    pub fn opening(folder: Folder) -> Self {
+        Self {
+            folder,
+            ..Self::default()
+        }
+    }
+
     /// Values a damaged or hand-edited file could otherwise break the layout
     /// with: ratios outside the panel range, and impossible window sizes.
     fn sanitized(mut self) -> Self {
@@ -163,7 +174,7 @@ mod tests {
     #[test]
     fn settings_survive_a_round_trip() {
         let settings = Settings {
-            folder: MailFolder::Archive,
+            folder: Folder::System(crate::mail::MailFolder::Archive),
             mark_read_on_open: false,
             ..Settings::default()
         };
@@ -181,7 +192,7 @@ mod tests {
         // A file written by an older version keeps whatever it does carry.
         let partial: Settings = serde_json::from_str(r#"{"confirm_links": false}"#).unwrap();
         assert!(!partial.confirm_links);
-        assert_eq!(partial.folder, MailFolder::Inbox);
+        assert_eq!(partial.folder, Folder::INBOX);
     }
 
     #[test]

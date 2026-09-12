@@ -9,7 +9,7 @@ use iced::widget::{Text, column, container, text};
 use iced::{Element, Fill, Font, Size, window};
 
 use crate::app::{App, AuthState, Message};
-use crate::mail::MailFolder;
+use crate::mail::Folder;
 use crate::settings::Settings;
 
 /// Size of the small print: times, counts, addresses and every other line
@@ -50,7 +50,7 @@ pub fn run(demo: bool) -> iced::Result {
 fn window_title(app: &App, demo: bool) -> String {
     let unread = app
         .mailbox()
-        .and_then(|mailbox| mailbox.counts()?.unread(MailFolder::Inbox));
+        .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX));
 
     title_label(unread, demo)
 }

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
-    ConversationDetail, ConversationPage, ConversationSummary, MailAddress, MailFolder,
+    ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAddress, MailFolder,
     MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
 };
 
@@ -156,7 +156,7 @@ impl DemoMailbox {
 
     pub fn list_conversations(
         &self,
-        folder: MailFolder,
+        folder: &Folder,
         page: u32,
         page_size: u32,
         now: i64,
@@ -192,7 +192,7 @@ impl DemoMailbox {
 
     pub fn snapshot(
         &self,
-        folder: MailFolder,
+        folder: &Folder,
         page_size: u32,
         now: i64,
     ) -> (ConversationPage, MailboxCounts) {
@@ -211,7 +211,13 @@ impl DemoMailbox {
         self.update(id, |fixture| fixture.starred = starred)
     }
 
-    pub fn move_to(&self, id: &str, folder: MailFolder) -> bool {
+    /// Moves a row between Proton's own folders. The fictional mailbox has no
+    /// folders of its own, so a move into one changes nothing.
+    pub fn move_to(&self, id: &str, folder: &Folder) -> bool {
+        let Some(folder) = folder.system() else {
+            return false;
+        };
+
         self.update(id, |fixture| fixture.folder = folder)
     }
 
@@ -683,13 +689,19 @@ fn matches_query(fixture: &Fixture, query: &str) -> bool {
         .any(|value| value.to_lowercase().contains(query))
 }
 
-fn in_folder(fixture: &Fixture, folder: MailFolder) -> bool {
+/// The fictional mailbox has only Proton's own folders, so a folder the
+/// account made never holds any of it.
+fn in_folder(fixture: &Fixture, folder: &Folder) -> bool {
+    let Some(folder) = folder.system() else {
+        return false;
+    };
+
     fixture.folder == folder || (folder == MailFolder::Starred && fixture.starred)
 }
 
 fn list_from(
     fixtures: &[Fixture],
-    folder: MailFolder,
+    folder: &Folder,
     page: u32,
     page_size: u32,
     now: i64,
@@ -719,10 +731,11 @@ fn list_from(
 fn counts_from(fixtures: &[Fixture]) -> MailboxCounts {
     MailFolder::ALL
         .into_iter()
+        .map(Folder::System)
         .map(|folder| {
             let unread = fixtures
                 .iter()
-                .filter(|fixture| fixture.unread && in_folder(fixture, folder))
+                .filter(|fixture| fixture.unread && in_folder(fixture, &folder))
                 .count();
             (folder, unread as u32)
         })
@@ -903,11 +916,16 @@ mod tests {
 
     const NOW: i64 = 1_789_000_000;
 
+    /// One of Proton's own folders, as a place to list from.
+    fn sys(folder: MailFolder) -> Folder {
+        Folder::System(folder)
+    }
+
     #[test]
     fn search_reaches_every_folder() {
         let mailbox = DemoMailbox::new();
         let inbox = mailbox
-            .list_conversations(MailFolder::Inbox, 0, PAGE_SIZE, NOW)
+            .list_conversations(&sys(MailFolder::Inbox), 0, PAGE_SIZE, NOW)
             .unwrap();
         // Taken from the data rather than written here, so the test survives
         // any rewrite of the fictional mail.
@@ -931,7 +949,7 @@ mod tests {
 
         // The row keeps turning up once it has left the Inbox: a search that
         // stopped at the open folder would not be a search.
-        assert!(mailbox.move_to(&id, MailFolder::Archive));
+        assert!(mailbox.move_to(&id, &sys(MailFolder::Archive)));
         let found = mailbox.search(&word, PAGE_SIZE, NOW).unwrap();
         assert!(found.conversations.iter().any(|found| found.id == id));
 
@@ -948,7 +966,7 @@ mod tests {
 
     fn page(folder: MailFolder, page: u32) -> ConversationPage {
         DemoMailbox::new()
-            .list_conversations(folder, page, PAGE_SIZE, NOW)
+            .list_conversations(&sys(folder), page, PAGE_SIZE, NOW)
             .unwrap()
     }
 
@@ -963,11 +981,11 @@ mod tests {
         let counts = DemoMailbox::new().counts();
 
         assert_eq!(counts, DemoMailbox::new().counts());
-        assert_eq!(counts.unread(MailFolder::Inbox), Some(6));
-        assert_eq!(counts.unread(MailFolder::Starred), Some(1));
-        assert_eq!(counts.unread(MailFolder::Archive), Some(1));
-        assert_eq!(counts.unread(MailFolder::Sent), Some(0));
-        assert_eq!(counts.unread(MailFolder::Trash), Some(0));
+        assert_eq!(counts.unread(&sys(MailFolder::Inbox)), Some(6));
+        assert_eq!(counts.unread(&sys(MailFolder::Starred)), Some(1));
+        assert_eq!(counts.unread(&sys(MailFolder::Archive)), Some(1));
+        assert_eq!(counts.unread(&sys(MailFolder::Sent)), Some(0));
+        assert_eq!(counts.unread(&sys(MailFolder::Trash)), Some(0));
     }
 
     #[test]
@@ -1143,16 +1161,16 @@ mod tests {
     fn read_actions_update_state_and_counts_idempotently() {
         let mailbox = DemoMailbox::new();
 
-        assert_eq!(mailbox.counts().unread(MailFolder::Inbox), Some(6));
+        assert_eq!(mailbox.counts().unread(&sys(MailFolder::Inbox)), Some(6));
         assert!(mailbox.set_unread("demo-0", false));
         assert!(!state_page(&mailbox, MailFolder::Inbox).conversations[0].unread);
-        assert_eq!(mailbox.counts().unread(MailFolder::Inbox), Some(5));
+        assert_eq!(mailbox.counts().unread(&sys(MailFolder::Inbox)), Some(5));
 
         assert!(mailbox.set_unread("demo-0", false));
-        assert_eq!(mailbox.counts().unread(MailFolder::Inbox), Some(5));
+        assert_eq!(mailbox.counts().unread(&sys(MailFolder::Inbox)), Some(5));
         assert!(mailbox.set_unread("demo-0", true));
         assert!(mailbox.set_unread("demo-0", true));
-        assert_eq!(mailbox.counts().unread(MailFolder::Inbox), Some(6));
+        assert_eq!(mailbox.counts().unread(&sys(MailFolder::Inbox)), Some(6));
     }
 
     #[test]
@@ -1164,12 +1182,12 @@ mod tests {
         let starred = state_page(&mailbox, MailFolder::Starred);
         assert_eq!(starred.total, 6);
         assert!(starred.conversations.iter().any(|c| c.id == "demo-1"));
-        assert_eq!(mailbox.counts().unread(MailFolder::Starred), Some(2));
+        assert_eq!(mailbox.counts().unread(&sys(MailFolder::Starred)), Some(2));
 
         assert!(mailbox.set_starred("demo-1", false));
         assert!(mailbox.set_starred("demo-1", false));
         assert_eq!(state_page(&mailbox, MailFolder::Starred).total, 5);
-        assert_eq!(mailbox.counts().unread(MailFolder::Starred), Some(1));
+        assert_eq!(mailbox.counts().unread(&sys(MailFolder::Starred)), Some(1));
     }
 
     #[test]
@@ -1177,7 +1195,7 @@ mod tests {
         let mailbox = DemoMailbox::new();
         let detail = mailbox.conversation_detail("demo-0", NOW).unwrap();
 
-        assert!(mailbox.move_to("demo-0", MailFolder::Archive));
+        assert!(mailbox.move_to("demo-0", &sys(MailFolder::Archive)));
 
         assert!(!contains(&mailbox, MailFolder::Inbox, "demo-0"));
         assert!(contains(&mailbox, MailFolder::Archive, "demo-0"));
@@ -1188,7 +1206,7 @@ mod tests {
     fn trash_moves_conversation_without_deleting_it() {
         let mailbox = DemoMailbox::new();
 
-        assert!(mailbox.move_to("demo-3", MailFolder::Trash));
+        assert!(mailbox.move_to("demo-3", &sys(MailFolder::Trash)));
 
         assert!(!contains(&mailbox, MailFolder::Inbox, "demo-3"));
         assert!(contains(&mailbox, MailFolder::Trash, "demo-3"));
@@ -1199,7 +1217,7 @@ mod tests {
     fn spam_moves_conversation_without_network_behavior() {
         let mailbox = DemoMailbox::new();
 
-        assert!(mailbox.move_to("demo-4", MailFolder::Spam));
+        assert!(mailbox.move_to("demo-4", &sys(MailFolder::Spam)));
 
         assert!(!contains(&mailbox, MailFolder::Inbox, "demo-4"));
         assert!(contains(&mailbox, MailFolder::Spam, "demo-4"));
@@ -1212,9 +1230,9 @@ mod tests {
         assert!(mailbox.set_unread("demo-0", false));
         assert!(mailbox.set_starred("demo-1", true));
         assert!(mailbox.set_starred("demo-1", true));
-        assert!(mailbox.move_to("demo-2", MailFolder::Archive));
-        assert!(mailbox.move_to("demo-3", MailFolder::Trash));
-        assert!(mailbox.move_to("demo-4", MailFolder::Spam));
+        assert!(mailbox.move_to("demo-2", &sys(MailFolder::Archive)));
+        assert!(mailbox.move_to("demo-3", &sys(MailFolder::Trash)));
+        assert!(mailbox.move_to("demo-4", &sys(MailFolder::Spam)));
 
         let counts = mailbox.counts();
         for folder in MailFolder::ALL {
@@ -1223,12 +1241,14 @@ mod tests {
                 .iter()
                 .filter(|conversation| conversation.unread)
                 .count() as u32;
-            assert_eq!(counts.unread(folder), Some(unread), "{folder:?}");
+            assert_eq!(counts.unread(&sys(folder)), Some(unread), "{folder:?}");
         }
     }
 
     fn state_page(mailbox: &DemoMailbox, folder: MailFolder) -> ConversationPage {
-        mailbox.list_conversations(folder, 0, 1_000, NOW).unwrap()
+        mailbox
+            .list_conversations(&sys(folder), 0, 1_000, NOW)
+            .unwrap()
     }
 
     fn contains(mailbox: &DemoMailbox, folder: MailFolder, id: &str) -> bool {

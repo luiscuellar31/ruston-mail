@@ -10,7 +10,7 @@ use crate::app::{
     App, CONVERSATION_LIST, DIVIDER_GRAB, DIVIDER_WIDTH, ListStatus, MIN_PANEL_WIDTH, Mailbox,
     Message, Panel, SEARCH_INPUT, UndoMove,
 };
-use crate::mail::{ConversationSummary, MailFolder};
+use crate::mail::{ConversationSummary, Folder, MailFolder};
 
 pub(super) const PANE_PADDING: f32 = 16.0;
 pub(super) const SPACING: f32 = 8.0;
@@ -67,6 +67,8 @@ fn sidebar<'a>(
     let folders = Column::with_children(
         MailFolder::ALL
             .into_iter()
+            .map(Folder::System)
+            .chain(app.folders().iter().cloned())
             .map(|folder| folder_button(mailbox, folder)),
     )
     .spacing(2);
@@ -110,14 +112,14 @@ fn sidebar<'a>(
     .into()
 }
 
-fn folder_button(mailbox: &Mailbox, folder: MailFolder) -> Element<'_, Message> {
-    let selected = folder == mailbox.folder();
+fn folder_button(mailbox: &Mailbox, folder: Folder) -> Element<'_, Message> {
+    let selected = &folder == mailbox.folder();
     let unread = mailbox
         .counts()
-        .and_then(|counts| counts.unread(folder))
+        .and_then(|counts| counts.unread(&folder))
         .filter(|&unread| unread > 0);
 
-    let mut label = row![text(folder.name()).width(Fill)].spacing(SPACING);
+    let mut label = row![text(folder.name().to_owned()).width(Fill)].spacing(SPACING);
     if let Some(unread) = unread {
         label = label.push(text(unread.to_string()));
     }

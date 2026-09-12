@@ -17,9 +17,9 @@ use crate::settings::{self, Settings};
 const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
-    AuthError, ConversationDetail, ConversationPage, LoginRequest, MailAction, MailBackend,
-    MailFolder, MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInEvent,
-    SignInOutcome, SignInPrompt, demo::DemoMailbox,
+    AuthError, ConversationDetail, ConversationPage, Folder, LoginRequest, MailAction, MailBackend,
+    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome,
+    SignInPrompt, demo::DemoMailbox,
 };
 
 pub use layout::{
@@ -75,7 +75,7 @@ pub enum Message {
     DismissLink,
     Logout,
     LogoutFinished(Result<(), AuthError>),
-    SelectFolder(MailFolder),
+    SelectFolder(Folder),
     SelectConversation(String),
     RetryConversation,
     SearchChanged(String),
@@ -99,6 +99,8 @@ pub enum Message {
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
+    /// The folders the account made, fetched once when the mailbox opens.
+    FoldersLoaded(Result<Vec<Folder>, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelResized(pane_grid::ResizeEvent),
@@ -193,6 +195,9 @@ pub struct App {
     /// Mailbox panel sizes. Pure layout state: kept for the life of the app
     /// and never touched by mailbox or authentication changes.
     panels: pane_grid::State<Panel>,
+    /// The folders the account made, which the sidebar shows below Proton's
+    /// own. Empty until they arrive, and in demo mode for good.
+    folders: Vec<Folder>,
     /// What the app remembers between runs.
     settings: Settings,
     /// Whether the settings page is covering the mailbox.
@@ -226,6 +231,7 @@ impl App {
             mailbox: None,
             last_request: 0,
             panels: layout::panels(settings.panels),
+            folders: Vec::new(),
             settings,
             showing_settings: false,
             saved_attachment: None,
@@ -266,6 +272,11 @@ impl App {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    /// The folders the account made.
+    pub fn folders(&self) -> &[Folder] {
+        &self.folders
     }
 
     pub fn showing_settings(&self) -> bool {
@@ -380,6 +391,16 @@ impl App {
                     .and_then(|mailbox| mailbox.finish_conversation(&request, result));
                 self.handle_mailbox_error(error);
                 return self.mark_opened_read();
+            }
+            Message::FoldersLoaded(result) => {
+                match result {
+                    Ok(folders) => self.folders = folders,
+                    // Without them the sidebar simply shows Proton's own.
+                    Err(error) => self.handle_mailbox_error(Some(error)),
+                }
+                // Counts were asked for before the folders were known, so ask
+                // again now that they are.
+                return self.reload_counts();
             }
             Message::CountsLoaded(request, result) => {
                 let error = self
@@ -707,12 +728,19 @@ impl App {
 
         let page_request = self.next_request();
         let counts_request = self.next_request();
-        let (mailbox, page) = Mailbox::open(page_size, page_request, counts_request);
+        // Someone comes back to the folder they were last reading.
+        let (mailbox, page) = Mailbox::open(
+            self.settings.folder.clone(),
+            page_size,
+            page_request,
+            counts_request,
+        );
         self.mailbox = Some(mailbox);
 
         Task::batch([
             self.fetch_page(Some(page)),
             self.fetch_counts(Some(counts_request)),
+            self.fetch_folders(),
         ])
     }
 
@@ -824,10 +852,10 @@ impl App {
             return Task::none();
         };
 
-        let applied = match action {
+        let applied = match &action {
             MailAction::MoveTo(folder) => service.move_to(&id, folder),
-            MailAction::SetUnread(unread) => service.set_unread(&id, unread),
-            MailAction::SetStarred(starred) => service.set_starred(&id, starred),
+            MailAction::SetUnread(unread) => service.set_unread(&id, *unread),
+            MailAction::SetStarred(starred) => service.set_starred(&id, *starred),
         };
         if applied {
             // Demo actions never reach `finish_action`, so the offer to take
@@ -849,11 +877,11 @@ impl App {
         let Some(undo) = self.active_mailbox().and_then(Mailbox::take_undo) else {
             return Task::none();
         };
-        let action = MailAction::MoveTo(undo.from);
+        let action = MailAction::MoveTo(undo.from.clone());
 
         match self.backend.clone() {
             Some(MailBackend::Demo(service)) => {
-                if service.move_to(&undo.row_id, undo.from) {
+                if service.move_to(&undo.row_id, &undo.from) {
                     self.apply_demo_snapshot(&service);
                 }
 
@@ -1019,18 +1047,18 @@ impl App {
 
     fn apply_demo_snapshot(&mut self, service: &DemoMailbox) -> Option<String> {
         let mailbox = self.mailbox.as_ref()?;
-        let folder = mailbox.folder();
+        let folder = mailbox.folder().clone();
         let page_size = mailbox.loaded_conversation_limit();
-        let (page, counts) = service.snapshot(folder, page_size, crate::mail::demo::now());
+        let (page, counts) = service.snapshot(&folder, page_size, crate::mail::demo::now());
 
         self.active_mailbox()?.apply_action_snapshot(page, counts)
     }
 
-    fn select_folder(&mut self, folder: MailFolder) -> Task<Message> {
+    fn select_folder(&mut self, folder: Folder) -> Task<Message> {
         self.pending_link = None;
         self.saved_attachment = None;
         // The folder someone left off in is the one they want on the next run.
-        self.remember(|settings| settings.folder = folder);
+        self.remember(|settings| settings.folder = folder.clone());
         let request = self.next_request();
         let page = self
             .active_mailbox()
@@ -1092,13 +1120,25 @@ impl App {
             return Task::none();
         };
 
+        let (id, folder, page, page_size) =
+            (request.id, request.folder, request.page, request.page_size);
+
         Task::perform(
-            async move {
-                backend
-                    .list_conversations(request.folder, request.page, request.page_size)
-                    .await
-            },
-            move |result| Message::ConversationsLoaded(request.id, result),
+            async move { backend.list_conversations(&folder, page, page_size).await },
+            move |result| Message::ConversationsLoaded(id, result),
+        )
+    }
+
+    /// Asks once for the folders the account made. They change rarely, so
+    /// nothing re-fetches them until the mailbox is opened again.
+    fn fetch_folders(&self) -> Task<Message> {
+        let Some(backend) = self.backend.clone() else {
+            return Task::none();
+        };
+
+        Task::perform(
+            async move { backend.list_folders().await },
+            Message::FoldersLoaded,
         )
     }
 
@@ -1107,8 +1147,10 @@ impl App {
             return Task::none();
         };
 
+        let folders = self.folders.clone();
+
         Task::perform(
-            async move { backend.conversation_counts().await },
+            async move { backend.conversation_counts(&folders).await },
             move |result| Message::CountsLoaded(request, result),
         )
     }
@@ -1173,7 +1215,7 @@ fn run_action(
                 .apply_action(
                     pending.kind,
                     &pending.row_id,
-                    pending.folder,
+                    &pending.folder,
                     pending.action,
                 )
                 .await
@@ -1235,12 +1277,19 @@ mod tests {
     use super::*;
     use crate::mail::demo;
 
+    use crate::mail::MailFolder;
+
+    /// One of Proton's own folders, as a place to list from.
+    fn sys(folder: MailFolder) -> Folder {
+        Folder::System(folder)
+    }
+
     const NOW: i64 = 1_789_000_000;
 
     fn authenticated_app() -> App {
         let mut app = App::new(Settings::default());
         app.auth_state = AuthState::Authenticated { email: None };
-        app.mailbox = Some(Mailbox::open(50, 1, 2).0);
+        app.mailbox = Some(Mailbox::open(Folder::INBOX, 50, 1, 2).0);
         app.last_request = 2;
         app
     }
@@ -1434,6 +1483,27 @@ mod tests {
     }
 
     #[test]
+    fn the_account_folders_reach_the_sidebar() {
+        let mut app = loaded_demo_app();
+        assert!(app.folders().is_empty(), "the demo account has none");
+
+        let invoices = Folder::Custom {
+            id: "kZ9".to_owned(),
+            name: "Invoices".to_owned(),
+        };
+        let _ = app.update(Message::FoldersLoaded(Ok(vec![invoices.clone()])));
+
+        assert_eq!(app.folders(), [invoices]);
+    }
+
+    #[test]
+    fn the_mailbox_opens_where_it_was_left() {
+        let (app, _) = App::boot(true, Settings::opening(sys(MailFolder::Archive)));
+
+        assert_eq!(app.mailbox().unwrap().folder(), &sys(MailFolder::Archive));
+    }
+
+    #[test]
     fn only_web_and_mail_links_are_offered() {
         let web = PendingLink::parse(" https://Example.com/path?x=1 ").unwrap();
         assert_eq!(web.target, "example.com");
@@ -1483,7 +1553,7 @@ mod tests {
         assert!(app.pending_link().is_none());
 
         let _ = app.update(Message::LinkClicked("https://example.com/a".into()));
-        let _ = app.update(Message::SelectFolder(MailFolder::Sent));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
         assert!(app.pending_link().is_none());
     }
 
@@ -1536,7 +1606,7 @@ mod tests {
         assert!(app.is_demo());
         assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
         let mailbox = app.mailbox().unwrap();
-        assert_eq!(mailbox.folder(), MailFolder::Inbox);
+        assert_eq!(mailbox.folder(), &sys(MailFolder::Inbox));
         assert_eq!(mailbox.status(), ListStatus::Loading(1));
     }
 
@@ -1550,7 +1620,10 @@ mod tests {
         let mailbox = app.mailbox().unwrap();
         assert_eq!(mailbox.conversations().len(), 10);
         assert!(mailbox.has_more());
-        assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Inbox), Some(6));
+        assert_eq!(
+            mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
+            Some(6)
+        );
 
         for page in 1..=3 {
             let _ = app.update(Message::LoadMoreConversations);
@@ -1567,13 +1640,13 @@ mod tests {
     fn demo_empty_and_spam_folders_load() {
         let (mut app, _) = App::boot(true, Settings::default());
 
-        let _ = app.update(Message::SelectFolder(MailFolder::Trash));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Trash)));
         deliver_latest_demo_page(&mut app, 0);
         let mailbox = app.mailbox().unwrap();
         assert_eq!(mailbox.status(), ListStatus::Loaded);
         assert!(mailbox.conversations().is_empty());
 
-        let _ = app.update(Message::SelectFolder(MailFolder::Spam));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Spam)));
         deliver_latest_demo_page(&mut app, 0);
         let mailbox = app.mailbox().unwrap();
         assert_eq!(mailbox.status(), ListStatus::Loaded);
@@ -1710,7 +1783,7 @@ mod tests {
         deliver_demo_page(&mut app, 1, 0);
         let _ = app.update(Message::SelectConversation("demo-0".into()));
 
-        let _ = app.update(Message::SelectFolder(MailFolder::Sent));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
 
         assert!(app.mailbox().unwrap().reader().is_none());
     }
@@ -1754,7 +1827,7 @@ mod tests {
                 .unwrap()
                 .counts()
                 .unwrap()
-                .unread(MailFolder::Inbox),
+                .unread(&sys(MailFolder::Inbox)),
             Some(5)
         );
 
@@ -1768,7 +1841,7 @@ mod tests {
                 .unwrap()
                 .counts()
                 .unwrap()
-                .unread(MailFolder::Inbox),
+                .unread(&sys(MailFolder::Inbox)),
             Some(6)
         );
 
@@ -1782,7 +1855,7 @@ mod tests {
                 .unwrap()
                 .counts()
                 .unwrap()
-                .unread(MailFolder::Inbox),
+                .unread(&sys(MailFolder::Inbox)),
             Some(5)
         );
     }
@@ -1796,7 +1869,7 @@ mod tests {
         let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
         assert!(app.mailbox().unwrap().conversations()[1].starred);
 
-        let _ = app.update(Message::SelectFolder(MailFolder::Starred));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Starred)));
         deliver_latest_demo_page(&mut app, 0);
         assert!(
             app.mailbox()
@@ -1826,7 +1899,7 @@ mod tests {
     #[test]
     fn starred_search_reflects_unstar_immediately() {
         let mut app = loaded_demo_app();
-        let _ = app.update(Message::SelectFolder(MailFolder::Starred));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Starred)));
         deliver_latest_demo_page(&mut app, 0);
         let _ = app.update(Message::SearchChanged("offsite".into()));
         let _ = app.update(Message::SelectConversation("demo-2".into()));
@@ -1845,9 +1918,9 @@ mod tests {
         let _ = app.update(Message::SelectConversation("demo-0".into()));
         deliver_selected_demo_detail(&mut app);
 
-        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
             MailFolder::Archive,
-        )));
+        ))));
 
         let mailbox = app.mailbox().unwrap();
         assert!(
@@ -1858,7 +1931,7 @@ mod tests {
         );
         assert_eq!(mailbox.selected_conversation(), Some("demo-1"));
 
-        let _ = app.update(Message::SelectFolder(MailFolder::Archive));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
         deliver_latest_demo_page(&mut app, 0);
         assert!(
             app.mailbox()
@@ -1875,9 +1948,9 @@ mod tests {
         let _ = app.update(Message::SelectConversation("demo-0".into()));
         let stale = pending_reader_request(&app);
 
-        let task = app.update(Message::ApplyAction(MailAction::MoveTo(
+        let task = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
             MailFolder::Archive,
-        )));
+        ))));
         let current = pending_reader_request(&app);
         let stale_detail = demo_service(&app).conversation_detail("demo-0", NOW);
         let _ = app.update(Message::ConversationLoaded(stale, stale_detail));
@@ -1898,9 +1971,9 @@ mod tests {
         let _ = app.update(Message::SelectConversation("demo-3".into()));
         deliver_selected_demo_detail(&mut app);
 
-        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
             MailFolder::Archive,
-        )));
+        ))));
         let has_row = |app: &App| {
             app.mailbox()
                 .unwrap()
@@ -1921,12 +1994,12 @@ mod tests {
     fn demo_trash_and_spam_moves_update_folders() {
         for (message, folder) in [
             (
-                Message::ApplyAction(MailAction::MoveTo(MailFolder::Trash)),
-                MailFolder::Trash,
+                Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Trash))),
+                sys(MailFolder::Trash),
             ),
             (
-                Message::ApplyAction(MailAction::MoveTo(MailFolder::Spam)),
-                MailFolder::Spam,
+                Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Spam))),
+                sys(MailFolder::Spam),
             ),
         ] {
             let mut app = loaded_demo_app();
@@ -1941,7 +2014,7 @@ mod tests {
                     .all(|conversation| conversation.id != "demo-3")
             );
 
-            let _ = app.update(Message::SelectFolder(folder));
+            let _ = app.update(Message::SelectFolder(folder.clone()));
             deliver_latest_demo_page(&mut app, 0);
             assert!(
                 app.mailbox()
@@ -1956,9 +2029,9 @@ mod tests {
     #[test]
     fn inbox_search_reflects_folder_moves_immediately() {
         for message in [
-            Message::ApplyAction(MailAction::MoveTo(MailFolder::Archive)),
-            Message::ApplyAction(MailAction::MoveTo(MailFolder::Trash)),
-            Message::ApplyAction(MailAction::MoveTo(MailFolder::Spam)),
+            Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Archive))),
+            Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Trash))),
+            Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Spam))),
         ] {
             let mut app = loaded_demo_app();
             let _ = app.update(Message::SearchChanged("blue notebook".into()));
@@ -1979,14 +2052,16 @@ mod tests {
     fn moving_only_conversation_closes_reader_cleanly() {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SelectConversation("demo-3".into()));
-        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(MailFolder::Trash)));
-        let _ = app.update(Message::SelectFolder(MailFolder::Trash));
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
+            MailFolder::Trash,
+        ))));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Trash)));
         deliver_latest_demo_page(&mut app, 0);
         let _ = app.update(Message::SelectConversation("demo-3".into()));
 
-        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
             MailFolder::Archive,
-        )));
+        ))));
 
         let mailbox = app.mailbox().unwrap();
         assert!(mailbox.conversations().is_empty());
@@ -2023,7 +2098,7 @@ mod tests {
         assert_eq!(app.last_request, requests);
         assert!(app.is_demo());
         let mailbox = app.mailbox().unwrap();
-        assert_eq!(mailbox.folder(), MailFolder::Inbox);
+        assert_eq!(mailbox.folder(), &sys(MailFolder::Inbox));
         assert_eq!(mailbox.status(), ListStatus::Loaded);
         assert_eq!(mailbox.conversations().len(), 10);
         let reader = mailbox.reader().unwrap();
@@ -2212,8 +2287,8 @@ mod tests {
         let mut app = authenticated_app();
         app.auth_state = AuthState::SigningOut;
 
-        let _ = app.update(Message::SelectFolder(MailFolder::Trash));
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Trash)));
 
-        assert_eq!(app.mailbox().unwrap().folder(), MailFolder::Inbox);
+        assert_eq!(app.mailbox().unwrap().folder(), &sys(MailFolder::Inbox));
     }
 }

@@ -8,14 +8,14 @@ use futures::{SinkExt, StreamExt, TryStreamExt, stream};
 use proton_core::model::enums::{label_ids, message_flag};
 use proton_core::model::message::Attachment;
 use proton_core::{
-    Client, Conversation, Error, HvChallenge, HvResolver, LabelCount, LoginOptions,
+    Client, Conversation, Error, HvChallenge, HvResolver, Label, LabelCount, LoginOptions,
     MessageMetadata, Recipient, SearchOpts, TotpPrompt,
 };
 
 use super::MailAction;
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
-    AuthError, ConversationDetail, ConversationPage, ConversationSummary, LoginRequest,
+    AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, LoginRequest,
     MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
     SummaryKind, html,
 };
@@ -176,7 +176,7 @@ impl ProtonMailService {
     /// metadata inspected, a few at a time and within `INSPECTION_BUDGET`.
     pub async fn list_conversations(
         &self,
-        folder: MailFolder,
+        folder: &Folder,
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
@@ -205,7 +205,7 @@ impl ProtonMailService {
     async fn rows(
         &self,
         conversation: Conversation,
-        folder: MailFolder,
+        folder: &Folder,
         deadline: tokio::time::Instant,
     ) -> Result<Vec<ConversationSummary>, MailboxError> {
         let senders: Vec<String> = conversation
@@ -226,10 +226,21 @@ impl ProtonMailService {
         inspected_rows(conversation, inspection, folder, &self.own_addresses)
     }
 
-    pub async fn conversation_counts(&self) -> Result<MailboxCounts, MailboxError> {
+    /// The folders the account made, so the sidebar can show more than
+    /// Proton's seven.
+    pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
+        let folders = timed(self.client.list_folders()).await?;
+
+        Ok(mail_folders(folders))
+    }
+
+    pub async fn conversation_counts(
+        &self,
+        folders: &[Folder],
+    ) -> Result<MailboxCounts, MailboxError> {
         let counts = timed(self.client.conversation_counts()).await?;
 
-        Ok(map_counts(&counts))
+        Ok(map_counts(&counts, folders))
     }
 
     /// Fetches and decrypts a conversation for the reader, oldest message
@@ -289,7 +300,7 @@ impl ProtonMailService {
         // Inbox is the perspective that describes incoming mail by its sender.
         let conversations: Vec<ConversationSummary> = found
             .into_iter()
-            .map(|conversation| summarize(conversation, MailFolder::Inbox))
+            .map(|conversation| summarize(conversation, &Folder::INBOX))
             .collect();
 
         Ok(ConversationPage {
@@ -314,13 +325,13 @@ impl ProtonMailService {
         &self,
         kind: SummaryKind,
         id: &str,
-        folder: MailFolder,
+        folder: &Folder,
         action: MailAction,
     ) -> Result<(), MailboxError> {
         let ids = [id.to_owned()];
         let client = &self.client;
         let call = async {
-            match (kind, action_call(action)) {
+            match (kind, action_call(&action)) {
                 (SummaryKind::Conversation, ActionCall::Move(label)) => {
                     client.move_conversations(&ids, label).await
                 }
@@ -464,22 +475,33 @@ fn percent_encode(value: &str) -> String {
 
 /// The Proton operation behind a mailbox action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActionCall {
-    /// Relabel into a system folder; never a permanent delete.
-    Move(&'static str),
+enum ActionCall<'a> {
+    /// Relabel into a folder; never a permanent delete. The id borrows from
+    /// the action, since a folder the account made carries its own.
+    Move(&'a str),
     MarkRead(bool),
     Star(bool),
 }
 
-fn action_call(action: MailAction) -> ActionCall {
+fn action_call(action: &MailAction) -> ActionCall<'_> {
     match action {
         MailAction::MoveTo(folder) => ActionCall::Move(label_id(folder)),
         MailAction::SetUnread(unread) => ActionCall::MarkRead(!unread),
-        MailAction::SetStarred(starred) => ActionCall::Star(starred),
+        MailAction::SetStarred(starred) => ActionCall::Star(*starred),
     }
 }
 
-fn label_id(folder: MailFolder) -> &'static str {
+/// What Proton calls this folder on the wire. System folders are numbered
+/// constants; a folder the account made is already an id of its own, and
+/// proton-core passes anything it does not recognise through unchanged.
+fn label_id(folder: &Folder) -> &str {
+    match folder {
+        Folder::Custom { id, .. } => id,
+        Folder::System(folder) => system_label_id(*folder),
+    }
+}
+
+fn system_label_id(folder: MailFolder) -> &'static str {
     match folder {
         MailFolder::Inbox => label_ids::INBOX,
         MailFolder::Drafts => label_ids::DRAFTS,
@@ -491,7 +513,7 @@ fn label_id(folder: MailFolder) -> &'static str {
     }
 }
 
-fn summarize(conversation: Conversation, folder: MailFolder) -> ConversationSummary {
+fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary {
     // Per-label context describes the conversation as seen from this folder.
     let context = conversation
         .labels
@@ -507,8 +529,9 @@ fn summarize(conversation: Conversation, folder: MailFolder) -> ConversationSumm
         .labels
         .iter()
         .any(|label| label.id == label_ids::STARRED);
-    let correspondents = match folder {
-        MailFolder::Sent | MailFolder::Drafts => &conversation.recipients,
+    let correspondents = match folder.system() {
+        // Only Proton's own outgoing folders describe mail by who it went to.
+        Some(MailFolder::Sent | MailFolder::Drafts) => &conversation.recipients,
         _ => &conversation.senders,
     };
     let participants = conversation
@@ -539,7 +562,7 @@ fn summarize(conversation: Conversation, folder: MailFolder) -> ConversationSumm
 fn inspected_rows(
     conversation: Conversation,
     inspection: Option<proton_core::Result<Vec<MessageMetadata>>>,
-    folder: MailFolder,
+    folder: &Folder,
     own: &OwnAddresses,
 ) -> Result<Vec<ConversationSummary>, MailboxError> {
     match inspection.map(|result| result.map_err(map_mailbox_error)) {
@@ -557,7 +580,7 @@ fn inspected_rows(
 fn split_rows(
     conversation: Conversation,
     messages: Vec<MessageMetadata>,
-    folder: MailFolder,
+    folder: &Folder,
     own: &OwnAddresses,
 ) -> Vec<ConversationSummary> {
     let facts: Vec<MessageFacts> = messages
@@ -683,14 +706,31 @@ fn display_names(people: &[Recipient]) -> Option<String> {
     Some(display)
 }
 
-fn map_counts(counts: &[LabelCount]) -> MailboxCounts {
+/// Counts for every folder the sidebar can show: Proton's own, and the ones
+/// the account made. The server reports every label, so `folders` decides
+/// which of them are worth keeping.
+fn map_counts(counts: &[LabelCount], folders: &[Folder]) -> MailboxCounts {
     MailFolder::ALL
         .into_iter()
+        .map(Folder::System)
+        .chain(folders.iter().cloned())
         .filter_map(|folder| {
             let count = counts
                 .iter()
-                .find(|count| count.label_id == label_id(folder))?;
+                .find(|count| count.label_id == label_id(&folder))?;
             Some((folder, u32::try_from(count.unread).unwrap_or(0)))
+        })
+        .collect()
+}
+
+/// The folders the account made, as the sidebar shows them. Proton returns
+/// labels and folders separately; only folders are places mail lives.
+fn mail_folders(labels: Vec<Label>) -> Vec<Folder> {
+    labels
+        .into_iter()
+        .map(|label| Folder::Custom {
+            id: label.id,
+            name: label.name,
         })
         .collect()
 }
@@ -957,32 +997,41 @@ mod tests {
 
     #[test]
     fn actions_map_to_relabels_and_flags_never_deletes() {
+        let moving = |folder: MailFolder| MailAction::MoveTo(Folder::System(folder));
+
         assert_eq!(
-            action_call(MailAction::MoveTo(MailFolder::Archive)),
+            action_call(&moving(MailFolder::Archive)),
             ActionCall::Move(label_ids::ARCHIVE)
         );
         assert_eq!(
-            action_call(MailAction::MoveTo(MailFolder::Spam)),
+            action_call(&moving(MailFolder::Spam)),
             ActionCall::Move(label_ids::SPAM)
         );
         assert_eq!(
-            action_call(MailAction::MoveTo(MailFolder::Trash)),
+            action_call(&moving(MailFolder::Trash)),
             ActionCall::Move(label_ids::TRASH)
         );
         assert_eq!(
-            action_call(MailAction::MoveTo(MailFolder::Inbox)),
+            action_call(&moving(MailFolder::Inbox)),
             ActionCall::Move(label_ids::INBOX)
         );
+
+        // A folder the account made carries its own id straight through.
+        let custom = MailAction::MoveTo(Folder::Custom {
+            id: "kZ9".to_owned(),
+            name: "Invoices".to_owned(),
+        });
+        assert_eq!(action_call(&custom), ActionCall::Move("kZ9"));
         assert_eq!(
-            action_call(MailAction::SetUnread(true)),
+            action_call(&MailAction::SetUnread(true)),
             ActionCall::MarkRead(false)
         );
         assert_eq!(
-            action_call(MailAction::SetUnread(false)),
+            action_call(&MailAction::SetUnread(false)),
             ActionCall::MarkRead(true)
         );
         assert_eq!(
-            action_call(MailAction::SetStarred(true)),
+            action_call(&MailAction::SetStarred(true)),
             ActionCall::Star(true)
         );
     }
@@ -990,7 +1039,7 @@ mod tests {
     #[test]
     fn inspection_failures_keep_grouping_but_expired_sessions_fail() {
         let grouped = |inspection| {
-            inspected_rows(bank_conversation(), inspection, MailFolder::Inbox, &own())
+            inspected_rows(bank_conversation(), inspection, &Folder::INBOX, &own())
                 .map(|rows| ids(&rows).join(","))
         };
 
@@ -1021,7 +1070,7 @@ mod tests {
             metadata("m3", BANK, 20, &[label_ids::INBOX]),
         ];
 
-        let rows = split_rows(bank_conversation(), messages, MailFolder::Inbox, &own());
+        let rows = split_rows(bank_conversation(), messages, &Folder::INBOX, &own());
 
         assert_eq!(ids(&rows), ["m2", "m3", "m1"]);
         assert!(rows.iter().all(|row| row.kind == SummaryKind::Message));
@@ -1038,7 +1087,7 @@ mod tests {
             metadata("m2", BANK, 20, &[label_ids::TRASH]),
         ];
 
-        let rows = split_rows(bank_conversation(), messages, MailFolder::Inbox, &own());
+        let rows = split_rows(bank_conversation(), messages, &Folder::INBOX, &own());
 
         assert_eq!(ids(&rows), ["m1"]);
     }
@@ -1054,7 +1103,7 @@ mod tests {
         let flagged = vec![metadata("m1", BANK, 10, &[label_ids::INBOX]), answered];
 
         for messages in [reply, flagged] {
-            let rows = split_rows(bank_conversation(), messages, MailFolder::Inbox, &own());
+            let rows = split_rows(bank_conversation(), messages, &Folder::INBOX, &own());
 
             assert_eq!(ids(&rows), ["conversation"]);
             assert_eq!(rows[0].kind, SummaryKind::Conversation);
@@ -1075,11 +1124,11 @@ mod tests {
             metadata("m2", BANK, 20, &[label_ids::INBOX]),
         ];
 
-        let grouped = split_rows(bank_conversation(), same_subject, MailFolder::Inbox, &own());
+        let grouped = split_rows(bank_conversation(), same_subject, &Folder::INBOX, &own());
         let split = split_rows(
             bank_conversation(),
             different_subjects,
-            MailFolder::Inbox,
+            &Folder::INBOX,
             &own(),
         );
 
@@ -1094,7 +1143,7 @@ mod tests {
             metadata("m2", BANK, 20, &[label_ids::ARCHIVE]),
         ];
 
-        let rows = split_rows(bank_conversation(), messages, MailFolder::Inbox, &own());
+        let rows = split_rows(bank_conversation(), messages, &Folder::INBOX, &own());
 
         assert_eq!(ids(&rows), ["conversation"]);
     }
@@ -1115,7 +1164,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = summarize(conversation, MailFolder::Inbox);
+        let summary = summarize(conversation, &Folder::INBOX);
 
         assert_eq!(
             summary,
@@ -1154,7 +1203,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = summarize(conversation, MailFolder::Inbox);
+        let summary = summarize(conversation, &Folder::INBOX);
 
         assert_eq!(summary.subject, None);
         assert_eq!(summary.correspondents, None);
@@ -1179,7 +1228,7 @@ mod tests {
             ..Default::default()
         };
 
-        let summary = summarize(conversation, MailFolder::Sent);
+        let summary = summarize(conversation, &Folder::System(MailFolder::Sent));
 
         assert!(!summary.unread);
         assert_eq!(summary.time, Some(42));
@@ -1211,10 +1260,19 @@ mod tests {
             },
         ];
 
-        let counts = map_counts(&counts);
+        let invoices = Folder::Custom {
+            id: "custom".to_owned(),
+            name: "Invoices".to_owned(),
+        };
+        let mapped = map_counts(&counts, std::slice::from_ref(&invoices));
 
-        assert_eq!(counts.unread(MailFolder::Inbox), Some(4));
-        assert_eq!(counts.unread(MailFolder::Trash), None);
+        assert_eq!(mapped.unread(&Folder::INBOX), Some(4));
+        assert_eq!(mapped.unread(&Folder::System(MailFolder::Trash)), None);
+        // A folder the account made is counted like any other, once known.
+        assert_eq!(mapped.unread(&invoices), Some(1));
+
+        // Unknown to the sidebar means unknown to the counts.
+        assert_eq!(map_counts(&counts, &[]).unread(&invoices), None);
     }
 
     #[test]

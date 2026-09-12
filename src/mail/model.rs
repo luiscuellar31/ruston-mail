@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 /// Standard Proton Mail folders supported by Ruston's mailbox view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MailFolder {
@@ -39,6 +41,55 @@ impl MailFolder {
             Self::Spam => "Spam",
             Self::Trash => "Trash",
         }
+    }
+}
+
+/// A place mail can be listed from: one of Proton's system folders, or a
+/// folder the account owns.
+///
+/// The wire identifier lives in the Proton layer, not here: this type says
+/// which place is meant, and that layer says what to call it on the network.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Folder {
+    /// Reads the settings written before custom folders existed, which hold
+    /// a bare name like `"Inbox"`.
+    System(MailFolder),
+    Custom {
+        id: String,
+        name: String,
+    },
+}
+
+impl Folder {
+    pub const INBOX: Self = Self::System(MailFolder::Inbox);
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::System(folder) => folder.name(),
+            Self::Custom { name, .. } => name,
+        }
+    }
+
+    /// The system folder this is, if it is one. Rules that only make sense
+    /// for Proton's own folders ask through this.
+    pub fn system(&self) -> Option<MailFolder> {
+        match self {
+            Self::System(folder) => Some(*folder),
+            Self::Custom { .. } => None,
+        }
+    }
+
+    /// Whether mail actually lives here, so a row can be moved back into it.
+    /// A folder the account made is always a real place.
+    pub fn is_location(&self) -> bool {
+        self.system().is_none_or(MailFolder::is_location)
+    }
+}
+
+impl From<MailFolder> for Folder {
+    fn from(folder: MailFolder) -> Self {
+        Self::System(folder)
     }
 }
 
@@ -249,17 +300,17 @@ pub struct ConversationPage {
 /// Unread conversation counts per folder. A missing folder means unknown.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MailboxCounts {
-    unread: HashMap<MailFolder, u32>,
+    unread: HashMap<Folder, u32>,
 }
 
 impl MailboxCounts {
-    pub fn unread(&self, folder: MailFolder) -> Option<u32> {
-        self.unread.get(&folder).copied()
+    pub fn unread(&self, folder: &Folder) -> Option<u32> {
+        self.unread.get(folder).copied()
     }
 }
 
-impl FromIterator<(MailFolder, u32)> for MailboxCounts {
-    fn from_iter<I: IntoIterator<Item = (MailFolder, u32)>>(iter: I) -> Self {
+impl FromIterator<(Folder, u32)> for MailboxCounts {
+    fn from_iter<I: IntoIterator<Item = (Folder, u32)>>(iter: I) -> Self {
         Self {
             unread: iter.into_iter().collect(),
         }
@@ -267,17 +318,19 @@ impl FromIterator<(MailFolder, u32)> for MailboxCounts {
 }
 
 /// A change the user applies to the selected mailbox row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Not `Copy`: a move now carries the folder's own id, and a folder the
+/// account made owns its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MailAction {
     /// Relabels the row into a folder; nothing is ever deleted.
-    MoveTo(MailFolder),
+    MoveTo(Folder),
     SetUnread(bool),
     SetStarred(bool),
 }
 
 impl MailAction {
     /// The folder a move sends the row to; `None` for flag changes.
-    pub fn destination(self) -> Option<MailFolder> {
+    pub fn destination(&self) -> Option<&Folder> {
         match self {
             Self::MoveTo(folder) => Some(folder),
             Self::SetUnread(_) | Self::SetStarred(_) => None,
@@ -325,6 +378,34 @@ impl MailboxError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_written_before_custom_ones_still_reads() {
+        // Settings files in the wild hold a bare system name.
+        let stored: Folder = serde_json::from_str("\"Archive\"").unwrap();
+
+        assert_eq!(stored, Folder::System(MailFolder::Archive));
+        assert_eq!(stored.name(), "Archive");
+    }
+
+    #[test]
+    fn a_custom_folder_survives_a_round_trip() {
+        let folder = Folder::Custom {
+            id: "kZ9".to_owned(),
+            name: "Invoices".to_owned(),
+        };
+
+        let text = serde_json::to_string(&folder).unwrap();
+        assert_eq!(serde_json::from_str::<Folder>(&text).unwrap(), folder);
+
+        assert_eq!(folder.name(), "Invoices");
+        assert_eq!(folder.system(), None);
+        // A folder someone made is somewhere mail lives, so a move can be
+        // taken back into it, unlike Starred or Sent.
+        assert!(folder.is_location());
+        assert!(!Folder::System(MailFolder::Starred).is_location());
+        assert!(Folder::INBOX.is_location());
+    }
 
     fn spans(text: &str) -> Vec<RichSpan> {
         vec![RichSpan {

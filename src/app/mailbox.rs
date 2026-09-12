@@ -4,7 +4,7 @@ use iced::widget::text_editor;
 
 use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
-    ConversationDetail, ConversationPage, ConversationSummary, MailAction, MailFolder,
+    ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAction, MailFolder,
     MailboxCounts, MailboxError, SummaryKind,
 };
 
@@ -12,10 +12,10 @@ use crate::mail::{
 /// request currently in flight is applied; anything else is stale.
 pub type RequestId = u64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageRequest {
     pub id: RequestId,
-    pub folder: MailFolder,
+    pub folder: Folder,
     /// Zero-based server page.
     pub page: u32,
     pub page_size: u32,
@@ -36,7 +36,7 @@ pub struct ActionRequest {
     pub row_id: String,
     pub kind: SummaryKind,
     /// The folder the action was started from.
-    pub folder: MailFolder,
+    pub folder: Folder,
     pub action: MailAction,
 }
 
@@ -46,9 +46,9 @@ pub struct UndoMove {
     pub row_id: String,
     pub kind: SummaryKind,
     /// The folder the row was moved out of, and goes back to.
-    pub from: MailFolder,
+    pub from: Folder,
     /// Where it was moved, which is what the offer says.
-    pub to: MailFolder,
+    pub to: Folder,
 }
 
 /// Which way the keyboard moves through the conversation list.
@@ -84,7 +84,7 @@ pub struct SearchRequest {
 }
 
 pub struct Mailbox {
-    folder: MailFolder,
+    folder: Folder,
     status: ListStatus,
     conversations: Vec<ConversationSummary>,
     page_size: u32,
@@ -111,15 +111,16 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    /// Opens the Inbox, returning the first page to fetch. Counts are fetched
-    /// under `counts_request`.
+    /// Opens `folder`, which is the one last read, returning the first page
+    /// to fetch. Counts are fetched under `counts_request`.
     pub fn open(
+        folder: Folder,
         page_size: u32,
         page_request: RequestId,
         counts_request: RequestId,
     ) -> (Self, PageRequest) {
         let mailbox = Self {
-            folder: MailFolder::Inbox,
+            folder,
             status: ListStatus::Loading(page_request),
             conversations: Vec::new(),
             page_size,
@@ -142,8 +143,8 @@ impl Mailbox {
         (mailbox, page)
     }
 
-    pub fn folder(&self) -> MailFolder {
-        self.folder
+    pub fn folder(&self) -> &Folder {
+        &self.folder
     }
 
     pub fn status(&self) -> ListStatus {
@@ -557,7 +558,7 @@ impl Mailbox {
             id: request,
             row_id: row.id.clone(),
             kind: row.kind,
-            folder: self.folder,
+            folder: self.folder.clone(),
             action: MailAction::SetUnread(false),
         };
         self.pending_reads
@@ -604,11 +605,11 @@ impl Mailbox {
     /// reach `finish_action`.
     pub fn offer_undo(&mut self, row_id: &str, kind: SummaryKind, action: MailAction) {
         self.undo = match action.destination() {
-            Some(to) if self.folder.is_location() && to != self.folder => Some(UndoMove {
+            Some(to) if self.folder.is_location() && *to != self.folder => Some(UndoMove {
                 row_id: row_id.to_owned(),
                 kind,
-                from: self.folder,
-                to,
+                from: self.folder.clone(),
+                to: to.clone(),
             }),
             _ => None,
         };
@@ -650,14 +651,14 @@ impl Mailbox {
             id: request,
             row_id,
             kind,
-            folder: self.folder,
+            folder: self.folder.clone(),
             action,
         };
         self.action_error = None;
         // Only the last move can be taken back, and only until the next one.
         self.undo = None;
         // An explicit read or unread wins over an automatic read in flight.
-        if matches!(action, MailAction::SetUnread(_)) {
+        if matches!(request.action, MailAction::SetUnread(_)) {
             self.pending_reads.remove(&request.row_id);
         }
         self.action_request = Some(request.clone());
@@ -685,13 +686,15 @@ impl Mailbox {
             return Ok(None);
         }
 
-        let leaves_folder = match request.action {
-            MailAction::SetStarred(starred) => !starred && request.folder == MailFolder::Starred,
+        let leaves_folder = match &request.action {
+            MailAction::SetStarred(starred) => {
+                !starred && request.folder.system() == Some(MailFolder::Starred)
+            }
             MailAction::SetUnread(_) => false,
-            moved => moved.destination() != Some(request.folder),
+            moved => moved.destination() != Some(&request.folder),
         };
         if leaves_folder {
-            self.offer_undo(&request.row_id, request.kind, request.action);
+            self.offer_undo(&request.row_id, request.kind, request.action.clone());
 
             return Ok(self.remove_row(&request.row_id));
         }
@@ -736,7 +739,7 @@ impl Mailbox {
             .map(|row| row.id.clone())
     }
 
-    pub fn select_folder(&mut self, folder: MailFolder, request: RequestId) -> Option<PageRequest> {
+    pub fn select_folder(&mut self, folder: Folder, request: RequestId) -> Option<PageRequest> {
         if folder == self.folder {
             return None;
         }
@@ -895,7 +898,7 @@ impl Mailbox {
     fn page_request(&self, id: RequestId, page: u32) -> PageRequest {
         PageRequest {
             id,
-            folder: self.folder,
+            folder: self.folder.clone(),
             page,
             page_size: self.page_size,
         }
@@ -990,6 +993,11 @@ mod tests {
 
     const PAGE_SIZE: u32 = 50;
 
+    /// One of Proton's own folders, as a place to list from.
+    fn sys(folder: MailFolder) -> Folder {
+        Folder::System(folder)
+    }
+
     fn summary(id: &str) -> ConversationSummary {
         ConversationSummary {
             id: id.to_owned(),
@@ -1066,7 +1074,7 @@ mod tests {
     }
 
     fn open() -> (Mailbox, PageRequest) {
-        Mailbox::open(PAGE_SIZE, 1, 2)
+        Mailbox::open(Folder::INBOX, PAGE_SIZE, 1, 2)
     }
 
     fn loaded_inbox(ids: &[&str], total: u32) -> Mailbox {
@@ -1276,7 +1284,7 @@ mod tests {
         let mut mailbox = loaded_inbox(&["a", "b"], 2);
         load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
         let request = mailbox
-            .start_action(MailAction::MoveTo(MailFolder::Archive), 4)
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4)
             .unwrap();
         let _ = mailbox.finish_action(&request, Ok(()));
         assert!(mailbox.undo().is_some());
@@ -1292,7 +1300,7 @@ mod tests {
         let mut mailbox = loaded_inbox(&["a", "b"], 2);
         load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
         let request = mailbox
-            .start_action(MailAction::MoveTo(MailFolder::Archive), 4)
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4)
             .unwrap();
         assert!(mailbox.undo().is_none());
 
@@ -1303,8 +1311,8 @@ mod tests {
 
         let undo = mailbox.undo().expect("a move out of the Inbox undoes");
         assert_eq!(undo.row_id, "a");
-        assert_eq!(undo.from, MailFolder::Inbox);
-        assert_eq!(undo.to, MailFolder::Archive);
+        assert_eq!(undo.from, sys(MailFolder::Inbox));
+        assert_eq!(undo.to, sys(MailFolder::Archive));
 
         // The offer is claimed once, and the next action replaces it.
         assert!(mailbox.take_undo().is_some());
@@ -1323,11 +1331,11 @@ mod tests {
         assert!(mailbox.undo().is_none());
 
         // Starred is a label, so there is no folder to put the row back into.
-        let page_request = mailbox.select_folder(MailFolder::Starred, 4).unwrap();
+        let page_request = mailbox.select_folder(sys(MailFolder::Starred), 4).unwrap();
         mailbox.finish_page(page_request.id, page(&["s1"], 1));
         load_detail(&mut mailbox, "s1", detail("s1", &["m1"]), 5);
         let request = mailbox
-            .start_action(MailAction::MoveTo(MailFolder::Archive), 6)
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 6)
             .unwrap();
         let _ = mailbox.finish_action(&request, Ok(()));
 
@@ -1424,8 +1432,9 @@ mod tests {
     #[test]
     fn a_lost_counts_response_never_blocks_later_refreshes() {
         let mut mailbox = loaded_inbox(&["a"], 1);
-        let counts =
-            |unread: u32| -> MailboxCounts { [(MailFolder::Inbox, unread)].into_iter().collect() };
+        let counts = |unread: u32| -> MailboxCounts {
+            [(sys(MailFolder::Inbox), unread)].into_iter().collect()
+        };
 
         // The response for the first request never arrives.
         assert_eq!(mailbox.refresh_counts(3), Some(3));
@@ -1436,7 +1445,10 @@ mod tests {
         assert!(mailbox.counts().is_none());
 
         assert_eq!(mailbox.finish_counts(4, Ok(counts(2))), None);
-        assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Inbox), Some(2));
+        assert_eq!(
+            mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1445,7 +1457,7 @@ mod tests {
         load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
         assert!(mailbox.selectable_body("a1").is_some());
 
-        mailbox.select_folder(MailFolder::Archive, 4);
+        mailbox.select_folder(sys(MailFolder::Archive), 4);
         assert!(mailbox.selectable_body("a1").is_none());
 
         // Same when a search hides the open conversation.
@@ -1482,7 +1494,7 @@ mod tests {
             request,
             PageRequest {
                 id: 1,
-                folder: MailFolder::Inbox,
+                folder: Folder::INBOX,
                 page: 0,
                 page_size: PAGE_SIZE,
             }
@@ -1520,9 +1532,9 @@ mod tests {
         let mut mailbox = loaded_inbox(&["a"], 200);
         mailbox.start_conversation_load("a".into(), 9);
 
-        let request = mailbox.select_folder(MailFolder::Sent, 3).unwrap();
+        let request = mailbox.select_folder(sys(MailFolder::Sent), 3).unwrap();
 
-        assert_eq!(request.folder, MailFolder::Sent);
+        assert_eq!(request.folder, sys(MailFolder::Sent));
         assert_eq!(request.page, 0);
         assert_eq!(mailbox.status(), ListStatus::Loading(3));
         assert!(mailbox.conversations().is_empty());
@@ -1535,7 +1547,7 @@ mod tests {
     fn selecting_current_folder_is_a_no_op() {
         let mut mailbox = loaded_inbox(&["a"], 1);
 
-        assert_eq!(mailbox.select_folder(MailFolder::Inbox, 3), None);
+        assert_eq!(mailbox.select_folder(sys(MailFolder::Inbox), 3), None);
         assert_eq!(ids(&mailbox), ["a"]);
     }
 
@@ -1558,21 +1570,21 @@ mod tests {
     #[test]
     fn stale_response_does_not_replace_current_folder() {
         let (mut mailbox, inbox) = open();
-        let sent = mailbox.select_folder(MailFolder::Sent, 3).unwrap();
+        let sent = mailbox.select_folder(sys(MailFolder::Sent), 3).unwrap();
 
         assert_eq!(mailbox.finish_page(inbox.id, page(&["inbox"], 1)), None);
         assert_eq!(mailbox.status(), ListStatus::Loading(sent.id));
         assert!(mailbox.conversations().is_empty());
 
         mailbox.finish_page(sent.id, page(&["sent"], 1));
-        assert_eq!(mailbox.folder(), MailFolder::Sent);
+        assert_eq!(mailbox.folder(), &sys(MailFolder::Sent));
         assert_eq!(ids(&mailbox), ["sent"]);
     }
 
     #[test]
     fn stale_error_is_ignored() {
         let (mut mailbox, inbox) = open();
-        mailbox.select_folder(MailFolder::Sent, 3);
+        mailbox.select_folder(sys(MailFolder::Sent), 3);
 
         assert_eq!(
             mailbox.finish_page(inbox.id, Err(MailboxError::SessionExpired)),
@@ -1600,7 +1612,7 @@ mod tests {
 
     #[test]
     fn page_size_controls_whether_more_pages_exist() {
-        let (mut mailbox, request) = Mailbox::open(2, 1, 2);
+        let (mut mailbox, request) = Mailbox::open(Folder::INBOX, 2, 1, 2);
         mailbox.finish_page(request.id, page(&["a", "b"], 3));
         assert!(mailbox.has_more());
 
@@ -1682,13 +1694,22 @@ mod tests {
         let (mut mailbox, _) = open();
 
         // `open` left request 2 in flight; its response is the one that counts.
-        let counts: MailboxCounts = [(MailFolder::Inbox, 4)].into_iter().collect();
+        let counts: MailboxCounts = [(sys(MailFolder::Inbox), 4)].into_iter().collect();
         mailbox.finish_counts(2, Ok(counts));
-        assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Inbox), Some(4));
-        assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Sent), None);
+        assert_eq!(
+            mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
+            Some(4)
+        );
+        assert_eq!(
+            mailbox.counts().unwrap().unread(&sys(MailFolder::Sent)),
+            None
+        );
 
         assert_eq!(mailbox.finish_counts(2, Ok(MailboxCounts::default())), None);
-        assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Inbox), Some(4));
+        assert_eq!(
+            mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
+            Some(4)
+        );
         assert_eq!(mailbox.refresh_counts(3), Some(3));
     }
 
@@ -1770,7 +1791,7 @@ mod tests {
         let mut mailbox = loaded_inbox(&["a"], 1);
         let detail_request = mailbox.start_conversation_load("a".into(), 3).unwrap();
 
-        mailbox.select_folder(MailFolder::Archive, 4);
+        mailbox.select_folder(sys(MailFolder::Archive), 4);
         mailbox.finish_conversation(&detail_request, Ok(detail("a", &["a1"])));
 
         assert_eq!(mailbox.reader_state(), &ReaderState::Empty);
@@ -1836,7 +1857,7 @@ mod tests {
     #[test]
     fn stale_classified_page_cannot_replace_newer_folder() {
         let (mut mailbox, inbox) = open();
-        mailbox.select_folder(MailFolder::Sent, 3);
+        mailbox.select_folder(sys(MailFolder::Sent), 3);
 
         let stale = mailbox.finish_page(
             inbox.id,
@@ -1854,7 +1875,7 @@ mod tests {
     #[test]
     fn split_rows_are_searchable_and_leave_counts_alone() {
         let (mut mailbox, request) = open();
-        let counts: MailboxCounts = [(MailFolder::Inbox, 2)].into_iter().collect();
+        let counts: MailboxCounts = [(sys(MailFolder::Inbox), 2)].into_iter().collect();
         mailbox.finish_counts(2, Ok(counts.clone()));
         mailbox.finish_page(
             request.id,
@@ -1879,7 +1900,7 @@ mod tests {
         let request = if folder == MailFolder::Inbox {
             inbox.id
         } else {
-            mailbox.select_folder(folder, 80).unwrap().id
+            mailbox.select_folder(sys(folder), 80).unwrap().id
         };
         mailbox.finish_page(request, page(ids, ids.len() as u32));
         let request = mailbox
@@ -1982,7 +2003,7 @@ mod tests {
     fn reads_after_a_folder_switch_change_nothing() {
         let mut mailbox = opened_unread(&["a"], "a");
         let request = mailbox.start_mark_read(3).unwrap();
-        mailbox.select_folder(MailFolder::Sent, 4);
+        mailbox.select_folder(sys(MailFolder::Sent), 4);
         mailbox.finish_page(
             4,
             Ok(ConversationPage {
@@ -2007,10 +2028,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(request.row_id, "a");
-        assert_eq!(request.folder, MailFolder::Inbox);
+        assert_eq!(request.folder, sys(MailFolder::Inbox));
         assert!(mailbox.action_pending());
         assert_eq!(
-            mailbox.start_action(MailAction::MoveTo(MailFolder::Archive), 4),
+            mailbox.start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4),
             None
         );
     }
@@ -2021,7 +2042,7 @@ mod tests {
         mailbox.refresh(3);
 
         assert_eq!(
-            mailbox.start_action(MailAction::MoveTo(MailFolder::Archive), 4),
+            mailbox.start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4),
             None
         );
         assert!(!mailbox.action_pending());
@@ -2050,7 +2071,7 @@ mod tests {
         let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b", "c"], "b");
 
         let request = mailbox
-            .start_action(MailAction::MoveTo(MailFolder::Archive), 3)
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
             .unwrap();
 
         assert_eq!(
@@ -2066,7 +2087,7 @@ mod tests {
         let mut mailbox = selected_in(MailFolder::Archive, &["a"], "a");
 
         let request = mailbox
-            .start_action(MailAction::MoveTo(MailFolder::Archive), 3)
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
             .unwrap();
 
         assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
@@ -2092,7 +2113,7 @@ mod tests {
     fn failed_actions_keep_rows_and_report_the_error() {
         let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
         let request = mailbox
-            .start_action(MailAction::MoveTo(MailFolder::Trash), 3)
+            .start_action(MailAction::MoveTo(sys(MailFolder::Trash)), 3)
             .unwrap();
 
         let result = mailbox.finish_action(&request, Err(MailboxError::Service));
@@ -2107,7 +2128,7 @@ mod tests {
     fn stale_or_moved_action_responses_change_nothing() {
         let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
         let request = mailbox
-            .start_action(MailAction::MoveTo(MailFolder::Archive), 3)
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
             .unwrap();
         let stale = ActionRequest {
             id: 99,
@@ -2118,7 +2139,7 @@ mod tests {
         assert_eq!(ids(&mailbox), ["a", "b"]);
         assert!(mailbox.action_pending());
 
-        mailbox.select_folder(MailFolder::Sent, 4);
+        mailbox.select_folder(sys(MailFolder::Sent), 4);
         mailbox.finish_page(4, page(&["a"], 1));
         assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
         assert_eq!(ids(&mailbox), ["a"]);
@@ -2268,7 +2289,7 @@ mod tests {
     fn search_applies_to_the_selected_folder() {
         let mut mailbox = searchable_mailbox();
         mailbox.set_search_query("rust".into());
-        let request = mailbox.select_folder(MailFolder::Archive, 3).unwrap();
+        let request = mailbox.select_folder(sys(MailFolder::Archive), 3).unwrap();
         mailbox.finish_page(
             request.id,
             Ok(ConversationPage {
@@ -2283,7 +2304,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(mailbox.folder(), MailFolder::Archive);
+        assert_eq!(mailbox.folder(), &sys(MailFolder::Archive));
         assert_eq!(visible_ids(&mailbox), ["archived"]);
     }
 
@@ -2311,7 +2332,7 @@ mod tests {
     #[test]
     fn search_does_not_change_mailbox_counts() {
         let mut mailbox = searchable_mailbox();
-        let counts: MailboxCounts = [(MailFolder::Inbox, 7)].into_iter().collect();
+        let counts: MailboxCounts = [(sys(MailFolder::Inbox), 7)].into_iter().collect();
         mailbox.finish_counts(2, Ok(counts.clone()));
 
         mailbox.set_search_query("rust".into());

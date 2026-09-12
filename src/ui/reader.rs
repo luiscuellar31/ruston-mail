@@ -15,8 +15,8 @@ use super::{DETAIL_SIZE, detail_text};
 use crate::app::{ConversationReader, Mailbox, Message, PendingLink, READER_BODY, ReaderState};
 use crate::downloads::SaveError;
 use crate::mail::{
-    BlockKind, ConversationDetail, ConversationSummary, MailAction, MailAddress, MailAttachment,
-    MailFolder, MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
+    BlockKind, ConversationDetail, ConversationSummary, Folder, MailAction, MailAddress,
+    MailAttachment, MailFolder, MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
 };
 
 const SUBJECT_SIZE: f32 = 22.0;
@@ -180,9 +180,15 @@ fn action_toolbar(summary: &ConversationSummary, enabled: bool) -> Element<'_, M
         ("Star", MailAction::SetStarred(true))
     };
     let actions = [
-        ("Archive", MailAction::MoveTo(MailFolder::Archive)),
-        ("Spam", MailAction::MoveTo(MailFolder::Spam)),
-        ("Trash", MailAction::MoveTo(MailFolder::Trash)),
+        (
+            "Archive",
+            MailAction::MoveTo(Folder::System(MailFolder::Archive)),
+        ),
+        ("Spam", MailAction::MoveTo(Folder::System(MailFolder::Spam))),
+        (
+            "Trash",
+            MailAction::MoveTo(Folder::System(MailFolder::Trash)),
+        ),
         read,
         star,
     ];

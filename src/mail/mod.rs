@@ -8,9 +8,9 @@ mod threading;
 use std::sync::Arc;
 
 pub use model::{
-    BlockKind, ConversationDetail, ConversationPage, ConversationSummary, MailAction, MailAddress,
-    MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, RichBlock,
-    RichBody, RichSpan, SummaryKind,
+    BlockKind, ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAction,
+    MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
+    RichBlock, RichBody, RichSpan, SummaryKind,
 };
 #[cfg(test)]
 pub use proton::Reply;
@@ -39,7 +39,7 @@ impl MailBackend {
 
     pub async fn list_conversations(
         &self,
-        folder: MailFolder,
+        folder: &Folder,
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
@@ -49,9 +49,20 @@ impl MailBackend {
         }
     }
 
-    pub async fn conversation_counts(&self) -> Result<MailboxCounts, MailboxError> {
+    /// The folders the account made. The demo mailbox has only Proton's own.
+    pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
         match self {
-            Self::Proton(service) => service.conversation_counts().await,
+            Self::Proton(service) => service.list_folders().await,
+            Self::Demo(_) => Ok(Vec::new()),
+        }
+    }
+
+    pub async fn conversation_counts(
+        &self,
+        folders: &[Folder],
+    ) -> Result<MailboxCounts, MailboxError> {
+        match self {
+            Self::Proton(service) => service.conversation_counts(folders).await,
             Self::Demo(service) => Ok(service.counts()),
         }
     }
