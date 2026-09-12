@@ -31,6 +31,7 @@ pub(super) fn view<'a>(
                 app.folders(),
                 app.mailbox_actions_available(),
                 app.pending_link(),
+                app.saving_attachment(),
                 app.saved_attachment(),
             ),
         };

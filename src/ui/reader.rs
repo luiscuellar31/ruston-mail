@@ -42,6 +42,7 @@ pub(super) fn view<'a>(
     places: &'a [Folder],
     actions_available: bool,
     pending_link: Option<&'a PendingLink>,
+    saving_attachment: Option<&'a str>,
     saved_attachment: Option<Result<&'a Path, SaveError>>,
 ) -> Element<'a, Message> {
     let content = match mailbox.reader_state() {
@@ -50,12 +51,12 @@ pub(super) fn view<'a>(
         ReaderState::Failed { error, .. } => load_error(*error),
         ReaderState::Loaded(reader) => conversation(
             reader,
-            reader.detail(),
             places,
             mailbox.selected_summary().filter(|_| actions_available),
             !mailbox.is_busy() && !mailbox.action_pending(),
             mailbox.action_error(),
             mailbox,
+            saving_attachment,
         ),
     };
     let content = match saved_attachment {
@@ -124,13 +125,14 @@ fn placeholder(message: &str) -> Element<'_, Message> {
 
 fn conversation<'a>(
     reader: &'a ConversationReader,
-    detail: &'a ConversationDetail,
     places: &'a [Folder],
     summary: Option<&'a ConversationSummary>,
     actions_enabled: bool,
     action_error: Option<crate::mail::MailboxError>,
     mailbox: &'a Mailbox,
+    saving_attachment: Option<&'a str>,
 ) -> Element<'a, Message> {
+    let detail = reader.detail();
     let mut header = column![
         text(detail.subject.as_deref().unwrap_or("(No subject)"))
             .size(SUBJECT_SIZE)
@@ -158,7 +160,7 @@ fn conversation<'a>(
     }
     for message in &detail.messages {
         let selectable = mailbox.selectable_body(&message.id);
-        messages = messages.push(message_card(message, reader, selectable));
+        messages = messages.push(message_card(message, reader, selectable, saving_attachment));
     }
 
     scrollable(
@@ -275,6 +277,7 @@ fn message_card<'a>(
     message: &'a MailMessage,
     reader: &ConversationReader,
     selection: Option<&'a text_editor::Content>,
+    saving_attachment: Option<&str>,
 ) -> Element<'a, Message> {
     let expanded = reader.is_expanded(&message.id);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
@@ -293,7 +296,9 @@ fn message_card<'a>(
             recipients_label(&message.recipients)
         )));
         for attachment in &message.attachments {
-            identity = identity.push(attachment_row(&message.id, attachment));
+            let saving = saving_attachment.is_some();
+            let this_one = saving_attachment == Some(attachment.id.as_str());
+            identity = identity.push(attachment_row(&message.id, attachment, saving, this_one));
         }
     } else {
         identity = identity.push(
@@ -566,19 +571,26 @@ fn detail_line<'a>(content: String) -> Element<'a, Message> {
 }
 
 /// One file on a message: what it is called, how big it is, and a way to keep
-/// it. Contents are fetched only when asked for.
-fn attachment_row<'a>(message_id: &str, attachment: &'a MailAttachment) -> Element<'a, Message> {
+/// it. Contents are fetched only when asked for, one at a time, so pressing
+/// twice cannot write the same file under two names.
+fn attachment_row<'a>(
+    message_id: &str,
+    attachment: &'a MailAttachment,
+    saving: bool,
+    this_one: bool,
+) -> Element<'a, Message> {
     let save = Message::SaveAttachment(message_id.to_owned(), attachment.id.clone());
+    let label = if this_one { "Saving…" } else { "Save" };
 
     row![
         detail_text(format!("📎 {}", attachment.name))
             .width(Fill)
             .wrapping(Wrapping::None),
         detail_text(size_label(attachment.size)),
-        button(text("Save").size(DETAIL_SIZE))
+        button(text(label).size(DETAIL_SIZE))
             .padding([2, 8])
             .style(button::secondary)
-            .on_press(save),
+            .on_press_maybe((!saving).then_some(save)),
     ]
     .spacing(SPACING)
     .align_y(iced::Center)

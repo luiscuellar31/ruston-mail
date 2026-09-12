@@ -204,6 +204,10 @@ pub struct App {
     showing_settings: bool,
     /// What became of the last attachment someone asked to save.
     saved_attachment: Option<Result<PathBuf, SaveError>>,
+    /// The attachment being fetched, if any. Saving one is a deliberate act
+    /// and a slow one, so a second press must not fetch and write the same
+    /// file a second time under a name of its own.
+    saving_attachment: Option<String>,
 }
 
 impl App {
@@ -235,10 +239,16 @@ impl App {
             settings,
             showing_settings: false,
             saved_attachment: None,
+            saving_attachment: None,
         }
     }
 
     /// Where the last saved attachment landed, or why it did not.
+    /// The attachment now being fetched, so its row can say so.
+    pub fn saving_attachment(&self) -> Option<&str> {
+        self.saving_attachment.as_deref()
+    }
+
     pub fn saved_attachment(&self) -> Option<Result<&Path, SaveError>> {
         self.saved_attachment
             .as_ref()
@@ -252,7 +262,11 @@ impl App {
         let Some(backend) = self.backend.clone() else {
             return Task::none();
         };
+        if self.saving_attachment.is_some() {
+            return Task::none();
+        }
         self.saved_attachment = None;
+        self.saving_attachment = Some(attachment_id.clone());
 
         Task::perform(
             async move {
@@ -457,7 +471,10 @@ impl App {
             Message::SaveAttachment(message_id, attachment_id) => {
                 return self.save_attachment(message_id, attachment_id);
             }
-            Message::AttachmentSaved(outcome) => self.saved_attachment = Some(outcome),
+            Message::AttachmentSaved(outcome) => {
+                self.saving_attachment = None;
+                self.saved_attachment = Some(outcome);
+            }
             Message::ShowSettings(showing) => self.showing_settings = showing,
             Message::SetMarkReadOnOpen(on) => {
                 self.remember(|settings| settings.mark_read_on_open = on);
@@ -1913,6 +1930,26 @@ mod tests {
         assert_eq!(mailbox.search_query(), "offsite");
         assert_eq!(mailbox.visible_conversations().count(), 0);
         assert_eq!(mailbox.selected_conversation(), None);
+    }
+
+    #[test]
+    fn one_attachment_is_saved_at_a_time() {
+        let mut app = loaded_demo_app();
+
+        // The demo carries no files, so the fetch itself fails; what matters
+        // is that the second press never starts a fetch of its own, which is
+        // how the same file ended up written twice under two names.
+        let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+        assert_eq!(app.saving_attachment(), Some("file"));
+
+        let _ = app.update(Message::SaveAttachment("demo-0".into(), "other".into()));
+        assert_eq!(app.saving_attachment(), Some("file"));
+
+        let _ = app.update(Message::AttachmentSaved(Err(SaveError::NotFetched)));
+        assert_eq!(app.saving_attachment(), None);
+        // Once the first one is done, the next press is free to go.
+        let _ = app.update(Message::SaveAttachment("demo-0".into(), "other".into()));
+        assert_eq!(app.saving_attachment(), Some("other"));
     }
 
     #[test]
