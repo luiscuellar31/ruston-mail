@@ -1,6 +1,7 @@
 mod login;
 mod mailbox;
 mod reader;
+mod selectable;
 
 use iced::widget::{column, container, text};
 use iced::{Element, Fill, Font, Size, window};

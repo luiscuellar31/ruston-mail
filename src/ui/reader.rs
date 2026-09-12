@@ -2,7 +2,7 @@ use chrono::{Local, TimeZone};
 use iced::font::{self, Weight};
 use iced::widget::text::{LineHeight, Span, Wrapping};
 use iced::widget::{
-    Column, button, column, container, rich_text, row, rule, scrollable, span, text,
+    Column, button, column, container, rich_text, row, rule, scrollable, span, text, text_editor,
 };
 use iced::{Element, Fill, Font, Padding};
 
@@ -27,8 +27,8 @@ const QUOTE_INDENT: f32 = 12.0;
 const MAX_QUOTE_DEPTH: u8 = 4;
 /// Bodies are set larger and looser than the interface around them, and stop
 /// short of the pane's full width: long lines are tiring to read.
-const BODY_SIZE: f32 = 15.0;
-const BODY_LINE_HEIGHT: LineHeight = LineHeight::Relative(1.45);
+pub(super) const BODY_SIZE: f32 = 15.0;
+pub(super) const BODY_LINE_HEIGHT: LineHeight = LineHeight::Relative(1.45);
 const READING_WIDTH: f32 = 680.0;
 
 pub(super) fn view<'a>(
@@ -46,6 +46,7 @@ pub(super) fn view<'a>(
             mailbox.selected_summary().filter(|_| actions_available),
             !mailbox.is_busy() && !mailbox.action_pending(),
             mailbox.action_error(),
+            mailbox.selection(),
         ),
     };
     let content = match pending_link {
@@ -110,6 +111,7 @@ fn conversation<'a>(
     summary: Option<&'a ConversationSummary>,
     actions_enabled: bool,
     action_error: Option<crate::mail::MailboxError>,
+    selection: Option<(&'a str, &'a text_editor::Content)>,
 ) -> Element<'a, Message> {
     let mut header = column![
         text(detail.subject.as_deref().unwrap_or("(No subject)"))
@@ -136,7 +138,10 @@ fn conversation<'a>(
         messages = messages.push(text("This conversation has no messages.").style(text::secondary));
     }
     for message in &detail.messages {
-        messages = messages.push(message_card(message, reader));
+        let selected = selection
+            .filter(|(id, _)| *id == message.id)
+            .map(|(_, content)| content);
+        messages = messages.push(message_card(message, reader, selected));
     }
 
     scrollable(
@@ -183,7 +188,11 @@ fn action_button(label: &str, message: Message, enabled: bool) -> Element<'_, Me
         .into()
 }
 
-fn message_card<'a>(message: &'a MailMessage, reader: &ConversationReader) -> Element<'a, Message> {
+fn message_card<'a>(
+    message: &'a MailMessage,
+    reader: &ConversationReader,
+    selection: Option<&'a text_editor::Content>,
+) -> Element<'a, Message> {
     let expanded = reader.is_expanded(&message.id);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
     let time = message
@@ -229,8 +238,12 @@ fn message_card<'a>(message: &'a MailMessage, reader: &ConversationReader) -> El
 
     let mut card = column![header];
     if expanded {
+        let body = match selection {
+            Some(content) => super::selectable::read_only(content),
+            None => message_body(message, reader),
+        };
         card = card.push(rule::horizontal(1)).push(
-            container(message_body(message, reader))
+            container(column![selection_button(&message.id, selection.is_some()), body].spacing(6))
                 .width(Fill)
                 .max_width(READING_WIDTH)
                 .padding(MESSAGE_SPACING),
@@ -240,6 +253,22 @@ fn message_card<'a>(message: &'a MailMessage, reader: &ConversationReader) -> El
     container(card)
         .width(Fill)
         .style(container::bordered_box)
+        .into()
+}
+
+/// Switches one body between the formatted view and selectable plain text.
+/// Selecting drops styles and links, so it stays off until asked for.
+fn selection_button(message_id: &str, selecting: bool) -> Element<'_, Message> {
+    let label = if selecting {
+        "Show formatted text"
+    } else {
+        "Select text"
+    };
+
+    button(text(label).size(DETAIL_SIZE))
+        .padding([2, 8])
+        .style(button::text)
+        .on_press(Message::ToggleTextSelection(message_id.to_owned()))
         .into()
 }
 

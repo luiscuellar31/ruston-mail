@@ -85,11 +85,22 @@ impl MailAddress {
 
 /// A message body.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum MessageBody {
     PlainText(String),
     /// Structure and inline styles taken from an HTML body. Nothing in it
     /// runs scripts or loads remote content.
     Rich(RichBody),
+}
+
+impl MessageBody {
+    /// The body as plain text, for copying out.
+    pub fn plain_text(&self) -> String {
+        match self {
+            Self::PlainText(text) => text.clone(),
+            Self::Rich(rich) => rich.plain_text(),
+        }
+    }
 }
 
 /// The readable structure of an HTML body, in reading order.
@@ -113,6 +124,34 @@ impl RichBody {
             spans.iter().map(|span| span.text.as_str()).chain(text)
         })
     }
+
+    /// The body as plain text, one block per line, for copying out. Styles and
+    /// links are dropped; structure is kept with markers and quote prefixes.
+    pub fn plain_text(&self) -> String {
+        let mut out = String::new();
+        for block in &self.blocks {
+            let line = match &block.kind {
+                BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => join(spans),
+                BlockKind::ListItem { marker, spans, .. } if marker.is_empty() => join(spans),
+                BlockKind::ListItem { marker, spans, .. } => format!("{marker} {}", join(spans)),
+                BlockKind::Preformatted(text) => text.clone(),
+                BlockKind::Image { description } => format!("[Image: {description}]"),
+                BlockKind::Rule => "---".to_owned(),
+            };
+            let quote = "> ".repeat(usize::from(block.quote_depth));
+            for line in line.lines() {
+                out.push_str(&quote);
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+
+        out
+    }
+}
+
+fn join(spans: &[RichSpan]) -> String {
+    spans.iter().map(|span| span.text.as_str()).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,5 +297,73 @@ impl MailboxError {
             Self::Service => "Proton Mail could not update this conversation. Try again later.",
             Self::Unavailable => "Ruston could not update this conversation. Try again.",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spans(text: &str) -> Vec<RichSpan> {
+        vec![RichSpan {
+            text: text.to_owned(),
+            ..RichSpan::default()
+        }]
+    }
+
+    fn block(kind: BlockKind, quote_depth: u8) -> RichBlock {
+        RichBlock { kind, quote_depth }
+    }
+
+    #[test]
+    fn plain_text_keeps_structure_one_block_per_line() {
+        let body = RichBody {
+            blocks: vec![
+                block(
+                    BlockKind::Heading {
+                        level: 1,
+                        spans: spans("Title"),
+                    },
+                    0,
+                ),
+                block(BlockKind::Paragraph(spans("Hello")), 0),
+                block(
+                    BlockKind::ListItem {
+                        marker: "•".to_owned(),
+                        depth: 1,
+                        spans: spans("One"),
+                    },
+                    0,
+                ),
+                block(
+                    BlockKind::Image {
+                        description: "Logo".to_owned(),
+                    },
+                    0,
+                ),
+                block(BlockKind::Rule, 0),
+                block(BlockKind::Paragraph(spans("Quoted")), 1),
+                block(
+                    BlockKind::Preformatted("let x = 1;\n  indented".to_owned()),
+                    2,
+                ),
+            ],
+        };
+
+        assert_eq!(
+            body.plain_text(),
+            "Title\nHello\n• One\n[Image: Logo]\n---\n> Quoted\n> > let x = 1;\n> >   indented\n"
+        );
+    }
+
+    #[test]
+    fn plain_text_covers_both_body_kinds() {
+        let rich = MessageBody::Rich(RichBody {
+            blocks: vec![block(BlockKind::Paragraph(spans("Hi")), 0)],
+        });
+
+        assert_eq!(MessageBody::PlainText("Hi".into()).plain_text(), "Hi");
+        assert_eq!(rich.plain_text(), "Hi\n");
+        assert_eq!(RichBody::default().plain_text(), "");
     }
 }

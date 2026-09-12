@@ -5,7 +5,7 @@ mod reader;
 use std::sync::Arc;
 
 use iced::Task;
-use iced::widget::pane_grid;
+use iced::widget::{pane_grid, text_editor};
 
 use crate::mail::{
     AuthError, ConversationDetail, ConversationPage, LoginRequest, MailAction, MailBackend,
@@ -68,6 +68,10 @@ pub enum Message {
     ToggleMessageExpanded(String),
     /// Folds or unfolds one quoted passage of a message.
     ToggleQuoteExpanded(String, usize),
+    /// Shows one message as selectable text, or goes back to the formatted body.
+    ToggleTextSelection(String),
+    /// A click, drag or keyboard interaction inside the selectable body.
+    SelectText(text_editor::Action),
     ArchiveSelected,
     MoveSelectedToSpam,
     MoveSelectedToTrash,
@@ -210,6 +214,16 @@ impl App {
             Message::ToggleQuoteExpanded(id, index) => {
                 if let Some(mailbox) = self.active_mailbox() {
                     mailbox.toggle_quote(&id, index);
+                }
+            }
+            Message::ToggleTextSelection(id) => {
+                if let Some(mailbox) = self.active_mailbox() {
+                    mailbox.toggle_selection(&id);
+                }
+            }
+            Message::SelectText(action) => {
+                if let Some(mailbox) = self.active_mailbox() {
+                    mailbox.select_text(action);
                 }
             }
             Message::ArchiveSelected => return self.apply_action(MailAction::Archive),
