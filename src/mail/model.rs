@@ -93,7 +93,6 @@ impl MailAddress {
 
 /// A message body.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)]
 pub enum MessageBody {
     PlainText(String),
     /// Structure and inline styles taken from an HTML body. Nothing in it
