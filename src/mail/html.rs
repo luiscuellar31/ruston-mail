@@ -85,7 +85,8 @@ impl TokenSink for Sink {
 struct Builder {
     blocks: Vec<RichBlock>,
     spans: Vec<RichSpan>,
-    /// Whitespace was seen since the last visible character.
+    /// A separating space has already been written since the last visible
+    /// character.
     space: bool,
     strong: u16,
     emphasis: u16,
@@ -169,7 +170,7 @@ impl Builder {
             "s" | "strike" | "del" => self.struck = self.struck.saturating_add(1),
             "a" => self.link = link_target(tag),
             // Table cells read left to right, separated like words.
-            "td" | "th" => self.space = self.wants_space(),
+            "td" | "th" => self.separate(),
             _ if BLOCKS.contains(&name) => self.flush(),
             _ => {}
         }
@@ -225,14 +226,24 @@ impl Builder {
         // Collapse whitespace runs like a browser does.
         for c in text.chars() {
             if c.is_whitespace() {
-                self.space = self.wants_space();
+                self.separate();
                 continue;
             }
-            if self.space {
-                self.push_char(' ');
-                self.space = false;
-            }
+            self.space = false;
             self.push_char(c);
+        }
+    }
+
+    /// Writes the space between two words where it was read, so it takes the
+    /// styling of the run that contains it. Deferring it to the next visible
+    /// character would style it by whatever tag had opened in between, which
+    /// is how a code background or a strikethrough came to reach past its
+    /// word into the gap before the next one. `flush` drops it if the block
+    /// ends first.
+    fn separate(&mut self) {
+        if !self.space && self.wants_space() {
+            self.push_char(' ');
+            self.space = true;
         }
     }
 
@@ -544,7 +555,40 @@ mod tests {
 
         assert_eq!(
             body.text_fragments().collect::<Vec<_>>(),
-            ["One", " two", "Pic", "code"]
+            ["One ", "two", "Pic", "code"]
         );
+    }
+
+    #[test]
+    fn a_styled_run_never_owns_the_space_beside_it() {
+        let body =
+            parse("<p>and a <s>withdrawn</s> point, plus <code>settings.json</code> here</p>");
+        let BlockKind::Paragraph(spans) = &body.blocks[0].kind else {
+            panic!("expected a paragraph");
+        };
+        for span in spans {
+            assert!(
+                !(span.code || span.struck) || span.text.trim() == span.text,
+                "{span:?} carries a space its background or strikethrough would cover"
+            );
+        }
+        assert_eq!(
+            spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
+            "and a withdrawn point, plus settings.json here"
+        );
+    }
+
+    #[test]
+    fn a_space_inside_a_styled_run_stays_inside_it() {
+        let body = parse("<p><code>cargo test</code></p>");
+        let BlockKind::Paragraph(spans) = &body.blocks[0].kind else {
+            panic!("expected a paragraph");
+        };
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "cargo test");
+        assert!(spans[0].code);
     }
 }
