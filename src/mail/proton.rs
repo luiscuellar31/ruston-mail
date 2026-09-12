@@ -44,6 +44,11 @@ const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox pa
 const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
 const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
 const MAX_LISTED_CORRESPONDENTS: usize = 3;
+/// Messages relabelled per request. Proton publishes no limit for its bulk
+/// endpoints and proton-core sends whatever it is handed, so a long thread
+/// goes up in batches small enough that no plausible limit turns them away.
+/// This is a margin, not a documented number.
+const LABEL_BATCH: usize = 50;
 
 #[derive(Clone)]
 pub enum ResumeOutcome {
@@ -528,22 +533,25 @@ enum ActionCall<'a> {
     Label(&'a str, bool),
 }
 
-/// Adds or removes one label across the messages given. An empty thread is
-/// nothing to relabel, and asking Proton to do it anyway would only fail.
+/// Adds or removes one label across the messages given, a batch at a time. A
+/// thread with nothing in it asks Proton for nothing, since an empty slice
+/// has no batches. A batch that fails leaves the ones before it applied:
+/// pressing the label again finishes the rest, and taking it away undoes them.
 async fn set_label(
     client: &Client,
     ids: &[String],
     label: &str,
     on: bool,
 ) -> Result<(), proton_core::Error> {
-    if ids.is_empty() {
-        return Ok(());
+    for batch in ids.chunks(LABEL_BATCH) {
+        if on {
+            client.apply_label(batch, label).await?;
+        } else {
+            client.remove_label(batch, label).await?;
+        }
     }
-    if on {
-        client.apply_label(ids, label).await
-    } else {
-        client.remove_label(ids, label).await
-    }
+
+    Ok(())
 }
 
 fn action_call(action: &MailAction) -> ActionCall<'_> {
