@@ -137,7 +137,7 @@ impl Mailbox {
                 .any(|conversation| conversation.id == selected)
         });
         if selected_is_hidden {
-            self.reader = ReaderState::Empty;
+            self.set_reader(ReaderState::Empty);
         }
     }
 
@@ -188,13 +188,15 @@ impl Mailbox {
     }
 
     /// Starts loading a visible conversation. Reselecting the current
-    /// conversation keeps its loaded or in-flight state.
+    /// conversation keeps its loaded or in-flight state, except after a
+    /// failure: clicking the row again is a retry.
     pub fn start_conversation_load(
         &mut self,
         conversation_id: String,
         request: RequestId,
     ) -> Option<ReaderRequest> {
-        if self.selected_conversation() == Some(conversation_id.as_str()) {
+        let reselecting = self.selected_conversation() == Some(conversation_id.as_str());
+        if reselecting && !matches!(self.reader, ReaderState::Failed { .. }) {
             return None;
         }
         let kind = self
@@ -208,11 +210,10 @@ impl Mailbox {
             conversation_id,
             kind,
         };
-        self.reader = ReaderState::Loading {
+        self.set_reader(ReaderState::Loading {
             conversation_id: request.conversation_id.clone(),
             request: request.id,
-        };
-        self.selectable.clear();
+        });
         Some(request)
     }
 
@@ -233,11 +234,10 @@ impl Mailbox {
             conversation_id: conversation_id.clone(),
             kind,
         };
-        self.reader = ReaderState::Loading {
+        self.set_reader(ReaderState::Loading {
             conversation_id: request.conversation_id.clone(),
             request: request.id,
-        };
-        self.selectable.clear();
+        });
         Some(request)
     }
 
@@ -261,40 +261,48 @@ impl Mailbox {
 
         match result {
             Ok(detail) if detail.id == request.conversation_id => {
-                let reader = ConversationReader::new(detail);
-                // A plain body loses nothing inside an editor, so it arrives
-                // selectable. HTML bodies wait until the user asks.
-                self.selectable = reader
-                    .detail()
-                    .messages
-                    .iter()
-                    .filter(|message| message.body.is_plain())
-                    .map(|message| {
-                        (
-                            message.id.clone(),
-                            text_editor::Content::with_text(&message.body.plain_text()),
-                        )
-                    })
-                    .collect();
-                self.reader = ReaderState::Loaded(reader);
+                self.set_reader(ReaderState::Loaded(ConversationReader::new(detail)));
                 None
             }
             Ok(_) => {
                 let error = MailboxError::Unavailable;
-                self.reader = ReaderState::Failed {
+                self.set_reader(ReaderState::Failed {
                     conversation_id: request.conversation_id.clone(),
                     error,
-                };
+                });
                 Some(error)
             }
             Err(error) => {
-                self.reader = ReaderState::Failed {
+                self.set_reader(ReaderState::Failed {
                     conversation_id: request.conversation_id.clone(),
                     error,
-                };
+                });
                 Some(error)
             }
         }
+    }
+
+    /// The only place the reader changes. Selectable bodies belong to the open
+    /// conversation, so they are rebuilt here and nowhere else: a plain body
+    /// loses nothing inside an editor and arrives selectable, while HTML ones
+    /// wait until the user asks for them.
+    fn set_reader(&mut self, reader: ReaderState) {
+        self.selectable = match &reader {
+            ReaderState::Loaded(loaded) => loaded
+                .detail()
+                .messages
+                .iter()
+                .filter(|message| message.body.is_plain())
+                .map(|message| {
+                    (
+                        message.id.clone(),
+                        text_editor::Content::with_text(&message.body.plain_text()),
+                    )
+                })
+                .collect(),
+            _ => HashMap::new(),
+        };
+        self.reader = reader;
     }
 
     pub fn toggle_message(&mut self, message_id: &str) {
@@ -309,7 +317,6 @@ impl Mailbox {
         }
     }
 
-    /// The message shown as selectable text, with its editor buffer.
     /// The editor buffer of a body shown as selectable text, if it has one.
     pub fn selectable_body(&self, message_id: &str) -> Option<&text_editor::Content> {
         self.selectable.get(message_id)
@@ -490,7 +497,7 @@ impl Mailbox {
             return None;
         }
 
-        self.reader = ReaderState::Empty;
+        self.set_reader(ReaderState::Empty);
         let last = self.visible_conversations().count().checked_sub(1)?;
         self.visible_conversations()
             .nth(index?.min(last))
@@ -506,7 +513,7 @@ impl Mailbox {
         self.conversations.clear();
         self.next_page = 0;
         self.has_more = false;
-        self.reader = ReaderState::Empty;
+        self.set_reader(ReaderState::Empty);
         self.action_error = None;
         self.status = ListStatus::Loading(request);
         Some(self.page_request(request, 0))
@@ -534,11 +541,10 @@ impl Mailbox {
         Some(self.page_request(request, self.next_page))
     }
 
+    /// Starts a counts refresh. A newer request supersedes one still in
+    /// flight, so a slow or lost response can never block later refreshes;
+    /// `finish_counts` then ignores everything but the newest.
     pub fn refresh_counts(&mut self, request: RequestId) -> Option<RequestId> {
-        if self.counts_request.is_some() {
-            return None;
-        }
-
         self.counts_request = Some(request);
         Some(request)
     }
@@ -579,7 +585,7 @@ impl Mailbox {
             return None;
         }
 
-        self.reader = ReaderState::Empty;
+        self.set_reader(ReaderState::Empty);
         let next_index = selected_index.min(self.visible_conversations().count().saturating_sub(1));
         self.visible_conversations()
             .nth(next_index)
@@ -633,6 +639,23 @@ impl Mailbox {
         }
     }
 
+    /// Takes the loaded rows that sit below `fresh`, that is, older than
+    /// everything it contains. Rows the fresh page covers are dropped, since
+    /// it is the newer word on them.
+    fn rows_below(&mut self, fresh: &[ConversationSummary]) -> Vec<ConversationSummary> {
+        let Some(oldest) = fresh.iter().filter_map(|row| row.time).min() else {
+            return Vec::new();
+        };
+        let covered: HashSet<&str> = fresh.iter().map(|row| row.id.as_str()).collect();
+
+        self.conversations
+            .drain(..)
+            .filter(|row| {
+                row.time.is_some_and(|time| time < oldest) && !covered.contains(row.id.as_str())
+            })
+            .collect()
+    }
+
     fn page_request(&self, id: RequestId, page: u32) -> PageRequest {
         PageRequest {
             id,
@@ -655,8 +678,19 @@ impl Mailbox {
             self.conversations.extend(new);
             self.next_page += 1;
         } else {
+            // A reload speaks only for the first page, so deeper pages the
+            // user already loaded are kept and refreshing never shortens the
+            // list. A short page is the exception: then the folder itself has
+            // no more rows, and everything below it is gone.
+            let deeper = if received >= self.page_size as usize {
+                self.rows_below(&page.conversations)
+            } else {
+                Vec::new()
+            };
             self.conversations = page.conversations;
-            self.next_page = 1;
+            self.conversations.extend(deeper);
+            self.next_page = self.next_page.max(1);
+
             let selected_left = self.selected_conversation().is_some_and(|selected| {
                 !self
                     .conversations
@@ -664,7 +698,7 @@ impl Mailbox {
                     .any(|conversation| conversation.id == selected)
             });
             if selected_left {
-                self.reader = ReaderState::Empty;
+                self.set_reader(ReaderState::Empty);
             }
         }
         // Rows split out of a conversation carry their own, older times.
@@ -679,7 +713,9 @@ impl Mailbox {
 /// a time stays right after the row that preceded it, since only the server
 /// knows where it belongs.
 fn sort_newest_first(rows: &mut Vec<ConversationSummary>) {
-    let mut previous = i64::MAX;
+    // Rows before the first dated one borrow its time, so a leading row
+    // without one never outranks mail that does have a date.
+    let mut previous = rows.iter().find_map(|row| row.time).unwrap_or(i64::MAX);
     let mut keyed: Vec<_> = rows
         .drain(..)
         .map(|row| {
@@ -917,6 +953,124 @@ mod tests {
         assert!(mailbox.selectable_body("b1").is_some());
     }
 
+    fn dated(id: &str, time: i64) -> ConversationSummary {
+        ConversationSummary {
+            time: Some(time),
+            ..summary(id)
+        }
+    }
+
+    fn dated_page(rows: &[(&str, i64)], total: u32) -> Result<ConversationPage, MailboxError> {
+        Ok(ConversationPage {
+            conversations: rows.iter().map(|(id, time)| dated(id, *time)).collect(),
+            total,
+        })
+    }
+
+    /// A full page of dated rows named `p<n>`, newest first.
+    fn full_page(start: u32, total: u32) -> Result<ConversationPage, MailboxError> {
+        let conversations = (0..PAGE_SIZE)
+            .map(|index| {
+                let number = start + index;
+                dated(&format!("p{number}"), i64::from(1_000_000 - number))
+            })
+            .collect();
+
+        Ok(ConversationPage {
+            conversations,
+            total,
+        })
+    }
+
+    #[test]
+    fn clicking_a_failed_conversation_again_retries_it() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        let request = mailbox.start_conversation_load("a".into(), 3).unwrap();
+        assert_eq!(
+            mailbox.finish_conversation(&request, Err(MailboxError::Connection)),
+            Some(MailboxError::Connection)
+        );
+
+        // The failed row stays selected, so the click used to do nothing.
+        assert!(mailbox.start_conversation_load("a".into(), 4).is_some());
+    }
+
+    #[test]
+    fn refreshing_keeps_the_pages_already_loaded() {
+        let (mut mailbox, request) = open();
+        mailbox.finish_page(request.id, full_page(0, 120));
+        let more = mailbox.load_more(5).unwrap();
+        mailbox.finish_page(more.id, full_page(PAGE_SIZE, 120));
+        assert_eq!(mailbox.conversations().len(), 2 * PAGE_SIZE as usize);
+
+        let refresh = mailbox.refresh(6).unwrap();
+        mailbox.finish_page(refresh.id, full_page(0, 120));
+
+        // Both pages survive, so refreshing does not send the user back to
+        // the first fifty rows.
+        assert_eq!(mailbox.conversations().len(), 2 * PAGE_SIZE as usize);
+        assert_eq!(mailbox.loaded_conversation_limit(), 2 * PAGE_SIZE);
+        assert!(mailbox.has_more());
+
+        // A short reload means the folder itself is short now.
+        let refresh = mailbox.refresh(7).unwrap();
+        mailbox.finish_page(refresh.id, dated_page(&[("p0", 1_000_000)], 1));
+        assert_eq!(visible_ids(&mailbox), ["p0"]);
+    }
+
+    #[test]
+    fn a_lost_counts_response_never_blocks_later_refreshes() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        let counts =
+            |unread: u32| -> MailboxCounts { [(MailFolder::Inbox, unread)].into_iter().collect() };
+
+        // The response for the first request never arrives.
+        assert_eq!(mailbox.refresh_counts(3), Some(3));
+        assert_eq!(mailbox.refresh_counts(4), Some(4));
+
+        // Arriving late, it is ignored in favour of the newest request.
+        assert_eq!(mailbox.finish_counts(3, Ok(counts(7))), None);
+        assert!(mailbox.counts().is_none());
+
+        assert_eq!(mailbox.finish_counts(4, Ok(counts(2))), None);
+        assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Inbox), Some(2));
+    }
+
+    #[test]
+    fn closing_the_reader_drops_the_selectable_bodies() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+        assert!(mailbox.selectable_body("a1").is_some());
+
+        mailbox.select_folder(MailFolder::Archive, 4);
+        assert!(mailbox.selectable_body("a1").is_none());
+
+        // Same when a search hides the open conversation.
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        load_detail(&mut mailbox, "a", detail("a", &["a1"]), 5);
+        mailbox.set_search_query("nothing matches this".into());
+
+        assert!(mailbox.selectable_body("a1").is_none());
+    }
+
+    #[test]
+    fn a_row_without_a_date_never_outranks_dated_mail() {
+        let mut rows = vec![
+            summary("undated"),
+            dated("older", 100),
+            dated("newest", 300),
+        ];
+
+        sort_newest_first(&mut rows);
+
+        // It borrows the time of the row it sits next to instead of floating
+        // to the top of the mailbox.
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["newest", "undated", "older"]
+        );
+    }
+
     #[test]
     fn opening_loads_first_inbox_page_with_unknown_counts() {
         let (mailbox, request) = open();
@@ -1121,10 +1275,10 @@ mod tests {
     }
 
     #[test]
-    fn counts_apply_once_and_prevent_duplicate_requests() {
+    fn counts_apply_once() {
         let (mut mailbox, _) = open();
-        assert_eq!(mailbox.refresh_counts(3), None);
 
+        // `open` left request 2 in flight; its response is the one that counts.
         let counts: MailboxCounts = [(MailFolder::Inbox, 4)].into_iter().collect();
         mailbox.finish_counts(2, Ok(counts));
         assert_eq!(mailbox.counts().unwrap().unread(MailFolder::Inbox), Some(4));

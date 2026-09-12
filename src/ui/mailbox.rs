@@ -172,7 +172,21 @@ fn conversation_pane(mailbox: &Mailbox) -> Element<'_, Message> {
             .align_x(Center)
             .into(),
         ),
-        (_, true) if mailbox.is_searching() => centered(text("No conversations found.").into()),
+        // Search only covers what is loaded, so the way out of an empty
+        // result is loading more. Saying so beats a dead end.
+        (_, true) if mailbox.is_searching() => {
+            let mut empty = column![
+                text("No matches in the conversations loaded so far.")
+                    .style(text::secondary)
+                    .wrapping(Wrapping::WordOrGlyph)
+            ]
+            .spacing(SPACING)
+            .align_x(Center);
+            if let Some(more) = load_more(mailbox) {
+                empty = empty.push(more);
+            }
+            centered(empty.into())
+        }
         (_, true) => {
             centered(text(format!("No conversations in {}.", mailbox.folder().name())).into())
         }
@@ -198,22 +212,8 @@ fn conversation_list(mailbox: &Mailbox) -> Element<'_, Message> {
     }))
     .spacing(2);
 
-    if matches!(mailbox.status(), ListStatus::LoadingMore(_)) {
-        list = list.push(
-            container(text("Loading more…"))
-                .center_x(Fill)
-                .padding(SPACING),
-        );
-    } else if mailbox.has_more() {
-        list = list.push(
-            container(
-                button(text("Load more"))
-                    .style(button::secondary)
-                    .on_press_maybe((!mailbox.is_busy()).then_some(Message::LoadMoreConversations)),
-            )
-            .center_x(Fill)
-            .padding(SPACING),
-        );
+    if let Some(more) = load_more(mailbox) {
+        list = list.push(container(more).center_x(Fill).padding(SPACING));
     }
 
     let mut content = column![].spacing(SPACING);
@@ -283,6 +283,20 @@ fn conversation_row<'a>(
         })
         .on_press(Message::SelectConversation(conversation.id.clone()))
         .into()
+}
+
+/// The control that extends the loaded list, when there is more to load.
+fn load_more(mailbox: &Mailbox) -> Option<Element<'_, Message>> {
+    if matches!(mailbox.status(), ListStatus::LoadingMore(_)) {
+        return Some(text("Loading more…").into());
+    }
+
+    mailbox.has_more().then(|| {
+        button(text("Load more"))
+            .style(button::secondary)
+            .on_press_maybe((!mailbox.is_busy()).then_some(Message::LoadMoreConversations))
+            .into()
+    })
 }
 
 fn centered(content: Element<'_, Message>) -> Element<'_, Message> {
