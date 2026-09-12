@@ -2,7 +2,8 @@ use chrono::{Local, TimeZone};
 use iced::font::{self, Weight};
 use iced::widget::text::{LineHeight, Span, Wrapping};
 use iced::widget::{
-    Column, button, column, container, rich_text, row, rule, scrollable, span, text, text_editor,
+    Column, Row, button, column, container, rich_text, row, rule, scrollable, span, text,
+    text_editor,
 };
 use iced::{Element, Fill, Font, Padding};
 
@@ -10,8 +11,8 @@ use super::APP_FONT;
 use super::mailbox::{DETAIL_SIZE, PANE_PADDING, SPACING};
 use crate::app::{ConversationReader, Mailbox, Message, PendingLink, READER_BODY, ReaderState};
 use crate::mail::{
-    BlockKind, ConversationDetail, ConversationSummary, MailAddress, MailMessage, MessageBody,
-    RichBlock, RichBody, RichSpan,
+    BlockKind, ConversationDetail, ConversationSummary, MailAction, MailAddress, MailFolder,
+    MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
 };
 
 const SUBJECT_SIZE: f32 = 22.0;
@@ -155,24 +156,31 @@ fn conversation<'a>(
 }
 
 fn action_toolbar(summary: &ConversationSummary, enabled: bool) -> Element<'_, Message> {
-    let (read_label, read_message) = if summary.unread {
-        ("Mark read", Message::MarkSelectedRead)
+    // Each button is a label and the action it applies to the open row, so
+    // adding one is a line in this table rather than a message of its own.
+    let read = if summary.unread {
+        ("Mark read", MailAction::SetUnread(false))
     } else {
-        ("Mark unread", Message::MarkSelectedUnread)
+        ("Mark unread", MailAction::SetUnread(true))
     };
-    let (star_label, star_message) = if summary.starred {
-        ("Unstar", Message::UnstarSelected)
+    let star = if summary.starred {
+        ("Unstar", MailAction::SetStarred(false))
     } else {
-        ("Star", Message::StarSelected)
+        ("Star", MailAction::SetStarred(true))
     };
+    let actions = [
+        ("Archive", MailAction::MoveTo(MailFolder::Archive)),
+        ("Spam", MailAction::MoveTo(MailFolder::Spam)),
+        ("Trash", MailAction::MoveTo(MailFolder::Trash)),
+        read,
+        star,
+    ];
 
-    row![
-        action_button("Archive", Message::ArchiveSelected, enabled),
-        action_button("Spam", Message::MoveSelectedToSpam, enabled),
-        action_button("Trash", Message::MoveSelectedToTrash, enabled),
-        action_button(read_label, read_message, enabled),
-        action_button(star_label, star_message, enabled),
-    ]
+    Row::with_children(
+        actions
+            .into_iter()
+            .map(|(label, action)| action_button(label, Message::ApplyAction(action), enabled)),
+    )
     .spacing(4)
     .wrap()
     .vertical_spacing(4)

@@ -77,15 +77,11 @@ pub enum Message {
     ToggleTextSelection(String),
     /// A click, drag or keyboard interaction inside one selectable body.
     SelectText(String, text_editor::Action),
-    ArchiveSelected,
-    MoveSelectedToSpam,
-    MoveSelectedToTrash,
+    /// Applies one action to the selected row. Adding an action is a line in
+    /// the toolbar rather than a message and an arm of its own.
+    ApplyAction(MailAction),
     /// Puts the last moved conversation back where it came from.
     UndoMove,
-    MarkSelectedRead,
-    MarkSelectedUnread,
-    StarSelected,
-    UnstarSelected,
     RefreshMailbox,
     LoadMoreConversations,
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
@@ -275,28 +271,8 @@ impl App {
                     mailbox.select_text(&id, action);
                 }
             }
-            Message::ArchiveSelected => {
-                return self.apply_action(MailAction::MoveTo(MailFolder::Archive));
-            }
-            Message::MoveSelectedToSpam => {
-                return self.apply_action(MailAction::MoveTo(MailFolder::Spam));
-            }
-            Message::MoveSelectedToTrash => {
-                return self.apply_action(MailAction::MoveTo(MailFolder::Trash));
-            }
+            Message::ApplyAction(action) => return self.apply_action(action),
             Message::UndoMove => return self.undo_move(),
-            Message::MarkSelectedRead => {
-                return self.apply_action(MailAction::SetUnread(false));
-            }
-            Message::MarkSelectedUnread => {
-                return self.apply_action(MailAction::SetUnread(true));
-            }
-            Message::StarSelected => {
-                return self.apply_action(MailAction::SetStarred(true));
-            }
-            Message::UnstarSelected => {
-                return self.apply_action(MailAction::SetStarred(false));
-            }
             Message::RefreshMailbox => return self.refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),
             Message::ConversationsLoaded(request, result) => {
@@ -1550,8 +1526,8 @@ mod tests {
             Some(5)
         );
 
-        let _ = app.update(Message::MarkSelectedUnread);
-        let _ = app.update(Message::MarkSelectedUnread);
+        let _ = app.update(Message::ApplyAction(MailAction::SetUnread(true)));
+        let _ = app.update(Message::ApplyAction(MailAction::SetUnread(true)));
         assert_eq!(app.mailbox().unwrap().search_query(), "design review");
         assert_eq!(app.mailbox().unwrap().visible_conversations().count(), 1);
         assert!(app.mailbox().unwrap().conversations()[0].unread);
@@ -1564,9 +1540,9 @@ mod tests {
             Some(6)
         );
 
-        let _ = app.update(Message::MarkSelectedRead);
-        let _ = app.update(Message::MarkSelectedRead);
-        let _ = app.update(Message::StarSelected);
+        let _ = app.update(Message::ApplyAction(MailAction::SetUnread(false)));
+        let _ = app.update(Message::ApplyAction(MailAction::SetUnread(false)));
+        let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
         assert_eq!(app.mailbox().unwrap().reader().unwrap().detail(), &detail);
         assert!(!app.mailbox().unwrap().conversations()[0].unread);
         assert_eq!(
@@ -1584,8 +1560,8 @@ mod tests {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SelectConversation("demo-1".into()));
         deliver_selected_demo_detail(&mut app);
-        let _ = app.update(Message::StarSelected);
-        let _ = app.update(Message::StarSelected);
+        let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
+        let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
         assert!(app.mailbox().unwrap().conversations()[1].starred);
 
         let _ = app.update(Message::SelectFolder(MailFolder::Starred));
@@ -1600,7 +1576,7 @@ mod tests {
 
         let _ = app.update(Message::SelectConversation("demo-1".into()));
         deliver_selected_demo_detail(&mut app);
-        let _ = app.update(Message::UnstarSelected);
+        let _ = app.update(Message::ApplyAction(MailAction::SetStarred(false)));
         let mailbox = app.mailbox().unwrap();
         assert!(
             mailbox
@@ -1623,7 +1599,7 @@ mod tests {
         let _ = app.update(Message::SearchChanged("offsite".into()));
         let _ = app.update(Message::SelectConversation("demo-2".into()));
 
-        let _ = app.update(Message::UnstarSelected);
+        let _ = app.update(Message::ApplyAction(MailAction::SetStarred(false)));
 
         let mailbox = app.mailbox().unwrap();
         assert_eq!(mailbox.search_query(), "offsite");
@@ -1637,7 +1613,9 @@ mod tests {
         let _ = app.update(Message::SelectConversation("demo-0".into()));
         deliver_selected_demo_detail(&mut app);
 
-        let _ = app.update(Message::ArchiveSelected);
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(
+            MailFolder::Archive,
+        )));
 
         let mailbox = app.mailbox().unwrap();
         assert!(
@@ -1665,7 +1643,9 @@ mod tests {
         let _ = app.update(Message::SelectConversation("demo-0".into()));
         let stale = pending_reader_request(&app);
 
-        let task = app.update(Message::ArchiveSelected);
+        let task = app.update(Message::ApplyAction(MailAction::MoveTo(
+            MailFolder::Archive,
+        )));
         let current = pending_reader_request(&app);
         let stale_detail = demo_service(&app).conversation_detail("demo-0", NOW);
         let _ = app.update(Message::ConversationLoaded(stale, stale_detail));
@@ -1686,7 +1666,9 @@ mod tests {
         let _ = app.update(Message::SelectConversation("demo-3".into()));
         deliver_selected_demo_detail(&mut app);
 
-        let _ = app.update(Message::ArchiveSelected);
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(
+            MailFolder::Archive,
+        )));
         let has_row = |app: &App| {
             app.mailbox()
                 .unwrap()
@@ -1706,8 +1688,14 @@ mod tests {
     #[test]
     fn demo_trash_and_spam_moves_update_folders() {
         for (message, folder) in [
-            (Message::MoveSelectedToTrash, MailFolder::Trash),
-            (Message::MoveSelectedToSpam, MailFolder::Spam),
+            (
+                Message::ApplyAction(MailAction::MoveTo(MailFolder::Trash)),
+                MailFolder::Trash,
+            ),
+            (
+                Message::ApplyAction(MailAction::MoveTo(MailFolder::Spam)),
+                MailFolder::Spam,
+            ),
         ] {
             let mut app = loaded_demo_app();
             let _ = app.update(Message::SelectConversation("demo-3".into()));
@@ -1736,9 +1724,9 @@ mod tests {
     #[test]
     fn inbox_search_reflects_folder_moves_immediately() {
         for message in [
-            Message::ArchiveSelected,
-            Message::MoveSelectedToTrash,
-            Message::MoveSelectedToSpam,
+            Message::ApplyAction(MailAction::MoveTo(MailFolder::Archive)),
+            Message::ApplyAction(MailAction::MoveTo(MailFolder::Trash)),
+            Message::ApplyAction(MailAction::MoveTo(MailFolder::Spam)),
         ] {
             let mut app = loaded_demo_app();
             let _ = app.update(Message::SearchChanged("blue notebook".into()));
@@ -1759,12 +1747,14 @@ mod tests {
     fn moving_only_conversation_closes_reader_cleanly() {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SelectConversation("demo-3".into()));
-        let _ = app.update(Message::MoveSelectedToTrash);
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(MailFolder::Trash)));
         let _ = app.update(Message::SelectFolder(MailFolder::Trash));
         deliver_latest_demo_page(&mut app, 0);
         let _ = app.update(Message::SelectConversation("demo-3".into()));
 
-        let _ = app.update(Message::ArchiveSelected);
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(
+            MailFolder::Archive,
+        )));
 
         let mailbox = app.mailbox().unwrap();
         assert!(mailbox.conversations().is_empty());
