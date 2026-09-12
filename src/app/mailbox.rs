@@ -273,16 +273,7 @@ impl Mailbox {
             .kind;
         self.action_error = None;
 
-        let request = ReaderRequest {
-            id: request,
-            conversation_id,
-            kind,
-        };
-        self.set_reader(ReaderState::Loading {
-            conversation_id: request.conversation_id.clone(),
-            request: request.id,
-        });
-        Some(request)
+        Some(self.open_conversation(conversation_id, kind, request))
     }
 
     pub fn retry_conversation(&mut self, request: RequestId) -> Option<ReaderRequest> {
@@ -292,21 +283,38 @@ impl Mailbox {
         else {
             return None;
         };
+        let conversation_id = conversation_id.clone();
+        // A retry reaches the row even when a search is hiding it, which is
+        // why it looks through every loaded row rather than the visible ones.
         let kind = self
             .conversations
             .iter()
-            .find(|conversation| &conversation.id == conversation_id)?
+            .find(|conversation| conversation.id == conversation_id)?
             .kind;
+
+        Some(self.open_conversation(conversation_id, kind, request))
+    }
+
+    /// Puts the reader on a conversation and names the request that will fill
+    /// it. Both opening and retrying land here, so the loading state is set in
+    /// one place.
+    fn open_conversation(
+        &mut self,
+        conversation_id: String,
+        kind: SummaryKind,
+        request: RequestId,
+    ) -> ReaderRequest {
         let request = ReaderRequest {
             id: request,
-            conversation_id: conversation_id.clone(),
+            conversation_id,
             kind,
         };
         self.set_reader(ReaderState::Loading {
             conversation_id: request.conversation_id.clone(),
             request: request.id,
         });
-        Some(request)
+
+        request
     }
 
     /// Applies only the response for the current reader request. A mismatched
