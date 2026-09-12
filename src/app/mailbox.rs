@@ -1027,8 +1027,10 @@ impl Mailbox {
 /// a time stays right after the row that preceded it, since only the server
 /// knows where it belongs.
 fn sort_newest_first(rows: &mut Vec<ConversationSummary>) {
-    // Rows before the first dated one borrow its time, so a leading row
-    // without one never outranks mail that does have a date.
+    // A row with no time of its own takes the time of the last dated row
+    // above it, or of the first dated row when it leads the list. Sorting is
+    // stable, so it keeps its place beside the row it borrowed from instead
+    // of floating to the top of the mailbox.
     let mut previous = rows.iter().find_map(|row| row.time).unwrap_or(i64::MAX);
     let mut keyed: Vec<_> = rows
         .drain(..)
@@ -1847,7 +1849,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_without_a_date_never_outranks_dated_mail() {
+    fn a_row_without_a_date_keeps_its_place_among_dated_mail() {
         let mut rows = vec![
             summary("undated"),
             dated("older", 100),
