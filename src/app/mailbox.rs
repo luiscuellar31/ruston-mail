@@ -280,6 +280,12 @@ impl Mailbox {
         }
     }
 
+    pub fn toggle_quote(&mut self, message_id: &str, index: usize) {
+        if let ReaderState::Loaded(reader) = &mut self.reader {
+            reader.toggle_quote(message_id, index);
+        }
+    }
+
     /// Starts marking the opened row read once its content is shown. Only an
     /// unread row with no read already in flight qualifies.
     pub fn start_mark_read(&mut self, request: RequestId) -> Option<ActionRequest> {

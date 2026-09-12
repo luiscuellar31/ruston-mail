@@ -32,12 +32,15 @@ impl ReaderState {
     }
 }
 
-/// Reader state for the selected conversation. Which messages are expanded is
-/// view state, so it lives here rather than in the mail models.
+/// Reader state for the selected conversation. Which messages and quoted
+/// passages are expanded is view state, so it lives here rather than in the
+/// mail models.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationReader {
     detail: ConversationDetail,
     expanded: HashSet<String>,
+    /// Unfolded quoted passages, as (message id, position in that message).
+    expanded_quotes: HashSet<(String, usize)>,
 }
 
 impl ConversationReader {
@@ -51,7 +54,11 @@ impl ConversationReader {
             .into_iter()
             .collect();
 
-        Self { detail, expanded }
+        Self {
+            detail,
+            expanded,
+            expanded_quotes: HashSet::new(),
+        }
     }
 
     pub fn conversation_id(&self) -> &str {
@@ -67,14 +74,34 @@ impl ConversationReader {
     }
 
     pub fn toggle(&mut self, message_id: &str) {
-        let known = self
-            .detail
-            .messages
-            .iter()
-            .any(|message| message.id == message_id);
-        if known && !self.expanded.remove(message_id) {
+        if self.knows(message_id) && !self.expanded.remove(message_id) {
             self.expanded.insert(message_id.to_owned());
         }
+    }
+
+    /// Whether the quoted passage at `index` of `message_id` is unfolded.
+    /// Quotes start folded: a reply usually repeats the whole thread below it.
+    pub fn is_quote_expanded(&self, message_id: &str, index: usize) -> bool {
+        self.expanded_quotes
+            .iter()
+            .any(|(id, position)| id == message_id && *position == index)
+    }
+
+    pub fn toggle_quote(&mut self, message_id: &str, index: usize) {
+        if !self.knows(message_id) {
+            return;
+        }
+        let quote = (message_id.to_owned(), index);
+        if !self.expanded_quotes.remove(&quote) {
+            self.expanded_quotes.insert(quote);
+        }
+    }
+
+    fn knows(&self, message_id: &str) -> bool {
+        self.detail
+            .messages
+            .iter()
+            .any(|message| message.id == message_id)
     }
 }
 
@@ -136,12 +163,31 @@ mod tests {
     }
 
     #[test]
+    fn quotes_start_folded_and_toggle_one_at_a_time() {
+        let mut reader = reader(vec![message("a", 10), message("b", 20)]);
+
+        assert!(!reader.is_quote_expanded("a", 0));
+
+        reader.toggle_quote("a", 0);
+        assert!(reader.is_quote_expanded("a", 0));
+        // Neither the next quote of the same message nor the same position of
+        // another message follows along.
+        assert!(!reader.is_quote_expanded("a", 1));
+        assert!(!reader.is_quote_expanded("b", 0));
+
+        reader.toggle_quote("a", 0);
+        assert!(!reader.is_quote_expanded("a", 0));
+    }
+
+    #[test]
     fn unknown_messages_cannot_be_expanded() {
         let mut reader = reader(vec![message("a", 10)]);
 
         reader.toggle("missing");
+        reader.toggle_quote("missing", 0);
 
         assert!(!reader.is_expanded("missing"));
+        assert!(!reader.is_quote_expanded("missing", 0));
     }
 
     #[test]

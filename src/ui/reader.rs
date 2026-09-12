@@ -1,6 +1,6 @@
 use chrono::{Local, TimeZone};
 use iced::font::{self, Weight};
-use iced::widget::text::{Span, Wrapping};
+use iced::widget::text::{LineHeight, Span, Wrapping};
 use iced::widget::{
     Column, button, column, container, rich_text, row, rule, scrollable, span, text,
 };
@@ -25,6 +25,11 @@ const LIST_INDENT: f32 = 18.0;
 const QUOTE_INDENT: f32 = 12.0;
 /// Deeper quotes share this level's box so indentation stays readable.
 const MAX_QUOTE_DEPTH: u8 = 4;
+/// Bodies are set larger and looser than the interface around them, and stop
+/// short of the pane's full width: long lines are tiring to read.
+const BODY_SIZE: f32 = 15.0;
+const BODY_LINE_HEIGHT: LineHeight = LineHeight::Relative(1.45);
+const READING_WIDTH: f32 = 680.0;
 
 pub(super) fn view<'a>(
     mailbox: &'a Mailbox,
@@ -131,7 +136,7 @@ fn conversation<'a>(
         messages = messages.push(text("This conversation has no messages.").style(text::secondary));
     }
     for message in &detail.messages {
-        messages = messages.push(message_card(message, reader.is_expanded(&message.id)));
+        messages = messages.push(message_card(message, reader));
     }
 
     scrollable(
@@ -178,7 +183,8 @@ fn action_button(label: &str, message: Message, enabled: bool) -> Element<'_, Me
         .into()
 }
 
-fn message_card(message: &MailMessage, expanded: bool) -> Element<'_, Message> {
+fn message_card<'a>(message: &'a MailMessage, reader: &ConversationReader) -> Element<'a, Message> {
+    let expanded = reader.is_expanded(&message.id);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
     let time = message
         .time
@@ -224,8 +230,9 @@ fn message_card(message: &MailMessage, expanded: bool) -> Element<'_, Message> {
     let mut card = column![header];
     if expanded {
         card = card.push(rule::horizontal(1)).push(
-            container(message_body(&message.body))
+            container(message_body(message, reader))
                 .width(Fill)
+                .max_width(READING_WIDTH)
                 .padding(MESSAGE_SPACING),
         );
     }
@@ -236,23 +243,79 @@ fn message_card(message: &MailMessage, expanded: bool) -> Element<'_, Message> {
         .into()
 }
 
-fn message_body(body: &MessageBody) -> Element<'_, Message> {
-    match body {
+fn message_body<'a>(message: &'a MailMessage, reader: &ConversationReader) -> Element<'a, Message> {
+    match &message.body {
         MessageBody::PlainText(content) => text(content.as_str())
+            .size(BODY_SIZE)
+            .line_height(BODY_LINE_HEIGHT)
             .wrapping(Wrapping::WordOrGlyph)
             .into(),
-        MessageBody::Rich(rich) => rich_body(rich),
+        MessageBody::Rich(rich) => rich_body(rich, &message.id, reader),
     }
 }
 
-fn rich_body(rich: &RichBody) -> Element<'_, Message> {
+/// Lays out a body, folding each run of quoted blocks behind a toggle.
+fn rich_body<'a>(
+    rich: &'a RichBody,
+    message_id: &'a str,
+    reader: &ConversationReader,
+) -> Element<'a, Message> {
     if rich.blocks.is_empty() {
         return text("This message has no text.")
             .style(text::secondary)
             .into();
     }
+    // A message that is nothing but quoted text, such as a forward, has no
+    // text of its own to keep in view, so folding it would hide everything.
+    if rich.blocks.iter().all(|block| block.quote_depth > 0) {
+        return blocks(&rich.blocks, 0);
+    }
 
-    blocks(&rich.blocks, 0)
+    let mut column = Column::new().spacing(BLOCK_SPACING).width(Fill);
+    let mut rest = &rich.blocks[..];
+    let mut quote = 0;
+
+    while let Some(first) = rest.first() {
+        if first.quote_depth > 0 {
+            let run = rest
+                .iter()
+                .take_while(|block| block.quote_depth > 0)
+                .count();
+            let expanded = reader.is_quote_expanded(message_id, quote);
+            column = column.push(quote_fold(&rest[..run], message_id, quote, expanded));
+            quote += 1;
+            rest = &rest[run..];
+        } else {
+            column = column.push(block(first));
+            rest = &rest[1..];
+        }
+    }
+
+    column.into()
+}
+
+fn quote_fold<'a>(
+    quoted: &'a [RichBlock],
+    message_id: &str,
+    index: usize,
+    expanded: bool,
+) -> Element<'a, Message> {
+    let label = if expanded {
+        "Hide quoted text"
+    } else {
+        "Show quoted text"
+    };
+    let toggle = button(text(label).size(DETAIL_SIZE))
+        .padding([2, 8])
+        .style(button::secondary)
+        .on_press(Message::ToggleQuoteExpanded(message_id.to_owned(), index));
+
+    let mut fold = column![toggle].spacing(BLOCK_SPACING);
+    if expanded {
+        fold = fold.push(quote_box(blocks(quoted, 1)));
+    }
+
+    fold.into()
 }
 
 /// Lays out blocks at one quote depth; each run of deeper blocks shares one
@@ -298,7 +361,9 @@ fn block(block: &RichBlock) -> Element<'_, Message> {
             depth,
             spans,
         } => row![
-            text(marker.as_str()).width(LIST_MARKER_WIDTH),
+            text(marker.as_str())
+                .size(BODY_SIZE)
+                .width(LIST_MARKER_WIDTH),
             rich_line(spans, None),
         ]
         .spacing(4)
@@ -309,6 +374,7 @@ fn block(block: &RichBlock) -> Element<'_, Message> {
         .into(),
         BlockKind::Preformatted(content) => container(
             text(content.as_str())
+                .size(BODY_SIZE)
                 .font(Font::MONOSPACE)
                 .wrapping(Wrapping::WordOrGlyph),
         )
@@ -332,6 +398,8 @@ fn rich_line(spans: &[RichSpan], heading: Option<u8>) -> Element<'_, Message> {
             .map(|piece| rich_span(piece, heading.is_some()))
             .collect::<Vec<_>>(),
     )
+    .size(BODY_SIZE)
+    .line_height(BODY_LINE_HEIGHT)
     .wrapping(Wrapping::WordOrGlyph)
     .width(Fill)
     .on_link_click(Message::LinkClicked);

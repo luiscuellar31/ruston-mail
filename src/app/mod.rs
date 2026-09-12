@@ -66,6 +66,8 @@ pub enum Message {
     RetryConversation,
     SearchChanged(String),
     ToggleMessageExpanded(String),
+    /// Folds or unfolds one quoted passage of a message.
+    ToggleQuoteExpanded(String, usize),
     ArchiveSelected,
     MoveSelectedToSpam,
     MoveSelectedToTrash,
@@ -203,6 +205,11 @@ impl App {
             Message::ToggleMessageExpanded(id) => {
                 if let Some(mailbox) = self.active_mailbox() {
                     mailbox.toggle_message(&id);
+                }
+            }
+            Message::ToggleQuoteExpanded(id, index) => {
+                if let Some(mailbox) = self.active_mailbox() {
+                    mailbox.toggle_quote(&id, index);
                 }
             }
             Message::ArchiveSelected => return self.apply_action(MailAction::Archive),
