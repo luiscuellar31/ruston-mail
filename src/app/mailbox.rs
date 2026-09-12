@@ -1049,14 +1049,35 @@ fn matches_search(conversation: &ConversationSummary, query: &str) -> bool {
             .into_iter()
             .chain(conversation.correspondents.as_deref())
             .chain(conversation.preview.as_deref())
-            .any(|value| value.to_lowercase().contains(query))
+            .any(|value| contains_ignoring_case(value, query))
         || conversation.participants.iter().any(|participant| {
             participant
                 .name
                 .as_deref()
-                .is_some_and(|name| name.to_lowercase().contains(query))
-                || participant.address.to_lowercase().contains(query)
+                .is_some_and(|name| contains_ignoring_case(name, query))
+                || contains_ignoring_case(&participant.address, query)
         })
+}
+
+/// Whether `haystack` holds `needle`, which is already lowercased.
+///
+/// Every visible row is asked this on every redraw, so the ASCII that most
+/// mail is written in answers without building a lowercased copy of each
+/// field. Anything else falls back to real lowercasing, which is the only
+/// way to match text where case is not a matter of one byte.
+fn contains_ignoring_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() {
+        // Every character is one byte here, so bytes and characters line up.
+        return haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()));
+    }
+
+    haystack.to_lowercase().contains(needle)
 }
 
 #[cfg(test)]
@@ -1508,6 +1529,26 @@ mod tests {
         );
         assert!(!mailbox.has_row("a"));
         assert!(mailbox.conversations().is_empty());
+    }
+
+    #[test]
+    fn matching_ignores_case_with_or_without_ascii() {
+        // The query arrives lowercased, as the mailbox trims and lowers it.
+        assert!(contains_ignoring_case("Quarterly Roadmap", "roadmap"));
+        assert!(contains_ignoring_case("ALICE@EXAMPLE.COM", "alice@"));
+        assert!(!contains_ignoring_case("roadmap", "budget"));
+        // A needle longer than what it is looked for in matches nothing.
+        assert!(!contains_ignoring_case("hi", "hiring"));
+        // An empty query narrows nothing, so everything matches it.
+        assert!(contains_ignoring_case("", ""));
+
+        // Text where case is more than one byte takes the slower path and
+        // must still match.
+        assert!(contains_ignoring_case("Ángel Ruíz", "ángel"));
+        assert!(contains_ignoring_case("ÉCOLE", "école"));
+        assert!(!contains_ignoring_case("Ángel", "ünsal"));
+        // And an ASCII line cannot hold a word that is not ASCII.
+        assert!(!contains_ignoring_case("Angel", "ángel"));
     }
 
     #[test]
