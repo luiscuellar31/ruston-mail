@@ -808,6 +808,19 @@ impl Mailbox {
             .map(|row| row.id.clone())
     }
 
+    /// Takes up the account's current name for the open place. Proton knows
+    /// it by its id, so the listing is the same one either way: nothing is
+    /// reloaded, and what is open stays open.
+    pub fn rename_folder(&mut self, folder: Folder) {
+        let same = matches!(
+            (self.folder.custom_id(), folder.custom_id()),
+            (Some(open), Some(current)) if open == current
+        );
+        if same {
+            self.folder = folder;
+        }
+    }
+
     pub fn select_folder(&mut self, folder: Folder, request: RequestId) -> Option<PageRequest> {
         if folder == self.folder {
             return None;
@@ -1495,6 +1508,31 @@ mod tests {
         );
         assert!(!mailbox.has_row("a"));
         assert!(mailbox.conversations().is_empty());
+    }
+
+    #[test]
+    fn taking_up_a_new_name_keeps_the_list_and_the_reader() {
+        let mut mailbox = loaded_inbox(&["a"], 1);
+        let request = mailbox
+            .select_folder(Folder::custom("kZ9", "Invoices"), 2)
+            .unwrap();
+        mailbox.finish_page(request.id, page(&["i1", "i2"], 2));
+        load_detail(&mut mailbox, "i1", detail("i1", &["m1"]), 3);
+
+        mailbox.rename_folder(Folder::custom("kZ9", "Facturas"));
+
+        // Proton knows the place by its id, so the same mail is listed under
+        // the new name and nothing had to be fetched again.
+        assert_eq!(mailbox.folder().name(), "Facturas");
+        assert_eq!(mailbox.conversations().len(), 2);
+        assert_eq!(mailbox.selected_conversation(), Some("i1"));
+
+        // Another place is not this one under a new name.
+        mailbox.rename_folder(Folder::custom("wN2", "Recibos"));
+        assert_eq!(mailbox.folder().name(), "Facturas");
+        // Nor is one of Proton's own, which carries no id of its own.
+        mailbox.rename_folder(sys(MailFolder::Archive));
+        assert_eq!(mailbox.folder().name(), "Facturas");
     }
 
     #[test]

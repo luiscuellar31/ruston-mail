@@ -1116,30 +1116,44 @@ impl App {
         let Some(id) = open.custom_id() else {
             return Task::none();
         };
-        // Gone from the account means gone from the sidebar, and the Inbox is
-        // the one place that is always there to fall back to.
-        let folder = self
+        let current = self
             .folders
             .iter()
             .find(|place| place.custom_id() == Some(id))
-            .cloned()
-            .unwrap_or(Folder::INBOX);
-        if folder == open {
+            .cloned();
+        // Gone from the account means gone from the sidebar, and the Inbox is
+        // the one place that is always there to fall back to.
+        let Some(current) = current else {
+            return self.select_folder(Folder::INBOX);
+        };
+        if current == open {
             return Task::none();
         }
 
-        self.select_folder(folder)
+        // The same place under a new name holds the same mail, so taking the
+        // name up is all there is to do: nothing is reloaded and whatever is
+        // being read stays open.
+        if let Some(mailbox) = self.active_mailbox() {
+            mailbox.rename_folder(current.clone());
+        }
+        self.remember_folder(&current);
+
+        Task::none()
+    }
+
+    /// Keeps the folder to open on the next run. Demo mail is fictional, so
+    /// where it is read is not worth remembering, let alone worth overwriting
+    /// the real answer with.
+    fn remember_folder(&mut self, folder: &Folder) {
+        if !self.is_demo() {
+            self.remember(|settings| settings.folder = folder.clone());
+        }
     }
 
     fn select_folder(&mut self, folder: Folder) -> Task<Message> {
         self.pending_link = None;
         self.saved_attachment = None;
-        // The folder someone left off in is the one they want on the next
-        // run. Demo mail is fictional, so where it is read is not worth
-        // remembering, let alone worth overwriting the real answer with.
-        if !self.is_demo() {
-            self.remember(|settings| settings.folder = folder.clone());
-        }
+        self.remember_folder(&folder);
         let request = self.next_request();
         let page = self
             .active_mailbox()
