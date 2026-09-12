@@ -1,5 +1,7 @@
 use iced::widget::Id;
-use iced::widget::pane_grid::{self, Axis, Configuration};
+use iced::widget::pane_grid::{self, Axis, Configuration, Node};
+
+use crate::settings::Panels;
 
 /// Scroll targets the app commands after a selection changes. They are named
 /// here, rather than in the views, so `update` can reach them without the app
@@ -27,24 +29,46 @@ pub const DIVIDER_GRAB: f32 = 8.0;
 /// when laying out, so stored split ratios never produce a smaller panel.
 pub const MIN_PANEL_WIDTH: f32 = 200.0;
 
-/// Default split positions, matching the previous fixed layout at the default
-/// window width: a 220 px sidebar out of 1100 px, with the rest split 3:4
-/// between the conversation list and the reader.
-const SIDEBAR_RATIO: f32 = 0.2;
-const CONVERSATIONS_RATIO: f32 = 3.0 / 7.0;
-
-pub fn default_panels() -> pane_grid::State<Panel> {
+/// Builds the three panes at the given split positions: where the sidebar
+/// ends, and where the conversation list ends within the rest.
+pub fn panels(ratios: Panels) -> pane_grid::State<Panel> {
     pane_grid::State::with_configuration(Configuration::Split {
         axis: Axis::Vertical,
-        ratio: SIDEBAR_RATIO,
+        ratio: ratios.sidebar,
         a: Box::new(Configuration::Pane(Panel::Sidebar)),
         b: Box::new(Configuration::Split {
             axis: Axis::Vertical,
-            ratio: CONVERSATIONS_RATIO,
+            ratio: ratios.conversations,
             a: Box::new(Configuration::Pane(Panel::Conversations)),
             b: Box::new(Configuration::Pane(Panel::Reader)),
         }),
     })
+}
+
+#[cfg(test)]
+pub fn default_panels() -> pane_grid::State<Panel> {
+    panels(Panels::default())
+}
+
+/// Reads the split positions back out of the layout, so they can be kept for
+/// the next run. A layout that is not the expected pair of splits, which no
+/// code path builds, reports the defaults rather than guessing.
+pub fn ratios(panels: &pane_grid::State<Panel>) -> Panels {
+    let Node::Split { ratio, b, .. } = panels.layout() else {
+        return Panels::default();
+    };
+    let Node::Split {
+        ratio: conversations,
+        ..
+    } = b.as_ref()
+    else {
+        return Panels::default();
+    };
+
+    Panels {
+        sidebar: *ratio,
+        conversations: *conversations,
+    }
 }
 
 #[cfg(test)]

@@ -7,7 +7,12 @@ use std::sync::Arc;
 use iced::keyboard::{self, Key, Modifiers};
 use iced::widget::operation::{self, RelativeOffset};
 use iced::widget::{pane_grid, text_editor};
-use iced::{Subscription, Task};
+use iced::{Size, Subscription, Task, window};
+
+use crate::settings::{self, Settings};
+
+/// How far the window must change before its new size is worth storing.
+const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, ConversationDetail, ConversationPage, LoginRequest, MailAction, MailBackend,
@@ -92,6 +97,14 @@ pub enum Message {
     PanelResized(pane_grid::ResizeEvent),
     /// A key the focused widget did not take.
     Keyboard(keyboard::Event),
+    /// The window changed size, which is worth remembering for next time.
+    WindowResized(Size),
+    /// Opens or closes the settings page.
+    ShowSettings(bool),
+    /// Marks opened mail as read, or leaves it unread.
+    SetMarkReadOnOpen(bool),
+    /// Asks where a link goes before opening it, or opens it straight away.
+    SetConfirmLinks(bool),
 }
 
 /// What a key press means to the mailbox.
@@ -169,13 +182,17 @@ pub struct App {
     /// Mailbox panel sizes. Pure layout state: kept for the life of the app
     /// and never touched by mailbox or authentication changes.
     panels: pane_grid::State<Panel>,
+    /// What the app remembers between runs.
+    settings: Settings,
+    /// Whether the settings page is covering the mailbox.
+    showing_settings: bool,
 }
 
 impl App {
     /// In demo mode the app opens a local fictional mailbox and never starts
     /// the Proton session resume.
-    pub fn boot(demo: bool) -> (Self, Task<Message>) {
-        let mut app = Self::new();
+    pub fn boot(demo: bool, settings: Settings) -> (Self, Task<Message>) {
+        let mut app = Self::new(settings);
         let task = if demo {
             app.open_mailbox(MailBackend::demo(), None)
         } else {
@@ -185,7 +202,7 @@ impl App {
         (app, task)
     }
 
-    fn new() -> Self {
+    fn new(settings: Settings) -> Self {
         Self {
             auth_state: AuthState::CheckingSession,
             login_form: LoginForm::default(),
@@ -195,7 +212,27 @@ impl App {
             backend: None,
             mailbox: None,
             last_request: 0,
-            panels: layout::default_panels(),
+            panels: layout::panels(settings.panels),
+            settings,
+            showing_settings: false,
+        }
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    pub fn showing_settings(&self) -> bool {
+        self.showing_settings
+    }
+
+    /// Keeps a changed setting, and writes it out. Saving is best effort, so
+    /// a setting that cannot be stored still applies for this run.
+    fn remember(&mut self, change: impl FnOnce(&mut Settings)) {
+        let before = self.settings.clone();
+        change(&mut self.settings);
+        if self.settings != before {
+            self.settings.save();
         }
     }
 
@@ -303,7 +340,15 @@ impl App {
             Message::MarkReadFinished(request, result) => {
                 return self.finish_mark_read(request, result);
             }
-            Message::LinkClicked(target) => self.pending_link = PendingLink::parse(&target),
+            Message::LinkClicked(target) => {
+                let Some(link) = PendingLink::parse(&target) else {
+                    return Task::none();
+                };
+                if !self.settings.confirm_links {
+                    return open_in_browser(link.url);
+                }
+                self.pending_link = Some(link);
+            }
             Message::OpenLink => {
                 if let Some(link) = self.pending_link.take() {
                     return open_in_browser(link.url);
@@ -315,8 +360,30 @@ impl App {
                 }
             }
             Message::DismissLink => self.pending_link = None,
-            Message::PanelResized(event) => self.panels.resize(event.split, event.ratio),
+            Message::PanelResized(event) => {
+                self.panels.resize(event.split, event.ratio);
+                let panels = layout::ratios(&self.panels);
+                self.remember(|settings| settings.panels = panels);
+            }
             Message::Keyboard(event) => return self.handle_key(event),
+            // A drag reports many sizes; only a real change is worth a write.
+            Message::WindowResized(size) => {
+                let moved = (size.width - self.settings.window.width).abs() >= RESIZE_STEP
+                    || (size.height - self.settings.window.height).abs() >= RESIZE_STEP;
+                if moved {
+                    self.remember(|settings| {
+                        settings.window = settings::Window {
+                            width: size.width,
+                            height: size.height,
+                        };
+                    });
+                }
+            }
+            Message::ShowSettings(showing) => self.showing_settings = showing,
+            Message::SetMarkReadOnOpen(on) => {
+                self.remember(|settings| settings.mark_read_on_open = on);
+            }
+            Message::SetConfirmLinks(on) => self.remember(|settings| settings.confirm_links = on),
         }
 
         Task::none()
@@ -326,9 +393,14 @@ impl App {
     /// just the keys no focused widget took, so typing in the search field
     /// never reaches the list.
     pub fn subscription(&self) -> Subscription<Message> {
+        // The window is worth following whatever the app is showing.
+        let resized = window::resize_events().map(|(_, size)| Message::WindowResized(size));
+
         match self.auth_state {
-            AuthState::Authenticated { .. } => keyboard::listen().map(Message::Keyboard),
-            _ => Subscription::none(),
+            AuthState::Authenticated { .. } => {
+                Subscription::batch([keyboard::listen().map(Message::Keyboard), resized])
+            }
+            _ => resized,
         }
     }
 
@@ -365,6 +437,10 @@ impl App {
             }
             // One layer at a time, starting with the most recent.
             Shortcut::Dismiss => {
+                if self.showing_settings {
+                    self.showing_settings = false;
+                    return Task::none();
+                }
                 if self.pending_link.take().is_some() {
                     return Task::none();
                 }
@@ -797,6 +873,9 @@ impl App {
     /// Once an unread Proton row's content is shown, marks it read on Proton.
     /// Demo rows are already marked read when they are selected.
     fn mark_opened_read(&mut self) -> Task<Message> {
+        if !self.settings.mark_read_on_open {
+            return Task::none();
+        }
         let Some(MailBackend::Proton(service)) = self.backend.clone() else {
             return Task::none();
         };
@@ -891,6 +970,8 @@ impl App {
 
     fn select_folder(&mut self, folder: MailFolder) -> Task<Message> {
         self.pending_link = None;
+        // The folder someone left off in is the one they want on the next run.
+        self.remember(|settings| settings.folder = folder);
         let request = self.next_request();
         let page = self
             .active_mailbox()
@@ -1071,7 +1152,7 @@ mod tests {
     const NOW: i64 = 1_789_000_000;
 
     fn authenticated_app() -> App {
-        let mut app = App::new();
+        let mut app = App::new(Settings::default());
         app.auth_state = AuthState::Authenticated { email: None };
         app.mailbox = Some(Mailbox::open(50, 1, 2).0);
         app.last_request = 2;
@@ -1115,6 +1196,69 @@ mod tests {
         let request = pending_reader_request(app);
         let result = demo_service(app).conversation_detail(&request.conversation_id, NOW);
         let _ = app.update(Message::ConversationLoaded(request, result));
+    }
+
+    #[test]
+    fn settings_changes_reach_the_app() {
+        let mut app = loaded_demo_app();
+
+        // Both start the way the app behaved before it could be configured.
+        assert!(app.settings().mark_read_on_open);
+        assert!(app.settings().confirm_links);
+
+        let _ = app.update(Message::SetMarkReadOnOpen(false));
+        let _ = app.update(Message::SetConfirmLinks(false));
+
+        assert!(!app.settings().mark_read_on_open);
+        assert!(!app.settings().confirm_links);
+    }
+
+    #[test]
+    fn a_link_skips_the_prompt_only_when_confirmation_is_off() {
+        let mut app = loaded_demo_app();
+
+        let _ = app.update(Message::LinkClicked("https://example.com/a".into()));
+        assert!(
+            app.pending_link().is_some(),
+            "confirmation is on by default"
+        );
+        let _ = app.update(Message::DismissLink);
+
+        let _ = app.update(Message::SetConfirmLinks(false));
+        let _ = app.update(Message::LinkClicked("https://example.com/a".into()));
+        assert!(
+            app.pending_link().is_none(),
+            "the link opens without asking"
+        );
+
+        // Refusing what is not a web or mail link does not depend on the
+        // setting: it is a rule, not a preference.
+        let _ = app.update(Message::LinkClicked("javascript:alert(1)".into()));
+        assert!(app.pending_link().is_none());
+    }
+
+    #[test]
+    fn the_settings_page_covers_the_mailbox_and_steps_back() {
+        let mut app = loaded_demo_app();
+        assert!(!app.showing_settings());
+
+        let _ = app.update(Message::ShowSettings(true));
+        assert!(app.showing_settings());
+
+        // Escape backs out of the page before anything underneath it.
+        let _ = app.update(Message::Keyboard(keyboard::Event::KeyPressed {
+            key: Key::Named(keyboard::key::Named::Escape),
+            modified_key: Key::Named(keyboard::key::Named::Escape),
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers: Modifiers::default(),
+            text: None,
+            repeat: false,
+        }));
+
+        assert!(!app.showing_settings());
     }
 
     #[test]
@@ -1275,7 +1419,7 @@ mod tests {
     }
 
     fn loaded_demo_app() -> App {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
         let counts = demo_service(&app).counts();
         let _ = app.update(Message::CountsLoaded(2, Ok(counts)));
@@ -1284,14 +1428,14 @@ mod tests {
 
     #[test]
     fn initial_state_checks_saved_session() {
-        let app = App::new();
+        let app = App::new(Settings::default());
 
         assert_eq!(app.auth_state, AuthState::CheckingSession);
     }
 
     #[test]
     fn normal_startup_checks_the_proton_session() {
-        let (app, _) = App::boot(false);
+        let (app, _) = App::boot(false, Settings::default());
 
         assert_eq!(app.auth_state, AuthState::CheckingSession);
         assert!(!app.is_demo());
@@ -1301,7 +1445,7 @@ mod tests {
 
     #[test]
     fn demo_startup_opens_mailbox_without_session_resume() {
-        let (app, _) = App::boot(true);
+        let (app, _) = App::boot(true, Settings::default());
 
         assert!(app.is_demo());
         assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
@@ -1312,7 +1456,7 @@ mod tests {
 
     #[test]
     fn demo_mailbox_uses_production_pagination() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
         let counts = demo_service(&app).counts();
         let _ = app.update(Message::CountsLoaded(2, Ok(counts)));
@@ -1335,7 +1479,7 @@ mod tests {
 
     #[test]
     fn demo_empty_and_spam_folders_load() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
 
         let _ = app.update(Message::SelectFolder(MailFolder::Trash));
         deliver_latest_demo_page(&mut app, 0);
@@ -1353,7 +1497,7 @@ mod tests {
 
     #[test]
     fn demo_selection_is_local() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
 
         let _ = app.update(Message::SelectConversation("demo-3".into()));
@@ -1405,7 +1549,7 @@ mod tests {
 
     #[test]
     fn no_selection_has_no_reader() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
 
         assert_eq!(app.mailbox().unwrap().reader_state(), &ReaderState::Empty);
@@ -1435,7 +1579,7 @@ mod tests {
 
     #[test]
     fn demo_selection_opens_reader_with_newest_message_expanded() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
 
         let _ = app.update(Message::SelectConversation("demo-0".into()));
@@ -1451,7 +1595,7 @@ mod tests {
 
     #[test]
     fn toggling_messages_and_switching_conversations() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
         let _ = app.update(Message::SelectConversation("demo-0".into()));
         deliver_selected_demo_detail(&mut app);
@@ -1476,7 +1620,7 @@ mod tests {
 
     #[test]
     fn folder_switch_closes_reader() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
         let _ = app.update(Message::SelectConversation("demo-0".into()));
 
@@ -1766,7 +1910,7 @@ mod tests {
 
     #[test]
     fn resizing_panels_only_changes_layout() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
         let _ = app.update(Message::SelectConversation("demo-0".into()));
         deliver_selected_demo_detail(&mut app);
@@ -1803,7 +1947,7 @@ mod tests {
 
     #[test]
     fn exiting_demo_clears_mailbox_and_opens_login() {
-        let (mut app, _) = App::boot(true);
+        let (mut app, _) = App::boot(true, Settings::default());
         deliver_demo_page(&mut app, 1, 0);
 
         let _ = app.update(Message::Logout);
@@ -1817,7 +1961,7 @@ mod tests {
 
     #[test]
     fn absent_saved_session_opens_login() {
-        let mut app = App::new();
+        let mut app = App::new(Settings::default());
 
         let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
 
@@ -1826,7 +1970,7 @@ mod tests {
     }
 
     fn signing_in_app() -> App {
-        let mut app = App::new();
+        let mut app = App::new(Settings::default());
         app.auth_state = AuthState::SigningIn(SignInStep::Credentials);
         app.login_form.username = "username sentinel".into();
         app.login_form.password = "password sentinel".into();
@@ -1889,7 +2033,7 @@ mod tests {
 
     #[test]
     fn prompts_without_a_running_sign_in_are_cancelled() {
-        let mut app = App::new();
+        let mut app = App::new(Settings::default());
         app.auth_state = AuthState::SignedOut;
         let (reply, mut answer) = crate::mail::Reply::<String>::channel();
 
@@ -1901,7 +2045,7 @@ mod tests {
 
     #[test]
     fn terminal_sign_in_failure_clears_secrets() {
-        let mut app = App::new();
+        let mut app = App::new(Settings::default());
         app.login_form.password = "password sentinel".into();
         app.login_form.totp = "totp sentinel".into();
         app.login_form.mailbox_password = "mailbox password sentinel".into();
@@ -1918,7 +2062,7 @@ mod tests {
 
     #[test]
     fn failed_logout_restores_authenticated_shell() {
-        let mut app = App::new();
+        let mut app = App::new(Settings::default());
         app.auth_state = AuthState::SigningOut;
 
         let _ = app.update(Message::LogoutFinished(Err(AuthError::SessionUnavailable)));

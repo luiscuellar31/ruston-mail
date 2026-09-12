@@ -4907,10 +4907,13 @@ name = "ruston-mail"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "directories",
  "futures",
  "html5ever",
  "iced",
  "proton-core",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing-subscriber",
  "url",

@@ -1,5 +1,6 @@
 mod app;
 mod mail;
+mod settings;
 mod ui;
 
 use std::ffi::OsStr;

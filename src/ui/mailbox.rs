@@ -82,7 +82,12 @@ fn sidebar<'a>(
     .style(button::secondary)
     .on_press_maybe((!signing_out).then_some(Message::Logout));
 
-    let mut footer = column![detail_text(account), logout].spacing(SPACING);
+    let settings = button(text("Settings"))
+        .width(Fill)
+        .style(button::text)
+        .on_press(Message::ShowSettings(true));
+
+    let mut footer = column![detail_text(account), settings, logout].spacing(SPACING);
     if let Some(error) = app.error_message() {
         footer = footer.push(text(error).size(DETAIL_SIZE).style(text::danger));
     }

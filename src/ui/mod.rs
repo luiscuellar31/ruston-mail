@@ -2,6 +2,7 @@ mod login;
 mod mailbox;
 mod reader;
 mod selectable;
+mod settings;
 
 use iced::widget::text::IntoFragment;
 use iced::widget::{Text, column, container, text};
@@ -9,12 +10,12 @@ use iced::{Element, Fill, Font, Size, window};
 
 use crate::app::{App, AuthState, Message};
 use crate::mail::MailFolder;
+use crate::settings::Settings;
 
 /// Size of the small print: times, counts, addresses and every other line
 /// that supports the one above it.
 pub(super) const DETAIL_SIZE: f32 = 12.0;
 
-const WINDOW_SIZE: Size = Size::new(1_100.0, 700.0);
 const MIN_WINDOW_SIZE: Size = Size::new(820.0, 480.0);
 
 /// A system family with a real bold face. The toolkit's own default family is
@@ -28,12 +29,15 @@ const APP_FONT: Font = Font::with_name("Segoe UI");
 const APP_FONT: Font = Font::DEFAULT;
 
 pub fn run(demo: bool) -> iced::Result {
-    iced::application(move || App::boot(demo), App::update, view)
+    let settings = Settings::load();
+    let size = Size::new(settings.window.width, settings.window.height);
+
+    iced::application(move || App::boot(demo, settings.clone()), App::update, view)
         .title(move |app: &App| window_title(app, demo))
         .subscription(App::subscription)
         .default_font(APP_FONT)
         .window(window::Settings {
-            size: WINDOW_SIZE,
+            size,
             min_size: Some(MIN_WINDOW_SIZE),
             resizable: true,
             ..window::Settings::default()
@@ -95,6 +99,10 @@ fn authenticated_view<'a>(
     email: Option<&'a str>,
     signing_out: bool,
 ) -> Element<'a, Message> {
+    if app.showing_settings() {
+        return settings::view(app.settings());
+    }
+
     match app.mailbox() {
         Some(mailbox) => mailbox::view(app, mailbox, email, signing_out),
         None => status_view("Opening mailbox…"),

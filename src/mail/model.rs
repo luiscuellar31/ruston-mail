@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 /// Standard Proton Mail folders supported by Ruston's mailbox view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MailFolder {
     Inbox,
     Drafts,
