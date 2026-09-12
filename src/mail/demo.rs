@@ -131,6 +131,8 @@ struct Fixture {
     starred: bool,
     /// Message bodies, oldest first. The length is the conversation count.
     bodies: Vec<&'static str>,
+    /// Whether the bodies are HTML rather than plain text.
+    html: bool,
     /// Replaces the generated recipients of every message.
     to: &'static [&'static str],
 }
@@ -250,6 +252,11 @@ impl Fixture {
         }
     }
 
+    /// Marks the bodies as HTML, so they reach the reader as a rich body.
+    fn html(self) -> Self {
+        Self { html: true, ..self }
+    }
+
     fn thread(self, bodies: &[&'static str]) -> Self {
         Self {
             bodies: bodies.to_vec(),
@@ -282,8 +289,19 @@ fn mail(
         unread: false,
         starred: false,
         bodies: vec![body],
+        html: false,
         to: &[],
     }
+}
+
+/// What a body says, with any markup resolved. Previews and search read this
+/// rather than the body itself, so an HTML fixture cannot match on its tags
+/// or show them in the conversation list.
+fn body_text(fixture: &Fixture, body: &str) -> String {
+    if !fixture.html {
+        return body.to_owned();
+    }
+    super::html::parse(body).plain_text()
 }
 
 fn fixtures() -> Vec<Fixture> {
@@ -649,8 +667,46 @@ fn fixtures() -> Vec<Fixture> {
             4 * DAY,
             "Your account will supposedly close today unless you confirm it through an unfamiliar link.\n\nThis fictional message demonstrates suspicious urgency and is not a real account notice.",
         ),
+        // The one HTML body in the fictional mailbox. Demo mode is the only
+        // way to see the rich reader without a Proton account, so it covers
+        // what that reader has to lay out: headings, styled runs, a link,
+        // inline and block code, a list, a quote, a rule and a blocked image.
+        mail(
+            Inbox,
+            "Bookings Team",
+            "Your reading room booking",
+            3 * HOUR,
+            BOOKING_HTML,
+        )
+        .html(),
     ]
 }
+
+const BOOKING_HTML: &str = r#"
+<h1>Reading room booking</h1>
+<p>Hi Demo, your booking is <strong>confirmed</strong>. The details are
+<em>provisional</em> until you check in at the desk, and this fictional message
+exists only to show how formatted mail is laid out.</p>
+<h2>What to bring</h2>
+<ul>
+  <li>Your membership card</li>
+  <li>The reference below, which is long enough that this item has to wrap onto
+      a second line and keep its indent</li>
+  <li>Something to write with</li>
+</ul>
+<p>Your reference is <code>RR-2026-0914</code>. The full house rules are on the
+<a href="https://example.org/reading-room/rules">reading room page</a>, and the
+<s>old third-floor entrance</s> is closed for the season.</p>
+<blockquote>
+  <p>Quiet study only. Group work belongs in the annexe.</p>
+</blockquote>
+<p>To cancel, reply to this message or run:</p>
+<pre>booking cancel RR-2026-0914
+booking list --upcoming</pre>
+<hr>
+<p><img src="https://example.org/floor-plan.png" alt="Floor plan of the reading room"></p>
+<p>See you Thursday,<br>The Bookings Team</p>
+"#;
 
 /// Rows matching `query` from anywhere in the mailbox, newest first. Folders
 /// are ignored on purpose: a search that stopped at the open folder would not
@@ -683,10 +739,13 @@ fn matches_query(fixture: &Fixture, query: &str) -> bool {
         return false;
     }
 
-    [fixture.subject, fixture.correspondents]
-        .into_iter()
-        .chain(fixture.bodies.iter().copied())
-        .any(|value| value.to_lowercase().contains(query))
+    [
+        fixture.subject.to_owned(),
+        fixture.correspondents.to_owned(),
+    ]
+    .into_iter()
+    .chain(fixture.bodies.iter().map(|body| body_text(fixture, body)))
+    .any(|value| value.to_lowercase().contains(query))
 }
 
 /// The fictional mailbox has only Proton's own folders, so a folder the
@@ -787,7 +846,7 @@ fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
         preview: fixture
             .bodies
             .last()
-            .and_then(|body| non_empty(&preview(body))),
+            .and_then(|body| non_empty(&preview(&body_text(fixture, body)))),
         time: Some(now - fixture.age),
         unread: fixture.unread,
         starred: fixture.starred,
@@ -868,7 +927,11 @@ fn message(
         sender,
         recipients,
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),
-        body: MessageBody::PlainText(fixture.bodies[position].to_owned()),
+        body: if fixture.html {
+            MessageBody::Rich(super::html::parse(fixture.bodies[position]))
+        } else {
+            MessageBody::PlainText(fixture.bodies[position].to_owned())
+        },
         attachments: Vec::new(),
     }
 }
@@ -994,7 +1057,7 @@ mod tests {
     fn first_inbox_page_is_deterministic_and_newest_first() {
         let first = page(MailFolder::Inbox, 0);
 
-        assert_eq!(first.total, 34);
+        assert_eq!(first.total, 35);
         assert_eq!(first.conversations.len(), 10);
         assert_eq!(first.conversations[0].id, "demo-0");
         assert_eq!(first.conversations[0].time, Some(NOW - 12 * MINUTE));
@@ -1015,8 +1078,8 @@ mod tests {
         let second = page(MailFolder::Inbox, 1);
         let last = page(MailFolder::Inbox, 3);
 
-        assert_eq!(second.conversations[0].id, "demo-10");
-        assert_eq!(last.conversations.len(), 4);
+        assert_eq!(second.conversations[0].id, "demo-9");
+        assert_eq!(last.conversations.len(), 5);
         assert!(page(MailFolder::Inbox, 4).conversations.is_empty());
     }
 
@@ -1060,7 +1123,14 @@ mod tests {
             assert_eq!(detail.messages.len(), fixture.message_count());
             for (message, expected) in detail.messages.iter().zip(&fixture.bodies) {
                 assert!(!expected.trim().is_empty());
-                assert_eq!(message.body, MessageBody::PlainText((*expected).to_owned()));
+                if fixture.html {
+                    // An HTML fixture reaches the reader as structure. No
+                    // markup survives into what the reader shows or copies.
+                    assert!(matches!(message.body, MessageBody::Rich(_)));
+                    assert!(!message.body.plain_text().contains('<'));
+                } else {
+                    assert_eq!(message.body, MessageBody::PlainText((*expected).to_owned()));
+                }
             }
             assert!(
                 detail
@@ -1094,6 +1164,37 @@ mod tests {
             detail.messages.last().unwrap().time,
             Some(NOW - 12 * MINUTE)
         );
+    }
+
+    #[test]
+    fn the_html_conversation_shows_its_text_and_never_its_markup() {
+        let fixtures = fixtures();
+        let index = fixtures
+            .iter()
+            .position(|fixture| fixture.html)
+            .expect("the fictional mailbox carries one HTML conversation");
+        let fixture = &fixtures[index];
+
+        let text = body_text(fixture, fixture.bodies[0]);
+        assert!(text.contains("Reading room booking"));
+        assert!(
+            !text.contains('<'),
+            "markup reached the reader's text: {text}"
+        );
+
+        // Searching reads what the mail says, not the tags it is written in.
+        assert!(matches_query(fixture, "membership card"));
+        assert!(!matches_query(fixture, "blockquote"));
+
+        // Nor do the tags reach the conversation list.
+        let preview = state_page(&DemoMailbox::new(), MailFolder::Inbox)
+            .conversations
+            .into_iter()
+            .find(|conversation| conversation.id == format!("demo-{index}"))
+            .expect("the HTML conversation is on the first Inbox page")
+            .preview
+            .expect("it has a preview");
+        assert!(!preview.contains('<'), "markup reached the list: {preview}");
     }
 
     #[test]

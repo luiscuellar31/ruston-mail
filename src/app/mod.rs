@@ -1821,7 +1821,7 @@ mod tests {
         }
 
         let mailbox = app.mailbox().unwrap();
-        assert_eq!(mailbox.conversations().len(), 34);
+        assert_eq!(mailbox.conversations().len(), 35);
         assert!(!mailbox.has_more());
         assert_eq!(mailbox.status(), ListStatus::Loaded);
     }
