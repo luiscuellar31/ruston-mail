@@ -745,13 +745,16 @@ impl App {
 
         let page_request = self.next_request();
         let counts_request = self.next_request();
-        // Someone comes back to the folder they were last reading.
-        let (mailbox, page) = Mailbox::open(
-            self.settings.folder.clone(),
-            page_size,
-            page_request,
-            counts_request,
-        );
+        // Someone comes back to the folder they were last reading. The demo
+        // account made no folders of its own, so a remembered one would open
+        // a place with none of its fictional mail in it.
+        let remembered = self.settings.folder.clone();
+        let folder = if self.is_demo() && remembered.system().is_none() {
+            Folder::INBOX
+        } else {
+            remembered
+        };
+        let (mailbox, page) = Mailbox::open(folder, page_size, page_request, counts_request);
         self.mailbox = Some(mailbox);
 
         Task::batch([
@@ -1077,8 +1080,12 @@ impl App {
     fn select_folder(&mut self, folder: Folder) -> Task<Message> {
         self.pending_link = None;
         self.saved_attachment = None;
-        // The folder someone left off in is the one they want on the next run.
-        self.remember(|settings| settings.folder = folder.clone());
+        // The folder someone left off in is the one they want on the next
+        // run. Demo mail is fictional, so where it is read is not worth
+        // remembering, let alone worth overwriting the real answer with.
+        if !self.is_demo() {
+            self.remember(|settings| settings.folder = folder.clone());
+        }
         let request = self.next_request();
         let page = self
             .active_mailbox()
@@ -1535,6 +1542,22 @@ mod tests {
         let (app, _) = App::boot(true, Settings::opening(sys(MailFolder::Archive)));
 
         assert_eq!(app.mailbox().unwrap().folder(), &sys(MailFolder::Archive));
+    }
+
+    #[test]
+    fn the_demo_opens_its_own_mailbox_and_leaves_the_setting_alone() {
+        let invoices = Folder::custom("kZ9", "Invoices");
+        let (mut app, _) = App::boot(true, Settings::opening(invoices.clone()));
+
+        // None of the demo's fictional mail is in a folder the real account
+        // made, so opening one would show an empty list under a name the
+        // demo sidebar does not even carry.
+        assert_eq!(app.mailbox().unwrap().folder(), &Folder::INBOX);
+
+        let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
+        // Reading demo mail says nothing about where the real mailbox was
+        // left, so the remembered folder is untouched.
+        assert_eq!(app.settings.folder, invoices);
     }
 
     #[test]
