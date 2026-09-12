@@ -473,7 +473,11 @@ impl App {
             }
             Message::AttachmentSaved(outcome) => {
                 self.saving_attachment = None;
-                self.saved_attachment = Some(outcome);
+                // A save that landed after the session ended has nobody left
+                // to tell, and its news must not surface in the next one.
+                if self.mailbox.is_some() {
+                    self.saved_attachment = Some(outcome);
+                }
             }
             Message::ShowSettings(showing) => self.showing_settings = showing,
             Message::SetMarkReadOnOpen(on) => {
@@ -828,6 +832,9 @@ impl App {
         // else, and until their folders arrive the sidebar would be showing
         // the previous account's.
         self.folders.clear();
+        // A file one session saved is not news for the next one.
+        self.saved_attachment = None;
+        self.saving_attachment = None;
         self.login_form.clear_all();
         self.auth_error = error;
         self.auth_state = AuthState::SignedOut;
@@ -1540,6 +1547,23 @@ mod tests {
             text: None,
             repeat: false,
         }));
+    }
+
+    #[test]
+    fn a_save_in_flight_does_not_outlive_the_session() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+        assert_eq!(app.saving_attachment(), Some("file"));
+
+        let _ = app.update(Message::Logout);
+        assert_eq!(app.saving_attachment(), None);
+        assert!(app.saved_attachment().is_none());
+
+        // The fetch was already running and still answers. There is no
+        // mailbox left to show it in, and the next one must not open with a
+        // banner about a file from the last session.
+        let _ = app.update(Message::AttachmentSaved(Ok(PathBuf::from("/tmp/x.pdf"))));
+        assert!(app.saved_attachment().is_none());
     }
 
     #[test]
