@@ -25,7 +25,8 @@ dragged to whatever widths suit you, and they stay that way next time.
 Your labels also sit above an open conversation: press one to give the thread
 that label, press it again to take it away. Either way the mail stays in
 whatever folder it is already in, which is what makes a label different from
-a move.
+a move. If you keep more labels than fit on one line, the conversation shows
+the ones it already carries and a button that reaches the rest.
 
 Opening a conversation marks it read, unless you would rather it did not, and
 shows its messages oldest first, with the newest one expanded. HTML mail is
