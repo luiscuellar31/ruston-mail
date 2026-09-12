@@ -83,10 +83,78 @@ impl MailAddress {
     }
 }
 
-/// A message body. Only plain text is supported for now.
+/// A message body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageBody {
     PlainText(String),
+    /// Structure and inline styles taken from an HTML body. Nothing in it
+    /// runs scripts or loads remote content.
+    Rich(RichBody),
+}
+
+/// The readable structure of an HTML body, in reading order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RichBody {
+    pub blocks: Vec<RichBlock>,
+}
+
+impl RichBody {
+    /// The visible text, in reading order, e.g. for previews.
+    pub fn text_fragments(&self) -> impl Iterator<Item = &str> {
+        self.blocks.iter().flat_map(|block| {
+            let (spans, text): (&[RichSpan], Option<&str>) = match &block.kind {
+                BlockKind::Paragraph(spans)
+                | BlockKind::Heading { spans, .. }
+                | BlockKind::ListItem { spans, .. } => (spans, None),
+                BlockKind::Preformatted(text) => (&[], Some(text)),
+                BlockKind::Image { description } => (&[], Some(description)),
+                BlockKind::Rule => (&[], None),
+            };
+            spans.iter().map(|span| span.text.as_str()).chain(text)
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RichBlock {
+    pub kind: BlockKind,
+    /// How deeply the block sits inside quotes.
+    pub quote_depth: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockKind {
+    Paragraph(Vec<RichSpan>),
+    Heading {
+        level: u8,
+        spans: Vec<RichSpan>,
+    },
+    /// A list item. `marker` is a bullet or number, and empty for further
+    /// paragraphs of the same item.
+    ListItem {
+        marker: String,
+        depth: u8,
+        spans: Vec<RichSpan>,
+    },
+    /// Text whose spacing matters, shown in a monospace font.
+    Preformatted(String),
+    /// An image that is not loaded; only its description is shown.
+    Image {
+        description: String,
+    },
+    Rule,
+}
+
+/// A run of text sharing one style.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RichSpan {
+    pub text: String,
+    pub strong: bool,
+    pub emphasis: bool,
+    pub code: bool,
+    pub struck: bool,
+    /// Only absolute `http`, `https` and `mailto` links are kept.
+    pub link: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

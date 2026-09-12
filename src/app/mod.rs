@@ -55,6 +55,10 @@ pub enum Message {
     SignInPrompt(SignInPrompt),
     OpenVerificationPage,
     CopyVerificationLink,
+    LinkClicked(String),
+    OpenLink,
+    CopyLink,
+    DismissLink,
     Logout,
     LogoutFinished(Result<(), AuthError>),
     SelectFolder(MailFolder),
@@ -106,6 +110,8 @@ pub struct App {
     auth_error: Option<AuthError>,
     /// The question a running sign-in is waiting on, if any.
     pending_prompt: Option<SignInPrompt>,
+    /// A link clicked in a message, waiting for the user to confirm it.
+    pending_link: Option<PendingLink>,
     backend: Option<MailBackend>,
     mailbox: Option<Mailbox>,
     last_request: RequestId,
@@ -134,6 +140,7 @@ impl App {
             login_form: LoginForm::default(),
             auth_error: None,
             pending_prompt: None,
+            pending_link: None,
             backend: None,
             mailbox: None,
             last_request: 0,
@@ -175,7 +182,7 @@ impl App {
             Message::SignInPrompt(prompt) => return self.show_prompt(prompt),
             Message::OpenVerificationPage => {
                 if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
-                    return open_verification_page(url.clone());
+                    return open_in_browser(url.clone());
                 }
             }
             Message::CopyVerificationLink => {
@@ -247,6 +254,18 @@ impl App {
             Message::MarkReadFinished(request, result) => {
                 return self.finish_mark_read(request, result);
             }
+            Message::LinkClicked(target) => self.pending_link = PendingLink::parse(&target),
+            Message::OpenLink => {
+                if let Some(link) = self.pending_link.take() {
+                    return open_in_browser(link.url);
+                }
+            }
+            Message::CopyLink => {
+                if let Some(link) = self.pending_link.take() {
+                    return iced::clipboard::write(link.url);
+                }
+            }
+            Message::DismissLink => self.pending_link = None,
             Message::PanelResized(event) => self.panels.resize(event.split, event.ratio),
         }
 
@@ -271,6 +290,10 @@ impl App {
 
     pub fn panels(&self) -> &pane_grid::State<Panel> {
         &self.panels
+    }
+
+    pub fn pending_link(&self) -> Option<&PendingLink> {
+        self.pending_link.as_ref()
     }
 
     pub fn username(&self) -> &str {
@@ -351,7 +374,7 @@ impl App {
             }
             SignInPrompt::HumanVerification { url, .. } => {
                 self.auth_state = AuthState::NeedsHumanVerification { url: url.clone() };
-                open_verification_page(url.clone())
+                open_in_browser(url.clone())
             }
         };
         self.pending_prompt = Some(prompt);
@@ -496,6 +519,7 @@ impl App {
     fn close_mailbox(&mut self, error: Option<AuthError>) {
         self.backend = None;
         self.mailbox = None;
+        self.pending_link = None;
         self.login_form.clear_all();
         self.auth_error = error;
         self.auth_state = AuthState::SignedOut;
@@ -518,6 +542,7 @@ impl App {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
             return Task::none();
         }
+        self.pending_link = None;
         if let Some(MailBackend::Demo(service)) = self.backend.clone() {
             if !service.set_unread(&id, false) {
                 return Task::none();
@@ -710,6 +735,7 @@ impl App {
     }
 
     fn select_folder(&mut self, folder: MailFolder) -> Task<Message> {
+        self.pending_link = None;
         let request = self.next_request();
         let page = self
             .active_mailbox()
@@ -784,6 +810,32 @@ impl App {
     }
 }
 
+/// A link clicked in a message, waiting for the user to confirm it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingLink {
+    /// The complete, normalized address that opens.
+    pub url: String,
+    /// Where the link really goes: the web host or the mail address.
+    pub target: String,
+}
+
+impl PendingLink {
+    /// Accepts only web and mail links.
+    fn parse(link: &str) -> Option<Self> {
+        let url = url::Url::parse(link.trim()).ok()?;
+        let target = match url.scheme() {
+            "http" | "https" => url.host_str()?.to_owned(),
+            "mailto" => url.path().to_owned(),
+            _ => return None,
+        };
+
+        Some(Self {
+            url: url.into(),
+            target,
+        })
+    }
+}
+
 /// Runs one sign-in, forwarding its prompts and final outcome as messages.
 fn sign_in_task(request: LoginRequest) -> Task<Message> {
     Task::run(
@@ -798,7 +850,7 @@ fn sign_in_task(request: LoginRequest) -> Task<Message> {
 }
 
 // ponytail: launch failures are ignored; the page offers "Copy link" instead.
-fn open_verification_page(url: String) -> Task<Message> {
+fn open_in_browser(url: String) -> Task<Message> {
     Task::future(async move {
         let _ = open_url(&url);
     })
@@ -882,6 +934,60 @@ mod tests {
         let request = pending_reader_request(app);
         let result = demo_service(app).conversation_detail(&request.conversation_id, NOW);
         let _ = app.update(Message::ConversationLoaded(request, result));
+    }
+
+    #[test]
+    fn only_web_and_mail_links_are_offered() {
+        let web = PendingLink::parse(" https://Example.com/path?x=1 ").unwrap();
+        assert_eq!(web.target, "example.com");
+        assert_eq!(web.url, "https://example.com/path?x=1");
+        assert_eq!(
+            PendingLink::parse("mailto:team@example.org")
+                .unwrap()
+                .target,
+            "team@example.org"
+        );
+        // The real host shows even when the link hides it behind a user name.
+        assert_eq!(
+            PendingLink::parse("https://bank.example@evil.example/login")
+                .unwrap()
+                .target,
+            "evil.example"
+        );
+
+        for rejected in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,x",
+            "/relative",
+            "not a link",
+        ] {
+            assert_eq!(PendingLink::parse(rejected), None, "{rejected}");
+        }
+    }
+
+    #[test]
+    fn clicked_links_wait_for_confirmation_and_clear() {
+        let mut app = loaded_demo_app();
+
+        let _ = app.update(Message::LinkClicked("https://example.com/a".into()));
+        assert_eq!(
+            app.pending_link().map(|link| link.target.as_str()),
+            Some("example.com")
+        );
+        let _ = app.update(Message::DismissLink);
+        assert!(app.pending_link().is_none());
+
+        let _ = app.update(Message::LinkClicked("javascript:alert(1)".into()));
+        assert!(app.pending_link().is_none());
+
+        let _ = app.update(Message::LinkClicked("https://example.com/a".into()));
+        let _ = app.update(Message::OpenLink);
+        assert!(app.pending_link().is_none());
+
+        let _ = app.update(Message::LinkClicked("https://example.com/a".into()));
+        let _ = app.update(Message::SelectFolder(MailFolder::Sent));
+        assert!(app.pending_link().is_none());
     }
 
     #[test]

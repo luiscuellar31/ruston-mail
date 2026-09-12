@@ -586,9 +586,9 @@ fn mail_address(person: &Recipient) -> MailAddress {
 
 fn mail_message(meta: MessageMetadata, body: String, mime_type: &str) -> MailMessage {
     let body = if mime_type.to_ascii_lowercase().starts_with("text/html") {
-        html::to_plain_text(&body)
+        MessageBody::Rich(html::parse(&body))
     } else {
-        body
+        MessageBody::PlainText(body)
     };
 
     MailMessage {
@@ -601,7 +601,7 @@ fn mail_message(meta: MessageMetadata, body: String, mime_type: &str) -> MailMes
             .map(mail_address)
             .collect(),
         time: (meta.time > 0).then_some(meta.time),
-        body: MessageBody::PlainText(body),
+        body,
         id: meta.id,
     }
 }
@@ -752,10 +752,10 @@ mod tests {
         assert_eq!(message.sender.address, "alex@example.com");
         assert_eq!(message.recipients.len(), 3);
         assert_eq!(message.time, Some(1_700_000_000));
-        assert_eq!(
-            message.body,
-            MessageBody::PlainText("Hello & welcome".into())
-        );
+        let MessageBody::Rich(body) = &message.body else {
+            panic!("expected a rich body for HTML");
+        };
+        assert_eq!(body.text_fragments().collect::<String>(), "Hello & welcome");
     }
 
     #[test]

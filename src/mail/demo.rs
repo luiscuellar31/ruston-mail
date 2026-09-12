@@ -1002,7 +1002,9 @@ mod tests {
             .find(|conversation| conversation.id == "demo-5")
             .unwrap();
         let preview = summary.preview.unwrap();
-        let MessageBody::PlainText(body) = &detail(5).messages[0].body;
+        let MessageBody::PlainText(body) = &detail(5).messages[0].body else {
+            panic!("demo bodies are plain text");
+        };
 
         assert!(preview.chars().count() <= 200);
         assert!(body.len() > preview.len());

@@ -1,193 +1,550 @@
-//! Plain-text rendering of sanitized HTML message bodies, used until Ruston
-//! can render HTML. The output is only ever shown as text, so nothing in it
-//! runs or loads remote content.
+//! Converts sanitized HTML message bodies into Ruston's rich body model.
+//!
+//! proton-core has already removed active content. This keeps only document
+//! structure (paragraphs, headings, lists, quotes, preformatted text, rules,
+//! image descriptions) and inline styles (bold, italic, code, strikethrough,
+//! links). Nothing here runs scripts, applies CSS, or loads remote content.
 
-/// Elements whose text is never shown.
-const HIDDEN: [&str; 4] = ["head", "script", "style", "title"];
+use std::cell::RefCell;
 
-/// Elements that begin or end a line.
-const BLOCKS: [&str; 21] = [
+use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::states::RawKind;
+use html5ever::tokenizer::{
+    BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
+};
+
+use super::model::{BlockKind, RichBlock, RichBody, RichSpan};
+
+/// Elements that start and end a paragraph.
+const BLOCKS: &[&str] = &[
     "address",
     "article",
-    "blockquote",
-    "br",
+    "aside",
+    "center",
+    "dd",
     "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
     "footer",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
+    "form",
     "header",
-    "hr",
-    "ol",
+    "main",
+    "nav",
     "p",
-    "pre",
     "section",
     "table",
+    "tbody",
+    "tfoot",
+    "thead",
     "tr",
-    "ul",
 ];
 
-pub(super) fn to_plain_text(html: &str) -> String {
-    let mut text = String::with_capacity(html.len());
-    let mut hidden: Option<String> = None;
-    let mut rest = html;
+/// Elements whose content is never shown.
+const HIDDEN: &[&str] = &[
+    "head", "noscript", "script", "style", "template", "textarea", "title",
+];
 
-    while let Some(start) = rest.find('<') {
-        if hidden.is_none() {
-            push_text(&mut text, &rest[..start]);
-        }
-        // An unterminated tag ends the body.
-        let Some(length) = rest[start..].find('>') else {
-            rest = "";
-            break;
-        };
-        let tag = &rest[start + 1..start + length];
-        rest = &rest[start + length + 1..];
+/// Elements that have no content and no end tag.
+const VOID: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
+    "wbr",
+];
 
-        let closing = tag.starts_with('/');
-        let name = tag
-            .trim_start_matches('/')
-            .chars()
-            .take_while(char::is_ascii_alphanumeric)
-            .collect::<String>()
-            .to_ascii_lowercase();
+/// Parses a sanitized HTML body.
+pub(super) fn parse(html: &str) -> RichBody {
+    let tokenizer = Tokenizer::new(Sink::default(), TokenizerOpts::default());
+    let input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(html));
+    let _ = tokenizer.feed(&input);
+    tokenizer.end();
 
-        match &hidden {
-            Some(element) => {
-                if closing && *element == name {
-                    hidden = None;
-                }
-            }
-            None if !closing && HIDDEN.contains(&name.as_str()) => hidden = Some(name),
-            None if !closing && name == "li" => text.push_str("\n• "),
-            None if BLOCKS.contains(&name.as_str()) => text.push('\n'),
-            None => {}
-        }
-    }
-    if hidden.is_none() {
-        push_text(&mut text, rest);
-    }
-
-    tidy(&text)
+    std::mem::take(&mut *tokenizer.sink.0.borrow_mut()).finish()
 }
 
-/// Appends decoded text, collapsing whitespace runs like a browser does.
-fn push_text(text: &mut String, fragment: &str) {
-    for c in decode_entities(fragment).chars() {
-        if c.is_whitespace() {
-            if !text.ends_with([' ', '\n']) {
-                text.push(' ');
+#[derive(Default)]
+struct Sink(RefCell<Builder>);
+
+impl TokenSink for Sink {
+    type Handle = ();
+
+    fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
+        let mut builder = self.0.borrow_mut();
+        match token {
+            Token::TagToken(tag) => return builder.tag(&tag),
+            Token::CharacterTokens(text) => builder.text(&text),
+            Token::EOFToken => builder.flush(),
+            _ => {}
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+#[derive(Default)]
+struct Builder {
+    blocks: Vec<RichBlock>,
+    spans: Vec<RichSpan>,
+    /// Whitespace was seen since the last visible character.
+    space: bool,
+    strong: u16,
+    emphasis: u16,
+    code: u16,
+    struck: u16,
+    link: Option<String>,
+    heading: Option<u8>,
+    /// Open lists, innermost last: the next number of ordered ones.
+    lists: Vec<Option<u32>>,
+    /// Marker for the next block of the current list item; empty once used.
+    item: Option<String>,
+    quote_depth: u8,
+    pre: u16,
+    pre_text: String,
+    /// Element whose content is being skipped.
+    hidden: Option<String>,
+}
+
+impl Builder {
+    fn tag(&mut self, tag: &Tag) -> TokenSinkResult<()> {
+        let name = &*tag.name;
+        match tag.kind {
+            TagKind::StartTag => {
+                self.start(name, tag);
+                if tag.self_closing && !VOID.contains(&name) {
+                    self.end(name);
+                    return TokenSinkResult::Continue;
+                }
+                raw_content(name)
+            }
+            TagKind::EndTag => {
+                self.end(name);
+                TokenSinkResult::Continue
+            }
+        }
+    }
+
+    fn start(&mut self, name: &str, tag: &Tag) {
+        if self.hidden.is_some() {
+            return;
+        }
+        if HIDDEN.contains(&name) {
+            self.hidden = Some(name.to_owned());
+            return;
+        }
+
+        match name {
+            "br" => self.line_break(),
+            "hr" => {
+                self.flush();
+                self.push(BlockKind::Rule);
+            }
+            "img" => self.image(tag),
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                self.flush();
+                self.heading = name[1..].parse().ok();
+            }
+            "ul" => {
+                self.flush();
+                self.lists.push(None);
+            }
+            "ol" => {
+                self.flush();
+                self.lists.push(Some(1));
+            }
+            "li" => {
+                self.flush();
+                self.item = Some(self.next_marker());
+            }
+            "blockquote" => {
+                self.flush();
+                self.quote_depth = self.quote_depth.saturating_add(1);
+            }
+            "pre" => {
+                self.flush();
+                self.pre = self.pre.saturating_add(1);
+            }
+            "b" | "strong" => self.strong = self.strong.saturating_add(1),
+            "i" | "em" | "cite" => self.emphasis = self.emphasis.saturating_add(1),
+            "code" | "kbd" | "samp" | "tt" => self.code = self.code.saturating_add(1),
+            "s" | "strike" | "del" => self.struck = self.struck.saturating_add(1),
+            "a" => self.link = link_target(tag),
+            // Table cells read left to right, separated like words.
+            "td" | "th" => self.space = self.wants_space(),
+            _ if BLOCKS.contains(&name) => self.flush(),
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, name: &str) {
+        if let Some(hidden) = &self.hidden {
+            if hidden == name {
+                self.hidden = None;
+            }
+            return;
+        }
+
+        match name {
+            "br" => self.line_break(),
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                self.flush();
+                self.heading = None;
+            }
+            "ul" | "ol" => {
+                self.flush();
+                self.lists.pop();
+                self.item = None;
+            }
+            "li" => {
+                self.flush();
+                self.item = None;
+            }
+            "blockquote" => {
+                self.flush();
+                self.quote_depth = self.quote_depth.saturating_sub(1);
+            }
+            "pre" => self.end_pre(),
+            "b" | "strong" => self.strong = self.strong.saturating_sub(1),
+            "i" | "em" | "cite" => self.emphasis = self.emphasis.saturating_sub(1),
+            "code" | "kbd" | "samp" | "tt" => self.code = self.code.saturating_sub(1),
+            "s" | "strike" | "del" => self.struck = self.struck.saturating_sub(1),
+            "a" => self.link = None,
+            _ if BLOCKS.contains(&name) => self.flush(),
+            _ => {}
+        }
+    }
+
+    fn text(&mut self, text: &str) {
+        if self.hidden.is_some() {
+            return;
+        }
+        if self.pre > 0 {
+            self.pre_text.push_str(text);
+            return;
+        }
+
+        // Collapse whitespace runs like a browser does.
+        for c in text.chars() {
+            if c.is_whitespace() {
+                self.space = self.wants_space();
+                continue;
+            }
+            if self.space {
+                self.push_char(' ');
+                self.space = false;
+            }
+            self.push_char(c);
+        }
+    }
+
+    /// Whether a space may separate what comes next from the text so far.
+    fn wants_space(&self) -> bool {
+        self.spans
+            .last()
+            .is_some_and(|span| !span.text.ends_with('\n'))
+    }
+
+    fn push_char(&mut self, c: char) {
+        let (strong, emphasis, code, struck) = (
+            self.strong > 0,
+            self.emphasis > 0,
+            self.code > 0,
+            self.struck > 0,
+        );
+        match self.spans.last_mut() {
+            Some(span)
+                if span.strong == strong
+                    && span.emphasis == emphasis
+                    && span.code == code
+                    && span.struck == struck
+                    && span.link == self.link =>
+            {
+                span.text.push(c);
+            }
+            _ => self.spans.push(RichSpan {
+                text: c.to_string(),
+                strong,
+                emphasis,
+                code,
+                struck,
+                link: self.link.clone(),
+            }),
+        }
+    }
+
+    fn line_break(&mut self) {
+        if self.pre > 0 {
+            self.pre_text.push('\n');
+        } else if !self.spans.is_empty() {
+            self.push_char('\n');
+            self.space = false;
+        }
+    }
+
+    /// Images are not loaded; described ones become a placeholder and
+    /// decorative ones (no description, e.g. tracking pixels) are dropped.
+    fn image(&mut self, tag: &Tag) {
+        let Some(description) = attribute(tag, "alt")
+            .map(str::trim)
+            .filter(|alt| !alt.is_empty())
+        else {
+            return;
+        };
+        self.flush();
+        self.push(BlockKind::Image {
+            description: description.to_owned(),
+        });
+    }
+
+    fn next_marker(&mut self) -> String {
+        match self.lists.last_mut() {
+            Some(Some(number)) => {
+                let marker = format!("{number}.");
+                *number = number.saturating_add(1);
+                marker
+            }
+            _ => "•".to_owned(),
+        }
+    }
+
+    /// Ends the current paragraph, if it has any text.
+    fn flush(&mut self) {
+        if let Some(last) = self.spans.last_mut() {
+            let length = last.text.trim_end().len();
+            last.text.truncate(length);
+        }
+        self.spans.retain(|span| !span.text.is_empty());
+        self.space = false;
+        if self.spans.is_empty() {
+            return;
+        }
+
+        let spans = std::mem::take(&mut self.spans);
+        let kind = if let Some(level) = self.heading {
+            BlockKind::Heading { level, spans }
+        } else if let Some(marker) = self.item.take() {
+            // Later blocks of the same item keep the indent, not the marker.
+            self.item = Some(String::new());
+            BlockKind::ListItem {
+                marker,
+                depth: u8::try_from(self.lists.len().max(1)).unwrap_or(u8::MAX),
+                spans,
             }
         } else {
-            text.push(c);
+            BlockKind::Paragraph(spans)
+        };
+        self.push(kind);
+    }
+
+    fn end_pre(&mut self) {
+        if self.pre == 0 {
+            return;
+        }
+        self.pre -= 1;
+        if self.pre > 0 {
+            return;
+        }
+
+        let text = std::mem::take(&mut self.pre_text);
+        // A newline right after `<pre>` is not part of the content.
+        let text = text.strip_prefix('\n').unwrap_or(&text).trim_end();
+        if !text.trim().is_empty() {
+            self.push(BlockKind::Preformatted(text.to_owned()));
+        }
+    }
+
+    fn push(&mut self, kind: BlockKind) {
+        self.blocks.push(RichBlock {
+            kind,
+            quote_depth: self.quote_depth,
+        });
+    }
+
+    fn finish(mut self) -> RichBody {
+        self.flush();
+        if self.pre > 0 {
+            self.pre = 1;
+            self.end_pre();
+        }
+        RichBody {
+            blocks: self.blocks,
         }
     }
 }
 
-/// Trims every line and keeps at most one blank line between paragraphs.
-fn tidy(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut blank = false;
-
-    for line in text.lines().map(str::trim) {
-        if line.is_empty() {
-            blank = true;
-            continue;
-        }
-        if !out.is_empty() {
-            out.push_str(if blank { "\n\n" } else { "\n" });
-        }
-        out.push_str(line);
-        blank = false;
-    }
-    out
-}
-
-fn decode_entities(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        rest = &rest[amp..];
-        let decoded = rest[1..]
-            .find(';')
-            .filter(|&end| end <= 10)
-            .and_then(|end| Some((entity(&rest[1..1 + end])?, end + 2)));
-        match decoded {
-            Some((c, length)) => {
-                out.push(c);
-                rest = &rest[length..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn entity(name: &str) -> Option<char> {
+/// Keeps the tokenizer from reading markup inside raw-text elements.
+fn raw_content(name: &str) -> TokenSinkResult<()> {
     match name {
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        "quot" => Some('"'),
-        "apos" => Some('\''),
-        "nbsp" => Some(' '),
-        _ => {
-            let code = name.strip_prefix('#')?;
-            let value = match code.strip_prefix(['x', 'X']) {
-                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                None => code.parse().ok()?,
-            };
-            char::from_u32(value)
-        }
+        "script" => TokenSinkResult::RawData(RawKind::ScriptData),
+        "style" => TokenSinkResult::RawData(RawKind::Rawtext),
+        "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
+        _ => TokenSinkResult::Continue,
     }
+}
+
+fn attribute<'t>(tag: &'t Tag, name: &str) -> Option<&'t str> {
+    tag.attrs
+        .iter()
+        .find(|attribute| &*attribute.name.local == name)
+        .map(|attribute| &*attribute.value)
+}
+
+/// Only absolute web and mail links stay clickable.
+fn link_target(tag: &Tag) -> Option<String> {
+    let url = url::Url::parse(attribute(tag, "href")?.trim()).ok()?;
+    matches!(url.scheme(), "http" | "https" | "mailto").then(|| url.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// One line per block: kind, quote depth as `>`, and its text.
+    fn outline(html: &str) -> Vec<String> {
+        let text = |spans: &[RichSpan]| spans.iter().map(|s| s.text.as_str()).collect::<String>();
+        parse(html)
+            .blocks
+            .iter()
+            .map(|block| {
+                let line = match &block.kind {
+                    BlockKind::Paragraph(spans) => format!("p {}", text(spans)),
+                    BlockKind::Heading { level, spans } => format!("h{level} {}", text(spans)),
+                    BlockKind::ListItem {
+                        marker,
+                        depth,
+                        spans,
+                    } => format!("li{depth} {marker} {}", text(spans)),
+                    BlockKind::Preformatted(content) => format!("pre {content}"),
+                    BlockKind::Image { description } => format!("img {description}"),
+                    BlockKind::Rule => "hr".to_owned(),
+                };
+                format!("{}{line}", ">".repeat(usize::from(block.quote_depth)))
+            })
+            .collect()
+    }
+
+    fn spans(html: &str) -> Vec<RichSpan> {
+        match parse(html)
+            .blocks
+            .into_iter()
+            .next()
+            .map(|block| block.kind)
+        {
+            Some(BlockKind::Paragraph(spans)) => spans,
+            other => panic!("expected a paragraph, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn blocks_become_lines_and_paragraphs() {
+    fn paragraphs_and_line_breaks() {
         let html = "<div><p>Hello <b>Alex</b>,</p><p>Line one<br>Line two</p></div>";
 
-        assert_eq!(to_plain_text(html), "Hello Alex,\n\nLine one\nLine two");
+        assert_eq!(outline(html), ["p Hello Alex,", "p Line one\nLine two"]);
     }
 
     #[test]
-    fn entities_are_decoded_and_unknown_ones_kept() {
-        let html = "Fish &amp; chips &lt;3 &#39;ok&#39; &#x263A; &copy; a&b";
+    fn headings_lists_and_quotes_keep_their_structure() {
+        let html = "<h1>Title</h1><ul><li>One</li><li>Two<ol><li>Nested</li></ol></li></ul>\
+                    <hr><blockquote><p>Quoted</p><blockquote>Deeper</blockquote></blockquote>";
 
-        assert_eq!(to_plain_text(html), "Fish & chips <3 'ok' ☺ &copy; a&b");
+        assert_eq!(
+            outline(html),
+            [
+                "h1 Title",
+                "li1 • One",
+                "li1 • Two",
+                "li2 1. Nested",
+                "hr",
+                ">p Quoted",
+                ">>p Deeper",
+            ]
+        );
     }
 
     #[test]
-    fn hidden_elements_are_dropped() {
-        let html = "<head><title>Subject</title><style>p { color: red }</style></head>\
-                    <body><p>Visible</p><script>alert(1)</script></body>";
+    fn inline_styles_become_spans() {
+        let spans = spans(
+            "<p>Plain <strong>bold</strong> <em>italic</em> <code>code</code> <s>old</s> \
+             <a href=\"https://example.com/x\">link</a></p>",
+        );
+        let styled = |word: &str| spans.iter().find(|s| s.text.trim() == word).unwrap();
 
-        assert_eq!(to_plain_text(html), "Visible");
+        assert!(!styled("Plain").strong && styled("Plain").link.is_none());
+        assert!(styled("bold").strong);
+        assert!(styled("italic").emphasis);
+        assert!(styled("code").code);
+        assert!(styled("old").struck);
+        assert_eq!(
+            styled("link").link.as_deref(),
+            Some("https://example.com/x")
+        );
     }
 
     #[test]
-    fn lists_get_bullets_and_whitespace_collapses() {
-        let html = "<ul>\n  <li>First   item</li>\n  <li>Second\n item</li>\n</ul>";
+    fn only_web_and_mail_links_stay_clickable() {
+        let spans = spans(
+            "<p><a href=\"javascript:alert(1)\">a</a> <a href=\"/relative\">b</a> \
+             <a href=\"mailto:team@example.org\">c</a> <a href=\"ftp://example.com\">d</a></p>",
+        );
+        let link = |word: &str| {
+            spans
+                .iter()
+                .find(|s| s.text.trim() == word)
+                .and_then(|s| s.link.clone())
+        };
 
-        assert_eq!(to_plain_text(html), "• First item\n• Second item");
+        assert_eq!(link("a"), None);
+        assert_eq!(link("b"), None);
+        assert_eq!(link("c").as_deref(), Some("mailto:team@example.org"));
+        assert_eq!(link("d"), None);
     }
 
     #[test]
-    fn malformed_input_is_handled() {
-        assert_eq!(to_plain_text("Text <b unterminated"), "Text");
-        assert_eq!(to_plain_text(""), "");
-        assert_eq!(to_plain_text("Plain text only"), "Plain text only");
+    fn preformatted_text_keeps_its_spacing() {
+        let html = "<pre>\n  let x = 1;\n    indented\n</pre><p>After</p>";
+
+        assert_eq!(outline(html), ["pre   let x = 1;\n    indented", "p After"]);
+    }
+
+    #[test]
+    fn hidden_content_is_dropped_and_entities_decoded() {
+        let html = "<head><title>Subject</title><style>p { color: red } a < b</style></head>\
+                    <p>Fish &amp; chips &lt;3 &copy; &#x263A;</p>\
+                    <script>document.write(\"<p>x</p>\")</script>";
+
+        assert_eq!(outline(html), ["p Fish & chips <3 © ☺"]);
+    }
+
+    #[test]
+    fn images_keep_only_their_description() {
+        let html = "<p>Logo <img src=\"https://tracker.example/p.gif\" alt=\"\"> text</p>\
+                    <img src=\"cid:logo\" alt=\" Company logo \">";
+
+        assert_eq!(outline(html), ["p Logo text", "img Company logo"]);
+    }
+
+    #[test]
+    fn tables_read_row_by_row() {
+        let html = "<table><tr><td>Name</td><td>Value</td></tr>\
+                    <tr><th>A</th><th>B</th></tr></table>";
+
+        assert_eq!(outline(html), ["p Name Value", "p A B"]);
+    }
+
+    #[test]
+    fn malformed_or_empty_input_is_handled() {
+        assert!(parse("").blocks.is_empty());
+        assert_eq!(outline("Text <b unterminated"), ["p Text"]);
+        assert_eq!(outline("Plain text only"), ["p Plain text only"]);
+        assert_eq!(outline(&"<b>".repeat(70_000)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn text_fragments_follow_reading_order() {
+        let body = parse("<p>One <b>two</b></p><img alt=\"Pic\"><pre>code</pre>");
+
+        assert_eq!(
+            body.text_fragments().collect::<Vec<_>>(),
+            ["One", " two", "Pic", "code"]
+        );
     }
 }

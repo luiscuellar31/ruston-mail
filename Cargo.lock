@@ -4908,10 +4908,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "futures",
+ "html5ever",
  "iced",
  "proton-core",
  "tokio",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

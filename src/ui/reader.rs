@@ -1,19 +1,36 @@
 use chrono::{Local, TimeZone};
-use iced::widget::text::Wrapping;
-use iced::widget::{Column, button, column, container, row, rule, scrollable, text};
-use iced::{Element, Fill};
+use iced::font::{self, Weight};
+use iced::widget::text::{Span, Wrapping};
+use iced::widget::{
+    Column, button, column, container, rich_text, row, rule, scrollable, span, text,
+};
+use iced::{Element, Fill, Font, Padding};
 
+use super::APP_FONT;
 use super::mailbox::{DETAIL_SIZE, PANE_PADDING, SPACING};
-use crate::app::{ConversationReader, Mailbox, Message, ReaderState};
-use crate::mail::{ConversationDetail, ConversationSummary, MailAddress, MailMessage, MessageBody};
+use crate::app::{ConversationReader, Mailbox, Message, PendingLink, ReaderState};
+use crate::mail::{
+    BlockKind, ConversationDetail, ConversationSummary, MailAddress, MailMessage, MessageBody,
+    RichBlock, RichBody, RichSpan,
+};
 
 const SUBJECT_SIZE: f32 = 22.0;
 const MESSAGE_SPACING: f32 = 12.0;
 const TOGGLE_WIDTH: f32 = 16.0;
 /// Words of the body shown in a collapsed message's header.
 const PREVIEW_WORDS: usize = 40;
+const BLOCK_SPACING: f32 = 10.0;
+const LIST_MARKER_WIDTH: f32 = 28.0;
+const LIST_INDENT: f32 = 18.0;
+const QUOTE_INDENT: f32 = 12.0;
+/// Deeper quotes share this level's box so indentation stays readable.
+const MAX_QUOTE_DEPTH: u8 = 4;
 
-pub(super) fn view(mailbox: &Mailbox, actions_available: bool) -> Element<'_, Message> {
+pub(super) fn view<'a>(
+    mailbox: &'a Mailbox,
+    actions_available: bool,
+    pending_link: Option<&'a PendingLink>,
+) -> Element<'a, Message> {
     let content = match mailbox.reader_state() {
         ReaderState::Empty => placeholder("Select a conversation to read it."),
         ReaderState::Loading { .. } => placeholder("Loading conversation…"),
@@ -26,8 +43,40 @@ pub(super) fn view(mailbox: &Mailbox, actions_available: bool) -> Element<'_, Me
             mailbox.action_error(),
         ),
     };
+    let content = match pending_link {
+        Some(link) => column![link_prompt(link), content].height(Fill).into(),
+        None => content,
+    };
 
     container(content).width(Fill).height(Fill).into()
+}
+
+/// Asks before opening a link, showing where it really goes.
+fn link_prompt(link: &PendingLink) -> Element<'_, Message> {
+    container(
+        column![
+            text(format!("Open a link to {}?", link.target)).wrapping(Wrapping::WordOrGlyph),
+            text(link.url.as_str())
+                .size(DETAIL_SIZE)
+                .style(text::secondary)
+                .wrapping(Wrapping::WordOrGlyph),
+            row![
+                button(text("Open")).on_press(Message::OpenLink),
+                button(text("Copy link"))
+                    .style(button::secondary)
+                    .on_press(Message::CopyLink),
+                button(text("Cancel"))
+                    .style(button::text)
+                    .on_press(Message::DismissLink),
+            ]
+            .spacing(SPACING),
+        ]
+        .spacing(6),
+    )
+    .width(Fill)
+    .padding(PANE_PADDING)
+    .style(container::bordered_box)
+    .into()
 }
 
 fn load_error(error: crate::mail::MailboxError) -> Element<'static, Message> {
@@ -130,7 +179,6 @@ fn action_button(label: &str, message: Message, enabled: bool) -> Element<'_, Me
 }
 
 fn message_card(message: &MailMessage, expanded: bool) -> Element<'_, Message> {
-    let body = body_text(&message.body);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
     let time = message
         .time
@@ -149,7 +197,7 @@ fn message_card(message: &MailMessage, expanded: bool) -> Element<'_, Message> {
     } else {
         identity = identity.push(
             container(
-                text(preview(body))
+                text(preview(&message.body))
                     .size(DETAIL_SIZE)
                     .style(text::secondary)
                     .wrapping(Wrapping::None),
@@ -176,7 +224,7 @@ fn message_card(message: &MailMessage, expanded: bool) -> Element<'_, Message> {
     let mut card = column![header];
     if expanded {
         card = card.push(rule::horizontal(1)).push(
-            container(text(body).wrapping(Wrapping::WordOrGlyph))
+            container(message_body(&message.body))
                 .width(Fill)
                 .padding(MESSAGE_SPACING),
         );
@@ -188,18 +236,153 @@ fn message_card(message: &MailMessage, expanded: bool) -> Element<'_, Message> {
         .into()
 }
 
+fn message_body(body: &MessageBody) -> Element<'_, Message> {
+    match body {
+        MessageBody::PlainText(content) => text(content.as_str())
+            .wrapping(Wrapping::WordOrGlyph)
+            .into(),
+        MessageBody::Rich(rich) => rich_body(rich),
+    }
+}
+
+fn rich_body(rich: &RichBody) -> Element<'_, Message> {
+    if rich.blocks.is_empty() {
+        return text("This message has no text.")
+            .style(text::secondary)
+            .into();
+    }
+
+    blocks(&rich.blocks, 0)
+}
+
+/// Lays out blocks at one quote depth; each run of deeper blocks shares one
+/// quote box, so a quoted reply reads as a single unit.
+fn blocks(blocks: &[RichBlock], depth: u8) -> Element<'_, Message> {
+    let mut column = Column::new().spacing(BLOCK_SPACING).width(Fill);
+    let mut rest = blocks;
+
+    while let Some(first) = rest.first() {
+        if first.quote_depth > depth && depth < MAX_QUOTE_DEPTH {
+            let run = rest
+                .iter()
+                .take_while(|block| block.quote_depth > depth)
+                .count();
+            column = column.push(quote_box(self::blocks(&rest[..run], depth + 1)));
+            rest = &rest[run..];
+        } else {
+            column = column.push(block(first));
+            rest = &rest[1..];
+        }
+    }
+
+    column.into()
+}
+
+fn quote_box(content: Element<'_, Message>) -> Element<'_, Message> {
+    container(content)
+        .width(Fill)
+        .padding(Padding {
+            left: QUOTE_INDENT,
+            ..Padding::new(SPACING)
+        })
+        .style(container::bordered_box)
+        .into()
+}
+
+fn block(block: &RichBlock) -> Element<'_, Message> {
+    match &block.kind {
+        BlockKind::Paragraph(spans) => rich_line(spans, None),
+        BlockKind::Heading { level, spans } => rich_line(spans, Some(*level)),
+        BlockKind::ListItem {
+            marker,
+            depth,
+            spans,
+        } => row![
+            text(marker.as_str()).width(LIST_MARKER_WIDTH),
+            rich_line(spans, None),
+        ]
+        .spacing(4)
+        .padding(Padding {
+            left: LIST_INDENT * f32::from(depth.saturating_sub(1)),
+            ..Padding::ZERO
+        })
+        .into(),
+        BlockKind::Preformatted(content) => container(
+            text(content.as_str())
+                .font(Font::MONOSPACE)
+                .wrapping(Wrapping::WordOrGlyph),
+        )
+        .width(Fill)
+        .padding(SPACING)
+        .style(container::rounded_box)
+        .into(),
+        BlockKind::Image { description } => text(format!("[Image: {description}]"))
+            .size(DETAIL_SIZE)
+            .style(text::secondary)
+            .wrapping(Wrapping::WordOrGlyph)
+            .into(),
+        BlockKind::Rule => rule::horizontal(1).into(),
+    }
+}
+
+fn rich_line(spans: &[RichSpan], heading: Option<u8>) -> Element<'_, Message> {
+    let mut line = rich_text(
+        spans
+            .iter()
+            .map(|piece| rich_span(piece, heading.is_some()))
+            .collect::<Vec<_>>(),
+    )
+    .wrapping(Wrapping::WordOrGlyph)
+    .width(Fill)
+    .on_link_click(Message::LinkClicked);
+    if let Some(level) = heading {
+        line = line.size(heading_size(level));
+    }
+
+    line.into()
+}
+
+fn rich_span(piece: &RichSpan, heading: bool) -> Span<'_, String, Font> {
+    let base = if piece.code {
+        Font::MONOSPACE
+    } else {
+        APP_FONT
+    };
+    let font = Font {
+        weight: if piece.strong || heading {
+            Weight::Bold
+        } else {
+            base.weight
+        },
+        style: if piece.emphasis {
+            font::Style::Italic
+        } else {
+            base.style
+        },
+        ..base
+    };
+
+    span(piece.text.as_str())
+        .font(font)
+        .underline(piece.link.is_some())
+        .strikethrough(piece.struck)
+        .link_maybe(piece.link.clone())
+}
+
+fn heading_size(level: u8) -> f32 {
+    match level {
+        1 => 24.0,
+        2 => 20.0,
+        _ => 17.0,
+    }
+}
+
 fn detail_line<'a>(content: String) -> Element<'a, Message> {
     text(content)
         .size(DETAIL_SIZE)
         .style(text::secondary)
         .wrapping(Wrapping::WordOrGlyph)
         .into()
-}
-
-fn body_text(body: &MessageBody) -> &str {
-    match body {
-        MessageBody::PlainText(text) => text,
-    }
 }
 
 fn message_count_label(count: usize) -> String {
@@ -211,11 +394,17 @@ fn message_count_label(count: usize) -> String {
 }
 
 /// The first words of the body on one line.
-fn preview(body: &str) -> String {
-    body.split_whitespace()
-        .take(PREVIEW_WORDS)
-        .collect::<Vec<_>>()
-        .join(" ")
+fn preview(body: &MessageBody) -> String {
+    let words: Vec<&str> = match body {
+        MessageBody::PlainText(content) => content.split_whitespace().take(PREVIEW_WORDS).collect(),
+        MessageBody::Rich(rich) => rich
+            .text_fragments()
+            .flat_map(str::split_whitespace)
+            .take(PREVIEW_WORDS)
+            .collect(),
+    };
+
+    words.join(" ")
 }
 
 fn address_label(address: &MailAddress) -> String {
@@ -261,6 +450,16 @@ mod tests {
         MailAddress {
             name: name.map(str::to_owned),
             address: email.to_owned(),
+        }
+    }
+
+    fn paragraph(text: &str) -> RichBlock {
+        RichBlock {
+            kind: BlockKind::Paragraph(vec![RichSpan {
+                text: text.to_owned(),
+                ..RichSpan::default()
+            }]),
+            quote_depth: 0,
         }
     }
 
@@ -311,11 +510,15 @@ mod tests {
 
     #[test]
     fn preview_is_a_single_bounded_line() {
-        let body = "Hi Alex,\n\nFirst line.\nSecond line.";
-        let long = "word ".repeat(100);
+        let body = MessageBody::PlainText("Hi Alex,\n\nFirst line.\nSecond line.".into());
+        let long = MessageBody::PlainText("word ".repeat(100));
+        let rich = MessageBody::Rich(RichBody {
+            blocks: vec![paragraph("Hello  there"), paragraph("again")],
+        });
 
-        assert_eq!(preview(body), "Hi Alex, First line. Second line.");
+        assert_eq!(preview(&body), "Hi Alex, First line. Second line.");
         assert_eq!(preview(&long).split(' ').count(), PREVIEW_WORDS);
+        assert_eq!(preview(&rich), "Hello there again");
     }
 
     #[test]

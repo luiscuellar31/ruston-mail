@@ -3,16 +3,27 @@ mod mailbox;
 mod reader;
 
 use iced::widget::{column, container, text};
-use iced::{Element, Fill, Size, window};
+use iced::{Element, Fill, Font, Size, window};
 
 use crate::app::{App, AuthState, Message};
 
 const WINDOW_SIZE: Size = Size::new(1_100.0, 700.0);
 const MIN_WINDOW_SIZE: Size = Size::new(820.0, 480.0);
 
+/// A system family with a real bold face. The toolkit's own default family is
+/// usually not installed, and its fallback chain can draw bold text in an
+/// unrelated monospace face.
+#[cfg(target_os = "macos")]
+const APP_FONT: Font = Font::with_name("Helvetica Neue");
+#[cfg(target_os = "windows")]
+const APP_FONT: Font = Font::with_name("Segoe UI");
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const APP_FONT: Font = Font::DEFAULT;
+
 pub fn run(demo: bool) -> iced::Result {
     iced::application(move || App::boot(demo), App::update, view)
         .title(if demo { "Ruston (demo)" } else { "Ruston" })
+        .default_font(APP_FONT)
         .window(window::Settings {
             size: WINDOW_SIZE,
             min_size: Some(MIN_WINDOW_SIZE),
