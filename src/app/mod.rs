@@ -414,7 +414,7 @@ impl App {
                 }
                 // Counts were asked for before the folders were known, so ask
                 // again now that they are.
-                return self.reload_counts();
+                return Task::batch([self.reconcile_open_folder(), self.reload_counts()]);
             }
             Message::CountsLoaded(request, result) => {
                 let error = self
@@ -1077,6 +1077,38 @@ impl App {
         self.active_mailbox()?.apply_action_snapshot(page, counts)
     }
 
+    /// Brings the open folder back in line with what the account has. It was
+    /// opened from the settings file, which may name a folder or label that
+    /// has since been renamed or removed, and a name nothing answers to would
+    /// sit in the header with no matching button beside it.
+    fn reconcile_open_folder(&mut self) -> Task<Message> {
+        let Some(open) = self
+            .mailbox
+            .as_ref()
+            .map(|mailbox| mailbox.folder().clone())
+        else {
+            return Task::none();
+        };
+        // Proton's own folders are always there, so only the account's own
+        // can have gone stale.
+        let Some(id) = open.custom_id() else {
+            return Task::none();
+        };
+        // Gone from the account means gone from the sidebar, and the Inbox is
+        // the one place that is always there to fall back to.
+        let folder = self
+            .folders
+            .iter()
+            .find(|place| place.custom_id() == Some(id))
+            .cloned()
+            .unwrap_or(Folder::INBOX);
+        if folder == open {
+            return Task::none();
+        }
+
+        self.select_folder(folder)
+    }
+
     fn select_folder(&mut self, folder: Folder) -> Task<Message> {
         self.pending_link = None;
         self.saved_attachment = None;
@@ -1558,6 +1590,23 @@ mod tests {
         // Reading demo mail says nothing about where the real mailbox was
         // left, so the remembered folder is untouched.
         assert_eq!(app.settings.folder, invoices);
+    }
+
+    #[test]
+    fn a_renamed_folder_is_taken_up_and_a_removed_one_falls_back() {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SelectFolder(Folder::custom("kZ9", "Invoices")));
+
+        // The account renamed it since the settings file was written, so the
+        // sidebar and the header agree on the name it has now.
+        let renamed = Folder::custom("kZ9", "Facturas");
+        let _ = app.update(Message::FoldersLoaded(Ok(vec![renamed.clone()])));
+        assert_eq!(app.mailbox().unwrap().folder(), &renamed);
+
+        // Once it is gone from the account there is nothing to show under it,
+        // so reading falls back to the one folder that is always there.
+        let _ = app.update(Message::FoldersLoaded(Ok(Vec::new())));
+        assert_eq!(app.mailbox().unwrap().folder(), &Folder::INBOX);
     }
 
     #[test]
