@@ -633,11 +633,15 @@ impl Mailbox {
     /// Remembers a move so it can be taken back, replacing any earlier offer.
     /// Only moves out of a real folder qualify: Starred is a label, and Sent
     /// and Drafts describe where mail came from, so there is nowhere to put it
-    /// back. Both backends record the offer here, since demo actions never
-    /// reach `finish_action`.
+    /// back. Nor does a row only a search found: it was listed from every
+    /// folder at once, so the open one is not where it came from and putting
+    /// it there would be a move of its own. Both backends record the offer
+    /// here, since demo actions never reach `finish_action`.
     pub fn offer_undo(&mut self, row_id: &str, kind: SummaryKind, action: MailAction) {
+        let from_here = self.folder.is_location() && self.listed_in_folder(row_id);
+
         self.undo = match action.destination() {
-            Some(to) if self.folder.is_location() && *to != self.folder => Some(UndoMove {
+            Some(to) if from_here && *to != self.folder => Some(UndoMove {
                 row_id: row_id.to_owned(),
                 kind,
                 from: self.folder.clone(),
@@ -1485,6 +1489,24 @@ mod tests {
         );
         assert!(!mailbox.has_row("a"));
         assert!(mailbox.conversations().is_empty());
+    }
+
+    #[test]
+    fn moving_a_row_only_a_search_found_offers_no_undo() {
+        let mut mailbox = searched(&["a"], &["found", "next"], "found");
+
+        let request = mailbox
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
+            .unwrap();
+        assert_eq!(
+            mailbox.finish_action(&request, Ok(())),
+            Ok(Some("next".into()))
+        );
+
+        // The search listed every folder at once, so the Inbox is not where
+        // this row came from and putting it there would be a move of its own.
+        assert!(mailbox.undo().is_none());
+        assert!(!mailbox.has_row("found"));
     }
 
     #[test]
