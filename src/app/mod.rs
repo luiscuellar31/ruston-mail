@@ -507,6 +507,13 @@ impl App {
         let Some(shortcut) = shortcut(key.as_ref(), modifiers) else {
             return Task::none();
         };
+        // Only the topmost thing on screen takes a key. The mailbox sits
+        // under the settings page and under the link prompt, so while either
+        // is up the one shortcut still worth anything backs out of it.
+        let covered = self.showing_settings || self.pending_link.is_some();
+        if covered && shortcut != Shortcut::Dismiss {
+            return Task::none();
+        }
 
         match shortcut {
             Shortcut::Move(step) => {
@@ -1507,28 +1514,83 @@ mod tests {
         assert_eq!(shortcut(Key::Character("z"), plain), None);
     }
 
+    /// Sends a plain key press, as the window would when no field took it.
+    fn press(app: &mut App, key: Key<&str>) {
+        let named = match key {
+            Key::Character(c) => Key::Character(c.into()),
+            Key::Named(named) => Key::Named(named),
+            Key::Unidentified => Key::Unidentified,
+        };
+        let _ = app.update(Message::Keyboard(keyboard::Event::KeyPressed {
+            key: named.clone(),
+            modified_key: named,
+            physical_key: keyboard::key::Physical::Unidentified(
+                keyboard::key::NativeCode::Unidentified,
+            ),
+            location: keyboard::Location::Standard,
+            modifiers: Modifiers::default(),
+            text: None,
+            repeat: false,
+        }));
+    }
+
+    #[test]
+    fn keys_do_not_reach_a_covered_mailbox() {
+        let mut app = loaded_demo_app();
+        press(&mut app, Key::Character("j"));
+        let opened = app
+            .mailbox()
+            .unwrap()
+            .selected_conversation()
+            .map(str::to_owned);
+        assert!(opened.is_some());
+
+        let _ = app.update(Message::ShowSettings(true));
+        // Stepping the list underneath the settings page would change the
+        // selection out of sight, and ask Proton for a conversation nobody
+        // can see.
+        press(&mut app, Key::Character("j"));
+        assert_eq!(
+            app.mailbox().unwrap().selected_conversation(),
+            opened.as_deref()
+        );
+
+        // Escape still backs out of the page, and the list answers again.
+        press(&mut app, Key::Named(keyboard::key::Named::Escape));
+        assert!(!app.showing_settings());
+        press(&mut app, Key::Character("j"));
+        assert_ne!(
+            app.mailbox().unwrap().selected_conversation(),
+            opened.as_deref()
+        );
+    }
+
+    #[test]
+    fn keys_do_not_reach_the_mailbox_under_a_link_prompt() {
+        let mut app = loaded_demo_app();
+        press(&mut app, Key::Character("j"));
+        let opened = app
+            .mailbox()
+            .unwrap()
+            .selected_conversation()
+            .map(str::to_owned);
+
+        let _ = app.update(Message::LinkClicked("https://example.com/".to_owned()));
+        assert!(app.pending_link().is_some());
+
+        press(&mut app, Key::Character("j"));
+        assert_eq!(
+            app.mailbox().unwrap().selected_conversation(),
+            opened.as_deref()
+        );
+
+        press(&mut app, Key::Named(keyboard::key::Named::Escape));
+        assert!(app.pending_link().is_none());
+    }
+
     #[test]
     fn the_keyboard_walks_the_conversation_list() {
         let mut app = loaded_demo_app();
-
-        let press = |app: &mut App, key: Key<&str>| {
-            let named = match key {
-                Key::Character(c) => Key::Character(c.into()),
-                Key::Named(named) => Key::Named(named),
-                Key::Unidentified => Key::Unidentified,
-            };
-            let _ = app.update(Message::Keyboard(keyboard::Event::KeyPressed {
-                key: named.clone(),
-                modified_key: named,
-                physical_key: keyboard::key::Physical::Unidentified(
-                    keyboard::key::NativeCode::Unidentified,
-                ),
-                location: keyboard::Location::Standard,
-                modifiers: Modifiers::default(),
-                text: None,
-                repeat: false,
-            }));
-        };
 
         // Nothing is open, so the first key opens the first conversation.
         press(&mut app, Key::Character("j"));
