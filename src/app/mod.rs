@@ -827,12 +827,13 @@ impl App {
             }
         };
 
-        // A row moved into the folder on screen, such as one put back, is not
-        // in the loaded list; a reload is what brings it into view.
-        let arrived = self
-            .mailbox
-            .as_ref()
-            .is_some_and(|mailbox| request.action.destination() == Some(mailbox.folder()));
+        // A row put back into the folder on screen is not in the loaded list,
+        // and only a reload brings it into view. A row that is already listed
+        // never left, so acting on it changes nothing to reload.
+        let arrived = self.mailbox.as_ref().is_some_and(|mailbox| {
+            request.action.destination() == Some(mailbox.folder())
+                && !mailbox.has_row(&request.row_id)
+        });
         if arrived {
             return self.refresh_mailbox();
         }

@@ -170,6 +170,11 @@ impl Mailbox {
         self.has_more
     }
 
+    /// Whether the loaded list holds this row, hidden by a search or not.
+    pub fn has_row(&self, row_id: &str) -> bool {
+        self.conversations.iter().any(|row| row.id == row_id)
+    }
+
     /// How many conversations are loaded, which is all a search can look at.
     pub fn loaded_count(&self) -> usize {
         self.conversations.len()
@@ -1176,6 +1181,21 @@ mod tests {
         assert_eq!(mailbox.neighbour(Step::Next), None);
         load_detail(&mut mailbox, "a", detail("a", &["a1"]), 6);
         assert_eq!(mailbox.neighbour(Step::Previous), None);
+    }
+
+    #[test]
+    fn a_loaded_row_is_found_even_while_a_search_hides_it() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+
+        assert!(mailbox.has_row("a"));
+        assert!(!mailbox.has_row("missing"));
+
+        // Hiding a row from view does not take it out of the loaded list, so
+        // an action on it knows the row never left the folder.
+        mailbox.set_search_query("nothing matches this".into());
+
+        assert_eq!(mailbox.visible_position("a"), None);
+        assert!(mailbox.has_row("a"));
     }
 
     #[test]
