@@ -617,10 +617,17 @@ impl Mailbox {
             return None;
         }
 
+        self.open_row_after(index?)
+    }
+
+    /// Closes the reader and names the visible row that took the place of the
+    /// one that was at `index`, so reading continues where it left off.
+    fn open_row_after(&mut self, index: usize) -> Option<String> {
         self.set_reader(ReaderState::Empty);
         let last = self.visible_conversations().count().checked_sub(1)?;
+
         self.visible_conversations()
-            .nth(index?.min(last))
+            .nth(index.min(last))
             .map(|row| row.id.clone())
     }
 
@@ -709,11 +716,7 @@ impl Mailbox {
             return None;
         }
 
-        self.set_reader(ReaderState::Empty);
-        let next_index = selected_index.min(self.visible_conversations().count().saturating_sub(1));
-        self.visible_conversations()
-            .nth(next_index)
-            .map(|conversation| conversation.id.clone())
+        self.open_row_after(selected_index)
     }
 
     /// Applies a page response. Returns the error of an accepted failed
