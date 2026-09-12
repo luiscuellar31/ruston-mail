@@ -338,7 +338,7 @@ impl ProtonMailService {
         &self,
         kind: SummaryKind,
         id: &str,
-        folder: &Folder,
+        context: Option<&Folder>,
         action: MailAction,
     ) -> Result<(), MailboxError> {
         let ids = [id.to_owned()];
@@ -350,7 +350,7 @@ impl ProtonMailService {
                 }
                 (SummaryKind::Conversation, ActionCall::MarkRead(read)) => {
                     client
-                        .mark_conversations_read(&ids, read, label_id(folder))
+                        .mark_conversations_read(&ids, read, context_label(context))
                         .await
                 }
                 (SummaryKind::Conversation, ActionCall::Star(starred)) => {
@@ -539,6 +539,13 @@ fn action_call(action: &MailAction) -> ActionCall<'_> {
         MailAction::SetStarred(starred) => ActionCall::Star(*starred),
         MailAction::SetLabel { label, on } => ActionCall::Label(label_id(label), *on),
     }
+}
+
+/// Where Proton should read a row from. Marking a conversation unread is the
+/// one action that needs it, and a row a search found can be in any folder,
+/// so All Mail stands in for it: every conversation is in All Mail.
+fn context_label(context: Option<&Folder>) -> &str {
+    context.map_or(label_ids::ALL_MAIL, label_id)
 }
 
 /// What Proton calls this folder on the wire. System folders are numbered
@@ -1067,6 +1074,15 @@ mod tests {
         // A folder the account made carries its own id straight through.
         let custom = MailAction::MoveTo(Folder::custom("kZ9", "Invoices"));
         assert_eq!(action_call(&custom), ActionCall::Move("kZ9"));
+
+        // A row only a search found has no folder to be read in, so Proton
+        // is pointed at All Mail, which holds every conversation.
+        assert_eq!(context_label(None), label_ids::ALL_MAIL);
+        assert_eq!(context_label(Some(&Folder::INBOX)), label_ids::INBOX);
+        assert_eq!(
+            context_label(Some(&Folder::custom("kZ9", "Invoices"))),
+            "kZ9"
+        );
 
         // A label change names the label and says which way it goes.
         let receipts = Folder::label("wN2", "Receipts");

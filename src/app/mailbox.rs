@@ -35,8 +35,12 @@ pub struct ActionRequest {
     pub id: RequestId,
     pub row_id: String,
     pub kind: SummaryKind,
-    /// The folder the action was started from.
+    /// The folder the action was started from, so a response that no longer
+    /// describes what is on screen is dropped.
     pub folder: Folder,
+    /// The folder Proton should read the row in. `None` for a row that only
+    /// a search found, which can live anywhere the open folder is not.
+    pub context: Option<Folder>,
     pub action: MailAction,
 }
 
@@ -329,9 +333,44 @@ impl Mailbox {
 
     pub fn selected_summary(&self) -> Option<&ConversationSummary> {
         let selected = self.selected_conversation()?;
+
+        self.row(selected)
+    }
+
+    /// Every row the user can act on. Search results are rows too: they are
+    /// what is on screen while a search is showing, and a conversation found
+    /// that way is usually nowhere in the folder listing.
+    fn rows(&self) -> impl Iterator<Item = &ConversationSummary> {
         self.conversations
             .iter()
-            .find(|conversation| conversation.id == selected)
+            .chain(self.search.iter().flat_map(|search| search.rows.iter()))
+    }
+
+    fn row(&self, row_id: &str) -> Option<&ConversationSummary> {
+        self.rows().find(|row| row.id == row_id)
+    }
+
+    /// Every listing that holds one row. A search result can also be in the
+    /// open folder, and the two copies must never disagree about it.
+    fn row_copies<'a>(
+        &'a mut self,
+        row_id: &'a str,
+    ) -> impl Iterator<Item = &'a mut ConversationSummary> {
+        let found = self
+            .search
+            .iter_mut()
+            .flat_map(|search| search.rows.iter_mut());
+
+        self.conversations
+            .iter_mut()
+            .chain(found)
+            .filter(move |row| row.id == row_id)
+    }
+
+    /// Whether the folder listing itself holds this row, which is what says
+    /// Proton can be told to read it in the open folder.
+    fn listed_in_folder(&self, row_id: &str) -> bool {
+        self.conversations.iter().any(|row| row.id == row_id)
     }
 
     #[cfg(test)]
@@ -390,13 +429,9 @@ impl Mailbox {
             return None;
         };
         let conversation_id = conversation_id.clone();
-        // A retry reaches the row even when a search is hiding it, which is
-        // why it looks through every loaded row rather than the visible ones.
-        let kind = self
-            .conversations
-            .iter()
-            .find(|conversation| conversation.id == conversation_id)?
-            .kind;
+        // A retry reaches the row even when typing is hiding it, which is why
+        // it looks through every loaded row rather than the visible ones.
+        let kind = self.row(&conversation_id)?.kind;
 
         Some(self.open_conversation(conversation_id, kind, request))
     }
@@ -546,18 +581,17 @@ impl Mailbox {
         let ReaderState::Loaded(reader) = &self.reader else {
             return None;
         };
-        let row = self
-            .conversations
-            .iter()
-            .find(|row| row.id == reader.conversation_id())?;
+        let row = self.row(reader.conversation_id())?;
         if !row.unread || self.pending_reads.contains_key(&row.id) {
             return None;
         }
+        let (row_id, kind) = (row.id.clone(), row.kind);
 
         let request = ActionRequest {
             id: request,
-            row_id: row.id.clone(),
-            kind: row.kind,
+            context: self.listed_in_folder(&row_id).then(|| self.folder.clone()),
+            row_id,
+            kind,
             folder: self.folder.clone(),
             action: MailAction::SetUnread(false),
         };
@@ -582,15 +616,13 @@ impl Mailbox {
             return Ok(false);
         }
 
-        let Some(row) = self
-            .conversations
-            .iter_mut()
-            .find(|row| row.id == request.row_id)
-        else {
-            return Ok(false);
-        };
-        row.unread = false;
-        Ok(true)
+        let mut found = false;
+        for row in self.row_copies(&request.row_id) {
+            row.unread = false;
+            found = true;
+        }
+
+        Ok(found)
     }
 
     /// The move the user can still take back, if any.
@@ -649,6 +681,7 @@ impl Mailbox {
 
         let request = ActionRequest {
             id: request,
+            context: self.listed_in_folder(&row_id).then(|| self.folder.clone()),
             row_id,
             kind,
             folder: self.folder.clone(),
@@ -702,17 +735,7 @@ impl Mailbox {
             return Ok(self.remove_row(&request.row_id));
         }
 
-        if let Some(row) = self
-            .conversations
-            .iter_mut()
-            .find(|row| row.id == request.row_id)
-        {
-            match request.action {
-                MailAction::SetUnread(unread) => row.unread = unread,
-                MailAction::SetStarred(starred) => row.starred = starred,
-                MailAction::MoveTo(_) | MailAction::SetLabel { .. } => {}
-            }
-        }
+        self.record_action(&request.row_id, &request.action);
         // The reader shows which labels the open conversation carries, and it
         // is the row that was just acted on.
         if let (MailAction::SetLabel { label, on }, ReaderState::Loaded(reader)) =
@@ -724,6 +747,21 @@ impl Mailbox {
         Ok(None)
     }
 
+    /// Writes a confirmed change into every listing that holds the row. A
+    /// move changes no field of a row, only which listings it belongs to.
+    /// Both backends come through here: the demo reloads the open folder
+    /// afterwards, but nothing reloads search results, which span every
+    /// folder and stay on screen.
+    pub fn record_action(&mut self, row_id: &str, action: &MailAction) {
+        for row in self.row_copies(row_id) {
+            match action {
+                MailAction::SetUnread(unread) => row.unread = *unread,
+                MailAction::SetStarred(starred) => row.starred = *starred,
+                MailAction::MoveTo(_) | MailAction::SetLabel { .. } => {}
+            }
+        }
+    }
+
     /// Removes a row. When it was selected, clears the reader and returns the
     /// visible row that took its place.
     fn remove_row(&mut self, row_id: &str) -> Option<String> {
@@ -732,6 +770,9 @@ impl Mailbox {
             .visible_conversations()
             .position(|row| row.id == row_id);
         self.conversations.retain(|row| row.id != row_id);
+        if let Some(search) = &mut self.search {
+            search.rows.retain(|row| row.id != row_id);
+        }
         if !was_selected {
             return None;
         }
@@ -1329,6 +1370,121 @@ mod tests {
         // The offer is claimed once, and the next action replaces it.
         assert!(mailbox.take_undo().is_some());
         assert!(mailbox.undo().is_none());
+    }
+
+    /// An Inbox holding `listed`, showing the results of a server search that
+    /// returned `found`, with `opened` open in the reader.
+    fn searched(listed: &[&str], found: &[&str], opened: &str) -> Mailbox {
+        let (mut mailbox, request) = open();
+        let rows: Vec<ConversationSummary> = listed
+            .iter()
+            .map(|id| ConversationSummary {
+                unread: true,
+                ..summary(id)
+            })
+            .collect();
+        let total = rows.len() as u32;
+        mailbox.finish_page(
+            request.id,
+            Ok(ConversationPage {
+                conversations: rows,
+                total,
+            }),
+        );
+
+        mailbox.set_search_query("report".to_owned());
+        let search = mailbox.start_search(90).unwrap();
+        let results: Vec<ConversationSummary> = found
+            .iter()
+            .map(|id| ConversationSummary {
+                unread: true,
+                ..summary(id)
+            })
+            .collect();
+        let total = results.len() as u32;
+        assert_eq!(
+            mailbox.finish_search(
+                &search,
+                Ok(ConversationPage {
+                    conversations: results,
+                    total,
+                }),
+            ),
+            None
+        );
+        load_detail(&mut mailbox, opened, detail(opened, &["message"]), 91);
+
+        mailbox
+    }
+
+    #[test]
+    fn a_conversation_a_search_found_can_be_acted_on() {
+        let mut mailbox = searched(&["a"], &["found"], "found");
+
+        // The row is nowhere in the folder listing, so Proton is told to read
+        // it across every folder rather than in the open one.
+        let request = mailbox
+            .start_action(MailAction::SetStarred(true), 3)
+            .expect("a search result takes actions like any other row");
+        assert_eq!(request.row_id, "found");
+        assert_eq!(request.context, None);
+
+        assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+        assert!(
+            mailbox
+                .selected_summary()
+                .expect("the open row is still the search result")
+                .starred
+        );
+    }
+
+    #[test]
+    fn a_search_result_is_marked_read_like_any_other_row() {
+        let mut mailbox = searched(&["a"], &["found"], "found");
+
+        let request = mailbox
+            .start_mark_read(3)
+            .expect("opening a search result marks it read");
+        assert_eq!(request.context, None);
+
+        assert_eq!(mailbox.finish_mark_read(&request, Ok(())), Ok(true));
+        assert!(!mailbox.selected_summary().unwrap().unread);
+    }
+
+    #[test]
+    fn a_row_in_both_listings_changes_in_both() {
+        // The search found a row the open folder also lists.
+        let mut mailbox = searched(&["a"], &["a"], "a");
+
+        // It is listed in the folder, so the open folder is the context.
+        let request = mailbox
+            .start_action(MailAction::SetStarred(true), 3)
+            .unwrap();
+        assert_eq!(request.context.as_ref(), Some(&sys(MailFolder::Inbox)));
+        assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+
+        // Both copies agree, so the folder listing holds no stale row waiting
+        // for the search to be left behind.
+        assert!(mailbox.selected_summary().unwrap().starred);
+        assert!(mailbox.conversations().iter().all(|row| row.starred));
+    }
+
+    #[test]
+    fn a_row_moved_out_leaves_the_search_results_too() {
+        let mut mailbox = searched(&["a"], &["a", "b"], "a");
+
+        let request = mailbox
+            .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
+            .unwrap();
+
+        // Reading goes on with the next result, and the moved row is gone
+        // from the results and from the folder listing alike.
+        assert_eq!(
+            mailbox.finish_action(&request, Ok(())),
+            Ok(Some("b".into()))
+        );
+        assert!(!mailbox.has_row("a"));
+        assert!(mailbox.conversations().is_empty());
     }
 
     #[test]

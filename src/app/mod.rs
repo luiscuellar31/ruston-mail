@@ -878,8 +878,9 @@ impl App {
         };
         if applied {
             // Demo actions never reach `finish_action`, so the offer to take
-            // the move back is recorded here instead.
+            // the move back, and the change itself, are recorded here instead.
             if let Some(mailbox) = self.active_mailbox() {
+                mailbox.record_action(&id, &action);
                 mailbox.offer_undo(&id, kind, action);
             }
             if let Some(next) = self.apply_demo_snapshot(service) {
@@ -1234,7 +1235,7 @@ fn run_action(
                 .apply_action(
                     pending.kind,
                     &pending.row_id,
-                    &pending.folder,
+                    pending.context.as_ref(),
                     pending.action,
                 )
                 .await
@@ -1350,6 +1351,19 @@ mod tests {
         let request = pending_reader_request(app);
         let result = demo_service(app).conversation_detail(&request.conversation_id, NOW);
         let _ = app.update(Message::ConversationLoaded(request, result));
+    }
+
+    /// Runs what is typed against the demo backend, the way pressing Enter
+    /// asks the server for everything matching it.
+    fn deliver_demo_search(app: &mut App, query: &str) {
+        let _ = app.update(Message::SearchChanged(query.to_owned()));
+        let _ = app.update(Message::SearchSubmitted);
+        let request = SearchRequest {
+            id: app.last_request,
+            query: query.to_owned(),
+        };
+        let result = demo_service(app).search(query, demo::PAGE_SIZE, NOW);
+        let _ = app.update(Message::SearchLoaded(request, result));
     }
 
     #[test]
@@ -1950,6 +1964,42 @@ mod tests {
         // Once the first one is done, the next press is free to go.
         let _ = app.update(Message::SaveAttachment("demo-0".into(), "other".into()));
         assert_eq!(app.saving_attachment(), Some("other"));
+    }
+
+    #[test]
+    fn a_conversation_the_server_found_can_still_be_acted_on() {
+        let mut app = loaded_demo_app();
+        deliver_demo_search(&mut app, "offsite");
+        let found = app
+            .mailbox()
+            .unwrap()
+            .visible_conversations()
+            .next()
+            .expect("the search found something")
+            .id
+            .clone();
+        let _ = app.update(Message::SelectConversation(found.clone()));
+        deliver_selected_demo_detail(&mut app);
+
+        // The row is not in the open folder's listing, which used to leave
+        // the reader with no actions at all.
+        assert_eq!(
+            app.mailbox().unwrap().selected_summary().map(|row| &row.id),
+            Some(&found)
+        );
+
+        let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
+
+        // The results are what is on screen, so they carry the change.
+        let mailbox = app.mailbox().unwrap();
+        assert_eq!(mailbox.search_results(), Some("offsite"));
+        assert!(
+            mailbox
+                .visible_conversations()
+                .find(|row| row.id == found)
+                .expect("the row is still listed")
+                .starred
+        );
     }
 
     #[test]
