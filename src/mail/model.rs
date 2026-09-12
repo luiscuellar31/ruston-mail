@@ -285,28 +285,28 @@ pub enum MailboxError {
 impl MailboxError {
     pub fn message(self) -> &'static str {
         match self {
-            Self::Connection => "Ruston could not connect to Proton Mail.",
+            Self::Connection => "Ruston Mail could not connect to Proton.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service => "Proton Mail could not load this folder. Try again later.",
-            Self::Unavailable => "Ruston could not load this folder. Try again.",
+            Self::Unavailable => "Ruston Mail could not load this folder. Try again.",
         }
     }
 
     pub fn conversation_message(self) -> &'static str {
         match self {
-            Self::Connection => "Ruston could not connect to load this conversation.",
+            Self::Connection => "Ruston Mail could not connect to load this conversation.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service => "Proton Mail could not load this conversation. Try again later.",
-            Self::Unavailable => "Ruston could not load this conversation. Try again.",
+            Self::Unavailable => "Ruston Mail could not load this conversation. Try again.",
         }
     }
 
     pub fn action_message(self) -> &'static str {
         match self {
-            Self::Connection => "Ruston could not connect to update this conversation.",
+            Self::Connection => "Ruston Mail could not connect to update this conversation.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service => "Proton Mail could not update this conversation. Try again later.",
-            Self::Unavailable => "Ruston could not update this conversation. Try again.",
+            Self::Unavailable => "Ruston Mail could not update this conversation. Try again.",
         }
     }
 }

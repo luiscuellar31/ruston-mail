@@ -28,14 +28,14 @@ impl fmt::Display for AuthError {
             Self::InvalidCredentials => "The username or password is incorrect.",
             Self::InvalidTotp => "The authentication code is invalid.",
             Self::InvalidMailboxPassword => "The mailbox password is incorrect.",
-            Self::Connection => "Ruston could not connect to Proton Mail.",
+            Self::Connection => "Ruston Mail could not connect to Proton.",
             Self::HumanVerificationRequired => {
-                "Proton requires human verification. Ruston does not support this flow yet."
+                "Proton requires human verification. Ruston Mail does not support this flow yet."
             }
             Self::SecurityKeyUnsupported => {
-                "This account requires FIDO2/WebAuthn, which Ruston does not support yet."
+                "This account requires FIDO2/WebAuthn, which Ruston Mail does not support yet."
             }
-            Self::SessionUnavailable => "Ruston could not access the saved Proton session.",
+            Self::SessionUnavailable => "Ruston Mail could not access the saved Proton session.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             // Only the status and code are shown; Proton's message and raw body
             // are never surfaced.
@@ -46,7 +46,7 @@ impl fmt::Display for AuthError {
                 );
             }
             Self::AuthenticationUnavailable => {
-                "Ruston could not complete authentication. Try again."
+                "Ruston Mail could not complete authentication. Try again."
             }
         };
 
@@ -102,7 +102,7 @@ mod tests {
         );
         assert_eq!(
             AuthError::HumanVerificationRequired.to_string(),
-            "Proton requires human verification. Ruston does not support this flow yet."
+            "Proton requires human verification. Ruston Mail does not support this flow yet."
         );
     }
 }
