@@ -116,8 +116,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-`proton-core` is pulled from a fork with a fix for Proton's captcha flow, so
-the first build will fetch it from GitHub.
+`proton-core` comes from a fork, which carries fixes for Proton's captcha and
+two-factor flows and a little more of its message metadata, so the first build
+fetches it from GitHub. It is pinned to one commit rather than to a branch:
+the build that worked yesterday is the build you get today, and moving to a
+newer one is a deliberate edit of `Cargo.toml`. That commit comes from the
+fork's `dev/luiscuellar31` branch.
 
 ### Demo mode
 
