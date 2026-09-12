@@ -632,6 +632,8 @@ impl Mailbox {
         if self.is_busy() {
             return None;
         }
+        // The reloaded list no longer shows what the offer talked about.
+        self.undo = None;
 
         self.status = if self.conversations.is_empty() {
             ListStatus::Loading(request)
@@ -1092,6 +1094,22 @@ mod tests {
             conversations,
             total,
         })
+    }
+
+    #[test]
+    fn refreshing_drops_the_offer_to_undo() {
+        let mut mailbox = loaded_inbox(&["a", "b"], 2);
+        load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+        let request = mailbox
+            .start_action(MailAction::MoveTo(MailFolder::Archive), 4)
+            .unwrap();
+        let _ = mailbox.finish_action(&request, Ok(()));
+        assert!(mailbox.undo().is_some());
+
+        // The reloaded list no longer shows what the offer talked about.
+        let _ = mailbox.refresh(5);
+
+        assert!(mailbox.undo().is_none());
     }
 
     #[test]
