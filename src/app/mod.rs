@@ -2075,6 +2075,34 @@ mod tests {
     }
 
     #[test]
+    fn archiving_from_the_results_takes_the_row_out_of_them() {
+        let mut app = loaded_demo_app();
+        deliver_demo_search(&mut app, "the");
+        let rows: Vec<String> = app
+            .mailbox()
+            .unwrap()
+            .visible_conversations()
+            .map(|row| row.id.clone())
+            .collect();
+        assert!(rows.len() > 1, "the search found more than one row");
+        let _ = app.update(Message::SelectConversation(rows[0].clone()));
+        deliver_selected_demo_detail(&mut app);
+
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
+            MailFolder::Archive,
+        ))));
+
+        // The demo has no server to re-read, so nothing else would have taken
+        // the row out of the results, and archiving would look like a no-op.
+        let mailbox = app.mailbox().unwrap();
+        assert!(
+            !mailbox.visible_conversations().any(|row| row.id == rows[0]),
+            "the archived row is still listed among the results"
+        );
+        assert_eq!(mailbox.selected_conversation(), Some(rows[1].as_str()));
+    }
+
+    #[test]
     fn demo_archive_removes_selected_and_opens_next() {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SelectConversation("demo-0".into()));

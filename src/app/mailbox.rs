@@ -723,17 +723,7 @@ impl Mailbox {
             return Ok(None);
         }
 
-        let leaves_folder = match &request.action {
-            MailAction::SetStarred(starred) => {
-                !starred && request.folder.system() == Some(MailFolder::Starred)
-            }
-            // Taking a label away while reading that label's own view is the
-            // one way a label change empties a row out of the list.
-            MailAction::SetLabel { label, on } => !on && *label == request.folder,
-            MailAction::SetUnread(_) => false,
-            moved => moved.destination() != Some(&request.folder),
-        };
-        if leaves_folder {
+        if self.leaves_view(&request.folder, &request.action) {
             self.offer_undo(&request.row_id, request.kind, request.action.clone());
 
             return Ok(self.remove_row(&request.row_id));
@@ -751,11 +741,26 @@ impl Mailbox {
         Ok(None)
     }
 
-    /// Writes a confirmed change into every listing that holds the row. A
-    /// move changes no field of a row, only which listings it belongs to.
-    /// Both backends come through here: the demo reloads the open folder
-    /// afterwards, but nothing reloads search results, which span every
-    /// folder and stay on screen.
+    /// Whether an action started in `folder` takes the row out of what the
+    /// view lists, rather than only changing how the row reads. Unstarring
+    /// inside Starred and taking a label away inside that label's own view
+    /// are the two ways something other than a move empties a row out.
+    fn leaves_view(&self, folder: &Folder, action: &MailAction) -> bool {
+        match action {
+            MailAction::SetStarred(starred) => {
+                !starred && folder.system() == Some(MailFolder::Starred)
+            }
+            MailAction::SetLabel { label, on } => !on && label == folder,
+            MailAction::SetUnread(_) => false,
+            moved => moved.destination() != Some(folder),
+        }
+    }
+
+    /// Writes a confirmed change into every listing that holds the row: the
+    /// fields it changes, and the row itself where the change takes it out of
+    /// the view. Proton's path removes such a row before reaching here; the
+    /// demo has no server to re-read and reloads only the open folder, so the
+    /// search results, which span every folder, are left to this.
     pub fn record_action(&mut self, row_id: &str, action: &MailAction) {
         for row in self.row_copies(row_id) {
             match action {
@@ -763,6 +768,11 @@ impl Mailbox {
                 MailAction::SetStarred(starred) => row.starred = *starred,
                 MailAction::MoveTo(_) | MailAction::SetLabel { .. } => {}
             }
+        }
+        if self.leaves_view(&self.folder, action)
+            && let Some(search) = &mut self.search
+        {
+            search.rows.retain(|row| row.id != row_id);
         }
     }
 
