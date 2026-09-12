@@ -223,24 +223,8 @@ pub struct RichBody {
 }
 
 impl RichBody {
-    /// The visible text, in reading order, e.g. for previews.
-    pub fn text_fragments(&self) -> impl Iterator<Item = &str> {
-        self.blocks.iter().flat_map(|block| {
-            let (spans, text): (&[RichSpan], Option<&str>) = match &block.kind {
-                BlockKind::Paragraph(spans)
-                | BlockKind::Heading { spans, .. }
-                | BlockKind::ListItem { spans, .. } => (spans, None),
-                BlockKind::Preformatted(text) => (&[], Some(text)),
-                BlockKind::Image { description } => (&[], Some(description)),
-                BlockKind::Rule => (&[], None),
-            };
-            spans.iter().map(|span| span.text.as_str()).chain(text)
-        })
-    }
-
-    /// The body as plain text, one block per line, for copying out. Styles and
-    /// links are dropped; structure is kept with markers and quote prefixes.
-    #[cfg(test)]
+    /// The body as plain text, one block per line. Styles and links are
+    /// dropped; structure is kept with markers and quote prefixes.
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
         for block in &self.blocks {
@@ -264,7 +248,6 @@ impl RichBody {
     }
 }
 
-#[cfg(test)]
 fn join(spans: &[RichSpan]) -> String {
     spans.iter().map(|span| span.text.as_str()).collect()
 }

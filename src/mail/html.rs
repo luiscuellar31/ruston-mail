@@ -550,13 +550,10 @@ mod tests {
     }
 
     #[test]
-    fn text_fragments_follow_reading_order() {
+    fn text_follows_reading_order() {
         let body = parse("<p>One <b>two</b></p><img alt=\"Pic\"><pre>code</pre>");
 
-        assert_eq!(
-            body.text_fragments().collect::<Vec<_>>(),
-            ["One ", "two", "Pic", "code"]
-        );
+        assert_eq!(body.plain_text(), "One two\n[Image: Pic]\ncode\n");
     }
 
     #[test]

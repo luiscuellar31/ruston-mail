@@ -936,7 +936,7 @@ mod tests {
         let MessageBody::Rich(body) = &message.body else {
             panic!("expected a rich body for HTML");
         };
-        assert_eq!(body.text_fragments().collect::<String>(), "Hello & welcome");
+        assert_eq!(body.plain_text(), "Hello & welcome\n");
     }
 
     #[test]

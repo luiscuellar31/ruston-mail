@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use chrono::{Local, TimeZone};
+use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Sense, Stroke};
 
 use super::mailbox::detail;
@@ -20,6 +21,11 @@ const MAX_QUOTE_DEPTH: u8 = 4;
 const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
 const MARKER_WIDTH: f32 = 12.0;
+const CODE_FILL: Color32 = Color32::from_rgb(18, 19, 24);
+/// `expand_bg` grows a code run's fill on every side, so it buys sideways
+/// breathing room at the cost of height. Small enough not to reach the line
+/// above or below.
+const CODE_PADDING: f32 = 2.5;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn show(
@@ -121,50 +127,80 @@ fn conversation(
     if std::mem::take(&mut state.scroll_reader_top) {
         scroll = scroll.vertical_scroll_offset(0.0);
     }
-    let content_width = ui.available_width().min(READING_WIDTH);
     scroll.show(ui, |ui| {
-        ui.set_width(content_width);
-        let detail_data = reader.detail();
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(detail_data.subject.as_deref().unwrap_or("(No subject)"))
-                    .size(SUBJECT_SIZE)
-                    .strong(),
-            )
-            .selectable(true)
-            .wrap(),
-        );
-        detail(ui, &message_count_label(detail_data.messages.len()));
-        ui.add_space(8.0);
-
-        if let Some(summary) = summary {
-            action_toolbar(ui, summary, actions_enabled, messages);
-            label_toggles(
-                ui,
-                detail_data,
-                places,
-                actions_enabled,
-                reader.is_showing_labels(),
-                messages,
-            );
-            if let Some(error) = action_error {
-                ui.label(
-                    egui::RichText::new(error.action_message())
-                        .small()
-                        .color(theme::DANGER),
+        // Mail is read in a column of its own width. Once the panel outgrows
+        // that, the column is centred rather than left hugging the divider.
+        let width = ui.available_width().min(READING_WIDTH);
+        ui.horizontal_top(|ui| {
+            ui.add_space(((ui.available_width() - width) * 0.5).max(0.0));
+            ui.vertical(|ui| {
+                ui.set_width(width);
+                reading_column(
+                    ui,
+                    reader,
+                    places,
+                    summary,
+                    actions_enabled,
+                    action_error,
+                    saving_attachment,
+                    messages,
                 );
-            }
-        }
-        ui.add_space(8.0);
-
-        if detail_data.messages.is_empty() {
-            detail(ui, "This conversation has no messages.");
-        }
-        for message in &detail_data.messages {
-            message_card(ui, message, reader, saving_attachment, messages);
-            ui.add_space(12.0);
-        }
+            });
+        });
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reading_column(
+    ui: &mut egui::Ui,
+    reader: &ConversationReader,
+    places: &[Folder],
+    summary: Option<&ConversationSummary>,
+    actions_enabled: bool,
+    action_error: Option<crate::mail::MailboxError>,
+    saving_attachment: Option<&str>,
+    messages: &mut Vec<Message>,
+) {
+    let detail_data = reader.detail();
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(detail_data.subject.as_deref().unwrap_or("(No subject)"))
+                .size(SUBJECT_SIZE)
+                .strong(),
+        )
+        .selectable(true)
+        .wrap(),
+    );
+    detail(ui, &message_count_label(detail_data.messages.len()));
+    ui.add_space(8.0);
+
+    if let Some(summary) = summary {
+        action_toolbar(ui, summary, actions_enabled, messages);
+        label_toggles(
+            ui,
+            detail_data,
+            places,
+            actions_enabled,
+            reader.is_showing_labels(),
+            messages,
+        );
+        if let Some(error) = action_error {
+            ui.label(
+                egui::RichText::new(error.action_message())
+                    .small()
+                    .color(theme::DANGER),
+            );
+        }
+    }
+    ui.add_space(8.0);
+
+    if detail_data.messages.is_empty() {
+        detail(ui, "This conversation has no messages.");
+    }
+    for message in &detail_data.messages {
+        message_card(ui, message, reader, saving_attachment, messages);
+        ui.add_space(12.0);
+    }
 }
 
 fn action_toolbar(
@@ -534,7 +570,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
         }
         BlockKind::Preformatted(content) => {
             egui::Frame::new()
-                .fill(Color32::from_rgb(18, 19, 24))
+                .fill(CODE_FILL)
                 .corner_radius(6)
                 .inner_margin(10)
                 .show(ui, |ui| {
@@ -587,34 +623,62 @@ fn rich_spans(
 ) {
     ui.spacing_mut().item_spacing.x = 0.0;
     for span in spans {
-        let mut text =
-            egui::RichText::new(&span.text).size(heading.map(heading_size).unwrap_or(BODY_SIZE));
-        if span.strong || heading.is_some() {
-            text = text.strong();
-        }
-        if span.emphasis {
-            text = text.italics();
-        }
-        if span.code {
-            // Monospace runs wider and taller than the proportional face at
-            // the same point size, so it is set a little smaller to sit on
-            // the same line as the words around it.
-            text = text
-                .monospace()
-                .size(BODY_SIZE - 1.5)
-                .background_color(Color32::from_rgb(18, 19, 24));
-        }
-        if span.struck {
-            text = text.strikethrough();
-        }
+        let job = span_layout(ui, span, heading);
         if let Some(link) = &span.link {
-            if ui.add(egui::Link::new(text)).clicked() {
+            if ui.add(egui::Link::new(job)).clicked() {
                 messages.push(Message::LinkClicked(link.clone()));
             }
         } else {
-            ui.add(egui::Label::new(text).selectable(true).wrap());
+            ui.add(egui::Label::new(job).selectable(true).wrap());
         }
     }
+}
+
+/// One span's styling, as a laid-out text job.
+///
+/// Built as a `TextFormat` rather than a `RichText` for the sake of
+/// `expand_bg`, which is the only way to widen the fill behind a code run:
+/// `RichText` pins it at 1.0, which leaves the background hugging the glyphs.
+fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>) -> LayoutJob {
+    let size = heading.map(heading_size).unwrap_or(BODY_SIZE);
+    // egui's bundled faces have no bold, so weight reads as a brighter ink.
+    let ink = if span.strong || heading.is_some() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    };
+    let mut format = egui::TextFormat {
+        font_id: if span.code {
+            // Monospace runs wider and taller than the proportional face at
+            // the same point size, so it is set a little smaller to sit on
+            // the same line as the words around it.
+            FontId::monospace(size - 1.5)
+        } else {
+            FontId::proportional(size)
+        },
+        // A link's colour is the one thing left to `Link`, which fills in
+        // the placeholder with the hyperlink colour and underlines on hover.
+        color: if span.link.is_some() {
+            Color32::PLACEHOLDER
+        } else {
+            ink
+        },
+        italics: span.emphasis,
+        ..Default::default()
+    };
+    if span.code {
+        format.background = CODE_FILL;
+        format.expand_bg = CODE_PADDING;
+    }
+    if span.struck {
+        let rule = if span.link.is_some() {
+            ui.visuals().hyperlink_color
+        } else {
+            ink
+        };
+        format.strikethrough = Stroke::new(1.0, rule);
+    }
+    LayoutJob::single_section(span.text.clone(), format)
 }
 
 fn heading_size(level: u8) -> f32 {
@@ -660,15 +724,17 @@ fn message_count_label(count: usize) -> String {
 }
 
 fn preview(body: &MessageBody) -> String {
-    let words: Vec<&str> = match body {
-        MessageBody::PlainText(content) => content.split_whitespace().take(PREVIEW_WORDS).collect(),
-        MessageBody::Rich(rich) => rich
-            .text_fragments()
-            .flat_map(str::split_whitespace)
-            .take(PREVIEW_WORDS)
-            .collect(),
+    // A rich body is flattened before it is split into words, not after:
+    // splitting each span on its own strands the punctuation that follows a
+    // styled run, which read as "confirmed . The" in the collapsed header.
+    let text = match body {
+        MessageBody::PlainText(content) => content.clone(),
+        MessageBody::Rich(rich) => rich.plain_text(),
     };
-    words.join(" ")
+    text.split_whitespace()
+        .take(PREVIEW_WORDS)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn address_label(address: &MailAddress) -> String {
