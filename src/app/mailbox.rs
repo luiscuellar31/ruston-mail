@@ -986,15 +986,9 @@ impl Mailbox {
             self.conversations.extend(deeper);
             self.next_page = self.next_page.max(1);
 
-            let selected_left = self.selected_conversation().is_some_and(|selected| {
-                !self
-                    .conversations
-                    .iter()
-                    .any(|conversation| conversation.id == selected)
-            });
-            if selected_left {
-                self.set_reader(ReaderState::Empty);
-            }
+            // Search results are not part of this answer and stay on screen,
+            // so what the reader holds is only closed when it truly left.
+            self.close_reader_if_hidden();
         }
         // Rows split out of a conversation carry their own, older times.
         sort_newest_first(&mut self.conversations);
@@ -1507,6 +1501,17 @@ mod tests {
         // this row came from and putting it there would be a move of its own.
         assert!(mailbox.undo().is_none());
         assert!(!mailbox.has_row("found"));
+    }
+
+    #[test]
+    fn refreshing_keeps_the_search_result_that_is_open() {
+        let mut mailbox = searched(&["a"], &["found"], "found");
+
+        // A reload answers for the folder, which the results are not part of.
+        let refresh = mailbox.refresh(3).expect("a search does not block reload");
+        assert_eq!(mailbox.finish_page(refresh.id, page(&["a"], 1)), None);
+
+        assert_eq!(mailbox.selected_conversation(), Some("found"));
     }
 
     #[test]
