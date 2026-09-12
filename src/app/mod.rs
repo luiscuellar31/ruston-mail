@@ -756,21 +756,7 @@ impl App {
                 }) else {
                     return Task::none();
                 };
-                let pending = request.clone();
-
-                Task::perform(
-                    async move {
-                        service
-                            .apply_action(
-                                pending.kind,
-                                &pending.row_id,
-                                pending.folder,
-                                pending.action,
-                            )
-                            .await
-                    },
-                    move |result| Message::ActionFinished(request.clone(), result),
-                )
+                run_action(service, request, Message::ActionFinished)
             }
             None => Task::none(),
         }
@@ -790,21 +776,7 @@ impl App {
         else {
             return Task::none();
         };
-        let pending = request.clone();
-
-        Task::perform(
-            async move {
-                service
-                    .apply_action(
-                        pending.kind,
-                        &pending.row_id,
-                        pending.folder,
-                        pending.action,
-                    )
-                    .await
-            },
-            move |result| Message::ActionFinished(request.clone(), result),
-        )
+        run_action(service, request, Message::ActionFinished)
     }
 
     fn finish_mail_action(
@@ -859,21 +831,7 @@ impl App {
         else {
             return Task::none();
         };
-        let pending = request.clone();
-
-        Task::perform(
-            async move {
-                service
-                    .apply_action(
-                        pending.kind,
-                        &pending.row_id,
-                        pending.folder,
-                        pending.action,
-                    )
-                    .await
-            },
-            move |result| Message::MarkReadFinished(request.clone(), result),
-        )
+        run_action(service, request, Message::MarkReadFinished)
     }
 
     fn finish_mark_read(
@@ -1055,6 +1013,30 @@ impl PendingLink {
             target,
         })
     }
+}
+
+/// Runs one mailbox action on Proton and reports the outcome under
+/// `finished`, which is what tells an automatic read from a deliberate one.
+fn run_action(
+    service: Arc<ProtonMailService>,
+    request: ActionRequest,
+    finished: fn(ActionRequest, Result<(), MailboxError>) -> Message,
+) -> Task<Message> {
+    let pending = request.clone();
+
+    Task::perform(
+        async move {
+            service
+                .apply_action(
+                    pending.kind,
+                    &pending.row_id,
+                    pending.folder,
+                    pending.action,
+                )
+                .await
+        },
+        move |result| finished(request.clone(), result),
+    )
 }
 
 /// Runs one sign-in, forwarding its prompts and final outcome as messages.
