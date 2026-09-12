@@ -1,6 +1,6 @@
-# Ruston
+# Ruston Mail
 
-Ruston is a native, cross-platform desktop client for Proton Mail, written in Rust.
+Ruston Mail is a native, cross-platform desktop client for Proton Mail, written in Rust.
 
 ## Status
 
@@ -9,8 +9,10 @@ Early development. Currently working:
 - Proton sign-in, including TOTP and separate mailbox passwords, with saved-session resume
 - Mailbox with system folders, unread counts, pagination, and refresh
 - Local filtering of loaded conversations by participant, subject, and preview
-- Async conversation reader; demo details work and Proton detail mapping remains pending
-- Read, star, archive, trash, and spam actions in demo mode
+- Conversation reader with HTML bodies shown as native text: headings, lists, quotes that fold away, and image descriptions in place of images, which are never loaded
+- Links open only after confirming where they go
+- Message text can be selected and copied
+- Read, star, archive, trash, and spam actions
 
 Custom folders are not shown yet.
 
@@ -31,7 +33,7 @@ cargo test
 RUSTON_DEMO=1 cargo run
 ```
 
-Runs a local, fictional mailbox without connecting to Proton or reading any saved session. Demo conversations and mailbox actions stay in memory and reset when Ruston exits. On Windows PowerShell, use `$env:RUSTON_DEMO=1; cargo run`.
+Runs a local, fictional mailbox without connecting to Proton or reading any saved session. Demo conversations and mailbox actions stay in memory and reset when Ruston Mail exits. On Windows PowerShell, use `$env:RUSTON_DEMO=1; cargo run`.
 
 ### HTTP diagnostics
 
@@ -43,6 +45,6 @@ Prints Proton request paths and response status codes to stderr, which helps ide
 
 ## Acknowledgements
 
-Ruston is built on top of [`proton-core`](https://github.com/filippofinke/protonmail-rs/tree/main/crates/proton-core), part of the [`protonmail-rs`](https://github.com/filippofinke/protonmail-rs) project.
+Ruston Mail is built on top of [`proton-core`](https://github.com/filippofinke/protonmail-rs/tree/main/crates/proton-core), part of the [`protonmail-rs`](https://github.com/filippofinke/protonmail-rs) project.
 
 This project is not affiliated with or endorsed by Proton AG.

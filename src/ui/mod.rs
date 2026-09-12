@@ -23,7 +23,11 @@ const APP_FONT: Font = Font::DEFAULT;
 
 pub fn run(demo: bool) -> iced::Result {
     iced::application(move || App::boot(demo), App::update, view)
-        .title(if demo { "Ruston (demo)" } else { "Ruston" })
+        .title(if demo {
+            "Ruston Mail (demo)"
+        } else {
+            "Ruston Mail"
+        })
         .default_font(APP_FONT)
         .window(window::Settings {
             size: WINDOW_SIZE,
@@ -36,7 +40,7 @@ pub fn run(demo: bool) -> iced::Result {
 
 fn view(app: &App) -> Element<'_, Message> {
     match app.auth_state() {
-        AuthState::CheckingSession => status_view("Opening Ruston…"),
+        AuthState::CheckingSession => status_view("Opening Ruston Mail…"),
         AuthState::SignedOut
         | AuthState::SigningIn(_)
         | AuthState::NeedsTotp
@@ -48,7 +52,7 @@ fn view(app: &App) -> Element<'_, Message> {
 }
 
 fn status_view(message: &str) -> Element<'_, Message> {
-    container(column![text("Ruston").size(36), text(message)].spacing(16))
+    container(column![text("Ruston Mail").size(36), text(message)].spacing(16))
         .center(Fill)
         .into()
 }

@@ -38,7 +38,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         .on_press_maybe((!busy).then_some(Message::Submit));
 
     let mut card = column![
-        text("Ruston").size(36),
+        text("Ruston Mail").size(36),
         text("Sign in to Proton Mail").size(24),
         fields,
     ]
@@ -62,7 +62,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
 
 fn verification_view(app: &App) -> Element<'_, Message> {
     let mut card = column![
-        text("Ruston").size(36),
+        text("Ruston Mail").size(36),
         text("Verify you are human").size(24),
         text(
             "Proton wants to confirm this sign-in. Complete the check in your browser, \

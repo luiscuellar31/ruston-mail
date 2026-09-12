@@ -92,7 +92,7 @@ fn sidebar<'a>(
 
     container(
         column![
-            text("Ruston").size(24),
+            text("Ruston Mail").size(24),
             folders,
             space().height(Fill),
             footer
