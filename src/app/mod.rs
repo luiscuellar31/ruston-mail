@@ -108,6 +108,10 @@ pub enum Message {
     SetMarkReadOnOpen(bool),
     /// Asks where a link goes before opening it, or opens it straight away.
     SetConfirmLinks(bool),
+    /// Opens every message in a conversation, or only the newest.
+    SetExpandAllMessages(bool),
+    /// Unfolds quoted passages, or leaves them behind their button.
+    SetShowQuotedText(bool),
 }
 
 /// What a key press means to the mailbox.
@@ -475,6 +479,12 @@ impl App {
                 self.remember(|settings| settings.mark_read_on_open = on);
             }
             Message::SetConfirmLinks(on) => self.remember(|settings| settings.confirm_links = on),
+            Message::SetExpandAllMessages(on) => {
+                self.remember(|settings| settings.expand_all_messages = on);
+            }
+            Message::SetShowQuotedText(on) => {
+                self.remember(|settings| settings.show_quoted_text = on);
+            }
         }
 
         Effects::none()
@@ -1335,6 +1345,7 @@ fn non_empty(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::mail::demo;
+    use crate::settings::Reading;
 
     use crate::mail::MailFolder;
 
@@ -1409,15 +1420,47 @@ mod tests {
     fn settings_changes_reach_the_app() {
         let mut app = loaded_demo_app();
 
-        // Both start the way the app behaved before it could be configured.
+        // Each starts the way the app behaved before it could be configured.
         assert!(app.settings().mark_read_on_open);
         assert!(app.settings().confirm_links);
+        assert_eq!(app.settings().reading(), Reading::default());
 
         let _ = app.update(Message::SetMarkReadOnOpen(false));
         let _ = app.update(Message::SetConfirmLinks(false));
+        let _ = app.update(Message::SetExpandAllMessages(true));
+        let _ = app.update(Message::SetShowQuotedText(true));
 
         assert!(!app.settings().mark_read_on_open);
         assert!(!app.settings().confirm_links);
+        assert_eq!(
+            app.settings().reading(),
+            Reading {
+                expand_all_messages: true,
+                show_quoted_text: true,
+            }
+        );
+    }
+
+    #[test]
+    fn asking_for_every_message_reaches_the_open_conversation() {
+        // The choice is read where a message is drawn, so it applies to the
+        // conversation already open, not only the next one.
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SelectConversation("demo-0".into()));
+        deliver_selected_demo_detail(&mut app);
+
+        let _ = app.update(Message::SetExpandAllMessages(true));
+
+        let reading = app.settings().reading();
+        let reader = app.mailbox().unwrap().reader().unwrap();
+        assert!(reader.detail().messages.len() > 1);
+        for message in &reader.detail().messages {
+            assert!(
+                reader.is_expanded(&message.id, reading),
+                "{} stayed folded",
+                message.id
+            );
+        }
     }
 
     #[test]
@@ -1916,8 +1959,8 @@ mod tests {
         assert_eq!(reader.conversation_id(), "demo-0");
         assert_eq!(reader.detail().id, reader.conversation_id());
         assert_eq!(reader.detail().messages.len(), 3);
-        assert!(reader.is_expanded("demo-0-2"));
-        assert!(!reader.is_expanded("demo-0-0"));
+        assert!(reader.is_expanded("demo-0-2", Reading::default()));
+        assert!(!reader.is_expanded("demo-0-0", Reading::default()));
     }
 
     #[test]
@@ -1929,8 +1972,8 @@ mod tests {
 
         let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
         let reader = app.mailbox().unwrap().reader().unwrap();
-        assert!(reader.is_expanded("demo-0-0"));
-        assert!(reader.is_expanded("demo-0-2"));
+        assert!(reader.is_expanded("demo-0-0", Reading::default()));
+        assert!(reader.is_expanded("demo-0-2", Reading::default()));
 
         let _ = app.update(Message::SelectConversation("demo-2".into()));
         deliver_selected_demo_detail(&mut app);
@@ -1941,7 +1984,7 @@ mod tests {
                 .unwrap()
                 .reader()
                 .unwrap()
-                .is_expanded("demo-0-0")
+                .is_expanded("demo-0-0", Reading::default())
         );
     }
 
@@ -2345,7 +2388,7 @@ mod tests {
         assert_eq!(mailbox.conversations().len(), 10);
         let reader = mailbox.reader().unwrap();
         assert_eq!(reader.conversation_id(), "demo-0");
-        assert!(reader.is_expanded("demo-0-0"));
+        assert!(reader.is_expanded("demo-0-0", Reading::default()));
     }
 
     #[test]

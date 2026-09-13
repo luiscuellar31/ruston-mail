@@ -49,6 +49,7 @@ pub(super) fn show(
                 app.pending_link(),
                 app.saving_attachment(),
                 app.saved_attachment(),
+                app.settings().reading(),
                 state,
                 messages,
             );

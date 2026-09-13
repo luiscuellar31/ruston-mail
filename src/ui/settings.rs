@@ -39,6 +39,32 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
             ui,
             "With this off, mail stays unread until you mark it yourself.",
         );
+        ui.add_space(6.0);
+
+        let mut on = settings.expand_all_messages;
+        if ui
+            .checkbox(&mut on, "Open every message in a conversation")
+            .changed()
+        {
+            messages.push(Message::SetExpandAllMessages(on));
+        }
+        detail(
+            ui,
+            "With this off, only the newest opens and the rest wait behind their headers.",
+        );
+        ui.add_space(6.0);
+
+        let mut on = settings.show_quoted_text;
+        if ui
+            .checkbox(&mut on, "Show quoted text without unfolding it")
+            .changed()
+        {
+            messages.push(Message::SetShowQuotedText(on));
+        }
+        detail(
+            ui,
+            "Quoted passages are the thread repeated under a reply, so they stay folded by default.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Links and images", |ui| {

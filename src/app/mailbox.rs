@@ -1027,6 +1027,7 @@ fn contains_ignoring_case(haystack: &str, needle: &str) -> bool {
 mod tests {
     use super::*;
     use crate::mail::{MailAddress, MailMessage, MessageBody};
+    use crate::settings::Reading;
 
     const PAGE_SIZE: u32 = 50;
 
@@ -1800,13 +1801,18 @@ mod tests {
         mailbox.toggle_message("a1");
 
         assert_eq!(mailbox.start_conversation_load("a".into(), 4), None);
-        assert!(mailbox.reader().unwrap().is_expanded("a1"));
+        assert!(
+            mailbox
+                .reader()
+                .unwrap()
+                .is_expanded("a1", Reading::default())
+        );
 
         load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
         load_detail(&mut mailbox, "a", detail("a", &["a1", "a2"]), 6);
         let reader = mailbox.reader().unwrap();
-        assert!(!reader.is_expanded("a1"));
-        assert!(reader.is_expanded("a2"));
+        assert!(!reader.is_expanded("a1", Reading::default()));
+        assert!(reader.is_expanded("a2", Reading::default()));
     }
 
     #[test]

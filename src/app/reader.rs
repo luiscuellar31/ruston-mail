@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use crate::mail::{ConversationDetail, Folder, MailboxError};
+use crate::settings::Reading;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ReaderState {
@@ -38,9 +39,13 @@ impl ReaderState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationReader {
     detail: ConversationDetail,
-    expanded: HashSet<String>,
-    /// Unfolded quoted passages, as (message id, position in that message).
-    expanded_quotes: HashSet<(String, usize)>,
+    /// Messages folded the other way from what the settings ask for. Holding
+    /// the difference rather than the state means changing the setting shows
+    /// at once on the open conversation, without discarding what was folded
+    /// by hand.
+    toggled: HashSet<String>,
+    /// Quoted passages folded the other way, as (message id, position).
+    toggled_quotes: HashSet<(String, usize)>,
     /// Whether the labels the conversation does not carry are on show. It
     /// belongs to the open conversation, so moving on puts the row back the
     /// way it usually reads.
@@ -48,20 +53,15 @@ pub struct ConversationReader {
 }
 
 impl ConversationReader {
-    /// Orders messages oldest first and expands only the newest one.
+    /// Orders messages oldest first. Which of them start open is left to the
+    /// settings, read through [`Self::is_expanded`].
     pub fn new(mut detail: ConversationDetail) -> Self {
         detail.messages.sort_by_key(|message| message.time);
-        let expanded = detail
-            .messages
-            .last()
-            .map(|message| message.id.clone())
-            .into_iter()
-            .collect();
 
         Self {
             detail,
-            expanded,
-            expanded_quotes: HashSet::new(),
+            toggled: HashSet::new(),
+            toggled_quotes: HashSet::new(),
             showing_labels: false,
         }
     }
@@ -88,22 +88,37 @@ impl ConversationReader {
         self.detail.set_label(label, on);
     }
 
-    pub fn is_expanded(&self, message_id: &str) -> bool {
-        self.expanded.contains(message_id)
+    pub fn is_expanded(&self, message_id: &str, reading: Reading) -> bool {
+        self.opens_on_its_own(message_id, reading) != self.toggled.contains(message_id)
+    }
+
+    /// Whether the settings alone would have this message open. Only the
+    /// newest is worth reading straight away in a thread; the rest are the
+    /// history behind it, unless every message was asked for.
+    fn opens_on_its_own(&self, message_id: &str, reading: Reading) -> bool {
+        reading.expand_all_messages
+            || self
+                .detail
+                .messages
+                .last()
+                .is_some_and(|message| message.id == message_id)
     }
 
     pub fn toggle(&mut self, message_id: &str) {
-        if self.knows(message_id) && !self.expanded.remove(message_id) {
-            self.expanded.insert(message_id.to_owned());
+        if self.knows(message_id) && !self.toggled.remove(message_id) {
+            self.toggled.insert(message_id.to_owned());
         }
     }
 
     /// Whether the quoted passage at `index` of `message_id` is unfolded.
-    /// Quotes start folded: a reply usually repeats the whole thread below it.
-    pub fn is_quote_expanded(&self, message_id: &str, index: usize) -> bool {
-        self.expanded_quotes
+    /// Quotes start folded unless asked for: a reply usually repeats the whole
+    /// thread below it.
+    pub fn is_quote_expanded(&self, message_id: &str, index: usize, reading: Reading) -> bool {
+        let toggled = self
+            .toggled_quotes
             .iter()
-            .any(|(id, position)| id == message_id && *position == index)
+            .any(|(id, position)| id == message_id && *position == index);
+        reading.show_quoted_text != toggled
     }
 
     pub fn toggle_quote(&mut self, message_id: &str, index: usize) {
@@ -111,8 +126,8 @@ impl ConversationReader {
             return;
         }
         let quote = (message_id.to_owned(), index);
-        if !self.expanded_quotes.remove(&quote) {
-            self.expanded_quotes.insert(quote);
+        if !self.toggled_quotes.remove(&quote) {
+            self.toggled_quotes.insert(quote);
         }
     }
 
@@ -138,6 +153,11 @@ mod tests {
             body: MessageBody::PlainText(String::new()),
             attachments: Vec::new(),
         }
+    }
+
+    /// The settings as they ship: newest message open, quotes folded.
+    fn plain() -> Reading {
+        Reading::default()
     }
 
     fn reader(messages: Vec<MailMessage>) -> ConversationReader {
@@ -180,9 +200,9 @@ mod tests {
         let reader = reader(vec![message("c", 30), message("a", 10), message("b", 20)]);
 
         assert_eq!(order(&reader), ["a", "b", "c"]);
-        assert!(reader.is_expanded("c"));
-        assert!(!reader.is_expanded("a"));
-        assert!(!reader.is_expanded("b"));
+        assert!(reader.is_expanded("c", plain()));
+        assert!(!reader.is_expanded("a", plain()));
+        assert!(!reader.is_expanded("b", plain()));
     }
 
     #[test]
@@ -190,30 +210,30 @@ mod tests {
         let mut reader = reader(vec![message("a", 10), message("b", 20), message("c", 30)]);
 
         reader.toggle("a");
-        assert!(reader.is_expanded("a"));
-        assert!(reader.is_expanded("c"));
-        assert!(!reader.is_expanded("b"));
+        assert!(reader.is_expanded("a", plain()));
+        assert!(reader.is_expanded("c", plain()));
+        assert!(!reader.is_expanded("b", plain()));
 
         reader.toggle("c");
-        assert!(!reader.is_expanded("c"));
-        assert!(reader.is_expanded("a"));
+        assert!(!reader.is_expanded("c", plain()));
+        assert!(reader.is_expanded("a", plain()));
     }
 
     #[test]
     fn quotes_start_folded_and_toggle_one_at_a_time() {
         let mut reader = reader(vec![message("a", 10), message("b", 20)]);
 
-        assert!(!reader.is_quote_expanded("a", 0));
+        assert!(!reader.is_quote_expanded("a", 0, plain()));
 
         reader.toggle_quote("a", 0);
-        assert!(reader.is_quote_expanded("a", 0));
+        assert!(reader.is_quote_expanded("a", 0, plain()));
         // Neither the next quote of the same message nor the same position of
         // another message follows along.
-        assert!(!reader.is_quote_expanded("a", 1));
-        assert!(!reader.is_quote_expanded("b", 0));
+        assert!(!reader.is_quote_expanded("a", 1, plain()));
+        assert!(!reader.is_quote_expanded("b", 0, plain()));
 
         reader.toggle_quote("a", 0);
-        assert!(!reader.is_quote_expanded("a", 0));
+        assert!(!reader.is_quote_expanded("a", 0, plain()));
     }
 
     #[test]
@@ -223,8 +243,8 @@ mod tests {
         reader.toggle("missing");
         reader.toggle_quote("missing", 0);
 
-        assert!(!reader.is_expanded("missing"));
-        assert!(!reader.is_quote_expanded("missing", 0));
+        assert!(!reader.is_expanded("missing", plain()));
+        assert!(!reader.is_quote_expanded("missing", 0, plain()));
     }
 
     #[test]
@@ -232,7 +252,53 @@ mod tests {
         let empty = reader(Vec::new());
 
         assert!(empty.detail().messages.is_empty());
-        assert!(empty.expanded.is_empty());
+        assert!(empty.toggled.is_empty());
+    }
+
+    #[test]
+    fn asking_for_every_message_opens_the_whole_thread() {
+        let reader = reader(vec![message("a", 10), message("b", 20), message("c", 30)]);
+        let all = Reading {
+            expand_all_messages: true,
+            ..plain()
+        };
+
+        for id in ["a", "b", "c"] {
+            assert!(reader.is_expanded(id, all), "{id} stayed folded");
+        }
+        // The same reader still answers for the settings as they were.
+        assert!(!reader.is_expanded("a", plain()));
+    }
+
+    #[test]
+    fn a_message_folded_by_hand_stays_that_way_when_the_setting_changes() {
+        // The reader holds the difference from the settings, not the state,
+        // so a change reaches the open conversation without undoing a fold.
+        let mut reader = reader(vec![message("a", 10), message("b", 20)]);
+        let all = Reading {
+            expand_all_messages: true,
+            ..plain()
+        };
+
+        reader.toggle("a");
+        assert!(reader.is_expanded("a", plain()));
+        assert!(!reader.is_expanded("a", all));
+        assert!(reader.is_expanded("b", all));
+    }
+
+    #[test]
+    fn asking_for_quoted_text_unfolds_it_without_losing_a_fold() {
+        let mut reader = reader(vec![message("a", 10)]);
+        let quoted = Reading {
+            show_quoted_text: true,
+            ..plain()
+        };
+
+        assert!(reader.is_quote_expanded("a", 0, quoted));
+
+        reader.toggle_quote("a", 0);
+        assert!(!reader.is_quote_expanded("a", 0, quoted));
+        assert!(reader.is_quote_expanded("a", 0, plain()));
     }
 
     #[test]

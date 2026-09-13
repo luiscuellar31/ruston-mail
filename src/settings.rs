@@ -29,6 +29,10 @@ pub struct Settings {
     pub mark_read_on_open: bool,
     /// Ask where a link goes before opening it.
     pub confirm_links: bool,
+    /// Open every message in a conversation, not only the newest.
+    pub expand_all_messages: bool,
+    /// Unfold quoted passages instead of hiding them behind a button.
+    pub show_quoted_text: bool,
     /// Whether these settings came from the settings file, and so belong back
     /// in it. Only `load` sets it, which keeps tests and any other in-memory
     /// settings from writing over what someone has on disk.
@@ -46,6 +50,8 @@ impl Default for Settings {
             // configured, so an upgrade changes nothing on its own.
             mark_read_on_open: true,
             confirm_links: true,
+            expand_all_messages: false,
+            show_quoted_text: false,
             stored: false,
         }
     }
@@ -85,7 +91,26 @@ impl Default for Panels {
     }
 }
 
+/// How the reader opens a conversation, from the settings.
+///
+/// A small copy of the two choices the reader needs keeps it from depending on
+/// the whole of [`Settings`], and keeps the answer to "is this open?" a
+/// question about the settings and the reader together rather than a copy that
+/// can go stale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reading {
+    pub expand_all_messages: bool,
+    pub show_quoted_text: bool,
+}
+
 impl Settings {
+    pub fn reading(&self) -> Reading {
+        Reading {
+            expand_all_messages: self.expand_all_messages,
+            show_quoted_text: self.show_quoted_text,
+        }
+    }
+
     /// Reads the settings, falling back to the defaults for anything missing
     /// or out of range.
     pub fn load() -> Self {
@@ -182,6 +207,16 @@ mod tests {
         let text = serde_json::to_string(&settings).unwrap();
 
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), settings);
+    }
+
+    #[test]
+    fn a_new_choice_starts_at_the_behaviour_the_app_already_had() {
+        // An upgrade must not change how anyone's mail opens on its own.
+        let defaults = Settings::default();
+
+        assert!(!defaults.expand_all_messages);
+        assert!(!defaults.show_quoted_text);
+        assert_eq!(defaults.reading(), Reading::default());
     }
 
     #[test]

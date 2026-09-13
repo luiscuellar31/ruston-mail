@@ -13,6 +13,7 @@ use crate::mail::{
     MailAddress, MailAttachment, MailFolder, MailMessage, MessageBody, RichBlock, RichBody,
     RichSpan,
 };
+use crate::settings::Reading;
 
 const SUBJECT_SIZE: f32 = 22.0;
 const PREVIEW_WORDS: usize = 40;
@@ -36,6 +37,7 @@ pub(super) fn show(
     pending_link: Option<&PendingLink>,
     saving_attachment: Option<&str>,
     saved_attachment: Option<Result<&Path, SaveError>>,
+    reading: Reading,
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
@@ -79,6 +81,7 @@ pub(super) fn show(
                 !mailbox.is_busy() && !mailbox.action_pending(),
                 mailbox.action_error(),
                 saving_attachment,
+                reading,
                 state,
                 messages,
             );
@@ -116,6 +119,7 @@ fn conversation(
     actions_enabled: bool,
     action_error: Option<crate::mail::MailboxError>,
     saving_attachment: Option<&str>,
+    reading: Reading,
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
@@ -141,6 +145,7 @@ fn conversation(
                     actions_enabled,
                     action_error,
                     saving_attachment,
+                    reading,
                     messages,
                 );
             });
@@ -157,6 +162,7 @@ fn reading_column(
     actions_enabled: bool,
     action_error: Option<crate::mail::MailboxError>,
     saving_attachment: Option<&str>,
+    reading: Reading,
     messages: &mut Vec<Message>,
 ) {
     let detail_data = reader.detail();
@@ -196,7 +202,7 @@ fn reading_column(
         detail(ui, "This conversation has no messages.");
     }
     for message in &detail_data.messages {
-        message_card(ui, message, reader, saving_attachment, messages);
+        message_card(ui, message, reader, saving_attachment, reading, messages);
         ui.add_space(12.0);
     }
 }
@@ -293,9 +299,10 @@ fn message_card(
     message: &MailMessage,
     reader: &ConversationReader,
     saving_attachment: Option<&str>,
+    reading: Reading,
     messages: &mut Vec<Message>,
 ) {
-    let expanded = reader.is_expanded(&message.id);
+    let expanded = reader.is_expanded(&message.id, reading);
     ui.push_id(&message.id, |ui| {
         theme::card().show(ui, |ui| {
             if message_header(ui, message, expanded).clicked() {
@@ -307,7 +314,7 @@ fn message_card(
                 }
                 ui.separator();
                 theme::selectable_text(ui, |ui| {
-                    message_body(ui, message, reader, messages);
+                    message_body(ui, message, reader, reading, messages);
                 });
             }
         });
@@ -451,6 +458,7 @@ fn message_body(
     ui: &mut egui::Ui,
     message: &MailMessage,
     reader: &ConversationReader,
+    reading: Reading,
     messages: &mut Vec<Message>,
 ) {
     match &message.body {
@@ -461,7 +469,7 @@ fn message_body(
                     .wrap(),
             );
         }
-        MessageBody::Rich(body) => rich_body(ui, body, &message.id, reader, messages),
+        MessageBody::Rich(body) => rich_body(ui, body, &message.id, reader, reading, messages),
     }
 }
 
@@ -470,6 +478,7 @@ fn rich_body(
     body: &RichBody,
     message_id: &str,
     reader: &ConversationReader,
+    reading: Reading,
     messages: &mut Vec<Message>,
 ) {
     if body.blocks.is_empty() {
@@ -489,7 +498,7 @@ fn rich_body(
                 .iter()
                 .take_while(|block| block.quote_depth > 0)
                 .count();
-            let expanded = reader.is_quote_expanded(message_id, quote);
+            let expanded = reader.is_quote_expanded(message_id, quote, reading);
             if ui
                 .small_button(if expanded {
                     "Hide quoted text"
