@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align, Layout};
 
-use super::{mailbox::detail, theme};
+use super::theme;
 use crate::app::Message;
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{ComposePlacement, Settings, StartFolder};
@@ -36,7 +36,7 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         {
             messages.push(Message::SetMarkReadOnOpen(on));
         }
-        detail(
+        description(
             ui,
             "With this off, mail stays unread until you mark it yourself.",
         );
@@ -49,7 +49,7 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         {
             messages.push(Message::SetExpandAllMessages(on));
         }
-        detail(
+        description(
             ui,
             "With this off, only the newest opens and the rest wait behind their headers.",
         );
@@ -62,7 +62,7 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         {
             messages.push(Message::SetShowQuotedText(on));
         }
-        detail(
+        description(
             ui,
             "Quoted passages are the thread repeated under a reply, so they stay folded by default.",
         );
@@ -73,11 +73,11 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         if ui.checkbox(&mut on, "Ask before opening a link").changed() {
             messages.push(Message::SetConfirmLinks(on));
         }
-        detail(
+        description(
             ui,
             "The prompt shows the real destination, which helps expose misleading links.",
         );
-        detail(
+        description(
             ui,
             "Images in mail are never downloaded. This protects your privacy from tracking pixels.",
         );
@@ -95,7 +95,7 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
                 }
             }
         });
-        detail(ui, "Where Write, Reply and Forward open.");
+        description(ui, "Where Write, Reply and Forward open.");
         ui.add_space(10.0);
 
         ui.horizontal_wrapped(|ui| {
@@ -109,50 +109,53 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
                 }
             }
         });
-        detail(
+        description(
             ui,
             "How a message you write is sent. Either way you write text: a tag you type is shown as you typed it, never obeyed.",
         );
     });
     ui.add_space(14.0);
     section(ui, "Starting up", |ui| {
-        ui.horizontal_wrapped(|ui| {
-            start_choice(
-                ui,
-                settings,
-                StartFolder::LastRead,
-                "Where I left off",
-                messages,
-            );
-            for folder in MailFolder::ALL {
-                let start = StartFolder::Always(folder);
-                start_choice(ui, settings, start, folder.name(), messages);
-            }
-        });
-        detail(
+        let mut start = settings.start;
+        egui::ComboBox::from_id_salt("start-folder")
+            .selected_text(start_label(start))
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut start, StartFolder::LastRead, "Where I left off");
+                for folder in MailFolder::ALL {
+                    ui.selectable_value(&mut start, StartFolder::Always(folder), folder.name());
+                }
+            });
+        if start != settings.start {
+            messages.push(Message::SetStartFolder(start));
+        }
+        description(
             ui,
             "A folder the account made cannot be pinned: it could be renamed or gone by the next run.",
         );
     });
     ui.add_space(14.0);
     section(ui, "Interface", |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for step in ZOOM_STEPS {
-                let chosen = (settings.zoom - step).abs() < f32::EPSILON;
-                let label = format!("{:.0}%", step * 100.0);
-                if ui.add(egui::Button::new(label).selected(chosen)).clicked() {
-                    messages.push(Message::SetZoom(step));
+        let mut zoom = settings.zoom;
+        egui::ComboBox::from_id_salt("interface-scale")
+            .selected_text(zoom_label(zoom))
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for step in ZOOM_STEPS {
+                    ui.selectable_value(&mut zoom, step, zoom_label(step));
                 }
-            }
-        });
-        detail(
+            });
+        if (zoom - settings.zoom).abs() > f32::EPSILON {
+            messages.push(Message::SetZoom(zoom));
+        }
+        description(
             ui,
             "Scales everything, not the text alone, so the window keeps its proportions.",
         );
     });
     ui.add_space(14.0);
     section(ui, "Keyboard", |ui| {
-        detail(
+        description(
             ui,
             "A key a focused field takes never reaches the mailbox, so these stay out of the way while you type.",
         );
@@ -163,28 +166,26 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
     });
     ui.add_space(14.0);
     section(ui, "Remembered automatically", |ui| {
-        detail(
+        description(
             ui,
             "Window size and pane widths return the way you left them.",
         );
     });
 }
 
-fn start_choice(
-    ui: &mut egui::Ui,
-    settings: &Settings,
-    start: StartFolder,
-    label: &str,
-    messages: &mut Vec<Message>,
-) {
-    let chosen = settings.start == start;
-    if ui.add(egui::Button::new(label).selected(chosen)).clicked() {
-        messages.push(Message::SetStartFolder(start));
+fn start_label(start: StartFolder) -> &'static str {
+    match start {
+        StartFolder::LastRead => "Where I left off",
+        StartFolder::Always(folder) => folder.name(),
     }
 }
 
+fn zoom_label(zoom: f32) -> String {
+    format!("{:.0}%", zoom * 100.0)
+}
+
 /// Offered rather than a free slider: a handful of steps cannot land on a
-/// scale that leaves the interface unusable, and each one is one click away.
+/// scale that leaves the interface unusable.
 /// The settings clamp anything else a file might carry.
 const ZOOM_STEPS: [f32; 6] = [0.9, 1.0, 1.15, 1.3, 1.5, 1.75];
 
@@ -227,11 +228,15 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str) {
                 ));
             },
         );
-        ui.vertical(|ui| detail(ui, what));
+        ui.vertical(|ui| description(ui, what));
     });
 }
 
 const KEYS_WIDTH: f32 = 92.0;
+
+fn description(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).color(theme::MUTED));
+}
 
 fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) -> egui::Response {
     theme::card()
@@ -280,8 +285,7 @@ mod tests {
     #[test]
     fn every_offered_zoom_is_one_the_settings_would_keep() {
         // The panel must not offer a scale that loading clamps away, and the
-        // scale a fresh install starts at has to be one of the buttons, or
-        // none of them would look chosen.
+        // scale a fresh install starts at has to be one of the choices.
         for step in ZOOM_STEPS {
             assert!(
                 (crate::settings::MIN_ZOOM..=crate::settings::MAX_ZOOM).contains(&step),
