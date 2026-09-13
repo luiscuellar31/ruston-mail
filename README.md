@@ -32,7 +32,7 @@ open unless you turn that prompt off. Read more in
 Attaching files, saved drafts, security-key sign-in, and folder or label
 management are not supported yet. Ruston Mail can move a message to Trash, but
 it never permanently deletes mail. See the
-[user guide](docs/USING_RUSTON_MAIL.md) for more detail.
+[user guide](docs/USAGE.md) for more detail.
 
 ## Run from source
 
@@ -55,7 +55,7 @@ RUSTON_DEMO=1 cargo run
 
 ## Documentation
 
-- [Using Ruston Mail](docs/USING_RUSTON_MAIL.md)
+- [Using Ruston Mail](docs/USAGE.md)
 - [Privacy and local data](docs/PRIVACY.md)
 - [Development](docs/DEVELOPMENT.md)
 
