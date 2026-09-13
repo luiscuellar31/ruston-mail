@@ -124,6 +124,23 @@ Rust 1.96 or newer.
 The native interface uses `egui`/`eframe`; mail rendering stays deliberately
 separate from the Proton and mailbox state layers.
 
+### How the source is laid out
+
+Three folders, each one layer: `mail` is the mail itself and where it comes
+from, `app` is the state machine that decides what happens, and `ui` draws it
+and nothing else. `app` never mentions a widget, and `ui` never talks to
+Proton.
+
+Inside a folder the same rule applies throughout, so no file is an exception:
+
+- `mod.rs` holds the layer's central type, how it is built, and what the rest
+  of the program may reach.
+- Every other file is one cohesive area of behaviour. `ui/login.rs` draws what
+  `app/auth.rs` decides; `ui/mailbox.rs` draws what `app/mailbox.rs` holds.
+- Tests sit with the code they cover. They move to a file of their own — as in
+  `app/tests.rs` — once they exercise the whole layer through its entry point
+  rather than one part of it.
+
 ```sh
 cargo run
 ```
