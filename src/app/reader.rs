@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 
-use crate::mail::{ConversationDetail, Folder, MailboxError};
+use crate::mail::{ConversationDetail, Folder, MailboxError, MessageBody};
 use crate::settings::Reading;
+
+/// How much of a message its collapsed header stands in for.
+const PREVIEW_WORDS: usize = 40;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ReaderState {
@@ -50,6 +53,15 @@ pub struct ConversationReader {
     /// belongs to the open conversation, so moving on puts the row back the
     /// way it usually reads.
     showing_labels: bool,
+    /// The line each collapsed message shows, in the order `detail.messages`
+    /// are in.
+    ///
+    /// Each is derived from a body that cannot change while the conversation
+    /// is open, so they are settled here rather than in the drawing:
+    /// flattening a message every frame cost more the longer the message was,
+    /// which is backwards for something only shown when the message is folded
+    /// away.
+    previews: Vec<String>,
 }
 
 impl ConversationReader {
@@ -57,13 +69,29 @@ impl ConversationReader {
     /// settings, read through [`Self::is_expanded`].
     pub fn new(mut detail: ConversationDetail) -> Self {
         detail.messages.sort_by_key(|message| message.time);
+        let previews = detail
+            .messages
+            .iter()
+            .map(|message| preview(&message.body))
+            .collect();
 
         Self {
             detail,
             toggled: HashSet::new(),
             toggled_quotes: HashSet::new(),
             showing_labels: false,
+            previews,
         }
+    }
+
+    /// The line that stands in for a message while it is folded away.
+    pub fn preview(&self, message_id: &str) -> &str {
+        self.detail
+            .messages
+            .iter()
+            .position(|message| message.id == message_id)
+            .and_then(|index| self.previews.get(index))
+            .map_or("", String::as_str)
     }
 
     pub fn conversation_id(&self) -> &str {
@@ -139,10 +167,28 @@ impl ConversationReader {
     }
 }
 
+/// The opening words of a message, on one line.
+///
+/// A rich body is flattened before it is split into words, not after:
+/// splitting each span on its own strands the punctuation that follows a
+/// styled run, which read as "confirmed . The" in the collapsed header.
+fn preview(body: &MessageBody) -> String {
+    let text = match body {
+        MessageBody::PlainText(content) => content.clone(),
+        MessageBody::Rich(rich) => rich.plain_text(),
+    };
+    text.split_whitespace()
+        .take(PREVIEW_WORDS)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mail::{MailAddress, MailMessage, MessageBody};
+    use crate::mail::{
+        BlockKind, MailAddress, MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
+    };
 
     fn message(id: &str, time: i64) -> MailMessage {
         MailMessage {
@@ -168,6 +214,44 @@ mod tests {
             labels: Vec::new(),
         };
         ConversationReader::new(detail)
+    }
+
+    fn saying(id: &str, body: MessageBody) -> MailMessage {
+        MailMessage {
+            body,
+            ..message(id, 10)
+        }
+    }
+
+    #[test]
+    fn a_collapsed_message_is_summarised_in_one_bounded_line() {
+        let rich = RichBody {
+            blocks: ["Hello  there", "again"]
+                .into_iter()
+                .map(|text| RichBlock {
+                    kind: BlockKind::Paragraph(vec![RichSpan {
+                        text: text.to_owned(),
+                        ..RichSpan::default()
+                    }]),
+                    quote_depth: 0,
+                })
+                .collect(),
+        };
+        let reader = reader(vec![
+            saying(
+                "plain",
+                MessageBody::PlainText("Hi Alex,\n\nFirst line.\nSecond line.".into()),
+            ),
+            saying("long", MessageBody::PlainText("word ".repeat(100))),
+            saying("rich", MessageBody::Rich(rich)),
+        ]);
+
+        assert_eq!(reader.preview("plain"), "Hi Alex, First line. Second line.");
+        assert_eq!(reader.preview("long").split(' ').count(), PREVIEW_WORDS);
+        // Blocks are joined, and the words inside one keep their spacing.
+        assert_eq!(reader.preview("rich"), "Hello there again");
+        // A message the conversation does not carry has nothing to show.
+        assert_eq!(reader.preview("missing"), "");
     }
 
     #[test]

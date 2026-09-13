@@ -16,7 +16,6 @@ use crate::mail::{
 use crate::settings::Reading;
 
 const SUBJECT_SIZE: f32 = 22.0;
-const PREVIEW_WORDS: usize = 40;
 const LABELS_SHOWN: usize = 8;
 const MAX_QUOTE_DEPTH: u8 = 4;
 const BODY_SIZE: f32 = 15.0;
@@ -305,7 +304,7 @@ fn message_card(
     let expanded = reader.is_expanded(&message.id, reading);
     ui.push_id(&message.id, |ui| {
         theme::card().show(ui, |ui| {
-            if message_header(ui, message, expanded).clicked() {
+            if message_header(ui, message, reader.preview(&message.id), expanded).clicked() {
                 messages.push(Message::ToggleMessageExpanded(message.id.clone()));
             }
             if expanded {
@@ -323,7 +322,12 @@ fn message_card(
 
 /// The whole header is one disclosure control. Copy selection is enabled only
 /// below it, so clicking a sender or preview reliably expands the message.
-fn message_header(ui: &mut egui::Ui, message: &MailMessage, expanded: bool) -> egui::Response {
+fn message_header(
+    ui: &mut egui::Ui,
+    message: &MailMessage,
+    preview: &str,
+    expanded: bool,
+) -> egui::Response {
     let height = if expanded { 66.0 } else { 44.0 };
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
@@ -373,7 +377,7 @@ fn message_header(ui: &mut egui::Ui, message: &MailMessage, expanded: bool) -> e
         theme::paint_truncated_text(
             &painter,
             copy_rect.left_top() + egui::vec2(0.0, 22.0),
-            &preview(&message.body),
+            preview,
             FontId::proportional(14.0),
             theme::MUTED,
             copy_rect.width(),
@@ -730,20 +734,6 @@ fn message_count_label(count: usize) -> String {
     }
 }
 
-fn preview(body: &MessageBody) -> String {
-    // A rich body is flattened before it is split into words, not after:
-    // splitting each span on its own strands the punctuation that follows a
-    // styled run, which read as "confirmed . The" in the collapsed header.
-    let text = match body {
-        MessageBody::PlainText(content) => content.clone(),
-        MessageBody::Rich(rich) => rich.plain_text(),
-    };
-    text.split_whitespace()
-        .take(PREVIEW_WORDS)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn address_label(address: &MailAddress) -> String {
     let name = address.name.as_deref().filter(|name| !name.is_empty());
     match (name, address.address.as_str()) {
@@ -797,16 +787,6 @@ mod tests {
         }
     }
 
-    fn paragraph(text: &str) -> RichBlock {
-        RichBlock {
-            kind: BlockKind::Paragraph(vec![RichSpan {
-                text: text.to_owned(),
-                ..RichSpan::default()
-            }]),
-            quote_depth: 0,
-        }
-    }
-
     #[test]
     fn message_times_are_complete() {
         let timestamp = Utc
@@ -850,18 +830,6 @@ mod tests {
     }
 
     #[test]
-    fn preview_is_a_single_bounded_line() {
-        let body = MessageBody::PlainText("Hi Alex,\n\nFirst line.\nSecond line.".into());
-        let long = MessageBody::PlainText("word ".repeat(100));
-        let rich = MessageBody::Rich(RichBody {
-            blocks: vec![paragraph("Hello  there"), paragraph("again")],
-        });
-        assert_eq!(preview(&body), "Hi Alex, First line. Second line.");
-        assert_eq!(preview(&long).split(' ').count(), PREVIEW_WORDS);
-        assert_eq!(preview(&rich), "Hello there again");
-    }
-
-    #[test]
     fn sizes_read_at_a_glance() {
         assert_eq!(size_label(0), "0.0 KB");
         assert_eq!(size_label(1_024), "1.0 KB");
@@ -894,7 +862,7 @@ mod tests {
             context
                 .run_ui(input, |ui| {
                     ui.set_width(320.0);
-                    let response = message_header(ui, &message, false);
+                    let response = message_header(ui, &message, "Preview", false);
                     result = (response.rect, response.clicked());
                 })
                 .drop_without_applying_deltas();
