@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::mail::{Folder, MailFolder};
+use crate::mail::{BodyFormat, Folder, MailFolder};
 
 const FILE: &str = "settings.json";
 
@@ -40,6 +40,8 @@ pub struct Settings {
     pub expand_all_messages: bool,
     /// Unfold quoted passages instead of hiding them behind a button.
     pub show_quoted_text: bool,
+    /// Whether a message is written out as HTML or as plain text.
+    pub compose_format: BodyFormat,
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
@@ -63,6 +65,7 @@ impl Default for Settings {
             confirm_links: true,
             expand_all_messages: false,
             show_quoted_text: false,
+            compose_format: BodyFormat::PlainText,
             zoom: 1.0,
             stored: false,
         }
@@ -255,6 +258,23 @@ mod tests {
         let text = serde_json::to_string(&settings).unwrap();
 
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), settings);
+    }
+
+    #[test]
+    fn mail_is_written_as_plain_text_until_asked_otherwise() {
+        assert_eq!(Settings::default().compose_format, BodyFormat::PlainText);
+        // It survives the file like every other choice.
+        let chosen = Settings {
+            compose_format: BodyFormat::Html,
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&chosen).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Settings>(&text)
+                .unwrap()
+                .compose_format,
+            BodyFormat::Html
+        );
     }
 
     #[test]

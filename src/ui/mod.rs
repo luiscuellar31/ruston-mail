@@ -1,3 +1,4 @@
+mod compose;
 mod login;
 mod mailbox;
 mod reader;
@@ -229,7 +230,9 @@ impl eframe::App for DesktopApp {
             | AuthState::NeedsMailboxPassword
             | AuthState::NeedsHumanVerification { .. } => login::show(ui, &self.app, &mut messages),
             AuthState::Authenticated { email } => {
-                if self.app.showing_settings() {
+                if let Some(writing) = self.app.compose() {
+                    compose::show(ui, writing, &mut messages);
+                } else if self.app.showing_settings() {
                     settings::show(ui, self.app.settings(), &mut messages);
                 } else if self.app.mailbox().is_some() {
                     mailbox::show(

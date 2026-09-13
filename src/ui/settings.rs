@@ -2,7 +2,7 @@ use eframe::egui::{self, Align, Layout};
 
 use super::{mailbox::detail, theme};
 use crate::app::Message;
-use crate::mail::MailFolder;
+use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{Settings, StartFolder};
 
 pub(super) fn show(root: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
@@ -80,6 +80,24 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         detail(
             ui,
             "Images in mail are never downloaded. This protects your privacy from tracking pixels.",
+        );
+    });
+    ui.add_space(14.0);
+    section(ui, "Writing", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (format, label) in [
+                (BodyFormat::PlainText, "Plain text"),
+                (BodyFormat::Html, "HTML"),
+            ] {
+                let chosen = settings.compose_format == format;
+                if ui.add(egui::Button::new(label).selected(chosen)).clicked() {
+                    messages.push(Message::SetComposeFormat(format));
+                }
+            }
+        });
+        detail(
+            ui,
+            "How a message you write is sent. Either way you write text: a tag you type is shown as you typed it, never obeyed.",
         );
     });
     ui.add_space(14.0);

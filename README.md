@@ -3,7 +3,8 @@
 A desktop client for Proton Mail, written in Rust with a native interface
 instead of a bundled browser. Unofficial, and not affiliated with Proton.
 
-It reads mail. It cannot write it yet.
+It reads mail, and it can write it. Replies, forwards and attachments are
+still to come.
 
 Three things it will not do, so you do not have to wonder: it never loads
 remote images, it never deletes anything, and it tells you where a link goes
@@ -35,6 +36,10 @@ label different from a move.
 
 **Attachments.** Listed with their sizes, saved to your downloads folder.
 
+**Writing.** Press Write, name as many people as you like in To, Cc and Bcc,
+and send. Ruston Mail tells you if something does not look like an address
+rather than quietly sending to fewer people than you meant.
+
 The three panes resize by dragging, and stay where you put them.
 
 ## Settings
@@ -45,6 +50,9 @@ Four choices change how mail behaves:
 - Whether every message in a conversation opens, or only the newest
 - Whether quoted text starts unfolded
 - Whether a link is confirmed before it opens
+
+You also choose whether a message goes out as plain text or as HTML. Either
+way you write text: a tag you type is shown as you typed it, never obeyed.
 
 Each starts out the way the app worked before it could be configured, and each
 takes effect on the conversation already open.
@@ -68,8 +76,10 @@ While you are typing, these stay out of the way.
 
 ## What it cannot do yet
 
-- Write mail. No compose, reply or forward.
-- Open an attachment. It saves the file; opening it is your file manager's job.
+- Reply or forward. You can write a new message, not answer one in place.
+- Attach a file to a message you are sending.
+- Open an attachment you received. It saves the file; opening it is your file
+  manager's job.
 - Page through search results. Proton answers in one batch, so a very common
   word may not reach as far back as you expect.
 - Create, rename or delete folders and labels.
@@ -137,8 +147,10 @@ RUSTON_DEMO=1 cargo run
 ```
 
 A made-up mailbox: no network, no account, nothing saved. Good for seeing the
-interface, or working on it without touching real mail. On Windows PowerShell,
-use `$env:RUSTON_DEMO=1; cargo run`.
+interface, or working on it without touching real mail. Writing works here
+too — messages land in its Sent folder and go nowhere, and it takes a few per
+run so a mistake cannot fill memory. On Windows PowerShell, use
+`$env:RUSTON_DEMO=1; cargo run`.
 
 ### HTTP diagnostics
 

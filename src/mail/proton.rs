@@ -9,10 +9,11 @@ use proton_core::model::enums::{label_ids, message_flag};
 use proton_core::model::message::Attachment;
 use proton_core::{
     Client, Conversation, Error, HvChallenge, HvResolver, Label, LabelCount, LoginOptions,
-    MessageMetadata, Recipient, SearchOpts, TotpPrompt,
+    MessageMetadata, Recipient, SearchOpts, SendOptions, TotpPrompt,
 };
 
 use super::MailAction;
+use super::outgoing::{Outgoing, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, LoginRequest,
@@ -30,6 +31,9 @@ const METADATA_CONCURRENCY: usize = 4;
 /// Longest wait for any Proton request a view is waiting on. Without it a
 /// stuck call leaves the view loading forever, with no way back.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Sending is several requests: a draft, a key for every recipient, then the
+/// message. It is given longer than a request that only reads.
+const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Time shared by all metadata inspections of one page. Conversations still
 /// pending when it runs out keep Proton's grouping, so a slow or stuck
@@ -172,7 +176,13 @@ impl ProtonMailService {
     /// so this is bound like every other call: a stuck request reports a
     /// connection failure and leaves the mailbox open rather than hanging.
     pub async fn logout(&self) -> Result<(), AuthError> {
-        timed_with(self.client.logout(), AuthError::Connection, map_error).await
+        timed_with(
+            self.client.logout(),
+            REQUEST_TIMEOUT,
+            AuthError::Connection,
+            map_error,
+        )
+        .await
     }
 
     pub fn email(&self) -> Option<&str> {
@@ -245,6 +255,31 @@ impl ProtonMailService {
             .into_iter()
             .chain(custom_places(labels, Folder::label))
             .collect())
+    }
+
+    /// Sends a message. The reply is Proton's id for it, which nothing here
+    /// needs yet.
+    pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
+        let options = SendOptions {
+            to: outgoing.to.clone(),
+            cc: outgoing.cc.clone(),
+            bcc: outgoing.bcc.clone(),
+            subject: outgoing.subject.clone(),
+            body: outgoing.wire_body(),
+            html: outgoing.is_html(),
+            // The account's own address, chosen by proton-core. Attachments,
+            // scheduling and self-destruct are not offered yet.
+            ..SendOptions::default()
+        };
+
+        timed_with(
+            self.client.send(&options),
+            SEND_TIMEOUT,
+            SendError::Mailbox(MailboxError::Connection),
+            |error| SendError::Mailbox(map_mailbox_error(error)),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn conversation_counts(
@@ -414,7 +449,13 @@ impl ProtonMailService {
 /// Runs one Proton request under `REQUEST_TIMEOUT`. A call that outlives it
 /// fails as a connection error, which every view offers to retry.
 async fn timed<T>(call: impl Future<Output = proton_core::Result<T>>) -> Result<T, MailboxError> {
-    timed_with(call, MailboxError::Connection, map_mailbox_error).await
+    timed_with(
+        call,
+        REQUEST_TIMEOUT,
+        MailboxError::Connection,
+        map_mailbox_error,
+    )
+    .await
 }
 
 /// The bound itself, for calls that report something other than a mailbox
@@ -422,10 +463,11 @@ async fn timed<T>(call: impl Future<Output = proton_core::Result<T>>) -> Result<
 /// request leaves that view waiting with no way back.
 async fn timed_with<T, E>(
     call: impl Future<Output = proton_core::Result<T>>,
+    within: Duration,
     timed_out: E,
     failed: impl FnOnce(Error) -> E,
 ) -> Result<T, E> {
-    tokio::time::timeout(REQUEST_TIMEOUT, call)
+    tokio::time::timeout(within, call)
         .await
         .map_err(|_| timed_out)?
         .map_err(failed)

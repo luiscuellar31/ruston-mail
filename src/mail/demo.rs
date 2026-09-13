@@ -7,6 +7,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::outgoing::{Outgoing, SendError};
 use super::{
     ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAddress, MailFolder,
     MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
@@ -15,6 +16,8 @@ use super::{
 /// Small enough that the demo Inbox needs several pages.
 pub const PAGE_SIZE: u32 = 10;
 
+/// How many messages the fictional mailbox accepts in one run.
+const SEND_LIMIT: usize = 5;
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
@@ -123,18 +126,20 @@ struct Fixture {
     /// Whether the demo user sent the original conversation.
     outgoing: bool,
     /// Senders, or recipients in Sent and Drafts. Empty means unknown.
-    correspondents: &'static str,
-    subject: &'static str,
+    correspondents: String,
+    subject: String,
     /// Seconds before now.
     age: i64,
     unread: bool,
     starred: bool,
     /// Message bodies, oldest first. The length is the conversation count.
-    bodies: Vec<&'static str>,
+    bodies: Vec<String>,
     /// Whether the bodies are HTML rather than plain text.
     html: bool,
     /// Replaces the generated recipients of every message.
-    to: &'static [&'static str],
+    to: Vec<String>,
+    /// Written in this run rather than shipped with the demo.
+    composed: bool,
 }
 
 /// Process-local mutable state for the offline mailbox.
@@ -205,6 +210,43 @@ impl DemoMailbox {
         )
     }
 
+    /// Accepts a message the fictional mailbox will pretend to have sent.
+    ///
+    /// It lands in Sent and nothing leaves the process. The cap is what makes
+    /// this safe to leave in: composing can be tried without an account, and
+    /// a mistake in the sending path cannot grow the mailbox without end.
+    pub fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
+        let mut fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        if fixtures.iter().filter(|fixture| fixture.composed).count() >= SEND_LIMIT {
+            return Err(SendError::DemoLimitReached);
+        }
+
+        let everyone: Vec<String> = outgoing
+            .to
+            .iter()
+            .chain(&outgoing.cc)
+            .chain(&outgoing.bcc)
+            .cloned()
+            .collect();
+        fixtures.push(Fixture {
+            folder: MailFolder::Sent,
+            outgoing: true,
+            correspondents: everyone.join(", "),
+            subject: outgoing.subject.clone(),
+            age: 0,
+            unread: false,
+            starred: false,
+            // What would have gone on the wire, so choosing HTML shows in the
+            // demo what choosing HTML does.
+            bodies: vec![outgoing.wire_body()],
+            html: outgoing.is_html(),
+            to: everyone,
+            composed: true,
+        });
+
+        Ok(())
+    }
+
     pub fn set_unread(&self, id: &str, unread: bool) -> bool {
         self.update(id, |fixture| fixture.unread = unread)
     }
@@ -259,13 +301,16 @@ impl Fixture {
 
     fn thread(self, bodies: &[&'static str]) -> Self {
         Self {
-            bodies: bodies.to_vec(),
+            bodies: bodies.iter().map(|body| (*body).to_owned()).collect(),
             ..self
         }
     }
 
     fn to(self, to: &'static [&'static str]) -> Self {
-        Self { to, ..self }
+        Self {
+            to: to.iter().map(|address| (*address).to_owned()).collect(),
+            ..self
+        }
     }
 
     fn message_count(&self) -> usize {
@@ -283,14 +328,15 @@ fn mail(
     Fixture {
         folder,
         outgoing: matches!(folder, MailFolder::Sent | MailFolder::Drafts),
-        correspondents,
-        subject,
+        correspondents: correspondents.to_owned(),
+        subject: subject.to_owned(),
         age,
         unread: false,
         starred: false,
-        bodies: vec![body],
+        bodies: vec![body.to_owned()],
         html: false,
-        to: &[],
+        to: Vec::new(),
+        composed: false,
     }
 }
 
@@ -817,7 +863,7 @@ fn detail_from(fixtures: &[Fixture], id: &str, now: i64) -> Option<ConversationD
 
     Some(ConversationDetail {
         id: id.to_owned(),
-        subject: non_empty(fixture.subject),
+        subject: non_empty(&fixture.subject),
         messages,
         // The demo account owns no labels, so nothing carries one.
         labels: Vec::new(),
@@ -840,8 +886,8 @@ fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
     ConversationSummary {
         id: format!("demo-{index}"),
         kind: SummaryKind::Conversation,
-        subject: non_empty(fixture.subject),
-        correspondents: non_empty(fixture.correspondents),
+        subject: non_empty(&fixture.subject),
+        correspondents: non_empty(&fixture.correspondents),
         participants: fixture_participants(fixture),
         preview: fixture
             .bodies
@@ -928,7 +974,7 @@ fn message(
         recipients,
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),
         body: if fixture.html {
-            MessageBody::Rich(super::html::parse(fixture.bodies[position]))
+            MessageBody::Rich(super::html::parse(&fixture.bodies[position]))
         } else {
             MessageBody::PlainText(fixture.bodies[position].to_owned())
         },
@@ -1166,6 +1212,79 @@ mod tests {
         );
     }
 
+    fn outgoing(subject: &str) -> Outgoing {
+        Outgoing {
+            to: vec!["alex@example.com".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: subject.to_owned(),
+            body: "Hi Alex,\n\nSee you Thursday.".into(),
+            format: crate::mail::BodyFormat::PlainText,
+        }
+    }
+
+    #[test]
+    fn a_sent_message_lands_in_the_fictional_sent_folder() {
+        let mailbox = DemoMailbox::new();
+        let before = state_page(&mailbox, MailFolder::Sent).total;
+
+        mailbox.send(&outgoing("About Thursday")).unwrap();
+
+        let sent = state_page(&mailbox, MailFolder::Sent);
+        assert_eq!(sent.total, before + 1);
+        let row = sent
+            .conversations
+            .iter()
+            .find(|row| row.subject.as_deref() == Some("About Thursday"))
+            .expect("the message is in Sent");
+        assert_eq!(row.correspondents.as_deref(), Some("alex@example.com"));
+    }
+
+    #[test]
+    fn the_fictional_mailbox_stops_accepting_after_a_few() {
+        // A cap is what makes it safe to leave sending switched on without an
+        // account: a loop in the sending path cannot grow the mailbox.
+        let mailbox = DemoMailbox::new();
+        for index in 0..SEND_LIMIT {
+            mailbox
+                .send(&outgoing(&format!("Message {index}")))
+                .expect("within the limit");
+        }
+
+        assert_eq!(
+            mailbox.send(&outgoing("One too many")),
+            Err(SendError::DemoLimitReached)
+        );
+        // And it says so in a way someone can act on.
+        assert!(SendError::DemoLimitReached.message().contains("Restart"));
+    }
+
+    #[test]
+    fn choosing_html_is_what_the_demo_shows_back() {
+        let mailbox = DemoMailbox::new();
+        mailbox
+            .send(&Outgoing {
+                format: crate::mail::BodyFormat::Html,
+                ..outgoing("Formatted")
+            })
+            .unwrap();
+
+        let id = state_page(&mailbox, MailFolder::Sent)
+            .conversations
+            .into_iter()
+            .find(|row| row.subject.as_deref() == Some("Formatted"))
+            .expect("the message is in Sent")
+            .id;
+        let detail = mailbox.conversation_detail(&id, NOW).unwrap();
+
+        // It comes back as structure, not as the tags that carried it.
+        assert!(matches!(
+            detail.messages[0].body,
+            crate::mail::MessageBody::Rich(_)
+        ));
+        assert!(!detail.messages[0].body.plain_text().contains('<'));
+    }
+
     #[test]
     fn the_html_conversation_shows_its_text_and_never_its_markup() {
         let fixtures = fixtures();
@@ -1175,7 +1294,7 @@ mod tests {
             .expect("the fictional mailbox carries one HTML conversation");
         let fixture = &fixtures[index];
 
-        let text = body_text(fixture, fixture.bodies[0]);
+        let text = body_text(fixture, &fixture.bodies[0]);
         assert!(text.contains("Reading room booking"));
         assert!(
             !text.contains('<'),

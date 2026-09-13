@@ -1,6 +1,7 @@
 pub mod demo;
 mod html;
 mod model;
+mod outgoing;
 mod proton;
 mod service;
 mod threading;
@@ -12,6 +13,7 @@ pub use model::{
     MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError,
     MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
 };
+pub use outgoing::{BodyFormat, Outgoing, SendError, recipients};
 #[cfg(test)]
 pub use proton::Reply;
 pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
@@ -50,6 +52,15 @@ impl MailBackend {
     }
 
     /// The folders the account made. The demo mailbox has only Proton's own.
+    /// Sends a message. The demo mailbox keeps it to itself; nothing about
+    /// this path reaches the network without a Proton session.
+    pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
+        match self {
+            Self::Proton(service) => service.send(outgoing).await,
+            Self::Demo(service) => service.send(outgoing),
+        }
+    }
+
     pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
         match self {
             Self::Proton(service) => service.list_folders().await,

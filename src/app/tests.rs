@@ -5,6 +5,7 @@
 //! its files.
 
 use super::*;
+use crate::mail::SendError;
 use crate::mail::demo;
 use crate::settings::Reading;
 
@@ -1247,4 +1248,91 @@ fn mailbox_actions_are_ignored_while_signing_out() {
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Trash)));
 
     assert_eq!(app.mailbox().unwrap().folder(), &sys(MailFolder::Inbox));
+}
+
+/// Opens a message and fills it in.
+fn write(app: &mut App, to: &str) {
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(ComposeField::To, to.to_owned()));
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Subject,
+        "Thursday".to_owned(),
+    ));
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "See you then.".to_owned(),
+    ));
+}
+
+#[test]
+fn a_message_is_written_sent_and_put_away() {
+    let mut app = loaded_demo_app();
+    write(&mut app, "alex@example.com, sam@example.org");
+
+    // Handing it over is work, and the window says so meanwhile.
+    let task = app.update(Message::Send);
+    assert_eq!(task.units(), 1);
+    assert_eq!(app.compose().map(Compose::sending), Some(Sending::InFlight));
+
+    let _ = app.update(Message::Sent(Ok(())));
+    assert!(
+        app.compose().is_none(),
+        "the window stays open after sending"
+    );
+}
+
+#[test]
+fn a_message_with_nowhere_to_go_does_not_leave() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "Ready to go".to_owned(),
+    ));
+
+    // Pressing Send is not an instruction to guess.
+    assert_eq!(app.update(Message::Send).units(), 0);
+    assert_eq!(app.compose().map(Compose::sending), Some(Sending::Writing));
+}
+
+#[test]
+fn a_refusal_keeps_the_message_and_says_why() {
+    let mut app = loaded_demo_app();
+    write(&mut app, "alex@example.com");
+    let _ = app.update(Message::Send);
+
+    let _ = app.update(Message::Sent(Err(SendError::DemoLimitReached)));
+
+    let writing = app.compose().expect("the message is still here");
+    assert_eq!(
+        writing.sending(),
+        Sending::Failed(SendError::DemoLimitReached)
+    );
+    // Nothing typed is lost, so it can be sent again once the cause is gone.
+    assert_eq!(writing.field(ComposeField::Body), "See you then.");
+}
+
+#[test]
+fn a_message_already_gone_cannot_be_sent_twice_or_dismissed() {
+    // Once it is out of the sender's hands, the window is a report, not a
+    // form: a second press must not put a second copy on the wire.
+    let mut app = loaded_demo_app();
+    write(&mut app, "alex@example.com");
+    let _ = app.update(Message::Send);
+
+    assert_eq!(app.update(Message::Send).units(), 0);
+    let _ = app.update(Message::CloseCompose);
+    assert_eq!(app.compose().map(Compose::sending), Some(Sending::InFlight));
+    press(&mut app, Key::Escape);
+    assert!(app.compose().is_some(), "escape dismissed a sent message");
+}
+
+#[test]
+fn escape_puts_an_unsent_message_away() {
+    let mut app = loaded_demo_app();
+    write(&mut app, "alex@example.com");
+
+    press(&mut app, Key::Escape);
+
+    assert!(app.compose().is_none());
 }

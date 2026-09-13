@@ -95,6 +95,12 @@ impl App {
             }
             // One layer at a time, starting with the most recent.
             Shortcut::Dismiss => {
+                // A message on its way is not dismissible; the rest steps
+                // back one layer at a time.
+                if self.compose().is_some_and(|writing| !writing.in_flight()) {
+                    self.close_compose();
+                    return Effects::none();
+                }
                 if self.showing_settings {
                     self.showing_settings = false;
                     return Effects::none();

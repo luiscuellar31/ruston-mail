@@ -75,6 +75,19 @@ fn sidebar(
     ui.heading(egui::RichText::new("Ruston Mail").size(23.0));
     ui.add_space(12.0);
 
+    if ui
+        .add(
+            egui::Button::new("Write")
+                .min_size(egui::vec2(ui.available_width(), 34.0))
+                .fill(theme::ACCENT_SOFT)
+                .stroke(Stroke::new(1.0, theme::ACCENT)),
+        )
+        .clicked()
+    {
+        messages.push(Message::OpenCompose);
+    }
+    ui.add_space(12.0);
+
     for folder in MailFolder::ALL.into_iter().map(Folder::System).chain(
         app.folders()
             .iter()

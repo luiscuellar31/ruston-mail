@@ -1,4 +1,5 @@
 mod auth;
+mod compose;
 mod effect;
 mod keys;
 mod layout;
@@ -15,13 +16,14 @@ use crate::settings::{Panels, Settings, StartFolder, Window};
 const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
-    AuthError, ConversationDetail, ConversationPage, Folder, MailAction, MailBackend,
-    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SignInOutcome, SignInPrompt,
-    demo::DemoMailbox,
+    AuthError, BodyFormat, ConversationDetail, ConversationPage, Folder, MailAction, MailBackend,
+    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SendError, SignInOutcome,
+    SignInPrompt, demo::DemoMailbox,
 };
 
 use auth::LoginForm;
 pub use auth::{AuthState, SignInStep};
+pub use compose::{Compose, ComposeField, Sending};
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{ratios as panel_ratios, widths as panel_widths};
@@ -97,6 +99,18 @@ pub enum Message {
     SetZoom(f32),
     /// Picks the folder a run opens in.
     SetStartFolder(StartFolder),
+    /// Writes a message out as HTML, or as plain text.
+    SetComposeFormat(BodyFormat),
+    /// Starts a new message.
+    OpenCompose,
+    /// Puts an unsent message away.
+    CloseCompose,
+    /// Shows or hides the copy fields.
+    ToggleComposeCopies,
+    ComposeChanged(ComposeField, String),
+    /// Hands the message over to be sent.
+    Send,
+    Sent(Result<(), SendError>),
 }
 
 pub struct App {
@@ -125,6 +139,8 @@ pub struct App {
     settings_written: u64,
     /// Whether the settings page is covering the mailbox.
     showing_settings: bool,
+    /// The message being written, if there is one.
+    compose: Option<Compose>,
     /// What became of the last attachment someone asked to save.
     saved_attachment: Option<Result<PathBuf, SaveError>>,
     /// The attachment being fetched, if any. Saving one is a deliberate act
@@ -162,6 +178,7 @@ impl App {
             settings_revision: 0,
             settings_written: 0,
             showing_settings: false,
+            compose: None,
             saved_attachment: None,
             saving_attachment: None,
         }
@@ -431,6 +448,15 @@ impl App {
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetStartFolder(start) => self.remember(|settings| settings.start = start),
+            Message::SetComposeFormat(format) => {
+                self.remember(|settings| settings.compose_format = format);
+            }
+            Message::OpenCompose => self.open_compose(),
+            Message::CloseCompose => self.close_compose(),
+            Message::ToggleComposeCopies => self.toggle_compose_copies(),
+            Message::ComposeChanged(field, value) => self.change_compose(field, value),
+            Message::Send => return self.send_compose(),
+            Message::Sent(result) => return self.finish_send(result),
         }
 
         Effects::none()
