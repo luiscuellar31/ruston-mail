@@ -201,21 +201,49 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str) {
 
 const KEYS_WIDTH: f32 = 92.0;
 
-fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
-    theme::card().show(ui, |ui| {
-        // A card fills the page. Left to size itself it stops at its longest
-        // line, which made the settings look like a column with an empty
-        // panel beside it.
-        ui.set_width(ui.available_width());
-        ui.heading(egui::RichText::new(title).size(17.0));
-        ui.add_space(4.0);
-        content(ui);
-    });
+fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    theme::card()
+        .show(ui, |ui| {
+            // A card fills the page. Left to size itself it stops at its longest
+            // line, which made the settings look like a column with an empty
+            // panel beside it.
+            ui.set_width(ui.available_width());
+            ui.heading(egui::RichText::new(title).size(17.0));
+            ui.add_space(4.0);
+            content(ui);
+        })
+        .response
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_fills_the_page_however_little_it_says() {
+        // Left to size itself a card stops at its longest line, which made
+        // the settings read as a column with an empty panel beside it.
+        let context = egui::Context::default();
+        let mut card = 0.0;
+        let mut page = 0.0;
+
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(900.0);
+                page = ui.available_width();
+                card = section(ui, "Reading", |ui| {
+                    ui.label("short");
+                })
+                .rect
+                .width();
+            })
+            .drop_without_applying_deltas();
+
+        assert!(
+            (card - page).abs() <= 1.0,
+            "a card {card} wide on a page {page} wide"
+        );
+    }
 
     #[test]
     fn every_offered_zoom_is_one_the_settings_would_keep() {

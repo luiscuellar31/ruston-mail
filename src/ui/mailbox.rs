@@ -5,10 +5,6 @@ use super::{UiState, reader, theme};
 use crate::app::{App, ListStatus, Mailbox, Message, panel_ratios, panel_widths};
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
 
-/// One of the few marks egui's bundled fonts carry; the paperclip beside it
-/// in a row has to be drawn instead (see [`theme::paint_clip`]).
-const STAR: &str = "★";
-
 pub(super) fn show(
     root: &mut egui::Ui,
     app: &App,
@@ -159,7 +155,7 @@ fn folder_button(
         .filter(|count| *count > 0);
     let mut button = egui::Button::new(folder.name())
         .wrap_mode(egui::TextWrapMode::Truncate)
-        .min_size(egui::vec2(ui.available_width(), 31.0))
+        .min_size(egui::vec2(ui.available_width(), FOLDER_HEIGHT))
         .frame(selected);
     if selected {
         button = button
@@ -292,6 +288,7 @@ fn conversation_pane(
 /// [`ROW_HEIGHT`] would slide the ones below it out of step with the
 /// scrollbar. `a_row_is_exactly_the_height_the_list_places_it_at` holds them
 /// together.
+const FOLDER_HEIGHT: f32 = 31.0;
 const ROW_HEIGHT: f32 = 54.0;
 const ROW_GAP: f32 = 10.0;
 
@@ -449,14 +446,14 @@ fn conversation_row(
         facts.push(conversation.message_count.to_string());
     }
     if conversation.starred {
-        facts.push(STAR.to_owned());
+        facts.push(theme::STAR.to_owned());
     }
     let bottom = rect.bottom() - 7.0;
     let facts_left = painter
         .text(
             egui::pos2(rect.right() - 8.0, bottom),
             Align2::RIGHT_BOTTOM,
-            facts.join(" · "),
+            facts.join(&format!(" {} ", theme::DOT)),
             meta_font,
             theme::MUTED,
         )
@@ -562,6 +559,35 @@ mod tests {
         assert_eq!(format_time(at(2026, 9, 11, 9, 5), &now), "09:05");
         assert_eq!(format_time(at(2026, 3, 2, 9, 5), &now), "Mar 2");
         assert_eq!(format_time(at(2025, 12, 31, 9, 5), &now), "2025-12-31");
+    }
+
+    #[test]
+    fn a_long_folder_name_stays_on_one_row() {
+        // A name the account chose is as long as the account wants it to be.
+        // Left to wrap it would take two or three lines and break the rhythm
+        // of the folders around it, so it is cut off instead.
+        let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+        let label = Folder::label(
+            "kZ9",
+            "A label whose name runs far past anything the sidebar is wide enough for",
+        );
+        let context = egui::Context::default();
+        let mut used = egui::Rect::NOTHING;
+
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(200.0);
+                folder_button(ui, &mailbox, label.clone(), &mut Vec::new());
+                used = ui.min_rect();
+            })
+            .drop_without_applying_deltas();
+
+        assert_eq!(used.height(), FOLDER_HEIGHT, "the folder took extra rows");
+        assert!(
+            used.width() <= 200.0,
+            "the sidebar grew to {} for one folder name",
+            used.width()
+        );
     }
 
     #[test]

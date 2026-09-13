@@ -129,11 +129,9 @@ fn conversation(
         scroll = scroll.vertical_scroll_offset(0.0);
     }
     scroll.show(ui, |ui| {
-        // Mail is read in a column of its own width. Once the panel outgrows
-        // that, the column is centred rather than left hugging the divider.
-        let width = ui.available_width().min(READING_WIDTH);
+        let (gap, width) = reading_column_place(ui.available_width());
         ui.horizontal_top(|ui| {
-            ui.add_space(((ui.available_width() - width) * 0.5).max(0.0));
+            ui.add_space(gap);
             ui.vertical(|ui| {
                 ui.set_width(width);
                 reading_column(
@@ -150,6 +148,17 @@ fn conversation(
             });
         });
     });
+}
+
+/// Where the reading column sits in `available` space: the gap before it, and
+/// its width.
+///
+/// Mail is read in a column of its own width. Once the panel outgrows that,
+/// the column is centred rather than left hugging the divider; once the panel
+/// is narrower, the column gives way rather than overflowing.
+fn reading_column_place(available: f32) -> (f32, f32) {
+    let width = available.min(READING_WIDTH);
+    (((available - width) * 0.5).max(0.0), width)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -770,6 +779,22 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+
+    #[test]
+    fn the_reading_column_is_bounded_and_centred() {
+        // Narrower than a column: it gives way, and never asks for a gap it
+        // cannot have.
+        assert_eq!(reading_column_place(400.0), (0.0, 400.0));
+        // Exactly a column: no gap to share out.
+        assert_eq!(reading_column_place(READING_WIDTH), (0.0, READING_WIDTH));
+        // Wider: the column keeps its width and the rest is split evenly, so
+        // it sits in the middle instead of against the divider.
+        let (gap, width) = reading_column_place(READING_WIDTH + 400.0);
+        assert_eq!(width, READING_WIDTH);
+        assert_eq!(gap, 200.0);
+        // A panel dragged to nothing must not produce a negative gap.
+        assert_eq!(reading_column_place(0.0), (0.0, 0.0));
+    }
 
     #[test]
     fn a_crowded_label_row_keeps_only_what_the_conversation_carries() {

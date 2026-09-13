@@ -10,6 +10,17 @@ pub const MUTED: Color32 = Color32::from_rgb(159, 162, 178);
 pub const DANGER: Color32 = Color32::from_rgb(245, 112, 112);
 pub const SUCCESS: Color32 = Color32::from_rgb(105, 210, 160);
 
+/// Marks the interface draws as text rather than painting.
+///
+/// egui's bundled fonts carry these. They do not carry a filled circle, a
+/// paperclip or a chevron: those come out as the replacement box, which is
+/// why the unread dot, the attachment mark and the disclosure arrow are drawn
+/// instead (see [`paint_clip`]). Anything added here has to survive
+/// `every_mark_the_interface_draws_has_a_glyph`.
+pub const STAR: &str = "★";
+/// Separates the facts at the end of a conversation row.
+pub const DOT: &str = "·";
+
 pub fn install(context: &egui::Context) {
     context.set_theme(egui::Theme::Dark);
     let mut style = (*context.style_of(egui::Theme::Dark)).clone();
@@ -173,6 +184,43 @@ mod tests {
                 "the group is not centered {axis}: {group} against {available}"
             );
         }
+    }
+
+    #[test]
+    fn every_mark_the_interface_draws_has_a_glyph() {
+        // A character the fonts do not carry is not an error: it is laid out
+        // as the replacement box, which is how a paperclip and a filled
+        // circle once reached the interface looking like squares. Comparing
+        // against that box is the only way to notice.
+        let context = egui::Context::default();
+        install(&context);
+        // Fonts are built on the first pass, not before it.
+        context
+            .run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+        let font = egui::FontId::proportional(14.0);
+        let width = |text: &str| {
+            context.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+            })
+        };
+        let missing = width("\u{fffd}");
+
+        // The last one is the bullet the parser marks a list item with. The
+        // reader draws it, so it needs a glyph like the marks the interface
+        // owns itself.
+        for mark in [STAR, DOT, "•"] {
+            let drawn = width(mark);
+            assert!(
+                (drawn - missing).abs() > f32::EPSILON,
+                "{mark:?} has no glyph and would be drawn as the replacement box"
+            );
+        }
+        // The comparison itself has to be able to fail, or it proves nothing.
+        assert_eq!(width("\u{1f4ce}"), missing, "the paperclip is still absent");
     }
 
     #[test]
