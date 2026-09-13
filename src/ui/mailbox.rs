@@ -284,6 +284,17 @@ fn conversation_pane(
     }
 }
 
+/// Only the rows on screen are drawn. Laying out every loaded one cost more
+/// than a frame's worth of time once a few pages had been asked for, and a
+/// row's size is fixed anyway, which is what makes the arithmetic possible.
+///
+/// The two numbers place every row, so a row that painted itself taller than
+/// [`ROW_HEIGHT`] would slide the ones below it out of step with the
+/// scrollbar. `a_row_is_exactly_the_height_the_list_places_it_at` holds them
+/// together.
+const ROW_HEIGHT: f32 = 54.0;
+const ROW_GAP: f32 = 10.0;
+
 fn conversation_list(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
@@ -292,11 +303,39 @@ fn conversation_list(
 ) {
     let now = Local::now();
     let selected = mailbox.selected_conversation();
-    egui::ScrollArea::vertical()
-        .id_salt("conversation-scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for conversation in mailbox.visible_conversations() {
+    // Gathered once so a row can be reached by number rather than by walking
+    // the list, which the drawing below does for a handful of rows a frame.
+    let rows: Vec<&ConversationSummary> = mailbox.visible_conversations().collect();
+    let total = rows.len() + usize::from(ends_with_load_more(mailbox));
+
+    ui.scope(|ui| {
+        // Read by `show_rows` to work out where each row goes, so it is set
+        // on this `Ui` and not inside the closure.
+        ui.spacing_mut().item_spacing.y = ROW_GAP;
+        let mut scroll = egui::ScrollArea::vertical()
+            .id_salt("conversation-scroll")
+            .auto_shrink([false, false]);
+
+        // A row that is not drawn cannot scroll itself into view, so the
+        // offset that centres it is worked out from its number. The request
+        // is kept until the row it names turns up.
+        let reveal = state
+            .reveal_conversation
+            .as_deref()
+            .and_then(|wanted| rows.iter().position(|row| row.id == wanted));
+        if let Some(index) = reveal {
+            let middle = (ui.available_height() - ROW_HEIGHT) / 2.0;
+            let offset = (index as f32 * (ROW_HEIGHT + ROW_GAP) - middle).max(0.0);
+            scroll = scroll.vertical_scroll_offset(offset);
+            state.reveal_conversation = None;
+        }
+
+        scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
+            for index in range {
+                let Some(conversation) = rows.get(index) else {
+                    load_more(ui, mailbox, messages);
+                    continue;
+                };
                 let response = ui
                     .push_id(&conversation.id, |ui| {
                         conversation_row(
@@ -307,17 +346,19 @@ fn conversation_list(
                         )
                     })
                     .inner;
-                if state.reveal_conversation.as_deref() == Some(conversation.id.as_str()) {
-                    response.scroll_to_me(Some(Align::Center));
-                    state.reveal_conversation = None;
-                }
                 if response.clicked() {
                     messages.push(Message::SelectConversation(conversation.id.clone()));
                 }
-                ui.add_space(2.0);
             }
-            load_more(ui, mailbox, messages);
         });
+    });
+}
+
+/// Whether [`load_more`] draws anything, which decides whether the list has a
+/// row at the end for it. The two answer the same question and belong
+/// together.
+fn ends_with_load_more(mailbox: &Mailbox) -> bool {
+    matches!(mailbox.status(), ListStatus::LoadingMore(_)) || mailbox.has_more()
 }
 
 fn conversation_row(
@@ -521,6 +562,39 @@ mod tests {
         assert_eq!(format_time(at(2026, 9, 11, 9, 5), &now), "09:05");
         assert_eq!(format_time(at(2026, 3, 2, 9, 5), &now), "Mar 2");
         assert_eq!(format_time(at(2025, 12, 31, 9, 5), &now), "2025-12-31");
+    }
+
+    #[test]
+    fn a_row_is_exactly_the_height_the_list_places_it_at() {
+        // The list is virtualised: every row's position comes from ROW_HEIGHT
+        // rather than from what the row drew. A row that grew would drift
+        // away from where the scrollbar says it is.
+        let conversation = ConversationSummary {
+            id: "row".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: Some("A subject".into()),
+            correspondents: Some("Alex Rivera".into()),
+            participants: Vec::new(),
+            preview: None,
+            time: Some(1_700_000_000),
+            unread: true,
+            starred: true,
+            message_count: 3,
+            has_attachments: true,
+        };
+        let context = egui::Context::default();
+        let now = Local::now();
+        let mut height = 0.0;
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(320.0);
+                height = conversation_row(ui, &conversation, true, &now)
+                    .rect
+                    .height();
+            })
+            .drop_without_applying_deltas();
+
+        assert_eq!(height, ROW_HEIGHT);
     }
 
     #[test]
