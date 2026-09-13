@@ -5,20 +5,35 @@ use crate::app::{App, AuthState, Message, SignInStep};
 
 const CARD_WIDTH: f32 = 420.0;
 
-pub(super) fn show(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
-    egui::CentralPanel::default().show(root, |ui| {
-        ui.centered_and_justified(|ui| {
-            ui.set_max_width(CARD_WIDTH);
-            theme::card().show(ui, |ui| {
-                ui.set_width(CARD_WIDTH - 56.0);
+pub(super) fn show(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) -> egui::Response {
+    egui::CentralPanel::default()
+        .show(root, |ui| {
+            card(ui, |ui| {
                 if matches!(app.auth_state(), AuthState::NeedsHumanVerification { .. }) {
                     verification(ui, app, messages);
                 } else {
                     sign_in(ui, app, messages);
                 }
-            });
+            })
+        })
+        .inner
+}
+
+/// Puts the card in the middle of the window, as tall as what it holds.
+///
+/// Not `centered_and_justified`: that justifies along the main axis too, and
+/// a top-down layout hands its whole height to the first widget it places.
+/// The brand mark took the window, and the heading, the fields and the button
+/// under it started below the bottom edge.
+fn card(ui: &mut egui::Ui, mut content: impl FnMut(&mut egui::Ui)) -> egui::Response {
+    let frame = theme::card();
+    let inside = CARD_WIDTH - frame.inner_margin.sum().x;
+    theme::centered_group(ui, |ui| {
+        frame.show(ui, |ui| {
+            ui.set_width(inside);
+            content(ui);
         });
-    });
+    })
 }
 
 fn sign_in(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
@@ -193,5 +208,61 @@ fn brand(ui: &mut egui::Ui) {
 fn error(ui: &mut egui::Ui, app: &App) {
     if let Some(error) = app.error_message() {
         ui.label(egui::RichText::new(error).color(theme::DANGER));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lays the sign-in screen out in a window of `size` and answers with the
+    /// card's rectangle and the window's.
+    fn laid_out(size: egui::Vec2) -> (egui::Rect, egui::Rect) {
+        let app = App::signed_out();
+        let context = egui::Context::default();
+        theme::install(&context);
+        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let mut card = egui::Rect::NOTHING;
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(window),
+                    ..Default::default()
+                },
+                |ui| card = show(ui, &app, &mut Vec::new()).rect,
+            )
+            .drop_without_applying_deltas();
+
+        (card, window)
+    }
+
+    #[test]
+    fn the_sign_in_card_is_centred_and_only_as_tall_as_it_holds() {
+        // A card stretched to the window is a card whose contents start in
+        // the middle of it: the brand mark ended up alone on screen, with the
+        // fields and the button below the bottom edge.
+        let (card, window) = laid_out(egui::vec2(1200.0, 800.0));
+        let (taller, _) = laid_out(egui::vec2(1200.0, 1400.0));
+
+        assert!(card.height() > 0.0, "the card was never laid out");
+        assert!(
+            (card.height() - taller.height()).abs() <= 1.0,
+            "the card grew with the window: {} against {}",
+            card.height(),
+            taller.height()
+        );
+        assert!(
+            window.contains_rect(card),
+            "the card {card:?} left the window {window:?}"
+        );
+        for (axis, card, window) in [
+            ("vertically", card.center().y, window.center().y),
+            ("horizontally", card.center().x, window.center().x),
+        ] {
+            assert!(
+                (card - window).abs() <= 1.0,
+                "the card is not centred {axis}: {card} against {window}"
+            );
+        }
     }
 }

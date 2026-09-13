@@ -191,6 +191,15 @@ impl App {
         }
     }
 
+    /// An app that has finished looking for a session and found none, which
+    /// is the state the sign-in screen is drawn for.
+    #[cfg(test)]
+    pub(crate) fn signed_out() -> Self {
+        let mut app = Self::new(Settings::default());
+        app.auth_state = AuthState::SignedOut;
+        app
+    }
+
     /// Where the last saved attachment landed, or why it did not.
     /// The attachment now being fetched, so its row can say so.
     pub fn saving_attachment(&self) -> Option<&str> {

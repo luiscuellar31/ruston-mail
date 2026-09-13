@@ -228,7 +228,9 @@ impl eframe::App for DesktopApp {
             | AuthState::SigningIn(_)
             | AuthState::NeedsTotp
             | AuthState::NeedsMailboxPassword
-            | AuthState::NeedsHumanVerification { .. } => login::show(ui, &self.app, &mut messages),
+            | AuthState::NeedsHumanVerification { .. } => {
+                login::show(ui, &self.app, &mut messages);
+            }
             AuthState::Authenticated { email } => {
                 if let Some(writing) = self.app.compose() {
                     compose::show(ui, writing, &mut messages);
