@@ -54,8 +54,12 @@ whether every message in a conversation opens or only the newest, whether
 quoted passages start unfolded, and whether a link is confirmed before it
 opens. Each ships set the way the app behaved before it could be configured, so
 an upgrade changes nothing on its own, and each reaches the conversation
-already open rather than waiting for the next one. The panel also lists the
-keys below, since a shortcut no one can find is a shortcut no one uses.
+already open rather than waiting for the next one.
+
+The interface can also be scaled, which grows every length rather than the text
+alone, so the window keeps its proportions and the remembered window size means
+the same window whatever the scale. The panel lists the keys below too, since a
+shortcut no one can find is a shortcut no one uses.
 
 Everything else worth keeping — the window size, the pane widths, the folder
 you left off in — is remembered on its own, with nothing to set.
