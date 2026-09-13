@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::outgoing::{Outgoing, SendError};
+use super::outgoing::{Kind, Outgoing, SendError};
 use super::{
     ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAddress, MailFolder,
     MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
@@ -215,36 +215,59 @@ impl DemoMailbox {
     /// It lands in Sent and nothing leaves the process. The cap is what makes
     /// this safe to leave in: composing can be tried without an account, and
     /// a mistake in the sending path cannot grow the mailbox without end.
-    pub fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
+    pub fn send(&self, outgoing: &Outgoing, now: i64) -> Result<(), SendError> {
         let mut fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
         if fixtures.iter().filter(|fixture| fixture.composed).count() >= SEND_LIMIT {
             return Err(SendError::DemoLimitReached);
         }
 
-        let everyone: Vec<String> = outgoing
-            .to
-            .iter()
-            .chain(&outgoing.cc)
-            .chain(&outgoing.bcc)
-            .cloned()
+        // What Proton would have decided for an answer, so the demo shows the
+        // same thing: a prefixed subject, the message quoted underneath, and
+        // for a reply the sender it goes back to.
+        let answered = answered_message(&fixtures, &outgoing.kind, now);
+        let (prefix, back_to) = match (&outgoing.kind, &answered) {
+            (Kind::Reply { .. }, Some(parent)) => ("Re: ", Some(parent.sender.clone())),
+            (Kind::Forward { .. }, _) => ("Fw: ", None),
+            (Kind::Reply { .. }, None) => ("Re: ", None),
+            (Kind::New, _) => ("", None),
+        };
+
+        let mut everyone: Vec<String> = back_to
+            .into_iter()
+            .chain(outgoing.to.iter().cloned())
+            .chain(outgoing.cc.iter().cloned())
+            .chain(outgoing.bcc.iter().cloned())
             .collect();
+        everyone.dedup();
         fixtures.push(Fixture {
             folder: MailFolder::Sent,
             outgoing: true,
             correspondents: everyone.join(", "),
-            subject: outgoing.subject.clone(),
+            subject: answered.as_ref().map_or_else(
+                || outgoing.subject.clone(),
+                |parent| with_prefix(prefix, &parent.subject),
+            ),
             age: 0,
             unread: false,
             starred: false,
             // What would have gone on the wire, so choosing HTML shows in the
             // demo what choosing HTML does.
-            bodies: vec![outgoing.wire_body()],
+            bodies: vec![match &answered {
+                Some(parent) => format!("{}\n\n{}", outgoing.wire_body(), parent.quoted),
+                None => outgoing.wire_body(),
+            }],
             html: outgoing.is_html(),
             to: everyone,
             composed: true,
         });
 
         Ok(())
+    }
+
+    /// [`Self::send`] at the fictional mailbox's own clock.
+    #[cfg(test)]
+    pub fn send_now(&self, outgoing: &Outgoing) -> Result<(), SendError> {
+        self.send(outgoing, tests::NOW)
     }
 
     pub fn set_unread(&self, id: &str, unread: bool) -> bool {
@@ -870,6 +893,54 @@ fn detail_from(fixtures: &[Fixture], id: &str, now: i64) -> Option<ConversationD
     })
 }
 
+/// The message an answer is answering, as the fictional mailbox sees it.
+struct Answered {
+    sender: String,
+    subject: String,
+    quoted: String,
+}
+
+/// Finds the message being answered and works out how it is quoted.
+fn answered_message(fixtures: &[Fixture], kind: &Kind, now: i64) -> Option<Answered> {
+    let message_id = match kind {
+        Kind::New => return None,
+        Kind::Reply { message_id, .. } | Kind::Forward { message_id } => message_id,
+    };
+    let (index, position) = message_place(message_id)?;
+    let detail = detail_from(fixtures, &format!("demo-{index}"), now)?;
+    let message = detail.messages.get(position)?;
+    let sender = message.sender.address.clone();
+
+    Some(Answered {
+        subject: detail.subject.clone().unwrap_or_default(),
+        quoted: message
+            .body
+            .plain_text()
+            .lines()
+            .map(|line| format!("> {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        sender,
+    })
+}
+
+/// `demo-{conversation}-{message}`.
+fn message_place(id: &str) -> Option<(usize, usize)> {
+    let rest = id.strip_prefix("demo-")?;
+    let (index, position) = rest.split_once('-')?;
+
+    Some((index.parse().ok()?, position.parse().ok()?))
+}
+
+/// Adds the prefix unless the subject already carries it.
+fn with_prefix(prefix: &str, subject: &str) -> String {
+    if prefix.is_empty() || subject.starts_with(prefix) {
+        return subject.to_owned();
+    }
+
+    format!("{prefix}{subject}")
+}
+
 fn fixture_index(id: &str) -> Option<usize> {
     id.strip_prefix("demo-")?.parse().ok()
 }
@@ -1025,7 +1096,7 @@ fn non_empty(value: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    const NOW: i64 = 1_789_000_000;
+    pub(super) const NOW: i64 = 1_789_000_000;
 
     /// One of Proton's own folders, as a place to list from.
     fn sys(folder: MailFolder) -> Folder {
@@ -1214,6 +1285,7 @@ mod tests {
 
     fn outgoing(subject: &str) -> Outgoing {
         Outgoing {
+            kind: Kind::New,
             to: vec!["alex@example.com".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
@@ -1228,7 +1300,7 @@ mod tests {
         let mailbox = DemoMailbox::new();
         let before = state_page(&mailbox, MailFolder::Sent).total;
 
-        mailbox.send(&outgoing("About Thursday")).unwrap();
+        mailbox.send_now(&outgoing("About Thursday")).unwrap();
 
         let sent = state_page(&mailbox, MailFolder::Sent);
         assert_eq!(sent.total, before + 1);
@@ -1247,12 +1319,12 @@ mod tests {
         let mailbox = DemoMailbox::new();
         for index in 0..SEND_LIMIT {
             mailbox
-                .send(&outgoing(&format!("Message {index}")))
+                .send_now(&outgoing(&format!("Message {index}")))
                 .expect("within the limit");
         }
 
         assert_eq!(
-            mailbox.send(&outgoing("One too many")),
+            mailbox.send_now(&outgoing("One too many")),
             Err(SendError::DemoLimitReached)
         );
         // And it says so in a way someone can act on.
@@ -1260,10 +1332,79 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_goes_back_to_the_sender_with_the_thread_under_it() {
+        // The fictional mailbox mirrors what Proton does with an answer, so
+        // the demo shows the same thing the real one would.
+        let mailbox = DemoMailbox::new();
+        let answered = mailbox.conversation_detail("demo-0", NOW).unwrap();
+        let parent = &answered.messages[0];
+
+        mailbox
+            .send_now(&Outgoing {
+                kind: Kind::Reply {
+                    message_id: parent.id.clone(),
+                    everyone: false,
+                },
+                to: Vec::new(),
+                subject: String::new(),
+                ..outgoing("ignored")
+            })
+            .unwrap();
+
+        let row = state_page(&mailbox, MailFolder::Sent)
+            .conversations
+            .into_iter()
+            .max_by_key(|row| row.time)
+            .expect("the reply is in Sent");
+        // Proton writes the subject and addresses it; neither was typed here.
+        assert_eq!(
+            row.subject.as_deref(),
+            Some(format!("Re: {}", answered.subject.unwrap()).as_str())
+        );
+        assert_eq!(
+            row.correspondents.as_deref(),
+            Some(parent.sender.address.as_str())
+        );
+
+        let sent = mailbox.conversation_detail(&row.id, NOW).unwrap();
+        let body = sent.messages[0].body.plain_text();
+        assert!(
+            body.contains("See you Thursday."),
+            "the new text is missing"
+        );
+        assert!(body.contains("> "), "the message answered is not quoted");
+    }
+
+    #[test]
+    fn a_forward_keeps_the_recipients_it_was_given() {
+        let mailbox = DemoMailbox::new();
+        let answered = mailbox.conversation_detail("demo-0", NOW).unwrap();
+
+        mailbox
+            .send_now(&Outgoing {
+                kind: Kind::Forward {
+                    message_id: answered.messages[0].id.clone(),
+                },
+                subject: String::new(),
+                ..outgoing("ignored")
+            })
+            .unwrap();
+
+        let row = state_page(&mailbox, MailFolder::Sent)
+            .conversations
+            .into_iter()
+            .max_by_key(|row| row.time)
+            .expect("the forward is in Sent");
+        assert!(row.subject.as_deref().unwrap().starts_with("Fw: "));
+        // Unlike a reply, a forward goes where it was told.
+        assert_eq!(row.correspondents.as_deref(), Some("alex@example.com"));
+    }
+
+    #[test]
     fn choosing_html_is_what_the_demo_shows_back() {
         let mailbox = DemoMailbox::new();
         mailbox
-            .send(&Outgoing {
+            .send_now(&Outgoing {
                 format: crate::mail::BodyFormat::Html,
                 ..outgoing("Formatted")
             })

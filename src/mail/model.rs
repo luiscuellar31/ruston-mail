@@ -206,8 +206,7 @@ pub enum MessageBody {
 }
 
 impl MessageBody {
-    /// The body as plain text, for copying out.
-    #[cfg(test)]
+    /// The body as plain text, for quoting it in an answer.
     pub fn plain_text(&self) -> String {
         match self {
             Self::PlainText(text) => text.clone(),

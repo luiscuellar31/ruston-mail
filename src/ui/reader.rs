@@ -320,6 +320,24 @@ fn message_card(
                 for attachment in &message.attachments {
                     attachment_row(ui, &message.id, attachment, saving_attachment, messages);
                 }
+                ui.horizontal_wrapped(|ui| {
+                    // Proton works out who a reply reaches from the message
+                    // itself, so these say what is being answered, not who
+                    // will receive it.
+                    for (label, forward, everyone) in [
+                        ("Reply", false, false),
+                        ("Reply all", false, true),
+                        ("Forward", true, false),
+                    ] {
+                        if ui.add(egui::Button::new(label).small()).clicked() {
+                            messages.push(Message::Answer {
+                                message_id: message.id.clone(),
+                                forward,
+                                everyone,
+                            });
+                        }
+                    }
+                });
                 ui.separator();
                 theme::selectable_text(ui, |ui| {
                     message_body(ui, message, reader, reading, messages);

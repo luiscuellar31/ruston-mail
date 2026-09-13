@@ -1336,3 +1336,82 @@ fn escape_puts_an_unsent_message_away() {
 
     assert!(app.compose().is_none());
 }
+
+#[test]
+fn a_reply_needs_nobody_named_because_proton_knows() {
+    // Proton addresses a reply from the message being answered, so the window
+    // must not refuse to send for want of a recipient.
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    deliver_selected_demo_detail(&mut app);
+
+    let _ = app.update(Message::Answer {
+        message_id: "demo-0-2".into(),
+        forward: false,
+        everyone: false,
+    });
+
+    let writing = app.compose().expect("a reply is open");
+    assert!(!writing.asks_for_recipients());
+    assert!(!writing.asks_for_subject());
+    assert_eq!(app.update(Message::Send).units(), 1);
+}
+
+#[test]
+fn a_forward_still_has_to_be_addressed() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    deliver_selected_demo_detail(&mut app);
+
+    let _ = app.update(Message::Answer {
+        message_id: "demo-0-2".into(),
+        forward: true,
+        everyone: false,
+    });
+
+    let writing = app.compose().expect("a forward is open");
+    assert!(writing.asks_for_recipients());
+    // Proton writes the subject, so the window does not ask for one.
+    assert!(!writing.asks_for_subject());
+    assert_eq!(app.update(Message::Send).units(), 0, "it left unaddressed");
+
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::To,
+        "alex@example.com".into(),
+    ));
+    assert_eq!(app.update(Message::Send).units(), 1);
+}
+
+#[test]
+fn answering_says_what_is_being_answered() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    deliver_selected_demo_detail(&mut app);
+
+    let _ = app.update(Message::Answer {
+        message_id: "demo-0-2".into(),
+        forward: false,
+        everyone: true,
+    });
+
+    let answering = app
+        .compose()
+        .and_then(Compose::answering)
+        .expect("it says what it answers");
+    assert!(answering.everyone);
+    assert!(!answering.subject.is_empty());
+    assert!(!answering.sender.is_empty());
+}
+
+#[test]
+fn answering_a_message_that_is_not_there_opens_nothing() {
+    let mut app = loaded_demo_app();
+
+    let _ = app.update(Message::Answer {
+        message_id: "demo-0-2".into(),
+        forward: false,
+        everyone: false,
+    });
+
+    assert!(app.compose().is_none());
+}

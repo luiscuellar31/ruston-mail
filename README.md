@@ -3,8 +3,8 @@
 A desktop client for Proton Mail, written in Rust with a native interface
 instead of a bundled browser. Unofficial, and not affiliated with Proton.
 
-It reads mail, and it can write it. Replies, forwards and attachments are
-still to come.
+It reads mail, and it can write it: new messages, replies and forwards.
+Attachments you send are still to come.
 
 Three things it will not do, so you do not have to wonder: it never loads
 remote images, it never deletes anything, and it tells you where a link goes
@@ -39,6 +39,10 @@ label different from a move.
 **Writing.** Press Write, name as many people as you like in To, Cc and Bcc,
 and send. Ruston Mail tells you if something does not look like an address
 rather than quietly sending to fewer people than you meant.
+
+**Answering.** Reply, reply to everyone, or forward, from the buttons on an
+open message. Proton addresses a reply from the message being answered and
+writes the subject, so the window asks only for what you want to say.
 
 The three panes resize by dragging, and stay where you put them.
 
@@ -76,7 +80,6 @@ While you are typing, these stay out of the way.
 
 ## What it cannot do yet
 
-- Reply or forward. You can write a new message, not answer one in place.
 - Attach a file to a message you are sending.
 - Open an attachment you received. It saves the file; opening it is your file
   manager's job.

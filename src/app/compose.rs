@@ -6,9 +6,9 @@
 //! and what to say when it is not. `ui::compose` draws this and adds nothing
 //! to it.
 
-use crate::mail::{BodyFormat, Outgoing, SendError, recipients};
+use crate::mail::{BodyFormat, Kind, MailMessage, Outgoing, SendError, recipients};
 
-use super::{App, Effects, Message};
+use super::{App, Effects, Message, ReaderState};
 
 /// One of the fields being typed into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,9 +52,21 @@ pub enum Sending {
     Failed(SendError),
 }
 
+/// The message being answered, as the window describes it. Proton works out
+/// the recipients and the subject itself, so this says what is being answered
+/// rather than promising who will receive it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answering {
+    pub sender: String,
+    pub subject: String,
+    pub everyone: bool,
+}
+
 /// A message being written.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Compose {
+    kind: Kind,
+    answering: Option<Answering>,
     to: String,
     cc: String,
     bcc: String,
@@ -102,6 +114,21 @@ impl Compose {
 
     pub fn showing_more(&self) -> bool {
         self.more
+    }
+
+    /// What is being answered, when something is.
+    pub fn answering(&self) -> Option<&Answering> {
+        self.answering.as_ref()
+    }
+
+    /// Whether the window asks who the message goes to.
+    pub fn asks_for_recipients(&self) -> bool {
+        Outgoing::needs_recipients(&self.kind)
+    }
+
+    /// Whether the window asks for a subject. Proton writes one for an answer.
+    pub fn asks_for_subject(&self) -> bool {
+        matches!(self.kind, Kind::New)
     }
 
     pub fn sending(&self) -> Sending {
@@ -152,11 +179,16 @@ impl Compose {
         if !rejected.is_empty() {
             return Err(NotReady::BadAddresses(rejected));
         }
-        if to.accepted.is_empty() && cc.accepted.is_empty() && bcc.accepted.is_empty() {
+        if Outgoing::needs_recipients(&self.kind)
+            && to.accepted.is_empty()
+            && cc.accepted.is_empty()
+            && bcc.accepted.is_empty()
+        {
             return Err(NotReady::NoRecipients);
         }
 
         Ok(Outgoing {
+            kind: self.kind.clone(),
             to: to.accepted,
             cc: cc.accepted,
             bcc: bcc.accepted,
@@ -176,6 +208,61 @@ impl App {
         if self.compose.is_none() {
             self.compose = Some(Compose::default());
         }
+    }
+
+    /// Answers the message with the given id in the open conversation.
+    pub(super) fn answer(&mut self, message_id: &str, forward: bool, everyone: bool) {
+        let Some(ReaderState::Loaded(reader)) = self.mailbox().map(super::Mailbox::reader_state)
+        else {
+            return;
+        };
+        let Some(message) = reader
+            .detail()
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+        else {
+            return;
+        };
+        let kind = if forward {
+            Kind::Forward {
+                message_id: message_id.to_owned(),
+            }
+        } else {
+            Kind::Reply {
+                message_id: message_id.to_owned(),
+                everyone,
+            }
+        };
+        let subject = reader.detail().subject.clone();
+        let message = message.clone();
+        self.open_answer(kind, &message, subject.as_deref());
+    }
+
+    /// Answers the message, or passes it on.
+    ///
+    /// What the window shows is what is being answered, not who will receive
+    /// it: for a reply Proton works the recipients out from the message
+    /// itself, and repeating that rule here is a second copy of it that could
+    /// drift from the first.
+    pub(super) fn open_answer(&mut self, kind: Kind, message: &MailMessage, subject: Option<&str>) {
+        if self.compose.is_some() {
+            return;
+        }
+        let everyone = matches!(kind, Kind::Reply { everyone: true, .. });
+        self.compose = Some(Compose {
+            kind,
+            answering: Some(Answering {
+                sender: message
+                    .sender
+                    .display_name()
+                    .unwrap_or("(unknown sender)")
+                    .to_owned(),
+                subject: subject.unwrap_or("(No subject)").to_owned(),
+                everyone,
+            }),
+            ..Compose::default()
+        });
     }
 
     /// Puts an unsent message away. One already on its way is left alone: it

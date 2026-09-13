@@ -18,9 +18,30 @@ pub enum BodyFormat {
     Html,
 }
 
+/// Whether a message stands on its own or answers one already there.
+///
+/// Proton decides some of an answer itself, from the message being answered,
+/// and what it decides is not ours to override: a reply's recipients and its
+/// subject, a forward's subject, and the attachments a forward carries. Only
+/// the new text is given here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Kind {
+    #[default]
+    New,
+    Reply {
+        message_id: String,
+        /// Everyone the message reached, rather than only whoever sent it.
+        everyone: bool,
+    },
+    Forward {
+        message_id: String,
+    },
+}
+
 /// A message ready to leave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {
+    pub kind: Kind,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
@@ -40,6 +61,12 @@ impl Outgoing {
 
     pub fn is_html(&self) -> bool {
         self.format == BodyFormat::Html
+    }
+
+    /// Whether the sender has to say where this goes. A reply already knows,
+    /// from the message it answers.
+    pub fn needs_recipients(kind: &Kind) -> bool {
+        !matches!(kind, Kind::Reply { .. })
     }
 }
 
@@ -223,6 +250,7 @@ mod tests {
 
     fn html(body: &str) -> String {
         Outgoing {
+            kind: Kind::New,
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),
@@ -237,6 +265,7 @@ mod tests {
     fn plain_text_leaves_exactly_as_it_was_typed() {
         let typed = "Hi Alex,\n\nThe < sign & the rest.\n";
         let message = Outgoing {
+            kind: Kind::New,
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),

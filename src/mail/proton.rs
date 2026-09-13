@@ -13,7 +13,7 @@ use proton_core::{
 };
 
 use super::MailAction;
-use super::outgoing::{Outgoing, SendError};
+use super::outgoing::{Kind, Outgoing, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, LoginRequest,
@@ -272,8 +272,22 @@ impl ProtonMailService {
             ..SendOptions::default()
         };
 
+        // Proton is told what kind of message this is, so a reply threads and
+        // a forward carries the files over. Which recipients an answer goes
+        // to is Proton's to decide, not something to work out twice.
+        let call = async {
+            match &outgoing.kind {
+                Kind::New => self.client.send(&options).await,
+                Kind::Reply {
+                    message_id,
+                    everyone,
+                } => self.client.reply(message_id, *everyone, &options).await,
+                Kind::Forward { message_id } => self.client.forward(message_id, &options).await,
+            }
+        };
+
         timed_with(
-            self.client.send(&options),
+            call,
             SEND_TIMEOUT,
             SendError::Mailbox(MailboxError::Connection),
             |error| SendError::Mailbox(map_mailbox_error(error)),

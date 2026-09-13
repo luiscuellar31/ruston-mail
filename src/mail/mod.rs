@@ -13,7 +13,7 @@ pub use model::{
     MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError,
     MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
 };
-pub use outgoing::{BodyFormat, Outgoing, SendError, recipients};
+pub use outgoing::{BodyFormat, Kind, Outgoing, SendError, recipients};
 #[cfg(test)]
 pub use proton::Reply;
 pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
@@ -57,7 +57,7 @@ impl MailBackend {
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
         match self {
             Self::Proton(service) => service.send(outgoing).await,
-            Self::Demo(service) => service.send(outgoing),
+            Self::Demo(service) => service.send(outgoing, demo::now()),
         }
     }
 

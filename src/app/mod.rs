@@ -23,7 +23,7 @@ use crate::mail::{
 
 use auth::LoginForm;
 pub use auth::{AuthState, SignInStep};
-pub use compose::{Compose, ComposeField, Sending};
+pub use compose::{Answering, Compose, ComposeField, Sending};
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{ratios as panel_ratios, widths as panel_widths};
@@ -103,6 +103,13 @@ pub enum Message {
     SetComposeFormat(BodyFormat),
     /// Starts a new message.
     OpenCompose,
+    /// Answers the open message, or passes it on. `everyone` is only read by
+    /// a reply.
+    Answer {
+        message_id: String,
+        forward: bool,
+        everyone: bool,
+    },
     /// Puts an unsent message away.
     CloseCompose,
     /// Shows or hides the copy fields.
@@ -452,6 +459,11 @@ impl App {
                 self.remember(|settings| settings.compose_format = format);
             }
             Message::OpenCompose => self.open_compose(),
+            Message::Answer {
+                message_id,
+                forward,
+                everyone,
+            } => self.answer(&message_id, forward, everyone),
             Message::CloseCompose => self.close_compose(),
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),

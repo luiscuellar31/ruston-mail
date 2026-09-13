@@ -1,7 +1,7 @@
 use eframe::egui::{self, Align, Layout};
 
 use super::{mailbox::detail, theme};
-use crate::app::{Compose, ComposeField, Message, Sending};
+use crate::app::{Answering, Compose, ComposeField, Message, Sending};
 
 /// How wide a recipient or subject line is before the body.
 const LABEL_WIDTH: f32 = 74.0;
@@ -16,8 +16,14 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     let sending = compose.sending();
     let leaving = sending == Sending::InFlight;
 
+    let heading = match compose.answering() {
+        None => "New message",
+        Some(answer) if answer.everyone => "Reply to everyone",
+        Some(_) if !compose.asks_for_recipients() => "Reply",
+        Some(_) => "Forward",
+    };
     ui.horizontal(|ui| {
-        ui.heading(egui::RichText::new("New message").size(24.0));
+        ui.heading(egui::RichText::new(heading).size(24.0));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Nothing is offered while the message is on its way: it is out
             // of the sender's hands, and a second press must not send twice.
@@ -41,36 +47,44 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             }
         });
     });
-    ui.add_space(14.0);
+    ui.add_space(10.0);
 
-    line(ui, "To", ComposeField::To, compose, leaving, messages);
-    if compose.showing_more() {
-        line(ui, "Cc", ComposeField::Cc, compose, leaving, messages);
-        line(ui, "Bcc", ComposeField::Bcc, compose, leaving, messages);
+    if let Some(answer) = compose.answering() {
+        answered(ui, answer, compose.asks_for_recipients());
     }
-    ui.horizontal(|ui| {
-        ui.add_space(LABEL_WIDTH);
-        let more = if compose.showing_more() {
-            "Fewer fields"
-        } else {
-            "Cc and Bcc"
-        };
-        if ui
-            .add_enabled(!leaving, egui::Button::new(more).small())
-            .clicked()
-        {
-            messages.push(Message::ToggleComposeCopies);
+
+    if compose.asks_for_recipients() {
+        line(ui, "To", ComposeField::To, compose, leaving, messages);
+        if compose.showing_more() {
+            line(ui, "Cc", ComposeField::Cc, compose, leaving, messages);
+            line(ui, "Bcc", ComposeField::Bcc, compose, leaving, messages);
         }
-    });
-    ui.add_space(4.0);
-    line(
-        ui,
-        "Subject",
-        ComposeField::Subject,
-        compose,
-        leaving,
-        messages,
-    );
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH);
+            let more = if compose.showing_more() {
+                "Fewer fields"
+            } else {
+                "Cc and Bcc"
+            };
+            if ui
+                .add_enabled(!leaving, egui::Button::new(more).small())
+                .clicked()
+            {
+                messages.push(Message::ToggleComposeCopies);
+            }
+        });
+        ui.add_space(4.0);
+    }
+    if compose.asks_for_subject() {
+        line(
+            ui,
+            "Subject",
+            ComposeField::Subject,
+            compose,
+            leaving,
+            messages,
+        );
+    }
     ui.add_space(10.0);
 
     // Whichever of the two matters: what went wrong beats what is missing,
@@ -103,6 +117,25 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     if response.changed() {
         messages.push(Message::ComposeChanged(ComposeField::Body, body));
     }
+}
+
+/// What is being answered.
+///
+/// It says which message, not who will receive the answer: Proton reads the
+/// recipients off the message itself, and only it knows whether that message
+/// asked for replies to go somewhere other than its sender.
+fn answered(ui: &mut egui::Ui, answer: &Answering, addressed_here: bool) {
+    detail(
+        ui,
+        &format!("Answering “{}” from {}.", answer.subject, answer.sender),
+    );
+    if !addressed_here {
+        detail(
+            ui,
+            "Proton addresses the reply from that message, and writes the subject.",
+        );
+    }
+    ui.add_space(8.0);
 }
 
 /// One labelled single-line field.
