@@ -3,10 +3,41 @@ use eframe::egui::{self, Align, Layout};
 use super::{mailbox::detail, theme};
 use crate::app::{Answering, Compose, ComposeField, Message, Sending};
 
-/// How wide a recipient or subject line is before the body.
-const LABEL_WIDTH: f32 = 74.0;
+const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
+const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 
-pub(super) fn show(root: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
+pub(super) fn show_in_pane(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
+    page(ui, compose, messages);
+}
+
+pub(super) fn show_window(context: &egui::Context, compose: &Compose) -> Vec<Message> {
+    context.show_viewport_immediate(
+        egui::ViewportId::from_hash_of("compose-window"),
+        egui::ViewportBuilder::default()
+            .with_title(heading(compose))
+            .with_inner_size(WINDOW_SIZE)
+            .with_min_inner_size(MIN_WINDOW_SIZE),
+        |root, _class| {
+            let mut messages = Vec::new();
+            show(root, compose, &mut messages);
+
+            if root.input(|input| input.viewport().close_requested()) {
+                if compose.in_flight() {
+                    root.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else {
+                    messages.push(Message::CloseCompose);
+                }
+            } else if root.input(|input| input.key_pressed(egui::Key::Escape)) {
+                messages.push(Message::CloseCompose);
+            }
+
+            messages
+        },
+    )
+}
+
+fn show(root: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     egui::CentralPanel::default()
         .frame(theme::panel_frame(theme::PANEL))
         .show(root, |ui| page(ui, compose, messages));
@@ -16,12 +47,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     let sending = compose.sending();
     let leaving = sending == Sending::InFlight;
 
-    let heading = match compose.answering() {
-        None => "New message",
-        Some(answer) if answer.everyone => "Reply to everyone",
-        Some(_) if !compose.asks_for_recipients() => "Reply",
-        Some(_) => "Forward",
-    };
+    let heading = heading(compose);
     ui.horizontal(|ui| {
         ui.heading(egui::RichText::new(heading).size(24.0));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -59,20 +85,17 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             line(ui, "Cc", ComposeField::Cc, compose, leaving, messages);
             line(ui, "Bcc", ComposeField::Bcc, compose, leaving, messages);
         }
-        ui.horizontal(|ui| {
-            ui.add_space(LABEL_WIDTH);
-            let more = if compose.showing_more() {
-                "Fewer fields"
-            } else {
-                "Cc and Bcc"
-            };
-            if ui
-                .add_enabled(!leaving, egui::Button::new(more).small())
-                .clicked()
-            {
-                messages.push(Message::ToggleComposeCopies);
-            }
-        });
+        let more = if compose.showing_more() {
+            "Fewer options"
+        } else {
+            "More options"
+        };
+        if ui
+            .add_enabled(!leaving, theme::compact_button(more))
+            .clicked()
+        {
+            messages.push(Message::ToggleComposeCopies);
+        }
         ui.add_space(4.0);
     }
     if compose.asks_for_subject() {
@@ -111,11 +134,21 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         egui::TextEdit::multiline(&mut body)
             .id(egui::Id::new("compose-body"))
             .hint_text("Write your message…")
+            .margin(egui::Margin::same(8))
             .desired_width(f32::INFINITY)
             .desired_rows(16),
     );
     if response.changed() {
         messages.push(Message::ComposeChanged(ComposeField::Body, body));
+    }
+}
+
+fn heading(compose: &Compose) -> &'static str {
+    match compose.answering() {
+        None => "New message",
+        Some(answer) if answer.everyone => "Reply to everyone",
+        Some(_) if !compose.asks_for_recipients() => "Reply",
+        Some(_) => "Forward",
     }
 }
 
@@ -146,25 +179,51 @@ fn line(
     compose: &Compose,
     leaving: bool,
     messages: &mut Vec<Message>,
-) {
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(LABEL_WIDTH, 0.0),
-            Layout::right_to_left(Align::Center),
-            |ui| {
-                ui.add_space(8.0);
-                detail(ui, label);
-            },
-        );
-        let mut value = compose.field(field).to_owned();
-        let response = ui.add_enabled(
-            !leaving,
-            egui::TextEdit::singleline(&mut value)
-                .id(egui::Id::new(("compose", label)))
-                .desired_width(f32::INFINITY),
-        );
-        if response.changed() {
-            messages.push(Message::ComposeChanged(field, value));
-        }
-    });
+) -> egui::Response {
+    detail(ui, label);
+    let mut value = compose.field(field).to_owned();
+    let response = ui.add_enabled(
+        !leaving,
+        theme::text_field(&mut value)
+            .id(egui::Id::new(("compose", label)))
+            .desired_width(f32::INFINITY),
+    );
+    if response.changed() {
+        messages.push(Message::ComposeChanged(field, value));
+    }
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compose_fields_start_at_the_left_and_are_taller_than_the_default() {
+        let context = egui::Context::default();
+        let mut geometry = None;
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(400.0);
+                let left = ui.available_rect_before_wrap().left();
+                let mut messages = Vec::new();
+                let field = line(
+                    ui,
+                    "To",
+                    ComposeField::To,
+                    &Compose::default(),
+                    false,
+                    &mut messages,
+                );
+
+                let mut plain = String::new();
+                let plain = ui.add(egui::TextEdit::singleline(&mut plain));
+                geometry = Some((left, field.rect, plain.rect.height()));
+            })
+            .drop_without_applying_deltas();
+
+        let (left, field, plain_height) = geometry.expect("the field was laid out");
+        assert!((field.left() - left).abs() <= 1.0);
+        assert!(field.height() >= plain_height + 8.0);
+    }
 }

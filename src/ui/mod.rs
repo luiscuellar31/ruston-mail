@@ -10,7 +10,7 @@ use eframe::egui;
 use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect};
 use crate::mail::Folder;
 use crate::runtime::Runtime;
-use crate::settings::{Settings, Window};
+use crate::settings::{ComposePlacement, Settings, Window};
 
 const MIN_WINDOW_SIZE: [f32; 2] = [820.0, 480.0];
 /// How long the settings have to stay still before they are written. Long
@@ -232,9 +232,7 @@ impl eframe::App for DesktopApp {
                 login::show(ui, &self.app, &mut messages);
             }
             AuthState::Authenticated { email } => {
-                if let Some(writing) = self.app.compose() {
-                    compose::show(ui, writing, &mut messages);
-                } else if self.app.showing_settings() {
+                if self.app.showing_settings() {
                     settings::show(ui, self.app.settings(), &mut messages);
                 } else if self.app.mailbox().is_some() {
                     mailbox::show(
@@ -247,6 +245,12 @@ impl eframe::App for DesktopApp {
                     );
                 } else {
                     status_view(ui, "Opening mailbox…");
+                }
+
+                if self.app.settings().compose_placement == ComposePlacement::Window
+                    && let Some(writing) = self.app.compose()
+                {
+                    messages.extend(compose::show_window(&context, writing));
                 }
             }
             AuthState::SigningOut => {

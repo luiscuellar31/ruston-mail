@@ -276,7 +276,7 @@ fn label_toggles(
             .filter(|label| shows_label(conversation.carries(label), crowded, showing_all))
         {
             let carried = conversation.carries(label);
-            let button = egui::Button::new(label.name()).selected(carried).small();
+            let button = theme::compact_button(label.name()).selected(carried);
             if ui.add_enabled(enabled, button).clicked() {
                 messages.push(Message::ApplyAction(MailAction::SetLabel {
                     label: label.clone(),
@@ -286,11 +286,11 @@ fn label_toggles(
         }
         if crowded
             && ui
-                .small_button(if showing_all {
+                .add(theme::compact_button(if showing_all {
                     "Fewer labels".to_owned()
                 } else {
                     format!("All {} labels", labels.len())
-                })
+                }))
                 .clicked()
         {
             messages.push(Message::ToggleLabelsShown);
@@ -329,7 +329,7 @@ fn message_card(
                         ("Reply all", false, true),
                         ("Forward", true, false),
                     ] {
-                        if ui.add(egui::Button::new(label).small()).clicked() {
+                        if ui.add(theme::compact_button(label)).clicked() {
                             messages.push(Message::Answer {
                                 message_id: message.id.clone(),
                                 forward,
@@ -473,7 +473,7 @@ fn attachment_row(
         if ui
             .add_enabled(
                 !saving,
-                egui::Button::new(if this_one { "Saving…" } else { "Save" }).small(),
+                theme::compact_button(if this_one { "Saving…" } else { "Save" }),
             )
             .clicked()
         {
@@ -531,11 +531,11 @@ fn rich_body(
                 .count();
             let expanded = reader.is_quote_expanded(message_id, quote, reading);
             if ui
-                .small_button(if expanded {
+                .add(theme::compact_button(if expanded {
                     "Hide quoted text"
                 } else {
                     "Show quoted text"
-                })
+                }))
                 .clicked()
             {
                 messages.push(Message::ToggleQuoteExpanded(message_id.to_owned(), quote));

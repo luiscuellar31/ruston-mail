@@ -7,7 +7,7 @@
 use super::*;
 use crate::mail::SendError;
 use crate::mail::demo;
-use crate::settings::Reading;
+use crate::settings::{ComposePlacement, Reading};
 
 use crate::mail::MailFolder;
 
@@ -127,15 +127,21 @@ fn settings_changes_reach_the_app() {
     assert!(app.settings().mark_read_on_open);
     assert!(app.settings().confirm_links);
     assert_eq!(app.settings().reading(), Reading::default());
+    assert_eq!(
+        app.settings().compose_placement,
+        ComposePlacement::ReadingPane
+    );
 
     let _ = app.update(Message::SetMarkReadOnOpen(false));
     let _ = app.update(Message::SetConfirmLinks(false));
     let _ = app.update(Message::SetExpandAllMessages(true));
     let _ = app.update(Message::SetShowQuotedText(true));
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
     let _ = app.update(Message::SetZoom(1.3));
 
     assert!(!app.settings().mark_read_on_open);
     assert!(!app.settings().confirm_links);
+    assert_eq!(app.settings().compose_placement, ComposePlacement::Window);
     assert_eq!(app.settings().zoom, 1.3);
     assert_eq!(
         app.settings().reading(),
@@ -204,6 +210,18 @@ fn the_settings_page_covers_the_mailbox_and_steps_back() {
     press(&mut app, Key::Escape);
 
     assert!(!app.showing_settings());
+}
+
+#[test]
+fn leaving_settings_keeps_the_message_open_underneath() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ShowSettings(true));
+
+    press(&mut app, Key::Escape);
+
+    assert!(!app.showing_settings());
+    assert!(app.compose().is_some());
 }
 
 /// Sends a plain key press, as the window would when no field took it.

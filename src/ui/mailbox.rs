@@ -1,9 +1,10 @@
 use chrono::{DateTime, Datelike, Local, TimeZone};
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
-use super::{UiState, reader, theme};
+use super::{UiState, compose, reader, theme};
 use crate::app::{App, ListStatus, Mailbox, Message, panel_ratios, panel_widths};
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
+use crate::settings::ComposePlacement;
 
 pub(super) fn show(
     root: &mut egui::Ui,
@@ -37,18 +38,24 @@ pub(super) fn show(
     egui::CentralPanel::default()
         .frame(theme::panel_frame(theme::PANEL))
         .show(root, |ui| {
-            reader::show(
-                ui,
-                mailbox,
-                app.folders(),
-                app.mailbox_actions_available(),
-                app.pending_link(),
-                app.saving_attachment(),
-                app.saved_attachment(),
-                app.settings().reading(),
-                state,
-                messages,
-            );
+            if app.settings().compose_placement == ComposePlacement::ReadingPane
+                && let Some(writing) = app.compose()
+            {
+                compose::show_in_pane(ui, writing, messages);
+            } else {
+                reader::show(
+                    ui,
+                    mailbox,
+                    app.folders(),
+                    app.mailbox_actions_available(),
+                    app.pending_link(),
+                    app.saving_attachment(),
+                    app.saved_attachment(),
+                    app.settings().reading(),
+                    state,
+                    messages,
+                );
+            }
         });
 
     let actual = panel_ratios(
@@ -230,7 +237,7 @@ fn conversation_pane(
     let mut query = mailbox.search_query().to_owned();
     ui.horizontal(|ui| {
         let response = ui.add(
-            egui::TextEdit::singleline(&mut query)
+            theme::text_field(&mut query)
                 .id(egui::Id::new("mail-search"))
                 .hint_text("Search mail…")
                 .desired_width(f32::INFINITY),
@@ -260,7 +267,7 @@ fn conversation_pane(
         theme::card().show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("Moved to {}.", undo.to.name()));
-                if ui.small_button("Undo").clicked() {
+                if ui.add(theme::compact_button("Undo")).clicked() {
                     messages.push(Message::UndoMove);
                 }
             });

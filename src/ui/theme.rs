@@ -9,6 +9,19 @@ pub const BORDER: Color32 = Color32::from_rgb(51, 53, 64);
 pub const MUTED: Color32 = Color32::from_rgb(159, 162, 178);
 pub const DANGER: Color32 = Color32::from_rgb(245, 112, 112);
 pub const SUCCESS: Color32 = Color32::from_rgb(105, 210, 160);
+const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
+
+/// A single-line field with enough vertical room for comfortable reading and clicking.
+pub fn text_field(text: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text).margin(egui::Margin::symmetric(4, 6))
+}
+
+/// A compact button that remains easy to click.
+pub fn compact_button<'a>(atoms: impl egui::IntoAtoms<'a>) -> egui::Button<'a> {
+    egui::Button::new(atoms)
+        .small()
+        .min_size(egui::vec2(0.0, COMPACT_BUTTON_HEIGHT))
+}
 
 /// Marks the interface draws as text rather than painting.
 ///
@@ -266,6 +279,14 @@ mod tests {
                 assert!(ui.style().interaction.selectable_labels);
             });
             assert!(!ui.style().interaction.selectable_labels);
+        });
+    }
+
+    #[test]
+    fn compact_buttons_keep_a_comfortable_height() {
+        egui::__run_test_ui(|ui| {
+            let button = ui.add(compact_button("More options"));
+            assert!(button.rect.height() >= COMPACT_BUTTON_HEIGHT);
         });
     }
 }

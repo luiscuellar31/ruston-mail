@@ -42,6 +42,8 @@ pub struct Settings {
     pub show_quoted_text: bool,
     /// Whether a message is written out as HTML or as plain text.
     pub compose_format: BodyFormat,
+    /// Where new messages, replies and forwards open.
+    pub compose_placement: ComposePlacement,
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
@@ -66,6 +68,7 @@ impl Default for Settings {
             expand_all_messages: false,
             show_quoted_text: false,
             compose_format: BodyFormat::PlainText,
+            compose_placement: ComposePlacement::ReadingPane,
             zoom: 1.0,
             stored: false,
         }
@@ -118,6 +121,16 @@ pub enum StartFolder {
     LastRead,
     /// The same folder every time, whatever was read last.
     Always(MailFolder),
+}
+
+/// Where the composer appears while the mailbox stays open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ComposePlacement {
+    /// Replaces the reader in the right-hand pane.
+    #[default]
+    ReadingPane,
+    /// Opens in a separate native window.
+    Window,
 }
 
 /// How the reader opens a conversation, from the settings.
@@ -278,6 +291,27 @@ mod tests {
     }
 
     #[test]
+    fn writing_opens_in_the_reading_pane_until_a_window_is_chosen() {
+        assert_eq!(
+            Settings::default().compose_placement,
+            ComposePlacement::ReadingPane
+        );
+
+        let chosen = Settings {
+            compose_placement: ComposePlacement::Window,
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&chosen).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<Settings>(&text)
+                .unwrap()
+                .compose_placement,
+            ComposePlacement::Window
+        );
+    }
+
+    #[test]
     fn a_new_choice_starts_at_the_behaviour_the_app_already_had() {
         // An upgrade must not change how anyone's mail opens on its own.
         let defaults = Settings::default();
@@ -296,6 +330,7 @@ mod tests {
         let partial: Settings = serde_json::from_str(r#"{"confirm_links": false}"#).unwrap();
         assert!(!partial.confirm_links);
         assert_eq!(partial.folder, Folder::INBOX);
+        assert_eq!(partial.compose_placement, ComposePlacement::ReadingPane);
     }
 
     #[test]

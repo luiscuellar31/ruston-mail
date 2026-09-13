@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::downloads::{self, SaveError};
-use crate::settings::{Panels, Settings, StartFolder, Window};
+use crate::settings::{ComposePlacement, Panels, Settings, StartFolder, Window};
 
 /// How far the window must change before its new size is worth storing.
 const RESIZE_STEP: f32 = 8.0;
@@ -101,6 +101,8 @@ pub enum Message {
     SetStartFolder(StartFolder),
     /// Writes a message out as HTML, or as plain text.
     SetComposeFormat(BodyFormat),
+    /// Opens the composer in the reading pane or in its own window.
+    SetComposePlacement(ComposePlacement),
     /// Starts a new message.
     OpenCompose,
     /// Answers the open message, or passes it on. `everyone` is only read by
@@ -466,6 +468,9 @@ impl App {
             Message::SetStartFolder(start) => self.remember(|settings| settings.start = start),
             Message::SetComposeFormat(format) => {
                 self.remember(|settings| settings.compose_format = format);
+            }
+            Message::SetComposePlacement(placement) => {
+                self.remember(|settings| settings.compose_placement = placement);
             }
             Message::OpenCompose => self.open_compose(),
             Message::Answer {

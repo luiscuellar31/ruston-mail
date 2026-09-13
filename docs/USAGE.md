@@ -67,6 +67,10 @@ Select **Write** for a new message. Recipient fields accept multiple addresses
 separated by commas or semicolons. Invalid addresses stop the whole send instead
 of being silently skipped.
 
+The composer opens in the reading pane by default, so folders and conversations
+stay visible. Settings can open it in a separate window instead. The same choice
+applies to new messages, replies, and forwards.
+
 The reader also offers **Reply**, **Reply all**, and **Forward**. Proton
 derives reply recipients and subjects from the original message.
 
@@ -84,6 +88,7 @@ Settings control:
 - Whether opening mail marks it read.
 - Whether all messages and quoted text start unfolded.
 - Whether links require confirmation.
+- Whether the composer opens in the reading pane or a new window.
 - Plain-text or HTML sending.
 - The folder shown at startup.
 - Interface scale.

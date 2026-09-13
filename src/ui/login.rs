@@ -181,7 +181,7 @@ fn edit_field(
     let mut value = current.to_owned();
     let response = ui.add_enabled(
         !busy,
-        egui::TextEdit::singleline(&mut value)
+        theme::text_field(&mut value)
             .hint_text(hint)
             .password(password)
             .desired_width(f32::INFINITY),

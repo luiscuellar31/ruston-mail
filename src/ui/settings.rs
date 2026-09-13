@@ -3,7 +3,7 @@ use eframe::egui::{self, Align, Layout};
 use super::{mailbox::detail, theme};
 use crate::app::Message;
 use crate::mail::{BodyFormat, MailFolder};
-use crate::settings::{Settings, StartFolder};
+use crate::settings::{ComposePlacement, Settings, StartFolder};
 
 pub(super) fn show(root: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
     // The page fills the window, with the padding the mailbox panels use: at
@@ -84,6 +84,20 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
     });
     ui.add_space(14.0);
     section(ui, "Writing", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (placement, label) in [
+                (ComposePlacement::ReadingPane, "Reading pane"),
+                (ComposePlacement::Window, "New window"),
+            ] {
+                let chosen = settings.compose_placement == placement;
+                if ui.add(egui::Button::new(label).selected(chosen)).clicked() {
+                    messages.push(Message::SetComposePlacement(placement));
+                }
+            }
+        });
+        detail(ui, "Where Write, Reply and Forward open.");
+        ui.add_space(10.0);
+
         ui.horizontal_wrapped(|ui| {
             for (format, label) in [
                 (BodyFormat::PlainText, "Plain text"),
