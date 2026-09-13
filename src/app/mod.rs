@@ -207,6 +207,14 @@ pub struct App {
     folders: Vec<Folder>,
     /// What the app remembers between runs.
     settings: Settings,
+    /// Counts changes to the settings, and how many of them have reached the
+    /// file. Dragging a divider or a window edge changes them many times a
+    /// second, and each write is a serialize and a synchronous file write on
+    /// the thread that is drawing, so the writing is left to whoever owns the
+    /// clock: it asks through [`Self::settings_revision`] and calls
+    /// [`Self::save_settings`] once the dragging has stopped.
+    settings_revision: u64,
+    settings_written: u64,
     /// Whether the settings page is covering the mailbox.
     showing_settings: bool,
     /// What became of the last attachment someone asked to save.
@@ -243,6 +251,8 @@ impl App {
             last_request: 0,
             folders: Vec::new(),
             settings,
+            settings_revision: 0,
+            settings_written: 0,
             showing_settings: false,
             saved_attachment: None,
             saving_attachment: None,
@@ -303,14 +313,36 @@ impl App {
         self.showing_settings
     }
 
-    /// Keeps a changed setting, and writes it out. Saving is best effort, so
-    /// a setting that cannot be stored still applies for this run.
+    /// Keeps a changed setting. The change applies at once; putting it in the
+    /// file is [`Self::save_settings`]'s job.
     fn remember(&mut self, change: impl FnOnce(&mut Settings)) {
         let before = self.settings.clone();
         change(&mut self.settings);
         if self.settings != before {
-            self.settings.save();
+            self.settings_revision += 1;
         }
+    }
+
+    /// How many times the settings have changed this run. A caller watches
+    /// this to tell a settled value from one still being dragged.
+    pub fn settings_revision(&self) -> u64 {
+        self.settings_revision
+    }
+
+    /// Whether a change is waiting to reach the file.
+    pub fn settings_unsaved(&self) -> bool {
+        self.settings_written != self.settings_revision
+    }
+
+    /// Writes the settings if they have changed since the last write. Saving
+    /// is best effort, so a setting that cannot be stored still applies for
+    /// this run.
+    pub fn save_settings(&mut self) {
+        if !self.settings_unsaved() {
+            return;
+        }
+        self.settings.save();
+        self.settings_written = self.settings_revision;
     }
 
     pub fn update(&mut self, message: Message) -> Effects {
@@ -1421,6 +1453,47 @@ mod tests {
         };
         let result = demo_service(app).search(query, demo::PAGE_SIZE, NOW);
         let _ = app.update(Message::SearchLoaded(request, result));
+    }
+
+    #[test]
+    fn only_a_real_change_counts_as_one() {
+        // A drag reports the same value over and over. The revision is what
+        // the shell watches to know a value has stopped moving, so repeating
+        // a value must not keep resetting that.
+        let mut app = loaded_demo_app();
+        assert_eq!(app.settings_revision(), 0);
+        assert!(!app.settings_unsaved());
+
+        let _ = app.update(Message::SetZoom(1.3));
+        assert_eq!(app.settings_revision(), 1);
+
+        let _ = app.update(Message::SetZoom(1.3));
+        assert_eq!(
+            app.settings_revision(),
+            1,
+            "the same value again is no change"
+        );
+
+        let _ = app.update(Message::SetZoom(1.5));
+        assert_eq!(app.settings_revision(), 2);
+    }
+
+    #[test]
+    fn a_change_waits_to_be_written_and_is_written_once() {
+        let mut app = loaded_demo_app();
+
+        let _ = app.update(Message::SetConfirmLinks(false));
+        // Keeping it applies at once, whether or not it has reached the file.
+        assert!(!app.settings().confirm_links);
+        assert!(app.settings_unsaved());
+
+        app.save_settings();
+        assert!(!app.settings_unsaved());
+
+        // Nothing further to write until something changes again.
+        app.save_settings();
+        assert!(!app.settings_unsaved());
+        assert_eq!(app.settings_revision(), 1);
     }
 
     #[test]

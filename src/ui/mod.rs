@@ -12,6 +12,10 @@ use crate::runtime::Runtime;
 use crate::settings::{Settings, Window};
 
 const MIN_WINDOW_SIZE: [f32; 2] = [820.0, 480.0];
+/// How long the settings have to stay still before they are written. Long
+/// enough that a drag is one write rather than dozens, short enough that a
+/// process killed rather than closed loses at most this much.
+const SETTINGS_QUIET: f32 = 0.75;
 
 #[derive(Default)]
 pub(super) struct UiState {
@@ -42,6 +46,11 @@ struct DesktopApp {
     ui: UiState,
     demo: bool,
     title: String,
+    /// The settings revision last seen, and when it was seen. Writing is held
+    /// back until it stops moving: a window edge or a divider being dragged
+    /// changes the settings many times a second.
+    settings_seen: u64,
+    settings_seen_at: f64,
 }
 
 impl DesktopApp {
@@ -56,6 +65,8 @@ impl DesktopApp {
             ui: UiState::default(),
             demo,
             title: String::new(),
+            settings_seen: 0,
+            settings_seen_at: 0.0,
         };
         desktop.execute(effects, &creation.egui_ctx);
         desktop
@@ -159,6 +170,28 @@ impl DesktopApp {
         }
     }
 
+    /// Writes the settings once they have been still for [`SETTINGS_QUIET`].
+    ///
+    /// A repaint is asked for so the frame that does the writing happens at
+    /// all: egui sleeps when nothing is going on, and the moment a drag ends
+    /// is exactly such a moment.
+    fn save_settled_settings(&mut self, context: &egui::Context) {
+        let revision = self.app.settings_revision();
+        let now = context.input(|input| input.time);
+        if revision != self.settings_seen {
+            self.settings_seen = revision;
+            self.settings_seen_at = now;
+        }
+        if !self.app.settings_unsaved() {
+            return;
+        }
+        if now - self.settings_seen_at >= f64::from(SETTINGS_QUIET) {
+            self.app.save_settings();
+        } else {
+            context.request_repaint_after(std::time::Duration::from_secs_f32(SETTINGS_QUIET));
+        }
+    }
+
     fn update_title(&mut self, context: &egui::Context) {
         let title = window_title(&self.app, self.demo);
         if title != self.title {
@@ -175,7 +208,14 @@ impl eframe::App for DesktopApp {
         self.drain_runtime(context);
         self.remember_window_size(context);
         self.keyboard_shortcuts(context);
+        self.save_settled_settings(context);
         self.update_title(context);
+    }
+
+    /// Closing is the one moment the settings must reach the file whether or
+    /// not they have settled.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.app.save_settings();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
