@@ -82,6 +82,17 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         );
     });
     ui.add_space(14.0);
+    section(ui, "Keyboard", |ui| {
+        detail(
+            ui,
+            "A key a focused field takes never reaches the mailbox, so these stay out of the way while you type.",
+        );
+        ui.add_space(6.0);
+        for (keys, what) in SHORTCUTS {
+            shortcut(ui, keys, what);
+        }
+    });
+    ui.add_space(14.0);
     section(ui, "Remembered automatically", |ui| {
         detail(
             ui,
@@ -89,6 +100,51 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         );
     });
 }
+
+/// What the mailbox already answers to. Listed here because a shortcut no one
+/// can find is a shortcut no one uses; the keys themselves live in `ui::mod`.
+const SHORTCUTS: [(&str, &str); 6] = [
+    ("j  /  Down", "Open the next conversation"),
+    ("k  /  Up", "Open the previous one"),
+    (
+        "Enter",
+        "Open the selected conversation, or retry a failed one. In the search field, search all mail",
+    ),
+    (
+        "Esc",
+        "Back out one layer: settings, link prompt, search, reader",
+    ),
+    (COMMAND_R, "Refresh the folder"),
+    (COMMAND_F, "Jump to the search field"),
+];
+
+#[cfg(target_os = "macos")]
+const COMMAND_R: &str = "Cmd + R";
+#[cfg(target_os = "macos")]
+const COMMAND_F: &str = "Cmd + F";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_R: &str = "Ctrl + R";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_F: &str = "Ctrl + F";
+
+/// One key and what it does, with the keys in a column of their own so the
+/// descriptions line up however wide the window is.
+fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str) {
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(KEYS_WIDTH, 0.0),
+            Layout::right_to_left(Align::TOP),
+            |ui| {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(keys).monospace().size(12.0),
+                ));
+            },
+        );
+        ui.vertical(|ui| detail(ui, what));
+    });
+}
+
+const KEYS_WIDTH: f32 = 92.0;
 
 fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
     theme::card().show(ui, |ui| {
