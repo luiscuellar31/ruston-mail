@@ -1,5 +1,7 @@
 # Ruston Mail
 
+[![CI](https://github.com/luiscuellar31/ruston-mail/actions/workflows/ci.yml/badge.svg)](https://github.com/luiscuellar31/ruston-mail/actions/workflows/ci.yml)
+
 A desktop client for Proton Mail, written in Rust with a native interface
 instead of a bundled browser. It is unofficial and not affiliated with Proton.
 
