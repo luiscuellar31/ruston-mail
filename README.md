@@ -61,8 +61,13 @@ alone, so the window keeps its proportions and the remembered window size means
 the same window whatever the scale. The panel lists the keys below too, since a
 shortcut no one can find is a shortcut no one uses.
 
-Everything else worth keeping — the window size, the pane widths, the folder
-you left off in — is remembered on its own, with nothing to set.
+Ruston Mail opens where you left off, or in one of Proton's own folders if you
+pin one in the panel. A folder the account made cannot be pinned: it could be
+renamed or gone by the next run, and a setting pointing at a place that is not
+there any more is worse than no setting.
+
+The window size and the pane widths are remembered on their own, with nothing
+to set.
 
 ### Keyboard
 
