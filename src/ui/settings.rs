@@ -82,6 +82,22 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         );
     });
     ui.add_space(14.0);
+    section(ui, "Interface", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for step in ZOOM_STEPS {
+                let chosen = (settings.zoom - step).abs() < f32::EPSILON;
+                let label = format!("{:.0}%", step * 100.0);
+                if ui.add(egui::Button::new(label).selected(chosen)).clicked() {
+                    messages.push(Message::SetZoom(step));
+                }
+            }
+        });
+        detail(
+            ui,
+            "Scales everything, not the text alone, so the window keeps its proportions.",
+        );
+    });
+    ui.add_space(14.0);
     section(ui, "Keyboard", |ui| {
         detail(
             ui,
@@ -100,6 +116,11 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         );
     });
 }
+
+/// Offered rather than a free slider: a handful of steps cannot land on a
+/// scale that leaves the interface unusable, and each one is one click away.
+/// The settings clamp anything else a file might carry.
+const ZOOM_STEPS: [f32; 6] = [0.9, 1.0, 1.15, 1.3, 1.5, 1.75];
 
 /// What the mailbox already answers to. Listed here because a shortcut no one
 /// can find is a shortcut no one uses; the keys themselves live in `ui::mod`.
@@ -156,4 +177,26 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
         ui.add_space(4.0);
         content(ui);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_offered_zoom_is_one_the_settings_would_keep() {
+        // The panel must not offer a scale that loading clamps away, and the
+        // scale a fresh install starts at has to be one of the buttons, or
+        // none of them would look chosen.
+        for step in ZOOM_STEPS {
+            assert!(
+                (crate::settings::MIN_ZOOM..=crate::settings::MAX_ZOOM).contains(&step),
+                "{step} is outside what the settings keep"
+            );
+        }
+        assert!(
+            ZOOM_STEPS.contains(&Settings::default().zoom),
+            "the scale everyone starts at has no button"
+        );
+    }
 }

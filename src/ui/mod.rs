@@ -90,10 +90,16 @@ impl DesktopApp {
         else {
             return;
         };
+        // egui reports the window in the points it lays out in, which the zoom
+        // scales. The window is built before the zoom is applied, so it is
+        // asked for in unscaled points: the zoom is taken back out here, and
+        // what is remembered is the window itself, the same number whatever
+        // the interface is scaled to.
+        let unscaled = size * context.zoom_factor();
         self.dispatch(
             Message::WindowResized(Window {
-                width: size.x,
-                height: size.y,
+                width: unscaled.x,
+                height: unscaled.y,
             }),
             context,
         );
@@ -143,6 +149,16 @@ impl DesktopApp {
         }
     }
 
+    /// Keeps egui's scale on the chosen zoom. egui measures window sizes in
+    /// the same scaled points and undoes the scale when a window is created,
+    /// so the remembered size stays the same window whatever the zoom.
+    fn apply_zoom(&self, context: &egui::Context) {
+        let zoom = self.app.settings().zoom;
+        if (context.zoom_factor() - zoom).abs() > f32::EPSILON {
+            context.set_zoom_factor(zoom);
+        }
+    }
+
     fn update_title(&mut self, context: &egui::Context) {
         let title = window_title(&self.app, self.demo);
         if title != self.title {
@@ -155,6 +171,7 @@ impl DesktopApp {
 impl eframe::App for DesktopApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.runtime.attach(context);
+        self.apply_zoom(context);
         self.drain_runtime(context);
         self.remember_window_size(context);
         self.keyboard_shortcuts(context);

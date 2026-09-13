@@ -17,6 +17,10 @@ const FILE: &str = "settings.json";
 const MIN_RATIO: f32 = 0.1;
 const MAX_RATIO: f32 = 0.9;
 const MIN_WINDOW: (f32, f32) = (820.0, 480.0);
+/// Zoom is a scale on every length in the interface, so it has to stay within
+/// what a window can still show something useful at.
+pub const MIN_ZOOM: f32 = 0.8;
+pub const MAX_ZOOM: f32 = 2.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,6 +37,9 @@ pub struct Settings {
     pub expand_all_messages: bool,
     /// Unfold quoted passages instead of hiding them behind a button.
     pub show_quoted_text: bool,
+    /// How much to scale the interface by. Every length is a multiple of it,
+    /// so the whole window grows together rather than the text alone.
+    pub zoom: f32,
     /// Whether these settings came from the settings file, and so belong back
     /// in it. Only `load` sets it, which keeps tests and any other in-memory
     /// settings from writing over what someone has on disk.
@@ -52,6 +59,7 @@ impl Default for Settings {
             confirm_links: true,
             expand_all_messages: false,
             show_quoted_text: false,
+            zoom: 1.0,
             stored: false,
         }
     }
@@ -160,6 +168,11 @@ impl Settings {
     fn sanitized(mut self) -> Self {
         let defaults = Self::default();
 
+        self.zoom = if self.zoom.is_finite() {
+            self.zoom.clamp(MIN_ZOOM, MAX_ZOOM)
+        } else {
+            defaults.zoom
+        };
         self.panels.sidebar = clamp_ratio(self.panels.sidebar, defaults.panels.sidebar);
         self.panels.conversations =
             clamp_ratio(self.panels.conversations, defaults.panels.conversations);
@@ -244,6 +257,25 @@ mod tests {
         // The flag is bookkeeping, not content, so it never reaches the file.
         let text = serde_json::to_string(&loaded).unwrap();
         assert!(!text.contains("stored"));
+    }
+
+    #[test]
+    fn zoom_stays_within_what_a_window_can_show() {
+        let at = |zoom| {
+            Settings {
+                zoom,
+                ..Settings::default()
+            }
+            .sanitized()
+            .zoom
+        };
+
+        assert_eq!(Settings::default().zoom, 1.0);
+        assert_eq!(at(5.0), MAX_ZOOM);
+        assert_eq!(at(0.1), MIN_ZOOM);
+        assert_eq!(at(0.0), MIN_ZOOM);
+        assert_eq!(at(f32::NAN), 1.0);
+        assert_eq!(at(1.25), 1.25);
     }
 
     #[test]

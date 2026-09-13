@@ -112,6 +112,8 @@ pub enum Message {
     SetExpandAllMessages(bool),
     /// Unfolds quoted passages, or leaves them behind their button.
     SetShowQuotedText(bool),
+    /// Scales the whole interface.
+    SetZoom(f32),
 }
 
 /// What a key press means to the mailbox.
@@ -485,6 +487,7 @@ impl App {
             Message::SetShowQuotedText(on) => {
                 self.remember(|settings| settings.show_quoted_text = on);
             }
+            Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
         }
 
         Effects::none()
@@ -1429,9 +1432,11 @@ mod tests {
         let _ = app.update(Message::SetConfirmLinks(false));
         let _ = app.update(Message::SetExpandAllMessages(true));
         let _ = app.update(Message::SetShowQuotedText(true));
+        let _ = app.update(Message::SetZoom(1.3));
 
         assert!(!app.settings().mark_read_on_open);
         assert!(!app.settings().confirm_links);
+        assert_eq!(app.settings().zoom, 1.3);
         assert_eq!(
             app.settings().reading(),
             Reading {
