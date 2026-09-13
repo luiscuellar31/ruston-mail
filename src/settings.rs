@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::mail::Folder;
+use crate::mail::{Folder, MailFolder};
 
 const FILE: &str = "settings.json";
 
@@ -27,8 +27,11 @@ pub const MAX_ZOOM: f32 = 2.0;
 pub struct Settings {
     pub window: Window,
     pub panels: Panels,
-    /// The folder to open on start, which is the last one that was read.
+    /// The last folder that was read. Kept whatever [`Self::start`] says, so
+    /// going back to [`StartFolder::LastRead`] still knows where that was.
     pub folder: Folder,
+    /// Which folder a run opens in.
+    pub start: StartFolder,
     /// Mark a conversation as read as soon as it is opened.
     pub mark_read_on_open: bool,
     /// Ask where a link goes before opening it.
@@ -53,6 +56,7 @@ impl Default for Settings {
             window: Window::default(),
             panels: Panels::default(),
             folder: Folder::INBOX,
+            start: StartFolder::LastRead,
             // Both default to the behaviour the app had before it could be
             // configured, so an upgrade changes nothing on its own.
             mark_read_on_open: true,
@@ -99,6 +103,20 @@ impl Default for Panels {
     }
 }
 
+/// Which folder a run opens in.
+///
+/// Only Proton's own folders can be pinned. One the account made can be
+/// renamed or removed between runs, which would leave the setting pointing at
+/// a place that is not there any more; a system folder always is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StartFolder {
+    /// Wherever the mailbox was left.
+    #[default]
+    LastRead,
+    /// The same folder every time, whatever was read last.
+    Always(MailFolder),
+}
+
 /// How the reader opens a conversation, from the settings.
 ///
 /// A small copy of the two choices the reader needs keeps it from depending on
@@ -112,6 +130,14 @@ pub struct Reading {
 }
 
 impl Settings {
+    /// The folder to open, which is the one pinned here or the last one read.
+    pub fn start_folder(&self) -> Folder {
+        match self.start {
+            StartFolder::LastRead => self.folder.clone(),
+            StartFolder::Always(folder) => Folder::System(folder),
+        }
+    }
+
     pub fn reading(&self) -> Reading {
         Reading {
             expand_all_messages: self.expand_all_messages,
@@ -161,6 +187,15 @@ impl Settings {
             folder,
             ..Self::default()
         }
+    }
+
+    /// The same settings with a folder pinned to open in. Chainable so tests
+    /// outside this module can set it without reaching for `stored`, which
+    /// stays private.
+    #[cfg(test)]
+    pub fn with_start(mut self, start: StartFolder) -> Self {
+        self.start = start;
+        self
     }
 
     /// Values a damaged or hand-edited file could otherwise break the layout
@@ -257,6 +292,28 @@ mod tests {
         // The flag is bookkeeping, not content, so it never reaches the file.
         let text = serde_json::to_string(&loaded).unwrap();
         assert!(!text.contains("stored"));
+    }
+
+    #[test]
+    fn a_pinned_folder_wins_over_the_one_last_read() {
+        let last_read = Folder::custom("kZ9", "Invoices");
+        let settings = Settings {
+            folder: last_read.clone(),
+            ..Settings::default()
+        };
+
+        // Left alone, a run returns to where it was.
+        assert_eq!(settings.start, StartFolder::LastRead);
+        assert_eq!(settings.start_folder(), last_read);
+
+        let pinned = Settings {
+            start: StartFolder::Always(MailFolder::Archive),
+            ..settings
+        };
+        assert_eq!(pinned.start_folder(), Folder::System(MailFolder::Archive),);
+        // The last folder read is still kept, so going back to LastRead knows
+        // where that was.
+        assert_eq!(pinned.folder, last_read);
     }
 
     #[test]

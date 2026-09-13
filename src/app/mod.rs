@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::downloads::{self, SaveError};
-use crate::settings::{Panels, Settings, Window};
+use crate::settings::{Panels, Settings, StartFolder, Window};
 
 /// How far the window must change before its new size is worth storing.
 const RESIZE_STEP: f32 = 8.0;
@@ -114,6 +114,8 @@ pub enum Message {
     SetShowQuotedText(bool),
     /// Scales the whole interface.
     SetZoom(f32),
+    /// Picks the folder a run opens in.
+    SetStartFolder(StartFolder),
 }
 
 /// What a key press means to the mailbox.
@@ -488,6 +490,7 @@ impl App {
                 self.remember(|settings| settings.show_quoted_text = on);
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
+            Message::SetStartFolder(start) => self.remember(|settings| settings.start = start),
         }
 
         Effects::none()
@@ -742,10 +745,11 @@ impl App {
 
         let page_request = self.next_request();
         let counts_request = self.next_request();
-        // Someone comes back to the folder they were last reading. The demo
-        // account made no folders of its own, so a remembered one would open
-        // a place with none of its fictional mail in it.
-        let remembered = self.settings.folder.clone();
+        // Someone comes back to the folder they pinned, or the one they were
+        // last reading. The demo account made no folders of its own, so a
+        // remembered one would open a place with none of its fictional mail
+        // in it.
+        let remembered = self.settings.start_folder();
         let folder = if self.is_demo() && remembered.system().is_none() {
             Folder::INBOX
         } else {
@@ -1703,6 +1707,17 @@ mod tests {
     #[test]
     fn the_mailbox_opens_where_it_was_left() {
         let (app, _) = App::boot(true, Settings::opening(sys(MailFolder::Archive)));
+
+        assert_eq!(app.mailbox().unwrap().folder(), &sys(MailFolder::Archive));
+    }
+
+    #[test]
+    fn a_pinned_folder_opens_instead_of_the_one_last_read() {
+        let (app, _) = App::boot(
+            true,
+            Settings::opening(sys(MailFolder::Spam))
+                .with_start(StartFolder::Always(MailFolder::Archive)),
+        );
 
         assert_eq!(app.mailbox().unwrap().folder(), &sys(MailFolder::Archive));
     }

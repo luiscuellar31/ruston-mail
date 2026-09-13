@@ -2,7 +2,8 @@ use eframe::egui::{self, Align, Layout};
 
 use super::{mailbox::detail, theme};
 use crate::app::Message;
-use crate::settings::Settings;
+use crate::mail::MailFolder;
+use crate::settings::{Settings, StartFolder};
 
 pub(super) fn show(root: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
     // The page fills the window, with the padding the mailbox panels use: at
@@ -82,6 +83,26 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
         );
     });
     ui.add_space(14.0);
+    section(ui, "Starting up", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            start_choice(
+                ui,
+                settings,
+                StartFolder::LastRead,
+                "Where I left off",
+                messages,
+            );
+            for folder in MailFolder::ALL {
+                let start = StartFolder::Always(folder);
+                start_choice(ui, settings, start, folder.name(), messages);
+            }
+        });
+        detail(
+            ui,
+            "A folder the account made cannot be pinned: it could be renamed or gone by the next run.",
+        );
+    });
+    ui.add_space(14.0);
     section(ui, "Interface", |ui| {
         ui.horizontal_wrapped(|ui| {
             for step in ZOOM_STEPS {
@@ -112,9 +133,22 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
     section(ui, "Remembered automatically", |ui| {
         detail(
             ui,
-            "Window size, pane widths and the last folder return the way you left them.",
+            "Window size and pane widths return the way you left them.",
         );
     });
+}
+
+fn start_choice(
+    ui: &mut egui::Ui,
+    settings: &Settings,
+    start: StartFolder,
+    label: &str,
+    messages: &mut Vec<Message>,
+) {
+    let chosen = settings.start == start;
+    if ui.add(egui::Button::new(label).selected(chosen)).clicked() {
+        messages.push(Message::SetStartFolder(start));
+    }
 }
 
 /// Offered rather than a free slider: a handful of steps cannot land on a
