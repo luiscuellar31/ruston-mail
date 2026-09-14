@@ -312,6 +312,9 @@ impl App {
             // Gone. The window closes, and the folder it landed in catches up.
             Ok(()) => {
                 self.compose = None;
+                if let Some(mailbox) = &mut self.mailbox {
+                    mailbox.invalidate_listings();
+                }
                 self.reload_counts()
             }
             Err(error) => {

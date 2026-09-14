@@ -770,6 +770,73 @@ fn selecting_current_folder_is_a_no_op() {
 }
 
 #[test]
+fn returning_to_a_loaded_folder_restores_its_rows_and_pagination() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 120);
+    let sent = mailbox.select_folder(sys(MailFolder::Sent), 3).unwrap();
+    mailbox.finish_page(sent.id, page(&["sent"], 1));
+
+    assert_eq!(mailbox.select_folder(sys(MailFolder::Inbox), 4), None);
+    assert_eq!(mailbox.status(), ListStatus::Loaded);
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    assert!(mailbox.has_more());
+
+    let more = mailbox.load_more(5).unwrap();
+    assert_eq!(more.page, 1);
+}
+
+#[test]
+fn a_changed_mailbox_restores_cached_rows_while_revalidating() {
+    let mut mailbox = loaded_inbox(&["inbox"], 1);
+    let sent = mailbox.select_folder(sys(MailFolder::Sent), 3).unwrap();
+    mailbox.finish_page(sent.id, page(&["sent"], 1));
+    load_detail(&mut mailbox, "sent", detail("sent", &["message"]), 4);
+    let action = mailbox
+        .start_action(MailAction::SetStarred(true), 5)
+        .unwrap();
+    assert_eq!(mailbox.finish_action(&action, Ok(())), Ok(None));
+
+    let refresh = mailbox
+        .select_folder(sys(MailFolder::Inbox), 6)
+        .expect("a mutation makes cached folders revalidate");
+    assert_eq!(refresh.page, 0);
+    assert_eq!(mailbox.status(), ListStatus::Refreshing(refresh.id));
+    assert_eq!(ids(&mailbox), ["inbox"]);
+}
+
+#[test]
+fn a_failed_cached_refresh_is_retried_on_the_next_visit() {
+    let mut mailbox = loaded_inbox(&["inbox"], 1);
+    let sent = mailbox.select_folder(sys(MailFolder::Sent), 3).unwrap();
+    mailbox.finish_page(sent.id, page(&["sent"], 1));
+    mailbox.invalidate_listings();
+
+    let refresh = mailbox.select_folder(sys(MailFolder::Inbox), 4).unwrap();
+    mailbox.finish_page(refresh.id, Err(MailboxError::Connection));
+    let archive = mailbox.select_folder(sys(MailFolder::Archive), 5).unwrap();
+    mailbox.finish_page(archive.id, page(&["archived"], 1));
+
+    let retry = mailbox
+        .select_folder(sys(MailFolder::Inbox), 6)
+        .expect("a failed refresh does not make stale rows clean");
+    assert_eq!(mailbox.status(), ListStatus::Refreshing(retry.id));
+    assert_eq!(ids(&mailbox), ["inbox"]);
+}
+
+#[test]
+fn a_custom_folder_cache_survives_a_rename() {
+    let mut mailbox = loaded_inbox(&["inbox"], 1);
+    let old_name = Folder::custom("folder-id", "Receipts");
+    let custom = mailbox.select_folder(old_name, 3).unwrap();
+    mailbox.finish_page(custom.id, page(&["receipt"], 1));
+    assert_eq!(mailbox.select_folder(sys(MailFolder::Inbox), 4), None);
+
+    let new_name = Folder::custom("folder-id", "Invoices");
+    assert_eq!(mailbox.select_folder(new_name.clone(), 5), None);
+    assert_eq!(mailbox.folder(), &new_name);
+    assert_eq!(ids(&mailbox), ["receipt"]);
+}
+
+#[test]
 fn reselecting_keeps_expansion_and_switching_resets_it() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     load_detail(&mut mailbox, "a", detail("a", &["a1", "a2"]), 3);
@@ -1240,6 +1307,12 @@ fn reads_after_a_folder_switch_change_nothing() {
 
     assert_eq!(mailbox.finish_mark_read(&request, Ok(())), Ok(false));
     assert!(mailbox.conversations()[0].unread);
+
+    let refresh = mailbox
+        .select_folder(sys(MailFolder::Inbox), 5)
+        .expect("the cached source folder was invalidated");
+    assert_eq!(mailbox.status(), ListStatus::Refreshing(refresh.id));
+    assert_eq!(ids(&mailbox), ["a"]);
 }
 
 #[test]

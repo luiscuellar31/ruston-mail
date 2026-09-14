@@ -78,6 +78,36 @@ struct SearchState {
     rows: Vec<ConversationSummary>,
 }
 
+/// The loaded part of one folder while another folder is open.
+///
+/// This is deliberately memory-only: summaries include correspondents and
+/// previews, so keeping them across runs would create a second mail store.
+struct CachedListing {
+    conversations: Vec<ConversationSummary>,
+    next_page: u32,
+    has_more: bool,
+    /// A confirmed mailbox change may have affected this folder. It can still
+    /// be shown immediately, but must be refreshed before it is cached clean.
+    dirty: bool,
+}
+
+/// A folder's stable identity. Account folders are keyed by Proton's id, not
+/// their display name, so a rename does not strand a valid cached listing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FolderKey {
+    System(MailFolder),
+    Custom(String),
+}
+
+impl FolderKey {
+    fn of(folder: &Folder) -> Self {
+        match folder {
+            Folder::System(folder) => Self::System(*folder),
+            Folder::Custom { id, .. } => Self::Custom(id.clone()),
+        }
+    }
+}
+
 /// A search sent to the backend, remembered so only its own answer is applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchRequest {
@@ -92,6 +122,10 @@ pub struct Mailbox {
     page_size: u32,
     next_page: u32,
     has_more: bool,
+    cached_listings: HashMap<FolderKey, CachedListing>,
+    /// Whether the active listing must be revalidated before being considered
+    /// a clean cache entry.
+    active_dirty: bool,
     counts: Option<MailboxCounts>,
     counts_request: Option<RequestId>,
     reader: ReaderState,
@@ -125,6 +159,8 @@ impl Mailbox {
             page_size,
             next_page: 0,
             has_more: false,
+            cached_listings: HashMap::new(),
+            active_dirty: false,
             counts: None,
             counts_request: Some(counts_request),
             reader: ReaderState::Empty,
@@ -556,6 +592,7 @@ impl Mailbox {
         }
         self.pending_reads.remove(&request.row_id);
         result?;
+        self.invalidate_listings();
         if request.folder != self.folder {
             return Ok(false);
         }
@@ -662,6 +699,7 @@ impl Mailbox {
             self.action_error = Some(error);
             return Err(error);
         }
+        self.invalidate_listings();
         // After a folder switch these rows no longer contain the acted-on row.
         if request.folder != self.folder {
             return Ok(None);
@@ -767,10 +805,8 @@ impl Mailbox {
             return None;
         }
 
+        self.cache_active_listing();
         self.folder = folder;
-        self.conversations.clear();
-        self.next_page = 0;
-        self.has_more = false;
         self.set_reader(ReaderState::Empty);
         self.action_error = None;
         // The offer belongs to the folder it was made in.
@@ -778,8 +814,55 @@ impl Mailbox {
         // So do search results: a folder is a different question.
         self.search = None;
         self.search_request = None;
-        self.status = ListStatus::Loading(request);
-        Some(self.page_request(request, 0))
+
+        if let Some(cached) = self.cached_listings.remove(&FolderKey::of(&self.folder)) {
+            self.conversations = cached.conversations;
+            self.next_page = cached.next_page;
+            self.has_more = cached.has_more;
+            self.active_dirty = cached.dirty;
+            if cached.dirty {
+                self.status = ListStatus::Refreshing(request);
+                Some(self.page_request(request, 0))
+            } else {
+                self.status = ListStatus::Loaded;
+                None
+            }
+        } else {
+            self.conversations.clear();
+            self.next_page = 0;
+            self.has_more = false;
+            self.active_dirty = false;
+            self.status = ListStatus::Loading(request);
+            Some(self.page_request(request, 0))
+        }
+    }
+
+    /// Stores only a real folder listing. An initial load has `next_page == 0`;
+    /// search results, reader state and transient actions deliberately stay out.
+    fn cache_active_listing(&mut self) {
+        if self.next_page == 0 {
+            return;
+        }
+        let dirty = self.active_dirty || matches!(self.status, ListStatus::Refreshing(_));
+        self.cached_listings.insert(
+            FolderKey::of(&self.folder),
+            CachedListing {
+                conversations: std::mem::take(&mut self.conversations),
+                next_page: self.next_page,
+                has_more: self.has_more,
+                dirty,
+            },
+        );
+    }
+
+    /// A confirmed server mutation may affect membership or summary state in
+    /// more than the folder it was started from. Keep cached rows available
+    /// for an instant return, but revalidate them before treating them as fresh.
+    pub(super) fn invalidate_listings(&mut self) {
+        self.active_dirty = true;
+        for cached in self.cached_listings.values_mut() {
+            cached.dirty = true;
+        }
     }
 
     pub fn refresh(&mut self, request: RequestId) -> Option<PageRequest> {
@@ -840,6 +923,12 @@ impl Mailbox {
         self.counts_request = None;
         self.status = ListStatus::Loaded;
         self.has_more = self.conversations.len() < total as usize;
+        // The demo snapshot is authoritative for the active folder. Other
+        // folders may have changed as a side effect and must be revalidated.
+        for cached in self.cached_listings.values_mut() {
+            cached.dirty = true;
+        }
+        self.active_dirty = false;
 
         let selected_left = selected.as_deref().is_some_and(|id| {
             !self
@@ -869,10 +958,16 @@ impl Mailbox {
         match result {
             Ok(page) => {
                 self.apply_page(page, append);
+                if !append {
+                    self.active_dirty = false;
+                }
                 self.status = ListStatus::Loaded;
                 None
             }
             Err(error) => {
+                if !append {
+                    self.active_dirty = true;
+                }
                 self.status = ListStatus::Failed(error);
                 Some(error)
             }

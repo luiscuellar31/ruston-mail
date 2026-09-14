@@ -690,6 +690,41 @@ fn folder_switch_closes_reader() {
 }
 
 #[test]
+fn returning_to_a_loaded_folder_does_not_fetch_it_again() {
+    let mut app = loaded_demo_app();
+    let inbox_ids: Vec<_> = app
+        .mailbox()
+        .unwrap()
+        .conversations()
+        .iter()
+        .map(|row| row.id.clone())
+        .collect();
+
+    assert_eq!(
+        app.update(Message::SelectFolder(sys(MailFolder::Sent)))
+            .units(),
+        1
+    );
+    deliver_latest_demo_page(&mut app, 0);
+
+    assert_eq!(
+        app.update(Message::SelectFolder(sys(MailFolder::Inbox)))
+            .units(),
+        0
+    );
+    let mailbox = app.mailbox().unwrap();
+    assert_eq!(mailbox.status(), ListStatus::Loaded);
+    assert_eq!(
+        mailbox
+            .conversations()
+            .iter()
+            .map(|row| row.id.clone())
+            .collect::<Vec<_>>(),
+        inbox_ids
+    );
+}
+
+#[test]
 fn detail_failure_and_retry_use_a_new_request() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectConversation("demo-3".into()));
@@ -1296,6 +1331,33 @@ fn a_message_is_written_sent_and_put_away() {
         app.compose().is_none(),
         "the window stays open after sending"
     );
+}
+
+#[test]
+fn sending_revalidates_a_cached_sent_folder() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
+    deliver_latest_demo_page(&mut app, 0);
+    assert_eq!(
+        app.update(Message::SelectFolder(sys(MailFolder::Inbox)))
+            .units(),
+        0
+    );
+
+    write(&mut app, "alex@example.com");
+    let _ = app.update(Message::Send);
+    let _ = app.update(Message::Sent(Ok(())));
+
+    assert_eq!(
+        app.update(Message::SelectFolder(sys(MailFolder::Sent)))
+            .units(),
+        1
+    );
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Refreshing(_)
+    ));
+    assert!(!app.mailbox().unwrap().conversations().is_empty());
 }
 
 #[test]
