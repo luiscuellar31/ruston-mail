@@ -309,8 +309,9 @@ fn conversation_pane(
 /// scrollbar. `a_row_is_exactly_the_height_the_list_places_it_at` holds them
 /// together.
 const FOLDER_HEIGHT: f32 = 31.0;
-const ROW_HEIGHT: f32 = 54.0;
+const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;
+const ROW_VERTICAL_PADDING: f32 = 8.0;
 
 fn conversation_list(
     ui: &mut egui::Ui,
@@ -412,7 +413,7 @@ fn conversation_row(
     };
 
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 54.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), Sense::click());
     let hovered_fill = if response.hovered() && !selected {
         Color32::from_rgb(28, 29, 36)
     } else {
@@ -430,7 +431,7 @@ fn conversation_row(
         // On the sender line: at the row's centre it reads as belonging to
         // neither line.
         ui.painter().circle_filled(
-            egui::pos2(rect.left() + 7.0, rect.top() + 13.0),
+            egui::pos2(rect.left() + 7.0, rect.top() + ROW_VERTICAL_PADDING + 8.0),
             3.5,
             theme::ACCENT,
         );
@@ -438,8 +439,11 @@ fn conversation_row(
 
     let meta_width = 70.0;
     let content_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 18.0, rect.top() + 5.0),
-        egui::pos2(rect.right() - meta_width - 8.0, rect.bottom() - 5.0),
+        egui::pos2(rect.left() + 18.0, rect.top() + ROW_VERTICAL_PADDING),
+        egui::pos2(
+            rect.right() - meta_width - 8.0,
+            rect.bottom() - ROW_VERTICAL_PADDING,
+        ),
     );
     let painter = ui.painter_at(rect);
     theme::paint_truncated_text(
@@ -461,7 +465,7 @@ fn conversation_row(
 
     let meta_font = FontId::proportional(11.0);
     painter.text(
-        egui::pos2(rect.right() - 8.0, rect.top() + 7.0),
+        egui::pos2(rect.right() - 8.0, rect.top() + ROW_VERTICAL_PADDING),
         Align2::RIGHT_TOP,
         time,
         meta_font.clone(),
@@ -475,7 +479,7 @@ fn conversation_row(
     if conversation.starred {
         facts.push(theme::STAR.to_owned());
     }
-    let bottom = rect.bottom() - 7.0;
+    let bottom = rect.bottom() - ROW_VERTICAL_PADDING;
     let facts_left = painter
         .text(
             egui::pos2(rect.right() - 8.0, bottom),
