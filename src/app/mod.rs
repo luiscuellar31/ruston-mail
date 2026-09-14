@@ -68,6 +68,9 @@ pub enum Message {
     /// Puts the last moved conversation back where it came from.
     UndoMove,
     RefreshMailbox,
+    /// Periodic foreground refresh. Unlike a manual refresh, this also marks
+    /// the other folder caches stale so they catch up when opened.
+    AutoRefreshMailbox,
     LoadMoreConversations,
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
@@ -366,6 +369,7 @@ impl App {
             Message::ApplyAction(action) => return self.apply_action(action),
             Message::UndoMove => return self.undo_move(),
             Message::RefreshMailbox => return self.refresh_mailbox(),
+            Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),
             Message::ConversationsLoaded(request, result) => {
                 let error = self
@@ -373,6 +377,14 @@ impl App {
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_page(request, result));
                 self.handle_mailbox_error(error);
+                if error.is_none()
+                    && self
+                        .mailbox
+                        .as_ref()
+                        .is_some_and(Mailbox::needs_revalidation)
+                {
+                    return self.refresh_mailbox();
+                }
             }
             Message::ConversationLoaded(request, result) => {
                 let error = self
@@ -498,6 +510,18 @@ impl App {
 
     pub fn mailbox_actions_available(&self) -> bool {
         self.backend.is_some()
+    }
+
+    /// Whether a background-triggered list request can start without racing
+    /// another list-changing operation.
+    pub fn auto_refresh_available(&self) -> bool {
+        matches!(self.auth_state, AuthState::Authenticated { .. })
+            && self.backend.is_some()
+            && self
+                .mailbox
+                .as_ref()
+                .is_some_and(Mailbox::auto_refresh_available)
+            && !self.compose.as_ref().is_some_and(Compose::in_flight)
     }
 
     pub fn panels(&self) -> Panels {
@@ -867,6 +891,17 @@ impl App {
         let counts = mailbox.refresh_counts(counts_request);
 
         Effects::batch([self.fetch_page(page), self.fetch_counts(counts)])
+    }
+
+    fn auto_refresh_mailbox(&mut self) -> Effects {
+        if !self.auto_refresh_available() {
+            return Effects::none();
+        }
+        if let Some(mailbox) = &mut self.mailbox {
+            mailbox.invalidate_cached_listings();
+        }
+
+        self.refresh_mailbox()
     }
 
     fn load_more_conversations(&mut self) -> Effects {

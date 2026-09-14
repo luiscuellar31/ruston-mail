@@ -6,13 +6,17 @@ use crate::app::{Answering, Compose, ComposeField, Message, Sending};
 const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 
+pub(super) fn viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("compose-window")
+}
+
 pub(super) fn show_in_pane(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     page(ui, compose, messages);
 }
 
 pub(super) fn show_window(context: &egui::Context, compose: &Compose) -> Vec<Message> {
     context.show_viewport_immediate(
-        egui::ViewportId::from_hash_of("compose-window"),
+        viewport_id(),
         egui::ViewportBuilder::default()
             .with_title(heading(compose))
             .with_inner_size(WINDOW_SIZE)

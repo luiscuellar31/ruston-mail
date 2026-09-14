@@ -725,6 +725,74 @@ fn returning_to_a_loaded_folder_does_not_fetch_it_again() {
 }
 
 #[test]
+fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
+    deliver_latest_demo_page(&mut app, 0);
+    assert_eq!(
+        app.update(Message::SelectFolder(sys(MailFolder::Inbox)))
+            .units(),
+        0
+    );
+
+    assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 2);
+    let page_request = app.last_request - 1;
+    deliver_demo_page(&mut app, page_request, 0);
+
+    assert_eq!(
+        app.update(Message::SelectFolder(sys(MailFolder::Sent)))
+            .units(),
+        1
+    );
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Refreshing(_)
+    ));
+}
+
+#[test]
+fn automatic_refresh_does_not_overlap_a_list_request() {
+    let mut app = loaded_demo_app();
+    assert_eq!(app.update(Message::RefreshMailbox).units(), 2);
+    let requests = app.last_request;
+
+    assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 0);
+    assert_eq!(app.last_request, requests);
+}
+
+#[test]
+fn automatic_refresh_waits_while_a_message_is_being_sent() {
+    let mut app = loaded_demo_app();
+    write(&mut app, "alex@example.com");
+    assert_eq!(app.update(Message::Send).units(), 1);
+    let requests = app.last_request;
+
+    assert!(!app.auto_refresh_available());
+    assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 0);
+    assert_eq!(app.last_request, requests);
+}
+
+#[test]
+fn a_mutation_during_refresh_is_followed_by_a_fresh_request() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::RefreshMailbox);
+    let page_request = app.last_request - 1;
+    app.mailbox.as_mut().unwrap().invalidate_listings();
+    let folder = app.mailbox().unwrap().folder();
+    let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
+
+    assert_eq!(
+        app.update(Message::ConversationsLoaded(page_request, page))
+            .units(),
+        2
+    );
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Refreshing(_)
+    ));
+}
+
+#[test]
 fn detail_failure_and_retry_use_a_new_request() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectConversation("demo-3".into()));

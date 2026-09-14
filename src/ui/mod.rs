@@ -1,3 +1,4 @@
+mod auto_refresh;
 mod compose;
 mod login;
 mod mailbox;
@@ -11,6 +12,7 @@ use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect};
 use crate::mail::Folder;
 use crate::runtime::Runtime;
 use crate::settings::{ComposePlacement, Settings, Window};
+use auto_refresh::AutoRefresh;
 
 const MIN_WINDOW_SIZE: [f32; 2] = [820.0, 480.0];
 /// How long the settings have to stay still before they are written. Long
@@ -47,6 +49,7 @@ struct DesktopApp {
     ui: UiState,
     demo: bool,
     title: String,
+    auto_refresh: AutoRefresh,
     /// Preferences being edited in the settings window until Apply is pressed.
     settings_draft: Option<Settings>,
     /// The settings revision last seen, and when it was seen. Writing is held
@@ -68,6 +71,7 @@ impl DesktopApp {
             ui: UiState::default(),
             demo,
             title: String::new(),
+            auto_refresh: AutoRefresh::default(),
             settings_draft: None,
             settings_seen: 0,
             settings_seen_at: 0.0,
@@ -77,8 +81,19 @@ impl DesktopApp {
     }
 
     fn dispatch(&mut self, message: Message, context: &egui::Context) {
+        let now = context.input(|input| input.time);
+        if matches!(&message, Message::RefreshMailbox) {
+            self.auto_refresh.postpone(now);
+        }
+        let page = match &message {
+            Message::ConversationsLoaded(request, result) => Some((*request, result.is_ok())),
+            _ => None,
+        };
         let effects = self.app.update(message);
         self.execute(effects, context);
+        if let Some((request, succeeded)) = page {
+            self.auto_refresh.page_finished(request, succeeded, now);
+        }
     }
 
     fn execute(&mut self, effects: Effects, context: &egui::Context) {
@@ -164,6 +179,51 @@ impl DesktopApp {
         }
     }
 
+    fn app_has_focus(&self, context: &egui::Context) -> bool {
+        context.input_for(egui::ViewportId::ROOT, |input| input.focused)
+            || self.app.showing_settings()
+                && context.input_for(settings::viewport_id(), |input| input.focused)
+            || self.app.settings().compose_placement == ComposePlacement::Window
+                && self.app.compose().is_some()
+                && context.input_for(compose::viewport_id(), |input| input.focused)
+    }
+
+    fn refresh_automatically(&mut self, context: &egui::Context) {
+        let now = context.input(|input| input.time);
+        let focused = self.app_has_focus(context);
+        let active = matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+            && self.app.mailbox().is_some()
+            && !self.app.is_demo();
+        let available = self.app.auto_refresh_available();
+
+        if self
+            .auto_refresh
+            .should_start(now, focused, active, available)
+        {
+            self.dispatch(Message::AutoRefreshMailbox, context);
+            let request = self
+                .app
+                .mailbox()
+                .and_then(|mailbox| match mailbox.status() {
+                    crate::app::ListStatus::Loading(request)
+                    | crate::app::ListStatus::Refreshing(request) => Some(request),
+                    _ => None,
+                });
+            if let Some(request) = request {
+                self.auto_refresh.started(request);
+            } else {
+                self.auto_refresh.postpone(now);
+            }
+        }
+
+        if let Some(wait) = self
+            .auto_refresh
+            .repaint_after(now, self.app.auto_refresh_available())
+        {
+            context.request_repaint_after(wait);
+        }
+    }
+
     /// Keeps egui's scale on the chosen zoom. egui measures window sizes in
     /// the same scaled points and undoes the scale when a window is created,
     /// so the remembered size stays the same window whatever the zoom.
@@ -212,6 +272,7 @@ impl eframe::App for DesktopApp {
         self.drain_runtime(context);
         self.remember_window_size(context);
         self.keyboard_shortcuts(context);
+        self.refresh_automatically(context);
         self.save_settled_settings(context);
         self.update_title(context);
     }

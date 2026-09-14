@@ -8,13 +8,17 @@ use crate::settings::{ComposePlacement, Settings, StartFolder};
 const WINDOW_SIZE: [f32; 2] = [720.0, 720.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [520.0, 420.0];
 
+pub(super) fn viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("settings-window")
+}
+
 pub(super) fn show_window(
     context: &egui::Context,
     current: &Settings,
     draft: &mut Settings,
 ) -> Vec<Message> {
     context.show_viewport_immediate(
-        egui::ViewportId::from_hash_of("settings-window"),
+        viewport_id(),
         egui::ViewportBuilder::default()
             .with_title("Settings")
             .with_inner_size(WINDOW_SIZE)

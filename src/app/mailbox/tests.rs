@@ -1333,6 +1333,23 @@ fn one_action_runs_at_a_time_on_the_selected_row() {
 }
 
 #[test]
+fn automatic_refresh_waits_for_pending_mail_changes() {
+    let mut mailbox = opened_unread(&["a"], "a");
+    assert!(mailbox.auto_refresh_available());
+
+    let read = mailbox.start_mark_read(3).unwrap();
+    assert!(!mailbox.auto_refresh_available());
+    assert_eq!(mailbox.finish_mark_read(&read, Ok(())), Ok(true));
+
+    let action = mailbox
+        .start_action(MailAction::SetStarred(true), 4)
+        .unwrap();
+    assert!(!mailbox.auto_refresh_available());
+    assert_eq!(mailbox.finish_action(&action, Ok(())), Ok(None));
+    assert!(mailbox.auto_refresh_available());
+}
+
+#[test]
 fn actions_wait_for_the_list_to_load() {
     let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
     mailbox.refresh(3);

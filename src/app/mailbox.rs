@@ -433,6 +433,14 @@ impl Mailbox {
         )
     }
 
+    pub(super) fn auto_refresh_available(&self) -> bool {
+        !self.is_busy() && self.action_request.is_none() && self.pending_reads.is_empty()
+    }
+
+    pub(super) fn needs_revalidation(&self) -> bool {
+        self.active_dirty && !self.is_busy()
+    }
+
     /// Starts loading a visible conversation. Reselecting the current
     /// conversation keeps its loaded or in-flight state, except after a
     /// failure: clicking the row again is a retry.
@@ -821,6 +829,9 @@ impl Mailbox {
             self.has_more = cached.has_more;
             self.active_dirty = cached.dirty;
             if cached.dirty {
+                // From this point on only a change made while this request is
+                // running can make its answer stale again.
+                self.active_dirty = false;
                 self.status = ListStatus::Refreshing(request);
                 Some(self.page_request(request, 0))
             } else {
@@ -860,6 +871,12 @@ impl Mailbox {
     /// for an instant return, but revalidate them before treating them as fresh.
     pub(super) fn invalidate_listings(&mut self) {
         self.active_dirty = true;
+        self.invalidate_cached_listings();
+    }
+
+    /// A periodic refresh updates the open folder now. Everything else stays
+    /// instant to open, but must revalidate before becoming a clean cache hit.
+    pub(super) fn invalidate_cached_listings(&mut self) {
         for cached in self.cached_listings.values_mut() {
             cached.dirty = true;
         }
@@ -871,6 +888,9 @@ impl Mailbox {
         }
         // The reloaded list no longer shows what the offer talked about.
         self.undo = None;
+        // If a mutation completes after this request starts it sets this back
+        // to true, and the app follows this response with one fresh request.
+        self.active_dirty = false;
 
         self.status = if self.conversations.is_empty() {
             ListStatus::Loading(request)
@@ -958,9 +978,6 @@ impl Mailbox {
         match result {
             Ok(page) => {
                 self.apply_page(page, append);
-                if !append {
-                    self.active_dirty = false;
-                }
                 self.status = ListStatus::Loaded;
                 None
             }
