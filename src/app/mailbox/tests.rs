@@ -273,6 +273,29 @@ fn a_move_out_of_a_folder_can_be_taken_back() {
     assert!(mailbox.undo().is_none());
 }
 
+#[test]
+fn an_expired_offer_cannot_dismiss_the_move_after_it() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+    mailbox.offer_undo(
+        "a",
+        SummaryKind::Conversation,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+    );
+    let expired = mailbox.undo().unwrap().clone();
+    mailbox.offer_undo(
+        "b",
+        SummaryKind::Conversation,
+        MailAction::MoveTo(sys(MailFolder::Trash)),
+    );
+
+    mailbox.dismiss_undo(&expired);
+
+    assert_eq!(mailbox.undo().map(|offer| offer.row_id.as_str()), Some("b"));
+    let current = mailbox.undo().unwrap().clone();
+    mailbox.dismiss_undo(&current);
+    assert!(mailbox.undo().is_none());
+}
+
 /// An Inbox holding `listed`, showing the results of a server search that
 /// returned `found`, with `opened` open in the reader.
 fn searched(listed: &[&str], found: &[&str], opened: &str) -> Mailbox {

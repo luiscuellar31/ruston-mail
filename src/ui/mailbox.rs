@@ -1,8 +1,8 @@
 use chrono::{DateTime, Datelike, Local, TimeZone};
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
-use super::{UiState, compose, reader, theme};
-use crate::app::{App, ListStatus, Mailbox, Message, panel_ratios, panel_widths};
+use super::{UiState, UndoNotice, compose, reader, theme};
+use crate::app::{App, ListStatus, Mailbox, Message, UndoMove, panel_ratios, panel_widths};
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
 use crate::settings::ComposePlacement;
 
@@ -15,6 +15,7 @@ pub(super) fn show(
     messages: &mut Vec<Message>,
 ) {
     let mailbox = app.mailbox().expect("authenticated mailbox");
+    let context = root.ctx().clone();
     let window_width = root.available_width();
     let widths = panel_widths(app.panels(), window_width);
 
@@ -58,6 +59,8 @@ pub(super) fn show(
             }
         });
 
+    undo_notice(&context, mailbox, state, messages);
+
     let actual = panel_ratios(
         sidebar.response.rect.width(),
         conversations.response.rect.width(),
@@ -82,15 +85,16 @@ fn sidebar(
     ui.heading(egui::RichText::new("Ruston Mail").size(23.0));
     ui.add_space(12.0);
 
-    if ui
-        .add(
-            egui::Button::new("Write")
-                .min_size(egui::vec2(ui.available_width(), 34.0))
-                .fill(theme::ACCENT_SOFT)
-                .stroke(Stroke::new(1.0, theme::ACCENT)),
-        )
-        .clicked()
-    {
+    let compose = egui::Button::new((
+        theme::icon_atom(),
+        egui::RichText::new("New message").color(Color32::WHITE),
+    ))
+    .min_size(egui::vec2(ui.available_width(), 34.0))
+    .fill(theme::ACCENT)
+    .stroke(Stroke::NONE)
+    .atom_ui(ui);
+    theme::paint_atom_icon(ui, &compose, theme::Icon::Compose, Color32::WHITE);
+    if compose.clicked() {
         messages.push(Message::OpenCompose);
     }
     ui.add_space(12.0);
@@ -169,41 +173,60 @@ fn folder_button(
     messages: &mut Vec<Message>,
 ) {
     let selected = &folder == mailbox.folder();
+    let icon = folder_icon(&folder);
     let unread = mailbox
         .counts()
         .and_then(|counts| counts.unread(&folder))
         .filter(|count| *count > 0);
-    let mut button = egui::Button::new(folder.name())
+    let mut button = egui::Button::new((theme::icon_atom(), folder.name()))
         .wrap_mode(egui::TextWrapMode::Truncate)
         .min_size(egui::vec2(ui.available_width(), FOLDER_HEIGHT))
-        .frame(selected);
-    if selected {
-        button = button
-            .fill(theme::ACCENT_SOFT)
-            .stroke(Stroke::new(1.0, theme::ACCENT));
-    }
-    let response = ui.add(button);
+        .selected(selected)
+        .frame(true)
+        .frame_when_inactive(selected);
     if let Some(count) = unread {
-        // Painted at the panel edge rather than padded into the label, which
-        // left the count wherever the folder's name happened to end.
-        ui.painter().text(
-            egui::pos2(response.rect.right() - 10.0, response.rect.center().y),
-            Align2::RIGHT_CENTER,
-            count.to_string(),
-            FontId::proportional(12.0),
-            theme::MUTED,
-        );
-        let name = folder.name().to_owned();
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                true,
-                format!("{name}, {count} unread"),
-            )
-        });
+        button = button.right_text(count.to_string());
     }
+    if selected {
+        button = button.fill(theme::ACCENT_SOFT).stroke(Stroke::NONE);
+    }
+    let layout = button.atom_ui(ui);
+    let icon_color = if icon == theme::Icon::Label {
+        theme::ACCENT
+    } else if selected {
+        Color32::WHITE
+    } else {
+        ui.style().interact(&layout.response).fg_stroke.color
+    };
+    theme::paint_atom_icon(ui, &layout, icon, icon_color);
+    let response = layout.response;
+    let name = folder.name().to_owned();
+    response.widget_info(|| {
+        let label = unread.map_or_else(|| name.clone(), |count| format!("{name}, {count} unread"));
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
+    });
     if response.clicked() {
         messages.push(Message::SelectFolder(folder));
+    }
+}
+
+fn folder_icon(folder: &Folder) -> theme::Icon {
+    match folder {
+        Folder::System(MailFolder::Inbox) => theme::Icon::Inbox,
+        Folder::System(MailFolder::Drafts) => theme::Icon::Drafts,
+        Folder::System(MailFolder::Sent) => theme::Icon::Sent,
+        Folder::System(MailFolder::Starred) => theme::Icon::Star,
+        Folder::System(MailFolder::Archive) => theme::Icon::Archive,
+        Folder::System(MailFolder::Spam) => theme::Icon::Spam,
+        Folder::System(MailFolder::Trash) => theme::Icon::Trash,
+        Folder::Custom {
+            kind: CustomKind::Folder,
+            ..
+        } => theme::Icon::Folder,
+        Folder::Custom {
+            kind: CustomKind::Label,
+            ..
+        } => theme::Icon::Label,
     }
 }
 
@@ -262,17 +285,6 @@ fn conversation_pane(
             &search_scope_label(mailbox.search_results(), mailbox.loaded_count()),
         );
     }
-    if let Some(undo) = mailbox.undo() {
-        ui.add_space(4.0);
-        theme::card().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!("Moved to {}.", undo.to.name()));
-                if ui.add(theme::compact_button("Undo")).clicked() {
-                    messages.push(Message::UndoMove);
-                }
-            });
-        });
-    }
     ui.add_space(4.0);
 
     let empty = mailbox.visible_conversations().next().is_none();
@@ -298,6 +310,61 @@ fn conversation_pane(
         ),
         _ => conversation_list(ui, mailbox, state, messages),
     }
+}
+
+const UNDO_NOTICE_SECONDS: f64 = 6.0;
+
+fn undo_notice(
+    context: &egui::Context,
+    mailbox: &Mailbox,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    let Some(offer) = mailbox.undo() else {
+        state.undo_notice = None;
+        return;
+    };
+    let now = context.input(|input| input.time);
+    let Some(remaining) = sync_undo_notice(state, offer, now) else {
+        messages.push(Message::DismissUndo(offer.clone()));
+        return;
+    };
+    context.request_repaint_after(remaining);
+
+    let _ = egui::Area::new(egui::Id::new("undo-move-notice"))
+        .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
+        .order(egui::Order::Foreground)
+        .show(context, |ui| {
+            theme::card()
+                .stroke(Stroke::new(1.0, theme::ACCENT))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Moved to {}.", offer.to.name()));
+                        if ui.add(theme::compact_button("Undo")).clicked() {
+                            messages.push(Message::UndoMove);
+                        }
+                    });
+                });
+        });
+}
+
+fn sync_undo_notice(
+    state: &mut UiState,
+    offer: &UndoMove,
+    now: f64,
+) -> Option<std::time::Duration> {
+    if state
+        .undo_notice
+        .as_ref()
+        .is_none_or(|notice| notice.offer != *offer)
+    {
+        state.undo_notice = Some(UndoNotice {
+            offer: offer.clone(),
+            expires_at: now + UNDO_NOTICE_SECONDS,
+        });
+    }
+    let remaining = state.undo_notice.as_ref()?.expires_at - now;
+    (remaining > 0.0).then(|| std::time::Duration::from_secs_f64(remaining))
 }
 
 /// Virtualized rows must draw at [`ROW_HEIGHT`] to stay aligned with scrolling.
@@ -395,12 +462,6 @@ fn conversation_row(
     } else {
         Color32::TRANSPARENT
     };
-    let stroke = if selected {
-        Stroke::new(1.0, theme::ACCENT)
-    } else {
-        Stroke::NONE
-    };
-
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), Sense::click());
     let hovered_fill = if response.hovered() && !selected {
@@ -412,7 +473,7 @@ fn conversation_row(
         rect,
         CornerRadius::same(8),
         hovered_fill,
-        stroke,
+        Stroke::NONE,
         egui::StrokeKind::Inside,
     );
 
@@ -578,6 +639,36 @@ mod tests {
         assert_eq!(format_time(at(2026, 9, 11, 9, 5), &now), "09:05");
         assert_eq!(format_time(at(2026, 3, 2, 9, 5), &now), "Mar 2");
         assert_eq!(format_time(at(2025, 12, 31, 9, 5), &now), "2025-12-31");
+    }
+
+    #[test]
+    fn an_undo_notice_expires_and_a_new_one_gets_its_own_time() {
+        let offer = UndoMove {
+            row_id: "first".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            from: Folder::INBOX,
+            to: Folder::System(MailFolder::Trash),
+        };
+        let mut state = UiState::default();
+
+        assert_eq!(
+            sync_undo_notice(&mut state, &offer, 10.0),
+            Some(std::time::Duration::from_secs(6))
+        );
+        assert_eq!(
+            sync_undo_notice(&mut state, &offer, 15.0),
+            Some(std::time::Duration::from_secs(1))
+        );
+        assert_eq!(sync_undo_notice(&mut state, &offer, 16.0), None);
+
+        let next = UndoMove {
+            row_id: "second".into(),
+            ..offer
+        };
+        assert_eq!(
+            sync_undo_notice(&mut state, &next, 16.0),
+            Some(std::time::Duration::from_secs(6))
+        );
     }
 
     #[test]

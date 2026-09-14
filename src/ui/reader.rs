@@ -16,10 +16,10 @@ use crate::mail::{
 use crate::settings::Reading;
 
 const SUBJECT_SIZE: f32 = 22.0;
-const LABELS_SHOWN: usize = 8;
 const MAX_QUOTE_DEPTH: u8 = 4;
 const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
+const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
 const MARKER_WIDTH: f32 = 12.0;
 const CODE_FILL: Color32 = Color32::from_rgb(18, 19, 24);
 /// Code background padding, kept clear of adjacent lines.
@@ -74,6 +74,7 @@ pub(super) fn show(
                 ui,
                 reader,
                 places,
+                mailbox.folder(),
                 mailbox.selected_summary().filter(|_| actions_available),
                 !mailbox.is_busy() && !mailbox.action_pending(),
                 mailbox.action_error(),
@@ -112,6 +113,7 @@ fn conversation(
     ui: &mut egui::Ui,
     reader: &ConversationReader,
     places: &[Folder],
+    current_folder: &Folder,
     summary: Option<&ConversationSummary>,
     actions_enabled: bool,
     action_error: Option<crate::mail::MailboxError>,
@@ -136,6 +138,7 @@ fn conversation(
                     ui,
                     reader,
                     places,
+                    current_folder,
                     summary,
                     actions_enabled,
                     action_error,
@@ -159,6 +162,7 @@ fn reading_column(
     ui: &mut egui::Ui,
     reader: &ConversationReader,
     places: &[Folder],
+    current_folder: &Folder,
     summary: Option<&ConversationSummary>,
     actions_enabled: bool,
     action_error: Option<crate::mail::MailboxError>,
@@ -180,13 +184,13 @@ fn reading_column(
     ui.add_space(8.0);
 
     if let Some(summary) = summary {
-        action_toolbar(ui, summary, actions_enabled, messages);
-        label_toggles(
+        action_toolbar(
             ui,
+            summary,
+            current_folder,
             detail_data,
             places,
             actions_enabled,
-            reader.is_showing_labels(),
             messages,
         );
         if let Some(error) = action_error {
@@ -211,47 +215,80 @@ fn reading_column(
 fn action_toolbar(
     ui: &mut egui::Ui,
     summary: &ConversationSummary,
+    current_folder: &Folder,
+    conversation: &ConversationDetail,
+    places: &[Folder],
     enabled: bool,
     messages: &mut Vec<Message>,
 ) {
-    let read = if summary.unread {
-        ("Mark read", MailAction::SetUnread(false))
-    } else {
-        ("Mark unread", MailAction::SetUnread(true))
-    };
-    let star = if summary.starred {
-        ("Unstar", MailAction::SetStarred(false))
-    } else {
-        ("Star", MailAction::SetStarred(true))
-    };
-    let actions = [
-        (
-            "Archive",
-            MailAction::MoveTo(Folder::System(MailFolder::Archive)),
-        ),
-        ("Spam", MailAction::MoveTo(Folder::System(MailFolder::Spam))),
-        (
-            "Trash",
-            MailAction::MoveTo(Folder::System(MailFolder::Trash)),
-        ),
-        read,
-        star,
-    ];
     ui.horizontal_wrapped(|ui| {
-        for (label, action) in actions {
-            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+        for (icon, label, folder, danger) in [
+            (theme::Icon::Archive, "Archive", MailFolder::Archive, false),
+            (theme::Icon::Spam, "Move to Spam", MailFolder::Spam, false),
+            (
+                theme::Icon::Trash,
+                "Delete (move to Trash)",
+                MailFolder::Trash,
+                true,
+            ),
+        ] {
+            let destination = Folder::System(folder);
+            if current_folder == &destination {
+                continue;
+            }
+            let mut button = theme::IconButton::new(icon, label);
+            if danger {
+                button = button.danger();
+            }
+            let response = ui.add_enabled(enabled, button);
+            if response.clicked() {
+                messages.push(Message::ApplyAction(MailAction::MoveTo(destination)));
+            }
+        }
+
+        ui.separator();
+        for (icon, label, selected, action) in [
+            (
+                theme::Icon::Mail,
+                if summary.unread {
+                    "Mark as read"
+                } else {
+                    "Mark as unread"
+                },
+                summary.unread,
+                MailAction::SetUnread(!summary.unread),
+            ),
+            (
+                theme::Icon::Star,
+                if summary.starred {
+                    "Remove star"
+                } else {
+                    "Add star"
+                },
+                summary.starred,
+                MailAction::SetStarred(!summary.starred),
+            ),
+        ] {
+            if ui
+                .add_enabled(
+                    enabled,
+                    theme::IconButton::new(icon, label).selected(selected),
+                )
+                .clicked()
+            {
                 messages.push(Message::ApplyAction(action));
             }
         }
+
+        label_menu(ui, conversation, places, enabled, messages);
     });
 }
 
-fn label_toggles(
+fn label_menu(
     ui: &mut egui::Ui,
     conversation: &ConversationDetail,
     places: &[Folder],
     enabled: bool,
-    showing_all: bool,
     messages: &mut Vec<Message>,
 ) {
     let labels: Vec<_> = places
@@ -261,38 +298,44 @@ fn label_toggles(
     if labels.is_empty() {
         return;
     }
-    let crowded = labels.len() > LABELS_SHOWN;
-    ui.horizontal_wrapped(|ui| {
-        for label in labels
-            .iter()
-            .copied()
-            .filter(|label| shows_label(conversation.carries(label), crowded, showing_all))
-        {
-            let carried = conversation.carries(label);
-            let button = theme::compact_button(label.name()).selected(carried);
-            if ui.add_enabled(enabled, button).clicked() {
-                messages.push(Message::ApplyAction(MailAction::SetLabel {
-                    label: label.clone(),
-                    on: !carried,
-                }));
-            }
-        }
-        if crowded
-            && ui
-                .add(theme::compact_button(if showing_all {
-                    "Fewer labels".to_owned()
-                } else {
-                    format!("All {} labels", labels.len())
-                }))
-                .clicked()
-        {
-            messages.push(Message::ToggleLabelsShown);
-        }
-    });
-}
+    let applied = labels
+        .iter()
+        .filter(|label| conversation.carries(label))
+        .count();
+    let title = if applied == 0 {
+        "Labels".to_owned()
+    } else {
+        format!("Labels ({applied})")
+    };
 
-fn shows_label(carried: bool, crowded: bool, showing_all: bool) -> bool {
-    carried || !crowded || showing_all
+    ui.separator();
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.menu_button(title, |ui| {
+            ui.set_min_width(180.0);
+            egui::ScrollArea::vertical()
+                .max_height(240.0)
+                .show(ui, |ui| {
+                    for label in labels {
+                        ui.horizontal(|ui| {
+                            let (dot, _) = ui.allocate_exact_size(
+                                egui::vec2(10.0, ui.spacing().interact_size.y),
+                                Sense::hover(),
+                            );
+                            ui.painter().circle_filled(dot.center(), 3.5, theme::ACCENT);
+                            let carried = conversation.carries(label);
+                            let mut on = carried;
+                            if ui.checkbox(&mut on, label.name()).changed() {
+                                messages.push(Message::ApplyAction(MailAction::SetLabel {
+                                    label: label.clone(),
+                                    on: !carried,
+                                }));
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+        });
+    });
 }
 
 fn message_card(
@@ -313,22 +356,32 @@ fn message_card(
                 for attachment in &message.attachments {
                     attachment_row(ui, &message.id, attachment, saving_attachment, messages);
                 }
-                ui.horizontal_wrapped(|ui| {
-                    // Proton determines reply recipients from the message.
-                    for (label, forward, everyone) in [
-                        ("Reply", false, false),
-                        ("Reply all", false, true),
-                        ("Forward", true, false),
-                    ] {
-                        if ui.add(theme::compact_button(label)).clicked() {
-                            messages.push(Message::Answer {
-                                message_id: message.id.clone(),
-                                forward,
-                                everyone,
-                            });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), REPLY_TOOLBAR_HEIGHT),
+                    Layout::left_to_right(Align::Center).with_main_align(Align::Max),
+                    |ui| {
+                        // Proton determines reply recipients from the message.
+                        for (label, forward, everyone) in [
+                            ("Reply", false, false),
+                            ("Reply all", false, true),
+                            ("Forward", true, false),
+                        ] {
+                            let mut button = theme::compact_button(label);
+                            if label == "Reply" {
+                                button = button
+                                    .fill(theme::ACCENT_SOFT)
+                                    .stroke(Stroke::new(1.0, theme::ACCENT));
+                            }
+                            if ui.add(button).clicked() {
+                                messages.push(Message::Answer {
+                                    message_id: message.id.clone(),
+                                    forward,
+                                    everyone,
+                                });
+                            }
                         }
-                    }
-                });
+                    },
+                );
                 ui.separator();
                 theme::selectable_text(ui, |ui| {
                     message_body(ui, message, reader, reading, messages);
@@ -798,12 +851,47 @@ mod tests {
     }
 
     #[test]
-    fn a_crowded_label_row_keeps_only_what_the_conversation_carries() {
-        assert!(shows_label(false, false, false));
-        assert!(shows_label(true, false, false));
-        assert!(shows_label(true, true, false));
-        assert!(!shows_label(false, true, false));
-        assert!(shows_label(false, true, true));
+    fn conversation_actions_share_one_compact_toolbar() {
+        let summary = ConversationSummary {
+            id: "conversation".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: None,
+            correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: None,
+            unread: true,
+            starred: true,
+            message_count: 1,
+            has_attachments: false,
+        };
+        let conversation = ConversationDetail {
+            id: summary.id.clone(),
+            subject: None,
+            labels: vec!["work".into()],
+            messages: Vec::new(),
+        };
+        let places = [Folder::label("work", "Work")];
+        let context = egui::Context::default();
+        let mut height = 0.0;
+
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(680.0);
+                action_toolbar(
+                    ui,
+                    &summary,
+                    &Folder::INBOX,
+                    &conversation,
+                    &places,
+                    true,
+                    &mut Vec::new(),
+                );
+                height = ui.min_rect().height();
+            })
+            .drop_without_applying_deltas();
+
+        assert!(height <= 32.0, "toolbar wrapped to {height} points");
     }
 
     fn address(name: Option<&str>, email: &str) -> MailAddress {
@@ -914,6 +1002,53 @@ mod tests {
         });
 
         assert!(clicked);
+    }
+
+    #[test]
+    fn an_expanded_message_card_only_uses_its_content_height() {
+        let detail = ConversationDetail {
+            id: "conversation".into(),
+            subject: Some("Short message".into()),
+            labels: Vec::new(),
+            messages: vec![MailMessage {
+                id: "message".into(),
+                sender: address(Some("Alex Rivera"), "alex@example.com"),
+                recipients: vec![address(None, "team@example.org")],
+                time: None,
+                body: MessageBody::PlainText("Hello.".into()),
+                attachments: Vec::new(),
+            }],
+        };
+        let reader = ConversationReader::new(detail);
+        let context = egui::Context::default();
+        let mut height = 0.0;
+
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(680.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.set_width(680.0);
+                    let top = ui.cursor().top();
+                    message_card(
+                        ui,
+                        &reader.detail().messages[0],
+                        &reader,
+                        None,
+                        Reading::default(),
+                        &mut Vec::new(),
+                    );
+                    height = ui.cursor().top() - top;
+                },
+            )
+            .drop_without_applying_deltas();
+
+        assert!(height < 250.0, "message card stretched to {height} points");
     }
 
     #[test]

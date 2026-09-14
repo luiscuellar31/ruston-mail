@@ -44,8 +44,6 @@ pub struct ConversationReader {
     toggled: HashSet<String>,
     /// Quoted passages folded the other way, as (message id, position).
     toggled_quotes: HashSet<(String, usize)>,
-    /// Whether available labels are shown for this conversation.
-    showing_labels: bool,
     /// Cached collapsed previews in `detail.messages` order.
     previews: Vec<String>,
 }
@@ -65,7 +63,6 @@ impl ConversationReader {
             detail,
             toggled: HashSet::new(),
             toggled_quotes: HashSet::new(),
-            showing_labels: false,
             previews,
         }
     }
@@ -86,14 +83,6 @@ impl ConversationReader {
 
     pub fn detail(&self) -> &ConversationDetail {
         &self.detail
-    }
-
-    pub fn is_showing_labels(&self) -> bool {
-        self.showing_labels
-    }
-
-    pub fn toggle_labels(&mut self) {
-        self.showing_labels = !self.showing_labels;
     }
 
     /// Records a label the open conversation was just given or had taken
@@ -230,22 +219,6 @@ mod tests {
         assert_eq!(reader.preview("rich"), "Hello there again");
         // A message the conversation does not carry has nothing to show.
         assert_eq!(reader.preview("missing"), "");
-    }
-
-    #[test]
-    fn the_label_picker_belongs_to_the_open_conversation() {
-        let mut reader = reader(vec![message("a", 1)]);
-        assert!(!reader.is_showing_labels());
-
-        reader.toggle_labels();
-        assert!(reader.is_showing_labels());
-        reader.toggle_labels();
-        assert!(!reader.is_showing_labels());
-
-        // Moving on puts the row back the way it usually reads.
-        reader.toggle_labels();
-        let next = ConversationReader::new(reader.detail().clone());
-        assert!(!next.is_showing_labels());
     }
 
     fn order(reader: &ConversationReader) -> Vec<&str> {

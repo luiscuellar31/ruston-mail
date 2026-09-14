@@ -27,7 +27,9 @@ pub use compose::{Answering, Compose, ComposeField, Sending};
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{ratios as panel_ratios, widths as panel_widths};
-pub use mailbox::{ActionRequest, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step};
+pub use mailbox::{
+    ActionRequest, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
+};
 use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
@@ -60,13 +62,13 @@ pub enum Message {
     ToggleMessageExpanded(String),
     /// Folds or unfolds one quoted passage of a message.
     ToggleQuoteExpanded(String, usize),
-    /// Shows or hides the labels the open conversation does not carry.
-    ToggleLabelsShown,
     /// Applies one action to the selected row. Adding an action is a line in
     /// the toolbar rather than a message and an arm of its own.
     ApplyAction(MailAction),
     /// Puts the last moved conversation back where it came from.
     UndoMove,
+    /// Lets this temporary undo offer expire if it is still current.
+    DismissUndo(UndoMove),
     RefreshMailbox,
     /// Periodic foreground refresh. Unlike a manual refresh, this also marks
     /// the other folder caches stale so they catch up when opened.
@@ -351,13 +353,13 @@ impl App {
                     mailbox.toggle_quote(&id, index);
                 }
             }
-            Message::ToggleLabelsShown => {
-                if let Some(mailbox) = self.active_mailbox() {
-                    mailbox.toggle_labels();
-                }
-            }
             Message::ApplyAction(action) => return self.apply_action(action),
             Message::UndoMove => return self.undo_move(),
+            Message::DismissUndo(offer) => {
+                if let Some(mailbox) = self.active_mailbox() {
+                    mailbox.dismiss_undo(&offer);
+                }
+            }
             Message::RefreshMailbox => return self.refresh_mailbox(),
             Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),

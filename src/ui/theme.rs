@@ -1,4 +1,7 @@
-use eframe::egui::{self, Color32, CornerRadius, Stroke};
+use eframe::egui::{
+    self, Atom, AtomLayoutResponse, Color32, CornerRadius, Id, Response, Stroke, Widget,
+    WidgetInfo, WidgetType,
+};
 
 pub const ACCENT: Color32 = Color32::from_rgb(109, 92, 245);
 pub const ACCENT_SOFT: Color32 = Color32::from_rgb(43, 38, 79);
@@ -10,6 +13,213 @@ pub const MUTED: Color32 = Color32::from_rgb(159, 162, 178);
 pub const DANGER: Color32 = Color32::from_rgb(245, 112, 112);
 pub const SUCCESS: Color32 = Color32::from_rgb(105, 210, 160);
 const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
+const ICON_SIZE: f32 = 16.0;
+const ICON_ATOM_ID: &str = "ruston-vector-icon";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Icon {
+    Compose,
+    Inbox,
+    Drafts,
+    Sent,
+    Star,
+    Archive,
+    Spam,
+    Trash,
+    Folder,
+    Label,
+    Mail,
+}
+
+pub fn icon_atom() -> Atom<'static> {
+    Atom::custom(Id::new(ICON_ATOM_ID), egui::Vec2::splat(ICON_SIZE))
+}
+
+pub fn paint_atom_icon(ui: &egui::Ui, response: &AtomLayoutResponse, icon: Icon, color: Color32) {
+    if let Some(rect) = response.rect(Id::new(ICON_ATOM_ID)) {
+        paint_icon(ui.painter(), rect.center(), icon, color);
+    }
+}
+
+pub struct IconButton<'a> {
+    icon: Icon,
+    label: &'a str,
+    selected: Option<bool>,
+    danger: bool,
+}
+
+impl<'a> IconButton<'a> {
+    pub fn new(icon: Icon, label: &'a str) -> Self {
+        Self {
+            icon,
+            label,
+            selected: None,
+            danger: false,
+        }
+    }
+
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = Some(selected);
+        self
+    }
+
+    pub fn danger(mut self) -> Self {
+        self.danger = true;
+        self
+    }
+}
+
+impl Widget for IconButton<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> Response {
+        let mut button = egui::Button::new(icon_atom())
+            .small()
+            .min_size(egui::vec2(32.0, 28.0));
+        if let Some(selected) = self.selected {
+            button = button.selected(selected);
+        }
+        let layout = button.atom_ui(ui);
+        let color = if !ui.is_enabled() {
+            ui.visuals().widgets.noninteractive.fg_stroke.color
+        } else if self.danger {
+            DANGER
+        } else if self.selected == Some(true) {
+            Color32::WHITE
+        } else {
+            ui.style().interact(&layout.response).fg_stroke.color
+        };
+        paint_atom_icon(ui, &layout, self.icon, color);
+
+        let response = layout.response;
+        response.widget_info(|| match self.selected {
+            Some(selected) => {
+                WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), selected, self.label)
+            }
+            None => WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), self.label),
+        });
+        response.on_hover_text(self.label)
+    }
+}
+
+pub fn paint_icon(painter: &egui::Painter, center: egui::Pos2, icon: Icon, color: Color32) {
+    let stroke = Stroke::new(1.4, color);
+    let point = |x, y| center + egui::vec2(x, y);
+    let line = |points: &[(f32, f32)]| {
+        painter.add(egui::Shape::line(
+            points.iter().map(|(x, y)| point(*x, *y)).collect(),
+            stroke,
+        ));
+    };
+
+    match icon {
+        Icon::Compose => {
+            painter.line_segment(
+                [point(-4.5, 4.5), point(4.5, -4.5)],
+                Stroke::new(2.0, color),
+            );
+            line(&[(-5.5, 2.5), (-6.0, 6.0), (-2.5, 5.5)]);
+        }
+        Icon::Inbox => {
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-6.5, -5.0), point(6.5, 5.5)),
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            line(&[
+                (-6.0, 1.0),
+                (-2.5, 1.0),
+                (-1.0, 3.0),
+                (1.0, 3.0),
+                (2.5, 1.0),
+                (6.0, 1.0),
+            ]);
+        }
+        Icon::Drafts => {
+            line(&[
+                (-5.0, -7.0),
+                (2.0, -7.0),
+                (6.0, -3.0),
+                (6.0, 7.0),
+                (-5.0, 7.0),
+                (-5.0, -7.0),
+            ]);
+            line(&[(2.0, -7.0), (2.0, -3.0), (6.0, -3.0)]);
+            painter.line_segment([point(-2.5, 0.0), point(3.0, 0.0)], stroke);
+            painter.line_segment([point(-2.5, 3.0), point(2.0, 3.0)], stroke);
+        }
+        Icon::Sent => {
+            line(&[
+                (-7.0, -5.5),
+                (7.0, 0.0),
+                (-7.0, 5.5),
+                (-3.0, 0.0),
+                (-7.0, -5.5),
+            ]);
+            painter.line_segment([point(-3.0, 0.0), point(7.0, 0.0)], stroke);
+        }
+        Icon::Star => {
+            let mut points = Vec::with_capacity(11);
+            for index in 0..=10 {
+                let angle =
+                    -std::f32::consts::FRAC_PI_2 + index as f32 * std::f32::consts::PI / 5.0;
+                let radius = if index % 2 == 0 { 7.0 } else { 3.1 };
+                points.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
+            }
+            painter.add(egui::Shape::line(points, stroke));
+        }
+        Icon::Archive => {
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-5.5, -2.5), point(5.5, 6.0)),
+                CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-7.0, -6.0), point(7.0, -2.5)),
+                CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.line_segment([point(-2.0, 1.0), point(2.0, 1.0)], stroke);
+        }
+        Icon::Spam => {
+            painter.circle_stroke(center, 6.5, stroke);
+            painter.line_segment([point(0.0, -3.5), point(0.0, 1.5)], stroke);
+            painter.circle_filled(point(0.0, 4.0), 1.0, color);
+        }
+        Icon::Trash => {
+            line(&[(-5.0, -3.5), (-4.0, 6.5), (4.0, 6.5), (5.0, -3.5)]);
+            painter.line_segment([point(-6.5, -3.5), point(6.5, -3.5)], stroke);
+            line(&[(-2.5, -3.5), (-1.5, -6.0), (1.5, -6.0), (2.5, -3.5)]);
+            painter.line_segment([point(-1.5, -0.5), point(-1.0, 4.0)], stroke);
+            painter.line_segment([point(1.5, -0.5), point(1.0, 4.0)], stroke);
+        }
+        Icon::Folder => {
+            line(&[
+                (-7.0, -4.5),
+                (-1.5, -4.5),
+                (0.5, -2.5),
+                (7.0, -2.5),
+                (6.0, 5.5),
+                (-7.0, 5.5),
+                (-7.0, -4.5),
+            ]);
+        }
+        Icon::Label => {
+            painter.circle_filled(center, 4.0, color);
+        }
+        Icon::Mail => {
+            let rect = egui::Rect::from_min_max(point(-7.0, -5.0), point(7.0, 5.0));
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            line(&[(-6.5, -4.0), (0.0, 1.0), (6.5, -4.0)]);
+        }
+    }
+}
 
 /// A single-line field with enough vertical room for comfortable reading and clicking.
 pub fn text_field(text: &mut String) -> egui::TextEdit<'_> {
@@ -280,6 +490,29 @@ mod tests {
         egui::__run_test_ui(|ui| {
             let button = ui.add(compact_button("More options"));
             assert!(button.rect.height() >= COMPACT_BUTTON_HEIGHT);
+        });
+    }
+
+    #[test]
+    fn vector_icon_buttons_are_consistent_click_targets() {
+        egui::__run_test_ui(|ui| {
+            for icon in [
+                Icon::Compose,
+                Icon::Inbox,
+                Icon::Drafts,
+                Icon::Sent,
+                Icon::Star,
+                Icon::Archive,
+                Icon::Spam,
+                Icon::Trash,
+                Icon::Folder,
+                Icon::Label,
+                Icon::Mail,
+            ] {
+                let response = ui.add(IconButton::new(icon, "Action"));
+                assert!(response.rect.width() >= 32.0);
+                assert!(response.rect.height() >= 28.0);
+            }
         });
     }
 

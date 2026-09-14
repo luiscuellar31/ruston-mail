@@ -8,7 +8,7 @@ mod theme;
 
 use eframe::egui;
 
-use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect};
+use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect, UndoMove};
 use crate::mail::Folder;
 use crate::runtime::Runtime;
 use crate::settings::{ComposePlacement, Settings, Window};
@@ -23,6 +23,12 @@ pub(super) struct UiState {
     focus_search: bool,
     scroll_reader_top: bool,
     reveal_conversation: Option<String>,
+    undo_notice: Option<UndoNotice>,
+}
+
+struct UndoNotice {
+    offer: UndoMove,
+    expires_at: f64,
 }
 
 pub fn run(demo: bool) -> eframe::Result {

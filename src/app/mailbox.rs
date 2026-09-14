@@ -538,13 +538,6 @@ impl Mailbox {
         }
     }
 
-    /// Shows or hides the labels the open conversation does not carry.
-    pub fn toggle_labels(&mut self) {
-        if let ReaderState::Loaded(reader) = &mut self.reader {
-            reader.toggle_labels();
-        }
-    }
-
     pub fn toggle_quote(&mut self, message_id: &str, index: usize) {
         if let ReaderState::Loaded(reader) = &mut self.reader {
             reader.toggle_quote(message_id, index);
@@ -626,6 +619,13 @@ impl Mailbox {
     /// Claims the offer, so it is made only once.
     pub fn take_undo(&mut self) -> Option<UndoMove> {
         self.undo.take()
+    }
+
+    /// Dismisses only the offer whose timer expired.
+    pub fn dismiss_undo(&mut self, offer: &UndoMove) {
+        if self.undo.as_ref() == Some(offer) {
+            self.undo = None;
+        }
     }
 
     /// Starts an action on the selected row. Only one action runs at a time,
