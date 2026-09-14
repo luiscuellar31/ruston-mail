@@ -1,9 +1,4 @@
-//! Writing saved attachments to disk.
-//!
-//! Files land in the platform's downloads folder under the name the sender
-//! chose, with two rules: the name is stripped to a bare file name, so a
-//! sender cannot steer the write anywhere else, and an existing file is never
-//! overwritten.
+//! Saves attachments without accepting paths or overwriting existing files.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -17,9 +12,7 @@ pub enum SaveError {
     NoFolder,
     /// The folder exists but the file could not be written.
     Failed,
-    /// Nothing was written because nothing arrived. It belongs here so that
-    /// one answer covers the whole of saving a file, from asking Proton for
-    /// it to putting it on disk.
+    /// Nothing was written because no attachment arrived.
     NotFetched,
 }
 
@@ -62,9 +55,7 @@ fn safe_name(name: &str) -> String {
     }
 }
 
-/// Whether this is a name and nothing more. Stripping separators is not
-/// enough on its own: Windows reads `C:report.pdf` as a place on another
-/// drive, and joining it to the downloads folder does not bring it back.
+/// Whether this is a bare name, including on Windows drive-qualified paths.
 fn is_plain_file_name(name: &str) -> bool {
     let mut components = Path::new(name).components();
 
@@ -106,8 +97,7 @@ mod tests {
         // An ordinary name is left exactly as the sender wrote it.
         assert_eq!(safe_name("Q3 report.pdf"), "Q3 report.pdf");
 
-        // Whatever the sender sends, what comes back is a name and nothing
-        // more, so joining it to the downloads folder cannot leave it.
+        // The sanitized name cannot escape the downloads folder.
         for name in [
             "../../etc/passwd",
             "C:report.pdf",

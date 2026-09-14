@@ -157,10 +157,7 @@ fn heading(compose: &Compose) -> &'static str {
 }
 
 /// What is being answered.
-///
-/// It says which message, not who will receive the answer: Proton reads the
-/// recipients off the message itself, and only it knows whether that message
-/// asked for replies to go somewhere other than its sender.
+/// Proton determines reply recipients from the original message.
 fn answered(ui: &mut egui::Ui, answer: &Answering, addressed_here: bool) {
     detail(
         ui,

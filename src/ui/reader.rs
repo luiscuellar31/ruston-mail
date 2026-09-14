@@ -22,9 +22,7 @@ const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
 const MARKER_WIDTH: f32 = 12.0;
 const CODE_FILL: Color32 = Color32::from_rgb(18, 19, 24);
-/// `expand_bg` grows a code run's fill on every side, so it buys sideways
-/// breathing room at the cost of height. Small enough not to reach the line
-/// above or below.
+/// Code background padding, kept clear of adjacent lines.
 const CODE_PADDING: f32 = 2.5;
 
 #[allow(clippy::too_many_arguments)]
@@ -150,12 +148,7 @@ fn conversation(
     });
 }
 
-/// Where the reading column sits in `available` space: the gap before it, and
-/// its width.
-///
-/// Mail is read in a column of its own width. Once the panel outgrows that,
-/// the column is centred rather than left hugging the divider; once the panel
-/// is narrower, the column gives way rather than overflowing.
+/// Centers the bounded reading column, shrinking it when necessary.
 fn reading_column_place(available: f32) -> (f32, f32) {
     let width = available.min(READING_WIDTH);
     (((available - width) * 0.5).max(0.0), width)
@@ -321,9 +314,7 @@ fn message_card(
                     attachment_row(ui, &message.id, attachment, saving_attachment, messages);
                 }
                 ui.horizontal_wrapped(|ui| {
-                    // Proton works out who a reply reaches from the message
-                    // itself, so these say what is being answered, not who
-                    // will receive it.
+                    // Proton determines reply recipients from the message.
                     for (label, forward, everyone) in [
                         ("Reply", false, false),
                         ("Reply all", false, true),
@@ -590,9 +581,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
         } => {
             ui.horizontal_top(|ui| {
                 ui.add_space(18.0 * f32::from(depth.saturating_sub(1)));
-                // The marker gets a column of its own, so a wrapped item
-                // continues under its own text rather than under the marker.
-                // It stays a label so that it copies out with the item.
+                // A selectable marker column keeps wrapped text aligned.
                 ui.allocate_ui_with_layout(
                     egui::vec2(MARKER_WIDTH, 0.0),
                     Layout::right_to_left(Align::TOP),
@@ -672,11 +661,7 @@ fn rich_spans(
     }
 }
 
-/// One span's styling, as a laid-out text job.
-///
-/// Built as a `TextFormat` rather than a `RichText` for the sake of
-/// `expand_bg`, which is the only way to widen the fill behind a code run:
-/// `RichText` pins it at 1.0, which leaves the background hugging the glyphs.
+/// Builds span styling; `TextFormat` allows padded code backgrounds.
 fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>) -> LayoutJob {
     let size = heading.map(heading_size).unwrap_or(BODY_SIZE);
     // egui's bundled faces have no bold, so weight reads as a brighter ink.
@@ -687,9 +672,7 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>) -> LayoutJob
     };
     let mut format = egui::TextFormat {
         font_id: if span.code {
-            // Monospace runs wider and taller than the proportional face at
-            // the same point size, so it is set a little smaller to sit on
-            // the same line as the words around it.
+            // Slightly smaller monospace aligns with surrounding text.
             FontId::monospace(size - 1.5)
         } else {
             FontId::proportional(size)

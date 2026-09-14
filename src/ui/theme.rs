@@ -23,13 +23,8 @@ pub fn compact_button<'a>(atoms: impl egui::IntoAtoms<'a>) -> egui::Button<'a> {
         .min_size(egui::vec2(0.0, COMPACT_BUTTON_HEIGHT))
 }
 
-/// Marks the interface draws as text rather than painting.
-///
-/// egui's bundled fonts carry these. They do not carry a filled circle, a
-/// paperclip or a chevron: those come out as the replacement box, which is
-/// why the unread dot, the attachment mark and the disclosure arrow are drawn
-/// instead (see [`paint_clip`]). Anything added here has to survive
-/// `every_mark_the_interface_draws_has_a_glyph`.
+/// Text marks guaranteed by egui's bundled fonts.
+/// Missing marks such as the paperclip and chevron are painted instead.
 pub const STAR: &str = "★";
 /// Separates the facts at the end of a conversation row.
 pub const DOT: &str = "·";
@@ -52,13 +47,11 @@ pub fn install(context: &egui::Context) {
     style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    // Floating scrollbars cover the content at its trailing edge. A solid,
-    // narrow bar keeps that edge clear everywhere without per-panel padding.
+    // Solid scrollbars reserve space instead of covering content.
     style.spacing.scroll = egui::style::ScrollStyle::solid();
     style.scroll_animation =
         egui::style::ScrollAnimation::new(1_200.0, egui::Rangef::new(0.08, 0.24));
-    // Navigation remains clickable. Message bodies opt into selection in a
-    // local scope, where labels cannot steal clicks from row headers.
+    // Only message bodies opt into selectable labels.
     style.interaction.selectable_labels = false;
     context.set_style_of(egui::Theme::Dark, style);
 }
@@ -71,23 +64,8 @@ pub fn selectable_text<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)
     .inner
 }
 
-/// Puts a group of widgets in the middle of the space left in `ui`, on both
-/// axes, and answers with the group's response.
-///
-/// egui centres a single widget with `centered_and_justified`, but not a
-/// group: a top-down layout starts its cursor at the top of its rect whatever
-/// its `main_align`, so nesting a vertical layout inside a justified one only
-/// stretches the group and leaves it at the top. The height has to be known
-/// first, so the group is laid out once in an invisible sizing pass. That pass
-/// gets a child of its own, which — unlike `Ui::scope` — leaves the parent's
-/// cursor where it was, and an id of its own, so the two passes cannot clash.
-/// Being invisible it is also disabled, so a button in the group cannot report
-/// a click twice.
-///
-/// Both axes are placed from the measurement, not just the height. A layout
-/// centres the widgets it places itself, but it does not move a nested one:
-/// left to `vertical_centered`, a group built around a `ui.horizontal` row
-/// would stay against the left edge.
+/// Centers a widget group after measuring it in an inert sizing pass.
+/// A separate child and id avoid advancing the parent or duplicating input.
 pub fn centered_group(ui: &mut egui::Ui, mut content: impl FnMut(&mut egui::Ui)) -> egui::Response {
     let mut measure = ui.new_child(
         egui::UiBuilder::new()
@@ -144,13 +122,7 @@ pub fn paint_truncated_text_aligned(
     painter.galley(position, galley, color);
 }
 
-/// A small paperclip, drawn because egui's bundled fonts have no glyph for
-/// one: the emoji renders as the replacement box.
-///
-/// One stroke, following the wire: down the outer arm, around the bottom, up
-/// the far side, over the top and back down the short inner tongue. The
-/// corners are cut rather than square, which at this size reads as bent wire
-/// instead of a rectangle.
+/// Paints the paperclip missing from egui's bundled fonts.
 pub fn paint_clip(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
     const WIRE: [(f32, f32); 11] = [
         (2.0, -4.5),
@@ -227,10 +199,7 @@ mod tests {
 
     #[test]
     fn every_mark_the_interface_draws_has_a_glyph() {
-        // A character the fonts do not carry is not an error: it is laid out
-        // as the replacement box, which is how a paperclip and a filled
-        // circle once reached the interface looking like squares. Comparing
-        // against that box is the only way to notice.
+        // Missing glyphs have the replacement box's width.
         let context = egui::Context::default();
         install(&context);
         // Fonts are built on the first pass, not before it.
@@ -248,9 +217,7 @@ mod tests {
         };
         let missing = width("\u{fffd}");
 
-        // The last one is the bullet the parser marks a list item with. The
-        // reader draws it, so it needs a glyph like the marks the interface
-        // owns itself.
+        // The parser's list bullet must be available too.
         for mark in [STAR, DOT, "•"] {
             let drawn = width(mark);
             assert!(

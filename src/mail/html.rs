@@ -1,9 +1,5 @@
-//! Converts sanitized HTML message bodies into Ruston's rich body model.
-//!
-//! proton-core has already removed active content. This keeps only document
-//! structure (paragraphs, headings, lists, quotes, preformatted text, rules,
-//! image descriptions) and inline styles (bold, italic, code, strikethrough,
-//! links). Nothing here runs scripts, applies CSS, or loads remote content.
+//! Converts proton-core-sanitized HTML into Ruston's rich body model.
+//! Preserves readable structure and inline styles without CSS or remote content.
 
 use std::cell::RefCell;
 
@@ -234,12 +230,7 @@ impl Builder {
         }
     }
 
-    /// Writes the space between two words where it was read, so it takes the
-    /// styling of the run that contains it. Deferring it to the next visible
-    /// character would style it by whatever tag had opened in between, which
-    /// is how a code background or a strikethrough came to reach past its
-    /// word into the gap before the next one. `flush` drops it if the block
-    /// ends first.
+    /// Writes pending space with the preceding run's style; `flush` drops it.
     fn separate(&mut self) {
         if !self.space && self.wants_space() {
             self.push_char(' ');

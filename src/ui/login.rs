@@ -20,11 +20,7 @@ pub(super) fn show(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) 
 }
 
 /// Puts the card in the middle of the window, as tall as what it holds.
-///
-/// Not `centered_and_justified`: that justifies along the main axis too, and
-/// a top-down layout hands its whole height to the first widget it places.
-/// The brand mark took the window, and the heading, the fields and the button
-/// under it started below the bottom edge.
+/// `centered_and_justified` would stretch the first top-down widget.
 fn card(ui: &mut egui::Ui, mut content: impl FnMut(&mut egui::Ui)) -> egui::Response {
     let frame = theme::card();
     let inside = CARD_WIDTH - frame.inner_margin.sum().x;
@@ -238,9 +234,7 @@ mod tests {
 
     #[test]
     fn the_sign_in_card_is_centred_and_only_as_tall_as_it_holds() {
-        // A card stretched to the window is a card whose contents start in
-        // the middle of it: the brand mark ended up alone on screen, with the
-        // fields and the button below the bottom edge.
+        // The card must fit its contents rather than stretch to the window.
         let (card, window) = laid_out(egui::vec2(1200.0, 800.0));
         let (taller, _) = laid_out(egui::vec2(1200.0, 1400.0));
 

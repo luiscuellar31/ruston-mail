@@ -1,8 +1,4 @@
-//! What Ruston Mail remembers between runs.
-//!
-//! Settings are a convenience, never a requirement: a missing, unreadable or
-//! damaged file falls back to the defaults, and a failed write is ignored.
-//! Losing a window size must never stop someone from reading their mail.
+//! Persistent preferences with safe defaults and best-effort writes.
 
 use std::path::PathBuf;
 
@@ -47,9 +43,7 @@ pub struct Settings {
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
-    /// Whether these settings came from the settings file, and so belong back
-    /// in it. Only `load` sets it, which keeps tests and any other in-memory
-    /// settings from writing over what someone has on disk.
+    /// Whether `load` read these settings, allowing them to be written back.
     #[serde(skip)]
     stored: bool,
 }
@@ -109,11 +103,7 @@ impl Default for Panels {
     }
 }
 
-/// Which folder a run opens in.
-///
-/// Only Proton's own folders can be pinned. One the account made can be
-/// renamed or removed between runs, which would leave the setting pointing at
-/// a place that is not there any more; a system folder always is.
+/// Which folder opens. Only stable system folders can be pinned.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StartFolder {
     /// Wherever the mailbox was left.
@@ -133,12 +123,7 @@ pub enum ComposePlacement {
     Window,
 }
 
-/// How the reader opens a conversation, from the settings.
-///
-/// A small copy of the two choices the reader needs keeps it from depending on
-/// the whole of [`Settings`], and keeps the answer to "is this open?" a
-/// question about the settings and the reader together rather than a copy that
-/// can go stale.
+/// The subset of settings that controls initial reader expansion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Reading {
     pub expand_all_messages: bool,
@@ -194,9 +179,7 @@ impl Settings {
         let _ = std::fs::write(path, text);
     }
 
-    /// Settings for one run that open a given folder. Tests build them this
-    /// way because `stored` stays private: nothing outside `load` may mark
-    /// settings as belonging in someone's file.
+    /// In-memory settings that open a given folder without becoming writable.
     #[cfg(test)]
     pub fn opening(folder: Folder) -> Self {
         Self {
@@ -205,9 +188,7 @@ impl Settings {
         }
     }
 
-    /// The same settings with a folder pinned to open in. Chainable so tests
-    /// outside this module can set it without reaching for `stored`, which
-    /// stays private.
+    /// Pins a system folder while keeping `stored` private.
     #[cfg(test)]
     pub fn with_start(mut self, start: StartFolder) -> Self {
         self.start = start;

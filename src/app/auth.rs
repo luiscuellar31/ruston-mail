@@ -1,8 +1,4 @@
-//! Signing in, and everything that follows from being signed in or out.
-//!
-//! The state a sign-in moves through, the form it is driven from, and the
-//! steps between a saved session and an open mailbox. `ui::login` draws what
-//! this decides.
+//! Authentication state and session lifecycle. `ui::login` renders it.
 
 use std::sync::Arc;
 
@@ -229,10 +225,7 @@ impl App {
 
         let page_request = self.next_request();
         let counts_request = self.next_request();
-        // Someone comes back to the folder they pinned, or the one they were
-        // last reading. The demo account made no folders of its own, so a
-        // remembered one would open a place with none of its fictional mail
-        // in it.
+        // Demo mail has no account folders, so always start it in Inbox.
         let remembered = self.settings.start_folder();
         let folder = if self.is_demo() && remembered.system().is_none() {
             Folder::INBOX
@@ -293,18 +286,13 @@ impl App {
         }
     }
 
-    /// Drops the backend and all mailbox data and returns to the login screen.
-    /// Everything the last session put on screen goes with it: what comes
-    /// back is a sign-in, and after it a mailbox, not whatever was open when
-    /// the session ended.
+    /// Drops all session state and returns to the login screen.
     pub(super) fn close_mailbox(&mut self, error: Option<AuthError>) {
         self.backend = None;
         self.mailbox = None;
         self.pending_link = None;
         self.showing_settings = false;
-        // These are one account's own names. The next sign-in may be someone
-        // else, and until their folders arrive the sidebar would be showing
-        // the previous account's.
+        // Never show one account's folders in the next session.
         self.folders.clear();
         // A file one session saved is not news for the next one.
         self.saved_attachment = None;

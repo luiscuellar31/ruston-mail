@@ -79,9 +79,7 @@ struct SearchState {
 }
 
 /// The loaded part of one folder while another folder is open.
-///
-/// This is deliberately memory-only: summaries include correspondents and
-/// previews, so keeping them across runs would create a second mail store.
+/// Memory-only, so Ruston never creates a second persistent mail store.
 struct CachedListing {
     conversations: Vec<ConversationSummary>,
     next_page: u32,
@@ -216,9 +214,7 @@ impl Mailbox {
         !self.search_query.trim().is_empty()
     }
 
-    /// Sends the typed query to the backend, which looks past the loaded rows
-    /// and past the open folder. Returns `None` for an empty query, which
-    /// simply leaves the results behind.
+    /// Starts a global backend search, or clears empty input.
     pub fn start_search(&mut self, request: RequestId) -> Option<SearchRequest> {
         let query = self.search_query.trim().to_owned();
         if query.is_empty() {
@@ -303,9 +299,7 @@ impl Mailbox {
         self.counts.as_ref()
     }
 
-    /// Whether the list can be extended. A search answers in one batch, so
-    /// while its results are what is on screen there is no next page to ask
-    /// for, however many the open folder still has waiting.
+    /// Whether the visible folder listing has another page.
     pub fn has_more(&self) -> bool {
         self.search.is_none() && self.has_more
     }
@@ -370,9 +364,7 @@ impl Mailbox {
         self.row(selected)
     }
 
-    /// Every row the user can act on. Search results are rows too: they are
-    /// what is on screen while a search is showing, and a conversation found
-    /// that way is usually nowhere in the folder listing.
+    /// Every actionable row, including server search results.
     fn rows(&self) -> impl Iterator<Item = &ConversationSummary> {
         self.conversations
             .iter()
@@ -441,9 +433,7 @@ impl Mailbox {
         self.active_dirty && !self.is_busy()
     }
 
-    /// Starts loading a visible conversation. Reselecting the current
-    /// conversation keeps its loaded or in-flight state, except after a
-    /// failure: clicking the row again is a retry.
+    /// Loads a visible conversation; reselecting a failed one retries it.
     pub fn start_conversation_load(
         &mut self,
         conversation_id: String,
@@ -477,9 +467,7 @@ impl Mailbox {
         Some(self.open_conversation(conversation_id, kind, request))
     }
 
-    /// Puts the reader on a conversation and names the request that will fill
-    /// it. Both opening and retrying land here, so the loading state is set in
-    /// one place.
+    /// Sets the reader's conversation and active request.
     fn open_conversation(
         &mut self,
         conversation_id: String,
@@ -619,13 +607,8 @@ impl Mailbox {
         self.undo.as_ref()
     }
 
-    /// Remembers a move so it can be taken back, replacing any earlier offer.
-    /// Only moves out of a real folder qualify: Starred is a label, and Sent
-    /// and Drafts describe where mail came from, so there is nowhere to put it
-    /// back. Nor does a row only a search found: it was listed from every
-    /// folder at once, so the open one is not where it came from and putting
-    /// it there would be a move of its own. Both backends record the offer
-    /// here, since demo actions never reach `finish_action`.
+    /// Replaces the undo offer for moves out of a known physical folder.
+    /// Label, origin and global-search views cannot identify that folder.
     pub fn offer_undo(&mut self, row_id: &str, kind: SummaryKind, action: MailAction) {
         let from_here = self.folder.is_location() && self.listed_in_folder(row_id);
 
@@ -691,9 +674,7 @@ impl Mailbox {
         Some(request)
     }
 
-    /// Applies an action once the backend confirmed it. Returns the row to
-    /// open next when the selected one left the folder, or the error of an
-    /// accepted failed response. Stale responses change nothing.
+    /// Applies a current action response and returns the next row or error.
     pub fn finish_action(
         &mut self,
         request: &ActionRequest,
@@ -731,10 +712,7 @@ impl Mailbox {
         Ok(None)
     }
 
-    /// Whether an action started in `folder` takes the row out of what the
-    /// view lists, rather than only changing how the row reads. Unstarring
-    /// inside Starred and taking a label away inside that label's own view
-    /// are the two ways something other than a move empties a row out.
+    /// Whether this action removes the row from the current view.
     fn leaves_view(&self, folder: &Folder, action: &MailAction) -> bool {
         match action {
             MailAction::SetStarred(starred) => {
@@ -746,11 +724,7 @@ impl Mailbox {
         }
     }
 
-    /// Writes a confirmed change into every listing that holds the row: the
-    /// fields it changes, and the row itself where the change takes it out of
-    /// the view. Proton's path removes such a row before reaching here; the
-    /// demo has no server to re-read and reloads only the open folder, so the
-    /// search results, which span every folder, are left to this.
+    /// Applies a confirmed change to every loaded copy of the row.
     pub fn record_action(&mut self, row_id: &str, action: &MailAction) {
         for row in self.row_copies(row_id) {
             match action {
@@ -795,9 +769,7 @@ impl Mailbox {
             .map(|row| row.id.clone())
     }
 
-    /// Takes up the account's current name for the open place. Proton knows
-    /// it by its id, so the listing is the same one either way: nothing is
-    /// reloaded, and what is open stays open.
+    /// Updates an account folder's name without reloading its stable id.
     pub fn rename_folder(&mut self, folder: Folder) {
         let same = matches!(
             (self.folder.custom_id(), folder.custom_id()),
@@ -866,9 +838,7 @@ impl Mailbox {
         );
     }
 
-    /// A confirmed server mutation may affect membership or summary state in
-    /// more than the folder it was started from. Keep cached rows available
-    /// for an instant return, but revalidate them before treating them as fresh.
+    /// Marks cached folders stale after a confirmed server mutation.
     pub(super) fn invalidate_listings(&mut self) {
         self.active_dirty = true;
         self.invalidate_cached_listings();
@@ -909,9 +879,7 @@ impl Mailbox {
         Some(self.page_request(request, self.next_page))
     }
 
-    /// Starts a counts refresh. A newer request supersedes one still in
-    /// flight, so a slow or lost response can never block later refreshes;
-    /// `finish_counts` then ignores everything but the newest.
+    /// Starts a counts refresh, superseding any older request.
     pub fn refresh_counts(&mut self, request: RequestId) -> Option<RequestId> {
         self.counts_request = Some(request);
         Some(request)
@@ -1012,9 +980,7 @@ impl Mailbox {
         }
     }
 
-    /// Takes the loaded rows that sit below `fresh`, that is, older than
-    /// everything it contains. Rows the fresh page covers are dropped, since
-    /// it is the newer word on them.
+    /// Returns loaded rows older than the refreshed first page.
     fn rows_below(&mut self, fresh: &[ConversationSummary]) -> Vec<ConversationSummary> {
         let Some(oldest) = fresh.iter().filter_map(|row| row.time).min() else {
             return Vec::new();
@@ -1051,10 +1017,7 @@ impl Mailbox {
             self.conversations.extend(new);
             self.next_page += 1;
         } else {
-            // A reload speaks only for the first page, so deeper pages the
-            // user already loaded are kept and refreshing never shortens the
-            // list. A short page is the exception: then the folder itself has
-            // no more rows, and everything below it is gone.
+            // Preserve deeper pages unless a short first page proves they are gone.
             let deeper = if received >= self.page_size as usize {
                 self.rows_below(&page.conversations)
             } else {
@@ -1076,14 +1039,9 @@ impl Mailbox {
     }
 }
 
-/// Newest first, stable, so rows already in order never move. A row without
-/// a time stays right after the row that preceded it, since only the server
-/// knows where it belongs.
+/// Sorts newest first while preserving undated rows' relative positions.
 fn sort_newest_first(rows: &mut Vec<ConversationSummary>) {
-    // A row with no time of its own takes the time of the last dated row
-    // above it, or of the first dated row when it leads the list. Sorting is
-    // stable, so it keeps its place beside the row it borrowed from instead
-    // of floating to the top of the mailbox.
+    // Borrow a neighboring time so stable sorting does not move undated rows.
     let mut previous = rows.iter().find_map(|row| row.time).unwrap_or(i64::MAX);
     let mut keyed: Vec<_> = rows
         .drain(..)
@@ -1115,11 +1073,7 @@ fn matches_search(conversation: &ConversationSummary, query: &str) -> bool {
 }
 
 /// Whether `haystack` holds `needle`, which is already lowercased.
-///
-/// Every visible row is asked this on every redraw, so the ASCII that most
-/// mail is written in answers without building a lowercased copy of each
-/// field. Anything else falls back to real lowercasing, which is the only
-/// way to match text where case is not a matter of one byte.
+/// ASCII avoids allocation on redraw; other text uses Unicode lowercasing.
 fn contains_ignoring_case(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;

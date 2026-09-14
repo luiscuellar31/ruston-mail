@@ -6,9 +6,7 @@ use crate::mail::LoginRequest;
 use super::Message;
 
 /// Work requested by the state machine and performed by the desktop shell.
-///
-/// Keeping this boundary free of GUI types lets the mailbox logic stay the
-/// same if its renderer or executor changes again.
+/// This boundary deliberately contains no GUI types.
 pub enum Effect {
     Future(Pin<Box<dyn Future<Output = Message> + Send>>),
     Background(Pin<Box<dyn Future<Output = ()> + Send>>),

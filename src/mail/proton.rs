@@ -35,9 +35,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// message. It is given longer than a request that only reads.
 const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Time shared by all metadata inspections of one page. Conversations still
-/// pending when it runs out keep Proton's grouping, so a slow or stuck
-/// request cannot hold the page back.
+/// Shared deadline for page metadata inspection; timeouts keep Proton grouping.
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
 const PROFILE: &str = "ruston";
@@ -48,10 +46,7 @@ const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox pa
 const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
 const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
 const MAX_LISTED_CORRESPONDENTS: usize = 3;
-/// Messages relabelled per request. Proton publishes no limit for its bulk
-/// endpoints and proton-core sends whatever it is handed, so a long thread
-/// goes up in batches small enough that no plausible limit turns them away.
-/// This is a margin, not a documented number.
+/// Conservative relabel batch size; Proton publishes no endpoint limit.
 const LABEL_BATCH: usize = 50;
 
 #[derive(Clone)]
@@ -139,9 +134,7 @@ impl ProtonMailService {
         }
     }
 
-    /// Signs in with a single login attempt. When Proton asks for a TOTP code
-    /// or human verification, a prompt goes out through `events` and the login
-    /// waits for its answer. Always ends by sending `SignInEvent::Finished`.
+    /// Signs in, forwarding interactive prompts and always emitting `Finished`.
     pub async fn sign_in(request: LoginRequest, mut events: mpsc::Sender<SignInEvent>) {
         let has_totp = request.totp.is_some();
         let has_mailbox_password = request.mailbox_password.is_some();
@@ -172,9 +165,7 @@ impl ProtonMailService {
         events.close_channel();
     }
 
-    /// Revokes the session with Proton. A signing-out view has no way back,
-    /// so this is bound like every other call: a stuck request reports a
-    /// connection failure and leaves the mailbox open rather than hanging.
+    /// Revokes the session within the standard request timeout.
     pub async fn logout(&self) -> Result<(), AuthError> {
         timed_with(
             self.client.logout(),
@@ -189,9 +180,7 @@ impl ProtonMailService {
         self.email.as_deref()
     }
 
-    /// Lists one zero-based page of a folder's conversations. Conversations
-    /// whose list metadata leaves the grouping in doubt have their message
-    /// metadata inspected, a few at a time and within `INSPECTION_BUDGET`.
+    /// Lists a zero-based page and inspects ambiguous conversation grouping.
     pub async fn list_conversations(
         &self,
         folder: &Folder,
@@ -244,9 +233,7 @@ impl ProtonMailService {
         inspected_rows(conversation, inspection, folder, &self.own_addresses)
     }
 
-    /// The folders and labels the account made, so the sidebar can show more
-    /// than Proton's seven. Both are places to list mail from; only a folder
-    /// is somewhere mail lives.
+    /// Lists account-owned folders and labels for the sidebar.
     pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
         let folders = timed(self.client.list_folders()).await?;
         let labels = timed(self.client.list_labels()).await?;
@@ -272,9 +259,7 @@ impl ProtonMailService {
             ..SendOptions::default()
         };
 
-        // Proton is told what kind of message this is, so a reply threads and
-        // a forward carries the files over. Which recipients an answer goes
-        // to is Proton's to decide, not something to work out twice.
+        // Proton owns reply recipients, threading and forwarded attachments.
         let call = async {
             match &outgoing.kind {
                 Kind::New => self.client.send(&options).await,
@@ -305,9 +290,7 @@ impl ProtonMailService {
         Ok(map_counts(&counts, folders))
     }
 
-    /// Fetches and decrypts a conversation for the reader, oldest message
-    /// first. proton-core sanitizes HTML bodies before Ruston Mail parses
-    /// them; nothing here runs scripts or loads remote content.
+    /// Decrypts a conversation oldest-first; proton-core sanitizes its HTML.
     pub async fn conversation_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
         let (conversation, messages) = timed(self.client.read_conversation(id)).await?;
         let subject = conversation.subject.trim();
@@ -354,10 +337,7 @@ impl ProtonMailService {
         })
     }
 
-    /// Asks Proton for conversations matching `query`, across every folder.
-    ///
-    /// The server answers with one batch and no total, so the result is a
-    /// complete page: there is nothing more to load after it.
+    /// Searches all folders. Proton returns one complete, unpaginated batch.
     pub async fn search(&self, query: &str, limit: u32) -> Result<ConversationPage, MailboxError> {
         let options = SearchOpts {
             keyword: Some(query.to_owned()),
@@ -423,9 +403,7 @@ impl ProtonMailService {
                     client.star_messages(&ids, starred).await
                 }
                 (SummaryKind::Conversation, ActionCall::Label(label, on)) => {
-                    // Proton labels messages, not conversations, so a thread
-                    // is relabelled one message at a time. Asking for the
-                    // thread's messages costs one listing and no decryption.
+                    // Proton relabels messages, so first list the thread's ids.
                     let thread: Vec<String> = client
                         .conversation_messages(id)
                         .await?
@@ -472,9 +450,7 @@ async fn timed<T>(call: impl Future<Output = proton_core::Result<T>>) -> Result<
     .await
 }
 
-/// The bound itself, for calls that report something other than a mailbox
-/// error. Every call a view waits on goes through here: without it a stuck
-/// request leaves that view waiting with no way back.
+/// Applies the timeout to calls with non-mailbox error types.
 async fn timed_with<T, E>(
     call: impl Future<Output = proton_core::Result<T>>,
     within: Duration,
@@ -589,10 +565,7 @@ enum ActionCall<'a> {
     Label(&'a str, bool),
 }
 
-/// Adds or removes one label across the messages given, a batch at a time. A
-/// thread with nothing in it asks Proton for nothing, since an empty slice
-/// has no batches. A batch that fails leaves the ones before it applied:
-/// pressing the label again finishes the rest, and taking it away undoes them.
+/// Adds or removes a label in batches. Earlier successful batches stay applied.
 async fn set_label(
     client: &Client,
     ids: &[String],
@@ -619,16 +592,12 @@ fn action_call(action: &MailAction) -> ActionCall<'_> {
     }
 }
 
-/// Where Proton should read a row from. Marking a conversation unread is the
-/// one action that needs it, and a row a search found can be in any folder,
-/// so All Mail stands in for it: every conversation is in All Mail.
+/// Folder context for row actions; global search rows use All Mail.
 fn context_label(context: Option<&Folder>) -> &str {
     context.map_or(label_ids::ALL_MAIL, label_id)
 }
 
-/// What Proton calls this folder on the wire. System folders are numbered
-/// constants; a folder the account made is already an id of its own, and
-/// proton-core passes anything it does not recognise through unchanged.
+/// Maps folders to Proton wire identifiers.
 fn label_id(folder: &Folder) -> &str {
     match folder {
         Folder::Custom { id, .. } => id,
@@ -709,9 +678,7 @@ fn inspected_rows(
     }
 }
 
-/// Applies the threading policy to a conversation's message metadata: rows
-/// for its messages in `folder` when it is only repeated inbound mail,
-/// otherwise the conversation itself.
+/// Splits proven independent inbound messages; otherwise keeps the conversation.
 fn split_rows(
     conversation: Conversation,
     messages: Vec<MessageMetadata>,
@@ -841,9 +808,7 @@ fn display_names(people: &[Recipient]) -> Option<String> {
     Some(display)
 }
 
-/// Counts for every folder the sidebar can show: Proton's own, and the ones
-/// the account made. The server reports every label, so `folders` decides
-/// which of them are worth keeping.
+/// Builds sidebar counts for system and known account folders.
 fn map_counts(counts: &[LabelCount], folders: &[Folder]) -> MailboxCounts {
     MailFolder::ALL
         .into_iter()
@@ -858,9 +823,7 @@ fn map_counts(counts: &[LabelCount], folders: &[Folder]) -> MailboxCounts {
         .collect()
 }
 
-/// The places the account made, as the sidebar shows them. Proton returns
-/// folders and labels from separate endpoints, and `make` says which of the
-/// two this batch is.
+/// Maps one Proton folder/label batch into sidebar entries.
 fn custom_places(labels: Vec<Label>, make: fn(String, String) -> Folder) -> Vec<Folder> {
     labels
         .into_iter()

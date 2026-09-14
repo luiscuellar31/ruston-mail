@@ -1,7 +1,4 @@
-//! What a key press means, and what the mailbox does about it.
-//!
-//! The keys themselves are read by `ui`, which says only which key was
-//! pressed; deciding what it means belongs here, where the mailbox is.
+//! Mailbox keyboard shortcuts. The UI only reports raw key presses.
 
 use super::{App, Effects, Step, UiEffect};
 
@@ -62,8 +59,7 @@ impl App {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
         };
-        // The settings window and link prompt take priority over mailbox
-        // shortcuts. While either is open, only Escape backs out of it.
+        // Modal UI blocks mailbox shortcuts except Escape.
         let shortcut_blocked = self.showing_settings || self.pending_link.is_some();
         if shortcut_blocked && shortcut != Shortcut::Dismiss {
             return Effects::none();
@@ -100,8 +96,7 @@ impl App {
                     self.showing_settings = false;
                     return Effects::none();
                 }
-                // A message on its way is not dismissible; the rest steps
-                // back one layer at a time.
+                // In-flight messages cannot be dismissed.
                 if self.compose().is_some_and(|writing| !writing.in_flight()) {
                     self.close_compose();
                     return Effects::none();

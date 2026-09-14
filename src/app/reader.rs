@@ -36,31 +36,17 @@ impl ReaderState {
     }
 }
 
-/// Reader state for the selected conversation. Which messages and quoted
-/// passages are expanded is view state, so it lives here rather than in the
-/// mail models.
+/// View state for the selected conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationReader {
     detail: ConversationDetail,
-    /// Messages folded the other way from what the settings ask for. Holding
-    /// the difference rather than the state means changing the setting shows
-    /// at once on the open conversation, without discarding what was folded
-    /// by hand.
+    /// Messages manually toggled away from the configured default.
     toggled: HashSet<String>,
     /// Quoted passages folded the other way, as (message id, position).
     toggled_quotes: HashSet<(String, usize)>,
-    /// Whether the labels the conversation does not carry are on show. It
-    /// belongs to the open conversation, so moving on puts the row back the
-    /// way it usually reads.
+    /// Whether available labels are shown for this conversation.
     showing_labels: bool,
-    /// The line each collapsed message shows, in the order `detail.messages`
-    /// are in.
-    ///
-    /// Each is derived from a body that cannot change while the conversation
-    /// is open, so they are settled here rather than in the drawing:
-    /// flattening a message every frame cost more the longer the message was,
-    /// which is backwards for something only shown when the message is folded
-    /// away.
+    /// Cached collapsed previews in `detail.messages` order.
     previews: Vec<String>,
 }
 
@@ -120,9 +106,7 @@ impl ConversationReader {
         self.opens_on_its_own(message_id, reading) != self.toggled.contains(message_id)
     }
 
-    /// Whether the settings alone would have this message open. Only the
-    /// newest is worth reading straight away in a thread; the rest are the
-    /// history behind it, unless every message was asked for.
+    /// Whether settings open this message before manual overrides.
     fn opens_on_its_own(&self, message_id: &str, reading: Reading) -> bool {
         reading.expand_all_messages
             || self
@@ -138,9 +122,7 @@ impl ConversationReader {
         }
     }
 
-    /// Whether the quoted passage at `index` of `message_id` is unfolded.
-    /// Quotes start folded unless asked for: a reply usually repeats the whole
-    /// thread below it.
+    /// Whether this quoted passage differs from its configured default.
     pub fn is_quote_expanded(&self, message_id: &str, index: usize, reading: Reading) -> bool {
         let toggled = self
             .toggled_quotes
@@ -167,11 +149,7 @@ impl ConversationReader {
     }
 }
 
-/// The opening words of a message, on one line.
-///
-/// A rich body is flattened before it is split into words, not after:
-/// splitting each span on its own strands the punctuation that follows a
-/// styled run, which read as "confirmed . The" in the collapsed header.
+/// One-line opening words, flattened before splitting to preserve punctuation.
 fn preview(body: &MessageBody) -> String {
     let text = match body {
         MessageBody::PlainText(content) => content.clone(),

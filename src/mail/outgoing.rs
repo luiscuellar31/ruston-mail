@@ -1,9 +1,4 @@
-//! A message on its way out, and the decisions taken before it leaves.
-//!
-//! Everything here is a pure function of what was typed. Sending is the one
-//! thing Ruston Mail does that reaches other people and cannot be taken back,
-//! so the judgements — who it goes to, what the body becomes — are made where
-//! they can be tested, and the backend is left with nothing to decide.
+//! Pure validation and conversion of typed mail into outgoing messages.
 
 use super::MailboxError;
 
@@ -18,12 +13,8 @@ pub enum BodyFormat {
     Html,
 }
 
-/// Whether a message stands on its own or answers one already there.
-///
-/// Proton decides some of an answer itself, from the message being answered,
-/// and what it decides is not ours to override: a reply's recipients and its
-/// subject, a forward's subject, and the attachments a forward carries. Only
-/// the new text is given here.
+/// Whether mail is new or answers an existing message.
+/// Proton supplies reply recipients, subjects and forwarded attachments.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Kind {
     #[default]
@@ -78,11 +69,7 @@ pub struct Recipients {
     pub rejected: Vec<String>,
 }
 
-/// Reads a typed recipient field.
-///
-/// Commas and semicolons both separate, because both are typed and pasted.
-/// An address that turns up twice is kept once: sending someone the same mail
-/// twice is never what was meant.
+/// Reads comma- or semicolon-separated recipients and removes duplicates.
 pub fn recipients(field: &str) -> Recipients {
     let mut result = Recipients::default();
     for piece in field
@@ -108,11 +95,7 @@ pub fn recipients(field: &str) -> Recipients {
     result
 }
 
-/// Whether a piece looks like an address worth handing to Proton.
-///
-/// Deliberately short of the full grammar for an address: the aim is to catch
-/// what someone plainly mistyped, not to turn away an address a mail server
-/// would have accepted.
+/// Rejects obvious mistakes without reimplementing the full address grammar.
 fn is_address(piece: &str) -> bool {
     if piece.chars().any(char::is_whitespace) {
         return false;
@@ -129,11 +112,7 @@ fn is_address(piece: &str) -> bool {
         && !domain.contains("..")
 }
 
-/// Turns typed text into HTML that says the same thing.
-///
-/// The text is escaped first, so a tag someone types arrives as the characters
-/// they typed. A blank line starts a paragraph and a single newline is a
-/// break, which is how the text already reads.
+/// Escapes typed text, then preserves paragraphs and line breaks as HTML.
 fn as_html(body: &str) -> String {
     let paragraphs: Vec<String> = body
         .replace("\r\n", "\n")

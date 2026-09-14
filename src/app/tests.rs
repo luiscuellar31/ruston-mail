@@ -1,8 +1,4 @@
-//! What the app does, exercised through `App::update`.
-//!
-//! These reach across the whole state machine rather than one part of
-//! it, which is why they sit beside the module instead of inside one of
-//! its files.
+//! End-to-end state-machine tests through `App::update`.
 
 use super::*;
 use crate::mail::SendError;
@@ -80,9 +76,7 @@ fn deliver_demo_search(app: &mut App, query: &str) {
 
 #[test]
 fn only_a_real_change_counts_as_one() {
-    // A drag reports the same value over and over. The revision is what
-    // the shell watches to know a value has stopped moving, so repeating
-    // a value must not keep resetting that.
+    // Repeated drag values must not advance the revision.
     let mut app = loaded_demo_app();
     assert_eq!(app.settings_revision(), 0);
     assert!(!app.settings_unsaved());
@@ -243,9 +237,7 @@ fn a_save_in_flight_does_not_outlive_the_session() {
     assert_eq!(app.saving_attachment(), None);
     assert!(app.saved_attachment().is_none());
 
-    // The fetch was already running and still answers. There is no
-    // mailbox left to show it in, and the next one must not open with a
-    // banner about a file from the last session.
+    // Ignore an attachment response from the previous session.
     let _ = app.update(Message::AttachmentSaved(Ok(PathBuf::from("/tmp/x.pdf"))));
     assert!(app.saved_attachment().is_none());
 }
@@ -397,9 +389,7 @@ fn the_demo_opens_its_own_mailbox_and_leaves_the_setting_alone() {
     let invoices = Folder::custom("kZ9", "Invoices");
     let (mut app, _) = App::boot(true, Settings::opening(invoices.clone()));
 
-    // None of the demo's fictional mail is in a folder the real account
-    // made, so opening one would show an empty list under a name the
-    // demo sidebar does not even carry.
+    // Demo mode cannot open a real account folder.
     assert_eq!(app.mailbox().unwrap().folder(), &Folder::INBOX);
 
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
@@ -920,9 +910,7 @@ fn starred_search_reflects_unstar_immediately() {
 fn one_attachment_is_saved_at_a_time() {
     let mut app = loaded_demo_app();
 
-    // The demo carries no files, so the fetch itself fails; what matters
-    // is that the second press never starts a fetch of its own, which is
-    // how the same file ended up written twice under two names.
+    // A second press must not start a duplicate fetch.
     let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
     assert_eq!(app.saving_attachment(), Some("file"));
 

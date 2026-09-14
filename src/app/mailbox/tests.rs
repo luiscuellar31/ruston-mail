@@ -1,5 +1,4 @@
-//! What an open mailbox does as pages, searches, actions and the reader
-//! move through it.
+//! Mailbox pagination, search, action and reader tests.
 
 use super::*;
 use crate::mail::{MailAddress, MailMessage, MessageBody};
@@ -562,9 +561,7 @@ fn flags_and_labels_offer_nothing_to_undo() {
 
     assert!(mailbox.undo().is_none());
 
-    // A label the account made behaves the same: the row keeps the label
-    // and moves out of whatever folder it was really in, which this view
-    // never knew.
+    // A label view cannot identify the row's original folder for undo.
     let page_request = mailbox
         .select_folder(Folder::label("wN2", "Receipts"), 7)
         .unwrap();

@@ -141,12 +141,8 @@ pub struct App {
     folders: Vec<Folder>,
     /// What the app remembers between runs.
     settings: Settings,
-    /// Counts changes to the settings, and how many of them have reached the
-    /// file. Dragging a divider or a window edge changes them many times a
-    /// second, and each write is a serialize and a synchronous file write on
-    /// the thread that is drawing, so the writing is left to whoever owns the
-    /// clock: it asks through [`Self::settings_revision`] and calls
-    /// [`Self::save_settings`] once the dragging has stopped.
+    /// Settings changes and the last revision written to disk.
+    /// The UI waits for resizing to settle before calling [`Self::save_settings`].
     settings_revision: u64,
     settings_written: u64,
     /// Whether the settings window is open.
@@ -155,9 +151,7 @@ pub struct App {
     compose: Option<Compose>,
     /// What became of the last attachment someone asked to save.
     saved_attachment: Option<Result<PathBuf, SaveError>>,
-    /// The attachment being fetched, if any. Saving one is a deliberate act
-    /// and a slow one, so a second press must not fetch and write the same
-    /// file a second time under a name of its own.
+    /// The attachment in flight, preventing duplicate downloads.
     saving_attachment: Option<String>,
 }
 
@@ -217,9 +211,7 @@ impl App {
             .map(|outcome| outcome.as_deref().map_err(|error| *error))
     }
 
-    /// Fetches one attachment and writes it to the downloads folder. The
-    /// download is the slow half, so the reader says what happened afterwards
-    /// rather than blocking on it.
+    /// Fetches an attachment and writes it off the UI thread.
     fn save_attachment(&mut self, message_id: String, attachment_id: String) -> Effects {
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
@@ -280,9 +272,7 @@ impl App {
         self.settings_written != self.settings_revision
     }
 
-    /// Writes the settings if they have changed since the last write. Saving
-    /// is best effort, so a setting that cannot be stored still applies for
-    /// this run.
+    /// Writes changed settings best-effort; in-memory changes always remain.
     pub fn save_settings(&mut self) {
         if !self.settings_unsaved() {
             return;
@@ -674,9 +664,7 @@ impl App {
             }
         };
 
-        // A row put back into the folder on screen is not in the loaded list,
-        // and only a reload brings it into view. A row that is already listed
-        // never left, so acting on it changes nothing to reload.
+        // Reload only when undo returns a missing row to the visible folder.
         let arrived = self.mailbox.as_ref().is_some_and(|mailbox| {
             request.action.destination() == Some(mailbox.folder())
                 && !mailbox.has_row(&request.row_id)
@@ -791,10 +779,7 @@ impl App {
         self.active_mailbox()?.apply_action_snapshot(page, counts)
     }
 
-    /// Brings the open folder back in line with what the account has. It was
-    /// opened from the settings file, which may name a folder or label that
-    /// has since been renamed or removed, and a name nothing answers to would
-    /// sit in the header with no matching button beside it.
+    /// Reconciles the saved folder with the account's current folders.
     fn reconcile_open_folder(&mut self) -> Effects {
         let Some(open) = self
             .mailbox
@@ -822,9 +807,7 @@ impl App {
             return Effects::none();
         }
 
-        // The same place under a new name holds the same mail, so taking the
-        // name up is all there is to do: nothing is reloaded and whatever is
-        // being read stays open.
+        // A rename keeps the stable id, loaded mail and reader state.
         if let Some(mailbox) = self.active_mailbox() {
             mailbox.rename_folder(current.clone());
         }
@@ -833,9 +816,7 @@ impl App {
         Effects::none()
     }
 
-    /// Keeps the folder to open on the next run. Demo mail is fictional, so
-    /// where it is read is not worth remembering, let alone worth overwriting
-    /// the real answer with.
+    /// Remembers the last real folder; demo navigation is process-local.
     fn remember_folder(&mut self, folder: &Folder) {
         if !self.is_demo() {
             self.remember(|settings| settings.folder = folder.clone());

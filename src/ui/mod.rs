@@ -15,9 +15,7 @@ use crate::settings::{ComposePlacement, Settings, Window};
 use auto_refresh::AutoRefresh;
 
 const MIN_WINDOW_SIZE: [f32; 2] = [820.0, 480.0];
-/// How long the settings have to stay still before they are written. Long
-/// enough that a drag is one write rather than dozens, short enough that a
-/// process killed rather than closed loses at most this much.
+/// Debounces settings writes while a window or divider is dragged.
 const SETTINGS_QUIET: f32 = 0.75;
 
 #[derive(Default)]
@@ -52,9 +50,7 @@ struct DesktopApp {
     auto_refresh: AutoRefresh,
     /// Preferences being edited in the settings window until Apply is pressed.
     settings_draft: Option<Settings>,
-    /// The settings revision last seen, and when it was seen. Writing is held
-    /// back until it stops moving: a window edge or a divider being dragged
-    /// changes the settings many times a second.
+    /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
 }
@@ -120,11 +116,7 @@ impl DesktopApp {
         else {
             return;
         };
-        // egui reports the window in the points it lays out in, which the zoom
-        // scales. The window is built before the zoom is applied, so it is
-        // asked for in unscaled points: the zoom is taken back out here, and
-        // what is remembered is the window itself, the same number whatever
-        // the interface is scaled to.
+        // Store unscaled points so zoom does not change the remembered window.
         let unscaled = size * context.zoom_factor();
         self.dispatch(
             Message::WindowResized(Window {
@@ -224,9 +216,7 @@ impl DesktopApp {
         }
     }
 
-    /// Keeps egui's scale on the chosen zoom. egui measures window sizes in
-    /// the same scaled points and undoes the scale when a window is created,
-    /// so the remembered size stays the same window whatever the zoom.
+    /// Applies UI zoom without changing the remembered window size.
     fn apply_zoom(&self, context: &egui::Context) {
         let zoom = self.app.settings().zoom;
         if (context.zoom_factor() - zoom).abs() > f32::EPSILON {
@@ -234,11 +224,7 @@ impl DesktopApp {
         }
     }
 
-    /// Writes the settings once they have been still for [`SETTINGS_QUIET`].
-    ///
-    /// A repaint is asked for so the frame that does the writing happens at
-    /// all: egui sleeps when nothing is going on, and the moment a drag ends
-    /// is exactly such a moment.
+    /// Writes settled settings and schedules the frame that performs it.
     fn save_settled_settings(&mut self, context: &egui::Context) {
         let revision = self.app.settings_revision();
         let now = context.input(|input| input.time);

@@ -51,9 +51,7 @@ impl MailBackend {
         }
     }
 
-    /// The folders the account made. The demo mailbox has only Proton's own.
-    /// Sends a message. The demo mailbox keeps it to itself; nothing about
-    /// this path reaches the network without a Proton session.
+    /// Sends through the active backend; demo messages remain local.
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
         match self {
             Self::Proton(service) => service.send(outgoing).await,
@@ -61,6 +59,7 @@ impl MailBackend {
         }
     }
 
+    /// Account folders and labels; demo mode has neither.
     pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
         match self {
             Self::Proton(service) => service.list_folders().await,

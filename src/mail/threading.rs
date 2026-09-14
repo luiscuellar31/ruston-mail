@@ -1,10 +1,5 @@
-//! Ruston's policy for when a Proton conversation is shown as one thread.
-//!
-//! Proton groups messages into conversations on its own, which also merges
-//! repeated independent mail from one sender. Ruston shows such messages
-//! individually only when their senders prove there was no exchange; whenever
-//! the evidence is incomplete, Proton's grouping is kept. Subjects are never
-//! consulted.
+//! Decides when Proton conversations are shown as threads.
+//! Split only proven independent inbound mail; otherwise keep Proton's grouping.
 
 use std::collections::HashSet;
 
@@ -24,10 +19,7 @@ pub(super) fn normalize_address(address: &str) -> String {
     address.trim().to_ascii_lowercase()
 }
 
-/// Whether list metadata leaves the grouping in doubt. A single message,
-/// several senders, or the user as sender already settle it, so only
-/// multi-message conversations from one external sender need their messages
-/// inspected.
+/// Whether a multi-message conversation needs metadata inspection.
 pub(super) fn needs_inspection(message_count: i64, senders: &[String], own: &OwnAddresses) -> bool {
     message_count > 1 && matches!(senders, [sender] if !sender.is_empty() && !own.contains(sender))
 }

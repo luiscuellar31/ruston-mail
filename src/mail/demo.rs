@@ -1,8 +1,5 @@
-//! Fictional in-memory mailbox for developing the UI without Proton.
-//!
-//! Nothing here touches the network, the keychain, a Proton session, or disk.
-//! All names and addresses are invented; addresses use the reserved
-//! `example.*` domains.
+//! Fictional in-memory mailbox with reserved `example.*` addresses.
+//! It never touches Proton, the network, the keychain or disk.
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -210,20 +207,14 @@ impl DemoMailbox {
         )
     }
 
-    /// Accepts a message the fictional mailbox will pretend to have sent.
-    ///
-    /// It lands in Sent and nothing leaves the process. The cap is what makes
-    /// this safe to leave in: composing can be tried without an account, and
-    /// a mistake in the sending path cannot grow the mailbox without end.
+    /// Stores a sent message locally, subject to the demo cap.
     pub fn send(&self, outgoing: &Outgoing, now: i64) -> Result<(), SendError> {
         let mut fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
         if fixtures.iter().filter(|fixture| fixture.composed).count() >= SEND_LIMIT {
             return Err(SendError::DemoLimitReached);
         }
 
-        // What Proton would have decided for an answer, so the demo shows the
-        // same thing: a prefixed subject, the message quoted underneath, and
-        // for a reply the sender it goes back to.
+        // Mirror Proton's subject, quote and reply-recipient behavior.
         let answered = answered_message(&fixtures, &outgoing.kind, now);
         let (prefix, back_to) = match (&outgoing.kind, &answered) {
             (Kind::Reply { .. }, Some(parent)) => ("Re: ", Some(parent.sender.clone())),
@@ -363,9 +354,7 @@ fn mail(
     }
 }
 
-/// What a body says, with any markup resolved. Previews and search read this
-/// rather than the body itself, so an HTML fixture cannot match on its tags
-/// or show them in the conversation list.
+/// Plain content used by previews and search, never HTML tags.
 fn body_text(fixture: &Fixture, body: &str) -> String {
     if !fixture.html {
         return body.to_owned();
@@ -736,10 +725,7 @@ fn fixtures() -> Vec<Fixture> {
             4 * DAY,
             "Your account will supposedly close today unless you confirm it through an unfamiliar link.\n\nThis fictional message demonstrates suspicious urgency and is not a real account notice.",
         ),
-        // The one HTML body in the fictional mailbox. Demo mode is the only
-        // way to see the rich reader without a Proton account, so it covers
-        // what that reader has to lay out: headings, styled runs, a link,
-        // inline and block code, a list, a quote, a rule and a blocked image.
+        // Covers every rich-reader block without requiring a Proton account.
         mail(
             Inbox,
             "Bookings Team",
@@ -777,9 +763,7 @@ booking list --upcoming</pre>
 <p>See you Thursday,<br>The Bookings Team</p>
 "#;
 
-/// Rows matching `query` from anywhere in the mailbox, newest first. Folders
-/// are ignored on purpose: a search that stopped at the open folder would not
-/// be a search.
+/// Matching rows across the whole demo mailbox, newest first.
 fn search_from(fixtures: &[Fixture], query: &str, limit: u32, now: i64) -> ConversationPage {
     let query = query.trim().to_lowercase();
     let mut matching: Vec<_> = fixtures

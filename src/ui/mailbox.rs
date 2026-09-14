@@ -300,14 +300,7 @@ fn conversation_pane(
     }
 }
 
-/// Only the rows on screen are drawn. Laying out every loaded one cost more
-/// than a frame's worth of time once a few pages had been asked for, and a
-/// row's size is fixed anyway, which is what makes the arithmetic possible.
-///
-/// The two numbers place every row, so a row that painted itself taller than
-/// [`ROW_HEIGHT`] would slide the ones below it out of step with the
-/// scrollbar. `a_row_is_exactly_the_height_the_list_places_it_at` holds them
-/// together.
+/// Virtualized rows must draw at [`ROW_HEIGHT`] to stay aligned with scrolling.
 const FOLDER_HEIGHT: f32 = 31.0;
 const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;
@@ -322,8 +315,7 @@ fn conversation_list(
 ) {
     let now = Local::now();
     let selected = mailbox.selected_conversation();
-    // Gathered once so a row can be reached by number rather than by walking
-    // the list, which the drawing below does for a handful of rows a frame.
+    // Index visible rows once for virtualized access.
     let rows: Vec<&ConversationSummary> = mailbox.visible_conversations().collect();
     let total = rows.len() + usize::from(ends_with_load_more(mailbox));
 
@@ -335,9 +327,7 @@ fn conversation_list(
             .id_salt("conversation-scroll")
             .auto_shrink([false, false]);
 
-        // A row that is not drawn cannot scroll itself into view, so the
-        // rectangle that centres it is worked out from its number. It can sit
-        // outside the virtualised range: egui still animates towards it.
+        // Synthesized rectangles can reveal rows outside the rendered range.
         let reveal = state
             .reveal_conversation
             .as_deref()
@@ -380,9 +370,7 @@ fn conversation_list(
     });
 }
 
-/// Whether [`load_more`] draws anything, which decides whether the list has a
-/// row at the end for it. The two answer the same question and belong
-/// together.
+/// Whether the virtualized list needs a trailing load-more row.
 fn ends_with_load_more(mailbox: &Mailbox) -> bool {
     matches!(mailbox.status(), ListStatus::LoadingMore(_)) || mailbox.has_more()
 }
@@ -594,9 +582,7 @@ mod tests {
 
     #[test]
     fn a_long_folder_name_stays_on_one_row() {
-        // A name the account chose is as long as the account wants it to be.
-        // Left to wrap it would take two or three lines and break the rhythm
-        // of the folders around it, so it is cut off instead.
+        // Account folder names truncate rather than changing row height.
         let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
         let label = Folder::label(
             "kZ9",
@@ -623,9 +609,7 @@ mod tests {
 
     #[test]
     fn a_row_is_exactly_the_height_the_list_places_it_at() {
-        // The list is virtualised: every row's position comes from ROW_HEIGHT
-        // rather than from what the row drew. A row that grew would drift
-        // away from where the scrollbar says it is.
+        // Rendered and virtualized row heights must match.
         let conversation = ConversationSummary {
             id: "row".into(),
             kind: crate::mail::SummaryKind::Conversation,

@@ -1,10 +1,4 @@
-//! Writing a message.
-//!
-//! Sending is the one thing Ruston Mail does that other people receive and
-//! that cannot be undone, so everything it depends on is decided here, where
-//! it can be tested: who the message is for, whether it is ready to leave,
-//! and what to say when it is not. `ui::compose` draws this and adds nothing
-//! to it.
+//! Message composition and validation. `ui::compose` only renders it.
 
 use crate::mail::{BodyFormat, Kind, MailMessage, Outgoing, SendError, recipients};
 
@@ -52,9 +46,7 @@ pub enum Sending {
     Failed(SendError),
 }
 
-/// The message being answered, as the window describes it. Proton works out
-/// the recipients and the subject itself, so this says what is being answered
-/// rather than promising who will receive it.
+/// The message being answered. Proton determines recipients and subject.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answering {
     pub sender: String,
@@ -158,10 +150,7 @@ impl Compose {
         self.ready(BodyFormat::PlainText).err()
     }
 
-    /// The message to send, or what is wrong with it.
-    ///
-    /// A subject is not required: Proton accepts one without, and refusing
-    /// would be Ruston Mail inventing a rule of its own.
+    /// The message to send, or its validation error. Subjects are optional.
     fn ready(&self, format: BodyFormat) -> Result<Outgoing, NotReady> {
         let (to, cc, bcc) = (
             recipients(&self.to),
@@ -239,12 +228,7 @@ impl App {
         self.open_answer(kind, &message, subject.as_deref());
     }
 
-    /// Answers the message, or passes it on.
-    ///
-    /// What the window shows is what is being answered, not who will receive
-    /// it: for a reply Proton works the recipients out from the message
-    /// itself, and repeating that rule here is a second copy of it that could
-    /// drift from the first.
+    /// Answers or forwards a message. Proton addresses replies itself.
     pub(super) fn open_answer(&mut self, kind: Kind, message: &MailMessage, subject: Option<&str>) {
         if self.compose.is_some() {
             return;
@@ -292,8 +276,7 @@ impl App {
             return Effects::none();
         };
         let Ok(outgoing) = compose.ready(format) else {
-            // The window already says what is wrong; pressing Send changes
-            // nothing until it is fixed.
+            // Keep the existing validation error visible.
             return Effects::none();
         };
         compose.state = State::InFlight;

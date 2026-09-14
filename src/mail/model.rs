@@ -55,11 +55,8 @@ pub enum CustomKind {
     Label,
 }
 
-/// A place mail can be listed from: one of Proton's system folders, or a
-/// folder or label the account owns.
-///
-/// The wire identifier lives in the Proton layer, not here: this type says
-/// which place is meant, and that layer says what to call it on the network.
+/// A system folder or account-owned folder/label.
+/// The Proton layer maps it to a wire identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Folder {
@@ -322,9 +319,7 @@ pub struct ConversationDetail {
     pub id: String,
     pub subject: Option<String>,
     pub messages: Vec<MailMessage>,
-    /// What Proton says this conversation is filed and labelled under. The
-    /// account's own name for each one lives in the folder list, so only the
-    /// identifiers are kept here.
+    /// Folder and label identifiers reported by Proton.
     pub labels: Vec<String>,
 }
 
@@ -376,9 +371,7 @@ impl FromIterator<(Folder, u32)> for MailboxCounts {
     }
 }
 
-/// A change the user applies to the selected mailbox row.
-/// Not `Copy`: a move now carries the folder's own id, and a folder the
-/// account made owns its name.
+/// A change applied to the selected mailbox row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MailAction {
     /// Relabels the row into a folder; nothing is ever deleted.

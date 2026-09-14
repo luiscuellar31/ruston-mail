@@ -247,9 +247,7 @@ fn zoom_label(zoom: f32) -> String {
     format!("{:.0}%", zoom * 100.0)
 }
 
-/// Offered rather than a free slider: a handful of steps cannot land on a
-/// scale that leaves the interface unusable.
-/// The settings clamp anything else a file might carry.
+/// Fixed usable zoom levels; loaded settings clamp other values.
 const ZOOM_STEPS: [f32; 6] = [0.9, 1.0, 1.15, 1.3, 1.5, 1.75];
 
 /// What the mailbox already answers to. Listed here because a shortcut no one
@@ -304,9 +302,7 @@ fn description(ui: &mut egui::Ui, text: &str) {
 fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) -> egui::Response {
     theme::card()
         .show(ui, |ui| {
-            // A card fills the page. Left to size itself it stops at its longest
-            // line, which made the settings look like a column with an empty
-            // panel beside it.
+            // Cards fill the page instead of sizing to their longest line.
             ui.set_width(ui.available_width());
             ui.heading(egui::RichText::new(title).size(17.0));
             ui.add_space(4.0);
