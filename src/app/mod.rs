@@ -85,7 +85,7 @@ pub enum Message {
     SaveAttachment(String, String),
     /// Where an attachment landed, or why it did not.
     AttachmentSaved(Result<PathBuf, SaveError>),
-    /// Opens or closes the settings page.
+    /// Opens or closes the settings window.
     ShowSettings(bool),
     /// Marks opened mail as read, or leaves it unread.
     SetMarkReadOnOpen(bool),
@@ -146,7 +146,7 @@ pub struct App {
     /// [`Self::save_settings`] once the dragging has stopped.
     settings_revision: u64,
     settings_written: u64,
-    /// Whether the settings page is covering the mailbox.
+    /// Whether the settings window is open.
     showing_settings: bool,
     /// The message being written, if there is one.
     compose: Option<Compose>,

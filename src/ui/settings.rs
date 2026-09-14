@@ -5,63 +5,102 @@ use crate::app::Message;
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{ComposePlacement, Settings, StartFolder};
 
-pub(super) fn show(root: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
-    // The page fills the window, with the padding the mailbox panels use: at
-    // full width the default margin left it cramped against the window edge.
+const WINDOW_SIZE: [f32; 2] = [720.0, 720.0];
+const MIN_WINDOW_SIZE: [f32; 2] = [520.0, 420.0];
+
+pub(super) fn show_window(
+    context: &egui::Context,
+    current: &Settings,
+    draft: &mut Settings,
+) -> Vec<Message> {
+    context.show_viewport_immediate(
+        egui::ViewportId::from_hash_of("settings-window"),
+        egui::ViewportBuilder::default()
+            .with_title("Settings")
+            .with_inner_size(WINDOW_SIZE)
+            .with_min_inner_size(MIN_WINDOW_SIZE),
+        |root, _class| {
+            let mut messages = Vec::new();
+            show(root, current, draft, &mut messages);
+
+            if root.input(|input| {
+                input.viewport().close_requested() || input.key_pressed(egui::Key::Escape)
+            }) {
+                messages.push(Message::ShowSettings(false));
+            }
+
+            messages
+        },
+    )
+}
+
+fn show(
+    root: &mut egui::Ui,
+    current: &Settings,
+    draft: &mut Settings,
+    messages: &mut Vec<Message>,
+) {
+    egui::Panel::bottom("settings-actions")
+        .frame(theme::panel_frame(theme::PANEL).stroke(egui::Stroke::new(1.0, theme::BORDER)))
+        .show(root, |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Close").clicked() {
+                    messages.push(Message::ShowSettings(false));
+                }
+
+                let changes = preference_changes(current, draft);
+                if ui
+                    .add_enabled(
+                        !changes.is_empty(),
+                        egui::Button::new("Apply")
+                            .fill(theme::ACCENT_SOFT)
+                            .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
+                    )
+                    .clicked()
+                {
+                    messages.extend(changes);
+                }
+            });
+        });
+
     egui::CentralPanel::default()
         .frame(theme::panel_frame(theme::PANEL))
         .show(root, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .show(ui, |ui| page(ui, settings, messages));
+                .show(ui, |ui| page(ui, draft));
         });
 }
 
-fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
-    ui.horizontal(|ui| {
-        ui.heading(egui::RichText::new("Settings").size(24.0));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.button("Done").clicked() {
-                messages.push(Message::ShowSettings(false));
-            }
-        });
-    });
+fn page(ui: &mut egui::Ui, settings: &mut Settings) {
+    ui.heading(egui::RichText::new("Settings").size(24.0));
     ui.add_space(18.0);
 
     section(ui, "Reading", |ui| {
-        let mut on = settings.mark_read_on_open;
-        if ui
-            .checkbox(&mut on, "Mark mail as read when I open it")
-            .changed()
-        {
-            messages.push(Message::SetMarkReadOnOpen(on));
-        }
+        ui.checkbox(
+            &mut settings.mark_read_on_open,
+            "Mark mail as read when I open it",
+        );
         description(
             ui,
             "With this off, mail stays unread until you mark it yourself.",
         );
         ui.add_space(6.0);
 
-        let mut on = settings.expand_all_messages;
-        if ui
-            .checkbox(&mut on, "Open every message in a conversation")
-            .changed()
-        {
-            messages.push(Message::SetExpandAllMessages(on));
-        }
+        ui.checkbox(
+            &mut settings.expand_all_messages,
+            "Open every message in a conversation",
+        );
         description(
             ui,
             "With this off, only the newest opens and the rest wait behind their headers.",
         );
         ui.add_space(6.0);
 
-        let mut on = settings.show_quoted_text;
-        if ui
-            .checkbox(&mut on, "Show quoted text without unfolding it")
-            .changed()
-        {
-            messages.push(Message::SetShowQuotedText(on));
-        }
+        ui.checkbox(
+            &mut settings.show_quoted_text,
+            "Show quoted text without unfolding it",
+        );
         description(
             ui,
             "Quoted passages are the thread repeated under a reply, so they stay folded by default.",
@@ -69,10 +108,7 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
     });
     ui.add_space(14.0);
     section(ui, "Links and images", |ui| {
-        let mut on = settings.confirm_links;
-        if ui.checkbox(&mut on, "Ask before opening a link").changed() {
-            messages.push(Message::SetConfirmLinks(on));
-        }
+        ui.checkbox(&mut settings.confirm_links, "Ask before opening a link");
         description(
             ui,
             "The prompt shows the real destination, which helps expose misleading links.",
@@ -89,10 +125,7 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
                 (ComposePlacement::ReadingPane, "Reading pane"),
                 (ComposePlacement::Window, "New window"),
             ] {
-                let chosen = settings.compose_placement == placement;
-                if ui.add(egui::Button::new(label).selected(chosen)).clicked() {
-                    messages.push(Message::SetComposePlacement(placement));
-                }
+                ui.selectable_value(&mut settings.compose_placement, placement, label);
             }
         });
         description(ui, "Where Write, Reply and Forward open.");
@@ -103,10 +136,7 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
                 (BodyFormat::PlainText, "Plain text"),
                 (BodyFormat::Html, "HTML"),
             ] {
-                let chosen = settings.compose_format == format;
-                if ui.add(egui::Button::new(label).selected(chosen)).clicked() {
-                    messages.push(Message::SetComposeFormat(format));
-                }
+                ui.selectable_value(&mut settings.compose_format, format, label);
             }
         });
         description(
@@ -116,19 +146,23 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
     });
     ui.add_space(14.0);
     section(ui, "Starting up", |ui| {
-        let mut start = settings.start;
         egui::ComboBox::from_id_salt("start-folder")
-            .selected_text(start_label(start))
+            .selected_text(start_label(settings.start))
             .width(180.0)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut start, StartFolder::LastRead, "Where I left off");
+                ui.selectable_value(
+                    &mut settings.start,
+                    StartFolder::LastRead,
+                    "Where I left off",
+                );
                 for folder in MailFolder::ALL {
-                    ui.selectable_value(&mut start, StartFolder::Always(folder), folder.name());
+                    ui.selectable_value(
+                        &mut settings.start,
+                        StartFolder::Always(folder),
+                        folder.name(),
+                    );
                 }
             });
-        if start != settings.start {
-            messages.push(Message::SetStartFolder(start));
-        }
         description(
             ui,
             "A folder the account made cannot be pinned: it could be renamed or gone by the next run.",
@@ -136,18 +170,14 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
     });
     ui.add_space(14.0);
     section(ui, "Interface", |ui| {
-        let mut zoom = settings.zoom;
         egui::ComboBox::from_id_salt("interface-scale")
-            .selected_text(zoom_label(zoom))
+            .selected_text(zoom_label(settings.zoom))
             .width(100.0)
             .show_ui(ui, |ui| {
                 for step in ZOOM_STEPS {
-                    ui.selectable_value(&mut zoom, step, zoom_label(step));
+                    ui.selectable_value(&mut settings.zoom, step, zoom_label(step));
                 }
             });
-        if (zoom - settings.zoom).abs() > f32::EPSILON {
-            messages.push(Message::SetZoom(zoom));
-        }
         description(
             ui,
             "Scales everything, not the text alone, so the window keeps its proportions.",
@@ -171,6 +201,35 @@ fn page(ui: &mut egui::Ui, settings: &Settings, messages: &mut Vec<Message>) {
             "Window size and pane widths return the way you left them.",
         );
     });
+}
+
+fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
+    let mut messages = Vec::new();
+    if draft.mark_read_on_open != current.mark_read_on_open {
+        messages.push(Message::SetMarkReadOnOpen(draft.mark_read_on_open));
+    }
+    if draft.confirm_links != current.confirm_links {
+        messages.push(Message::SetConfirmLinks(draft.confirm_links));
+    }
+    if draft.expand_all_messages != current.expand_all_messages {
+        messages.push(Message::SetExpandAllMessages(draft.expand_all_messages));
+    }
+    if draft.show_quoted_text != current.show_quoted_text {
+        messages.push(Message::SetShowQuotedText(draft.show_quoted_text));
+    }
+    if draft.compose_placement != current.compose_placement {
+        messages.push(Message::SetComposePlacement(draft.compose_placement));
+    }
+    if draft.compose_format != current.compose_format {
+        messages.push(Message::SetComposeFormat(draft.compose_format));
+    }
+    if draft.start != current.start {
+        messages.push(Message::SetStartFolder(draft.start));
+    }
+    if (draft.zoom - current.zoom).abs() > f32::EPSILON {
+        messages.push(Message::SetZoom(draft.zoom));
+    }
+    messages
 }
 
 fn start_label(start: StartFolder) -> &'static str {
@@ -279,6 +338,31 @@ mod tests {
         assert!(
             (card - page).abs() <= 1.0,
             "a card {card} wide on a page {page} wide"
+        );
+    }
+
+    #[test]
+    fn apply_reports_only_preferences_changed_in_the_window() {
+        let current = Settings::default();
+        let mut draft = current.clone();
+        draft.window.width += 100.0;
+        draft.panels.sidebar += 0.1;
+        draft.folder = crate::mail::Folder::System(MailFolder::Spam);
+        assert!(preference_changes(&current, &draft).is_empty());
+
+        draft.confirm_links = false;
+        draft.zoom = 1.15;
+        let changes = preference_changes(&current, &draft);
+        assert_eq!(changes.len(), 2);
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetConfirmLinks(false)))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetZoom(zoom) if *zoom == 1.15))
         );
     }
 

@@ -47,6 +47,8 @@ struct DesktopApp {
     ui: UiState,
     demo: bool,
     title: String,
+    /// Preferences being edited in the settings window until Apply is pressed.
+    settings_draft: Option<Settings>,
     /// The settings revision last seen, and when it was seen. Writing is held
     /// back until it stops moving: a window edge or a divider being dragged
     /// changes the settings many times a second.
@@ -66,6 +68,7 @@ impl DesktopApp {
             ui: UiState::default(),
             demo,
             title: String::new(),
+            settings_draft: None,
             settings_seen: 0,
             settings_seen_at: 0.0,
         };
@@ -232,9 +235,7 @@ impl eframe::App for DesktopApp {
                 login::show(ui, &self.app, &mut messages);
             }
             AuthState::Authenticated { email } => {
-                if self.app.showing_settings() {
-                    settings::show(ui, self.app.settings(), &mut messages);
-                } else if self.app.mailbox().is_some() {
+                if self.app.mailbox().is_some() {
                     mailbox::show(
                         ui,
                         &self.app,
@@ -245,6 +246,15 @@ impl eframe::App for DesktopApp {
                     );
                 } else {
                     status_view(ui, "Opening mailbox…");
+                }
+
+                if self.app.showing_settings() {
+                    let draft = self
+                        .settings_draft
+                        .get_or_insert_with(|| self.app.settings().clone());
+                    messages.extend(settings::show_window(&context, self.app.settings(), draft));
+                } else {
+                    self.settings_draft = None;
                 }
 
                 if self.app.settings().compose_placement == ComposePlacement::Window

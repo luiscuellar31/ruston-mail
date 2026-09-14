@@ -199,21 +199,21 @@ fn a_link_skips_the_prompt_only_when_confirmation_is_off() {
 }
 
 #[test]
-fn the_settings_page_covers_the_mailbox_and_steps_back() {
+fn the_settings_window_opens_and_steps_back() {
     let mut app = loaded_demo_app();
     assert!(!app.showing_settings());
 
     let _ = app.update(Message::ShowSettings(true));
     assert!(app.showing_settings());
 
-    // Escape backs out of the page before anything underneath it.
+    // Escape closes the settings window first.
     press(&mut app, Key::Escape);
 
     assert!(!app.showing_settings());
 }
 
 #[test]
-fn leaving_settings_keeps_the_message_open_underneath() {
+fn closing_settings_keeps_the_message_open() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::OpenCompose);
     let _ = app.update(Message::ShowSettings(true));
@@ -267,19 +267,19 @@ fn signing_out_takes_the_account_folders_with_it() {
 }
 
 #[test]
-fn signing_out_from_the_settings_page_comes_back_to_the_mailbox() {
+fn signing_out_from_the_settings_window_comes_back_to_the_mailbox() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::ShowSettings(true));
 
     let _ = app.update(Message::Logout);
 
-    // Otherwise signing back in lands on the settings page again, with
+    // Otherwise signing back in opens the settings window again, with
     // no sign that it was ever left open.
     assert!(!app.showing_settings());
 }
 
 #[test]
-fn keys_do_not_reach_a_covered_mailbox() {
+fn settings_shortcuts_do_not_reach_the_mailbox_window() {
     let mut app = loaded_demo_app();
     press(&mut app, Key::Character('j'));
     let opened = app
@@ -290,16 +290,15 @@ fn keys_do_not_reach_a_covered_mailbox() {
     assert!(opened.is_some());
 
     let _ = app.update(Message::ShowSettings(true));
-    // Stepping the list underneath the settings page would change the
-    // selection out of sight, and ask Proton for a conversation nobody
-    // can see.
+    // Stepping the list from the settings window would change the selection
+    // in the other window, and ask Proton for a conversation unexpectedly.
     press(&mut app, Key::Character('j'));
     assert_eq!(
         app.mailbox().unwrap().selected_conversation(),
         opened.as_deref()
     );
 
-    // Escape still backs out of the page, and the list answers again.
+    // Escape closes settings, and the list answers again.
     press(&mut app, Key::Escape);
     assert!(!app.showing_settings());
     press(&mut app, Key::Character('j'));

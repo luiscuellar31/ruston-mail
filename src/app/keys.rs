@@ -62,11 +62,10 @@ impl App {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
         };
-        // Only the topmost thing on screen takes a key. The mailbox sits
-        // under the settings page and under the link prompt, so while either
-        // is up the one shortcut still worth anything backs out of it.
-        let covered = self.showing_settings || self.pending_link.is_some();
-        if covered && shortcut != Shortcut::Dismiss {
+        // The settings window and link prompt take priority over mailbox
+        // shortcuts. While either is open, only Escape backs out of it.
+        let shortcut_blocked = self.showing_settings || self.pending_link.is_some();
+        if shortcut_blocked && shortcut != Shortcut::Dismiss {
             return Effects::none();
         }
 
@@ -95,8 +94,8 @@ impl App {
             }
             // One layer at a time, starting with the most recent.
             Shortcut::Dismiss => {
-                // Settings cover the composer, so leave them before touching
-                // a message that is still open underneath.
+                // Leave settings before touching a message still open in the
+                // mailbox window.
                 if self.showing_settings {
                     self.showing_settings = false;
                     return Effects::none();
