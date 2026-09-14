@@ -1,4 +1,5 @@
 use chrono::{DateTime, Datelike, Local, TimeZone};
+use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
 use super::{UiState, UndoNotice, compose, reader, theme};
@@ -85,16 +86,7 @@ fn sidebar(
     ui.heading(egui::RichText::new("Ruston Mail").size(23.0));
     ui.add_space(12.0);
 
-    let compose = egui::Button::new((
-        theme::icon_atom(),
-        egui::RichText::new("New message").color(Color32::WHITE),
-    ))
-    .min_size(egui::vec2(ui.available_width(), 34.0))
-    .fill(theme::ACCENT)
-    .stroke(Stroke::NONE)
-    .atom_ui(ui);
-    theme::paint_atom_icon(ui, &compose, theme::Icon::Compose, Color32::WHITE);
-    if compose.clicked() {
+    if new_message_button(ui).clicked() {
         messages.push(Message::OpenCompose);
     }
     ui.add_space(12.0);
@@ -166,6 +158,31 @@ fn sidebar(
     });
 }
 
+const NEW_MESSAGE_LABEL_ID: &str = "new-message-label";
+const FOLDER_NAME_ATOM_ID: &str = "folder-name";
+const SELECTED_FOLDER_TEXT_OFFSET: f32 = 0.45;
+
+fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
+    let width = ui.available_width();
+    ui.scope(|ui| {
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::ACCENT;
+        ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::ACCENT_HOVER;
+        ui.visuals_mut().widgets.active.weak_bg_fill = theme::ACCENT_HOVER;
+        egui::Button::new((
+            egui::Atom::grow(),
+            egui::RichText::new("New message")
+                .size(15.0)
+                .color(Color32::WHITE)
+                .atom_id(egui::Id::new(NEW_MESSAGE_LABEL_ID)),
+            egui::Atom::grow(),
+        ))
+        .min_size(egui::vec2(width, 34.0))
+        .stroke(Stroke::NONE)
+        .atom_ui(ui)
+    })
+    .inner
+}
+
 fn folder_button(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
@@ -178,7 +195,14 @@ fn folder_button(
         .counts()
         .and_then(|counts| counts.unread(&folder))
         .filter(|count| *count > 0);
-    let mut button = egui::Button::new((theme::icon_atom(), folder.name()))
+    let name = if selected {
+        egui::RichText::new(folder.name()).color(Color32::WHITE)
+    } else {
+        egui::RichText::new(folder.name())
+    }
+    .atom_id(egui::Id::new(FOLDER_NAME_ATOM_ID));
+    let mut button = egui::Button::new((theme::icon_atom(), name))
+        .gap(ui.spacing().icon_spacing + 3.0)
         .wrap_mode(egui::TextWrapMode::Truncate)
         .min_size(egui::vec2(ui.available_width(), FOLDER_HEIGHT))
         .selected(selected)
@@ -199,6 +223,18 @@ fn folder_button(
         ui.style().interact(&layout.response).fg_stroke.color
     };
     theme::paint_atom_icon(ui, &layout, icon, icon_color);
+    if selected && let Some(rect) = layout.rect(egui::Id::new(FOLDER_NAME_ATOM_ID)) {
+        let painter = ui.painter().with_clip_rect(rect);
+        theme::paint_truncated_text_aligned(
+            &painter,
+            rect.left_center() + egui::vec2(SELECTED_FOLDER_TEXT_OFFSET, 0.0),
+            Align2::LEFT_CENTER,
+            folder.name(),
+            egui::TextStyle::Button.resolve(ui.style()),
+            Color32::WHITE,
+            rect.width() - SELECTED_FOLDER_TEXT_OFFSET,
+        );
+    }
     let response = layout.response;
     let name = folder.name().to_owned();
     response.widget_info(|| {
@@ -263,6 +299,7 @@ fn conversation_pane(
             theme::text_field(&mut query)
                 .id(egui::Id::new("mail-search"))
                 .hint_text("Search mail…")
+                .margin(egui::Margin::symmetric(ROW_HORIZONTAL_PADDING as i8, 8))
                 .desired_width(f32::INFINITY),
         );
         if state.focus_search {
@@ -616,6 +653,63 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+
+    #[test]
+    fn new_message_text_is_centered_in_its_button() {
+        let context = egui::Context::default();
+        let mut centers = (0.0, 0.0);
+
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(240.0);
+                let button = new_message_button(ui);
+                centers = (
+                    button.response.rect.center().x,
+                    button
+                        .rect(egui::Id::new(NEW_MESSAGE_LABEL_ID))
+                        .expect("new message label")
+                        .center()
+                        .x,
+                );
+            })
+            .drop_without_applying_deltas();
+
+        assert!((centers.0 - centers.1).abs() <= 0.5);
+    }
+
+    #[test]
+    fn selected_folder_name_gets_an_extra_text_pass() {
+        fn text_shapes(shape: &egui::epaint::Shape) -> usize {
+            match shape {
+                egui::epaint::Shape::Text(_) => 1,
+                egui::epaint::Shape::Vec(shapes) => shapes.iter().map(text_shapes).sum(),
+                _ => 0,
+            }
+        }
+
+        let render = |selected| {
+            let current = if selected {
+                Folder::INBOX
+            } else {
+                Folder::System(MailFolder::Drafts)
+            };
+            let (mailbox, _) = Mailbox::open(current, 50, 1, 2);
+            let context = egui::Context::default();
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(240.0);
+                folder_button(ui, &mailbox, Folder::INBOX, &mut Vec::new());
+            });
+            let count = output
+                .shapes
+                .iter()
+                .map(|shape| text_shapes(&shape.shape))
+                .sum::<usize>();
+            output.textures_delta.clear();
+            count
+        };
+
+        assert_eq!(render(true), render(false) + 1);
+    }
 
     #[test]
     fn search_scope_says_what_the_list_is_showing() {

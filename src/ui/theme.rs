@@ -4,6 +4,7 @@ use eframe::egui::{
 };
 
 pub const ACCENT: Color32 = Color32::from_rgb(109, 92, 245);
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(122, 107, 247);
 pub const ACCENT_SOFT: Color32 = Color32::from_rgb(43, 38, 79);
 pub const PANEL: Color32 = Color32::from_rgb(24, 25, 31);
 pub const PANEL_RAISED: Color32 = Color32::from_rgb(31, 32, 40);
@@ -18,7 +19,6 @@ const ICON_ATOM_ID: &str = "ruston-vector-icon";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Icon {
-    Compose,
     Inbox,
     Drafts,
     Sent,
@@ -111,13 +111,6 @@ pub fn paint_icon(painter: &egui::Painter, center: egui::Pos2, icon: Icon, color
     };
 
     match icon {
-        Icon::Compose => {
-            painter.line_segment(
-                [point(-4.5, 4.5), point(4.5, -4.5)],
-                Stroke::new(2.0, color),
-            );
-            line(&[(-5.5, 2.5), (-6.0, 6.0), (-2.5, 5.5)]);
-        }
         Icon::Inbox => {
             painter.rect_stroke(
                 egui::Rect::from_min_max(point(-6.5, -5.0), point(6.5, 5.5)),
@@ -251,6 +244,8 @@ pub fn install(context: &egui::Context) {
     style.visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
     style.visuals.hyperlink_color = Color32::from_rgb(150, 139, 255);
     style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
+    style.visuals.widgets.hovered.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
+    style.visuals.widgets.active.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
     style.visuals.widgets.inactive.corner_radius = CornerRadius::same(7);
     style.visuals.widgets.hovered.corner_radius = CornerRadius::same(7);
     style.visuals.widgets.active.corner_radius = CornerRadius::same(7);
@@ -494,10 +489,38 @@ mod tests {
     }
 
     #[test]
+    fn a_compact_button_keeps_its_size_on_hover() {
+        let context = egui::Context::default();
+        install(&context);
+        let render = |input| {
+            let mut rect = egui::Rect::NOTHING;
+            context
+                .run_ui(input, |ui| {
+                    rect = ui
+                        .add(
+                            compact_button("Reply")
+                                .fill(ACCENT_SOFT)
+                                .stroke(Stroke::new(1.0, ACCENT)),
+                        )
+                        .rect;
+                })
+                .drop_without_applying_deltas();
+            rect
+        };
+
+        let idle = render(egui::RawInput::default());
+        let hovered = render(egui::RawInput {
+            events: vec![egui::Event::PointerMoved(idle.center())],
+            ..Default::default()
+        });
+
+        assert_eq!(hovered.size(), idle.size());
+    }
+
+    #[test]
     fn vector_icon_buttons_are_consistent_click_targets() {
         egui::__run_test_ui(|ui| {
             for icon in [
-                Icon::Compose,
                 Icon::Inbox,
                 Icon::Drafts,
                 Icon::Sent,
