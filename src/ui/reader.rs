@@ -122,30 +122,33 @@ fn conversation(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    let mut scroll = egui::ScrollArea::vertical()
-        .id_salt("reader-scroll")
-        .auto_shrink([false, false]);
-    if std::mem::take(&mut state.scroll_reader_top) {
-        scroll = scroll.vertical_scroll_offset(0.0);
-    }
-    scroll.show(ui, |ui| {
-        let (gap, width) = reading_column_place(ui.available_width());
-        ui.horizontal_top(|ui| {
-            ui.add_space(gap);
-            ui.vertical(|ui| {
-                ui.set_width(width);
-                reading_column(
-                    ui,
-                    reader,
-                    places,
-                    current_folder,
-                    summary,
-                    actions_enabled,
-                    action_error,
-                    saving_attachment,
-                    reading,
-                    messages,
-                );
+    ui.scope(|ui| {
+        ui.spacing_mut().scroll = theme::panel_scroll_style();
+        let mut scroll = egui::ScrollArea::vertical()
+            .id_salt("reader-scroll")
+            .auto_shrink([false, false]);
+        if std::mem::take(&mut state.scroll_reader_top) {
+            scroll = scroll.vertical_scroll_offset(0.0);
+        }
+        scroll.show(ui, |ui| {
+            let (gap, width) = reading_column_place(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.add_space(gap);
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    reading_column(
+                        ui,
+                        reader,
+                        places,
+                        current_folder,
+                        summary,
+                        actions_enabled,
+                        action_error,
+                        saving_attachment,
+                        reading,
+                        messages,
+                    );
+                });
             });
         });
     });
@@ -848,6 +851,16 @@ mod tests {
         assert_eq!(gap, 200.0);
         // A panel dragged to nothing must not produce a negative gap.
         assert_eq!(reading_column_place(0.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn reader_scrollbar_overlays_without_resizing_content() {
+        let style = theme::panel_scroll_style();
+
+        assert!(style.floating);
+        assert_eq!(style.allocated_width(), 0.0);
+        let handle_center = -style.bar_outer_margin - style.floating_width * 0.5;
+        assert_eq!(handle_center, theme::PANEL_PADDING as f32 * 0.5);
     }
 
     #[test]

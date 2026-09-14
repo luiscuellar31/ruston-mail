@@ -427,6 +427,7 @@ fn conversation_list(
         // Read by `show_rows` to work out where each row goes, so it is set
         // on this `Ui` and not inside the closure.
         ui.spacing_mut().item_spacing.y = ROW_GAP;
+        ui.spacing_mut().scroll = theme::panel_scroll_style();
         let scroll = egui::ScrollArea::vertical()
             .id_salt("conversation-scroll")
             .auto_shrink([false, false]);

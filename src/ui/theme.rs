@@ -13,6 +13,7 @@ pub const BORDER: Color32 = Color32::from_rgb(51, 53, 64);
 pub const MUTED: Color32 = Color32::from_rgb(159, 162, 178);
 pub const DANGER: Color32 = Color32::from_rgb(245, 112, 112);
 pub const SUCCESS: Color32 = Color32::from_rgb(105, 210, 160);
+pub const PANEL_PADDING: i8 = 16;
 const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
@@ -351,7 +352,13 @@ pub fn paint_clip(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
 }
 
 pub fn panel_frame(fill: Color32) -> egui::Frame {
-    egui::Frame::new().fill(fill).inner_margin(16)
+    egui::Frame::new().fill(fill).inner_margin(PANEL_PADDING)
+}
+
+pub fn panel_scroll_style() -> egui::style::ScrollStyle {
+    let mut style = egui::style::ScrollStyle::floating();
+    style.bar_outer_margin = -(PANEL_PADDING as f32 + style.floating_width) * 0.5;
+    style
 }
 
 pub fn card() -> egui::Frame {
