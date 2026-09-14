@@ -52,6 +52,11 @@ pub fn install(context: &egui::Context) {
     style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
     style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    // Floating scrollbars cover the content at its trailing edge. A solid,
+    // narrow bar keeps that edge clear everywhere without per-panel padding.
+    style.spacing.scroll = egui::style::ScrollStyle::solid();
+    style.scroll_animation =
+        egui::style::ScrollAnimation::new(1_200.0, egui::Rangef::new(0.08, 0.24));
     // Navigation remains clickable. Message bodies opt into selection in a
     // local scope, where labels cannot steal clicks from row headers.
     style.interaction.selectable_labels = false;
@@ -288,5 +293,20 @@ mod tests {
             let button = ui.add(compact_button("More options"));
             assert!(button.rect.height() >= COMPACT_BUTTON_HEIGHT);
         });
+    }
+
+    #[test]
+    fn scrollbars_reserve_space_and_share_a_short_animation() {
+        let context = egui::Context::default();
+        install(&context);
+        let style = context.style_of(egui::Theme::Dark);
+
+        assert!(!style.spacing.scroll.floating);
+        assert!(style.spacing.scroll.allocated_width() > 0.0);
+        assert_eq!(style.scroll_animation.points_per_second, 1_200.0);
+        assert_eq!(
+            style.scroll_animation.duration,
+            egui::Rangef::new(0.08, 0.24)
+        );
     }
 }

@@ -329,25 +329,29 @@ fn conversation_list(
         // Read by `show_rows` to work out where each row goes, so it is set
         // on this `Ui` and not inside the closure.
         ui.spacing_mut().item_spacing.y = ROW_GAP;
-        let mut scroll = egui::ScrollArea::vertical()
+        let scroll = egui::ScrollArea::vertical()
             .id_salt("conversation-scroll")
             .auto_shrink([false, false]);
 
         // A row that is not drawn cannot scroll itself into view, so the
-        // offset that centres it is worked out from its number. The request
-        // is kept until the row it names turns up.
+        // rectangle that centres it is worked out from its number. It can sit
+        // outside the virtualised range: egui still animates towards it.
         let reveal = state
             .reveal_conversation
             .as_deref()
             .and_then(|wanted| rows.iter().position(|row| row.id == wanted));
-        if let Some(index) = reveal {
-            let middle = (ui.available_height() - ROW_HEIGHT) / 2.0;
-            let offset = (index as f32 * (ROW_HEIGHT + ROW_GAP) - middle).max(0.0);
-            scroll = scroll.vertical_scroll_offset(offset);
-            state.reveal_conversation = None;
-        }
 
         scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
+            if let Some(index) = reveal {
+                let row_step = ROW_HEIGHT + ROW_GAP;
+                let content_top = ui.max_rect().top() - range.start as f32 * row_step;
+                let row_rect = egui::Rect::from_min_size(
+                    egui::pos2(ui.max_rect().left(), content_top + index as f32 * row_step),
+                    egui::vec2(ui.available_width(), ROW_HEIGHT),
+                );
+                ui.scroll_to_rect(row_rect, Some(egui::Align::Center));
+            }
+
             for index in range {
                 let Some(conversation) = rows.get(index) else {
                     load_more(ui, mailbox, messages);
@@ -368,6 +372,9 @@ fn conversation_list(
                 }
             }
         });
+        if reveal.is_some() {
+            state.reveal_conversation = None;
+        }
     });
 }
 
