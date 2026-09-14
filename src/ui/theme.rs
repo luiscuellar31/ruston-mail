@@ -116,10 +116,31 @@ pub fn paint_truncated_text(
     color: Color32,
     max_width: f32,
 ) {
+    paint_truncated_text_aligned(
+        painter,
+        position,
+        egui::Align2::LEFT_TOP,
+        text,
+        font_id,
+        color,
+        max_width,
+    );
+}
+
+pub fn paint_truncated_text_aligned(
+    painter: &egui::Painter,
+    anchor: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    font_id: egui::FontId,
+    color: Color32,
+    max_width: f32,
+) {
     let width = max_width.max(0.0);
     let mut job = egui::text::LayoutJob::simple(text.to_owned(), font_id, color, width);
     job.wrap = egui::text::TextWrapping::truncate_at_width(width);
     let galley = painter.layout_job(job);
+    let position = align.anchor_size(anchor, galley.size()).min;
     painter.galley(position, galley, color);
 }
 

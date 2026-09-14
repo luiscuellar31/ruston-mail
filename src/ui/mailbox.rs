@@ -311,7 +311,8 @@ fn conversation_pane(
 const FOLDER_HEIGHT: f32 = 31.0;
 const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;
-const ROW_VERTICAL_PADDING: f32 = 8.0;
+const ROW_HORIZONTAL_PADDING: f32 = 18.0;
+const ROW_LINE_CENTER_OFFSET: f32 = 12.5;
 
 fn conversation_list(
     ui: &mut egui::Ui,
@@ -427,46 +428,46 @@ fn conversation_row(
         egui::StrokeKind::Inside,
     );
 
+    let sender_center_y = rect.center().y - ROW_LINE_CENTER_OFFSET;
+    let subject_center_y = rect.center().y + ROW_LINE_CENTER_OFFSET;
+
     if conversation.unread {
         // On the sender line: at the row's centre it reads as belonging to
         // neither line.
         ui.painter().circle_filled(
-            egui::pos2(rect.left() + 7.0, rect.top() + ROW_VERTICAL_PADDING + 8.0),
+            egui::pos2(rect.left() + 7.0, sender_center_y),
             3.5,
             theme::ACCENT,
         );
     }
 
     let meta_width = 70.0;
-    let content_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 18.0, rect.top() + ROW_VERTICAL_PADDING),
-        egui::pos2(
-            rect.right() - meta_width - 8.0,
-            rect.bottom() - ROW_VERTICAL_PADDING,
-        ),
-    );
+    let text_left = rect.left() + ROW_HORIZONTAL_PADDING;
+    let text_width = rect.right() - ROW_HORIZONTAL_PADDING - meta_width - text_left;
     let painter = ui.painter_at(rect);
-    theme::paint_truncated_text(
+    theme::paint_truncated_text_aligned(
         &painter,
-        content_rect.left_top(),
+        egui::pos2(text_left, sender_center_y),
+        Align2::LEFT_CENTER,
         correspondents,
         FontId::proportional(14.0),
         ui.visuals().strong_text_color(),
-        content_rect.width(),
+        text_width,
     );
-    theme::paint_truncated_text(
+    theme::paint_truncated_text_aligned(
         &painter,
-        content_rect.left_top() + egui::vec2(0.0, 25.0),
+        egui::pos2(text_left, subject_center_y),
+        Align2::LEFT_CENTER,
         subject,
         FontId::proportional(14.0),
         theme::MUTED,
-        content_rect.width(),
+        text_width,
     );
 
     let meta_font = FontId::proportional(11.0);
     painter.text(
-        egui::pos2(rect.right() - 8.0, rect.top() + ROW_VERTICAL_PADDING),
-        Align2::RIGHT_TOP,
+        egui::pos2(rect.right() - ROW_HORIZONTAL_PADDING, sender_center_y),
+        Align2::RIGHT_CENTER,
         time,
         meta_font.clone(),
         theme::MUTED,
@@ -479,11 +480,10 @@ fn conversation_row(
     if conversation.starred {
         facts.push(theme::STAR.to_owned());
     }
-    let bottom = rect.bottom() - ROW_VERTICAL_PADDING;
     let facts_left = painter
         .text(
-            egui::pos2(rect.right() - 8.0, bottom),
-            Align2::RIGHT_BOTTOM,
+            egui::pos2(rect.right() - ROW_HORIZONTAL_PADDING, subject_center_y),
+            Align2::RIGHT_CENTER,
             facts.join(&format!(" {} ", theme::DOT)),
             meta_font,
             theme::MUTED,
@@ -492,7 +492,7 @@ fn conversation_row(
     if conversation.has_attachments {
         theme::paint_clip(
             &painter,
-            egui::pos2(facts_left - 9.0, bottom - 6.75),
+            egui::pos2(facts_left - 9.0, subject_center_y),
             theme::MUTED,
         );
     }
