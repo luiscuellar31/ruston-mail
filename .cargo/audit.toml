@@ -1,0 +1,9 @@
+[advisories]
+ignore = [
+    # Transitive through pgp 0.19's PQC support. Its ml-dsa 0.0 API is not
+    # compatible with the fixed 0.1 release candidates yet.
+    "RUSTSEC-2025-0144",
+    # Transitive through pgp/proton-rpgp; the advisory has no patched rsa
+    # release. Keep visible here until upstream provides a migration path.
+    "RUSTSEC-2023-0071",
+]
