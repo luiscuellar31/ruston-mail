@@ -325,6 +325,7 @@ pub struct ConversationDetail {
 
 impl ConversationDetail {
     /// Whether the conversation carries a label the account made.
+    #[cfg(test)]
     pub fn carries(&self, label: &Folder) -> bool {
         label
             .custom_id()

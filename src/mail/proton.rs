@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -810,14 +811,17 @@ fn display_names(people: &[Recipient]) -> Option<String> {
 
 /// Builds sidebar counts for system and known account folders.
 fn map_counts(counts: &[LabelCount], folders: &[Folder]) -> MailboxCounts {
+    let mut counts_by_id = HashMap::with_capacity(counts.len());
+    for count in counts {
+        counts_by_id.entry(count.label_id.as_str()).or_insert(count);
+    }
+
     MailFolder::ALL
         .into_iter()
         .map(Folder::System)
         .chain(folders.iter().cloned())
         .filter_map(|folder| {
-            let count = counts
-                .iter()
-                .find(|count| count.label_id == label_id(&folder))?;
+            let count = counts_by_id.get(label_id(&folder))?;
             Some((folder, u32::try_from(count.unread).unwrap_or(0)))
         })
         .collect()
@@ -1376,6 +1380,13 @@ mod tests {
                 label_id: "custom".into(),
                 total: 1,
                 unread: 1,
+            },
+            // The API should not duplicate identifiers, but preserving the
+            // first one matches the former linear lookup if it ever does.
+            LabelCount {
+                label_id: label_ids::INBOX.into(),
+                total: 10,
+                unread: 9,
             },
         ];
 

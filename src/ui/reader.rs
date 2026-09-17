@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{Local, TimeZone};
@@ -372,9 +373,10 @@ fn label_menu(
     if labels.is_empty() {
         return;
     }
+    let carried_ids: HashSet<_> = conversation.labels.iter().map(String::as_str).collect();
     let applied = labels
         .iter()
-        .filter(|label| conversation.carries(label))
+        .filter(|label| label.custom_id().is_some_and(|id| carried_ids.contains(id)))
         .count();
     let title = if applied == 0 {
         "Labels".to_owned()
@@ -396,7 +398,8 @@ fn label_menu(
                                 Sense::hover(),
                             );
                             ui.painter().circle_filled(dot.center(), 3.5, theme::ACCENT);
-                            let carried = conversation.carries(label);
+                            let carried =
+                                label.custom_id().is_some_and(|id| carried_ids.contains(id));
                             let mut on = carried;
                             if ui.checkbox(&mut on, label.name()).changed() {
                                 messages.push(Message::ApplyAction(MailAction::SetLabel {
