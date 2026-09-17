@@ -230,9 +230,13 @@ impl App {
                     .download_attachment(&message_id, &attachment_id)
                     .await
                 {
-                    // Writing happens off the interface thread, where a large
-                    // file cannot stall a redraw.
-                    Ok((name, contents)) => downloads::save(&name, &contents),
+                    // File I/O is blocking, so keep it off both the interface
+                    // thread and Tokio's asynchronous workers.
+                    Ok((name, contents)) => {
+                        tokio::task::spawn_blocking(move || downloads::save(&name, &contents))
+                            .await
+                            .unwrap_or(Err(SaveError::Failed))
+                    }
                     Err(_) => Err(SaveError::NotFetched),
                 }
             },

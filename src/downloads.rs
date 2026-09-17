@@ -1,5 +1,7 @@
 //! Saves attachments without accepting paths or overwriting existing files.
 
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 
 /// Tried before giving up on a name, which only happens when a hundred files
@@ -32,10 +34,7 @@ pub fn save(name: &str, contents: &[u8]) -> Result<PathBuf, SaveError> {
         .and_then(|dirs| dirs.download_dir().map(Path::to_path_buf))
         .ok_or(SaveError::NoFolder)?;
 
-    let path = free_path(&folder, &safe_name(name)).ok_or(SaveError::Failed)?;
-    std::fs::write(&path, contents).map_err(|_| SaveError::Failed)?;
-
-    Ok(path)
+    save_to(&folder, &safe_name(name), contents)
 }
 
 /// The bare file name a sender asked for, with anything that could point
@@ -62,23 +61,34 @@ fn is_plain_file_name(name: &str) -> bool {
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
-/// The first free name: `report.pdf`, then `report (2).pdf`, and so on. An
-/// existing file is left alone.
-fn free_path(folder: &Path, name: &str) -> Option<PathBuf> {
-    let candidate = folder.join(name);
-    if !candidate.exists() {
-        return Some(candidate);
-    }
-
+/// Exclusively creates `report.pdf`, then `report (2).pdf`, and so on. Opening
+/// and claiming the name in one operation prevents races and symlink writes.
+fn save_to(folder: &Path, name: &str, contents: &[u8]) -> Result<PathBuf, SaveError> {
     let (stem, extension) = match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
         _ => (name, String::new()),
     };
 
-    (2..MAX_ATTEMPTS).find_map(|number| {
-        let candidate = folder.join(format!("{stem} ({number}){extension}"));
-        (!candidate.exists()).then_some(candidate)
-    })
+    for attempt in 0..MAX_ATTEMPTS {
+        let path = if attempt == 0 {
+            folder.join(name)
+        } else {
+            folder.join(format!("{stem} ({}){extension}", attempt + 1))
+        };
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(SaveError::Failed),
+        };
+        if file.write_all(contents).is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(SaveError::Failed);
+        }
+        return Ok(path);
+    }
+
+    Err(SaveError::Failed)
 }
 
 #[cfg(test)]
@@ -127,20 +137,19 @@ mod tests {
     #[test]
     fn an_existing_file_is_never_overwritten() {
         let folder = std::env::temp_dir().join(format!("ruston-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
 
-        let first = free_path(&folder, "report.pdf").unwrap();
+        let first = save_to(&folder, "report.pdf", b"one").unwrap();
         assert_eq!(first.file_name().unwrap(), "report.pdf");
-        std::fs::write(&first, b"one").unwrap();
 
-        let second = free_path(&folder, "report.pdf").unwrap();
+        let second = save_to(&folder, "report.pdf", b"two").unwrap();
         assert_eq!(second.file_name().unwrap(), "report (2).pdf");
-        std::fs::write(&second, b"two").unwrap();
 
         // The first file still holds what it held.
         assert_eq!(std::fs::read(&first).unwrap(), b"one");
         assert_eq!(
-            free_path(&folder, "report.pdf")
+            save_to(&folder, "report.pdf", b"three")
                 .unwrap()
                 .file_name()
                 .unwrap(),
@@ -148,13 +157,75 @@ mod tests {
         );
 
         // A name with no extension still gets a number.
-        let plain = free_path(&folder, "notes").unwrap();
-        std::fs::write(&plain, b"x").unwrap();
+        save_to(&folder, "notes", b"x").unwrap();
         assert_eq!(
-            free_path(&folder, "notes").unwrap().file_name().unwrap(),
+            save_to(&folder, "notes", b"y")
+                .unwrap()
+                .file_name()
+                .unwrap(),
             "notes (2)"
         );
 
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_cannot_steer_the_write_out_of_the_folder() {
+        use std::os::unix::fs::symlink;
+
+        let folder =
+            std::env::temp_dir().join(format!("ruston-save-symlink-{}", std::process::id()));
+        let outside = folder.with_extension("outside");
+        let _ = std::fs::remove_dir_all(&folder);
+        let _ = std::fs::remove_file(&outside);
+        std::fs::create_dir_all(&folder).unwrap();
+        symlink(&outside, folder.join("report.pdf")).unwrap();
+
+        let selected = save_to(&folder, "report.pdf", b"mail").unwrap();
+        let escaped = outside.exists();
+        let selected_name = selected.file_name().unwrap().to_owned();
+
+        let _ = std::fs::remove_dir_all(&folder);
+        let _ = std::fs::remove_file(&outside);
+        assert!(!escaped, "the write followed a dangling symlink");
+        assert_eq!(selected_name, "report (2).pdf");
+    }
+
+    #[test]
+    fn concurrent_saves_claim_different_names() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Barrier};
+
+        let folder =
+            std::env::temp_dir().join(format!("ruston-save-concurrent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = Arc::new(folder);
+        let barrier = Arc::new(Barrier::new(8));
+
+        let threads: Vec<_> = (0_u8..8)
+            .map(|contents| {
+                let folder = Arc::clone(&folder);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let path = save_to(&folder, "report.pdf", &[contents]).unwrap();
+                    (path, contents)
+                })
+            })
+            .collect();
+        let saves: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+
+        let mut paths = HashSet::new();
+        for (path, contents) in saves {
+            assert!(paths.insert(path.clone()));
+            assert_eq!(std::fs::read(path).unwrap(), [contents]);
+        }
+
+        let _ = std::fs::remove_dir_all(folder.as_ref());
     }
 }
