@@ -3,13 +3,14 @@ use std::sync::{Arc, Mutex, mpsc};
 use eframe::egui;
 use futures::StreamExt;
 
-use crate::app::{Effect, Effects, Message, UiEffect};
+use crate::app::{AuthAttempt, Effect, Effects, Message, UiEffect};
 use crate::mail::{ProtonMailService, SignInEvent};
 
 /// Executes application effects away from the rendering thread and wakes
 /// egui as soon as a result is ready.
 pub struct Runtime {
     executor: Option<tokio::runtime::Runtime>,
+    sign_in: Mutex<Option<tokio::task::JoinHandle<()>>>,
     sender: EventSender,
     receiver: mpsc::Receiver<Message>,
 }
@@ -39,6 +40,7 @@ impl Runtime {
 
         Ok(Self {
             executor: Some(executor),
+            sign_in: Mutex::new(None),
             sender: EventSender {
                 messages,
                 context: Arc::new(Mutex::new(None)),
@@ -70,22 +72,23 @@ impl Runtime {
                 Effect::Background(future) => {
                     self.executor().spawn(future);
                 }
-                Effect::SignIn(request) => self.sign_in(request),
+                Effect::SignIn(attempt, request) => self.sign_in(attempt, request),
+                Effect::CancelSignIn => self.cancel_sign_in(),
                 Effect::Ui(effect) => ui.push(effect),
             }
         }
         ui
     }
 
-    fn sign_in(&self, request: crate::mail::LoginRequest) {
+    fn sign_in(&self, attempt: AuthAttempt, request: crate::mail::LoginRequest) {
         let sender = self.sender.clone();
-        self.executor().spawn(async move {
+        let task = self.executor().spawn(async move {
             let (events, mut incoming) = futures::channel::mpsc::channel(1);
             let forward = async move {
                 while let Some(event) = incoming.next().await {
                     let message = match event {
-                        SignInEvent::Prompt(prompt) => Message::SignInPrompt(prompt),
-                        SignInEvent::Finished(outcome) => Message::SignInFinished(outcome),
+                        SignInEvent::Prompt(prompt) => Message::SignInPrompt(attempt, prompt),
+                        SignInEvent::Finished(outcome) => Message::SignInFinished(attempt, outcome),
                     };
                     sender.send(message);
                 }
@@ -93,6 +96,21 @@ impl Runtime {
 
             futures::future::join(ProtonMailService::sign_in(request, events), forward).await;
         });
+        let mut current = self.sign_in.lock().expect("sign-in task lock poisoned");
+        if let Some(previous) = current.replace(task) {
+            previous.abort();
+        }
+    }
+
+    fn cancel_sign_in(&self) {
+        if let Some(task) = self
+            .sign_in
+            .lock()
+            .expect("sign-in task lock poisoned")
+            .take()
+        {
+            task.abort();
+        }
     }
 
     fn executor(&self) -> &tokio::runtime::Runtime {

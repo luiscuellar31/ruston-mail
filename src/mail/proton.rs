@@ -12,6 +12,7 @@ use proton_core::{
     Client, Conversation, Error, HvChallenge, HvResolver, Label, LabelCount, LoginOptions,
     MessageMetadata, Recipient, SearchOpts, SendOptions, TotpPrompt,
 };
+use secrecy::SecretString;
 
 use super::MailAction;
 use super::outgoing::{Kind, Outgoing, SendError};
@@ -32,6 +33,9 @@ const METADATA_CONCURRENCY: usize = 4;
 /// Longest wait for any Proton request a view is waiting on. Without it a
 /// stuck call leaves the view loading forever, with no way back.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// A complete authentication attempt, including interactive challenges, must
+/// eventually release its credentials even when the server stops responding.
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(120);
 /// Sending is several requests: a draft, a key for every recipient, then the
 /// message. It is given longer than a request that only reads.
 const SEND_TIMEOUT: Duration = Duration::from_secs(90);
@@ -70,7 +74,7 @@ pub enum SignInOutcome {
 #[derive(Clone)]
 pub enum SignInPrompt {
     /// Enter the current TOTP code.
-    Totp(Reply<String>),
+    Totp(Reply<SecretString>),
     /// Complete Proton's check at `url` in a browser, then confirm.
     HumanVerification { url: String, done: Reply<()> },
 }
@@ -153,12 +157,18 @@ impl ProtonMailService {
         };
         let totp_prompt = totp_prompt(events.clone(), prompted_totp.clone());
 
-        let outcome = match Client::login_with_totp_prompt(options, totp_prompt).await {
-            Ok(client) => SignInOutcome::Authenticated(Arc::new(Self::from_client(client))),
-            Err(error) => {
+        let outcome = match tokio::time::timeout(
+            SIGN_IN_TIMEOUT,
+            Client::login_with_totp_prompt(options, totp_prompt),
+        )
+        .await
+        {
+            Ok(Ok(client)) => SignInOutcome::Authenticated(Arc::new(Self::from_client(client))),
+            Ok(Err(error)) => {
                 let has_totp = has_totp || prompted_totp.load(Ordering::Relaxed);
                 map_sign_in_error(error, has_totp, has_mailbox_password)
             }
+            Err(_) => SignInOutcome::Failed(AuthError::Connection),
         };
         let _ = events.send(SignInEvent::Finished(outcome)).await;
         // The client keeps the verification resolver; closing the channel ends

@@ -4244,7 +4244,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 [[package]]
 name = "proton-core"
 version = "0.1.1"
-source = "git+https://github.com/luiscuellar31/protonmail-rs.git?rev=82d1523a10aa24e482cae20d82dfb72fa93e7af0#82d1523a10aa24e482cae20d82dfb72fa93e7af0"
+source = "git+https://github.com/luiscuellar31/protonmail-rs.git?rev=1cba4d5eb6df433fd1836a4c388cb6d54cb34dd0#1cba4d5eb6df433fd1836a4c388cb6d54cb34dd0"
 dependencies = [
  "ammonia",
  "async-trait",
@@ -4840,11 +4840,13 @@ dependencies = [
  "futures",
  "html5ever",
  "proton-core",
+ "secrecy",
  "serde",
  "serde_json",
  "tokio",
  "tracing-subscriber",
  "url",
+ "zeroize",
 ]
 
 [[package]]

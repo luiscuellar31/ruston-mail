@@ -1,5 +1,7 @@
 use std::fmt;
 
+use secrecy::SecretString;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthError {
     UsernameRequired,
@@ -56,17 +58,17 @@ impl fmt::Display for AuthError {
 
 pub struct LoginRequest {
     pub(crate) username: String,
-    pub(crate) password: String,
-    pub(crate) totp: Option<String>,
-    pub(crate) mailbox_password: Option<String>,
+    pub(crate) password: SecretString,
+    pub(crate) totp: Option<SecretString>,
+    pub(crate) mailbox_password: Option<SecretString>,
 }
 
 impl LoginRequest {
     pub(crate) fn new(
         username: String,
-        password: String,
-        totp: Option<String>,
-        mailbox_password: Option<String>,
+        password: SecretString,
+        totp: Option<SecretString>,
+        mailbox_password: Option<SecretString>,
     ) -> Self {
         Self {
             username,

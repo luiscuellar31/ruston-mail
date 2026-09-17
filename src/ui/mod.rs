@@ -285,7 +285,7 @@ impl eframe::App for DesktopApp {
             | AuthState::NeedsTotp
             | AuthState::NeedsMailboxPassword
             | AuthState::NeedsHumanVerification { .. } => {
-                login::show(ui, &self.app, &mut messages);
+                login::show(ui, &mut self.app, &mut messages);
             }
             AuthState::Authenticated { email } => {
                 if self.app.mailbox().is_some() {

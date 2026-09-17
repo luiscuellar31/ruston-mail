@@ -3,14 +3,15 @@ use std::pin::Pin;
 
 use crate::mail::LoginRequest;
 
-use super::Message;
+use super::{AuthAttempt, Message};
 
 /// Work requested by the state machine and performed by the desktop shell.
 /// This boundary deliberately contains no GUI types.
 pub enum Effect {
     Future(Pin<Box<dyn Future<Output = Message> + Send>>),
     Background(Pin<Box<dyn Future<Output = ()> + Send>>),
-    SignIn(LoginRequest),
+    SignIn(AuthAttempt, LoginRequest),
+    CancelSignIn,
     Ui(UiEffect),
 }
 
@@ -48,8 +49,12 @@ impl Effects {
         Self(vec![Effect::Background(Box::pin(future))])
     }
 
-    pub fn sign_in(request: LoginRequest) -> Self {
-        Self(vec![Effect::SignIn(request)])
+    pub fn sign_in(attempt: AuthAttempt, request: LoginRequest) -> Self {
+        Self(vec![Effect::SignIn(attempt, request)])
+    }
+
+    pub fn cancel_sign_in() -> Self {
+        Self(vec![Effect::CancelSignIn])
     }
 
     pub fn ui(effect: UiEffect) -> Self {

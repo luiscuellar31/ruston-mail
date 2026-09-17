@@ -34,18 +34,15 @@ use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
 type SessionEpoch = u64;
+pub(crate) type AuthAttempt = u64;
 
 #[derive(Clone)]
 pub enum Message {
-    UsernameChanged(String),
-    PasswordChanged(String),
-    TotpChanged(String),
-    MailboxPasswordChanged(String),
     Submit,
     CancelChallenge,
     SessionChecked(ResumeOutcome),
-    SignInFinished(SignInOutcome),
-    SignInPrompt(SignInPrompt),
+    SignInFinished(AuthAttempt, SignInOutcome),
+    SignInPrompt(AuthAttempt, SignInPrompt),
     OpenVerificationPage,
     CopyVerificationLink,
     LinkClicked(String),
@@ -133,6 +130,9 @@ pub struct App {
     auth_state: AuthState,
     login_form: LoginForm,
     auth_error: Option<AuthError>,
+    /// Changes for every authentication attempt so queued results from an
+    /// aborted task cannot affect its replacement.
+    auth_attempt: AuthAttempt,
     /// The question a running sign-in is waiting on, if any.
     pending_prompt: Option<SignInPrompt>,
     /// A link clicked in a message, waiting for the user to confirm it.
@@ -181,6 +181,7 @@ impl App {
             auth_state: AuthState::CheckingSession,
             login_form: LoginForm::default(),
             auth_error: None,
+            auth_attempt: 0,
             pending_prompt: None,
             pending_link: None,
             backend: None,
@@ -203,6 +204,14 @@ impl App {
             .session_epoch
             .checked_add(1)
             .expect("session epoch exhausted");
+    }
+
+    fn advance_auth_attempt(&mut self) -> AuthAttempt {
+        self.auth_attempt = self
+            .auth_attempt
+            .checked_add(1)
+            .expect("authentication attempt exhausted");
+        self.auth_attempt
     }
 
     fn is_current_session(&self, epoch: SessionEpoch) -> bool {
@@ -307,36 +316,15 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Effects {
         match message {
-            Message::UsernameChanged(username) => {
-                self.login_form.username = username;
-                self.auth_error = None;
-            }
-            Message::PasswordChanged(password) => {
-                self.login_form.password = password;
-                self.auth_error = None;
-            }
-            Message::TotpChanged(totp) => {
-                self.login_form.totp = totp;
-                self.auth_error = None;
-            }
-            Message::MailboxPasswordChanged(mailbox_password) => {
-                self.login_form.mailbox_password = mailbox_password;
-                self.auth_error = None;
-            }
             Message::Submit => return self.sign_in(),
-            Message::CancelChallenge => {
-                if !matches!(self.auth_state, AuthState::SigningIn(_)) {
-                    if let Some(prompt) = self.pending_prompt.take() {
-                        prompt.cancel();
-                    }
-                    self.login_form.clear_sensitive();
-                    self.auth_error = None;
-                    self.auth_state = AuthState::SignedOut;
-                }
-            }
+            Message::CancelChallenge => return self.cancel_sign_in(),
             Message::SessionChecked(outcome) => return self.finish_session_check(outcome),
-            Message::SignInFinished(outcome) => return self.finish_sign_in(outcome),
-            Message::SignInPrompt(prompt) => return self.show_prompt(prompt),
+            Message::SignInFinished(attempt, outcome) => {
+                return self.finish_sign_in(attempt, outcome);
+            }
+            Message::SignInPrompt(attempt, prompt) => {
+                return self.show_prompt(attempt, prompt);
+            }
             Message::OpenVerificationPage => {
                 if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
                     return open_in_browser(url.clone());
@@ -1058,17 +1046,6 @@ fn open_url(url: &str) -> std::io::Result<()> {
     let mut command = std::process::Command::new("xdg-open");
 
     command.arg(url).spawn().map(drop)
-}
-
-fn optional_trimmed(value: &str) -> Option<String> {
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_owned())
-}
-
-/// Same rule as `mail::demo::non_empty`, kept under the same name on purpose:
-/// a mailbox password is taken exactly as typed, spaces included.
-fn non_empty(value: &str) -> Option<String> {
-    (!value.is_empty()).then(|| value.to_owned())
 }
 
 #[cfg(test)]

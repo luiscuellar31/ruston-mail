@@ -2,12 +2,15 @@
 
 use std::sync::Arc;
 
+use secrecy::SecretString;
+use zeroize::{Zeroize, Zeroizing};
+
 use crate::mail::{
     AuthError, Folder, LoginRequest, MailBackend, ProtonMailService, ResumeOutcome, SignInOutcome,
     SignInPrompt,
 };
 
-use super::{App, Effects, Mailbox, Message, non_empty, open_in_browser, optional_trimmed};
+use super::{App, Effects, Mailbox, Message, open_in_browser};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInStep {
@@ -36,16 +39,16 @@ pub enum AuthState {
 #[derive(Default)]
 pub(super) struct LoginForm {
     pub(super) username: String,
-    pub(super) password: String,
-    pub(super) totp: String,
-    pub(super) mailbox_password: String,
+    pub(super) password: Zeroizing<String>,
+    pub(super) totp: Zeroizing<String>,
+    pub(super) mailbox_password: Zeroizing<String>,
 }
 
 impl LoginForm {
     pub(super) fn clear_sensitive(&mut self) {
-        self.password.clear();
-        self.totp.clear();
-        self.mailbox_password.clear();
+        self.password.zeroize();
+        self.totp.zeroize();
+        self.mailbox_password.zeroize();
     }
 
     pub(super) fn clear_all(&mut self) {
@@ -59,20 +62,24 @@ impl App {
         &self.auth_state
     }
 
-    pub fn username(&self) -> &str {
-        &self.login_form.username
+    pub(crate) fn username_mut(&mut self) -> &mut String {
+        &mut self.login_form.username
     }
 
-    pub fn password(&self) -> &str {
-        &self.login_form.password
+    pub(crate) fn password_mut(&mut self) -> &mut String {
+        &mut self.login_form.password
     }
 
-    pub fn totp(&self) -> &str {
-        &self.login_form.totp
+    pub(crate) fn totp_mut(&mut self) -> &mut String {
+        &mut self.login_form.totp
     }
 
-    pub fn mailbox_password(&self) -> &str {
-        &self.login_form.mailbox_password
+    pub(crate) fn mailbox_password_mut(&mut self) -> &mut String {
+        &mut self.login_form.mailbox_password
+    }
+
+    pub(crate) fn login_edited(&mut self) {
+        self.auth_error = None;
     }
 
     pub fn error_message(&self) -> Option<String> {
@@ -110,20 +117,25 @@ impl App {
 
         let request = LoginRequest::new(
             self.login_form.username.trim().to_owned(),
-            self.login_form.password.clone(),
-            optional_trimmed(&self.login_form.totp),
-            non_empty(&self.login_form.mailbox_password),
+            SecretString::from(self.login_form.password.as_str()),
+            optional_trimmed_secret(&self.login_form.totp),
+            non_empty_secret(&self.login_form.mailbox_password),
         );
         self.auth_error = None;
         self.auth_state = AuthState::SigningIn(step);
+        let attempt = self.advance_auth_attempt();
 
-        sign_in_task(request)
+        sign_in_task(attempt, request)
     }
 
     /// Shows a question from the running sign-in. Prompts that arrive when no
     /// sign-in is running are cancelled.
-    pub(super) fn show_prompt(&mut self, prompt: SignInPrompt) -> Effects {
-        if !matches!(self.auth_state, AuthState::SigningIn(_)) {
+    pub(super) fn show_prompt(
+        &mut self,
+        attempt: super::AuthAttempt,
+        prompt: SignInPrompt,
+    ) -> Effects {
+        if attempt != self.auth_attempt || !matches!(self.auth_state, AuthState::SigningIn(_)) {
             prompt.cancel();
             return Effects::none();
         }
@@ -131,7 +143,7 @@ impl App {
         self.auth_error = None;
         let task = match &prompt {
             SignInPrompt::Totp(_) => {
-                self.login_form.totp.clear();
+                self.login_form.totp.zeroize();
                 self.auth_state = AuthState::NeedsTotp;
                 Effects::none()
             }
@@ -147,14 +159,15 @@ impl App {
     pub(super) fn answer_prompt(&mut self, prompt: SignInPrompt) -> Effects {
         match prompt {
             SignInPrompt::Totp(reply) => {
-                let code = self.login_form.totp.trim().to_owned();
+                let code = self.login_form.totp.trim();
                 if code.is_empty() {
                     self.auth_error = Some(AuthError::TotpRequired);
                     self.pending_prompt = Some(SignInPrompt::Totp(reply));
                     return Effects::none();
                 }
+                let code = SecretString::from(code);
                 // Codes expire; never keep one for a later attempt.
-                self.login_form.totp.clear();
+                self.login_form.totp.zeroize();
                 reply.send(code);
                 self.auth_state = AuthState::SigningIn(SignInStep::Totp);
             }
@@ -181,23 +194,44 @@ impl App {
         Effects::none()
     }
 
-    pub(super) fn finish_sign_in(&mut self, outcome: SignInOutcome) -> Effects {
+    pub(super) fn finish_sign_in(
+        &mut self,
+        attempt: super::AuthAttempt,
+        outcome: SignInOutcome,
+    ) -> Effects {
+        if attempt != self.auth_attempt
+            || matches!(
+                self.auth_state,
+                AuthState::CheckingSession
+                    | AuthState::SignedOut
+                    | AuthState::Authenticated { .. }
+                    | AuthState::SigningOut
+            )
+        {
+            return Effects::none();
+        }
+        if let Some(prompt) = self.pending_prompt.take() {
+            prompt.cancel();
+        }
         match outcome {
             SignInOutcome::Authenticated(service) => return self.set_authenticated(service),
-            // The user already left with Back.
-            SignInOutcome::Cancelled => {}
+            SignInOutcome::Cancelled => {
+                self.login_form.clear_sensitive();
+                self.auth_error = None;
+                self.auth_state = AuthState::SignedOut;
+            }
             SignInOutcome::NeedsMailboxPassword => {
-                self.login_form.mailbox_password.clear();
+                self.login_form.mailbox_password.zeroize();
                 self.auth_error = None;
                 self.auth_state = AuthState::NeedsMailboxPassword;
             }
             SignInOutcome::Failed(error @ AuthError::InvalidTotp) => {
-                self.login_form.totp.clear();
+                self.login_form.totp.zeroize();
                 self.auth_error = Some(error);
                 self.auth_state = AuthState::NeedsTotp;
             }
             SignInOutcome::Failed(error @ AuthError::InvalidMailboxPassword) => {
-                self.login_form.mailbox_password.clear();
+                self.login_form.mailbox_password.zeroize();
                 self.auth_error = Some(error);
                 self.auth_state = AuthState::NeedsMailboxPassword;
             }
@@ -209,6 +243,26 @@ impl App {
         }
 
         Effects::none()
+    }
+
+    pub(super) fn cancel_sign_in(&mut self) -> Effects {
+        if !matches!(
+            self.auth_state,
+            AuthState::SigningIn(_)
+                | AuthState::NeedsTotp
+                | AuthState::NeedsMailboxPassword
+                | AuthState::NeedsHumanVerification { .. }
+        ) {
+            return Effects::none();
+        }
+        if let Some(prompt) = self.pending_prompt.take() {
+            prompt.cancel();
+        }
+        self.login_form.clear_sensitive();
+        self.auth_error = None;
+        self.auth_state = AuthState::SignedOut;
+        self.advance_auth_attempt();
+        Effects::cancel_sign_in()
     }
 
     pub(super) fn set_authenticated(&mut self, service: Arc<ProtonMailService>) -> Effects {
@@ -316,8 +370,18 @@ impl App {
 }
 
 /// Runs one sign-in, forwarding its prompts and final outcome as messages.
-fn sign_in_task(request: LoginRequest) -> Effects {
-    Effects::sign_in(request)
+fn sign_in_task(attempt: super::AuthAttempt, request: LoginRequest) -> Effects {
+    Effects::sign_in(attempt, request)
+}
+
+fn optional_trimmed_secret(value: &str) -> Option<SecretString> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| SecretString::from(value))
+}
+
+/// A mailbox password is taken exactly as typed, spaces included.
+fn non_empty_secret(value: &str) -> Option<SecretString> {
+    (!value.is_empty()).then(|| SecretString::from(value))
 }
 
 // ponytail: launch failures are ignored; the page offers "Copy link" instead.

@@ -4,6 +4,7 @@ use super::*;
 use crate::mail::SendError;
 use crate::mail::demo;
 use crate::settings::{ComposePlacement, Reading};
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::mail::MailFolder;
 
@@ -1237,7 +1238,7 @@ fn signing_in_app() -> App {
     let mut app = App::new(Settings::default());
     app.auth_state = AuthState::SigningIn(SignInStep::Credentials);
     app.login_form.username = "username sentinel".into();
-    app.login_form.password = "password sentinel".into();
+    app.login_form.password = "password sentinel".to_owned().into();
     app
 }
 
@@ -1246,18 +1247,23 @@ fn totp_prompt_is_answered_within_the_same_sign_in() {
     let mut app = signing_in_app();
     let (reply, mut answer) = crate::mail::Reply::channel();
 
-    let _ = app.update(Message::SignInPrompt(SignInPrompt::Totp(reply)));
+    let _ = app.update(Message::SignInPrompt(
+        app.auth_attempt,
+        SignInPrompt::Totp(reply),
+    ));
     assert_eq!(app.auth_state, AuthState::NeedsTotp);
     assert_eq!(app.login_form.username, "username sentinel");
-    assert_eq!(app.login_form.password, "password sentinel");
+    assert_eq!(app.login_form.password.as_str(), "password sentinel");
 
     let _ = app.update(Message::Submit);
     assert_eq!(app.auth_error, Some(AuthError::TotpRequired));
-    assert_eq!(answer.try_recv(), Ok(None));
+    assert!(matches!(answer.try_recv(), Ok(None)));
 
-    let _ = app.update(Message::TotpChanged(" 123456 ".into()));
+    *app.totp_mut() = " 123456 ".into();
+    app.login_edited();
     let _ = app.update(Message::Submit);
-    assert_eq!(answer.try_recv(), Ok(Some("123456".to_owned())));
+    let code = answer.try_recv().unwrap().unwrap();
+    assert_eq!(code.expose_secret(), "123456");
     assert_eq!(app.auth_state, AuthState::SigningIn(SignInStep::Totp));
     assert!(app.login_form.totp.is_empty());
 }
@@ -1268,10 +1274,13 @@ fn human_verification_waits_for_confirmation() {
     let (done, mut answer) = crate::mail::Reply::channel();
     let url = "https://verify.proton.me/?methods=captcha&token=t".to_owned();
 
-    let _ = app.update(Message::SignInPrompt(SignInPrompt::HumanVerification {
-        url: url.clone(),
-        done,
-    }));
+    let _ = app.update(Message::SignInPrompt(
+        app.auth_attempt,
+        SignInPrompt::HumanVerification {
+            url: url.clone(),
+            done,
+        },
+    ));
     assert_eq!(app.auth_state, AuthState::NeedsHumanVerification { url });
     assert_eq!(answer.try_recv(), Ok(None));
 
@@ -1283,15 +1292,29 @@ fn human_verification_waits_for_confirmation() {
 #[test]
 fn going_back_cancels_the_pending_prompt() {
     let mut app = signing_in_app();
-    let (reply, mut answer) = crate::mail::Reply::<String>::channel();
-    let _ = app.update(Message::SignInPrompt(SignInPrompt::Totp(reply)));
+    let attempt = app.auth_attempt;
+    let (reply, mut answer) = crate::mail::Reply::<SecretString>::channel();
+    let _ = app.update(Message::SignInPrompt(attempt, SignInPrompt::Totp(reply)));
 
-    let _ = app.update(Message::CancelChallenge);
+    let effects = app.update(Message::CancelChallenge);
     assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert!(app.login_form.password.is_empty());
     assert!(answer.try_recv().is_err());
+    assert!(matches!(
+        effects.into_iter().next(),
+        Some(Effect::CancelSignIn)
+    ));
 
-    let _ = app.update(Message::SignInFinished(SignInOutcome::Cancelled));
-    assert_eq!(app.auth_state, AuthState::SignedOut);
+    *app.password_mut() = "new password".into();
+    let _ = app.update(Message::Submit);
+    assert!(matches!(app.auth_state, AuthState::SigningIn(_)));
+    assert_ne!(app.auth_attempt, attempt);
+
+    let _ = app.update(Message::SignInFinished(
+        attempt,
+        SignInOutcome::Failed(AuthError::Connection),
+    ));
+    assert!(matches!(app.auth_state, AuthState::SigningIn(_)));
     assert_eq!(app.auth_error, None);
 }
 
@@ -1299,9 +1322,12 @@ fn going_back_cancels_the_pending_prompt() {
 fn prompts_without_a_running_sign_in_are_cancelled() {
     let mut app = App::new(Settings::default());
     app.auth_state = AuthState::SignedOut;
-    let (reply, mut answer) = crate::mail::Reply::<String>::channel();
+    let (reply, mut answer) = crate::mail::Reply::<SecretString>::channel();
 
-    let _ = app.update(Message::SignInPrompt(SignInPrompt::Totp(reply)));
+    let _ = app.update(Message::SignInPrompt(
+        app.auth_attempt,
+        SignInPrompt::Totp(reply),
+    ));
 
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert!(answer.try_recv().is_err());
@@ -1310,13 +1336,15 @@ fn prompts_without_a_running_sign_in_are_cancelled() {
 #[test]
 fn terminal_sign_in_failure_clears_secrets() {
     let mut app = App::new(Settings::default());
-    app.login_form.password = "password sentinel".into();
-    app.login_form.totp = "totp sentinel".into();
-    app.login_form.mailbox_password = "mailbox password sentinel".into();
+    app.auth_state = AuthState::SigningIn(SignInStep::Credentials);
+    app.login_form.password = "password sentinel".to_owned().into();
+    app.login_form.totp = "totp sentinel".to_owned().into();
+    app.login_form.mailbox_password = "mailbox password sentinel".to_owned().into();
 
-    let _ = app.update(Message::SignInFinished(SignInOutcome::Failed(
-        AuthError::Connection,
-    )));
+    let _ = app.update(Message::SignInFinished(
+        app.auth_attempt,
+        SignInOutcome::Failed(AuthError::Connection),
+    ));
 
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert!(app.login_form.password.is_empty());
