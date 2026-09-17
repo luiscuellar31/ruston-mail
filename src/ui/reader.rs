@@ -272,8 +272,16 @@ fn reading_column(
     if detail_data.messages.is_empty() {
         detail(ui, "This conversation has no messages.");
     }
-    for message in &detail_data.messages {
-        message_card(ui, message, reader, saving_attachment, reading, messages);
+    for (index, message) in detail_data.messages.iter().enumerate() {
+        message_card(
+            ui,
+            message,
+            reader.preview_at(index),
+            reader,
+            saving_attachment,
+            reading,
+            messages,
+        );
         ui.add_space(12.0);
     }
 }
@@ -407,6 +415,7 @@ fn label_menu(
 fn message_card(
     ui: &mut egui::Ui,
     message: &MailMessage,
+    preview: &str,
     reader: &ConversationReader,
     saving_attachment: Option<&str>,
     reading: Reading,
@@ -415,7 +424,7 @@ fn message_card(
     let expanded = reader.is_expanded(&message.id, reading);
     ui.push_id(&message.id, |ui| {
         theme::card().show(ui, |ui| {
-            if message_header(ui, message, reader.preview(&message.id), expanded).clicked() {
+            if message_header(ui, message, preview, expanded).clicked() {
                 messages.push(Message::ToggleMessageExpanded(message.id.clone()));
             }
             if expanded {
@@ -1142,6 +1151,7 @@ mod tests {
                     message_card(
                         ui,
                         &reader.detail().messages[0],
+                        reader.preview_at(0),
                         &reader,
                         None,
                         Reading::default(),

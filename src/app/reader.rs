@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::mail::{ConversationDetail, Folder, MailboxError, MessageBody};
@@ -67,14 +68,9 @@ impl ConversationReader {
         }
     }
 
-    /// The line that stands in for a message while it is folded away.
-    pub fn preview(&self, message_id: &str) -> &str {
-        self.detail
-            .messages
-            .iter()
-            .position(|message| message.id == message_id)
-            .and_then(|index| self.previews.get(index))
-            .map_or("", String::as_str)
+    /// The line that stands in for the message at this position while folded.
+    pub fn preview_at(&self, index: usize) -> &str {
+        self.previews.get(index).map_or("", String::as_str)
     }
 
     pub fn conversation_id(&self) -> &str {
@@ -141,8 +137,8 @@ impl ConversationReader {
 /// One-line opening words, flattened before splitting to preserve punctuation.
 fn preview(body: &MessageBody) -> String {
     let text = match body {
-        MessageBody::PlainText(content) => content.clone(),
-        MessageBody::Rich(rich) => rich.plain_text(),
+        MessageBody::PlainText(content) => Cow::Borrowed(content.as_str()),
+        MessageBody::Rich(rich) => Cow::Owned(rich.plain_text()),
     };
     text.split_whitespace()
         .take(PREVIEW_WORDS)
@@ -213,12 +209,12 @@ mod tests {
             saying("rich", MessageBody::Rich(rich)),
         ]);
 
-        assert_eq!(reader.preview("plain"), "Hi Alex, First line. Second line.");
-        assert_eq!(reader.preview("long").split(' ').count(), PREVIEW_WORDS);
+        assert_eq!(reader.preview_at(0), "Hi Alex, First line. Second line.");
+        assert_eq!(reader.preview_at(1).split(' ').count(), PREVIEW_WORDS);
         // Blocks are joined, and the words inside one keep their spacing.
-        assert_eq!(reader.preview("rich"), "Hello there again");
-        // A message the conversation does not carry has nothing to show.
-        assert_eq!(reader.preview("missing"), "");
+        assert_eq!(reader.preview_at(2), "Hello there again");
+        // A position the conversation does not carry has nothing to show.
+        assert_eq!(reader.preview_at(3), "");
     }
 
     fn order(reader: &ConversationReader) -> Vec<&str> {
@@ -238,6 +234,25 @@ mod tests {
         assert!(reader.is_expanded("c", plain()));
         assert!(!reader.is_expanded("a", plain()));
         assert!(!reader.is_expanded("b", plain()));
+    }
+
+    #[test]
+    fn previews_follow_messages_after_chronological_sorting() {
+        let messages = [("c", 30), ("a", 10), ("b", 20)].map(|(id, time)| {
+            let mut message = saying(id, MessageBody::PlainText(id.into()));
+            message.time = Some(time);
+            message
+        });
+        let reader = reader(messages.into());
+
+        assert_eq!(
+            [
+                reader.preview_at(0),
+                reader.preview_at(1),
+                reader.preview_at(2)
+            ],
+            ["a", "b", "c"]
+        );
     }
 
     #[test]
