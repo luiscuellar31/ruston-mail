@@ -1,12 +1,15 @@
 //! Persistent preferences with safe defaults and best-effort writes.
 
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::{self, ErrorKind, Write};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::mail::{BodyFormat, Folder, MailFolder};
 
 const FILE: &str = "settings.json";
+const TEMP_ATTEMPTS: u32 = 100;
 
 /// Ratios are clamped on load: a damaged file must not produce a layout with
 /// no room to read in.
@@ -173,10 +176,7 @@ impl Settings {
         let Ok(text) = serde_json::to_string_pretty(self) else {
             return;
         };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(path, text);
+        let _ = write_atomically(&path, text.as_bytes());
     }
 
     /// In-memory settings that open a given folder without becoming writable.
@@ -235,6 +235,45 @@ fn path() -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "Ruston Mail")?;
 
     Some(dirs.config_dir().join(FILE))
+}
+
+/// Replaces complete settings in one rename, leaving the previous file intact
+/// until the new contents have reached disk.
+fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "settings path has no parent"))?;
+    fs::create_dir_all(parent)?;
+
+    for attempt in 0..TEMP_ATTEMPTS {
+        let temporary = parent.join(format!(".{FILE}.{}.{}.tmp", std::process::id(), attempt));
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+
+        let written = file.write_all(contents).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = written {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        if let Err(error) = fs::rename(&temporary, path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        ErrorKind::AlreadyExists,
+        "no temporary settings name is available",
+    ))
 }
 
 #[cfg(test)]
@@ -328,6 +367,21 @@ mod tests {
         // The flag is bookkeeping, not content, so it never reaches the file.
         let text = serde_json::to_string(&loaded).unwrap();
         assert!(!text.contains("stored"));
+    }
+
+    #[test]
+    fn settings_replace_a_complete_file_and_leave_no_temporary_file() {
+        let folder = std::env::temp_dir().join(format!("ruston-settings-{}", std::process::id()));
+        let path = folder.join(FILE);
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(&path, b"old settings").unwrap();
+
+        write_atomically(&path, b"new settings").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"new settings");
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(folder);
     }
 
     #[test]
