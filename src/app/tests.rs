@@ -1302,17 +1302,28 @@ fn failed_logout_restores_authenticated_shell() {
 #[test]
 fn successful_logout_opens_login_and_clears_mailbox() {
     let mut app = authenticated_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "private draft".to_owned(),
+    ));
     app.auth_state = AuthState::SigningOut;
 
     let _ = app.update(Message::LogoutFinished(Ok(())));
 
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert!(app.mailbox.is_none());
+    assert!(app.compose().is_none());
 }
 
 #[test]
 fn expired_session_signs_out_and_clears_mailbox() {
     let mut app = authenticated_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "private draft".to_owned(),
+    ));
 
     let _ = app.update(Message::ConversationsLoaded(
         1,
@@ -1322,6 +1333,7 @@ fn expired_session_signs_out_and_clears_mailbox() {
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
     assert!(app.mailbox.is_none());
+    assert!(app.compose().is_none());
 }
 
 #[test]

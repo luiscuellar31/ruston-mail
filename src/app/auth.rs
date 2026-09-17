@@ -290,6 +290,9 @@ impl App {
     pub(super) fn close_mailbox(&mut self, error: Option<AuthError>) {
         self.backend = None;
         self.mailbox = None;
+        // A draft belongs to the account that created it and must never cross
+        // into a later session.
+        self.compose = None;
         self.pending_link = None;
         self.showing_settings = false;
         // Never show one account's folders in the next session.
