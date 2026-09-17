@@ -10,6 +10,9 @@ use crate::mail::{
 /// request currently in flight is applied; anything else is stale.
 pub type RequestId = u64;
 
+/// Recent readers are kept only for quick backtracking within this session.
+const READER_CACHE_CAPACITY: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageRequest {
     pub id: RequestId,
@@ -89,6 +92,30 @@ struct CachedListing {
     dirty: bool,
 }
 
+/// List metadata that tells whether a loaded reader still describes its row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReaderStamp {
+    kind: SummaryKind,
+    time: Option<i64>,
+    message_count: u32,
+}
+
+impl ReaderStamp {
+    fn of(summary: &ConversationSummary) -> Self {
+        Self {
+            kind: summary.kind,
+            time: summary.time,
+            message_count: summary.message_count,
+        }
+    }
+}
+
+/// One memory-only reader, ordered least-recently used first in the cache.
+struct CachedReader {
+    stamp: ReaderStamp,
+    reader: ConversationReader,
+}
+
 /// A folder's stable identity. Account folders are keyed by Proton's id, not
 /// their display name, so a rename does not strand a valid cached listing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -127,6 +154,8 @@ pub struct Mailbox {
     counts: Option<MailboxCounts>,
     counts_request: Option<RequestId>,
     reader: ReaderState,
+    reader_stamp: Option<ReaderStamp>,
+    cached_readers: Vec<CachedReader>,
     search_query: String,
     /// Results of the last server search, while they are on screen.
     search: Option<SearchState>,
@@ -162,6 +191,8 @@ impl Mailbox {
             counts: None,
             counts_request: Some(counts_request),
             reader: ReaderState::Empty,
+            reader_stamp: None,
+            cached_readers: Vec::new(),
             search_query: String::new(),
             search: None,
             search_request: None,
@@ -443,13 +474,19 @@ impl Mailbox {
         if reselecting && !matches!(self.reader, ReaderState::Failed { .. }) {
             return None;
         }
-        let kind = self
+        let summary = self
             .visible_conversations()
-            .find(|conversation| conversation.id == conversation_id)?
-            .kind;
+            .find(|conversation| conversation.id == conversation_id)?;
+        let stamp = ReaderStamp::of(summary);
         self.action_error = None;
 
-        Some(self.open_conversation(conversation_id, kind, request))
+        if let Some(reader) = self.take_cached_reader(&conversation_id, stamp) {
+            self.set_reader(ReaderState::Loaded(reader));
+            self.reader_stamp = Some(stamp);
+            return None;
+        }
+
+        Some(self.open_conversation(conversation_id, stamp.kind, request))
     }
 
     pub fn retry_conversation(&mut self, request: RequestId) -> Option<ReaderRequest> {
@@ -507,7 +544,12 @@ impl Mailbox {
 
         match result {
             Ok(detail) if detail.id == request.conversation_id => {
+                let stamp = self
+                    .visible_conversations()
+                    .find(|summary| summary.id == request.conversation_id)
+                    .map(ReaderStamp::of);
                 self.set_reader(ReaderState::Loaded(ConversationReader::new(detail)));
+                self.reader_stamp = stamp;
                 None
             }
             Ok(_) => {
@@ -529,7 +571,52 @@ impl Mailbox {
     }
 
     fn set_reader(&mut self, reader: ReaderState) {
-        self.reader = reader;
+        let previous = std::mem::replace(&mut self.reader, reader);
+        let stamp = self.reader_stamp.take();
+        if let (ReaderState::Loaded(reader), Some(stamp)) = (previous, stamp) {
+            self.cache_reader(reader, stamp);
+        }
+    }
+
+    fn cache_reader(&mut self, reader: ConversationReader, stamp: ReaderStamp) {
+        if let Some(index) = self
+            .cached_readers
+            .iter()
+            .position(|cached| cached.reader.conversation_id() == reader.conversation_id())
+        {
+            self.cached_readers.remove(index);
+        }
+        if self.cached_readers.len() >= READER_CACHE_CAPACITY {
+            self.cached_readers.remove(0);
+        }
+        self.cached_readers.push(CachedReader { stamp, reader });
+    }
+
+    fn take_cached_reader(
+        &mut self,
+        conversation_id: &str,
+        stamp: ReaderStamp,
+    ) -> Option<ConversationReader> {
+        let index = self
+            .cached_readers
+            .iter()
+            .position(|cached| cached.reader.conversation_id() == conversation_id)?;
+        let cached = self.cached_readers.remove(index);
+
+        (cached.stamp == stamp).then_some(cached.reader)
+    }
+
+    /// A successful send can add a message to a previously loaded thread.
+    pub(super) fn invalidate_reader_cache(&mut self) {
+        self.cached_readers.clear();
+        // Keep the open reader visible, but reload it after navigating away.
+        self.reader_stamp = None;
+    }
+
+    /// Clears content that is known to have left the current listing.
+    fn discard_reader(&mut self) {
+        self.reader = ReaderState::Empty;
+        self.reader_stamp = None;
     }
 
     pub fn toggle_message(&mut self, message_id: &str) {
@@ -761,7 +848,7 @@ impl Mailbox {
     /// Closes the reader and names the visible row that took the place of the
     /// one that was at `index`, so reading continues where it left off.
     fn open_row_after(&mut self, index: usize) -> Option<String> {
-        self.set_reader(ReaderState::Empty);
+        self.discard_reader();
         let last = self.visible_conversations().count().checked_sub(1)?;
 
         self.visible_conversations()

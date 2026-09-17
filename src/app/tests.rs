@@ -644,7 +644,7 @@ fn demo_selection_opens_reader_with_newest_message_expanded() {
 }
 
 #[test]
-fn toggling_messages_and_switching_conversations() {
+fn returning_to_a_conversation_restores_its_reader_without_loading() {
     let (mut app, _) = App::boot(true, Settings::default());
     deliver_demo_page(&mut app, 1, 0);
     let _ = app.update(Message::SelectConversation("demo-0".into()));
@@ -657,10 +657,11 @@ fn toggling_messages_and_switching_conversations() {
 
     let _ = app.update(Message::SelectConversation("demo-2".into()));
     deliver_selected_demo_detail(&mut app);
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    let effects = app.update(Message::SelectConversation("demo-0".into()));
+    // The only work is scrolling the restored reader to its top.
+    assert_eq!(effects.units(), 1);
     assert!(
-        !app.mailbox()
+        app.mailbox()
             .unwrap()
             .reader()
             .unwrap()
@@ -873,8 +874,8 @@ fn demo_star_actions_update_starred_folder_and_selection() {
             .any(|conversation| conversation.id == "demo-1")
     );
 
-    let _ = app.update(Message::SelectConversation("demo-1".into()));
-    deliver_selected_demo_detail(&mut app);
+    let effects = app.update(Message::SelectConversation("demo-1".into()));
+    assert_eq!(effects.units(), 1);
     let _ = app.update(Message::ApplyAction(MailAction::SetStarred(false)));
     let mailbox = app.mailbox().unwrap();
     assert!(

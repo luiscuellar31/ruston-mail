@@ -734,19 +734,24 @@ impl App {
 
     fn start_conversation_load(&mut self, id: String) -> Effects {
         let request = self.next_request();
-        let request = self
-            .active_mailbox()
-            .and_then(|mailbox| mailbox.start_conversation_load(id, request));
-        if request.is_none() {
+        let Some(mailbox) = self.active_mailbox() else {
+            return Effects::none();
+        };
+        let previous = mailbox.selected_conversation().map(str::to_owned);
+        let request = mailbox.start_conversation_load(id, request);
+        let selection_changed = mailbox.selected_conversation() != previous.as_deref();
+        if request.is_none() && !selection_changed {
             return Effects::none();
         }
 
+        let content = match request {
+            Some(request) => self.fetch_conversation(Some(request)),
+            None => self.mark_opened_read(),
+        };
+
         // A new conversation starts at its top, not where the last one was
         // left; the reader pane keeps its scroll offset otherwise.
-        Effects::batch([
-            Effects::ui(UiEffect::ScrollReaderTop),
-            self.fetch_conversation(request),
-        ])
+        Effects::batch([Effects::ui(UiEffect::ScrollReaderTop), content])
     }
 
     /// Brings a row the app opened on its own into view. A row the user

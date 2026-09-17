@@ -9,8 +9,10 @@ Ruston Mail talks directly to Proton through `proton-core`; it has no separate
 application server. `proton-core` handles authentication, key unlocking, and
 mail cryptography.
 
-Mail and mailbox lists stay in memory while the app runs. Ruston Mail does not
-build a local mail cache.
+Mail and mailbox lists stay in memory while the app runs. In addition to the
+conversation on screen, up to eight previously opened conversations can remain
+in memory for quick backtracking. Ruston Mail does not write a persistent mail
+cache to disk.
 
 HTML messages do not run in a browser view. They are sanitized, parsed, and
 drawn with native UI elements. Scripts do not run, and remote images are never

@@ -297,6 +297,7 @@ impl App {
                 self.compose = None;
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.invalidate_listings();
+                    mailbox.invalidate_reader_cache();
                 }
                 self.reload_counts()
             }

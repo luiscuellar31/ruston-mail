@@ -857,7 +857,7 @@ fn a_custom_folder_cache_survives_a_rename() {
 }
 
 #[test]
-fn reselecting_keeps_expansion_and_switching_resets_it() {
+fn reselecting_and_returning_to_cached_mail_keep_expansion() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     load_detail(&mut mailbox, "a", detail("a", &["a1", "a2"]), 3);
     mailbox.toggle_message("a1");
@@ -871,10 +871,74 @@ fn reselecting_keeps_expansion_and_switching_resets_it() {
     );
 
     load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
-    load_detail(&mut mailbox, "a", detail("a", &["a1", "a2"]), 6);
+    assert_eq!(mailbox.start_conversation_load("a".into(), 6), None);
     let reader = mailbox.reader().unwrap();
-    assert!(!reader.is_expanded("a1", Reading::default()));
+    assert!(reader.is_expanded("a1", Reading::default()));
     assert!(reader.is_expanded("a2", Reading::default()));
+}
+
+#[test]
+fn changed_list_metadata_makes_a_cached_reader_reload() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+
+    let refresh = mailbox.refresh(4).unwrap();
+    let mut changed = summary("a");
+    changed.message_count = 2;
+    mailbox.finish_page(
+        refresh.id,
+        Ok(ConversationPage {
+            conversations: vec![changed, summary("b")],
+            total: 2,
+        }),
+    );
+    load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
+
+    let request = mailbox.start_conversation_load("a".into(), 6).unwrap();
+    assert_eq!(request.conversation_id, "a");
+    assert!(matches!(
+        mailbox.reader_state(),
+        ReaderState::Loading {
+            conversation_id,
+            request: 6,
+        } if conversation_id == "a"
+    ));
+}
+
+#[test]
+fn reader_cache_evicts_the_least_recent_entry_at_its_limit() {
+    let names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+    let mut mailbox = loaded_inbox(&names, names.len() as u32);
+    for (offset, name) in names.iter().enumerate() {
+        load_detail(&mut mailbox, name, detail(name, &[name]), 3 + offset as u64);
+    }
+
+    assert_eq!(mailbox.cached_readers.len(), READER_CACHE_CAPACITY);
+    assert!(
+        mailbox
+            .cached_readers
+            .iter()
+            .all(|cached| { cached.reader.conversation_id() != "a" })
+    );
+    assert!(
+        mailbox
+            .cached_readers
+            .iter()
+            .any(|cached| { cached.reader.conversation_id() == "b" })
+    );
+}
+
+#[test]
+fn invalidating_readers_for_a_send_forces_the_next_open_to_reload() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+    load_detail(&mut mailbox, "b", detail("b", &["b1"]), 4);
+    assert_eq!(mailbox.cached_readers.len(), 1);
+
+    mailbox.invalidate_reader_cache();
+
+    assert!(mailbox.cached_readers.is_empty());
+    assert!(mailbox.start_conversation_load("a".into(), 5).is_some());
 }
 
 #[test]
