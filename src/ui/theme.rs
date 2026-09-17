@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use eframe::egui::{
     self, Atom, AtomLayoutResponse, Color32, CornerRadius, Id, Response, Stroke, Widget,
     WidgetInfo, WidgetType,
@@ -14,6 +16,11 @@ pub const MUTED: Color32 = Color32::from_rgb(159, 162, 178);
 pub const DANGER: Color32 = Color32::from_rgb(245, 112, 112);
 pub const SUCCESS: Color32 = Color32::from_rgb(105, 210, 160);
 pub const PANEL_PADDING: i8 = 16;
+pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
+const SKELETON_LOW: Color32 = Color32::from_rgb(37, 38, 47);
+const SKELETON_HIGH: Color32 = Color32::from_rgb(54, 56, 68);
+const SKELETON_PERIOD_SECONDS: f64 = 1.6;
+const SKELETON_FRAME: Duration = Duration::from_millis(50);
 const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
@@ -74,7 +81,7 @@ impl Widget for IconButton<'_> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
         let mut button = egui::Button::new(icon_atom())
             .small()
-            .min_size(egui::vec2(32.0, 28.0));
+            .min_size(ICON_BUTTON_MIN_SIZE);
         if let Some(selected) = self.selected {
             button = button.selected(selected);
         }
@@ -268,6 +275,36 @@ pub fn selectable_text<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)
         content(ui)
     })
     .inner
+}
+
+/// A quiet loading pulse shared by skeleton layouts. Delayed repaints keep it
+/// inexpensive, and an unfocused window falls back to a static placeholder.
+pub fn skeleton_fill(ui: &egui::Ui) -> Color32 {
+    let animated = ui.style().animation_time > 0.0 && ui.input(|input| input.focused);
+    if animated {
+        ui.ctx().request_repaint_after(SKELETON_FRAME);
+    }
+    let time = if animated {
+        ui.input(|input| input.time)
+    } else {
+        0.0
+    };
+    skeleton_fill_at(time)
+}
+
+pub fn paint_skeleton(painter: &egui::Painter, rect: egui::Rect, fill: Color32) {
+    painter.rect_filled(rect, CornerRadius::same(4), fill);
+}
+
+fn skeleton_fill_at(time: f64) -> Color32 {
+    let wave = ((time * std::f64::consts::TAU / SKELETON_PERIOD_SECONDS).sin() as f32 + 1.0) * 0.5;
+    let channel =
+        |low: u8, high: u8| (low as f32 + (high as f32 - low as f32) * wave).round() as u8;
+    Color32::from_rgb(
+        channel(SKELETON_LOW.r(), SKELETON_HIGH.r()),
+        channel(SKELETON_LOW.g(), SKELETON_HIGH.g()),
+        channel(SKELETON_LOW.b(), SKELETON_HIGH.b()),
+    )
 }
 
 /// Centers a widget group after measuring it in an inert sizing pass.
@@ -558,6 +595,18 @@ mod tests {
         assert_eq!(
             style.scroll_animation.duration,
             egui::Rangef::new(0.08, 0.24)
+        );
+    }
+
+    #[test]
+    fn skeleton_pulse_stays_between_its_theme_colors() {
+        assert_eq!(
+            skeleton_fill_at(SKELETON_PERIOD_SECONDS * 0.25),
+            SKELETON_HIGH
+        );
+        assert_eq!(
+            skeleton_fill_at(SKELETON_PERIOD_SECONDS * 0.75),
+            SKELETON_LOW
         );
     }
 }

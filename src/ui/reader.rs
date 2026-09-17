@@ -53,14 +53,7 @@ pub(super) fn show(
 
     match mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
-        ReaderState::Loading { .. } => {
-            theme::centered_group(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Loading conversation…");
-                });
-            });
-        }
+        ReaderState::Loading { .. } => conversation_skeleton(ui),
         ReaderState::Failed { error, .. } => {
             theme::centered_group(ui, |ui| {
                 ui.label(error.conversation_message());
@@ -158,6 +151,76 @@ fn conversation(
 fn reading_column_place(available: f32) -> (f32, f32) {
     let width = available.min(READING_WIDTH);
     (((available - width) * 0.5).max(0.0), width)
+}
+
+fn conversation_skeleton(ui: &mut egui::Ui) {
+    let fill = theme::skeleton_fill(ui);
+    let response = ui
+        .scope(|ui| {
+            let (gap, width) = reading_column_place(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.add_space(gap);
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    skeleton_bar(ui, width * 0.72, 24.0, fill);
+                    skeleton_bar(ui, 52.0, 8.0, fill);
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for _ in 0..3 {
+                            skeleton_bar(
+                                ui,
+                                theme::ICON_BUTTON_MIN_SIZE.x,
+                                theme::ICON_BUTTON_MIN_SIZE.y,
+                                fill,
+                            );
+                        }
+                        ui.separator();
+                        for _ in 0..2 {
+                            skeleton_bar(
+                                ui,
+                                theme::ICON_BUTTON_MIN_SIZE.x,
+                                theme::ICON_BUTTON_MIN_SIZE.y,
+                                fill,
+                            );
+                        }
+                        ui.separator();
+                        skeleton_bar(ui, 60.0, theme::ICON_BUTTON_MIN_SIZE.y, fill);
+                    });
+                    ui.add_space(8.0);
+                    skeleton_message_card(ui, fill);
+                });
+            });
+        })
+        .response;
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::ProgressIndicator,
+            true,
+            "Loading conversation",
+        )
+    });
+}
+
+fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32) -> egui::Response {
+    theme::card()
+        .show(ui, |ui| {
+            let width = ui.available_width();
+            ui.set_min_width(width);
+            skeleton_bar(ui, width * 0.38, 12.0, fill);
+            skeleton_bar(ui, width * 0.24, 8.0, fill);
+            ui.add_space(12.0);
+            for fraction in [0.92, 0.76, 0.84, 0.48] {
+                skeleton_bar(ui, width * fraction, 9.0, fill);
+            }
+        })
+        .response
+}
+
+fn skeleton_bar(ui: &mut egui::Ui, width: f32, height: f32, fill: Color32) -> egui::Response {
+    let size = egui::vec2(width.min(ui.available_width()).max(0.0), height);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    theme::paint_skeleton(ui.painter(), rect, fill);
+    response
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -971,6 +1034,34 @@ mod tests {
         assert_eq!(message_count_label(0), "No messages");
         assert_eq!(message_count_label(1), "1 message");
         assert_eq!(message_count_label(7), "7 messages");
+    }
+
+    #[test]
+    fn loading_message_card_fills_the_reading_column_and_shows_body_lines() {
+        let context = egui::Context::default();
+        let mut rect = egui::Rect::NOTHING;
+
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(READING_WIDTH, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.set_width(READING_WIDTH);
+                    rect = skeleton_message_card(ui, Color32::GRAY).rect;
+                },
+            )
+            .drop_without_applying_deltas();
+
+        assert!((rect.width() - READING_WIDTH).abs() < 0.1);
+        assert!(
+            rect.height() > 100.0,
+            "loading message card lost its expanded body: {rect:?}"
+        );
     }
 
     #[test]

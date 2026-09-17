@@ -326,7 +326,7 @@ fn conversation_pane(
 
     let empty = mailbox.visible_conversations().next().is_none();
     match (mailbox.status(), empty) {
-        (ListStatus::Loading(_), _) => centered(ui, "Loading conversations…"),
+        (ListStatus::Loading(_), _) => conversation_skeleton(ui),
         (ListStatus::Failed(error), true) => {
             centered(ui, error.message());
             if ui.button("Try again").clicked() {
@@ -594,11 +594,84 @@ fn conversation_row(
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+fn conversation_skeleton(ui: &mut egui::Ui) {
+    let fill = theme::skeleton_fill(ui);
+    let available = ui.available_height();
+    let rows = (((available + ROW_GAP) / (ROW_HEIGHT + ROW_GAP)).floor() as usize).clamp(1, 12);
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().item_spacing.y = ROW_GAP;
+            for index in 0..rows {
+                skeleton_conversation_row(ui, index, fill);
+            }
+        })
+        .response;
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::ProgressIndicator,
+            true,
+            "Loading conversations",
+        )
+    });
+}
+
+fn skeleton_conversation_row(ui: &mut egui::Ui, index: usize, fill: Color32) -> egui::Response {
+    const SENDER_WIDTHS: [f32; 4] = [0.62, 0.48, 0.72, 0.56];
+    const SUBJECT_WIDTHS: [f32; 4] = [0.44, 0.66, 0.52, 0.36];
+
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), Sense::hover());
+    let painter = ui.painter_at(rect);
+    let sender_center_y = rect.center().y - ROW_LINE_CENTER_OFFSET;
+    let subject_center_y = rect.center().y + ROW_LINE_CENTER_OFFSET;
+    let text_left = rect.left() + ROW_HORIZONTAL_PADDING;
+    let text_right = rect.right() - ROW_HORIZONTAL_PADDING - 70.0;
+    let text_width = (text_right - text_left).max(24.0);
+    let bar = |center_y: f32, width: f32, height: f32| {
+        theme::paint_skeleton(
+            &painter,
+            egui::Rect::from_min_size(
+                egui::pos2(text_left, center_y - height * 0.5),
+                egui::vec2(width, height),
+            ),
+            fill,
+        );
+    };
+    bar(
+        sender_center_y,
+        text_width * SENDER_WIDTHS[index % SENDER_WIDTHS.len()],
+        11.0,
+    );
+    bar(
+        subject_center_y,
+        text_width * SUBJECT_WIDTHS[index % SUBJECT_WIDTHS.len()],
+        9.0,
+    );
+    theme::paint_skeleton(
+        &painter,
+        egui::Rect::from_center_size(
+            egui::pos2(
+                rect.right() - ROW_HORIZONTAL_PADDING - 18.0,
+                sender_center_y,
+            ),
+            egui::vec2(36.0, 8.0),
+        ),
+        fill,
+    );
+
+    response
+}
+
 fn load_more(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) {
     if matches!(mailbox.status(), ListStatus::LoadingMore(_)) {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label("Loading more…");
+        let fill = theme::skeleton_fill(ui);
+        let response = skeleton_conversation_row(ui, 0, fill);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::ProgressIndicator,
+                true,
+                "Loading more conversations",
+            )
         });
     } else if mailbox.has_more()
         && ui
@@ -822,6 +895,16 @@ mod tests {
             .drop_without_applying_deltas();
 
         assert_eq!(height, ROW_HEIGHT);
+    }
+
+    #[test]
+    fn a_skeleton_row_matches_the_real_row_height() {
+        egui::__run_test_ui(|ui| {
+            ui.set_width(320.0);
+            let response = skeleton_conversation_row(ui, 0, Color32::GRAY);
+            assert_eq!(response.rect.height(), ROW_HEIGHT);
+            assert!(!response.sense.senses_click());
+        });
     }
 
     #[test]
