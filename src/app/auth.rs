@@ -217,6 +217,7 @@ impl App {
     }
 
     pub(super) fn open_mailbox(&mut self, backend: MailBackend, email: Option<String>) -> Effects {
+        self.advance_session_epoch();
         self.login_form.clear_all();
         self.auth_error = None;
         let page_size = backend.page_size();
@@ -261,13 +262,20 @@ impl App {
 
         self.auth_error = None;
         self.auth_state = AuthState::SigningOut;
-        Effects::perform(
-            async move { service.logout().await },
-            Message::LogoutFinished,
-        )
+        let epoch = self.session_epoch;
+        Effects::perform(async move { service.logout().await }, move |result| {
+            Message::LogoutFinished(epoch, result)
+        })
     }
 
-    pub(super) fn finish_logout(&mut self, result: Result<(), AuthError>) {
+    pub(super) fn finish_logout(
+        &mut self,
+        epoch: super::SessionEpoch,
+        result: Result<(), AuthError>,
+    ) {
+        if !self.is_current_session(epoch) {
+            return;
+        }
         // The session may have expired while signing out.
         if self.auth_state != AuthState::SigningOut {
             return;
@@ -288,6 +296,7 @@ impl App {
 
     /// Drops all session state and returns to the login screen.
     pub(super) fn close_mailbox(&mut self, error: Option<AuthError>) {
+        self.advance_session_epoch();
         self.backend = None;
         self.mailbox = None;
         // A draft belongs to the account that created it and must never cross

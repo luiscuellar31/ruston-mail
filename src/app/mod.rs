@@ -33,6 +33,8 @@ pub use mailbox::{
 use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
+type SessionEpoch = u64;
+
 #[derive(Clone)]
 pub enum Message {
     UsernameChanged(String),
@@ -51,7 +53,7 @@ pub enum Message {
     CopyLink,
     DismissLink,
     Logout,
-    LogoutFinished(Result<(), AuthError>),
+    LogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
     SelectConversation(String),
     RetryConversation,
@@ -78,7 +80,7 @@ pub enum Message {
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
     /// The folders the account made, fetched once when the mailbox opens.
-    FoldersLoaded(Result<Vec<Folder>, MailboxError>),
+    FoldersLoaded(SessionEpoch, Result<Vec<Folder>, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
@@ -89,7 +91,7 @@ pub enum Message {
     /// Fetches one attachment and saves it, by message and attachment id.
     SaveAttachment(String, String),
     /// Where an attachment landed, or why it did not.
-    AttachmentSaved(Result<PathBuf, SaveError>),
+    AttachmentSaved(SessionEpoch, Result<PathBuf, SaveError>),
     /// Opens or closes the settings window.
     ShowSettings(bool),
     /// Marks opened mail as read, or leaves it unread.
@@ -124,7 +126,7 @@ pub enum Message {
     ComposeChanged(ComposeField, String),
     /// Hands the message over to be sent.
     Send,
-    Sent(Result<(), SendError>),
+    Sent(SessionEpoch, Result<(), SendError>),
 }
 
 pub struct App {
@@ -137,6 +139,9 @@ pub struct App {
     pending_link: Option<PendingLink>,
     backend: Option<MailBackend>,
     mailbox: Option<Mailbox>,
+    /// Changes whenever an account opens or closes so late async results can
+    /// never mutate another session.
+    session_epoch: SessionEpoch,
     last_request: RequestId,
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
@@ -180,6 +185,7 @@ impl App {
             pending_link: None,
             backend: None,
             mailbox: None,
+            session_epoch: 0,
             last_request: 0,
             folders: Vec::new(),
             settings,
@@ -190,6 +196,17 @@ impl App {
             saved_attachment: None,
             saving_attachment: None,
         }
+    }
+
+    fn advance_session_epoch(&mut self) {
+        self.session_epoch = self
+            .session_epoch
+            .checked_add(1)
+            .expect("session epoch exhausted");
+    }
+
+    fn is_current_session(&self, epoch: SessionEpoch) -> bool {
+        self.session_epoch == epoch
     }
 
     /// An app that has finished looking for a session and found none, which
@@ -223,6 +240,7 @@ impl App {
         }
         self.saved_attachment = None;
         self.saving_attachment = Some(attachment_id.clone());
+        let epoch = self.session_epoch;
 
         Effects::perform(
             async move {
@@ -240,7 +258,7 @@ impl App {
                     Err(_) => Err(SaveError::NotFetched),
                 }
             },
-            Message::AttachmentSaved,
+            move |outcome| Message::AttachmentSaved(epoch, outcome),
         )
     }
 
@@ -330,7 +348,7 @@ impl App {
                 }
             }
             Message::Logout => return self.logout(),
-            Message::LogoutFinished(result) => self.finish_logout(result),
+            Message::LogoutFinished(epoch, result) => self.finish_logout(epoch, result),
             Message::SelectFolder(folder) => return self.select_folder(folder),
             Message::SelectConversation(id) => return self.select_conversation(id),
             Message::RetryConversation => return self.retry_conversation(),
@@ -390,7 +408,10 @@ impl App {
                 self.handle_mailbox_error(error);
                 return self.mark_opened_read();
             }
-            Message::FoldersLoaded(result) => {
+            Message::FoldersLoaded(epoch, result) => {
+                if !self.is_current_session(epoch) {
+                    return Effects::none();
+                }
                 match result {
                     Ok(folders) => self.folders = folders,
                     // Without them the sidebar simply shows Proton's own.
@@ -453,7 +474,10 @@ impl App {
             Message::SaveAttachment(message_id, attachment_id) => {
                 return self.save_attachment(message_id, attachment_id);
             }
-            Message::AttachmentSaved(outcome) => {
+            Message::AttachmentSaved(epoch, outcome) => {
+                if !self.is_current_session(epoch) {
+                    return Effects::none();
+                }
                 self.saving_attachment = None;
                 // A save that landed after the session ended has nobody left
                 // to tell, and its news must not surface in the next one.
@@ -490,7 +514,7 @@ impl App {
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
             Message::Send => return self.send_compose(),
-            Message::Sent(result) => return self.finish_send(result),
+            Message::Sent(epoch, result) => return self.finish_send(epoch, result),
         }
 
         Effects::none()
@@ -925,11 +949,11 @@ impl App {
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
         };
+        let epoch = self.session_epoch;
 
-        Effects::perform(
-            async move { backend.list_folders().await },
-            Message::FoldersLoaded,
-        )
+        Effects::perform(async move { backend.list_folders().await }, move |result| {
+            Message::FoldersLoaded(epoch, result)
+        })
     }
 
     fn fetch_counts(&self, request: Option<RequestId>) -> Effects {

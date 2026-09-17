@@ -74,6 +74,26 @@ fn deliver_demo_search(app: &mut App, query: &str) {
     let _ = app.update(Message::SearchLoaded(request, result));
 }
 
+fn deliver_folders(app: &mut App, result: Result<Vec<Folder>, MailboxError>) {
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::FoldersLoaded(epoch, result));
+}
+
+fn deliver_attachment(app: &mut App, result: Result<PathBuf, SaveError>) {
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::AttachmentSaved(epoch, result));
+}
+
+fn deliver_logout(app: &mut App, result: Result<(), AuthError>) {
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::LogoutFinished(epoch, result));
+}
+
+fn deliver_send(app: &mut App, result: Result<(), SendError>) {
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::Sent(epoch, result));
+}
+
 #[test]
 fn only_a_real_change_counts_as_one() {
     // Repeated drag values must not advance the revision.
@@ -230,6 +250,7 @@ fn press(app: &mut App, key: Key) {
 #[test]
 fn a_save_in_flight_does_not_outlive_the_session() {
     let mut app = loaded_demo_app();
+    let previous_epoch = app.session_epoch;
     let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
     assert_eq!(app.saving_attachment(), Some("file"));
 
@@ -237,24 +258,42 @@ fn a_save_in_flight_does_not_outlive_the_session() {
     assert_eq!(app.saving_attachment(), None);
     assert!(app.saved_attachment().is_none());
 
-    // Ignore an attachment response from the previous session.
-    let _ = app.update(Message::AttachmentSaved(Ok(PathBuf::from("/tmp/x.pdf"))));
+    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.update(Message::SaveAttachment("demo-1".into(), "new-file".into()));
+
+    // A late save from the previous session must not replace the new one.
+    let _ = app.update(Message::AttachmentSaved(
+        previous_epoch,
+        Ok(PathBuf::from("/tmp/x.pdf")),
+    ));
     assert!(app.saved_attachment().is_none());
+    assert_eq!(app.saving_attachment(), Some("new-file"));
 }
 
 #[test]
 fn signing_out_takes_the_account_folders_with_it() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::FoldersLoaded(Ok(vec![
-        Folder::custom("kZ9", "Invoices"),
-        Folder::label("wN2", "Receipts"),
-    ])));
+    let previous_epoch = app.session_epoch;
+    deliver_folders(
+        &mut app,
+        Ok(vec![
+            Folder::custom("kZ9", "Invoices"),
+            Folder::label("wN2", "Receipts"),
+        ]),
+    );
     assert_eq!(app.folders().len(), 2);
 
     let _ = app.update(Message::Logout);
 
     // The next sign-in can be a different account, and its sidebar must
     // not open showing names that belong to the last one.
+    assert!(app.folders().is_empty());
+
+    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.update(Message::FoldersLoaded(
+        previous_epoch,
+        Ok(vec![Folder::custom("old", "Previous account")]),
+    ));
     assert!(app.folders().is_empty());
 }
 
@@ -358,10 +397,7 @@ fn the_account_folders_reach_the_sidebar() {
 
     let invoices = Folder::custom("kZ9", "Invoices");
     let receipts = Folder::label("wN2", "Receipts");
-    let _ = app.update(Message::FoldersLoaded(Ok(vec![
-        invoices.clone(),
-        receipts.clone(),
-    ])));
+    deliver_folders(&mut app, Ok(vec![invoices.clone(), receipts.clone()]));
 
     assert_eq!(app.folders(), [invoices, receipts]);
 }
@@ -406,12 +442,12 @@ fn a_renamed_folder_is_taken_up_and_a_removed_one_falls_back() {
     // The account renamed it since the settings file was written, so the
     // sidebar and the header agree on the name it has now.
     let renamed = Folder::custom("kZ9", "Facturas");
-    let _ = app.update(Message::FoldersLoaded(Ok(vec![renamed.clone()])));
+    deliver_folders(&mut app, Ok(vec![renamed.clone()]));
     assert_eq!(app.mailbox().unwrap().folder(), &renamed);
 
     // Once it is gone from the account there is nothing to show under it,
     // so reading falls back to the one folder that is always there.
-    let _ = app.update(Message::FoldersLoaded(Ok(Vec::new())));
+    deliver_folders(&mut app, Ok(Vec::new()));
     assert_eq!(app.mailbox().unwrap().folder(), &Folder::INBOX);
 }
 
@@ -918,7 +954,7 @@ fn one_attachment_is_saved_at_a_time() {
     let _ = app.update(Message::SaveAttachment("demo-0".into(), "other".into()));
     assert_eq!(app.saving_attachment(), Some("file"));
 
-    let _ = app.update(Message::AttachmentSaved(Err(SaveError::NotFetched)));
+    deliver_attachment(&mut app, Err(SaveError::NotFetched));
     assert_eq!(app.saving_attachment(), None);
     // Once the first one is done, the next press is free to go.
     let _ = app.update(Message::SaveAttachment("demo-0".into(), "other".into()));
@@ -1293,7 +1329,7 @@ fn failed_logout_restores_authenticated_shell() {
     let mut app = App::new(Settings::default());
     app.auth_state = AuthState::SigningOut;
 
-    let _ = app.update(Message::LogoutFinished(Err(AuthError::SessionUnavailable)));
+    deliver_logout(&mut app, Err(AuthError::SessionUnavailable));
 
     assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
     assert_eq!(app.auth_error, Some(AuthError::SessionUnavailable));
@@ -1309,7 +1345,7 @@ fn successful_logout_opens_login_and_clears_mailbox() {
     ));
     app.auth_state = AuthState::SigningOut;
 
-    let _ = app.update(Message::LogoutFinished(Ok(())));
+    deliver_logout(&mut app, Ok(()));
 
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert!(app.mailbox.is_none());
@@ -1352,13 +1388,32 @@ fn stale_expired_session_response_is_ignored() {
 #[test]
 fn logout_result_after_session_expiry_is_ignored() {
     let mut app = authenticated_app();
+    let previous_epoch = app.session_epoch;
     app.auth_state = AuthState::SigningOut;
     let _ = app.update(Message::CountsLoaded(2, Err(MailboxError::SessionExpired)));
 
-    let _ = app.update(Message::LogoutFinished(Err(AuthError::Connection)));
+    let _ = app.update(Message::LogoutFinished(
+        previous_epoch,
+        Err(AuthError::Connection),
+    ));
 
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
+}
+
+#[test]
+fn logout_result_from_a_previous_session_is_ignored() {
+    let mut app = authenticated_app();
+    let previous_epoch = app.session_epoch;
+    app.auth_state = AuthState::SigningOut;
+    let _ = app.update(Message::CountsLoaded(2, Err(MailboxError::SessionExpired)));
+    let _ = app.open_mailbox(MailBackend::demo(), None);
+    app.auth_state = AuthState::SigningOut;
+
+    let _ = app.update(Message::LogoutFinished(previous_epoch, Ok(())));
+
+    assert_eq!(app.auth_state, AuthState::SigningOut);
+    assert!(app.mailbox().is_some());
 }
 
 #[test]
@@ -1395,11 +1450,27 @@ fn a_message_is_written_sent_and_put_away() {
     assert_eq!(task.units(), 1);
     assert_eq!(app.compose().map(Compose::sending), Some(Sending::InFlight));
 
-    let _ = app.update(Message::Sent(Ok(())));
+    deliver_send(&mut app, Ok(()));
     assert!(
         app.compose().is_none(),
         "the window stays open after sending"
     );
+}
+
+#[test]
+fn send_result_from_a_previous_session_keeps_the_new_draft() {
+    let mut app = loaded_demo_app();
+    let previous_epoch = app.session_epoch;
+    write(&mut app, "old@example.com");
+    let _ = app.update(Message::Send);
+    let _ = app.update(Message::Logout);
+
+    let _ = app.open_mailbox(MailBackend::demo(), None);
+    write(&mut app, "new@example.com");
+    let _ = app.update(Message::Sent(previous_epoch, Ok(())));
+
+    let compose = app.compose().expect("the new session keeps its draft");
+    assert_eq!(compose.field(ComposeField::To), "new@example.com");
 }
 
 #[test]
@@ -1415,7 +1486,7 @@ fn sending_revalidates_a_cached_sent_folder() {
 
     write(&mut app, "alex@example.com");
     let _ = app.update(Message::Send);
-    let _ = app.update(Message::Sent(Ok(())));
+    deliver_send(&mut app, Ok(()));
 
     assert_eq!(
         app.update(Message::SelectFolder(sys(MailFolder::Sent)))
@@ -1449,7 +1520,7 @@ fn a_refusal_keeps_the_message_and_says_why() {
     write(&mut app, "alex@example.com");
     let _ = app.update(Message::Send);
 
-    let _ = app.update(Message::Sent(Err(SendError::DemoLimitReached)));
+    deliver_send(&mut app, Err(SendError::DemoLimitReached));
 
     let writing = app.compose().expect("the message is still here");
     assert_eq!(

@@ -271,6 +271,7 @@ impl App {
 
     /// Hands the message over, if it is ready and no other is already gone.
     pub(super) fn send_compose(&mut self) -> Effects {
+        let epoch = self.session_epoch;
         let format = self.settings.compose_format;
         let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) else {
             return Effects::none();
@@ -284,10 +285,20 @@ impl App {
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
         };
-        Effects::perform(async move { backend.send(&outgoing).await }, Message::Sent)
+        Effects::perform(
+            async move { backend.send(&outgoing).await },
+            move |result| Message::Sent(epoch, result),
+        )
     }
 
-    pub(super) fn finish_send(&mut self, result: Result<(), SendError>) -> Effects {
+    pub(super) fn finish_send(
+        &mut self,
+        epoch: super::SessionEpoch,
+        result: Result<(), SendError>,
+    ) -> Effects {
+        if !self.is_current_session(epoch) {
+            return Effects::none();
+        }
         let Some(compose) = self.compose.as_mut() else {
             return Effects::none();
         };
