@@ -109,8 +109,12 @@ impl App {
                     return Effects::none();
                 }
                 // In-flight messages cannot be dismissed.
-                if self.compose().is_some_and(|writing| !writing.in_flight()) {
-                    self.close_compose();
+                if let Some(compose) = self.compose().filter(|c| !c.in_flight()) {
+                    if compose.confirming_discard() {
+                        self.cancel_discard();
+                    } else {
+                        self.close_compose();
+                    }
                     return Effects::none();
                 }
                 if self.pending_link.take().is_some() {

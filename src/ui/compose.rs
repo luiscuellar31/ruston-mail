@@ -29,11 +29,19 @@ pub(super) fn show_window(context: &egui::Context, compose: &Compose) -> Vec<Mes
                 if compose.in_flight() {
                     root.ctx()
                         .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else if compose.is_untouched() || compose.confirming_discard() {
+                    messages.push(Message::DiscardCompose);
                 } else {
+                    root.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::CancelClose);
                     messages.push(Message::CloseCompose);
                 }
             } else if root.input(|input| input.key_pressed(egui::Key::Escape)) {
-                messages.push(Message::CloseCompose);
+                if compose.confirming_discard() {
+                    messages.push(Message::CancelDiscard);
+                } else {
+                    messages.push(Message::CloseCompose);
+                }
             } else if root
                 .input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter))
                 && compose.not_ready().is_none()
@@ -84,6 +92,32 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         });
     });
     ui.add_space(10.0);
+
+    if compose.confirming_discard() {
+        theme::card()
+            .stroke(egui::Stroke::new(1.0, theme::DANGER))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Discard unsaved message?")
+                            .strong()
+                            .color(theme::DANGER),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .button(egui::RichText::new("Discard").color(theme::DANGER))
+                            .clicked()
+                        {
+                            messages.push(Message::DiscardCompose);
+                        }
+                        if ui.button("Keep writing").clicked() {
+                            messages.push(Message::CancelDiscard);
+                        }
+                    });
+                });
+            });
+        ui.add_space(10.0);
+    }
 
     if let Some(answer) = compose.answering() {
         answered(ui, answer, compose.asks_for_recipients());

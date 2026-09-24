@@ -239,6 +239,60 @@ fn closing_settings_keeps_the_message_open() {
     assert!(app.compose().is_some());
 }
 
+#[test]
+fn escape_key_closes_untouched_compose_without_prompt() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    assert!(app.compose().is_some());
+
+    press(&mut app, Key::Escape);
+    assert!(app.compose().is_none());
+}
+
+#[test]
+fn escape_key_prompts_to_discard_when_message_has_content() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "Drafting...".into(),
+    ));
+
+    // First escape asks for confirmation instead of discarding
+    press(&mut app, Key::Escape);
+    assert!(app.compose().is_some());
+    assert!(app.compose().unwrap().confirming_discard());
+
+    // Second escape cancels confirmation and keeps the draft
+    press(&mut app, Key::Escape);
+    assert!(app.compose().is_some());
+    assert!(!app.compose().unwrap().confirming_discard());
+
+    // Discard button dispatches DiscardCompose
+    let _ = app.update(Message::CloseCompose);
+    assert!(app.compose().unwrap().confirming_discard());
+    let _ = app.update(Message::DiscardCompose);
+    assert!(app.compose().is_none());
+}
+
+#[test]
+fn typing_clears_discard_prompt() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "Drafting...".into(),
+    ));
+    let _ = app.update(Message::CloseCompose);
+    assert!(app.compose().unwrap().confirming_discard());
+
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "Drafting more...".into(),
+    ));
+    assert!(!app.compose().unwrap().confirming_discard());
+}
+
 /// Sends a plain key press, as the window would when no field took it.
 fn press(app: &mut App, key: Key) {
     let _ = app.update(Message::KeyPressed(KeyPress {
@@ -1658,11 +1712,24 @@ fn a_message_already_gone_cannot_be_sent_twice_or_dismissed() {
 #[test]
 fn escape_puts_an_unsent_message_away() {
     let mut app = loaded_demo_app();
-    write(&mut app, "alex@example.com");
-
+    let _ = app.update(Message::OpenCompose);
     press(&mut app, Key::Escape);
+    assert!(
+        app.compose().is_none(),
+        "untouched compose is put away immediately"
+    );
 
-    assert!(app.compose().is_none());
+    write(&mut app, "alex@example.com");
+    press(&mut app, Key::Escape);
+    assert!(
+        app.compose().is_some_and(|c| c.confirming_discard()),
+        "written compose asks for confirmation before being put away"
+    );
+    let _ = app.update(Message::DiscardCompose);
+    assert!(
+        app.compose().is_none(),
+        "confirming discard puts message away"
+    );
 }
 
 #[test]

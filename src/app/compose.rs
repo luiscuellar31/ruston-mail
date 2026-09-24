@@ -68,6 +68,7 @@ pub struct Compose {
     /// to one person.
     more: bool,
     state: State,
+    confirming_discard: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -98,6 +99,7 @@ impl Compose {
             ComposeField::Body => &mut self.body,
         };
         *slot = value;
+        self.confirming_discard = false;
         // Typing after a refusal is an attempt to fix it, so the refusal goes.
         if matches!(self.state, State::Failed(_)) {
             self.state = State::Writing;
@@ -106,6 +108,10 @@ impl Compose {
 
     pub fn showing_more(&self) -> bool {
         self.more
+    }
+
+    pub fn confirming_discard(&self) -> bool {
+        self.confirming_discard
     }
 
     /// What is being answered, when something is.
@@ -249,11 +255,33 @@ impl App {
         });
     }
 
-    /// Puts an unsent message away. One already on its way is left alone: it
-    /// is out of the sender's hands, and the window says so until it lands.
+    /// Puts an unsent message away. Untouched messages close at once;
+    /// written ones ask for confirmation first.
     pub(super) fn close_compose(&mut self) {
+        let Some(compose) = self.compose.as_mut() else {
+            return;
+        };
+        if compose.in_flight() {
+            return;
+        }
+        if compose.is_untouched() {
+            self.compose = None;
+        } else {
+            compose.confirming_discard = true;
+        }
+    }
+
+    /// Discards an unsent message even if it carries text.
+    pub(super) fn discard_compose(&mut self) {
         if !self.compose.as_ref().is_some_and(Compose::in_flight) {
             self.compose = None;
+        }
+    }
+
+    /// Cancels discard confirmation and keeps the message.
+    pub(super) fn cancel_discard(&mut self) {
+        if let Some(compose) = self.compose.as_mut() {
+            compose.confirming_discard = false;
         }
     }
 
@@ -413,5 +441,35 @@ mod tests {
         let mut spaces = Compose::default();
         spaces.set(ComposeField::Body, "   \n ".to_owned());
         assert!(spaces.is_untouched(), "whitespace is not writing");
+    }
+
+    #[test]
+    fn closing_an_untouched_message_discards_immediately() {
+        let mut app = App::new(crate::settings::Settings::default());
+        app.open_compose();
+        assert!(app.compose().is_some());
+
+        app.close_compose();
+        assert!(app.compose().is_none());
+    }
+
+    #[test]
+    fn closing_a_written_message_asks_for_confirmation() {
+        let mut app = App::new(crate::settings::Settings::default());
+        app.open_compose();
+        app.change_compose(ComposeField::Body, "Draft content".to_owned());
+
+        app.close_compose();
+        assert!(app.compose().is_some());
+        assert!(app.compose().unwrap().confirming_discard());
+
+        // Cancelling confirmation returns to writing
+        app.cancel_discard();
+        assert!(!app.compose().unwrap().confirming_discard());
+        assert!(app.compose().is_some());
+
+        // Discarding clears the draft
+        app.discard_compose();
+        assert!(app.compose().is_none());
     }
 }

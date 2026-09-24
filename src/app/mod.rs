@@ -118,8 +118,12 @@ pub enum Message {
         forward: bool,
         everyone: bool,
     },
-    /// Puts an unsent message away.
+    /// Puts an unsent message away. Untouched messages close; written ones ask first.
     CloseCompose,
+    /// Discards an unsent message after confirmation.
+    DiscardCompose,
+    /// Cancels discard confirmation and returns to editing.
+    CancelDiscard,
     /// Shows or hides the copy fields.
     ToggleComposeCopies,
     ComposeChanged(ComposeField, String),
@@ -502,6 +506,8 @@ impl App {
                 everyone,
             } => self.answer(&message_id, forward, everyone),
             Message::CloseCompose => self.close_compose(),
+            Message::DiscardCompose => self.discard_compose(),
+            Message::CancelDiscard => self.cancel_discard(),
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
             Message::Send => return self.send_compose(),
