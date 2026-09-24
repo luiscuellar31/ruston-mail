@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Ruston Mail</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>Ruston Mail</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>__IDENTIFIER__</string>
+
+    <key>CFBundleExecutable</key>
+    <string>__EXECUTABLE__</string>
+
+    <key>CFBundleIconFile</key>
+    <string>ruston-mail</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+
+    <key>CFBundleVersion</key>
+    <string>__BUILD__</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Email address link</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>mailto</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+    </array>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT License. Unofficial native desktop client for Proton Mail.</string>
+</dict>
+</plist>

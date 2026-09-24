@@ -23,3 +23,8 @@ target
 # macOS
 .DS_Store
 ._*
+
+# Packaging and distribution
+dist/
+*.dmg
+*.app/

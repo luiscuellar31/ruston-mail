@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Non-sandboxed desktop client for native keychain and local file access -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Allow outgoing network connections to Proton Mail API servers -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Disallow attaching a debugger in release builds -->
+    <key>com.apple.security.get-task-allow</key>
+    <false/>
+</dict>
+</plist>
