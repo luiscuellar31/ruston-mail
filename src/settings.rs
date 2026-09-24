@@ -46,6 +46,8 @@ pub struct Settings {
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
+    /// Show unread email count badge on the application dock or taskbar icon.
+    pub show_unread_badge: bool,
     /// Whether `load` read these settings, allowing them to be written back.
     #[serde(skip)]
     stored: bool,
@@ -67,6 +69,7 @@ impl Default for Settings {
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
             zoom: 1.0,
+            show_unread_badge: true,
             stored: false,
         }
     }
@@ -338,6 +341,7 @@ mod tests {
 
         assert!(!defaults.expand_all_messages);
         assert!(!defaults.show_quoted_text);
+        assert!(defaults.show_unread_badge);
         assert_eq!(defaults.reading(), Reading::default());
     }
 
@@ -349,6 +353,7 @@ mod tests {
         // A file written by an older version keeps whatever it does carry.
         let partial: Settings = serde_json::from_str(r#"{"confirm_links": false}"#).unwrap();
         assert!(!partial.confirm_links);
+        assert!(partial.show_unread_badge);
         assert_eq!(partial.folder, Folder::INBOX);
         assert_eq!(partial.compose_placement, ComposePlacement::ReadingPane);
     }

@@ -188,6 +188,16 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings) {
             ui,
             "Scales everything, not the text alone, so the window keeps its proportions.",
         );
+        ui.add_space(8.0);
+        #[cfg(target_os = "macos")]
+        let badge_label = "Show unread count badge on the Dock icon";
+        #[cfg(not(target_os = "macos"))]
+        let badge_label = "Show unread count badge on the app icon";
+        ui.checkbox(&mut settings.show_unread_badge, badge_label);
+        description(
+            ui,
+            "Updates the application icon with the number of unread messages in your inbox.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Keyboard", |ui| {
@@ -234,6 +244,9 @@ fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
     }
     if (draft.zoom - current.zoom).abs() > f32::EPSILON {
         messages.push(Message::SetZoom(draft.zoom));
+    }
+    if draft.show_unread_badge != current.show_unread_badge {
+        messages.push(Message::SetShowUnreadBadge(draft.show_unread_badge));
     }
     messages
 }
@@ -375,8 +388,9 @@ mod tests {
 
         draft.confirm_links = false;
         draft.zoom = 1.15;
+        draft.show_unread_badge = false;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 2);
+        assert_eq!(changes.len(), 3);
         assert!(
             changes
                 .iter()
@@ -386,6 +400,11 @@ mod tests {
             changes
                 .iter()
                 .any(|message| matches!(message, Message::SetZoom(zoom) if *zoom == 1.15))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetShowUnreadBadge(false)))
         );
     }
 

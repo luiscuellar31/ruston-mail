@@ -53,6 +53,7 @@ struct DesktopApp {
     ui: UiState,
     demo: bool,
     title: String,
+    dock_badge: Option<u32>,
     auto_refresh: AutoRefresh,
     /// Preferences being edited in the settings window until Apply is pressed.
     settings_draft: Option<Settings>,
@@ -73,6 +74,7 @@ impl DesktopApp {
             ui: UiState::default(),
             demo,
             title: String::new(),
+            dock_badge: None,
             auto_refresh: AutoRefresh::default(),
             settings_draft: None,
             settings_seen: 0,
@@ -272,6 +274,14 @@ impl DesktopApp {
             context.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
     }
+
+    fn update_dock_badge(&mut self) {
+        let badge = dock_badge_count(&self.app);
+        if badge != self.dock_badge {
+            self.dock_badge = badge;
+            set_dock_badge(badge);
+        }
+    }
 }
 
 impl eframe::App for DesktopApp {
@@ -284,12 +294,14 @@ impl eframe::App for DesktopApp {
         self.refresh_automatically(context);
         self.save_settled_settings(context);
         self.update_title(context);
+        self.update_dock_badge();
     }
 
     /// Closing is the one moment the settings must reach the file whether or
     /// not they have settled.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.app.save_settings();
+        set_dock_badge(None);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -387,6 +399,31 @@ fn title_label(unread: Option<u32>, demo: bool) -> String {
     }
 }
 
+pub(crate) fn dock_badge_count(app: &App) -> Option<u32> {
+    if !app.settings().show_unread_badge {
+        return None;
+    }
+    app.mailbox()
+        .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX))
+        .filter(|&count| count > 0)
+}
+
+#[cfg(target_os = "macos")]
+fn set_dock_badge(count: Option<u32>) {
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::{MainThreadMarker, NSString};
+
+    if let Some(mtm) = MainThreadMarker::new() {
+        let app = NSApplication::sharedApplication(mtm);
+        let dock_tile = app.dockTile();
+        let label = count.map(|c| NSString::from_str(&c.to_string()));
+        dock_tile.setBadgeLabel(label.as_deref());
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_dock_badge(_count: Option<u32>) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +434,17 @@ mod tests {
         assert_eq!(title_label(Some(0), false), "Ruston Mail");
         assert_eq!(title_label(None, false), "Ruston Mail");
         assert_eq!(title_label(Some(3), true), "Ruston Mail (demo) (3)");
+    }
+
+    #[test]
+    fn dock_badge_count_returns_none_when_unauthenticated() {
+        let (app, _) = App::boot(false, crate::settings::Settings::default());
+        assert_eq!(dock_badge_count(&app), None);
+    }
+
+    #[test]
+    fn set_dock_badge_does_not_panic() {
+        set_dock_badge(Some(5));
+        set_dock_badge(None);
     }
 }

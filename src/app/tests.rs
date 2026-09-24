@@ -293,6 +293,18 @@ fn typing_clears_discard_prompt() {
     assert!(!app.compose().unwrap().confirming_discard());
 }
 
+#[test]
+fn dock_badge_reflects_inbox_unread_and_preference() {
+    let mut app = loaded_demo_app();
+    assert_eq!(crate::ui::dock_badge_count(&app), Some(6));
+
+    let _ = app.update(Message::SetShowUnreadBadge(false));
+    assert_eq!(crate::ui::dock_badge_count(&app), None);
+
+    let _ = app.update(Message::SetShowUnreadBadge(true));
+    assert_eq!(crate::ui::dock_badge_count(&app), Some(6));
+}
+
 /// Sends a plain key press, as the window would when no field took it.
 fn press(app: &mut App, key: Key) {
     let _ = app.update(Message::KeyPressed(KeyPress {

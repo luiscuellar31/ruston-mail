@@ -103,6 +103,8 @@ pub enum Message {
     SetShowQuotedText(bool),
     /// Scales the whole interface.
     SetZoom(f32),
+    /// Shows or hides the unread mail badge on the dock/app icon.
+    SetShowUnreadBadge(bool),
     /// Picks the folder a run opens in.
     SetStartFolder(StartFolder),
     /// Writes a message out as HTML, or as plain text.
@@ -492,6 +494,9 @@ impl App {
                 self.remember(|settings| settings.show_quoted_text = on);
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
+            Message::SetShowUnreadBadge(on) => {
+                self.remember(|settings| settings.show_unread_badge = on);
+            }
             Message::SetStartFolder(start) => self.remember(|settings| settings.start = start),
             Message::SetComposeFormat(format) => {
                 self.remember(|settings| settings.compose_format = format);
