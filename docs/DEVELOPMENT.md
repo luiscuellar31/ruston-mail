@@ -38,6 +38,23 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ```
 
+## Packaging (macOS)
+
+Build a signed `Ruston Mail.app` bundle and draggable `.dmg` disk image:
+
+```sh
+./packaging/macos/package.sh
+```
+
+Options:
+- `--skip-build`: Package the existing `target/release/ruston` binary without rebuilding.
+- `CODESIGN_IDENTITY="Developer ID Application: ..."`: Sign with a commercial certificate; defaults to ad-hoc signing (`-s -`).
+
+Artifacts are written to `dist/`:
+- `dist/Ruston Mail.app`
+- `dist/ruston-mail-<version>-<arch>.dmg`
+- `dist/ruston-mail-<version>-<arch>.dmg.sha256`
+
 ## Source layout
 
 The code follows three main layers:

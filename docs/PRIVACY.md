@@ -43,6 +43,9 @@ metadata and credentials.
 
 Self-built macOS binaries may ask for Keychain access again after a rebuild.
 Without a stable code signature, macOS can treat each build as a different app.
+Packaging the application into `Ruston Mail.app` via `./packaging/macos/package.sh`
+applies an ad-hoc code signature (`codesign -s -`) with bundle identifier
+`com.luiscuellar.ruston-mail`, providing a stable identity that retains Keychain authorization.
 
 ## Attachments
 
