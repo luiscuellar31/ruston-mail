@@ -89,6 +89,8 @@ pub enum Message {
     SaveAttachment(String, String),
     /// Where an attachment landed, or why it did not.
     AttachmentSaved(SessionEpoch, Result<PathBuf, SaveError>),
+    /// Reveals a downloaded file in the system file manager.
+    RevealAttachment(PathBuf),
     /// Opens or closes the settings window.
     ShowSettings(bool),
     /// Marks opened mail as read, or leaves it unread.
@@ -473,6 +475,7 @@ impl App {
                     self.saved_attachment = Some(outcome);
                 }
             }
+            Message::RevealAttachment(path) => return reveal_in_file_manager(path),
             Message::ShowSettings(showing) => self.showing_settings = showing,
             Message::SetMarkReadOnOpen(on) => {
                 self.remember(|settings| settings.mark_read_on_open = on);
@@ -1046,6 +1049,37 @@ fn open_url(url: &str) -> std::io::Result<()> {
     let mut command = std::process::Command::new("xdg-open");
 
     command.arg(url).spawn().map(drop)
+}
+
+fn reveal_in_file_manager(path: PathBuf) -> Effects {
+    Effects::background(async move {
+        let _ = reveal_file(&path);
+    })
+}
+
+/// Reveals `path` in the system file manager without going through a shell.
+fn reveal_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg("-R").arg(path);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer");
+        command.arg(format!("/select,{}", path.display()));
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let parent = path.parent().unwrap_or(path);
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(parent);
+        command
+    };
+
+    command.spawn().map(drop)
 }
 
 #[cfg(test)]

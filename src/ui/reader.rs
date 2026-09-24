@@ -26,6 +26,13 @@ const CODE_FILL: Color32 = Color32::from_rgb(18, 19, 24);
 /// Code background padding, kept clear of adjacent lines.
 const CODE_PADDING: f32 = 2.5;
 
+#[cfg(target_os = "macos")]
+const REVEAL_LABEL: &str = "Show in Finder";
+#[cfg(target_os = "windows")]
+const REVEAL_LABEL: &str = "Show in Explorer";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const REVEAL_LABEL: &str = "Show in folder";
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn show(
     ui: &mut egui::Ui,
@@ -40,11 +47,27 @@ pub(super) fn show(
     messages: &mut Vec<Message>,
 ) {
     if let Some(outcome) = saved_attachment {
-        let (text, color) = match outcome {
-            Ok(path) => (format!("Saved to {}", path.display()), theme::SUCCESS),
-            Err(error) => (error.message().to_owned(), theme::DANGER),
-        };
-        ui.label(egui::RichText::new(text).small().color(color));
+        match outcome {
+            Ok(path) => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Saved to {}", path.display()))
+                            .small()
+                            .color(theme::SUCCESS),
+                    );
+                    if ui.add(theme::compact_button(REVEAL_LABEL)).clicked() {
+                        messages.push(Message::RevealAttachment(path.to_path_buf()));
+                    }
+                });
+            }
+            Err(error) => {
+                ui.label(
+                    egui::RichText::new(error.message())
+                        .small()
+                        .color(theme::DANGER),
+                );
+            }
+        }
         ui.separator();
     }
     if let Some(link) = pending_link {
@@ -1176,5 +1199,33 @@ mod tests {
 
         assert!(closed[1].x > closed[0].x && closed[1].x > closed[2].x);
         assert!(open[1].y > open[0].y && open[1].y > open[2].y);
+    }
+
+    #[test]
+    fn a_saved_attachment_renders_notice_and_reveal_button() {
+        let path = std::path::PathBuf::from("/tmp/report.pdf");
+        let context = egui::Context::default();
+        let mut messages = Vec::new();
+
+        let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(680.0);
+                show(
+                    ui,
+                    &mailbox,
+                    &[],
+                    true,
+                    None,
+                    None,
+                    Some(Ok(&path)),
+                    Reading::default(),
+                    &mut UiState::default(),
+                    &mut messages,
+                );
+            })
+            .drop_without_applying_deltas();
+
+        assert!(messages.is_empty());
     }
 }

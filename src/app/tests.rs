@@ -346,6 +346,13 @@ fn a_save_in_flight_does_not_outlive_the_session() {
 }
 
 #[test]
+fn revealing_an_attachment_starts_a_background_task() {
+    let mut app = loaded_demo_app();
+    let effects = app.update(Message::RevealAttachment(PathBuf::from("/tmp/report.pdf")));
+    assert_eq!(effects.units(), 1);
+}
+
+#[test]
 fn signing_out_takes_the_account_folders_with_it() {
     let mut app = loaded_demo_app();
     let previous_epoch = app.session_epoch;
