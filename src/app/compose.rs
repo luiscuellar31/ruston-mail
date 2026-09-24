@@ -1,8 +1,8 @@
-//! Message composition and validation. `ui::compose` only renders it.
+use std::path::PathBuf;
 
 use crate::mail::{BodyFormat, Kind, MailMessage, Outgoing, SendError, recipients};
 
-use super::{App, Effects, Message, ReaderState};
+use super::{App, Effects, Message, ReaderState, UiEffect};
 
 /// One of the fields being typed into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +22,8 @@ pub enum NotReady {
     /// Pieces of a recipient field that do not look like an address. Sending
     /// anyway would reach fewer people than the sender believes.
     BadAddresses(Vec<String>),
+    /// An attached file could not be found on disk.
+    MissingAttachment(String),
 }
 
 impl NotReady {
@@ -30,6 +32,9 @@ impl NotReady {
             Self::NoRecipients => "Add someone to send this to.".to_owned(),
             Self::BadAddresses(pieces) => {
                 format!("This does not look like an address: {}", pieces.join(", "))
+            }
+            Self::MissingAttachment(name) => {
+                format!("Attachment cannot be found: {name}")
             }
         }
     }
@@ -64,6 +69,7 @@ pub struct Compose {
     bcc: String,
     subject: String,
     body: String,
+    attachments: Vec<PathBuf>,
     /// Whether the copy fields are on show. They start hidden: most mail goes
     /// to one person.
     more: bool,
@@ -114,6 +120,29 @@ impl Compose {
         self.confirming_discard
     }
 
+    pub fn attachments(&self) -> &[PathBuf] {
+        &self.attachments
+    }
+
+    pub fn add_attachments(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for path in paths {
+            if !self.attachments.contains(&path) {
+                self.attachments.push(path);
+            }
+        }
+        self.confirming_discard = false;
+        if matches!(self.state, State::Failed(_)) {
+            self.state = State::Writing;
+        }
+    }
+
+    pub fn remove_attachment(&mut self, index: usize) {
+        if index < self.attachments.len() {
+            self.attachments.remove(index);
+            self.confirming_discard = false;
+        }
+    }
+
     /// What is being answered, when something is.
     pub fn answering(&self) -> Option<&Answering> {
         self.answering.as_ref()
@@ -149,6 +178,7 @@ impl Compose {
             && self.bcc.trim().is_empty()
             && self.subject.trim().is_empty()
             && self.body.trim().is_empty()
+            && self.attachments.is_empty()
     }
 
     /// Why the message cannot be sent, if it cannot.
@@ -182,6 +212,16 @@ impl Compose {
             return Err(NotReady::NoRecipients);
         }
 
+        for path in &self.attachments {
+            if !path.exists() {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Attachment");
+                return Err(NotReady::MissingAttachment(name.to_owned()));
+            }
+        }
+
         Ok(Outgoing {
             kind: self.kind.clone(),
             to: to.accepted,
@@ -190,6 +230,7 @@ impl Compose {
             subject: self.subject.trim().to_owned(),
             body: self.body.clone(),
             format,
+            attachments: self.attachments.clone(),
         })
     }
 }
@@ -294,6 +335,26 @@ impl App {
     pub(super) fn toggle_compose_copies(&mut self) {
         if let Some(compose) = self.compose.as_mut() {
             compose.more = !compose.more;
+        }
+    }
+
+    pub(super) fn pick_compose_attachments(&self) -> Effects {
+        if self.compose.as_ref().is_some_and(|c| !c.in_flight()) {
+            Effects::ui(UiEffect::PickComposeAttachments)
+        } else {
+            Effects::none()
+        }
+    }
+
+    pub(super) fn add_compose_attachments(&mut self, paths: Vec<PathBuf>) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
+            compose.add_attachments(paths);
+        }
+    }
+
+    pub(super) fn remove_compose_attachment(&mut self, index: usize) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
+            compose.remove_attachment(index);
         }
     }
 
@@ -471,5 +532,53 @@ mod tests {
         // Discarding clears the draft
         app.discard_compose();
         assert!(app.compose().is_none());
+    }
+
+    #[test]
+    fn attachments_make_a_message_touched() {
+        let mut compose = Compose::default();
+        assert!(compose.is_untouched());
+
+        compose.add_attachments([PathBuf::from("/tmp/test.txt")]);
+        assert!(!compose.is_untouched());
+        assert_eq!(compose.attachments(), &[PathBuf::from("/tmp/test.txt")]);
+
+        compose.remove_attachment(0);
+        assert!(compose.attachments().is_empty());
+        assert!(compose.is_untouched());
+    }
+
+    #[test]
+    fn attachments_are_deduplicated() {
+        let mut compose = Compose::default();
+        compose.add_attachments([
+            PathBuf::from("/tmp/test.txt"),
+            PathBuf::from("/tmp/test.txt"),
+        ]);
+        assert_eq!(compose.attachments().len(), 1);
+    }
+
+    #[test]
+    fn ready_carries_existing_attachments_and_rejects_missing_ones() {
+        let mut compose = written("alex@example.com");
+        let non_existent = PathBuf::from("/tmp/this_file_does_not_exist_ruston_test.xyz");
+        compose.add_attachments([non_existent]);
+
+        let not_ready = compose.not_ready();
+        assert!(matches!(not_ready, Some(NotReady::MissingAttachment(_))));
+        assert!(
+            not_ready
+                .unwrap()
+                .message()
+                .contains("this_file_does_not_exist_ruston_test.xyz")
+        );
+
+        compose.remove_attachment(0);
+        let existing = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        compose.add_attachments([existing.clone()]);
+        assert_eq!(compose.not_ready(), None);
+
+        let outgoing = compose.ready(BodyFormat::PlainText).unwrap();
+        assert_eq!(outgoing.attachments, vec![existing]);
     }
 }

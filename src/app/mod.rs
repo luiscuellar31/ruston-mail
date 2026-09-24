@@ -132,6 +132,12 @@ pub enum Message {
     /// Shows or hides the copy fields.
     ToggleComposeCopies,
     ComposeChanged(ComposeField, String),
+    /// Tells the desktop to open the native file dialog for selecting attachments.
+    PickComposeAttachments,
+    /// Adds picked local files as attachments to the active draft.
+    AddComposeAttachments(Vec<PathBuf>),
+    /// Removes an attachment by index from the active draft.
+    RemoveComposeAttachment(usize),
     /// Hands the message over to be sent.
     Send,
     Sent(SessionEpoch, Result<(), SendError>),
@@ -574,6 +580,9 @@ impl App {
             Message::CancelDiscard => self.cancel_discard(),
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
+            Message::PickComposeAttachments => return self.pick_compose_attachments(),
+            Message::AddComposeAttachments(paths) => self.add_compose_attachments(paths),
+            Message::RemoveComposeAttachment(index) => self.remove_compose_attachment(index),
             Message::Send => return self.send_compose(),
             Message::Sent(epoch, result) => return self.finish_send(epoch, result),
         }

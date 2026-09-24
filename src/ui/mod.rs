@@ -124,6 +124,22 @@ impl DesktopApp {
                 UiEffect::NotifyNewMail { sender, subject } => {
                     show_desktop_notification(&sender, &subject);
                 }
+                UiEffect::PickComposeAttachments => {
+                    let task = rfd::AsyncFileDialog::new().pick_files();
+                    self.runtime.spawn_message(async move {
+                        let files = task.await;
+                        let paths: Vec<std::path::PathBuf> = files
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|f| f.path().to_path_buf())
+                            .collect();
+                        if !paths.is_empty() {
+                            Some(Message::AddComposeAttachments(paths))
+                        } else {
+                            None
+                        }
+                    });
+                }
             }
         }
         context.request_repaint();

@@ -80,6 +80,19 @@ impl Runtime {
         ui
     }
 
+    /// Spawns a background task that sends a message to the event loop upon completion.
+    pub fn spawn_message<F>(&self, future: F)
+    where
+        F: std::future::Future<Output = Option<Message>> + Send + 'static,
+    {
+        let sender = self.sender.clone();
+        self.executor().spawn(async move {
+            if let Some(message) = future.await {
+                sender.send(message);
+            }
+        });
+    }
+
     fn sign_in(&self, attempt: AuthAttempt, request: crate::mail::LoginRequest) {
         let sender = self.sender.clone();
         let task = self.executor().spawn(async move {

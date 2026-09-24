@@ -265,8 +265,9 @@ impl ProtonMailService {
             subject: outgoing.subject.clone(),
             body: outgoing.wire_body(),
             html: outgoing.is_html(),
-            // The account's own address, chosen by proton-core. Attachments,
-            // scheduling and self-destruct are not offered yet.
+            attachments: outgoing.attachments.clone(),
+            // The account's own address, chosen by proton-core.
+            // Scheduling and self-destruct are not offered yet.
             ..SendOptions::default()
         };
 

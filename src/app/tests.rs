@@ -296,6 +296,44 @@ fn typing_clears_discard_prompt() {
 }
 
 #[test]
+fn picking_compose_attachments_emits_ui_effect() {
+    let mut app = loaded_demo_app();
+    // When compose is closed, picking does nothing
+    let effects = app.update(Message::PickComposeAttachments);
+    assert_eq!(effects.units(), 0);
+
+    let _ = app.update(Message::OpenCompose);
+    let effects = app.update(Message::PickComposeAttachments);
+    assert_eq!(effects.units(), 1);
+    let effect = effects.into_iter().next().unwrap();
+    assert!(matches!(
+        effect,
+        Effect::Ui(UiEffect::PickComposeAttachments)
+    ));
+}
+
+#[test]
+fn compose_attachments_can_be_added_and_removed_through_messages() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+
+    let file1 = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let file2 = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("README.md");
+
+    let _ = app.update(Message::AddComposeAttachments(vec![
+        file1.clone(),
+        file2.clone(),
+    ]));
+    let compose = app.compose().unwrap();
+    assert_eq!(compose.attachments(), &[file1, file2.clone()]);
+    assert!(!compose.is_untouched());
+
+    let _ = app.update(Message::RemoveComposeAttachment(0));
+    let compose = app.compose().unwrap();
+    assert_eq!(compose.attachments(), &[file2]);
+}
+
+#[test]
 fn dock_badge_reflects_inbox_unread_and_preference() {
     let mut app = loaded_demo_app();
     assert_eq!(crate::ui::dock_badge_count(&app), Some(6));

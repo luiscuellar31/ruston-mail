@@ -1295,6 +1295,7 @@ mod tests {
             subject: subject.to_owned(),
             body: "Hi Alex,\n\nSee you Thursday.".into(),
             format: crate::mail::BodyFormat::PlainText,
+            attachments: Vec::new(),
         }
     }
 

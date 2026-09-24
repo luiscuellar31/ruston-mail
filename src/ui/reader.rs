@@ -870,7 +870,7 @@ fn placeholder(ui: &mut egui::Ui, message: &str) {
     });
 }
 
-fn size_label(bytes: u64) -> String {
+pub(super) fn size_label(bytes: u64) -> String {
     const UNIT: f64 = 1024.0;
     let bytes = bytes as f64;
     for (limit, suffix) in [

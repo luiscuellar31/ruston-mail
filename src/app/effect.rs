@@ -23,6 +23,7 @@ pub enum UiEffect {
     ScrollReaderTop,
     RevealConversation(String),
     NotifyNewMail { sender: String, subject: String },
+    PickComposeAttachments,
 }
 
 /// A flat collection makes combining independent effects explicit and keeps
@@ -129,5 +130,11 @@ mod tests {
             Effect::Ui(UiEffect::NotifyNewMail { sender, subject })
                 if sender == "Alice" && subject == "Update"
         ));
+
+        let pick = Effects::ui(UiEffect::PickComposeAttachments)
+            .into_iter()
+            .next()
+            .expect("one effect");
+        assert!(matches!(pick, Effect::Ui(UiEffect::PickComposeAttachments)));
     }
 }

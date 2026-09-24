@@ -1,4 +1,4 @@
-//! Pure validation and conversion of typed mail into outgoing messages.
+use std::path::PathBuf;
 
 use super::MailboxError;
 
@@ -39,6 +39,7 @@ pub struct Outgoing {
     pub subject: String,
     pub body: String,
     pub format: BodyFormat,
+    pub attachments: Vec<PathBuf>,
 }
 
 impl Outgoing {
@@ -236,6 +237,7 @@ mod tests {
             subject: String::new(),
             body: body.to_owned(),
             format: BodyFormat::Html,
+            attachments: Vec::new(),
         }
         .wire_body()
     }
@@ -251,6 +253,7 @@ mod tests {
             subject: String::new(),
             body: typed.to_owned(),
             format: BodyFormat::PlainText,
+            attachments: Vec::new(),
         };
 
         assert_eq!(message.wire_body(), typed);

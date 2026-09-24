@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align, Layout};
 
-use super::{mailbox::detail, theme};
+use super::{mailbox::detail, reader, theme};
 use crate::app::{Answering, Compose, ComposeField, Message, Sending};
 
 const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
@@ -89,6 +89,12 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             {
                 messages.push(Message::CloseCompose);
             }
+            if ui
+                .add_enabled(!leaving, egui::Button::new("Attach…"))
+                .clicked()
+            {
+                messages.push(Message::PickComposeAttachments);
+            }
         });
     });
     ui.add_space(10.0);
@@ -151,6 +157,46 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             leaving,
             messages,
         );
+    }
+    ui.add_space(6.0);
+
+    if !compose.attachments().is_empty() {
+        detail(ui, "Attachments");
+        for (index, path) in compose.attachments().iter().enumerate() {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Attachment");
+            let size = std::fs::metadata(path)
+                .ok()
+                .map(|m| format!(" ({})", reader::size_label(m.len())))
+                .unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("📎 {name}{size}"))
+                        .color(ui.visuals().text_color()),
+                );
+                if ui
+                    .add_enabled(!leaving, theme::compact_button("Remove"))
+                    .clicked()
+                {
+                    messages.push(Message::RemoveComposeAttachment(index));
+                }
+            });
+        }
+        ui.add_space(4.0);
+    }
+
+    let attach_label = if compose.attachments().is_empty() {
+        "Attach files…"
+    } else {
+        "Attach more…"
+    };
+    if ui
+        .add_enabled(!leaving, theme::compact_button(attach_label))
+        .clicked()
+    {
+        messages.push(Message::PickComposeAttachments);
     }
     ui.add_space(10.0);
 
