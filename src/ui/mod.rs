@@ -32,17 +32,15 @@ struct UndoNotice {
 }
 
 pub(crate) fn main_viewport(settings: &Settings) -> egui::ViewportBuilder {
-    let mut viewport = egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
         .with_inner_size([settings.window.width, settings.window.height])
         .with_min_inner_size(MIN_WINDOW_SIZE);
 
     #[cfg(target_os = "macos")]
-    {
-        viewport = viewport
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false);
-    }
+    let viewport = viewport
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false)
+        .with_title_shown(false);
 
     viewport
 }
