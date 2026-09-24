@@ -4321,7 +4321,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 [[package]]
 name = "proton-core"
 version = "0.1.1"
-source = "git+https://github.com/luiscuellar31/protonmail-rs.git?rev=1cba4d5eb6df433fd1836a4c388cb6d54cb34dd0#1cba4d5eb6df433fd1836a4c388cb6d54cb34dd0"
+source = "git+https://github.com/luiscuellar31/protonmail-rs.git?rev=31460498c0a1d858242f7872ab017e28e249abba#31460498c0a1d858242f7872ab017e28e249abba"
 dependencies = [
  "ammonia",
  "async-trait",

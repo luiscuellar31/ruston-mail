@@ -18,11 +18,9 @@ directories = "6"
 futures = "0.3"
 html5ever = "0.39"
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
-# A commit, not a branch: a branch would let the next `cargo update` build
-# whatever had been pushed to it since, without anyone asking for it. New
-# revisions come from dev/luiscuellar31, where the fork's own work is
-# integrated, and are taken up here one at a time.
-proton-core = { git = "https://github.com/luiscuellar31/protonmail-rs.git", rev = "1cba4d5eb6df433fd1836a4c388cb6d54cb34dd0" }
+# A fixed fork commit exposes paged conversation search. Keep this pinned so
+# dependency updates do not change the mail API unexpectedly.
+proton-core = { git = "https://github.com/luiscuellar31/protonmail-rs.git", rev = "31460498c0a1d858242f7872ab017e28e249abba" }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

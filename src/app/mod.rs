@@ -55,7 +55,7 @@ pub enum Message {
     SelectConversation(String),
     RetryConversation,
     SearchChanged(String),
-    /// Asks the server for everything matching what was typed, across folders.
+    /// Asks the server for the first page matching what was typed, across folders.
     SearchSubmitted,
     SearchLoaded(SearchRequest, Result<ConversationPage, MailboxError>),
     ToggleMessageExpanded(String),
@@ -891,10 +891,10 @@ impl App {
             return Effects::none();
         };
         let query = request.query.clone();
-        let limit = backend.page_size();
+        let (page, page_size) = (request.page, request.page_size);
 
         Effects::perform(
-            async move { backend.search(&query, limit).await },
+            async move { backend.search(&query, page, page_size).await },
             move |result| Message::SearchLoaded(request.clone(), result),
         )
     }
@@ -924,11 +924,16 @@ impl App {
 
     fn load_more_conversations(&mut self) -> Effects {
         let request = self.next_request();
-        let page = self
-            .active_mailbox()
-            .and_then(|mailbox| mailbox.load_more(request));
-
-        self.fetch_page(page)
+        let Some(mailbox) = self.active_mailbox() else {
+            return Effects::none();
+        };
+        if mailbox.search_results().is_some() {
+            let search = mailbox.load_more_search(request);
+            search.map_or_else(Effects::none, |search| self.fetch_search(search))
+        } else {
+            let page = mailbox.load_more(request);
+            self.fetch_page(page)
+        }
     }
 
     fn fetch_page(&self, request: Option<PageRequest>) -> Effects {

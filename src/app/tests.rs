@@ -70,6 +70,8 @@ fn deliver_demo_search(app: &mut App, query: &str) {
     let request = SearchRequest {
         id: app.last_request,
         query: query.to_owned(),
+        page: 0,
+        page_size: demo::PAGE_SIZE,
     };
     let result = demo_service(app).search(query, demo::PAGE_SIZE, NOW);
     let _ = app.update(Message::SearchLoaded(request, result));

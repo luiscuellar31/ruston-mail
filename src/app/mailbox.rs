@@ -79,6 +79,8 @@ pub enum ListStatus {
 struct SearchState {
     query: String,
     rows: Vec<ConversationSummary>,
+    next_page: u32,
+    has_more: bool,
 }
 
 /// The loaded part of one folder while another folder is open.
@@ -138,6 +140,8 @@ impl FolderKey {
 pub struct SearchRequest {
     pub id: RequestId,
     pub query: String,
+    pub page: u32,
+    pub page_size: u32,
 }
 
 pub struct Mailbox {
@@ -256,7 +260,28 @@ impl Mailbox {
         self.search_request = Some(request);
         self.status = ListStatus::Loading(request);
 
-        Some(SearchRequest { id: request, query })
+        Some(SearchRequest {
+            id: request,
+            query,
+            page: 0,
+            page_size: self.page_size,
+        })
+    }
+
+    pub fn load_more_search(&mut self, request: RequestId) -> Option<SearchRequest> {
+        if self.is_busy() {
+            return None;
+        }
+        let search = self.search.as_ref().filter(|search| search.has_more)?;
+        let next = SearchRequest {
+            id: request,
+            query: search.query.clone(),
+            page: search.next_page,
+            page_size: self.page_size,
+        };
+        self.search_request = Some(request);
+        self.status = ListStatus::LoadingMore(request);
+        Some(next)
     }
 
     /// Applies the answer to the search still in flight; anything else is a
@@ -273,12 +298,34 @@ impl Mailbox {
 
         match result {
             Ok(page) => {
-                self.search = Some(SearchState {
-                    query: request.query.clone(),
-                    rows: page.conversations,
-                });
+                let has_more = !page.conversations.is_empty()
+                    && (u64::from(request.page) + 1) * u64::from(request.page_size)
+                        < u64::from(page.total);
+                if request.page > 0 {
+                    let search = self
+                        .search
+                        .as_mut()
+                        .expect("later search page has first page");
+                    let known: HashSet<&str> =
+                        search.rows.iter().map(|row| row.id.as_str()).collect();
+                    let new: Vec<_> = page
+                        .conversations
+                        .into_iter()
+                        .filter(|row| !known.contains(row.id.as_str()))
+                        .collect();
+                    search.rows.extend(new);
+                    search.next_page = request.page.saturating_add(1);
+                    search.has_more = has_more;
+                } else {
+                    self.search = Some(SearchState {
+                        query: request.query.clone(),
+                        rows: page.conversations,
+                        next_page: 1,
+                        has_more,
+                    });
+                    self.close_reader_if_hidden();
+                }
                 self.status = ListStatus::Loaded;
-                self.close_reader_if_hidden();
                 None
             }
             Err(error) => {
@@ -291,6 +338,9 @@ impl Mailbox {
     /// Goes back to the folder listing, leaving any results behind.
     pub fn clear_search(&mut self) {
         self.search = None;
+        if self.search_request.is_some() {
+            self.status = ListStatus::Loaded;
+        }
         self.search_request = None;
         if matches!(self.status, ListStatus::Failed(_)) {
             self.status = ListStatus::Loaded;
@@ -330,9 +380,11 @@ impl Mailbox {
         self.counts.as_ref()
     }
 
-    /// Whether the visible folder listing has another page.
+    /// Whether the visible search or folder listing has another page.
     pub fn has_more(&self) -> bool {
-        self.search.is_none() && self.has_more
+        self.search
+            .as_ref()
+            .map_or(self.has_more, |search| search.has_more)
     }
 
     /// Whether the rows on screen hold this one, hidden by typing or not.
@@ -958,7 +1010,7 @@ impl Mailbox {
     }
 
     pub fn load_more(&mut self, request: RequestId) -> Option<PageRequest> {
-        if self.is_busy() || !self.has_more() {
+        if self.is_busy() || self.search.is_some() || !self.has_more {
             return None;
         }
 

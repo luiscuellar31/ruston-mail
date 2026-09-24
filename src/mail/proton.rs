@@ -348,14 +348,22 @@ impl ProtonMailService {
         })
     }
 
-    /// Searches all folders. Proton returns one complete, unpaginated batch.
-    pub async fn search(&self, query: &str, limit: u32) -> Result<ConversationPage, MailboxError> {
+    /// Searches one page across all folders.
+    pub async fn search(
+        &self,
+        query: &str,
+        page: u32,
+        page_size: u32,
+    ) -> Result<ConversationPage, MailboxError> {
         let options = SearchOpts {
             keyword: Some(query.to_owned()),
-            limit: Some(limit),
             ..SearchOpts::default()
         };
-        let found = timed(self.client.search_conversations(&options)).await?;
+        let (total, found) = timed(
+            self.client
+                .search_conversations_page(&options, page, page_size),
+        )
+        .await?;
 
         // Results span folders, so there is no one folder to read them from.
         // Inbox is the perspective that describes incoming mail by its sender.
@@ -365,7 +373,7 @@ impl ProtonMailService {
             .collect();
 
         Ok(ConversationPage {
-            total: u32::try_from(conversations.len()).unwrap_or(u32::MAX),
+            total,
             conversations,
         })
     }

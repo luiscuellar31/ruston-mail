@@ -170,14 +170,25 @@ impl DemoMailbox {
     }
 
     /// Searches every folder, the way the server does for a real account.
+    #[cfg(test)]
     pub fn search(
         &self,
         query: &str,
         limit: u32,
         now: i64,
     ) -> Result<ConversationPage, MailboxError> {
+        self.search_page(query, 0, limit, now)
+    }
+
+    pub fn search_page(
+        &self,
+        query: &str,
+        page: u32,
+        page_size: u32,
+        now: i64,
+    ) -> Result<ConversationPage, MailboxError> {
         let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
-        Ok(search_from(&fixtures, query, limit, now))
+        Ok(search_from(&fixtures, query, page, page_size, now))
     }
 
     pub fn counts(&self) -> MailboxCounts {
@@ -764,7 +775,13 @@ booking list --upcoming</pre>
 "#;
 
 /// Matching rows across the whole demo mailbox, newest first.
-fn search_from(fixtures: &[Fixture], query: &str, limit: u32, now: i64) -> ConversationPage {
+fn search_from(
+    fixtures: &[Fixture],
+    query: &str,
+    page: u32,
+    page_size: u32,
+    now: i64,
+) -> ConversationPage {
     let query = query.trim().to_lowercase();
     let mut matching: Vec<_> = fixtures
         .iter()
@@ -773,14 +790,16 @@ fn search_from(fixtures: &[Fixture], query: &str, limit: u32, now: i64) -> Conve
         .collect();
     matching.sort_by_key(|(_, fixture)| fixture.age);
 
+    let total = matching.len() as u32;
     let conversations: Vec<_> = matching
         .into_iter()
-        .take(limit as usize)
+        .skip((page as usize).saturating_mul(page_size as usize))
+        .take(page_size as usize)
         .map(|(index, fixture)| summary(index, fixture, now))
         .collect();
 
     ConversationPage {
-        total: conversations.len() as u32,
+        total,
         conversations,
     }
 }

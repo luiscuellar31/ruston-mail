@@ -196,14 +196,37 @@ fn server_results_replace_the_folder_listing() {
     assert_eq!(visible_ids(&mailbox), ["found"]);
     assert_eq!(mailbox.search_results(), Some("invoice"));
 
-    // The server answers in one batch, so there is no next page to ask
-    // for, even though the folder behind the results has more.
+    // One match needs no next search page, even though the folder has more.
     assert_eq!(mailbox.load_more(4), None);
 
     // Emptying the field puts the folder back.
     mailbox.set_search_query(String::new());
     assert_eq!(visible_ids(&mailbox), ["a", "b"]);
     assert_eq!(mailbox.search_results(), None);
+}
+
+#[test]
+fn search_loads_more_than_fifty_results_without_losing_the_first_page() {
+    let mut mailbox = loaded_inbox(&["inbox"], 1);
+    mailbox.set_search_query("invoice".into());
+    let first = mailbox.start_search(3).unwrap();
+    assert_eq!(first.page, 0);
+    assert_eq!(mailbox.finish_search(&first, full_page(0, 51)), None);
+    assert_eq!(visible_ids(&mailbox).len(), 50);
+    assert!(mailbox.has_more());
+    assert_eq!(mailbox.load_more(4), None);
+
+    let next = mailbox.load_more_search(4).unwrap();
+    assert_eq!(next.page, 1);
+    assert_eq!(next.page_size, PAGE_SIZE);
+    assert!(mailbox.load_more_search(5).is_none());
+    assert_eq!(mailbox.finish_search(&first, page(&["stale"], 1)), None);
+    assert_eq!(mailbox.finish_search(&next, page(&["p50"], 51)), None);
+
+    assert_eq!(visible_ids(&mailbox).len(), 51);
+    assert_eq!(visible_ids(&mailbox).last(), Some(&"p50"));
+    assert!(!mailbox.has_more());
+    assert!(mailbox.load_more_search(6).is_none());
 }
 
 #[test]
