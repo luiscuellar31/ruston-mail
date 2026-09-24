@@ -248,6 +248,80 @@ fn press(app: &mut App, key: Key) {
     }));
 }
 
+/// Sends a command key press (Cmd on macOS, Ctrl on other platforms).
+fn press_command(app: &mut App, key: Key) {
+    let _ = app.update(Message::KeyPressed(KeyPress {
+        key,
+        command: true,
+        other_modifier: false,
+    }));
+}
+
+#[test]
+fn command_comma_toggles_settings() {
+    let mut app = loaded_demo_app();
+    assert!(!app.showing_settings());
+
+    press_command(&mut app, Key::Character(','));
+    assert!(app.showing_settings());
+
+    press_command(&mut app, Key::Character(','));
+    assert!(!app.showing_settings());
+}
+
+#[test]
+fn command_n_opens_compose() {
+    let mut app = loaded_demo_app();
+    assert!(app.compose().is_none());
+
+    press_command(&mut app, Key::Character('n'));
+    assert!(app.compose().is_some());
+}
+
+#[test]
+fn command_enter_sends_compose() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::To,
+        "recipient@example.com".into(),
+    ));
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
+    assert_eq!(app.compose().unwrap().sending(), Sending::Writing);
+
+    press_command(&mut app, Key::Enter);
+
+    assert!(app.compose().unwrap().in_flight());
+}
+
+#[test]
+fn trash_shortcuts_move_selected_conversation() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
+    deliver_selected_demo_detail(&mut app);
+
+    press_command(&mut app, Key::Backspace);
+
+    let has_row = |app: &App| {
+        app.mailbox()
+            .unwrap()
+            .conversations()
+            .iter()
+            .any(|row| row.id == "demo-3")
+    };
+    assert!(!has_row(&app));
+    assert!(app.mailbox().unwrap().undo().is_some());
+
+    let _ = app.update(Message::UndoMove);
+    assert!(has_row(&app));
+
+    // Plain Delete key also moves to trash
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
+    deliver_selected_demo_detail(&mut app);
+    press(&mut app, Key::Delete);
+    assert!(!has_row(&app));
+}
+
 #[test]
 fn a_save_in_flight_does_not_outlive_the_session() {
     let mut app = loaded_demo_app();

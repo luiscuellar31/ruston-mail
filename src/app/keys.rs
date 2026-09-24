@@ -13,6 +13,10 @@ enum Shortcut {
     Dismiss,
     Refresh,
     Search,
+    ToggleSettings,
+    Compose,
+    Send,
+    Trash,
 }
 
 /// The meaning of a key press, or `None` when it is not a shortcut. Plain
@@ -22,6 +26,10 @@ fn shortcut(press: KeyPress) -> Option<Shortcut> {
         return match press.key {
             Key::Character('r') => Some(Shortcut::Refresh),
             Key::Character('f') => Some(Shortcut::Search),
+            Key::Character(',') => Some(Shortcut::ToggleSettings),
+            Key::Character('n') => Some(Shortcut::Compose),
+            Key::Enter => Some(Shortcut::Send),
+            Key::Backspace | Key::Delete => Some(Shortcut::Trash),
             _ => None,
         };
     }
@@ -34,6 +42,7 @@ fn shortcut(press: KeyPress) -> Option<Shortcut> {
         Key::ArrowUp | Key::Character('k') => Some(Shortcut::Move(Step::Previous)),
         Key::Enter => Some(Shortcut::Open),
         Key::Escape => Some(Shortcut::Dismiss),
+        Key::Delete => Some(Shortcut::Trash),
         _ => None,
     }
 }
@@ -45,6 +54,8 @@ pub enum Key {
     ArrowUp,
     Enter,
     Escape,
+    Backspace,
+    Delete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,8 +70,9 @@ impl App {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
         };
-        // Modal UI blocks mailbox shortcuts except Escape.
-        let shortcut_blocked = self.showing_settings || self.pending_link.is_some();
+        // Modal UI blocks mailbox shortcuts except Escape and toggling settings.
+        let shortcut_blocked = (self.showing_settings && shortcut != Shortcut::ToggleSettings)
+            || self.pending_link.is_some();
         if shortcut_blocked && shortcut != Shortcut::Dismiss {
             return Effects::none();
         }
@@ -116,6 +128,30 @@ impl App {
             }
             Shortcut::Refresh => self.refresh_mailbox(),
             Shortcut::Search => Effects::ui(UiEffect::FocusSearch),
+            Shortcut::ToggleSettings => {
+                self.showing_settings = !self.showing_settings;
+                Effects::none()
+            }
+            Shortcut::Compose => {
+                self.open_compose();
+                Effects::none()
+            }
+            Shortcut::Send => {
+                if self.compose.is_some() {
+                    return self.send_compose();
+                }
+                Effects::none()
+            }
+            Shortcut::Trash => {
+                if self.compose.is_some() {
+                    return Effects::none();
+                }
+                let trash = crate::mail::Folder::System(crate::mail::MailFolder::Trash);
+                if self.mailbox().is_some_and(|m| m.folder() == &trash) {
+                    return Effects::none();
+                }
+                self.apply_action(crate::mail::MailAction::MoveTo(trash))
+            }
         }
     }
 }
@@ -159,11 +195,24 @@ mod tests {
             shortcut(command(Key::Character('f'))),
             Some(Shortcut::Search)
         );
+        assert_eq!(
+            shortcut(command(Key::Character(','))),
+            Some(Shortcut::ToggleSettings)
+        );
+        assert_eq!(
+            shortcut(command(Key::Character('n'))),
+            Some(Shortcut::Compose)
+        );
+        assert_eq!(shortcut(command(Key::Enter)), Some(Shortcut::Send));
+        assert_eq!(shortcut(command(Key::Backspace)), Some(Shortcut::Trash));
+        assert_eq!(shortcut(command(Key::Delete)), Some(Shortcut::Trash));
+        assert_eq!(shortcut(plain(Key::Delete)), Some(Shortcut::Trash));
 
         // A modifier turns a plain shortcut into somebody else's business.
         assert_eq!(shortcut(command(Key::Character('j'))), None);
         assert_eq!(shortcut(command(Key::ArrowDown)), None);
         assert_eq!(shortcut(plain(Key::Character('r'))), None);
         assert_eq!(shortcut(plain(Key::Character('z'))), None);
+        assert_eq!(shortcut(plain(Key::Backspace)), None);
     }
 }

@@ -105,5 +105,9 @@ Window size and pane widths are remembered automatically.
 | `Esc` | Close the topmost view or prompt |
 | `Cmd`/`Ctrl` + `R` | Refresh the folder |
 | `Cmd`/`Ctrl` + `F` | Focus the search field |
+| `Cmd`/`Ctrl` + `,` | Open or close Settings |
+| `Cmd`/`Ctrl` + `N` | Write a new message |
+| `Cmd`/`Ctrl` + `Enter` | Send the message being written |
+| `Cmd` + `Backspace` / `Delete` | Move the selected conversation to Trash |
 
 Shortcuts do not run while a text field is using the same key.

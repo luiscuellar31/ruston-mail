@@ -34,6 +34,12 @@ pub(super) fn show_window(context: &egui::Context, compose: &Compose) -> Vec<Mes
                 }
             } else if root.input(|input| input.key_pressed(egui::Key::Escape)) {
                 messages.push(Message::CloseCompose);
+            } else if root
+                .input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter))
+                && compose.not_ready().is_none()
+                && !compose.in_flight()
+            {
+                messages.push(Message::Send);
             }
 
             messages

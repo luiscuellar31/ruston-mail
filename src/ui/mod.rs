@@ -148,6 +148,15 @@ impl DesktopApp {
             if command && input.key_pressed(egui::Key::F) {
                 presses.push(key(Key::Character('f'), true));
             }
+            if command && input.key_pressed(egui::Key::Comma) {
+                presses.push(key(Key::Character(','), true));
+            }
+            if command && input.key_pressed(egui::Key::N) {
+                presses.push(key(Key::Character('n'), true));
+            }
+            if command && input.key_pressed(egui::Key::Enter) {
+                presses.push(key(Key::Enter, true));
+            }
             if input.key_pressed(egui::Key::Escape) {
                 presses.push(key(Key::Escape, false));
             }
@@ -158,6 +167,8 @@ impl DesktopApp {
                     presses.push(key(Key::ArrowUp, false));
                 } else if input.key_pressed(egui::Key::Enter) {
                     presses.push(key(Key::Enter, false));
+                } else if input.key_pressed(egui::Key::Delete) {
+                    presses.push(key(Key::Delete, false));
                 } else {
                     for event in &input.events {
                         if let egui::Event::Text(text) = event
@@ -167,6 +178,12 @@ impl DesktopApp {
                             break;
                         }
                     }
+                }
+            } else if !wants_text && command && !input.modifiers.alt && !input.modifiers.shift {
+                if input.key_pressed(egui::Key::Backspace) {
+                    presses.push(key(Key::Backspace, true));
+                } else if input.key_pressed(egui::Key::Delete) {
+                    presses.push(key(Key::Delete, true));
                 }
             }
             presses

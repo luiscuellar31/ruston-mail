@@ -28,7 +28,9 @@ pub(super) fn show_window(
             show(root, current, draft, &mut messages);
 
             if root.input(|input| {
-                input.viewport().close_requested() || input.key_pressed(egui::Key::Escape)
+                input.viewport().close_requested()
+                    || input.key_pressed(egui::Key::Escape)
+                    || (input.modifiers.command && input.key_pressed(egui::Key::Comma))
             }) {
                 messages.push(Message::ShowSettings(false));
             }
@@ -252,7 +254,7 @@ const ZOOM_STEPS: [f32; 6] = [0.9, 1.0, 1.15, 1.3, 1.5, 1.75];
 
 /// What the mailbox already answers to. Listed here because a shortcut no one
 /// can find is a shortcut no one uses; the keys themselves live in `ui::mod`.
-const SHORTCUTS: [(&str, &str); 6] = [
+const SHORTCUTS: [(&str, &str); 10] = [
     ("j  /  Down", "Open the next conversation"),
     ("k  /  Up", "Open the previous one"),
     (
@@ -265,16 +267,37 @@ const SHORTCUTS: [(&str, &str); 6] = [
     ),
     (COMMAND_R, "Refresh the folder"),
     (COMMAND_F, "Jump to the search field"),
+    (COMMAND_COMMA, "Open or close Settings"),
+    (COMMAND_N, "Write a new message"),
+    (COMMAND_ENTER, "Send the message being written"),
+    (COMMAND_TRASH, "Move selected conversation to Trash"),
 ];
 
 #[cfg(target_os = "macos")]
 const COMMAND_R: &str = "Cmd + R";
 #[cfg(target_os = "macos")]
 const COMMAND_F: &str = "Cmd + F";
+#[cfg(target_os = "macos")]
+const COMMAND_COMMA: &str = "Cmd + ,";
+#[cfg(target_os = "macos")]
+const COMMAND_N: &str = "Cmd + N";
+#[cfg(target_os = "macos")]
+const COMMAND_ENTER: &str = "Cmd + Enter";
+#[cfg(target_os = "macos")]
+const COMMAND_TRASH: &str = "Cmd + Backspace";
+
 #[cfg(not(target_os = "macos"))]
 const COMMAND_R: &str = "Ctrl + R";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_F: &str = "Ctrl + F";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_COMMA: &str = "Ctrl + ,";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_N: &str = "Ctrl + N";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_ENTER: &str = "Ctrl + Enter";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_TRASH: &str = "Delete / Ctrl + Backspace";
 
 /// One key and what it does, with the keys in a column of their own so the
 /// descriptions line up however wide the window is.
@@ -293,7 +316,7 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str) {
     });
 }
 
-const KEYS_WIDTH: f32 = 92.0;
+const KEYS_WIDTH: f32 = 120.0;
 
 fn description(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).color(theme::MUTED));
