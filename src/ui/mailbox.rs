@@ -19,12 +19,13 @@ pub(super) fn show(
     let context = root.ctx().clone();
     let window_width = root.available_width();
     let widths = panel_widths(app.panels(), window_width);
+    let inset = theme::titlebar_inset(&context);
 
     let sidebar = egui::Panel::left("mailbox-sidebar")
         .default_size(widths.sidebar)
         .size_range(200.0..=(window_width - 400.0).max(200.0))
         .resizable(true)
-        .frame(theme::panel_frame(theme::SIDEBAR))
+        .frame(theme::top_panel_frame(theme::SIDEBAR, inset))
         .show(root, |ui| {
             sidebar(ui, app, mailbox, email, signing_out, messages)
         });
@@ -34,11 +35,11 @@ pub(super) fn show(
         .default_size(widths.conversations)
         .size_range(200.0..=(remaining - 200.0).max(200.0))
         .resizable(true)
-        .frame(theme::panel_frame(theme::PANEL))
+        .frame(theme::top_panel_frame(theme::PANEL, inset))
         .show(root, |ui| conversation_pane(ui, mailbox, state, messages));
 
     egui::CentralPanel::default()
-        .frame(theme::panel_frame(theme::PANEL))
+        .frame(theme::top_panel_frame(theme::PANEL, inset))
         .show(root, |ui| {
             if app.settings().compose_placement == ComposePlacement::ReadingPane
                 && let Some(writing) = app.compose()

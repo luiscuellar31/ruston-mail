@@ -388,8 +388,31 @@ pub fn paint_clip(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
     ));
 }
 
+/// macOS hides the titlebar and draws the window content all the way to the
+/// top edge, so whatever sits at the top of the window has to leave room for
+/// the traffic lights. Zero everywhere else, and in fullscreen, where the
+/// buttons are gone.
+pub fn titlebar_inset(ctx: &egui::Context) -> f32 {
+    if cfg!(target_os = "macos") && !ctx.input(|input| input.viewport().fullscreen.unwrap_or(false))
+    {
+        28.0
+    } else {
+        0.0
+    }
+}
+
 pub fn panel_frame(fill: Color32) -> egui::Frame {
     egui::Frame::new().fill(fill).inner_margin(PANEL_PADDING)
+}
+
+pub fn top_panel_frame(fill: Color32, top_inset: f32) -> egui::Frame {
+    let top = (PANEL_PADDING as f32 + top_inset.max(0.0)).min(i8::MAX as f32) as i8;
+    egui::Frame::new().fill(fill).inner_margin(egui::Margin {
+        left: PANEL_PADDING,
+        right: PANEL_PADDING,
+        top,
+        bottom: PANEL_PADDING,
+    })
 }
 
 pub fn panel_scroll_style() -> egui::style::ScrollStyle {
@@ -608,5 +631,40 @@ mod tests {
             skeleton_fill_at(SKELETON_PERIOD_SECONDS * 0.75),
             SKELETON_LOW
         );
+    }
+
+    #[test]
+    fn titlebar_inset_tracks_fullscreen_and_platform() {
+        let context = egui::Context::default();
+        if cfg!(target_os = "macos") {
+            assert_eq!(titlebar_inset(&context), 28.0);
+            let mut raw = egui::RawInput::default();
+            raw.viewports.insert(
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    fullscreen: Some(true),
+                    ..Default::default()
+                },
+            );
+            context.run_ui(raw, |_| {}).drop_without_applying_deltas();
+            assert_eq!(titlebar_inset(&context), 0.0);
+        } else {
+            assert_eq!(titlebar_inset(&context), 0.0);
+        }
+    }
+
+    #[test]
+    fn top_panel_frame_adds_inset_to_panel_padding() {
+        let zero_inset = top_panel_frame(SIDEBAR, 0.0);
+        assert_eq!(zero_inset.inner_margin.top, PANEL_PADDING);
+        assert_eq!(zero_inset.inner_margin.left, PANEL_PADDING);
+        assert_eq!(zero_inset.inner_margin.right, PANEL_PADDING);
+        assert_eq!(zero_inset.inner_margin.bottom, PANEL_PADDING);
+
+        let inset_frame = top_panel_frame(SIDEBAR, 28.0);
+        assert_eq!(inset_frame.inner_margin.top, PANEL_PADDING + 28);
+        assert_eq!(inset_frame.inner_margin.left, PANEL_PADDING);
+        assert_eq!(inset_frame.inner_margin.right, PANEL_PADDING);
+        assert_eq!(inset_frame.inner_margin.bottom, PANEL_PADDING);
     }
 }

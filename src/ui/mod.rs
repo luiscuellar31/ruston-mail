@@ -31,12 +31,26 @@ struct UndoNotice {
     expires_at: f64,
 }
 
+pub(crate) fn main_viewport(settings: &Settings) -> egui::ViewportBuilder {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([settings.window.width, settings.window.height])
+        .with_min_inner_size(MIN_WINDOW_SIZE);
+
+    #[cfg(target_os = "macos")]
+    {
+        viewport = viewport
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false);
+    }
+
+    viewport
+}
+
 pub fn run(demo: bool) -> eframe::Result {
     let settings = Settings::load();
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([settings.window.width, settings.window.height])
-            .with_min_inner_size(MIN_WINDOW_SIZE),
+        viewport: main_viewport(&settings),
         ..Default::default()
     };
 
@@ -446,5 +460,25 @@ mod tests {
     fn set_dock_badge_does_not_panic() {
         set_dock_badge(Some(5));
         set_dock_badge(None);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn main_viewport_enables_macos_fullsize_content_view() {
+        let settings = Settings::default();
+        let viewport = main_viewport(&settings);
+        assert_eq!(viewport.fullsize_content_view, Some(true));
+        assert_eq!(viewport.titlebar_shown, Some(false));
+        assert_eq!(viewport.title_shown, Some(false));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn main_viewport_leaves_system_decorations_intact() {
+        let settings = Settings::default();
+        let viewport = main_viewport(&settings);
+        assert_eq!(viewport.fullsize_content_view, None);
+        assert_eq!(viewport.titlebar_shown, None);
+        assert_eq!(viewport.title_shown, None);
     }
 }
