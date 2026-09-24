@@ -76,6 +76,7 @@ pub enum Message {
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
+    NewMailConversationLoaded(Result<ConversationPage, MailboxError>),
     /// The folders the account made, fetched once when the mailbox opens.
     FoldersLoaded(SessionEpoch, Result<Vec<Folder>, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
@@ -105,6 +106,8 @@ pub enum Message {
     SetZoom(f32),
     /// Shows or hides the unread mail badge on the dock/app icon.
     SetShowUnreadBadge(bool),
+    /// Shows or hides desktop notifications for incoming mail.
+    SetDesktopNotifications(bool),
     /// Picks the folder a run opens in.
     SetStartFolder(StartFolder),
     /// Writes a message out as HTML, or as plain text.
@@ -168,6 +171,8 @@ pub struct App {
     saved_attachment: Option<Result<PathBuf, SaveError>>,
     /// The attachment in flight, preventing duplicate downloads.
     saving_attachment: Option<String>,
+    /// Whether the current refresh was started by background polling.
+    is_polling: bool,
 }
 
 impl App {
@@ -204,6 +209,7 @@ impl App {
             compose: None,
             saved_attachment: None,
             saving_attachment: None,
+            is_polling: false,
         }
     }
 
@@ -378,7 +384,10 @@ impl App {
                     mailbox.dismiss_undo(&offer);
                 }
             }
-            Message::RefreshMailbox => return self.refresh_mailbox(),
+            Message::RefreshMailbox => {
+                self.is_polling = false;
+                return self.refresh_mailbox();
+            }
             Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),
             Message::ConversationsLoaded(request, result) => {
@@ -418,11 +427,58 @@ impl App {
                 return Effects::batch([self.reconcile_open_folder(), self.reload_counts()]);
             }
             Message::CountsLoaded(request, result) => {
+                let old_inbox_unread = self
+                    .mailbox
+                    .as_ref()
+                    .and_then(|mailbox| mailbox.counts())
+                    .and_then(|counts| counts.unread(&Folder::INBOX));
+                let was_polling = self.is_polling;
+                self.is_polling = false;
+
                 let error = self
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_counts(request, result));
                 self.handle_mailbox_error(error);
+
+                let new_inbox_unread = self
+                    .mailbox
+                    .as_ref()
+                    .and_then(|mailbox| mailbox.counts())
+                    .and_then(|counts| counts.unread(&Folder::INBOX));
+
+                if was_polling
+                    && self.settings.desktop_notifications
+                    && let (Some(old), Some(new)) = (old_inbox_unread, new_inbox_unread)
+                    && new > old
+                {
+                    return self.fetch_new_mail_notification();
+                }
+            }
+            Message::NewMailConversationLoaded(result) => {
+                if let Ok(page) = result
+                    && let Some(conversation) = page.conversations.first()
+                {
+                    let sender = conversation
+                        .correspondents
+                        .as_deref()
+                        .filter(|c| !c.is_empty())
+                        .or_else(|| {
+                            conversation
+                                .participants
+                                .first()
+                                .and_then(|addr| addr.display_name())
+                        })
+                        .unwrap_or("Proton Mail")
+                        .to_owned();
+                    let subject = conversation
+                        .subject
+                        .as_deref()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or("(No subject)")
+                        .to_owned();
+                    return Effects::ui(UiEffect::NotifyNewMail { sender, subject });
+                }
             }
             Message::ActionFinished(request, result) => {
                 return self.finish_mail_action(request, result);
@@ -496,6 +552,9 @@ impl App {
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetShowUnreadBadge(on) => {
                 self.remember(|settings| settings.show_unread_badge = on);
+            }
+            Message::SetDesktopNotifications(on) => {
+                self.remember(|settings| settings.desktop_notifications = on);
             }
             Message::SetStartFolder(start) => self.remember(|settings| settings.start = start),
             Message::SetComposeFormat(format) => {
@@ -915,6 +974,7 @@ impl App {
         if !self.auto_refresh_available() {
             return Effects::none();
         }
+        self.is_polling = true;
         if let Some(mailbox) = &mut self.mailbox {
             mailbox.invalidate_cached_listings();
         }
@@ -973,6 +1033,17 @@ impl App {
         Effects::perform(
             async move { backend.conversation_counts(&folders).await },
             move |result| Message::CountsLoaded(request, result),
+        )
+    }
+
+    fn fetch_new_mail_notification(&self) -> Effects {
+        let Some(backend) = self.backend.clone() else {
+            return Effects::none();
+        };
+
+        Effects::perform(
+            async move { backend.list_conversations(&Folder::INBOX, 0, 1).await },
+            Message::NewMailConversationLoaded,
         )
     }
 

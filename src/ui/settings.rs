@@ -198,6 +198,15 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings) {
             ui,
             "Updates the application icon with the number of unread messages in your inbox.",
         );
+        ui.add_space(8.0);
+        ui.checkbox(
+            &mut settings.desktop_notifications,
+            "Show desktop notifications for new mail",
+        );
+        description(
+            ui,
+            "Displays a system notification with the sender and subject when new mail arrives.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Keyboard", |ui| {
@@ -247,6 +256,11 @@ fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
     }
     if draft.show_unread_badge != current.show_unread_badge {
         messages.push(Message::SetShowUnreadBadge(draft.show_unread_badge));
+    }
+    if draft.desktop_notifications != current.desktop_notifications {
+        messages.push(Message::SetDesktopNotifications(
+            draft.desktop_notifications,
+        ));
     }
     messages
 }
@@ -389,8 +403,9 @@ mod tests {
         draft.confirm_links = false;
         draft.zoom = 1.15;
         draft.show_unread_badge = false;
+        draft.desktop_notifications = false;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 3);
+        assert_eq!(changes.len(), 4);
         assert!(
             changes
                 .iter()
@@ -405,6 +420,11 @@ mod tests {
             changes
                 .iter()
                 .any(|message| matches!(message, Message::SetShowUnreadBadge(false)))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetDesktopNotifications(false)))
         );
     }
 

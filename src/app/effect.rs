@@ -22,6 +22,7 @@ pub enum UiEffect {
     FocusSearch,
     ScrollReaderTop,
     RevealConversation(String),
+    NotifyNewMail { sender: String, subject: String },
 }
 
 /// A flat collection makes combining independent effects explicit and keeps
@@ -114,6 +115,19 @@ mod tests {
         assert!(matches!(
             effect,
             Effect::Ui(UiEffect::CopyText(text)) if text == "copy me"
+        ));
+
+        let notify = Effects::ui(UiEffect::NotifyNewMail {
+            sender: "Alice".into(),
+            subject: "Update".into(),
+        })
+        .into_iter()
+        .next()
+        .expect("one effect");
+        assert!(matches!(
+            notify,
+            Effect::Ui(UiEffect::NotifyNewMail { sender, subject })
+                if sender == "Alice" && subject == "Update"
         ));
     }
 }

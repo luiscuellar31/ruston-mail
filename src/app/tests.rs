@@ -950,6 +950,108 @@ fn automatic_refresh_waits_while_a_message_is_being_sent() {
 }
 
 #[test]
+fn automatic_refresh_notifies_when_inbox_unread_increases() {
+    let mut app = loaded_demo_app();
+    let initial_unread = app
+        .mailbox()
+        .unwrap()
+        .counts()
+        .unwrap()
+        .unread(&Folder::INBOX)
+        .unwrap();
+
+    let _ = app.update(Message::AutoRefreshMailbox);
+    let counts_request = app.last_request;
+
+    let new_counts: crate::mail::MailboxCounts =
+        [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
+    let effects = app.update(Message::CountsLoaded(counts_request, Ok(new_counts)));
+    assert_eq!(effects.units(), 1);
+
+    let effect = effects
+        .into_iter()
+        .next()
+        .expect("fetch conversation effect");
+    let Effect::Future(future) = effect else {
+        panic!("expected future effect");
+    };
+
+    let new_mail_message = futures::executor::block_on(future);
+    let ui_effects = app.update(new_mail_message);
+    assert_eq!(ui_effects.units(), 1);
+
+    let notify_effect = ui_effects.into_iter().next().expect("ui effect");
+    assert!(matches!(
+        notify_effect,
+        Effect::Ui(UiEffect::NotifyNewMail { ref sender, ref subject })
+            if !sender.is_empty() && !subject.is_empty()
+    ));
+}
+
+#[test]
+fn automatic_refresh_does_not_notify_when_inbox_unread_stays_same() {
+    let mut app = loaded_demo_app();
+    let initial_unread = app
+        .mailbox()
+        .unwrap()
+        .counts()
+        .unwrap()
+        .unread(&Folder::INBOX)
+        .unwrap();
+
+    let _ = app.update(Message::AutoRefreshMailbox);
+    let counts_request = app.last_request;
+
+    let new_counts: crate::mail::MailboxCounts =
+        [(Folder::INBOX, initial_unread)].into_iter().collect();
+    let effects = app.update(Message::CountsLoaded(counts_request, Ok(new_counts)));
+    assert_eq!(effects.units(), 0);
+}
+
+#[test]
+fn manual_refresh_does_not_trigger_notification_when_unread_increases() {
+    let mut app = loaded_demo_app();
+    let initial_unread = app
+        .mailbox()
+        .unwrap()
+        .counts()
+        .unwrap()
+        .unread(&Folder::INBOX)
+        .unwrap();
+
+    let _ = app.update(Message::RefreshMailbox);
+    let counts_request = app.last_request;
+
+    let new_counts: crate::mail::MailboxCounts =
+        [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
+    let effects = app.update(Message::CountsLoaded(counts_request, Ok(new_counts)));
+    assert_eq!(effects.units(), 0);
+}
+
+#[test]
+fn automatic_refresh_does_not_notify_when_desktop_notifications_disabled() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetDesktopNotifications(false));
+    assert!(!app.settings().desktop_notifications);
+
+    let initial_unread = app
+        .mailbox()
+        .unwrap()
+        .counts()
+        .unwrap()
+        .unread(&Folder::INBOX)
+        .unwrap();
+
+    let _ = app.update(Message::AutoRefreshMailbox);
+    let counts_request = app.last_request;
+
+    let new_counts: crate::mail::MailboxCounts =
+        [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
+    let effects = app.update(Message::CountsLoaded(counts_request, Ok(new_counts)));
+    assert_eq!(effects.units(), 0);
+}
+
+#[test]
 fn a_mutation_during_refresh_is_followed_by_a_fresh_request() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::RefreshMailbox);

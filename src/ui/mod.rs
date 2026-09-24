@@ -121,6 +121,9 @@ impl DesktopApp {
                 UiEffect::FocusSearch => self.ui.focus_search = true,
                 UiEffect::ScrollReaderTop => self.ui.scroll_reader_top = true,
                 UiEffect::RevealConversation(id) => self.ui.reveal_conversation = Some(id),
+                UiEffect::NotifyNewMail { sender, subject } => {
+                    show_desktop_notification(&sender, &subject);
+                }
             }
         }
         context.request_repaint();
@@ -435,12 +438,42 @@ fn set_dock_badge(count: Option<u32>) {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn show_desktop_notification(sender: &str, subject: &str) {
+    use objc2_foundation::{NSString, NSUserNotification, NSUserNotificationCenter};
+
+    let center: Option<objc2::rc::Retained<NSUserNotificationCenter>> = unsafe {
+        objc2::msg_send![
+            objc2::class!(NSUserNotificationCenter),
+            defaultUserNotificationCenter
+        ]
+    };
+    if let Some(center) = center {
+        let notification = NSUserNotification::new();
+        notification.setTitle(Some(&NSString::from_str(sender)));
+        notification.setInformativeText(Some(&NSString::from_str(subject)));
+        notification.setSoundName(Some(&NSString::from_str(
+            "NSUserNotificationDefaultSoundName",
+        )));
+        center.deliverNotification(&notification);
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn set_dock_badge(_count: Option<u32>) {}
+
+#[cfg(not(target_os = "macos"))]
+fn show_desktop_notification(_sender: &str, _subject: &str) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_desktop_notification_does_not_panic() {
+        show_desktop_notification("Alice", "Hello World");
+    }
 
     #[test]
     fn the_title_carries_unread_mail_only_when_there_is_some() {

@@ -48,6 +48,8 @@ pub struct Settings {
     pub zoom: f32,
     /// Show unread email count badge on the application dock or taskbar icon.
     pub show_unread_badge: bool,
+    /// Show desktop notification when new mail arrives in inbox.
+    pub desktop_notifications: bool,
     /// Whether `load` read these settings, allowing them to be written back.
     #[serde(skip)]
     stored: bool,
@@ -70,6 +72,7 @@ impl Default for Settings {
             compose_placement: ComposePlacement::ReadingPane,
             zoom: 1.0,
             show_unread_badge: true,
+            desktop_notifications: true,
             stored: false,
         }
     }
