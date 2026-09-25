@@ -325,7 +325,7 @@ fn conversation_pane(
     }
     ui.add_space(4.0);
 
-    let empty = mailbox.visible_conversations().next().is_none();
+    let empty = mailbox.is_empty_visible();
     match (mailbox.status(), empty) {
         (ListStatus::Loading(_), _) => conversation_skeleton(ui),
         (ListStatus::Failed(error), true) => {
@@ -420,9 +420,8 @@ fn conversation_list(
 ) {
     let now = Local::now();
     let selected = mailbox.selected_conversation();
-    // Index visible rows once for virtualized access.
-    let rows: Vec<&ConversationSummary> = mailbox.visible_conversations().collect();
-    let total = rows.len() + usize::from(ends_with_load_more(mailbox));
+    let visible_count = mailbox.visible_count();
+    let total = visible_count + usize::from(ends_with_load_more(mailbox));
 
     ui.scope(|ui| {
         // Read by `show_rows` to work out where each row goes, so it is set
@@ -434,10 +433,11 @@ fn conversation_list(
             .auto_shrink([false, false]);
 
         // Synthesized rectangles can reveal rows outside the rendered range.
-        let reveal = state
-            .reveal_conversation
-            .as_deref()
-            .and_then(|wanted| rows.iter().position(|row| row.id == wanted));
+        let reveal = state.reveal_conversation.as_deref().and_then(|wanted| {
+            mailbox
+                .visible_conversations()
+                .position(|row| row.id == wanted)
+        });
 
         scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
             if let Some(index) = reveal {
@@ -451,7 +451,7 @@ fn conversation_list(
             }
 
             for index in range {
-                let Some(conversation) = rows.get(index) else {
+                let Some(conversation) = mailbox.visible_row(index) else {
                     load_more(ui, mailbox, messages);
                     continue;
                 };

@@ -148,6 +148,8 @@ pub struct Mailbox {
     folder: Folder,
     status: ListStatus,
     conversations: Vec<ConversationSummary>,
+    /// Indices of visible rows into either `search.rows` or `conversations`.
+    visible_cache: Vec<usize>,
     page_size: u32,
     next_page: u32,
     has_more: bool,
@@ -187,6 +189,7 @@ impl Mailbox {
             folder,
             status: ListStatus::Loading(page_request),
             conversations: Vec::new(),
+            visible_cache: Vec::new(),
             page_size,
             next_page: 0,
             has_more: false,
@@ -223,17 +226,60 @@ impl Mailbox {
         &self.conversations
     }
 
+    fn source_rows(&self) -> &[ConversationSummary] {
+        match &self.search {
+            Some(search) => &search.rows,
+            None => &self.conversations,
+        }
+    }
+
+    /// Recomputes the cached visible row indices based on current search state and query.
+    fn recompute_visible(&mut self) {
+        self.visible_cache.clear();
+        match &self.search {
+            Some(search) => {
+                self.visible_cache.extend(0..search.rows.len());
+            }
+            None => {
+                let trimmed = self.search_query.trim();
+                if trimmed.is_empty() {
+                    self.visible_cache.extend(0..self.conversations.len());
+                } else {
+                    let query = trimmed.to_lowercase();
+                    self.visible_cache
+                        .extend(self.conversations.iter().enumerate().filter_map(
+                            |(idx, conversation)| {
+                                matches_search(conversation, &query).then_some(idx)
+                            },
+                        ));
+                }
+            }
+        }
+    }
+
+    /// Number of visible rows currently on screen.
+    pub fn visible_count(&self) -> usize {
+        self.visible_cache.len()
+    }
+
+    /// Whether there are no visible rows on screen.
+    pub fn is_empty_visible(&self) -> bool {
+        self.visible_cache.is_empty()
+    }
+
+    /// Accesses a visible row by its 0-based visible index.
+    pub fn visible_row(&self, index: usize) -> Option<&ConversationSummary> {
+        let &row_index = self.visible_cache.get(index)?;
+        self.source_rows().get(row_index)
+    }
+
     /// The rows on screen: search results when a search is showing, otherwise
     /// the loaded folder narrowed by what is typed in the search field.
-    pub fn visible_conversations(&self) -> impl Iterator<Item = &ConversationSummary> {
-        let (rows, query) = match &self.search {
-            // Results already match, so nothing is filtered out of them.
-            Some(search) => (&search.rows, String::new()),
-            None => (&self.conversations, self.search_query.trim().to_lowercase()),
-        };
-
-        rows.iter()
-            .filter(move |conversation| matches_search(conversation, &query))
+    pub fn visible_conversations(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &ConversationSummary> + DoubleEndedIterator {
+        let rows = self.source_rows();
+        self.visible_cache.iter().map(move |&idx| &rows[idx])
     }
 
     /// The query whose results are on screen, if any.
@@ -316,6 +362,7 @@ impl Mailbox {
                     search.rows.extend(new);
                     search.next_page = request.page.saturating_add(1);
                     search.has_more = has_more;
+                    self.recompute_visible();
                 } else {
                     self.search = Some(SearchState {
                         query: request.query.clone(),
@@ -323,6 +370,7 @@ impl Mailbox {
                         next_page: 1,
                         has_more,
                     });
+                    self.recompute_visible();
                     self.close_reader_if_hidden();
                 }
                 self.status = ListStatus::Loaded;
@@ -345,6 +393,7 @@ impl Mailbox {
         if matches!(self.status, ListStatus::Failed(_)) {
             self.status = ListStatus::Loaded;
         }
+        self.recompute_visible();
         self.close_reader_if_hidden();
     }
 
@@ -365,14 +414,9 @@ impl Mailbox {
         // Emptying the field is how someone leaves the results behind.
         if self.search_query.trim().is_empty() {
             self.clear_search();
-        }
-        let selected_is_hidden = self.selected_conversation().is_some_and(|selected| {
-            !self
-                .visible_conversations()
-                .any(|conversation| conversation.id == selected)
-        });
-        if selected_is_hidden {
-            self.set_reader(ReaderState::Empty);
+        } else {
+            self.recompute_visible();
+            self.close_reader_if_hidden();
         }
     }
 
@@ -403,13 +447,10 @@ impl Mailbox {
     /// The visible row one step away from the selected one, or the first
     /// visible row when nothing is open yet. `None` at either end of the list.
     pub fn neighbour(&self, step: Step) -> Option<String> {
-        let rows: Vec<&str> = self
-            .visible_conversations()
-            .map(|row| row.id.as_str())
-            .collect();
-        let current = self
-            .selected_conversation()
-            .and_then(|selected| rows.iter().position(|row| *row == selected));
+        let current = self.selected_conversation().and_then(|selected| {
+            self.visible_conversations()
+                .position(|row| row.id == selected)
+        });
 
         let index = match (current, step) {
             (None, _) => 0,
@@ -418,7 +459,7 @@ impl Mailbox {
             (Some(index), Step::Previous) => index - 1,
         };
 
-        rows.get(index).map(|id| (*id).to_owned())
+        self.visible_row(index).map(|row| row.id.clone())
     }
 
     /// Closes the reader without touching the list, as Escape does.
@@ -429,12 +470,15 @@ impl Mailbox {
     /// Where a row sits among the visible ones, as a fraction from 0 to 1.
     /// `None` when it is not visible or is the only row.
     pub fn visible_position(&self, row_id: &str) -> Option<f32> {
+        let last = self.visible_cache.len().checked_sub(1)?;
+        if last == 0 {
+            return None;
+        }
         let index = self
             .visible_conversations()
             .position(|row| row.id == row_id)?;
-        let last = self.visible_conversations().count().checked_sub(1)?;
 
-        (last > 0).then(|| index as f32 / last as f32)
+        Some(index as f32 / last as f32)
     }
 
     pub fn selected_conversation(&self) -> Option<&str> {
@@ -876,6 +920,7 @@ impl Mailbox {
             && let Some(search) = &mut self.search
         {
             search.rows.retain(|row| row.id != row_id);
+            self.recompute_visible();
         }
     }
 
@@ -890,6 +935,7 @@ impl Mailbox {
         if let Some(search) = &mut self.search {
             search.rows.retain(|row| row.id != row_id);
         }
+        self.recompute_visible();
         if !was_selected {
             return None;
         }
@@ -901,11 +947,9 @@ impl Mailbox {
     /// one that was at `index`, so reading continues where it left off.
     fn open_row_after(&mut self, index: usize) -> Option<String> {
         self.discard_reader();
-        let last = self.visible_conversations().count().checked_sub(1)?;
+        let last = self.visible_cache.len().checked_sub(1)?;
 
-        self.visible_conversations()
-            .nth(index.min(last))
-            .map(|row| row.id.clone())
+        self.visible_row(index.min(last)).map(|row| row.id.clone())
     }
 
     /// Updates an account folder's name without reloading its stable id.
@@ -939,6 +983,7 @@ impl Mailbox {
             self.next_page = cached.next_page;
             self.has_more = cached.has_more;
             self.active_dirty = cached.dirty;
+            self.recompute_visible();
             if cached.dirty {
                 // From this point on only a change made while this request is
                 // running can make its answer stale again.
@@ -954,6 +999,7 @@ impl Mailbox {
             self.next_page = 0;
             self.has_more = false;
             self.active_dirty = false;
+            self.recompute_visible();
             self.status = ListStatus::Loading(request);
             Some(self.page_request(request, 0))
         }
@@ -1056,6 +1102,7 @@ impl Mailbox {
             cached.dirty = true;
         }
         self.active_dirty = false;
+        self.recompute_visible();
 
         let selected_left = selected.as_deref().is_some_and(|id| {
             !self
@@ -1165,13 +1212,15 @@ impl Mailbox {
             self.conversations = page.conversations;
             self.conversations.extend(deeper);
             self.next_page = self.next_page.max(1);
-
+        }
+        // Rows split out of a conversation carry their own, older times.
+        sort_newest_first(&mut self.conversations);
+        self.recompute_visible();
+        if !append {
             // Search results are not part of this answer and stay on screen,
             // so what the reader holds is only closed when it truly left.
             self.close_reader_if_hidden();
         }
-        // Rows split out of a conversation carry their own, older times.
-        sort_newest_first(&mut self.conversations);
 
         self.has_more = received > 0
             && u64::from(self.next_page) * u64::from(self.page_size) < u64::from(page.total);
@@ -1212,12 +1261,15 @@ fn matches_search(conversation: &ConversationSummary, query: &str) -> bool {
 }
 
 /// Whether `haystack` holds `needle`, which is already lowercased.
-/// ASCII avoids allocation on redraw; other text uses Unicode lowercasing.
+/// ASCII avoids allocation; other text uses zero-allocation streaming Unicode lowercasing.
 fn contains_ignoring_case(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;
     }
-    if haystack.is_ascii() {
+    if haystack.is_ascii() && !needle.is_ascii() {
+        return false;
+    }
+    if haystack.is_ascii() && needle.is_ascii() {
         // Every character is one byte here, so bytes and characters line up.
         return haystack
             .as_bytes()
@@ -1225,7 +1277,22 @@ fn contains_ignoring_case(haystack: &str, needle: &str) -> bool {
             .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()));
     }
 
-    haystack.to_lowercase().contains(needle)
+    // For non-ASCII text, avoid allocating a lowercased String on the heap by
+    // streaming lowercased characters from each character start position in haystack.
+    haystack.char_indices().any(|(start, _)| {
+        let mut haystack_chars = haystack[start..].chars().flat_map(char::to_lowercase);
+        let mut needle_chars = needle.chars().flat_map(char::to_lowercase);
+        loop {
+            match needle_chars.next() {
+                None => return true,
+                Some(nc) => {
+                    if haystack_chars.next() != Some(nc) {
+                        return false;
+                    }
+                }
+            }
+        }
+    })
 }
 
 #[cfg(test)]
