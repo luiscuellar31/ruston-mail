@@ -66,3 +66,19 @@ jobs:
 
       - name: Ensure clean workspace
         run: git diff --exit-code
+
+  deny:
+    name: Dependency & license integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  unused-deps:
+    name: Unused dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: bnjbvr/cargo-machete@main
