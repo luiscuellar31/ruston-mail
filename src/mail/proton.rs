@@ -3,6 +3,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::Semaphore;
 
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
@@ -25,6 +26,9 @@ use super::{
 
 /// Conversations requested per page from Proton.
 pub const PAGE_SIZE: u32 = 50;
+
+/// Maximum number of background metadata inspection requests in flight simultaneously.
+const METADATA_CONCURRENCY: usize = 4;
 
 /// Longest wait for any Proton request a view is waiting on. Without it a
 /// stuck call leaves the view loading forever, with no way back.
@@ -121,6 +125,7 @@ pub struct ProtonMailService {
     client: Client,
     email: Option<String>,
     own_addresses: OwnAddresses,
+    inspection_limiter: Arc<Semaphore>,
 }
 
 impl ProtonMailService {
@@ -232,6 +237,12 @@ impl ProtonMailService {
         conversation_id: &str,
         folder: &Folder,
     ) -> Result<Option<Vec<ConversationSummary>>, MailboxError> {
+        let _permit = self
+            .inspection_limiter
+            .acquire()
+            .await
+            .map_err(|_| MailboxError::Unavailable)?;
+
         let inspection = tokio::time::timeout(
             INSPECTION_BUDGET,
             self.client.conversation_messages(conversation_id),
@@ -457,6 +468,7 @@ impl ProtonMailService {
             client,
             email,
             own_addresses,
+            inspection_limiter: Arc::new(Semaphore::new(METADATA_CONCURRENCY)),
         }
     }
 }

@@ -1877,7 +1877,7 @@ fn split_conversation_replaces_conversation_with_message_rows_and_updates_visibl
         },
     ];
 
-    mailbox.split_conversation("c1", split_rows);
+    mailbox.split_conversation(&Folder::INBOX, "c1", split_rows);
 
     assert_eq!(visible_ids(&mailbox), ["m1", "m2", "c2"]);
     assert_eq!(mailbox.visible_count(), 3);
@@ -1888,9 +1888,42 @@ fn split_conversation_ignores_nonexistent_or_empty() {
     let (mut mailbox, request) = open();
     mailbox.finish_page(request.id, page(&["c1"], 1));
 
-    mailbox.split_conversation("c1", Vec::new());
+    mailbox.split_conversation(&Folder::INBOX, "c1", Vec::new());
     assert_eq!(visible_ids(&mailbox), ["c1"]);
 
-    mailbox.split_conversation("nonexistent", vec![summary("m1")]);
+    mailbox.split_conversation(&Folder::INBOX, "nonexistent", vec![summary("m1")]);
     assert_eq!(visible_ids(&mailbox), ["c1"]);
+}
+
+#[test]
+fn split_conversation_updates_cached_listing_when_folder_not_active() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(request.id, page(&["c1"], 1));
+
+    // Navigating to Sent moves Inbox to cached_listings
+    let sent_request = mailbox.select_folder(sys(MailFolder::Sent), 2).unwrap();
+    mailbox.finish_page(sent_request.id, page(&["s1"], 1));
+    assert_eq!(visible_ids(&mailbox), ["s1"]);
+
+    // Background inspection finishes for Inbox while Sent is active
+    let split_rows = vec![
+        ConversationSummary {
+            time: Some(60),
+            kind: SummaryKind::Message,
+            ..summary("m1")
+        },
+        ConversationSummary {
+            time: Some(40),
+            kind: SummaryKind::Message,
+            ..summary("m2")
+        },
+    ];
+    mailbox.split_conversation(&Folder::INBOX, "c1", split_rows);
+
+    // Sent is still visible and unaffected
+    assert_eq!(visible_ids(&mailbox), ["s1"]);
+
+    // Navigating back to Inbox restores cached listing with split rows already applied!
+    mailbox.select_folder(sys(MailFolder::Inbox), 3);
+    assert_eq!(visible_ids(&mailbox), ["m1", "m2"]);
 }

@@ -452,10 +452,8 @@ impl App {
                 }
                 match result {
                     Ok(Some(split_rows)) => {
-                        if let Some(mailbox) =
-                            self.mailbox.as_mut().filter(|m| m.folder() == &folder)
-                        {
-                            mailbox.split_conversation(&conversation_id, split_rows);
+                        if let Some(mailbox) = self.mailbox.as_mut() {
+                            mailbox.split_conversation(&folder, &conversation_id, split_rows);
                         }
                     }
                     Ok(None) => {}

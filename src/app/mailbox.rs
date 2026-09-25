@@ -1147,8 +1147,11 @@ impl Mailbox {
 
     /// Replaces an uninspected conversation with its split message rows once
     /// background inspection confirms it is repeated inbound mail.
+    /// Updates the active folder listing if currently viewed, or any cached
+    /// listing for that folder if the user navigated away.
     pub fn split_conversation(
         &mut self,
+        folder: &Folder,
         conversation_id: &str,
         split_rows: Vec<ConversationSummary>,
     ) {
@@ -1156,14 +1159,24 @@ impl Mailbox {
             return;
         }
 
-        if let Some(pos) = self
-            .conversations
-            .iter()
-            .position(|c| c.id == conversation_id)
+        if &self.folder == folder {
+            if let Some(pos) = self
+                .conversations
+                .iter()
+                .position(|c| c.id == conversation_id)
+            {
+                self.conversations.splice(pos..=pos, split_rows);
+                sort_newest_first(&mut self.conversations);
+                self.recompute_visible();
+            }
+        } else if let Some(cached) = self.cached_listings.get_mut(&FolderKey::of(folder))
+            && let Some(pos) = cached
+                .conversations
+                .iter()
+                .position(|c| c.id == conversation_id)
         {
-            self.conversations.splice(pos..=pos, split_rows);
-            sort_newest_first(&mut self.conversations);
-            self.recompute_visible();
+            cached.conversations.splice(pos..=pos, split_rows);
+            sort_newest_first(&mut cached.conversations);
         }
     }
 
