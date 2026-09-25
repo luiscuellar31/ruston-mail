@@ -16,18 +16,26 @@ env:
 
 jobs:
   check:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       # Both answers are wanted: one platform failing should not hide the
       # other's result.
       fail-fast: false
       matrix:
-        # Each compiles code the other never does. The keyboard hints in the
-        # settings panel are chosen with cfg(target_os), and macOS is where
-        # Ruston Mail is developed while Linux is what its window features
-        # are built for.
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - name: Ubuntu (x86_64)
+            os: ubuntu-latest
+            cache-key: ubuntu-x86_64
+          - name: Ubuntu (arm64)
+            os: ubuntu-24.04-arm
+            cache-key: ubuntu-arm64
+          - name: macOS (arm64)
+            os: macos-latest
+            cache-key: macos-arm64
+          - name: macOS (x86_64)
+            os: macos-15-intel
+            cache-key: macos-x86_64
 
     steps:
       # Actions are pinned to a commit for the reason proton-core is: a tag
@@ -42,7 +50,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: ${{ matrix.os }}
+          key: ${{ matrix.cache-key }}
 
       - name: Formatting
         run: cargo fmt --all -- --check
