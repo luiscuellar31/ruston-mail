@@ -51,6 +51,20 @@ impl MailBackend {
         }
     }
 
+    /// Checks whether an ambiguous multi-message conversation is only repeated
+    /// inbound mail. Returns `Some(split_rows)` if proven independent inbound messages,
+    /// or `None` if grouping should be kept or inspection failed/timed out.
+    pub async fn inspect_conversation(
+        &self,
+        conversation_id: &str,
+        folder: &Folder,
+    ) -> Result<Option<Vec<ConversationSummary>>, MailboxError> {
+        match self {
+            Self::Proton(service) => service.inspect_conversation(conversation_id, folder).await,
+            Self::Demo(_) => Ok(None),
+        }
+    }
+
     /// Sends through the active backend; demo messages remain local.
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
         match self {

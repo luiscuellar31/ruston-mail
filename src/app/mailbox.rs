@@ -1145,6 +1145,28 @@ impl Mailbox {
         }
     }
 
+    /// Replaces an uninspected conversation with its split message rows once
+    /// background inspection confirms it is repeated inbound mail.
+    pub fn split_conversation(
+        &mut self,
+        conversation_id: &str,
+        split_rows: Vec<ConversationSummary>,
+    ) {
+        if split_rows.is_empty() {
+            return;
+        }
+
+        if let Some(pos) = self
+            .conversations
+            .iter()
+            .position(|c| c.id == conversation_id)
+        {
+            self.conversations.splice(pos..=pos, split_rows);
+            sort_newest_first(&mut self.conversations);
+            self.recompute_visible();
+        }
+    }
+
     /// Applies a counts response. Returns the error of an accepted failed
     /// response; previously loaded counts are kept on failure.
     pub fn finish_counts(

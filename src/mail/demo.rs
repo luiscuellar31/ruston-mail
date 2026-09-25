@@ -801,6 +801,7 @@ fn search_from(
     ConversationPage {
         total,
         conversations,
+        inspect_candidates: Vec::new(),
     }
 }
 
@@ -856,6 +857,7 @@ fn list_from(
     ConversationPage {
         conversations,
         total,
+        inspect_candidates: Vec::new(),
     }
 }
 

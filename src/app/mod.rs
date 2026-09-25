@@ -16,9 +16,9 @@ use crate::settings::{ComposePlacement, Panels, Settings, StartFolder, Window};
 const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
-    AuthError, BodyFormat, ConversationDetail, ConversationPage, Folder, MailAction, MailBackend,
-    MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome, SendError, SignInOutcome,
-    SignInPrompt, demo::DemoMailbox,
+    AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
+    MailAction, MailBackend, MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome,
+    SendError, SignInOutcome, SignInPrompt, demo::DemoMailbox,
 };
 
 use auth::LoginForm;
@@ -74,6 +74,12 @@ pub enum Message {
     AutoRefreshMailbox,
     LoadMoreConversations,
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
+    ThreadInspected {
+        epoch: SessionEpoch,
+        folder: Folder,
+        conversation_id: String,
+        result: Result<Option<Vec<ConversationSummary>>, MailboxError>,
+    },
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
     NewMailConversationLoaded(Result<ConversationPage, MailboxError>),
@@ -409,18 +415,53 @@ impl App {
             Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),
             Message::ConversationsLoaded(request, result) => {
+                let candidates = match &result {
+                    Ok(page) => page.inspect_candidates.clone(),
+                    Err(_) => Vec::new(),
+                };
                 let error = self
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_page(request, result));
                 self.handle_mailbox_error(error);
-                if error.is_none()
-                    && self
+                if error.is_none() {
+                    let revalidating = self
                         .mailbox
                         .as_ref()
-                        .is_some_and(Mailbox::needs_revalidation)
-                {
-                    return self.refresh_mailbox();
+                        .is_some_and(Mailbox::needs_revalidation);
+                    if revalidating {
+                        return self.refresh_mailbox();
+                    }
+                    let accepted = self
+                        .mailbox
+                        .as_ref()
+                        .is_some_and(|m| m.status() == ListStatus::Loaded);
+                    if accepted && !candidates.is_empty() {
+                        return self.inspect_candidates(candidates);
+                    }
+                }
+            }
+            Message::ThreadInspected {
+                epoch,
+                folder,
+                conversation_id,
+                result,
+            } => {
+                if !self.is_current_session(epoch) {
+                    return Effects::none();
+                }
+                match result {
+                    Ok(Some(split_rows)) => {
+                        if let Some(mailbox) =
+                            self.mailbox.as_mut().filter(|m| m.folder() == &folder)
+                        {
+                            mailbox.split_conversation(&conversation_id, split_rows);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.handle_mailbox_error(Some(error));
+                    }
                 }
             }
             Message::ConversationLoaded(request, result) => {
@@ -1029,6 +1070,34 @@ impl App {
             async move { backend.list_conversations(&folder, page, page_size).await },
             move |result| Message::ConversationsLoaded(id, result),
         )
+    }
+
+    fn inspect_candidates(&self, candidates: Vec<String>) -> Effects {
+        let (Some(backend), Some(mailbox)) = (self.backend.clone(), self.mailbox.as_ref()) else {
+            return Effects::none();
+        };
+        let epoch = self.session_epoch;
+        let folder = mailbox.folder().clone();
+
+        Effects::batch(candidates.into_iter().map(|id| {
+            let backend = backend.clone();
+            let target_folder = folder.clone();
+            let callback_folder = folder.clone();
+            let conversation_id = id.clone();
+            Effects::perform(
+                async move {
+                    backend
+                        .inspect_conversation(&conversation_id, &target_folder)
+                        .await
+                },
+                move |result| Message::ThreadInspected {
+                    epoch,
+                    folder: callback_folder,
+                    conversation_id: id,
+                    result,
+                },
+            )
+        }))
     }
 
     /// Asks once for the folders the account made. They change rarely, so

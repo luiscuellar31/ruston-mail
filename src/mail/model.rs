@@ -345,11 +345,13 @@ impl ConversationDetail {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConversationPage {
     pub conversations: Vec<ConversationSummary>,
     /// Total conversations in the folder, across all pages.
     pub total: u32,
+    /// Candidates for progressive thread inspection.
+    pub inspect_candidates: Vec<String>,
 }
 
 /// Unread conversation counts per folder. A missing folder means unknown.

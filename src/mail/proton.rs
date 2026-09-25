@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
-use futures::{SinkExt, StreamExt, TryStreamExt, stream};
 use proton_core::model::enums::{label_ids, message_flag};
 use proton_core::model::message::Attachment;
 use proton_core::{
@@ -25,10 +25,6 @@ use super::{
 
 /// Conversations requested per page from Proton.
 pub const PAGE_SIZE: u32 = 50;
-
-/// Conversations whose message metadata is inspected at the same time while
-/// a page loads.
-const METADATA_CONCURRENCY: usize = 4;
 
 /// Longest wait for any Proton request a view is waiting on. Without it a
 /// stuck call leaves the view loading forever, with no way back.
@@ -191,7 +187,7 @@ impl ProtonMailService {
         self.email.as_deref()
     }
 
-    /// Lists a zero-based page and inspects ambiguous conversation grouping.
+    /// Lists a zero-based page and identifies conversations qualifying for progressive thread inspection.
     pub async fn list_conversations(
         &self,
         folder: &Folder,
@@ -205,43 +201,49 @@ impl ProtonMailService {
             )
             .await?;
 
-        let deadline = tokio::time::Instant::now() + INSPECTION_BUDGET;
-        let rows: Vec<Vec<ConversationSummary>> = stream::iter(conversations)
-            .map(|conversation| self.rows(conversation, folder, deadline))
-            .buffered(METADATA_CONCURRENCY)
-            .try_collect()
-            .await?;
+        let mut inspect_candidates = Vec::new();
+        let mut summaries = Vec::with_capacity(conversations.len());
+
+        for conversation in conversations {
+            let senders: Vec<String> = conversation
+                .senders
+                .iter()
+                .map(|sender| threading::normalize_address(&sender.address))
+                .collect();
+            if threading::needs_inspection(conversation.num_messages, &senders, &self.own_addresses)
+            {
+                inspect_candidates.push(conversation.id.clone());
+            }
+            summaries.push(summarize(conversation, folder));
+        }
 
         Ok(ConversationPage {
-            conversations: rows.into_iter().flatten().collect(),
+            conversations: summaries,
             total,
+            inspect_candidates,
         })
     }
 
-    /// One row for the conversation, or one per message when it is only
-    /// repeated inbound mail.
-    async fn rows(
+    /// Checks whether an ambiguous multi-message conversation is only repeated
+    /// inbound mail. Returns `Some(split_rows)` if proven independent inbound messages,
+    /// or `None` if grouping should be kept or inspection failed/timed out.
+    pub async fn inspect_conversation(
         &self,
-        conversation: Conversation,
+        conversation_id: &str,
         folder: &Folder,
-        deadline: tokio::time::Instant,
-    ) -> Result<Vec<ConversationSummary>, MailboxError> {
-        let senders: Vec<String> = conversation
-            .senders
-            .iter()
-            .map(|sender| threading::normalize_address(&sender.address))
-            .collect();
-        if !threading::needs_inspection(conversation.num_messages, &senders, &self.own_addresses) {
-            return Ok(vec![summarize(conversation, folder)]);
-        }
-
-        let inspection = tokio::time::timeout_at(
-            deadline,
-            self.client.conversation_messages(&conversation.id),
+    ) -> Result<Option<Vec<ConversationSummary>>, MailboxError> {
+        let inspection = tokio::time::timeout(
+            INSPECTION_BUDGET,
+            self.client.conversation_messages(conversation_id),
         )
         .await
         .ok();
-        inspected_rows(conversation, inspection, folder, &self.own_addresses)
+
+        match inspection.map(|res| res.map_err(map_mailbox_error)) {
+            Some(Ok(messages)) => Ok(inspect_messages(messages, folder, &self.own_addresses)),
+            Some(Err(MailboxError::SessionExpired)) => Err(MailboxError::SessionExpired),
+            Some(Err(_)) | None => Ok(None),
+        }
     }
 
     /// Lists account-owned folders and labels for the sidebar.
@@ -376,6 +378,7 @@ impl ProtonMailService {
         Ok(ConversationPage {
             total,
             conversations,
+            inspect_candidates: Vec::new(),
         })
     }
 
@@ -683,6 +686,7 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
 
 /// Rows for a conversation whose messages were inspected. `None` means the
 /// inspection ran out of time.
+#[cfg(test)]
 fn inspected_rows(
     conversation: Conversation,
     inspection: Option<proton_core::Result<Vec<MessageMetadata>>>,
@@ -698,13 +702,12 @@ fn inspected_rows(
     }
 }
 
-/// Splits proven independent inbound messages; otherwise keeps the conversation.
-fn split_rows(
-    conversation: Conversation,
+/// Inspects message metadata to determine if it is repeated inbound mail.
+fn inspect_messages(
     messages: Vec<MessageMetadata>,
     folder: &Folder,
     own: &OwnAddresses,
-) -> Vec<ConversationSummary> {
+) -> Option<Vec<ConversationSummary>> {
     let facts: Vec<MessageFacts> = messages
         .iter()
         .map(|message| MessageFacts {
@@ -719,7 +722,7 @@ fn split_rows(
         })
         .collect();
     if !threading::is_repeated_inbound(&facts, own) {
-        return vec![summarize(conversation, folder)];
+        return None;
     }
 
     let mut rows: Vec<_> = messages
@@ -727,12 +730,22 @@ fn split_rows(
         .filter(|message| message.label_ids.iter().any(|id| id == label_id(folder)))
         .map(message_summary)
         .collect();
-    // Label data disagreeing with the conversation list: keep Proton's row.
     if rows.is_empty() {
-        return vec![summarize(conversation, folder)];
+        return None;
     }
     rows.sort_by_key(|row| std::cmp::Reverse(row.time));
-    rows
+    Some(rows)
+}
+
+/// Splits proven independent inbound messages; otherwise keeps the conversation.
+#[cfg(test)]
+fn split_rows(
+    conversation: Conversation,
+    messages: Vec<MessageMetadata>,
+    folder: &Folder,
+    own: &OwnAddresses,
+) -> Vec<ConversationSummary> {
+    inspect_messages(messages, folder, own).unwrap_or_else(|| vec![summarize(conversation, folder)])
 }
 
 /// A row for one message split out of a conversation. Only inbound mail is

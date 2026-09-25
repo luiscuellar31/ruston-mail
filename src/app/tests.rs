@@ -2021,3 +2021,137 @@ fn answering_a_message_that_is_not_there_opens_nothing() {
 
     assert!(app.compose().is_none());
 }
+
+#[test]
+fn conversations_loaded_with_candidates_starts_inspection_effects() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::RefreshMailbox);
+    let request = app.last_request - 1;
+
+    let page = ConversationPage {
+        conversations: vec![ConversationSummary {
+            id: "demo-cand-1".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: Some("Candidate 1".into()),
+            correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: Some(100),
+            unread: false,
+            starred: false,
+            message_count: 2,
+            has_attachments: false,
+        }],
+        total: 1,
+        inspect_candidates: vec!["demo-cand-1".into(), "demo-cand-2".into()],
+    };
+
+    let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
+    assert_eq!(effects.units(), 2);
+}
+
+#[test]
+fn thread_inspected_splits_conversation_when_successful() {
+    let mut app = loaded_demo_app();
+    let epoch = app.session_epoch;
+
+    let split_rows = vec![
+        ConversationSummary {
+            id: "split-1".into(),
+            kind: crate::mail::SummaryKind::Message,
+            subject: Some("Split 1".into()),
+            correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: Some(150),
+            unread: false,
+            starred: false,
+            message_count: 1,
+            has_attachments: false,
+        },
+        ConversationSummary {
+            id: "split-2".into(),
+            kind: crate::mail::SummaryKind::Message,
+            subject: Some("Split 2".into()),
+            correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: Some(140),
+            unread: false,
+            starred: false,
+            message_count: 1,
+            has_attachments: false,
+        },
+    ];
+
+    let _ = app.update(Message::ThreadInspected {
+        epoch,
+        folder: Folder::INBOX,
+        conversation_id: "demo-0".into(),
+        result: Ok(Some(split_rows)),
+    });
+
+    let visible: Vec<_> = app
+        .mailbox()
+        .unwrap()
+        .visible_conversations()
+        .map(|c| c.id.as_str())
+        .collect();
+    assert!(visible.contains(&"split-1"));
+    assert!(visible.contains(&"split-2"));
+    assert!(!visible.contains(&"demo-0"));
+}
+
+#[test]
+fn thread_inspected_stale_epoch_or_folder_is_ignored() {
+    let mut app = loaded_demo_app();
+    let stale_epoch = app.session_epoch + 99;
+
+    let split_rows = vec![ConversationSummary {
+        id: "split-ignored".into(),
+        kind: crate::mail::SummaryKind::Message,
+        subject: Some("Split Ignored".into()),
+        correspondents: None,
+        participants: Vec::new(),
+        preview: None,
+        time: Some(150),
+        unread: false,
+        starred: false,
+        message_count: 1,
+        has_attachments: false,
+    }];
+
+    // Wrong epoch
+    let _ = app.update(Message::ThreadInspected {
+        epoch: stale_epoch,
+        folder: Folder::INBOX,
+        conversation_id: "demo-0".into(),
+        result: Ok(Some(split_rows.clone())),
+    });
+
+    let visible: Vec<_> = app
+        .mailbox()
+        .unwrap()
+        .visible_conversations()
+        .map(|c| c.id.as_str())
+        .collect();
+    assert!(!visible.contains(&"split-ignored"));
+    assert!(visible.contains(&"demo-0"));
+
+    // Wrong folder
+    let _ = app.update(Message::ThreadInspected {
+        epoch: app.session_epoch,
+        folder: Folder::System(crate::mail::MailFolder::Trash),
+        conversation_id: "demo-0".into(),
+        result: Ok(Some(split_rows)),
+    });
+
+    let visible: Vec<_> = app
+        .mailbox()
+        .unwrap()
+        .visible_conversations()
+        .map(|c| c.id.as_str())
+        .collect();
+    assert!(!visible.contains(&"split-ignored"));
+    assert!(visible.contains(&"demo-0"));
+}

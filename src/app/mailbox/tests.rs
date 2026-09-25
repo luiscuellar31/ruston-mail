@@ -56,6 +56,7 @@ fn page(ids: &[&str], total: u32) -> Result<ConversationPage, MailboxError> {
     Ok(ConversationPage {
         conversations: ids.iter().map(|id| summary(id)).collect(),
         total,
+        inspect_candidates: Vec::new(),
     })
 }
 
@@ -142,6 +143,7 @@ fn searchable_mailbox() -> Mailbox {
         Ok(ConversationPage {
             total: conversations.len() as u32,
             conversations,
+            inspect_candidates: Vec::new(),
         }),
     );
     mailbox
@@ -165,6 +167,7 @@ fn dated_page(rows: &[(&str, i64)], total: u32) -> Result<ConversationPage, Mail
     Ok(ConversationPage {
         conversations: rows.iter().map(|(id, time)| dated(id, *time)).collect(),
         total,
+        inspect_candidates: Vec::new(),
     })
 }
 
@@ -180,6 +183,7 @@ fn full_page(start: u32, total: u32) -> Result<ConversationPage, MailboxError> {
     Ok(ConversationPage {
         conversations,
         total,
+        inspect_candidates: Vec::new(),
     })
 }
 
@@ -336,6 +340,7 @@ fn searched(listed: &[&str], found: &[&str], opened: &str) -> Mailbox {
         Ok(ConversationPage {
             conversations: rows,
             total,
+            inspect_candidates: Vec::new(),
         }),
     );
 
@@ -355,6 +360,7 @@ fn searched(listed: &[&str], found: &[&str], opened: &str) -> Mailbox {
             Ok(ConversationPage {
                 conversations: results,
                 total,
+                inspect_candidates: Vec::new(),
             }),
         ),
         None
@@ -919,6 +925,7 @@ fn changed_list_metadata_makes_a_cached_reader_reload() {
         Ok(ConversationPage {
             conversations: vec![changed, summary("b")],
             total: 2,
+            inspect_candidates: Vec::new(),
         }),
     );
     load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
@@ -1242,6 +1249,7 @@ fn message_rows_load_as_single_messages() {
         Ok(ConversationPage {
             conversations: vec![message_row("m1"), summary("c1")],
             total: 2,
+            inspect_candidates: Vec::new(),
         }),
     );
 
@@ -1267,6 +1275,7 @@ fn stale_classified_page_cannot_replace_newer_folder() {
         Ok(ConversationPage {
             conversations: vec![message_row("m1"), message_row("m2")],
             total: 1,
+            inspect_candidates: Vec::new(),
         }),
     );
 
@@ -1285,6 +1294,7 @@ fn split_rows_are_searchable_and_leave_counts_alone() {
         Ok(ConversationPage {
             conversations: vec![message_row("m1"), message_row("m2"), summary("c1")],
             total: 2,
+            inspect_candidates: Vec::new(),
         }),
     );
 
@@ -1327,6 +1337,7 @@ fn opened_unread(ids: &[&str], opened: &str) -> Mailbox {
         Ok(ConversationPage {
             conversations: rows,
             total: ids.len() as u32,
+            inspect_candidates: Vec::new(),
         }),
     );
     let load = mailbox.start_conversation_load(opened.into(), 82).unwrap();
@@ -1360,6 +1371,7 @@ fn reads_wait_for_the_content_to_load() {
                 ..summary("a")
             }],
             total: 1,
+            inspect_candidates: Vec::new(),
         }),
     );
     let load = mailbox.start_conversation_load("a".into(), 3).unwrap();
@@ -1415,6 +1427,7 @@ fn reads_after_a_folder_switch_change_nothing() {
                 ..summary("a")
             }],
             total: 1,
+            inspect_candidates: Vec::new(),
         }),
     );
 
@@ -1589,6 +1602,7 @@ fn rows_without_a_time_keep_their_place() {
                 timed("c2", 30),
             ],
             total: 4,
+            inspect_candidates: Vec::new(),
         }),
     );
 
@@ -1612,6 +1626,7 @@ fn rows_stay_newest_first_across_pages() {
                 timed("c2", 30),
             ],
             total: 120,
+            inspect_candidates: Vec::new(),
         }),
     );
     assert_eq!(ids(&mailbox), ["c1", "m1", "c2", "m2"]);
@@ -1622,6 +1637,7 @@ fn rows_stay_newest_first_across_pages() {
         Ok(ConversationPage {
             conversations: vec![timed("c3", 20)],
             total: 120,
+            inspect_candidates: Vec::new(),
         }),
     );
 
@@ -1727,6 +1743,7 @@ fn search_applies_to_the_selected_folder() {
                 "Old project",
             )],
             total: 1,
+            inspect_candidates: Vec::new(),
         }),
     );
 
@@ -1822,4 +1839,58 @@ fn visible_accessors_and_navigation_use_cache() {
     // Clearing query restores cache
     mailbox.set_search_query(String::new());
     assert_eq!(mailbox.visible_count(), 3);
+}
+
+#[test]
+fn split_conversation_replaces_conversation_with_message_rows_and_updates_visible() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(
+        request.id,
+        Ok(ConversationPage {
+            conversations: vec![
+                ConversationSummary {
+                    time: Some(50),
+                    ..summary("c1")
+                },
+                ConversationSummary {
+                    time: Some(20),
+                    ..summary("c2")
+                },
+            ],
+            total: 2,
+            inspect_candidates: vec!["c1".into()],
+        }),
+    );
+
+    assert_eq!(visible_ids(&mailbox), ["c1", "c2"]);
+
+    let split_rows = vec![
+        ConversationSummary {
+            time: Some(60),
+            kind: SummaryKind::Message,
+            ..summary("m1")
+        },
+        ConversationSummary {
+            time: Some(40),
+            kind: SummaryKind::Message,
+            ..summary("m2")
+        },
+    ];
+
+    mailbox.split_conversation("c1", split_rows);
+
+    assert_eq!(visible_ids(&mailbox), ["m1", "m2", "c2"]);
+    assert_eq!(mailbox.visible_count(), 3);
+}
+
+#[test]
+fn split_conversation_ignores_nonexistent_or_empty() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(request.id, page(&["c1"], 1));
+
+    mailbox.split_conversation("c1", Vec::new());
+    assert_eq!(visible_ids(&mailbox), ["c1"]);
+
+    mailbox.split_conversation("nonexistent", vec![summary("m1")]);
+    assert_eq!(visible_ids(&mailbox), ["c1"]);
 }
