@@ -72,13 +72,19 @@ struct DesktopApp {
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
+    /// Last window size dispatched, avoiding busy-loop repainting when window size is unchanged.
+    last_window_size: Option<Window>,
 }
 
 impl DesktopApp {
     fn new(creation: &eframe::CreationContext<'_>, demo: bool, settings: Settings) -> Self {
-        theme::install(&creation.egui_ctx);
+        Self::with_context(&creation.egui_ctx, demo, settings)
+    }
+
+    fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
+        theme::install(context);
         let runtime = Runtime::new().expect("failed to start background runtime");
-        runtime.attach(&creation.egui_ctx);
+        runtime.attach(context);
         let (app, effects) = App::boot(demo, settings);
         let mut desktop = Self {
             app,
@@ -91,8 +97,9 @@ impl DesktopApp {
             settings_draft: None,
             settings_seen: 0,
             settings_seen_at: 0.0,
+            last_window_size: None,
         };
-        desktop.execute(effects, &creation.egui_ctx);
+        desktop.execute(effects, context);
         desktop
     }
 
@@ -113,7 +120,11 @@ impl DesktopApp {
     }
 
     fn execute(&mut self, effects: Effects, context: &egui::Context) {
+        let mut visual = false;
         for effect in self.runtime.execute(effects) {
+            if effect.is_visual() {
+                visual = true;
+            }
             match effect {
                 UiEffect::CopyText(text) => context.copy_text(text),
                 UiEffect::FocusSearch => self.ui.focus_search = true,
@@ -140,7 +151,9 @@ impl DesktopApp {
                 }
             }
         }
-        context.request_repaint();
+        if visual {
+            context.request_repaint();
+        }
     }
 
     fn drain_runtime(&mut self, context: &egui::Context) {
@@ -157,13 +170,18 @@ impl DesktopApp {
         };
         // Store unscaled points so zoom does not change the remembered window.
         let unscaled = size * context.zoom_factor();
-        self.dispatch(
-            Message::WindowResized(Window {
-                width: unscaled.x,
-                height: unscaled.y,
-            }),
-            context,
-        );
+        let current = Window {
+            width: unscaled.x,
+            height: unscaled.y,
+        };
+        if let Some(last) = self.last_window_size
+            && (last.width - current.width).abs() < f32::EPSILON
+            && (last.height - current.height).abs() < f32::EPSILON
+        {
+            return;
+        }
+        self.last_window_size = Some(current);
+        self.dispatch(Message::WindowResized(current), context);
     }
 
     fn keyboard_shortcuts(&mut self, context: &egui::Context) {
@@ -385,8 +403,12 @@ impl eframe::App for DesktopApp {
             }
         }
 
+        let has_messages = !messages.is_empty();
         for message in messages {
             self.dispatch(message, &context);
+        }
+        if has_messages {
+            context.request_repaint();
         }
     }
 }
@@ -527,5 +549,119 @@ mod tests {
         assert_eq!(viewport.fullsize_content_view, None);
         assert_eq!(viewport.titlebar_shown, None);
         assert_eq!(viewport.title_shown, None);
+    }
+
+    #[test]
+    fn execute_only_requests_repaint_for_visual_effects() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let check_effect = |effect: UiEffect, should_repaint: bool| {
+            let boot_ctx = egui::Context::default();
+            let mut desktop = DesktopApp::with_context(&boot_ctx, true, Settings::default());
+            desktop.runtime.attach(&egui::Context::default());
+
+            let ctx = egui::Context::default();
+            let repainted = Arc::new(AtomicBool::new(false));
+            let r = repainted.clone();
+            ctx.set_request_repaint_callback(move |_info| {
+                r.store(true, Ordering::SeqCst);
+            });
+
+            desktop.execute(Effects::ui(effect), &ctx);
+            assert_eq!(repainted.load(Ordering::SeqCst), should_repaint);
+        };
+
+        // Non-visual effects must not request repaint.
+        check_effect(UiEffect::CopyText("test".into()), false);
+        check_effect(
+            UiEffect::NotifyNewMail {
+                sender: "a".into(),
+                subject: "b".into(),
+            },
+            false,
+        );
+
+        // Visual effects must request repaint.
+        check_effect(UiEffect::FocusSearch, true);
+        check_effect(UiEffect::ScrollReaderTop, true);
+        check_effect(UiEffect::RevealConversation("123".into()), true);
+
+        // Empty effects must not request repaint.
+        let boot_ctx = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&boot_ctx, true, Settings::default());
+        desktop.runtime.attach(&egui::Context::default());
+
+        let ctx = egui::Context::default();
+        let repainted = Arc::new(AtomicBool::new(false));
+        let r = repainted.clone();
+        ctx.set_request_repaint_callback(move |_info| {
+            r.store(true, Ordering::SeqCst);
+        });
+        desktop.execute(Effects::none(), &ctx);
+        assert!(!repainted.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn remember_window_size_deduplicates_unchanged_dimensions() {
+        let ctx = egui::Context::default();
+        let mut raw_input = egui::RawInput::default();
+        raw_input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .inner_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1000.0, 700.0),
+        ));
+
+        let mut output = ctx.run_ui(raw_input, |_| {});
+        output.textures_delta.clear();
+
+        let mut desktop = DesktopApp::with_context(&ctx, true, Settings::default());
+        assert_eq!(desktop.last_window_size, None);
+
+        // First pass: records the window size and updates last_window_size.
+        desktop.remember_window_size(&ctx);
+        assert_eq!(
+            desktop.last_window_size,
+            Some(Window {
+                width: 1000.0,
+                height: 700.0,
+            })
+        );
+
+        // Simulate subsequent idle frames where window size has not changed.
+        // We track settings revision to verify no new WindowResized messages are dispatched.
+        let revision_before = desktop.app.settings_revision();
+        for _ in 0..10 {
+            desktop.remember_window_size(&ctx);
+        }
+        assert_eq!(desktop.app.settings_revision(), revision_before);
+
+        // When the window is resized, a new message is dispatched and settings updated.
+        let mut resized_input = egui::RawInput::default();
+        resized_input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .inner_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1200.0, 800.0),
+        ));
+        let mut output2 = ctx.run_ui(resized_input, |_| {});
+        output2.textures_delta.clear();
+
+        desktop.remember_window_size(&ctx);
+        assert_eq!(
+            desktop.last_window_size,
+            Some(Window {
+                width: 1200.0,
+                height: 800.0,
+            })
+        );
+        assert_eq!(desktop.app.settings().window.width, 1200.0);
+        assert_eq!(desktop.app.settings().window.height, 800.0);
+        assert!(desktop.app.settings_revision() > revision_before);
     }
 }

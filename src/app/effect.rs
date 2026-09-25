@@ -26,6 +26,17 @@ pub enum UiEffect {
     PickComposeAttachments,
 }
 
+impl UiEffect {
+    /// Whether this effect modifies visual layout, focus, or scroll state
+    /// in the UI and therefore requires an immediate repaint pass.
+    pub fn is_visual(&self) -> bool {
+        matches!(
+            self,
+            UiEffect::FocusSearch | UiEffect::ScrollReaderTop | UiEffect::RevealConversation(_)
+        )
+    }
+}
+
 /// A flat collection makes combining independent effects explicit and keeps
 /// tests able to assert how much work an interaction starts.
 #[derive(Default)]
@@ -136,5 +147,22 @@ mod tests {
             .next()
             .expect("one effect");
         assert!(matches!(pick, Effect::Ui(UiEffect::PickComposeAttachments)));
+    }
+
+    #[test]
+    fn visual_effects_are_distinguished_from_non_visual() {
+        assert!(UiEffect::FocusSearch.is_visual());
+        assert!(UiEffect::ScrollReaderTop.is_visual());
+        assert!(UiEffect::RevealConversation("conv-1".into()).is_visual());
+
+        assert!(!UiEffect::CopyText("hello".into()).is_visual());
+        assert!(
+            !UiEffect::NotifyNewMail {
+                sender: "a".into(),
+                subject: "b".into(),
+            }
+            .is_visual()
+        );
+        assert!(!UiEffect::PickComposeAttachments.is_visual());
     }
 }
