@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use crate::mail::LoginRequest;
 
-use super::{AuthAttempt, Message};
+use super::{AuthAttempt, ComposeId, Message};
 
 /// Work requested by the state machine and performed by the desktop shell.
 /// This boundary deliberately contains no GUI types.
@@ -23,7 +23,7 @@ pub enum UiEffect {
     ScrollReaderTop,
     RevealConversation(String),
     NotifyNewMail { sender: String, subject: String },
-    PickComposeAttachments,
+    PickComposeAttachments(ComposeId),
 }
 
 impl UiEffect {
@@ -142,11 +142,14 @@ mod tests {
                 if sender == "Alice" && subject == "Update"
         ));
 
-        let pick = Effects::ui(UiEffect::PickComposeAttachments)
+        let pick = Effects::ui(UiEffect::PickComposeAttachments(42))
             .into_iter()
             .next()
             .expect("one effect");
-        assert!(matches!(pick, Effect::Ui(UiEffect::PickComposeAttachments)));
+        assert!(matches!(
+            pick,
+            Effect::Ui(UiEffect::PickComposeAttachments(42))
+        ));
     }
 
     #[test]
@@ -163,6 +166,6 @@ mod tests {
             }
             .is_visual()
         );
-        assert!(!UiEffect::PickComposeAttachments.is_visual());
+        assert!(!UiEffect::PickComposeAttachments(42).is_visual());
     }
 }

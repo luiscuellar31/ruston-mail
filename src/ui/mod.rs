@@ -133,7 +133,7 @@ impl DesktopApp {
                 UiEffect::NotifyNewMail { sender, subject } => {
                     show_desktop_notification(&sender, &subject);
                 }
-                UiEffect::PickComposeAttachments => {
+                UiEffect::PickComposeAttachments(id) => {
                     let task = rfd::AsyncFileDialog::new().pick_files();
                     self.runtime.spawn_message(async move {
                         let files = task.await;
@@ -143,7 +143,7 @@ impl DesktopApp {
                             .map(|f| f.path().to_path_buf())
                             .collect();
                         if !paths.is_empty() {
-                            Some(Message::AddComposeAttachments(paths))
+                            Some(Message::AddComposeAttachments(id, paths))
                         } else {
                             None
                         }

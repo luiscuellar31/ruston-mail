@@ -23,7 +23,7 @@ use crate::mail::{
 
 use auth::LoginForm;
 pub use auth::{AuthState, SignInStep};
-pub use compose::{Answering, Compose, ComposeField, Sending};
+pub use compose::{Answering, Compose, ComposeField, ComposeId, Sending};
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{ratios as panel_ratios, widths as panel_widths};
@@ -135,7 +135,7 @@ pub enum Message {
     /// Tells the desktop to open the native file dialog for selecting attachments.
     PickComposeAttachments,
     /// Adds picked local files as attachments to the active draft.
-    AddComposeAttachments(Vec<PathBuf>),
+    AddComposeAttachments(ComposeId, Vec<PathBuf>),
     /// Removes an attachment by index from the active draft.
     RemoveComposeAttachment(usize),
     /// Hands the message over to be sent.
@@ -173,6 +173,9 @@ pub struct App {
     showing_settings: bool,
     /// The message being written, if there is one.
     compose: Option<Compose>,
+    /// Changes for each opened draft so asynchronous attachment pickers from a
+    /// closed or discarded draft cannot inject files into a subsequent draft.
+    last_compose_id: ComposeId,
     /// What became of the last attachment someone asked to save.
     saved_attachment: Option<Result<PathBuf, SaveError>>,
     /// The attachment in flight, preventing duplicate downloads.
@@ -213,10 +216,19 @@ impl App {
             settings_written: 0,
             showing_settings: false,
             compose: None,
+            last_compose_id: 0,
             saved_attachment: None,
             saving_attachment: None,
             is_polling: false,
         }
+    }
+
+    fn next_compose_id(&mut self) -> ComposeId {
+        self.last_compose_id = self
+            .last_compose_id
+            .checked_add(1)
+            .expect("compose id exhausted");
+        self.last_compose_id
     }
 
     fn advance_session_epoch(&mut self) {
@@ -581,7 +593,7 @@ impl App {
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
             Message::PickComposeAttachments => return self.pick_compose_attachments(),
-            Message::AddComposeAttachments(paths) => self.add_compose_attachments(paths),
+            Message::AddComposeAttachments(id, paths) => self.add_compose_attachments(id, paths),
             Message::RemoveComposeAttachment(index) => self.remove_compose_attachment(index),
             Message::Send => return self.send_compose(),
             Message::Sent(epoch, result) => return self.finish_send(epoch, result),

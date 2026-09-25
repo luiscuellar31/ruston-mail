@@ -4,6 +4,8 @@ use crate::mail::{BodyFormat, Kind, MailMessage, Outgoing, SendError, recipients
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
 
+pub type ComposeId = u64;
+
 /// One of the fields being typed into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposeField {
@@ -62,6 +64,7 @@ pub struct Answering {
 /// A message being written.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Compose {
+    id: ComposeId,
     kind: Kind,
     answering: Option<Answering>,
     to: String,
@@ -86,6 +89,11 @@ enum State {
 }
 
 impl Compose {
+    #[cfg(test)]
+    pub fn id(&self) -> ComposeId {
+        self.id
+    }
+
     pub fn field(&self, field: ComposeField) -> &str {
         match field {
             ComposeField::To => &self.to,
@@ -242,7 +250,11 @@ impl App {
 
     pub(super) fn open_compose(&mut self) {
         if self.compose.is_none() {
-            self.compose = Some(Compose::default());
+            let id = self.next_compose_id();
+            self.compose = Some(Compose {
+                id,
+                ..Compose::default()
+            });
         }
     }
 
@@ -280,8 +292,10 @@ impl App {
         if self.compose.is_some() {
             return;
         }
+        let id = self.next_compose_id();
         let everyone = matches!(kind, Kind::Reply { everyone: true, .. });
         self.compose = Some(Compose {
+            id,
             kind,
             answering: Some(Answering {
                 sender: message
@@ -339,15 +353,19 @@ impl App {
     }
 
     pub(super) fn pick_compose_attachments(&self) -> Effects {
-        if self.compose.as_ref().is_some_and(|c| !c.in_flight()) {
-            Effects::ui(UiEffect::PickComposeAttachments)
+        if let Some(compose) = self.compose.as_ref().filter(|c| !c.in_flight()) {
+            Effects::ui(UiEffect::PickComposeAttachments(compose.id))
         } else {
             Effects::none()
         }
     }
 
-    pub(super) fn add_compose_attachments(&mut self, paths: Vec<PathBuf>) {
-        if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
+    pub(super) fn add_compose_attachments(&mut self, id: ComposeId, paths: Vec<PathBuf>) {
+        if let Some(compose) = self
+            .compose
+            .as_mut()
+            .filter(|c| c.id == id && !c.in_flight())
+        {
             compose.add_attachments(paths);
         }
     }

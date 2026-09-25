@@ -303,12 +303,13 @@ fn picking_compose_attachments_emits_ui_effect() {
     assert_eq!(effects.units(), 0);
 
     let _ = app.update(Message::OpenCompose);
+    let compose_id = app.compose().unwrap().id();
     let effects = app.update(Message::PickComposeAttachments);
     assert_eq!(effects.units(), 1);
     let effect = effects.into_iter().next().unwrap();
     assert!(matches!(
         effect,
-        Effect::Ui(UiEffect::PickComposeAttachments)
+        Effect::Ui(UiEffect::PickComposeAttachments(id)) if id == compose_id
     ));
 }
 
@@ -316,14 +317,15 @@ fn picking_compose_attachments_emits_ui_effect() {
 fn compose_attachments_can_be_added_and_removed_through_messages() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::OpenCompose);
+    let compose_id = app.compose().unwrap().id();
 
     let file1 = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let file2 = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("README.md");
 
-    let _ = app.update(Message::AddComposeAttachments(vec![
-        file1.clone(),
-        file2.clone(),
-    ]));
+    let _ = app.update(Message::AddComposeAttachments(
+        compose_id,
+        vec![file1.clone(), file2.clone()],
+    ));
     let compose = app.compose().unwrap();
     assert_eq!(compose.attachments(), &[file1, file2.clone()]);
     assert!(!compose.is_untouched());
@@ -331,6 +333,45 @@ fn compose_attachments_can_be_added_and_removed_through_messages() {
     let _ = app.update(Message::RemoveComposeAttachment(0));
     let compose = app.compose().unwrap();
     assert_eq!(compose.attachments(), &[file2]);
+}
+
+#[test]
+fn attachments_from_discarded_compose_are_ignored_by_new_compose() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let first_id = app.compose().unwrap().id();
+
+    let effects = app.update(Message::PickComposeAttachments);
+    assert_eq!(effects.units(), 1);
+    let effect = effects.into_iter().next().unwrap();
+    assert!(matches!(
+        effect,
+        Effect::Ui(UiEffect::PickComposeAttachments(id)) if id == first_id
+    ));
+
+    // Discard the first compose draft and open a second one
+    let _ = app.update(Message::DiscardCompose);
+    assert!(app.compose().is_none());
+
+    let _ = app.update(Message::OpenCompose);
+    let second_id = app.compose().unwrap().id();
+    assert_ne!(first_id, second_id);
+
+    // If the file dialog for first_id finishes now, its attachments must be ignored
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let _ = app.update(Message::AddComposeAttachments(first_id, vec![file.clone()]));
+
+    let compose = app.compose().unwrap();
+    assert!(compose.attachments().is_empty());
+    assert!(compose.is_untouched());
+
+    // But attachments targeting second_id are accepted
+    let _ = app.update(Message::AddComposeAttachments(
+        second_id,
+        vec![file.clone()],
+    ));
+    let compose = app.compose().unwrap();
+    assert_eq!(compose.attachments(), &[file]);
 }
 
 #[test]
