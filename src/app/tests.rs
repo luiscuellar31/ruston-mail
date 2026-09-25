@@ -1683,14 +1683,30 @@ fn terminal_sign_in_failure_clears_secrets() {
 }
 
 #[test]
-fn failed_logout_restores_authenticated_shell() {
-    let mut app = App::new(Settings::default());
-    app.auth_state = AuthState::SigningOut;
+fn failed_remote_logout_still_closes_mailbox_and_signs_out() {
+    for error in [
+        AuthError::Connection,
+        AuthError::SessionUnavailable,
+        AuthError::Service {
+            http_status: 500,
+            code: 5000,
+        },
+    ] {
+        let mut app = authenticated_app();
+        let _ = app.update(Message::OpenCompose);
+        let _ = app.update(Message::ComposeChanged(
+            ComposeField::Body,
+            "private draft".to_owned(),
+        ));
+        app.auth_state = AuthState::SigningOut;
 
-    deliver_logout(&mut app, Err(AuthError::SessionUnavailable));
+        deliver_logout(&mut app, Err(error));
 
-    assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
-    assert_eq!(app.auth_error, Some(AuthError::SessionUnavailable));
+        assert_eq!(app.auth_state, AuthState::SignedOut);
+        assert_eq!(app.auth_error, None);
+        assert!(app.mailbox().is_none());
+        assert!(app.compose().is_none());
+    }
 }
 
 #[test]
