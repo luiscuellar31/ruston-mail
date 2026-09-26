@@ -60,15 +60,11 @@ pub enum CustomKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Folder {
-    /// Reads the settings written before custom folders existed, which hold
-    /// a bare name like `"Inbox"`.
+    /// System folders are stored by name, for example `"Inbox"`.
     System(MailFolder),
     Custom {
         id: String,
         name: String,
-        /// Missing from settings written before labels were listed, which
-        /// held folders only.
-        #[serde(default)]
         kind: CustomKind,
     },
 }
@@ -443,8 +439,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_folder_written_before_custom_ones_still_reads() {
-        // Settings files in the wild hold a bare system name.
+    fn system_folder_uses_its_name_in_settings() {
         let stored: Folder = serde_json::from_str("\"Archive\"").unwrap();
 
         assert_eq!(stored, Folder::System(MailFolder::Archive));
@@ -482,11 +477,9 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_written_before_labels_were_listed_still_reads() {
-        // Files in the wild hold the id and name only.
-        let stored: Folder = serde_json::from_str(r#"{"id": "kZ9", "name": "Invoices"}"#).unwrap();
-
-        assert_eq!(stored, Folder::custom("kZ9", "Invoices"));
+    fn a_custom_folder_requires_its_kind_in_settings() {
+        let incomplete = r#"{"id": "kZ9", "name": "Invoices"}"#;
+        assert!(serde_json::from_str::<Folder>(incomplete).is_err());
     }
 
     #[test]

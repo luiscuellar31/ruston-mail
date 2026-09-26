@@ -5,8 +5,6 @@ use crate::model::message::MessageMetadata;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
 
-const FTS_ORPHAN_REPAIR_KEY: &str = "fts_orphans_repaired_v1";
-
 fn map<E: std::fmt::Display>(e: E) -> Error {
     Error::Cache(e.to_string())
 }
@@ -16,16 +14,6 @@ fn participants(m: &MessageMetadata) -> String {
         .chain(m.to_list.iter().map(|r| r.address.as_str()))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn orphan_repair_done(conn: &Connection) -> Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)",
-        [FTS_ORPHAN_REPAIR_KEY],
-        |row| row.get::<_, i64>(0),
-    )
-    .map(|found| found != 0)
-    .map_err(map)
 }
 
 fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
@@ -55,9 +43,9 @@ pub struct Cache {
 }
 
 impl Cache {
-    /// Default cache path: `<cache_dir>/protonmail-cli/<profile>.db`.
+    /// Default cache path: `<cache_dir>/ruston-mail/<profile>.db`.
     pub fn default_path(profile: &str) -> Result<PathBuf> {
-        let dirs = directories::ProjectDirs::from("me", "Proton", "protonmail-cli")
+        let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
             .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
         let dir = dirs.cache_dir().to_path_buf();
         std::fs::create_dir_all(&dir).map_err(map)?;
@@ -82,26 +70,6 @@ impl Cache {
              BEGIN DELETE FROM msg_fts WHERE id=OLD.id; END;",
         )
         .map_err(map)?;
-        // Older caches may already contain indexed bodies for deleted messages.
-        // Repair once; the trigger also protects deletes made by older clients.
-        if !orphan_repair_done(&conn)? {
-            let tx =
-                Transaction::new_unchecked(&conn, TransactionBehavior::Immediate).map_err(map)?;
-            if !orphan_repair_done(&tx)? {
-                tx.execute(
-                    "DELETE FROM msg_fts WHERE NOT EXISTS
-                     (SELECT 1 FROM messages WHERE messages.id=msg_fts.id)",
-                    [],
-                )
-                .map_err(map)?;
-                tx.execute(
-                    "INSERT INTO meta(key, value) VALUES(?1, 'done')",
-                    [FTS_ORPHAN_REPAIR_KEY],
-                )
-                .map_err(map)?;
-            }
-            tx.commit().map_err(map)?;
-        }
         Ok(Cache { conn })
     }
 
@@ -512,52 +480,19 @@ mod tests {
     }
 
     #[test]
-    fn opening_an_old_cache_repairs_orphans_and_keeps_valid_index_entries() {
-        let path =
-            std::env::temp_dir().join(format!("ruston-fts-repair-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        {
-            let c = Cache::open(&path).unwrap();
-            c.index_message(&meta("orphan", "0", 0, 10), "oldprivatebody")
-                .unwrap();
-            c.index_message(&meta("keep", "0", 0, 20), "currentbody")
-                .unwrap();
-            c.conn
-                .execute_batch(
-                    "DROP TRIGGER messages_delete_fts;
-                     DELETE FROM messages WHERE id='orphan';
-                     DELETE FROM message_labels WHERE message_id='orphan';",
-                )
-                .unwrap();
-            c.conn
-                .execute("DELETE FROM meta WHERE key=?1", [FTS_ORPHAN_REPAIR_KEY])
-                .unwrap();
-        }
-
-        let c = Cache::open(&path).unwrap();
-        let orphan_rows: i64 = c
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM msg_fts WHERE id='orphan'",
-                [],
-                |row| row.get(0),
-            )
+    fn deleting_metadata_directly_removes_the_indexed_body() {
+        let c = Cache::open(Path::new(":memory:")).unwrap();
+        c.index_message(&meta("m1", "0", 0, 10), "privatebody")
             .unwrap();
-        assert_eq!(orphan_rows, 0);
-        assert_eq!(c.search("currentbody", 10).unwrap()[0].id, "keep");
-
-        // A client that still deletes metadata directly gets the same cleanup.
         c.conn
-            .execute("DELETE FROM messages WHERE id='keep'", [])
+            .execute("DELETE FROM messages WHERE id='m1'", [])
             .unwrap();
         let remaining: i64 = c
             .conn
-            .query_row("SELECT COUNT(*) FROM msg_fts WHERE id='keep'", [], |row| {
+            .query_row("SELECT COUNT(*) FROM msg_fts WHERE id='m1'", [], |row| {
                 row.get(0)
             })
             .unwrap();
         assert_eq!(remaining, 0);
-        drop(c);
-        std::fs::remove_file(path).unwrap();
     }
 }

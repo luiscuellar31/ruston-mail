@@ -25,7 +25,7 @@ impl KeyringStore {
     /// Create a keychain-backed store for the given profile.
     pub fn new(profile: impl Into<String>) -> Self {
         KeyringStore {
-            service: "protonmail-cli".into(),
+            service: crate::STORAGE_NAME.into(),
             profile: profile.into(),
         }
     }

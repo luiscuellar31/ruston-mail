@@ -11,8 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
-const K_ACCESS: &str = "access_token";
-const K_REFRESH: &str = "refresh_token";
 const K_TOKENS: &str = "auth_tokens_v1";
 const K_SKP: &str = "skp";
 
@@ -50,15 +48,9 @@ pub struct Session {
     /// API base URL for this session.
     pub base_url: String,
     /// Password mode (1 = single-password, 2 = two-password login).
-    #[serde(default = "default_password_mode")]
     pub password_mode: u8,
     /// Optional `User-Agent` recorded for this session.
-    #[serde(default)]
     pub user_agent: Option<String>,
-}
-
-fn default_password_mode() -> u8 {
-    1
 }
 
 /// A fully-loaded session (metadata + secrets).
@@ -78,9 +70,9 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Platform config dir: `<config>/protonmail-cli`.
+    /// Platform config directory for `ruston-mail`.
     pub fn system() -> Result<Self> {
-        let dirs = directories::ProjectDirs::from("me", "Proton", "protonmail-cli")
+        let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
             .ok_or_else(|| Error::Session("cannot resolve config dir".into()))?;
         Ok(Paths {
             base: dirs.config_dir().to_path_buf(),
@@ -164,26 +156,20 @@ impl Session {
             Ok(s) => s,
             Err(_) => return Ok(None),
         };
-        let (access, refresh) = match store.get(K_TOKENS)? {
-            Some(pair) => {
-                let pair = Zeroizing::new(pair);
-                let pair: LoadedTokens = serde_json::from_str(&pair)
-                    .map_err(|e| Error::Session(format!("invalid stored auth tokens: {e}")))?;
-                (pair.access, pair.refresh)
-            }
-            None => match (store.get(K_ACCESS)?, store.get(K_REFRESH)?) {
-                (Some(access), Some(refresh)) => (access, refresh),
-                _ => return Ok(None),
-            },
+        let Some(pair) = store.get(K_TOKENS)? else {
+            return Ok(None);
         };
+        let pair = Zeroizing::new(pair);
+        let pair: LoadedTokens = serde_json::from_str(&pair)
+            .map_err(|e| Error::Session(format!("invalid stored auth tokens: {e}")))?;
         let skp = match store.get(K_SKP)? {
             Some(skp) => skp,
             None => return Ok(None),
         };
         let tokens = Tokens {
             uid: session.uid.clone(),
-            access: SecretString::from(access),
-            refresh: SecretString::from(refresh),
+            access: SecretString::from(pair.access),
+            refresh: SecretString::from(pair.refresh),
         };
         Ok(Some(LoadedSession {
             session,
@@ -201,8 +187,6 @@ impl Session {
             Err(e) => return Err(e.into()),
         }
         store.delete(K_TOKENS)?;
-        store.delete(K_ACCESS)?;
-        store.delete(K_REFRESH)?;
         store.delete(K_SKP)?;
         Ok(())
     }
@@ -221,7 +205,7 @@ mod tests {
 
     impl SecretStore for RejectTokenWrites {
         fn set(&self, key: &str, value: &str) -> Result<()> {
-            if self.reject.load(Ordering::Relaxed) && (key == K_REFRESH || key == K_TOKENS) {
+            if self.reject.load(Ordering::Relaxed) && key == K_TOKENS {
                 return Err(Error::Session("simulated keyring write failure".into()));
             }
             self.inner.set(key, value)
@@ -241,7 +225,11 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("proton-test-{}-{}", std::process::id(), nanos))
+        std::env::temp_dir().join(format!(
+            "ruston-session-test-{}-{}",
+            std::process::id(),
+            nanos
+        ))
     }
 
     #[test]
@@ -253,7 +241,7 @@ mod tests {
             app_version: "Other".into(),
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
-            user_agent: Some("ruston-cli/0.1.1 (macos)".into()),
+            user_agent: Some("ruston-cli/0.2.0 (macos)".into()),
         };
         let tokens = Tokens {
             uid: "UID1".into(),
@@ -274,13 +262,11 @@ mod tests {
         assert_eq!(loaded.session.app_version, "Other");
         assert_eq!(
             loaded.session.user_agent.as_deref(),
-            Some("ruston-cli/0.1.1 (macos)")
+            Some("ruston-cli/0.2.0 (macos)")
         );
         assert_eq!(loaded.tokens.access.expose_secret(), "acc");
         assert_eq!(loaded.skp.expose_secret(), "skp-secret");
         assert!(store.get(K_TOKENS).unwrap().is_some());
-        assert!(store.get(K_ACCESS).unwrap().is_none());
-        assert!(store.get(K_REFRESH).unwrap().is_none());
 
         #[cfg(unix)]
         {
@@ -368,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tokens_load_and_migrate_on_refresh() {
+    fn split_tokens_do_not_resume_a_session() {
         let paths = Paths::with_base(unique_base());
         let store = MemoryStore::new();
         let session = Session {
@@ -393,26 +379,26 @@ mod tests {
             )
             .unwrap();
         store.delete(K_TOKENS).unwrap();
-        store.set(K_ACCESS, "old-access").unwrap();
-        store.set(K_REFRESH, "old-refresh").unwrap();
+        store.set("access_token", "old-access").unwrap();
+        store.set("refresh_token", "old-refresh").unwrap();
 
-        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
-        assert_eq!(loaded.tokens.access.expose_secret(), "old-access");
-        assert_eq!(loaded.tokens.refresh.expose_secret(), "old-refresh");
-
-        Session::save_tokens(&store, "new-access", "new-refresh").unwrap();
-        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
-        assert_eq!(loaded.tokens.access.expose_secret(), "new-access");
-        assert_eq!(loaded.tokens.refresh.expose_secret(), "new-refresh");
-
-        store.set(K_TOKENS, "broken").unwrap();
-        assert!(matches!(
-            Session::load(&paths, "default", &store),
-            Err(Error::Session(_))
-        ));
+        assert!(Session::load(&paths, "default", &store).unwrap().is_none());
         Session::clear(&paths, "default", &store).unwrap();
-        assert!(store.get(K_ACCESS).unwrap().is_none());
-        assert!(store.get(K_REFRESH).unwrap().is_none());
         assert!(store.get(K_TOKENS).unwrap().is_none());
+    }
+
+    #[test]
+    fn session_metadata_requires_password_mode() {
+        let session = Session {
+            uid: "UID1".into(),
+            app_version: "Other".into(),
+            base_url: "https://mail.proton.me/api".into(),
+            password_mode: 1,
+            user_agent: None,
+        };
+        let current = serde_json::to_value(session).unwrap();
+        let mut incomplete = current;
+        incomplete.as_object_mut().unwrap().remove("password_mode");
+        assert!(serde_json::from_value::<Session>(incomplete).is_err());
     }
 }

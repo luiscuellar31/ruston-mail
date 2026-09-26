@@ -69,6 +69,9 @@ pub mod model;
 pub mod session;
 pub mod transport;
 
+/// Shared local storage identity for sessions, credentials, and the CLI cache.
+pub(crate) const STORAGE_NAME: &str = "ruston-mail";
+
 pub use api::contacts::{Contact, ContactEmail};
 pub use api::events::LabelCount;
 pub use api::filters::Filter;

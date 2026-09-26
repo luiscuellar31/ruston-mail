@@ -112,11 +112,12 @@ unconfirmed because it may happen at any stage of the send pipeline.
 
 The desktop uses the `ruston` session profile; the CLI defaults to `default`
 and accepts `--profile`. Both use core session storage: non-secret metadata in
-a platform config directory and credentials in the OS keychain. The current
-storage identifier is `protonmail-cli`. Desktop preferences live separately
-in `Ruston Mail`'s config directory. Core [`session/`](../crates/ruston-core/src/session/)
-stores access and refresh tokens as one keychain entry and still reads older
-separate entries. Token refresh writes go through
+a platform config directory and credentials in the OS keychain. The storage
+identifier is `ruston-mail`, defined in core
+[`lib.rs`](../crates/ruston-core/src/lib.rs). Desktop preferences live
+separately in `Ruston Mail`'s config directory. Core
+[`session/`](../crates/ruston-core/src/session/) stores access and refresh
+tokens as one keychain entry. Token refresh writes go through
 [`transport/`](../crates/ruston-core/src/transport/), which returns persistence
 errors to the request.
 
@@ -124,13 +125,13 @@ The desktop keeps mailbox data in memory. The core also offers a per-profile
 SQLite cache used by CLI sync and local search. Indexing a folder stores
 decrypted message bodies in that local database; it is not encrypted at rest
 by this code. Cache writes and index maintenance live in
-[`cache.rs`](../crates/ruston-core/src/cache.rs), which repairs old orphaned
-index entries once and removes indexed bodies when messages are deleted. The
-event stream in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs)
+[`cache.rs`](../crates/ruston-core/src/cache.rs), which removes indexed bodies
+when messages are deleted. The event stream in
+[`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs)
 invalidates an indexed body on a full message update. When Proton requests a
 full refresh, sync pages through all message metadata into temporary SQLite
 tables, then replaces the cache and event cursor in one transaction. A failed
-rebuild leaves the previous offline cache and cursor intact. Sync catches up
+rebuild leaves the cached offline data and cursor intact. Sync catches up
 on events from the new cursor after the replacement. The full refresh clears
 the local body index; run CLI `index` again to rebuild search. See
 [Privacy and local data](PRIVACY.md) before changing storage or diagnostics.

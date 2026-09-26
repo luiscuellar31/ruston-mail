@@ -22,7 +22,6 @@ pub const MIN_ZOOM: f32 = 0.8;
 pub const MAX_ZOOM: f32 = 2.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Settings {
     pub window: Window,
     pub panels: Panels,
@@ -62,8 +61,7 @@ impl Default for Settings {
             panels: Panels::default(),
             folder: Folder::INBOX,
             start: StartFolder::LastRead,
-            // Both default to the behaviour the app had before it could be
-            // configured, so an upgrade changes nothing on its own.
+            // Keep the initial reader choices predictable on a fresh install.
             mark_read_on_open: true,
             confirm_links: true,
             expand_all_messages: false,
@@ -79,7 +77,6 @@ impl Default for Settings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Window {
     pub width: f32,
     pub height: f32,
@@ -95,7 +92,6 @@ impl Default for Window {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct Panels {
     /// Where the sidebar ends, as a fraction of the window.
     pub sidebar: f32,
@@ -155,8 +151,7 @@ impl Settings {
         }
     }
 
-    /// Reads the settings, falling back to the defaults for anything missing
-    /// or out of range.
+    /// Reads the settings, using defaults if the file is absent or invalid.
     pub fn load() -> Self {
         let mut settings = path()
             .and_then(|path| std::fs::read_to_string(path).ok())
@@ -338,8 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_choice_starts_at_the_behaviour_the_app_already_had() {
-        // An upgrade must not change how anyone's mail opens on its own.
+    fn reader_defaults_are_consistent() {
         let defaults = Settings::default();
 
         assert!(!defaults.expand_all_messages);
@@ -349,16 +343,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_fields_fall_back_to_the_defaults() {
-        let settings: Settings = serde_json::from_str("{}").unwrap();
+    fn incomplete_settings_are_invalid() {
+        assert!(serde_json::from_str::<Settings>(r#"{"confirm_links": false}"#).is_err());
 
-        assert_eq!(settings, Settings::default());
-        // A file written by an older version keeps whatever it does carry.
-        let partial: Settings = serde_json::from_str(r#"{"confirm_links": false}"#).unwrap();
-        assert!(!partial.confirm_links);
-        assert!(partial.show_unread_badge);
-        assert_eq!(partial.folder, Folder::INBOX);
-        assert_eq!(partial.compose_placement, ComposePlacement::ReadingPane);
+        let mut incomplete = serde_json::to_value(Settings::default()).unwrap();
+        incomplete["window"]
+            .as_object_mut()
+            .unwrap()
+            .remove("width");
+        assert!(serde_json::from_value::<Settings>(incomplete).is_err());
     }
 
     #[test]

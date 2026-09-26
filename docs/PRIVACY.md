@@ -26,22 +26,19 @@ opening it by default; this prompt can be disabled in Settings.
 
 The CLI uses `ruston-core`'s per-profile SQLite cache for `sync`, optional
 backfills, and local `index` and `search` commands. The cache is stored under
-the platform cache directory for `protonmail-cli`, in `<profile>.db`.
+the platform cache directory for `ruston-mail`, in `<profile>.db`.
 Sync and backfill store message metadata. Running `index` also stores decrypted
 message bodies and other searchable fields in SQLite full-text search. This
 database is **not encrypted at rest by Ruston Mail**. The desktop client does
 not use this cache. Once `sync` applies a deletion, it removes the active search
-entry. Existing caches are also cleaned of older orphaned index entries when
-opened by this version. A full message update drops its old indexed body; run
-`index` again to make the updated body searchable. If you built an index with
-an older version, run `index` again to refresh its remaining entries. SQLite
-deletion does not guarantee secure erasure of bytes already written to disk or
-copied into backups.
+entry. A full message update removes its indexed body; run `index` again to
+make the updated body searchable. SQLite deletion does not guarantee secure
+erasure of bytes already written to disk or copied into backups.
 
 When Proton requests a full refresh, sync rebuilds all cached message metadata
-before replacing the old cache. If the rebuild fails, the old offline data and
-sync cursor remain available. A completed refresh clears the local search index;
-run `index` again to make message bodies searchable.
+before replacing the current cache. If the rebuild fails, cached offline data
+and the sync cursor remain available. A completed refresh clears the local
+search index; run `index` again to make message bodies searchable.
 
 ## Saved session and settings
 
@@ -53,21 +50,19 @@ token, and key passphrase in the operating system's credential store:
 - Windows Credential Manager on Windows.
 
 Access and refresh tokens are saved together in one credential-store entry.
-Sessions saved by older versions with separate entries can still be opened;
-those entries are removed when signing out. If the credential store rejects a
-token refresh, the request reports an error. The new tokens remain in memory,
-but reopening the app may require signing in again. Older app versions may also
-require a new sign-in after a token refresh.
+If the credential store rejects a token refresh, the request reports an error.
+The new tokens remain in memory, but reopening the app may require signing in
+again.
 
 Non-secret session metadata is stored in `ruston-core`'s platform config
-directory under the current `protonmail-cli` storage name. On Unix, its session
+directory under the `ruston-mail` storage name. On Unix, its session
 directory and file use modes `0700` and `0600`. The desktop uses the `ruston`
 profile; the CLI uses `default` unless `--profile` is given.
 
 Ruston Mail keeps `settings.json` in its own platform config directory. It
 contains preferences, the last folder, window size, and pane widths. It does not
-contain account passwords or session tokens. A missing or damaged settings file
-falls back to defaults.
+contain account passwords or session tokens. A missing, incomplete, or damaged
+settings file falls back to defaults.
 
 Signing out tries to revoke the server session, then removes the local session
 metadata and credentials.
