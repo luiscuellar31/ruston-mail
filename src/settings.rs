@@ -45,7 +45,7 @@ pub struct Settings {
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
-    /// Show unread email count badge on the application dock or taskbar icon.
+    /// Show the unread inbox count on the macOS Dock icon.
     pub show_unread_badge: bool,
     /// Show desktop notification when new mail arrives in inbox.
     pub desktop_notifications: bool,

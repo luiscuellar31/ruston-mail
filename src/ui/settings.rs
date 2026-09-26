@@ -190,15 +190,17 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(8.0);
         #[cfg(target_os = "macos")]
-        let badge_label = "Show unread count badge on the Dock icon";
-        #[cfg(not(target_os = "macos"))]
-        let badge_label = "Show unread count badge on the app icon";
-        ui.checkbox(&mut settings.show_unread_badge, badge_label);
-        description(
-            ui,
-            "Updates the application icon with the number of unread messages in your inbox.",
-        );
-        ui.add_space(8.0);
+        {
+            ui.checkbox(
+                &mut settings.show_unread_badge,
+                "Show unread count badge on the Dock icon",
+            );
+            description(
+                ui,
+                "Updates the Dock icon with the number of unread messages in your inbox.",
+            );
+            ui.add_space(8.0);
+        }
         ui.checkbox(
             &mut settings.desktop_notifications,
             "Show desktop notifications for new mail",
