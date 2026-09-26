@@ -2,7 +2,6 @@
 
 use super::Client;
 use crate::api;
-use crate::api::events::action;
 use crate::api::messages::ListQuery;
 use crate::cache::Cache;
 use crate::error::{Error, Result};
@@ -71,16 +70,20 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
         None => {
             // Bootstrap: record the current cursor; deltas flow from here.
             let latest = api::events::get_latest_event_id(http).await?;
-            cache.set_last_event_id(&latest)?;
-            tracing::info!(target: "ruston_core::sync", event_id = %latest, "sync initialized cursor");
-            return Ok(SyncReport {
-                created: 0,
-                updated: 0,
-                deleted: 0,
-                event_id: latest,
-                initialized: true,
-                rebuilt: None,
-            });
+            if cache.initialize_cursor(&latest)? {
+                tracing::info!(target: "ruston_core::sync", event_id = %latest, "sync initialized cursor");
+                return Ok(SyncReport {
+                    created: 0,
+                    updated: 0,
+                    deleted: 0,
+                    event_id: latest,
+                    initialized: true,
+                    rebuilt: None,
+                });
+            }
+            cache.last_event_id()?.ok_or_else(|| {
+                Error::Cache("sync cursor disappeared during initialization; retry".into())
+            })?
         }
     };
 
@@ -103,37 +106,10 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
             deleted = 0;
             continue;
         }
-        for ev in &batch.messages {
-            match ev.action {
-                action::DELETE => {
-                    cache.delete_message(&ev.id)?;
-                    deleted += 1;
-                }
-                action::CREATE | action::UPDATE => {
-                    if ev.action == action::UPDATE {
-                        // Events carry metadata, not the decrypted body. Do not
-                        // leave an older body searchable after a full update.
-                        cache.invalidate_index(&ev.id)?;
-                    }
-                    if let Some(m) = &ev.message {
-                        cache.upsert_message(m)?;
-                        if ev.action == action::CREATE {
-                            created += 1;
-                        } else {
-                            updated += 1;
-                        }
-                    }
-                }
-                action::UPDATE_FLAGS => {
-                    if let Some(m) = &ev.message {
-                        cache.upsert_message_flags(m)?;
-                        updated += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-        cache.set_last_event_id(&batch.event_id)?;
+        let (batch_created, batch_updated, batch_deleted) = cache.apply_event_batch(&id, &batch)?;
+        created += batch_created;
+        updated += batch_updated;
+        deleted += batch_deleted;
         id = batch.event_id;
         if !batch.more {
             break;

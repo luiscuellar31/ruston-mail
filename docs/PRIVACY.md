@@ -55,6 +55,9 @@ When Proton requests a full refresh, sync rebuilds all cached message metadata
 before replacing the current cache. If the rebuild fails, cached offline data
 and the sync cursor remain available. A completed refresh clears the local
 search index; run `index` again to make message bodies searchable.
+Concurrent incremental sync runs commit each event batch with its cursor. If
+another process has advanced the cursor, the stale run stops with a retry error
+and leaves that batch unapplied.
 
 ## Saved session and settings
 

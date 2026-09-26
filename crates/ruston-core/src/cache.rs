@@ -1,5 +1,6 @@
 //! Local SQLite cache of message metadata, indexed bodies, and the sync cursor.
 
+use crate::api::events::{EventBatch, action};
 use crate::error::{Error, Result};
 use crate::model::message::MessageMetadata;
 use crate::session::validate_profile_name;
@@ -106,6 +107,31 @@ fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
     Ok(())
 }
 
+fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
+    upsert_metadata(conn, m)?;
+    conn.execute(
+        "UPDATE msg_fts SET subject=?2, participants=?3 WHERE id=?1",
+        rusqlite::params![m.id, m.subject, participants(m)],
+    )
+    .map_err(map)?;
+    Ok(())
+}
+
+fn delete_message(conn: &Connection, id: &str) -> Result<()> {
+    // The messages_delete_fts trigger removes the indexed body in this transaction.
+    let deleted = conn
+        .execute("DELETE FROM messages WHERE id=?1", [id])
+        .map_err(map)?;
+    if deleted == 0 {
+        // A stray index row can still exist without cached metadata.
+        conn.execute("DELETE FROM msg_fts WHERE id=?1", [id])
+            .map_err(map)?;
+    }
+    conn.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
+        .map_err(map)?;
+    Ok(())
+}
+
 /// A per-profile metadata cache.
 pub struct Cache {
     conn: Connection,
@@ -182,16 +208,86 @@ impl Cache {
         Ok(())
     }
 
+    /// Claim an uninitialized cursor without replacing another sync's cursor.
+    pub(crate) fn initialize_cursor(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO meta(key, value) VALUES('last_event_id', ?1)",
+                [id],
+            )
+            .map_err(map)?
+            == 1)
+    }
+
+    /// Apply a server batch and its cursor only if the cursor we fetched from
+    /// still owns the cache. A stale process leaves both data and cursor intact.
+    pub(crate) fn apply_event_batch(
+        &self,
+        previous_cursor: &str,
+        batch: &EventBatch,
+    ) -> Result<(usize, usize, usize)> {
+        let tx =
+            Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(map)?;
+        let current_cursor: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key='last_event_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(map)?;
+        if current_cursor.as_deref() != Some(previous_cursor) {
+            return Err(Error::Cache(
+                "sync cursor changed during incremental sync; retry".into(),
+            ));
+        }
+
+        let (mut created, mut updated, mut deleted) = (0, 0, 0);
+        for ev in &batch.messages {
+            match ev.action {
+                action::DELETE => {
+                    delete_message(&tx, &ev.id)?;
+                    deleted += 1;
+                }
+                action::CREATE | action::UPDATE => {
+                    if ev.action == action::UPDATE {
+                        // Events carry metadata, not the decrypted body.
+                        tx.execute("DELETE FROM msg_fts WHERE id=?1", [&ev.id])
+                            .map_err(map)?;
+                    }
+                    if let Some(m) = &ev.message {
+                        upsert_message(&tx, m)?;
+                        if ev.action == action::CREATE {
+                            created += 1;
+                        } else {
+                            updated += 1;
+                        }
+                    }
+                }
+                action::UPDATE_FLAGS => {
+                    if let Some(m) = &ev.message {
+                        upsert_metadata(&tx, m)?;
+                        updated += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
+            [&batch.event_id],
+        )
+        .map_err(map)?;
+        tx.commit().map_err(map)?;
+        Ok((created, updated, deleted))
+    }
+
     /// Insert or replace cached metadata and labels, keeping searchable headers
     /// current for a body that has already been indexed.
     pub fn upsert_message(&self, m: &MessageMetadata) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
-        upsert_metadata(&tx, m)?;
-        tx.execute(
-            "UPDATE msg_fts SET subject=?2, participants=?3 WHERE id=?1",
-            rusqlite::params![m.id, m.subject, participants(m)],
-        )
-        .map_err(map)?;
+        upsert_message(&tx, m)?;
         tx.commit().map_err(map)?;
         Ok(())
     }
@@ -207,17 +303,7 @@ impl Cache {
     /// Remove a message, its labels, and its active full-text index entry.
     pub fn delete_message(&self, id: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
-        // The messages_delete_fts trigger removes the indexed body in this transaction.
-        let deleted = tx
-            .execute("DELETE FROM messages WHERE id=?1", [id])
-            .map_err(map)?;
-        if deleted == 0 {
-            // A stray index row can still exist without cached metadata.
-            tx.execute("DELETE FROM msg_fts WHERE id=?1", [id])
-                .map_err(map)?;
-        }
-        tx.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
-            .map_err(map)?;
+        delete_message(&tx, id)?;
         tx.commit().map_err(map)?;
         Ok(())
     }
@@ -419,6 +505,7 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::events::MessageEvent;
     use crate::model::message::Recipient;
 
     #[test]
@@ -437,6 +524,128 @@ mod tests {
             time,
             ..Default::default()
         }
+    }
+
+    fn event_batch(event_id: &str, messages: Vec<MessageEvent>) -> EventBatch {
+        EventBatch {
+            event_id: event_id.into(),
+            more: false,
+            refresh: false,
+            messages,
+            counts: Vec::new(),
+        }
+    }
+
+    fn temp_cache_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ruston-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&dir).unwrap();
+        #[cfg(unix)]
+        secure_cache_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn first_sync_claims_cursor_only_once() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        assert!(cache.initialize_cursor("first").unwrap());
+        assert!(!cache.initialize_cursor("stale").unwrap());
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn stale_process_cannot_replace_a_newer_batch() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let fast = Cache::open(&path).unwrap();
+        let slow = Cache::open(&path).unwrap();
+        fast.set_last_event_id("old").unwrap();
+        fast.index_message(&meta("m1", "0", 0, 1), "privatebody")
+            .unwrap();
+
+        let newer = event_batch(
+            "new",
+            vec![MessageEvent {
+                id: "m1".into(),
+                action: action::UPDATE_FLAGS,
+                message: Some(meta("m1", "0", 1, 2)),
+            }],
+        );
+        assert_eq!(fast.apply_event_batch("old", &newer).unwrap(), (0, 1, 0));
+        let stale = event_batch(
+            "older",
+            vec![MessageEvent {
+                id: "m1".into(),
+                action: action::DELETE,
+                message: None,
+            }],
+        );
+        assert!(slow.apply_event_batch("old", &stale).is_err());
+        assert_eq!(slow.last_event_id().unwrap().as_deref(), Some("new"));
+        assert_eq!(slow.list("0", false, 10, 0).unwrap()[0].unread, 1);
+        assert_eq!(slow.search("privatebody", 10).unwrap().len(), 1);
+
+        let updated = event_batch(
+            "next",
+            vec![MessageEvent {
+                id: "m1".into(),
+                action: action::UPDATE,
+                message: Some(meta("m1", "0", 1, 3)),
+            }],
+        );
+        assert_eq!(slow.apply_event_batch("new", &updated).unwrap(), (0, 1, 0));
+        assert!(slow.search("privatebody", 10).unwrap().is_empty());
+
+        drop(slow);
+        drop(fast);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_batch_rolls_back_prior_changes_and_cursor() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        cache
+            .index_message(&meta("keep", "0", 0, 1), "privatebody")
+            .unwrap();
+        cache
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_bad BEFORE INSERT ON messages
+                 WHEN NEW.id='bad' BEGIN SELECT RAISE(ABORT, 'bad'); END;",
+            )
+            .unwrap();
+        let batch = event_batch(
+            "new",
+            vec![
+                MessageEvent {
+                    id: "keep".into(),
+                    action: action::DELETE,
+                    message: None,
+                },
+                MessageEvent {
+                    id: "bad".into(),
+                    action: action::CREATE,
+                    message: Some(meta("bad", "0", 0, 2)),
+                },
+            ],
+        );
+        assert!(cache.apply_event_batch("old", &batch).is_err());
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
+        assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "keep");
+        assert_eq!(cache.search("privatebody", 10).unwrap().len(), 1);
     }
 
     #[test]
@@ -494,19 +703,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn disk_cache_restricts_new_and_existing_permissions() {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        use std::os::unix::fs::PermissionsExt;
 
-        let dir = std::env::temp_dir().join(format!(
-            "ruston-cache-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut builder = std::fs::DirBuilder::new();
-        builder.mode(0o700).create(&dir).unwrap();
-        secure_cache_dir(&dir).unwrap();
+        let dir = temp_cache_dir();
         let new_cache_dir = dir.join("new-cache");
         secure_cache_dir(&new_cache_dir).unwrap();
         assert_eq!(
