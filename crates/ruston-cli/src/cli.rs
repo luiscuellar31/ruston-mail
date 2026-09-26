@@ -295,7 +295,7 @@ pub struct SendArgs {
     /// Message body, or `-` to read from stdin.
     #[arg(long)]
     pub body: String,
-    /// Treat the body as HTML.
+    /// Treat the body as HTML. A terminal may ask when the body looks like HTML.
     #[arg(long)]
     pub html: bool,
     /// Attach a file (repeatable).

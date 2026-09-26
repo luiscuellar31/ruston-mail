@@ -81,7 +81,9 @@ unconfirmed because it may happen at any stage of the send pipeline.
 - [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs)
   offers a numbered sender choice when `messages send` runs in a terminal with
   multiple account addresses and no `--from`. Noninteractive and JSON sends
-  keep the primary-address default from core.
+  keep the primary-address default from core. It also detects likely HTML in
+  an interactive send without `--html` and asks before changing the format;
+  scripted sends keep the explicit flag behavior.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
   commands. The desktop has its own demo mailbox in `src/mail/demo.rs`.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`

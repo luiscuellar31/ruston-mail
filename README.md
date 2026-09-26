@@ -68,6 +68,9 @@ To inspect the CLI commands, run:
 cargo run -p ruston-cli -- --help
 ```
 
+When sending from a terminal, the CLI asks before treating a body that looks
+like HTML as HTML. For scripts, pass `--html` explicitly.
+
 ## Privacy
 
 The desktop keeps mailbox content in memory, blocks remote images, and asks

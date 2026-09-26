@@ -4,7 +4,12 @@ use crate::cli::Ctx;
 use crate::cli::{LabelAction, MessagesCmd, SearchArgs, SendArgs};
 use crate::commands::{read_body, resolve_all, resume};
 use crate::render;
+use html5ever::tendril::StrTendril;
+use html5ever::tokenizer::{
+    BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
+};
 use ruston_core::{AddressInfo, Client, Result, SearchOpts, SendOptions};
+use std::cell::Cell;
 use std::io::{self, BufRead, IsTerminal, Write};
 
 fn search_opts(a: SearchArgs) -> SearchOpts {
@@ -70,6 +75,58 @@ fn prompt_sender(
     }
 }
 
+fn can_prompt(ctx: &Ctx) -> bool {
+    !ctx.json && io::stdin().is_terminal() && io::stderr().is_terminal()
+}
+
+#[derive(Default)]
+struct HtmlDetector(Cell<bool>);
+
+impl TokenSink for HtmlDetector {
+    type Handle = ();
+
+    fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
+        if matches!(token, Token::DoctypeToken(_))
+            || matches!(token, Token::TagToken(tag)
+                if tag.kind == TagKind::StartTag
+                    && matches!(&*tag.name, "html" | "body" | "p" | "div" | "span" | "br"
+                        | "a" | "b" | "strong" | "i" | "em" | "h1" | "h2" | "h3"
+                        | "ul" | "ol" | "li" | "table" | "img"))
+        {
+            self.0.set(true);
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+fn looks_like_html(body: &str) -> bool {
+    let tokenizer = Tokenizer::new(HtmlDetector::default(), TokenizerOpts::default());
+    let input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(body));
+    let _ = tokenizer.feed(&input);
+    tokenizer.end();
+    tokenizer.sink.0.get()
+}
+
+fn confirm_html(input: &mut impl BufRead, output: &mut impl Write) -> io::Result<bool> {
+    loop {
+        write!(output, "Body looks like HTML. Send as HTML? [y/N]: ")?;
+        output.flush()?;
+        let mut answer = String::new();
+        if input.read_line(&mut answer)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "HTML format confirmation cancelled",
+            ));
+        }
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "" | "n" | "no" => return Ok(false),
+            _ => writeln!(output, "Enter y or n.")?,
+        }
+    }
+}
+
 pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
     match cmd {
         MessagesCmd::List {
@@ -119,11 +176,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::Send(mut args) => {
             let client = resume(&ctx.profile).await?;
-            if args.from.is_none()
-                && !ctx.json
-                && io::stdin().is_terminal()
-                && io::stderr().is_terminal()
-            {
+            if args.from.is_none() && can_prompt(ctx) {
                 let addresses = client.addresses();
                 if addresses.len() > 1 {
                     args.from = Some(prompt_sender(
@@ -134,6 +187,9 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 }
             }
             let body = read_body(&args.body)?;
+            if !args.html && can_prompt(ctx) && looks_like_html(&body) {
+                args.html = confirm_html(&mut io::stdin().lock(), &mut io::stderr().lock())?;
+            }
             let eo_password = args.eo_password.clone();
             let eo_hint = args.eo_hint.clone();
             let opts = send_options(args, body);
@@ -299,7 +355,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::prompt_sender;
+    use super::{confirm_html, looks_like_html, prompt_sender};
     use ruston_core::AddressInfo;
     use std::io::{self, Cursor};
 
@@ -328,6 +384,35 @@ mod tests {
 
         let error = prompt_sender(&addresses, &mut Cursor::new(""), &mut Vec::new())
             .expect_err("EOF must cancel the send");
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn html_detection_ignores_plain_text_comparisons() {
+        assert!(looks_like_html(
+            "<p class=\"note\">Hello <strong>world</strong></p>"
+        ));
+        assert!(looks_like_html(
+            "<!DOCTYPE html><html><body>Hello</body></html>"
+        ));
+        assert!(!looks_like_html("2 < 3 and 5 > 4"));
+        assert!(!looks_like_html("Please write <alias> in the field"));
+    }
+
+    #[test]
+    fn html_confirmation_requires_an_explicit_yes() {
+        for (answer, expected) in [
+            ("y\n", true),
+            ("no\n", false),
+            ("\n", false),
+            ("?\nyes\n", true),
+        ] {
+            assert_eq!(
+                confirm_html(&mut Cursor::new(answer), &mut Vec::new()).unwrap(),
+                expected
+            );
+        }
+        let error = confirm_html(&mut Cursor::new(""), &mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     }
 }
