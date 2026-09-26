@@ -41,6 +41,16 @@ entry. A full message update removes its indexed body; run `index` again to
 make the updated body searchable. SQLite deletion does not guarantee secure
 erasure of bytes already written to disk or copied into backups.
 
+On Unix, the default cache directory uses mode `0700` and each SQLite database
+uses mode `0600`. Opening an older cache at the default location tightens those
+permissions before SQLite reads it, without deleting its contents. A custom
+cache path must have a private `0700` parent directory; symlinks at the cache
+directory or database path are rejected. SQLite's journal files live beside the
+database, so the private directory also protects them. These checks cannot undo
+past exposure of an older cache or detect separate filesystem ACL grants. On
+Windows, access depends on the destination directory's ACLs; this code does
+not manage Windows ACLs.
+
 When Proton requests a full refresh, sync rebuilds all cached message metadata
 before replacing the current cache. If the rebuild fails, cached offline data
 and the sync cursor remain available. A completed refresh clears the local

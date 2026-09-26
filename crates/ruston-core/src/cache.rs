@@ -1,13 +1,81 @@
-//! Local SQLite cache of message metadata + the sync cursor.
+//! Local SQLite cache of message metadata, indexed bodies, and the sync cursor.
 
 use crate::error::{Error, Result};
 use crate::model::message::MessageMetadata;
 use crate::session::validate_profile_name;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
 
 fn map<E: std::fmt::Display>(e: E) -> Error {
     Error::Cache(e.to_string())
+}
+
+#[cfg(unix)]
+fn secure_cache_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::create_dir_all(dir).map_err(map)?;
+    let metadata = std::fs::symlink_metadata(dir).map_err(map)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(Error::Cache("cache directory must not be a symlink".into()));
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(map)?;
+    if std::fs::symlink_metadata(dir)
+        .map_err(map)?
+        .permissions()
+        .mode()
+        & 0o777
+        != 0o700
+    {
+        return Err(Error::Cache("cache directory is not private".into()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn secure_cache_file(path: &Path) -> Result<()> {
+    use std::fs::{OpenOptions, Permissions};
+    use std::io::ErrorKind;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let dir = std::fs::symlink_metadata(parent).map_err(map)?;
+    if !dir.is_dir() || dir.file_type().is_symlink() || dir.permissions().mode() & 0o777 != 0o700 {
+        return Err(Error::Cache(format!(
+            "cache directory {} must be private (mode 0700) and not a symlink",
+            parent.display()
+        )));
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    match options.open(path) {
+        Ok(file) => file
+            .set_permissions(Permissions::from_mode(0o600))
+            .map_err(map)?,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(path).map_err(map)?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(Error::Cache("cache database must be a regular file".into()));
+            }
+            let file = OpenOptions::new().read(true).open(path).map_err(map)?;
+            let opened = file.metadata().map_err(map)?;
+            if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+                return Err(Error::Cache("cache database changed while opening".into()));
+            }
+            file.set_permissions(Permissions::from_mode(0o600))
+                .map_err(map)?;
+        }
+        Err(error) => return Err(map(error)),
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(map)?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o777 != 0o600 {
+        return Err(Error::Cache("cache database is not private".into()));
+    }
+    Ok(())
 }
 
 fn participants(m: &MessageMetadata) -> String {
@@ -50,13 +118,32 @@ impl Cache {
         let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
             .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
         let dir = dirs.cache_dir().to_path_buf();
+        #[cfg(unix)]
+        secure_cache_dir(&dir)?;
+        #[cfg(not(unix))]
         std::fs::create_dir_all(&dir).map_err(map)?;
         Ok(dir.join(format!("{profile}.db")))
     }
 
     /// Open (creating if needed) the cache database at `path`, ensuring its schema.
+    /// On Unix, the parent must be a private directory; existing database files
+    /// are restricted to mode `0600` before SQLite opens them.
     pub fn open(path: &Path) -> Result<Cache> {
-        let conn = Connection::open(path).map_err(map)?;
+        #[cfg(unix)]
+        let sqlite_path = if path == Path::new(":memory:") {
+            path.to_path_buf()
+        } else {
+            secure_cache_file(path)?;
+            // NOFOLLOW also rejects symlinks in ancestor paths on macOS.
+            std::fs::canonicalize(path).map_err(map)?
+        };
+        #[cfg(not(unix))]
+        let sqlite_path = path.to_path_buf();
+        #[cfg(unix)]
+        let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        #[cfg(not(unix))]
+        let flags = OpenFlags::default();
+        let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(map)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
              CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
@@ -354,9 +441,7 @@ mod tests {
 
     #[test]
     fn upsert_list_delete_roundtrip() {
-        let tmp = std::env::temp_dir().join(format!("ptest-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&tmp);
-        let c = Cache::open(&tmp).unwrap();
+        let c = Cache::open(Path::new(":memory:")).unwrap();
 
         assert_eq!(c.last_event_id().unwrap(), None);
         c.set_last_event_id("evt-1").unwrap();
@@ -374,7 +459,6 @@ mod tests {
         assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 1);
         c.clear().unwrap();
         assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 0);
-        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
@@ -394,9 +478,7 @@ mod tests {
 
     #[test]
     fn fts_index_and_search() {
-        let tmp = std::env::temp_dir().join(format!("pfts-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&tmp);
-        let c = Cache::open(&tmp).unwrap();
+        let c = Cache::open(Path::new(":memory:")).unwrap();
         c.index_message(&meta("m1", "5", 0, 10), "hello from ruston-cli rust client")
             .unwrap();
         c.index_message(&meta("m2", "5", 0, 20), "completely unrelated content here")
@@ -407,7 +489,78 @@ mod tests {
         assert!(c.search("nonexistentword", 10).unwrap().is_empty());
         // multi-token AND
         assert_eq!(c.search("hello rust", 10).unwrap().len(), 1);
-        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_cache_restricts_new_and_existing_permissions() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+        let dir = std::env::temp_dir().join(format!(
+            "ruston-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700).create(&dir).unwrap();
+        secure_cache_dir(&dir).unwrap();
+        let new_cache_dir = dir.join("new-cache");
+        secure_cache_dir(&new_cache_dir).unwrap();
+        assert_eq!(
+            std::fs::metadata(&new_cache_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        let path = dir.join("cache.db");
+
+        let cache = Cache::open(&path).unwrap();
+        cache
+            .index_message(&meta("m1", "0", 0, 1), "privatebody")
+            .unwrap();
+        cache
+            .conn
+            .execute_batch("BEGIN IMMEDIATE; INSERT INTO meta VALUES('test', 'secret')")
+            .unwrap();
+        let journal = path.with_extension("db-journal");
+        assert_eq!(
+            std::fs::metadata(&journal).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        cache.conn.execute_batch("ROLLBACK").unwrap();
+        drop(cache);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let cache = Cache::open(&path).unwrap();
+        assert_eq!(cache.search("privatebody", 1).unwrap().len(), 1);
+        drop(cache);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Cache::open(&path).is_err());
+        secure_cache_dir(&dir).unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        Cache::open(&path).unwrap();
+
+        let link = dir.join("linked.db");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(Cache::open(&link).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

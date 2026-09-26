@@ -156,9 +156,11 @@ shared profile signs out both frontends.
 The desktop keeps mailbox data in memory. The core also offers a per-profile
 SQLite cache used by CLI sync and local search. Indexing a folder stores
 decrypted message bodies in that local database; it is not encrypted at rest
-by this code. Cache writes and index maintenance live in
-[`cache.rs`](../crates/ruston-core/src/cache.rs), which removes indexed bodies
-when messages are deleted. The event stream in
+by this code. On Unix, core creates the cache directory and database with
+private permissions and tightens older cache permissions before opening them;
+explicit cache paths require a private parent directory. Cache writes and index
+maintenance live in [`cache.rs`](../crates/ruston-core/src/cache.rs), which
+removes indexed bodies when messages are deleted. The event stream in
 [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs)
 invalidates an indexed body on a full message update. When Proton requests a
 full refresh, sync pages through all message metadata into temporary SQLite
