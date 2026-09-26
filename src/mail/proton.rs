@@ -810,7 +810,7 @@ fn mail_message(
     mime_type: &str,
     attachments: Vec<Attachment>,
 ) -> MailMessage {
-    let body = if mime_type.to_ascii_lowercase().starts_with("text/html") {
+    let body = if ruston_core::html::is_html_mime(mime_type) {
         MessageBody::Rich(html::parse(&body))
     } else {
         MessageBody::PlainText(body)

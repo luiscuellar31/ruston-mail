@@ -192,7 +192,7 @@ impl Client {
             )
         };
         // Sanitize HTML bodies (strip scripts / active content) for safe rendering.
-        let body = if mime_type == "text/html" {
+        let body = if crate::html::is_html_mime(&mime_type) {
             crate::html::sanitize(&body)
         } else {
             body

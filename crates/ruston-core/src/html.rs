@@ -1,14 +1,22 @@
-//! HTML sanitization for message bodies (XSS-safe rendering).
+//! HTML sanitization for message bodies.
 
-/// Sanitize an HTML message body: strips `<script>`/`<style>`, event handlers,
-/// `javascript:` URLs, forms, and other active content, keeping safe formatting.
-///
-/// To block tracking pixels / remote images, rewrites `<img src>` and CSS
-/// backgrounds are dropped by removing `src` on remote images is left to the
-/// caller; here we keep images but neutralize active content. (A remote-image
-/// proxy is a separate, deferred feature.)
+/// Whether a MIME type describes HTML, including optional charset parameters.
+pub fn is_html_mime(mime_type: &str) -> bool {
+    mime_type
+        .split(';')
+        .next()
+        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("text/html"))
+}
+
+/// Remove active and hidden content while retaining safe HTML formatting.
+/// Image tags may remain; renderers decide whether to display or fetch them.
 pub fn sanitize(html: &str) -> String {
-    ammonia::clean(html)
+    ammonia::Builder::new()
+        .add_clean_content_tags(&[
+            "head", "title", "noscript", "template", "textarea", "iframe", "svg",
+        ])
+        .clean(html)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -30,5 +38,22 @@ mod tests {
     fn keeps_safe_links() {
         let clean = sanitize(r#"<a href="https://proton.me">link</a>"#);
         assert!(clean.contains("https://proton.me"));
+    }
+
+    #[test]
+    fn drops_hidden_elements_with_their_text() {
+        let clean = sanitize(
+            "<head><title>Hidden subject</title></head><p>Visible</p><noscript>Hidden</noscript>",
+        );
+        assert!(clean.contains("Visible"));
+        assert!(!clean.contains("Hidden"));
+    }
+
+    #[test]
+    fn recognizes_html_with_charset_parameters() {
+        assert!(is_html_mime("text/html"));
+        assert!(is_html_mime("Text/HTML; charset=UTF-8"));
+        assert!(!is_html_mime("text/html-extra"));
+        assert!(!is_html_mime("text/plain"));
     }
 }
