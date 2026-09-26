@@ -33,6 +33,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine.
+- [`app/mailbox.rs`](../src/app/mailbox.rs) owns folder and search pagination.
+  Loaded folders keep their rows, ID index, and page cursor together when
+  cached; older pages append in date order, while overlapping dates are merged.
 - [`src/runtime.rs`](../src/runtime.rs) runs asynchronous effects off the UI
   thread and sends their results back as messages. UI drawing does not wait for
   network operations.

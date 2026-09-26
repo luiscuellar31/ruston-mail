@@ -234,6 +234,21 @@ fn search_loads_more_than_fifty_results_without_losing_the_first_page() {
 }
 
 #[test]
+fn search_pages_reuse_the_id_index_after_a_row_leaves_the_results() {
+    let (mut mailbox, inbox) = Mailbox::open(Folder::INBOX, 2, 1, 2);
+    mailbox.finish_page(inbox.id, page(&["inbox"], 1));
+    mailbox.set_search_query("invoice".into());
+    let first = mailbox.start_search(3).unwrap();
+    mailbox.finish_search(&first, page(&["a", "b"], 5));
+    mailbox.record_action("a", &MailAction::MoveTo(sys(MailFolder::Trash)));
+
+    let next = mailbox.load_more_search(4).unwrap();
+    mailbox.finish_search(&next, page(&["a", "b", "c"], 5));
+
+    assert_eq!(visible_ids(&mailbox), ["b", "a", "c"]);
+}
+
+#[test]
 fn an_abandoned_search_never_lands() {
     let mut mailbox = loaded_inbox(&["a"], 1);
     mailbox.set_search_query("invoice".into());
@@ -714,8 +729,16 @@ fn refreshing_keeps_the_pages_already_loaded() {
     assert_eq!(mailbox.loaded_conversation_limit(), 2 * PAGE_SIZE);
     assert!(mailbox.has_more());
 
+    let more = mailbox.load_more(7).unwrap();
+    mailbox.finish_page(
+        more.id,
+        dated_page(&[("p99", 999_901), ("p100", 999_900)], 120),
+    );
+    assert_eq!(mailbox.conversations().len(), 101);
+    assert_eq!(mailbox.conversations().last().unwrap().id, "p100");
+
     // A short reload means the folder itself is short now.
-    let refresh = mailbox.refresh(7).unwrap();
+    let refresh = mailbox.refresh(8).unwrap();
     mailbox.finish_page(refresh.id, dated_page(&[("p0", 1_000_000)], 1));
     assert_eq!(visible_ids(&mailbox), ["p0"]);
 }
@@ -1018,6 +1041,83 @@ fn load_more_appends_without_duplicates() {
     assert_eq!(ids(&mailbox), ["a", "b", "c"]);
     assert!(mailbox.has_more());
     assert_eq!(mailbox.load_more(4).unwrap().page, 2);
+}
+
+#[test]
+fn later_pages_merge_interleaved_dates_and_keep_earlier_rows_first_on_ties() {
+    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    mailbox.finish_page(first.id, dated_page(&[("a", 100), ("b", 80), ("c", 50)], 7));
+
+    let next = mailbox.load_more(3).unwrap();
+    mailbox.finish_page(
+        next.id,
+        dated_page(&[("d", 90), ("e", 80), ("c", 50), ("f", 40)], 7),
+    );
+
+    assert_eq!(ids(&mailbox), ["a", "d", "b", "e", "c", "f"]);
+    assert_eq!(visible_ids(&mailbox), ids(&mailbox));
+}
+
+#[test]
+fn interleaved_pages_keep_undated_rows_with_their_neighbours() {
+    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    mailbox.finish_page(
+        first.id,
+        Ok(ConversationPage {
+            conversations: vec![dated("a", 100), summary("undated-a"), dated("b", 50)],
+            total: 6,
+            inspect_candidates: Vec::new(),
+        }),
+    );
+
+    let next = mailbox.load_more(3).unwrap();
+    mailbox.finish_page(
+        next.id,
+        Ok(ConversationPage {
+            conversations: vec![dated("c", 75), summary("undated-c"), dated("d", 40)],
+            total: 6,
+            inspect_candidates: Vec::new(),
+        }),
+    );
+
+    assert_eq!(
+        ids(&mailbox),
+        ["a", "undated-a", "c", "undated-c", "b", "d"]
+    );
+}
+
+#[test]
+fn older_pages_preserve_undated_rows_and_extend_local_filter() {
+    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    let mut match_a = dated("a", 100);
+    match_a.subject = Some("receipt".into());
+    let mut match_b = dated("b", 70);
+    match_b.subject = Some("receipt".into());
+    mailbox.finish_page(
+        first.id,
+        Ok(ConversationPage {
+            conversations: vec![match_a, summary("undated-a"), dated("other", 80)],
+            total: 6,
+            inspect_candidates: Vec::new(),
+        }),
+    );
+    mailbox.set_search_query("receipt".into());
+
+    let next = mailbox.load_more(3).unwrap();
+    mailbox.finish_page(
+        next.id,
+        Ok(ConversationPage {
+            conversations: vec![summary("undated-b"), match_b, dated("last", 60)],
+            total: 6,
+            inspect_candidates: Vec::new(),
+        }),
+    );
+
+    assert_eq!(
+        ids(&mailbox),
+        ["a", "undated-a", "other", "undated-b", "b", "last"]
+    );
+    assert_eq!(visible_ids(&mailbox), ["a", "b"]);
 }
 
 #[test]
@@ -1926,4 +2026,18 @@ fn split_conversation_updates_cached_listing_when_folder_not_active() {
     // Navigating back to Inbox restores cached listing with split rows already applied!
     mailbox.select_folder(sys(MailFolder::Inbox), 3);
     assert_eq!(visible_ids(&mailbox), ["m1", "m2"]);
+}
+
+#[test]
+fn cached_split_rows_are_not_added_again_by_the_next_page() {
+    let mut mailbox = loaded_inbox(&["c1", "c2"], 120);
+    let sent = mailbox.select_folder(sys(MailFolder::Sent), 3).unwrap();
+    mailbox.finish_page(sent.id, page(&["sent"], 1));
+    mailbox.split_conversation(&Folder::INBOX, "c1", vec![dated("m1", 50), dated("m2", 40)]);
+
+    assert_eq!(mailbox.select_folder(Folder::INBOX, 4), None);
+    let next = mailbox.load_more(5).unwrap();
+    mailbox.finish_page(next.id, page(&["m1", "c3"], 120));
+
+    assert_eq!(ids(&mailbox), ["m1", "m2", "c2", "c3"]);
 }

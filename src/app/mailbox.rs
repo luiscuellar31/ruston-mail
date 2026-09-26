@@ -79,6 +79,7 @@ pub enum ListStatus {
 struct SearchState {
     query: String,
     rows: Vec<ConversationSummary>,
+    row_ids: HashSet<String>,
     next_page: u32,
     has_more: bool,
 }
@@ -87,6 +88,8 @@ struct SearchState {
 /// Memory-only, so Ruston never creates a second persistent mail store.
 struct CachedListing {
     conversations: Vec<ConversationSummary>,
+    row_ids: HashSet<String>,
+    last_dated_time: Option<i64>,
     next_page: u32,
     has_more: bool,
     /// A confirmed mailbox change may have affected this folder. It can still
@@ -148,6 +151,9 @@ pub struct Mailbox {
     folder: Folder,
     status: ListStatus,
     conversations: Vec<ConversationSummary>,
+    row_ids: HashSet<String>,
+    /// Last dated row in display order, used to order the next page.
+    last_dated_time: Option<i64>,
     /// Indices of visible rows into either `search.rows` or `conversations`.
     visible_cache: Vec<usize>,
     page_size: u32,
@@ -189,6 +195,8 @@ impl Mailbox {
             folder,
             status: ListStatus::Loading(page_request),
             conversations: Vec::new(),
+            row_ids: HashSet::new(),
+            last_dated_time: None,
             visible_cache: Vec::new(),
             page_size,
             next_page: 0,
@@ -254,6 +262,24 @@ impl Mailbox {
                         ));
                 }
             }
+        }
+    }
+
+    /// Extends visible indices when a page was appended without moving old rows.
+    fn append_visible(&mut self, from: usize) {
+        let query = self.search_query.trim();
+        if query.is_empty() {
+            self.visible_cache.extend(from..self.conversations.len());
+        } else {
+            let query = query.to_lowercase();
+            self.visible_cache.extend(
+                self.conversations[from..]
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(offset, row)| {
+                        matches_search(row, &query).then_some(from + offset)
+                    }),
+            );
         }
     }
 
@@ -352,21 +378,23 @@ impl Mailbox {
                         .search
                         .as_mut()
                         .expect("later search page has first page");
-                    let known: HashSet<&str> =
-                        search.rows.iter().map(|row| row.id.as_str()).collect();
                     let new: Vec<_> = page
                         .conversations
                         .into_iter()
-                        .filter(|row| !known.contains(row.id.as_str()))
+                        .filter(|row| !search.row_ids.contains(&row.id))
                         .collect();
+                    let from = search.rows.len();
+                    search.row_ids.extend(new.iter().map(|row| row.id.clone()));
                     search.rows.extend(new);
                     search.next_page = request.page.saturating_add(1);
                     search.has_more = has_more;
-                    self.recompute_visible();
+                    self.visible_cache.extend(from..search.rows.len());
                 } else {
+                    let row_ids = collect_ids(&page.conversations);
                     self.search = Some(SearchState {
                         query: request.query.clone(),
                         rows: page.conversations,
+                        row_ids,
                         next_page: 1,
                         has_more,
                     });
@@ -434,8 +462,8 @@ impl Mailbox {
     /// Whether the rows on screen hold this one, hidden by typing or not.
     pub fn has_row(&self, row_id: &str) -> bool {
         match &self.search {
-            Some(search) => search.rows.iter().any(|row| row.id == row_id),
-            None => self.conversations.iter().any(|row| row.id == row_id),
+            Some(search) => search.row_ids.contains(row_id),
+            None => self.row_ids.contains(row_id),
         }
     }
 
@@ -522,7 +550,7 @@ impl Mailbox {
     /// Whether the folder listing itself holds this row, which is what says
     /// Proton can be told to read it in the open folder.
     fn listed_in_folder(&self, row_id: &str) -> bool {
-        self.conversations.iter().any(|row| row.id == row_id)
+        self.row_ids.contains(row_id)
     }
 
     #[cfg(test)]
@@ -920,6 +948,7 @@ impl Mailbox {
             && let Some(search) = &mut self.search
         {
             search.rows.retain(|row| row.id != row_id);
+            search.row_ids.remove(row_id);
             self.recompute_visible();
         }
     }
@@ -932,8 +961,11 @@ impl Mailbox {
             .visible_conversations()
             .position(|row| row.id == row_id);
         self.conversations.retain(|row| row.id != row_id);
+        self.row_ids.remove(row_id);
+        self.last_dated_time = last_dated_time(&self.conversations);
         if let Some(search) = &mut self.search {
             search.rows.retain(|row| row.id != row_id);
+            search.row_ids.remove(row_id);
         }
         self.recompute_visible();
         if !was_selected {
@@ -980,6 +1012,8 @@ impl Mailbox {
 
         if let Some(cached) = self.cached_listings.remove(&FolderKey::of(&self.folder)) {
             self.conversations = cached.conversations;
+            self.row_ids = cached.row_ids;
+            self.last_dated_time = cached.last_dated_time;
             self.next_page = cached.next_page;
             self.has_more = cached.has_more;
             self.active_dirty = cached.dirty;
@@ -996,6 +1030,8 @@ impl Mailbox {
             }
         } else {
             self.conversations.clear();
+            self.row_ids.clear();
+            self.last_dated_time = None;
             self.next_page = 0;
             self.has_more = false;
             self.active_dirty = false;
@@ -1016,6 +1052,8 @@ impl Mailbox {
             FolderKey::of(&self.folder),
             CachedListing {
                 conversations: std::mem::take(&mut self.conversations),
+                row_ids: std::mem::take(&mut self.row_ids),
+                last_dated_time: self.last_dated_time.take(),
                 next_page: self.next_page,
                 has_more: self.has_more,
                 dirty,
@@ -1092,6 +1130,8 @@ impl Mailbox {
         let total = page.total;
 
         self.conversations = page.conversations;
+        self.row_ids = collect_ids(&self.conversations);
+        self.last_dated_time = last_dated_time(&self.conversations);
         self.counts = Some(counts);
         self.counts_request = None;
         self.status = ListStatus::Loaded;
@@ -1167,6 +1207,8 @@ impl Mailbox {
             {
                 self.conversations.splice(pos..=pos, split_rows);
                 sort_newest_first(&mut self.conversations);
+                self.row_ids = collect_ids(&self.conversations);
+                self.last_dated_time = last_dated_time(&self.conversations);
                 self.recompute_visible();
             }
         } else if let Some(cached) = self.cached_listings.get_mut(&FolderKey::of(folder))
@@ -1177,6 +1219,8 @@ impl Mailbox {
         {
             cached.conversations.splice(pos..=pos, split_rows);
             sort_newest_first(&mut cached.conversations);
+            cached.row_ids = collect_ids(&cached.conversations);
+            cached.last_dated_time = last_dated_time(&cached.conversations);
         }
     }
 
@@ -1229,13 +1273,21 @@ impl Mailbox {
         let received = page.conversations.len();
 
         if append {
-            let known: HashSet<&str> = self.conversations.iter().map(|c| c.id.as_str()).collect();
             let new: Vec<_> = page
                 .conversations
                 .into_iter()
-                .filter(|conversation| !known.contains(conversation.id.as_str()))
+                .filter(|conversation| !self.row_ids.contains(&conversation.id))
                 .collect();
-            self.conversations.extend(new);
+            self.row_ids.extend(new.iter().map(|row| row.id.clone()));
+            let from = self.conversations.len();
+            let (last_dated_time, appended_at_end) =
+                append_newest_first(&mut self.conversations, new, self.last_dated_time);
+            self.last_dated_time = last_dated_time;
+            if appended_at_end && self.search.is_none() {
+                self.append_visible(from);
+            } else {
+                self.recompute_visible();
+            }
             self.next_page += 1;
         } else {
             // Preserve deeper pages unless a short first page proves they are gone.
@@ -1246,11 +1298,13 @@ impl Mailbox {
             };
             self.conversations = page.conversations;
             self.conversations.extend(deeper);
+            self.row_ids = collect_ids(&self.conversations);
+            // Rows split out of a conversation carry their own, older times.
+            sort_newest_first(&mut self.conversations);
+            self.last_dated_time = last_dated_time(&self.conversations);
+            self.recompute_visible();
             self.next_page = self.next_page.max(1);
         }
-        // Rows split out of a conversation carry their own, older times.
-        sort_newest_first(&mut self.conversations);
-        self.recompute_visible();
         if !append {
             // Search results are not part of this answer and stay on screen,
             // so what the reader holds is only closed when it truly left.
@@ -1260,6 +1314,71 @@ impl Mailbox {
         self.has_more = received > 0
             && u64::from(self.next_page) * u64::from(self.page_size) < u64::from(page.total);
     }
+}
+
+fn collect_ids(rows: &[ConversationSummary]) -> HashSet<String> {
+    rows.iter().map(|row| row.id.clone()).collect()
+}
+
+fn last_dated_time(rows: &[ConversationSummary]) -> Option<i64> {
+    rows.iter().rev().find_map(|row| row.time)
+}
+
+/// Keeps older pages proportional to the new page. Interleaved pages use a
+/// stable linear merge, with earlier pages winning ties.
+fn append_newest_first(
+    rows: &mut Vec<ConversationSummary>,
+    incoming: Vec<ConversationSummary>,
+    last_dated: Option<i64>,
+) -> (Option<i64>, bool) {
+    let seed = last_dated
+        .or_else(|| incoming.iter().find_map(|row| row.time))
+        .unwrap_or(i64::MAX);
+    let mut previous = seed;
+    let mut keyed: Vec<_> = incoming
+        .into_iter()
+        .map(|row| {
+            previous = row.time.unwrap_or(previous);
+            (previous, row)
+        })
+        .collect();
+    let tail_key = last_dated.unwrap_or(seed);
+
+    keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+    if !rows.is_empty() && keyed.first().is_some_and(|(time, _)| *time > tail_key) {
+        // The old rows are already ordered. Recreate their undated sort keys
+        // using the same seed as sorting the concatenated pages would use.
+        let old_seed = rows.iter().find_map(|row| row.time).unwrap_or(seed);
+        let mut previous = old_seed;
+        let old = std::mem::take(rows);
+        let mut old = old
+            .into_iter()
+            .map(|row| {
+                previous = row.time.unwrap_or(previous);
+                (previous, row)
+            })
+            .peekable();
+        let mut new = keyed.into_iter().peekable();
+        rows.reserve(old.len() + new.len());
+
+        while old.peek().is_some() && new.peek().is_some() {
+            if old.peek().unwrap().0 >= new.peek().unwrap().0 {
+                rows.push(old.next().unwrap().1);
+            } else {
+                rows.push(new.next().unwrap().1);
+            }
+        }
+        rows.extend(old.chain(new).map(|(_, row)| row));
+        return (last_dated_time(rows), false);
+    }
+
+    let next_last_dated = keyed
+        .iter()
+        .rev()
+        .find_map(|(_, row)| row.time)
+        .or(last_dated);
+    rows.extend(keyed.into_iter().map(|(_, row)| row));
+    (next_last_dated, true)
 }
 
 /// Sorts newest first while preserving undated rows' relative positions.
