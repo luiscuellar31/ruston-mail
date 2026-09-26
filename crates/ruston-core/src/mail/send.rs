@@ -5,6 +5,7 @@ use crate::api;
 use crate::crypto::{self, keys::AddressKeys, SessionKeyMaterial};
 use crate::error::{Error, Result};
 use crate::model::enums::package_type;
+use crate::transport::Doer;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use proton_srp::{SRPAuth, SRPVerifierB64};
 use serde_json::{json, Map, Value};
@@ -82,6 +83,31 @@ fn guess_mime(path: &std::path::Path) -> String {
 struct Uploaded {
     id: String,
     material: SessionKeyMaterial,
+}
+
+async fn submit_send<D: Doer>(http: &D, message_id: &str, body: Value) -> Result<()> {
+    api::messages::send_message(http, message_id, body)
+        .await
+        .map_err(|error| {
+            // A lost or unusable response does not prove that Proton rejected
+            // the POST. Keep the draft ID so callers can check Sent first.
+            let uncertain = matches!(&error, Error::Http(_) | Error::Json(_))
+                || matches!(&error, Error::Api(api) if api.http_status >= 500);
+            if uncertain {
+                Error::SendUnconfirmed {
+                    message_id: message_id.to_owned(),
+                    source: Box::new(error),
+                }
+            } else {
+                error
+            }
+        })
+}
+
+async fn cleanup_failed_draft<D: Doer>(http: &D, message_id: &str, error: &Error) {
+    if !matches!(error, Error::SendUnconfirmed { .. }) {
+        let _ = api::messages::delete(http, &[message_id.to_owned()]).await;
+    }
 }
 
 impl Client {
@@ -238,7 +264,7 @@ impl Client {
         let message_id = created.meta.id.clone();
         tracing::debug!(target: "ruston_core::send", message_id = %message_id, "send: draft created");
 
-        // Run the rest; on any failure delete the draft.
+        // Clean up only when the failure proves the message was not sent.
         match self
             .finish_send(&provider, addr, &message_id, mime_type, opts, eo)
             .await
@@ -248,8 +274,12 @@ impl Client {
                 Ok(message_id)
             }
             Err(e) => {
-                tracing::warn!(target: "ruston_core::send", message_id = %message_id, error = %e, "send failed — deleting draft");
-                let _ = api::messages::delete(self.http(), &[message_id]).await;
+                if matches!(e, Error::SendUnconfirmed { .. }) {
+                    tracing::warn!(target: "ruston_core::send", message_id = %message_id, error = %e, "send outcome unconfirmed — skipping draft cleanup");
+                } else {
+                    tracing::warn!(target: "ruston_core::send", message_id = %message_id, error = %e, "send failed — deleting draft");
+                }
+                cleanup_failed_draft(self.http(), &message_id, &e).await;
                 Err(e)
             }
         }
@@ -472,7 +502,7 @@ impl Client {
             body["ExpiresIn"] = json!(s);
         }
         tracing::debug!(target: "ruston_core::send", packages = packages.len(), "send step 4: submitting (POST /mail/v4/messages/{{id}})");
-        api::messages::send_message(self.http(), message_id, body).await
+        submit_send(self.http(), message_id, body).await
     }
 }
 
@@ -507,6 +537,77 @@ fn quote_block(parent: &crate::model::message::Message, body: &str, html: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::HttpClient;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn incomplete_final_response_leaves_send_unconfirmed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let size = socket.read(&mut request).await.unwrap();
+            assert!(request[..size].starts_with(b"POST /mail/v4/messages/draft-1 "));
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"Code\":1000}")
+                .await
+                .unwrap();
+        });
+
+        let http = HttpClient::new(format!("http://{addr}"), "Other");
+        let error = submit_send(&http, "draft-1", json!({"Packages": []}))
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert!(matches!(
+            error,
+            Error::SendUnconfirmed { message_id, source }
+                if message_id == "draft-1" && matches!(*source, Error::Http(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn explicit_send_rejection_remains_a_regular_api_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+                "Code": 1200, "Error": "invalid recipients"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = HttpClient::new(server.uri(), "Other");
+        let error = submit_send(&http, "draft-1", json!({"Packages": []}))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Api(api) if api.http_status == 422));
+    }
+
+    #[tokio::test]
+    async fn uncertain_send_does_not_delete_the_draft() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/mail/v4/messages/delete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let unknown = Error::SendUnconfirmed {
+            message_id: "draft-1".into(),
+            source: Box::new(Error::Other("response lost".into())),
+        };
+
+        cleanup_failed_draft(&http, "draft-1", &unknown).await;
+        assert!(server.received_requests().await.unwrap().is_empty());
+        cleanup_failed_draft(&http, "draft-1", &Error::Other("rejected".into())).await;
+        server.verify().await;
+    }
 
     #[test]
     fn dedupe_case_insensitive() {

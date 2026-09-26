@@ -152,6 +152,8 @@ pub enum SendError {
     /// The fictional mailbox takes only a few messages per run.
     DemoLimitReached,
     Mailbox(MailboxError),
+    /// Proton may have accepted the send, but the client could not confirm it.
+    Unconfirmed,
     /// An attached file could not be found or read on disk.
     MissingAttachment(String),
 }
@@ -171,6 +173,9 @@ impl SendError {
             Self::Mailbox(MailboxError::Service | MailboxError::Unavailable) => {
                 Cow::Borrowed("Proton would not accept the message. It was not sent.")
             }
+            Self::Unconfirmed => Cow::Borrowed(
+                "Could not confirm whether Proton sent this message. Check Sent before trying again.",
+            ),
             Self::MissingAttachment(name) => {
                 Cow::Owned(format!("Attachment cannot be found: {name}"))
             }
@@ -359,5 +364,7 @@ mod tests {
             "Attachment cannot be found: photo.jpg"
         );
         assert!(SendError::DemoLimitReached.message().contains("Restart"));
+        assert!(SendError::Unconfirmed.message().contains("Check Sent"));
+        assert!(!SendError::Unconfirmed.message().contains("was not sent"));
     }
 }

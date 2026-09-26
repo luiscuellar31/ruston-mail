@@ -58,6 +58,13 @@ memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
 result returns to the app as a message.
 
+If the final send request has no reliable success or explicit rejection, core
+[`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) returns an unconfirmed
+outcome and does not try to delete the draft. The desktop leaves the
+composer open and asks the sender to check Sent before trying again; the CLI
+reports the draft ID with the error. A desktop send timeout is also shown as
+unconfirmed because it may happen at any stage of the send pipeline.
+
 ## CLI and core boundaries
 
 - [`cli.rs`](../crates/ruston-cli/src/cli.rs) defines commands and global

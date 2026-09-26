@@ -70,6 +70,16 @@ pub enum Error {
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// The final send request may have succeeded, but its result was not confirmed.
+    #[error("could not confirm whether message {message_id} was sent; check Sent before retrying: {source}")]
+    SendUnconfirmed {
+        /// ID of the draft submitted to Proton.
+        message_id: String,
+        /// Failure that prevented confirmation.
+        #[source]
+        source: Box<Error>,
+    },
+
     /// JSON (de)serialization failed.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),

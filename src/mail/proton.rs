@@ -299,8 +299,11 @@ impl ProtonMailService {
         timed_with(
             call,
             SEND_TIMEOUT,
-            SendError::Mailbox(MailboxError::Connection),
-            |error| SendError::Mailbox(map_mailbox_error(error)),
+            SendError::Unconfirmed,
+            |error| match error {
+                Error::SendUnconfirmed { .. } => SendError::Unconfirmed,
+                other => SendError::Mailbox(map_mailbox_error(other)),
+            },
         )
         .await
         .map(|_| ())

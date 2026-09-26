@@ -44,7 +44,7 @@ pub enum Sending {
     Writing,
     /// Handed over, waiting to hear back.
     InFlight,
-    /// It did not leave, and why.
+    /// The send failed or its outcome could not be confirmed.
     Failed(SendError),
 }
 
@@ -109,8 +109,8 @@ impl Compose {
         };
         *slot = value;
         self.confirming_discard = false;
-        // Typing after a refusal is an attempt to fix it, so the refusal goes.
-        if matches!(self.state, State::Failed(_)) {
+        // Keep an unconfirmed-send warning visible even if the draft changes.
+        if matches!(self.state, State::Failed(ref error) if *error != SendError::Unconfirmed) {
             self.state = State::Writing;
         }
     }
@@ -134,7 +134,7 @@ impl Compose {
             }
         }
         self.confirming_discard = false;
-        if matches!(self.state, State::Failed(_)) {
+        if matches!(self.state, State::Failed(ref error) if *error != SendError::Unconfirmed) {
             self.state = State::Writing;
         }
     }
@@ -143,7 +143,7 @@ impl Compose {
         if index < self.attachments.len() {
             self.attachments.remove(index);
             self.confirming_discard = false;
-            if matches!(self.state, State::Failed(_)) {
+            if matches!(self.state, State::Failed(ref error) if *error != SendError::Unconfirmed) {
                 self.state = State::Writing;
             }
         }
@@ -498,6 +498,18 @@ mod tests {
         compose.set(ComposeField::Body, "Actually, Friday.".to_owned());
 
         assert_eq!(compose.sending(), Sending::Writing);
+    }
+
+    #[test]
+    fn editing_does_not_hide_an_unconfirmed_send_warning() {
+        let mut compose = written("alex@example.com");
+        compose.state = State::Failed(SendError::Unconfirmed);
+
+        compose.set(ComposeField::Body, "A revised body.".to_owned());
+        compose.add_attachments([PathBuf::from("note.txt")]);
+        compose.remove_attachment(0);
+
+        assert_eq!(compose.sending(), Sending::Failed(SendError::Unconfirmed));
     }
 
     #[test]

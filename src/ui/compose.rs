@@ -2,6 +2,7 @@ use eframe::egui::{self, Align, Layout};
 
 use super::{mailbox::detail, reader, theme};
 use crate::app::{Answering, Compose, ComposeField, Message, Sending};
+use crate::mail::SendError;
 
 const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
@@ -75,9 +76,15 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             if ui
                 .add_enabled(
                     ready && !leaving,
-                    egui::Button::new(if leaving { "Sending…" } else { "Send" })
-                        .fill(theme::ACCENT_SOFT)
-                        .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
+                    egui::Button::new(if leaving {
+                        "Sending…"
+                    } else if sending == Sending::Failed(SendError::Unconfirmed) {
+                        "Send again"
+                    } else {
+                        "Send"
+                    })
+                    .fill(theme::ACCENT_SOFT)
+                    .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
                 )
                 .clicked()
             {
@@ -200,8 +207,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     }
     ui.add_space(10.0);
 
-    // Whichever of the two matters: what went wrong beats what is missing,
-    // because a refusal is news and an unfinished line is not.
+    // A send result takes priority over validation hints.
     match sending {
         Sending::Failed(error) => {
             ui.label(
