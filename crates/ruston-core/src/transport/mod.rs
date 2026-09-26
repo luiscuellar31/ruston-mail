@@ -244,9 +244,8 @@ impl HttpClient {
         u
     }
 
-    async fn execute_once(&self, req: &Request) -> Result<Response> {
-        let auth = self.auth.read().await.clone();
-        let mut hdrs = headers::build_headers(&auth, req);
+    async fn execute_once(&self, req: &Request, auth: &AuthState) -> Result<Response> {
+        let mut hdrs = headers::build_headers(auth, req);
         if req.omit_auth {
             hdrs.remove(reqwest::header::AUTHORIZATION);
         }
@@ -283,9 +282,19 @@ impl HttpClient {
     }
 
     /// Refresh the access/refresh tokens via `POST /auth/v4/refresh`.
-    async fn refresh_tokens(&self) -> Result<()> {
+    async fn refresh_tokens(&self, sent_auth: &AuthState) -> Result<()> {
+        // Keep the check, refresh request, and token replacement under the
+        // shared state lock so concurrent 401s reuse a successful rotation.
+        let mut a = self.auth.write().await;
+        if a.uid != sent_auth.uid
+            || a.access.as_ref().map(|t| t.expose_secret())
+                != sent_auth.access.as_ref().map(|t| t.expose_secret())
+            || a.refresh.as_ref().map(|t| t.expose_secret())
+                != sent_auth.refresh.as_ref().map(|t| t.expose_secret())
+        {
+            return Ok(());
+        }
         let (uid, refresh) = {
-            let a = self.auth.read().await;
             match (&a.uid, &a.refresh) {
                 (Some(u), Some(r)) => (u.clone(), r.expose_secret().to_string()),
                 _ => return Err(Error::Unauthorized),
@@ -303,7 +312,7 @@ impl HttpClient {
             .json(body)
             .no_refresh()
             .omit_auth();
-        let resp = self.execute_once(&req).await?;
+        let resp = self.execute_once(&req, &a).await?;
         if !(200..300).contains(&resp.status) {
             return Err(Error::Unauthorized);
         }
@@ -315,11 +324,9 @@ impl HttpClient {
             refresh_token: String,
         }
         let parsed: RefreshResp = serde_json::from_slice(&resp.body)?;
-        {
-            let mut a = self.auth.write().await;
-            a.access = Some(SecretString::from(parsed.access_token.clone()));
-            a.refresh = Some(SecretString::from(parsed.refresh_token.clone()));
-        }
+        a.access = Some(SecretString::from(parsed.access_token.clone()));
+        a.refresh = Some(SecretString::from(parsed.refresh_token.clone()));
+        drop(a);
         if let Some(cb) = &self.on_refresh {
             cb(&uid, &parsed.access_token, &parsed.refresh_token);
         }
@@ -402,12 +409,13 @@ impl Doer for HttpClient {
         let mut hv_tried = false;
 
         loop {
-            let resp = self.execute_once(&work).await?;
+            let sent_auth = self.auth.read().await.clone();
+            let resp = self.execute_once(&work, &sent_auth).await?;
             match detect(resp.status, &resp.body) {
                 Detected::Ok => return Ok(resp),
                 Detected::Api(e) if e.http_status == 401 && !work.skip_refresh && !refreshed => {
                     tracing::debug!(target: "ruston_core::http", "401 — refreshing access token and retrying");
-                    self.refresh_tokens().await?;
+                    self.refresh_tokens(&sent_auth).await?;
                     refreshed = true;
                     continue;
                 }
@@ -446,7 +454,7 @@ impl Doer for HttpClient {
 mod tests {
     use super::*;
     use serde::Deserialize;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(base: &str) -> HttpClient {
@@ -585,6 +593,69 @@ mod tests {
         // Tokens were rotated.
         let a = c.auth.read().await;
         assert_eq!(a.access.as_ref().unwrap().expose_secret(), "new-acc");
+    }
+
+    #[tokio::test]
+    async fn concurrent_401s_refresh_shared_session_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer old-acc"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"Code":401,"Error":"expired"}))
+                    .set_delay(std::time::Duration::from_millis(200)),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .and(body_json(serde_json::json!({
+                "UID": "uid",
+                "RefreshToken": "old-ref",
+                "ResponseType": "token",
+                "GrantType": "refresh_token",
+                "RedirectURI": "https://protonmail.ch",
+                "State": "0"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"Code":1000,"AccessToken":"new-acc","RefreshToken":"new-ref"}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer new-acc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code":1000,"Value":99})),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let auth = Arc::new(RwLock::new(AuthState::unauthenticated("Other")));
+        let first = HttpClient::with_state(server.uri(), auth.clone());
+        let second = HttpClient::with_state(server.uri(), auth.clone());
+        first
+            .set_tokens(
+                "uid".into(),
+                SecretString::from("old-acc"),
+                SecretString::from("old-ref"),
+            )
+            .await;
+
+        let (a, b) = tokio::join!(
+            first.decode::<ValueResp>(Request::get("/protected")),
+            second.decode::<ValueResp>(Request::get("/protected")),
+        );
+        assert_eq!(a.unwrap().value, 99);
+        assert_eq!(b.unwrap().value, 99);
+        let state = auth.read().await;
+        assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
+        assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
     }
 
     #[tokio::test]

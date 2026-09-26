@@ -74,7 +74,8 @@ result returns to the app as a message.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
-  authentication headers, token refresh, and retries.
+  authentication headers, token refresh, and retries. Requests sharing auth
+  state coordinate refresh after a 401 and reuse successfully rotated tokens.
 - [`auth/`](../crates/ruston-core/src/auth/) handles sign-in;
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
   message cryptography. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
