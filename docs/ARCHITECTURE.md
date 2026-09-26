@@ -101,7 +101,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 | CLI syntax, behavior, or output | [`crates/ruston-cli/src/cli.rs`](../crates/ruston-cli/src/cli.rs), [`commands/`](../crates/ruston-cli/src/commands/) | [`render.rs`](../crates/ruston-cli/src/render.rs), corresponding core `mail/` operation |
 | Proton request or response | [`crates/ruston-core/src/api/`](../crates/ruston-core/src/api/) | [`transport/`](../crates/ruston-core/src/transport/), [`model/`](../crates/ruston-core/src/model/), [wire tests](../crates/ruston-core/tests/api_wiremock.rs) |
 | Sessions and desktop preferences | Core [`session/`](../crates/ruston-core/src/session/) | Desktop [`settings.rs`](../src/settings.rs), [privacy guide](PRIVACY.md) |
-| CLI sync and local search | [`commands/sync.rs`](../crates/ruston-cli/src/commands/sync.rs), [`commands/search.rs`](../crates/ruston-cli/src/commands/search.rs) | Core [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs), [`cache.rs`](../crates/ruston-core/src/cache.rs), [privacy guide](PRIVACY.md) |
+| CLI sync, watch, and local search | [`commands/sync.rs`](../crates/ruston-cli/src/commands/sync.rs), [`commands/watch.rs`](../crates/ruston-cli/src/commands/watch.rs), [`commands/search.rs`](../crates/ruston-cli/src/commands/search.rs) | Core [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs), [`cache.rs`](../crates/ruston-core/src/cache.rs), [privacy guide](PRIVACY.md) |
 | Offline demo data | [`src/mail/demo.rs`](../src/mail/demo.rs), [`crates/ruston-cli/src/demo.rs`](../crates/ruston-cli/src/demo.rs) | Each frontend's entry point |
 | Build, packaging, and CI | [Workspace manifest](../Cargo.toml), [`packaging/macos/`](../packaging/macos/) | [CI workflows](../.github/workflows/), [development guide](DEVELOPMENT.md) |
 
@@ -132,6 +132,12 @@ on events from the new cursor after the replacement. The full refresh clears
 the local body index; run CLI `index` again to rebuild search. See
 [Privacy and local data](PRIVACY.md) before changing storage or diagnostics.
 Demo modes use fictional data and do not contact Proton.
+
+CLI [`watch --folder`](../crates/ruston-cli/src/commands/watch.rs) backfills
+metadata and indexes the selected folder on its first tick. Later ticks use
+sync events for metadata and reindex only after creates, updates, or a full
+refresh. Backfill and indexing failures stop the command instead of producing
+a successful tick.
 
 Most unit tests live beside the code they cover. Core HTTP contract tests are
 in [`tests/api_wiremock.rs`](../crates/ruston-core/tests/api_wiremock.rs).

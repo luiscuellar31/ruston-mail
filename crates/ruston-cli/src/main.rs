@@ -74,6 +74,12 @@ mod tests {
     }
 
     #[test]
+    fn watch_requires_positive_interval() {
+        assert!(Cli::try_parse_from(["ruston-cli", "watch", "--interval", "0"]).is_err());
+        assert!(Cli::try_parse_from(["ruston-cli", "watch", "--interval", "1"]).is_ok());
+    }
+
+    #[test]
     fn send_with_stdin_body() {
         let cli = parse(&[
             "ruston-cli",

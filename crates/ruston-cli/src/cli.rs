@@ -202,9 +202,9 @@ pub enum Command {
     },
     /// Continuously sync the cache (event stream) until interrupted.
     Watch {
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         interval: u64,
-        /// Also backfill + index this folder each tick.
+        /// Backfill this folder once, then update its local search index when mail changes.
         #[arg(long)]
         folder: Option<String>,
     },
