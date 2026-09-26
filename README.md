@@ -19,6 +19,7 @@ familiar mail features do not.
   Proton.
 - Read plain-text and HTML mail, including threads and quoted replies.
 - Write new messages, reply, reply to everyone, and forward.
+- Attach local files to outgoing messages.
 - Archive, star, mark read or unread, move to spam or trash, undo moves, and
   apply custom labels.
 - Download received attachments.
@@ -29,9 +30,9 @@ open unless you turn that prompt off. Read more in
 
 ## Current limits
 
-Attaching files, saved drafts, security-key sign-in, and folder or label
-management are not supported yet. Ruston Mail can move a message to Trash, but
-it never permanently deletes mail. See the
+Saved drafts, security-key sign-in, and folder or label management are not
+supported yet in the desktop client. It can move a message to Trash, but it
+never permanently deletes mail. See the
 [user guide](docs/USAGE.md) for more detail.
 
 ## Run from source
@@ -44,7 +45,14 @@ cd ruston-mail
 cargo run
 ```
 
-The workspace includes the native desktop client (`ruston-mail`), the core SDK (`crates/ruston-core`), and the command-line interface (`crates/ruston-cli`).
+The workspace includes the native desktop client (`ruston-mail`), the shared
+SDK (`crates/ruston-core`), and a separate command-line client
+(`crates/ruston-cli`). The [architecture map](docs/ARCHITECTURE.md) shows where
+each kind of change belongs. To inspect CLI commands:
+
+```sh
+cargo run -p ruston-cli -- --help
+```
 
 To look around without an account or network connection, start the fictional
 mailbox:
@@ -58,6 +66,8 @@ RUSTON_DEMO=1 cargo run
 - [Using Ruston Mail](docs/USAGE.md)
 - [Privacy and local data](docs/PRIVACY.md)
 - [Development](docs/DEVELOPMENT.md)
+- [Architecture and code map](docs/ARCHITECTURE.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Credits
 

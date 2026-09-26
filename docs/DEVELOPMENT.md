@@ -1,7 +1,10 @@
 # Development
 
-Ruston Mail uses Rust 2024 and requires Rust 1.96 or newer. Development happens
-on macOS, and CI checks both macOS and Linux.
+The desktop uses Rust 2024; the core and CLI crates use Rust 2021. The
+workspace requires Rust 1.96 or newer. Development happens on macOS, and CI
+checks both macOS and Linux. For ownership and code paths, see the
+[architecture map](ARCHITECTURE.md); for contribution rules, see
+[Contributing](../CONTRIBUTING.md).
 
 ## Run the app
 
@@ -9,7 +12,12 @@ on macOS, and CI checks both macOS and Linux.
 cargo run
 ```
 
-Cargo builds the workspace locally (`ruston-mail`, `crates/ruston-core`, and `crates/ruston-cli`).
+`cargo run` selects the desktop package (`ruston-mail`) and builds its core
+dependency. Run the CLI explicitly:
+
+```sh
+cargo run -p ruston-cli -- --help
+```
 
 ## Demo mailbox
 
@@ -26,15 +34,21 @@ $env:RUSTON_DEMO=1; cargo run
 ```
 
 Sent demo messages stay inside the process and disappear when it exits.
+The CLI has its own fictional demo data:
+
+```sh
+cargo run -p ruston-cli -- --demo messages list
+```
 
 ## Checks
 
-Run the same checks used by CI before sending a change:
+Run the main workspace checks used by CI before sending a code change:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --all-features
+cargo test --locked --workspace --all-features
 ```
 
 ## Packaging (macOS)
@@ -56,26 +70,8 @@ Artifacts are written to `dist/`:
 
 ## Source layout
 
-The code follows three main layers:
-
-- `src/mail/` owns mail models and the Proton and demo backends.
-- `src/app/` owns state, decisions, and side effects without depending on UI
-  widgets.
-- `src/ui/` draws the app with `eframe` and `egui`.
-
-`src/runtime.rs` runs asynchronous work away from the UI thread.
-`src/settings.rs` persists user preferences, and `src/downloads.rs` saves
-attachments safely.
-
-Files usually match across layers. For example, `app/auth.rs` decides the login
-flow and `ui/login.rs` draws it. Tests stay beside the code they cover.
-
-## Workspace layout
-
-The repository is structured as a Cargo workspace:
-- `.` (`ruston-mail`): Native desktop GUI client.
-- `crates/ruston-core`: Pure-Rust Proton Mail SDK providing SRP auth, OpenPGP crypto, and the Mail API.
-- `crates/ruston-cli`: Command-line interface frontend for terminal users.
+The [architecture map](ARCHITECTURE.md) describes the three workspace
+packages, the desktop and CLI flows, and where to start for common changes.
 
 ## HTTP diagnostics
 

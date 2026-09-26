@@ -24,8 +24,8 @@ Typing in the search field narrows the conversations already loaded. Press
 `Enter` to ask Proton to search the whole mailbox. Clear the field to return to
 the open folder.
 
-Folder lists load 50 conversations at a time. Server search currently returns
-one batch of up to 50 results and cannot load another page.
+Folder lists and server search load 50 conversations at a time. Use **Load more**
+at the end of the list to request another page when available.
 
 ## Reading and organizing
 
@@ -58,8 +58,8 @@ Select an attachment to save it in the system Downloads folder. Ruston Mail
 uses a safe file name and never replaces an existing file; it adds a number to
 the new name instead.
 
-The app saves attachments but does not open them. Files cannot be attached to a
-new outgoing message yet.
+The app can reveal a saved attachment in the file manager. Use **Attach files**
+in the composer to add local files to an outgoing message.
 
 ## Writing
 

@@ -1,7 +1,8 @@
 # Privacy and local data
 
 Ruston Mail is an unofficial client and has not received an independent
-security audit. This page describes what the current code does.
+security audit. This page describes the desktop client and the separate CLI
+where their local data differs.
 
 ## Mail content
 
@@ -9,10 +10,10 @@ Ruston Mail talks directly to Proton through `ruston-core`; it has no separate
 application server. `ruston-core` handles authentication, key unlocking, and
 mail cryptography.
 
-Mail and mailbox lists stay in memory while the app runs. In addition to the
-conversation on screen, up to eight previously opened conversations can remain
-in memory for quick backtracking. Ruston Mail does not write a persistent mail
-cache to disk.
+In the desktop client, mail and mailbox lists stay in memory while it runs.
+In addition to the conversation on screen, up to eight previously opened
+conversations can remain in memory for quick backtracking. The desktop client
+does not write a persistent mail cache to disk.
 
 HTML messages do not run in a browser view. They are sanitized, parsed, and
 drawn with native UI elements. Scripts do not run, and remote images are never
@@ -20,6 +21,16 @@ requested. This also blocks tracking pixels.
 
 Links open in the system browser. Ruston Mail shows the real destination before
 opening it by default; this prompt can be disabled in Settings.
+
+## CLI cache
+
+The CLI uses `ruston-core`'s per-profile SQLite cache for `sync`, optional
+backfills, and local `index` and `search` commands. The cache is stored under
+the platform cache directory for `protonmail-cli`, in `<profile>.db`.
+Sync and backfill store message metadata. Running `index` also stores decrypted
+message bodies and other searchable fields in SQLite full-text search. This
+database is **not encrypted at rest by Ruston Mail**. The desktop client does
+not use this cache.
 
 ## Saved session and settings
 
@@ -31,7 +42,9 @@ token, and key passphrase in the operating system's credential store:
 - Windows Credential Manager on Windows.
 
 Non-secret session metadata is stored in `ruston-core`'s platform config
-directory. On Unix, its session directory and file use modes `0700` and `0600`.
+directory under the current `protonmail-cli` storage name. On Unix, its session
+directory and file use modes `0700` and `0600`. The desktop uses the `ruston`
+profile; the CLI uses `default` unless `--profile` is given.
 
 Ruston Mail keeps `settings.json` in its own platform config directory. It
 contains preferences, the last folder, window size, and pane widths. It does not
