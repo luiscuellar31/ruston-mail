@@ -2,6 +2,7 @@
 
 mod cli;
 mod commands;
+mod demo;
 mod hv;
 mod render;
 
@@ -24,6 +25,9 @@ async fn main() {
 
 async fn dispatch(cli: Cli) -> Result<()> {
     let ctx: Ctx = (&cli).into();
+    if ctx.demo {
+        return demo::dispatch(&ctx, cli.command).await;
+    }
     match cli.command {
         Command::Login => commands::auth::login(&ctx).await,
         Command::Logout => commands::auth::logout(&ctx).await,
@@ -275,5 +279,34 @@ mod tests {
             "2021-01-01 00:00:00 UTC"
         );
         assert_eq!(super::render::fmt_time(0), "-");
+    }
+
+    #[test]
+    fn demo_flag_parsed() {
+        let cli = parse(&["ruston-cli", "--demo", "whoami"]);
+        assert!(cli.demo);
+        let ctx: super::cli::Ctx = (&cli).into();
+        assert!(ctx.demo);
+    }
+
+    #[tokio::test]
+    async fn demo_dispatch_whoami() {
+        let cli = parse(&["ruston-cli", "--demo", "whoami"]);
+        assert!(super::dispatch(cli).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn demo_dispatch_messages_list_and_read() {
+        let cli = parse(&["ruston-cli", "--demo", "messages", "list"]);
+        assert!(super::dispatch(cli).await.is_ok());
+
+        let cli = parse(&["ruston-cli", "--demo", "messages", "read", "msg-demo-01"]);
+        assert!(super::dispatch(cli).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn demo_dispatch_json_mode() {
+        let cli = parse(&["ruston-cli", "--demo", "--json", "counts"]);
+        assert!(super::dispatch(cli).await.is_ok());
     }
 }

@@ -57,6 +57,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub captcha_chrome: bool,
 
+    /// Run in offline demo mode using fictional data without contacting Proton.
+    #[arg(long, global = true)]
+    pub demo: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -94,6 +98,7 @@ impl ClientPreset {
 pub struct Ctx {
     pub profile: String,
     pub json: bool,
+    pub demo: bool,
     pub api_url: Option<String>,
     pub app_version: Option<String>,
     pub totp: Option<String>,
@@ -106,9 +111,19 @@ pub struct Ctx {
 
 impl From<&Cli> for Ctx {
     fn from(c: &Cli) -> Self {
+        let env_demo = std::env::var("RUSTON_DEMO")
+            .map(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+
         Ctx {
             profile: c.profile.clone(),
             json: c.json,
+            demo: c.demo || env_demo,
             api_url: c.api_url.clone(),
             app_version: c.app_version.clone(),
             totp: c.totp.clone(),
