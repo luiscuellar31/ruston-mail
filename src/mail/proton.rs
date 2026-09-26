@@ -7,9 +7,9 @@ use tokio::sync::Semaphore;
 
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
-use proton_core::model::enums::{label_ids, message_flag};
-use proton_core::model::message::Attachment;
-use proton_core::{
+use ruston_core::model::enums::{label_ids, message_flag};
+use ruston_core::model::message::Attachment;
+use ruston_core::{
     Client, Conversation, Error, HvChallenge, HvResolver, Label, LabelCount, LoginOptions,
     MessageMetadata, Recipient, SearchOpts, SendOptions, TotpPrompt,
 };
@@ -279,7 +279,7 @@ impl ProtonMailService {
             body: outgoing.wire_body(),
             html: outgoing.is_html(),
             attachments: outgoing.attachments.clone(),
-            // The account's own address, chosen by proton-core.
+            // The account's own address, chosen by ruston-core.
             // Scheduling and self-destruct are not offered yet.
             ..SendOptions::default()
         };
@@ -315,7 +315,7 @@ impl ProtonMailService {
         Ok(map_counts(&counts, folders))
     }
 
-    /// Decrypts a conversation oldest-first; proton-core sanitizes its HTML.
+    /// Decrypts a conversation oldest-first; ruston-core sanitizes its HTML.
     pub async fn conversation_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
         let (conversation, messages) = timed(self.client.read_conversation(id)).await?;
         let subject = conversation.subject.trim();
@@ -475,7 +475,7 @@ impl ProtonMailService {
 
 /// Runs one Proton request under `REQUEST_TIMEOUT`. A call that outlives it
 /// fails as a connection error, which every view offers to retry.
-async fn timed<T>(call: impl Future<Output = proton_core::Result<T>>) -> Result<T, MailboxError> {
+async fn timed<T>(call: impl Future<Output = ruston_core::Result<T>>) -> Result<T, MailboxError> {
     timed_with(
         call,
         REQUEST_TIMEOUT,
@@ -487,7 +487,7 @@ async fn timed<T>(call: impl Future<Output = proton_core::Result<T>>) -> Result<
 
 /// Applies the timeout to calls with non-mailbox error types.
 async fn timed_with<T, E>(
-    call: impl Future<Output = proton_core::Result<T>>,
+    call: impl Future<Output = ruston_core::Result<T>>,
     within: Duration,
     timed_out: E,
     failed: impl FnOnce(Error) -> E,
@@ -498,7 +498,7 @@ async fn timed_with<T, E>(
         .map_err(failed)
 }
 
-/// An honest client identity, like protonmail-cli's.
+/// An honest client identity, like ruston-cli's.
 fn user_agent() -> String {
     format!(
         "ruston/{} ({})",
@@ -543,7 +543,7 @@ fn human_verification(events: mpsc::Sender<SignInEvent>) -> HvResolver {
 async fn ask<T: Send + 'static>(
     mut events: mpsc::Sender<SignInEvent>,
     prompt: impl FnOnce(Reply<T>) -> SignInPrompt,
-) -> proton_core::Result<T> {
+) -> ruston_core::Result<T> {
     let (reply, answer) = Reply::channel();
     events
         .send(SignInEvent::Prompt(prompt(reply)))
@@ -606,7 +606,7 @@ async fn set_label(
     ids: &[String],
     label: &str,
     on: bool,
-) -> Result<(), proton_core::Error> {
+) -> Result<(), ruston_core::Error> {
     for batch in ids.chunks(LABEL_BATCH) {
         if on {
             client.apply_label(batch, label).await?;
@@ -701,7 +701,7 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
 #[cfg(test)]
 fn inspected_rows(
     conversation: Conversation,
-    inspection: Option<proton_core::Result<Vec<MessageMetadata>>>,
+    inspection: Option<ruston_core::Result<Vec<MessageMetadata>>>,
     folder: &Folder,
     own: &OwnAddresses,
 ) -> Result<Vec<ConversationSummary>, MailboxError> {
@@ -946,8 +946,8 @@ fn mentions_credentials(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use proton_core::ApiError;
-    use proton_core::model::ConversationLabel;
+    use ruston_core::ApiError;
+    use ruston_core::model::ConversationLabel;
 
     use super::*;
 

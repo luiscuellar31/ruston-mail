@@ -38,8 +38,7 @@ jobs:
             cache-key: macos-x86_64
 
     steps:
-      # Actions are pinned to a commit for the reason proton-core is: a tag
-      # can be moved to whatever has been pushed to it since.
+      # Actions are pinned to a commit SHA so CI builds remain deterministic.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Toolchain
@@ -56,13 +55,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lints
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Documentation
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --all-features
 
       - name: Tests
-        run: cargo test --locked --all-features
+        run: cargo test --locked --workspace --all-features
 
       - name: Ensure clean workspace
         run: git diff --exit-code

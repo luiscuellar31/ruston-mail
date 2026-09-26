@@ -1,0 +1,24 @@
+[package]
+name = "ruston-cli"
+description = "Unofficial command-line client for Proton Mail, built on ruston-core."
+edition = "2021"
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+keywords = ["proton", "protonmail", "email", "openpgp", "cli"]
+categories = ["email", "command-line-utilities"]
+
+[[bin]]
+name = "ruston-cli"
+path = "src/main.rs"
+
+[dependencies]
+ruston-core = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+rpassword = { workspace = true }
+secrecy = { workspace = true }

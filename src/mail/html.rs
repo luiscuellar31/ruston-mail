@@ -1,4 +1,4 @@
-//! Converts proton-core-sanitized HTML into Ruston's rich body model.
+//! Converts ruston-core-sanitized HTML into Ruston's rich body model.
 //! Preserves readable structure and inline styles without CSS or remote content.
 
 use std::cell::RefCell;

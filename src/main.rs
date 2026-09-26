@@ -12,10 +12,10 @@ use tracing_subscriber::EnvFilter;
 /// Set to any value to print Proton HTTP diagnostics to stderr.
 const DEBUG_HTTP_ENV: &str = "RUSTON_DEBUG_HTTP";
 
-/// Only proton-core's HTTP target: method, path, body kind, status, size and
-/// timing. Other proton-core targets log usernames, session UIDs and
+/// Only ruston-core's HTTP target: method, path, body kind, status, size and
+/// timing. Other ruston-core targets log usernames, session UIDs and
 /// addresses, so the filter is fixed and `RUST_LOG` is deliberately ignored.
-const DEBUG_HTTP_FILTER: &str = "proton_core::http=debug";
+const DEBUG_HTTP_FILTER: &str = "ruston_core::http=debug";
 
 /// Set to `1` to open a local fictional mailbox instead of Proton.
 const DEMO_ENV: &str = "RUSTON_DEMO";
