@@ -30,7 +30,9 @@ RUSTON_DEMO=1 cargo run
 On PowerShell:
 
 ```powershell
-$env:RUSTON_DEMO=1; cargo run
+$env:RUSTON_DEMO = "1"
+cargo run
+Remove-Item Env:RUSTON_DEMO
 ```
 
 Sent demo messages stay inside the process and disappear when it exits.
@@ -67,11 +69,6 @@ Artifacts are written to `dist/`:
 - `dist/Ruston Mail.app`
 - `dist/ruston-mail-<version>-<arch>.dmg`
 - `dist/ruston-mail-<version>-<arch>.dmg.sha256`
-
-## Source layout
-
-The [architecture map](ARCHITECTURE.md) describes the three workspace
-packages, the desktop and CLI flows, and where to start for common changes.
 
 ## HTTP diagnostics
 

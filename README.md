@@ -2,8 +2,7 @@
 
 Ruston Mail is an unofficial desktop client for Proton Mail, written in Rust.
 Its three-pane interface lets you read, organize, and send mail without an
-embedded browser. The project is still in early development, so some familiar
-mail features are missing.
+embedded browser. The project is still in early development.
 
 > Ruston Mail is not affiliated with or endorsed by Proton AG.
 
@@ -69,15 +68,12 @@ To inspect the CLI commands, run:
 cargo run -p ruston-cli -- --help
 ```
 
-## Privacy at a glance
+## Privacy
 
-The desktop keeps mailbox content in memory and does not save a persistent
-mail cache. The CLI's optional local search index stores decrypted message
-bodies in a SQLite database that Ruston Mail does not encrypt.
-
-In the desktop reader, remote images are never fetched, and links show their
-destination before opening unless you disable that prompt. See
-[Privacy and local data](docs/PRIVACY.md) for details.
+The desktop keeps mailbox content in memory, blocks remote images, and asks
+before opening links by default. The CLI's optional local search index stores
+decrypted message bodies in a SQLite database that Ruston Mail does not
+encrypt.
 
 ## Documentation
 
@@ -87,7 +83,7 @@ destination before opening unless you disable that prompt. See
 - [Architecture and code map](docs/ARCHITECTURE.md)
 - [Contributing](CONTRIBUTING.md)
 
-## License and attribution
+## License
 
 `ruston-core` is adapted from Filippo Finke's
 [`protonmail-rs`](https://github.com/filippofinke/protonmail-rs).
