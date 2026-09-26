@@ -81,6 +81,9 @@ unconfirmed because it may happen at any stage of the send pipeline.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
+- [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
+  owns the filename policy shared by both frontends. Each frontend chooses its
+  destination and creates the file exclusively.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,

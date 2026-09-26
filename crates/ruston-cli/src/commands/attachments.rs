@@ -4,11 +4,12 @@ use crate::cli::AttachmentsCmd;
 use crate::cli::Ctx;
 use crate::commands::resume;
 use crate::render;
+use ruston_core::mail::attachments::safe_attachment_name;
 use ruston_core::{Error, Result};
 use serde_json::json;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 const MAX_NAME_ATTEMPTS: u32 = 10_000;
 
@@ -70,53 +71,10 @@ pub async fn run(ctx: &Ctx, cmd: AttachmentsCmd) -> Result<()> {
     }
 }
 
-/// Keep only a plain filename, regardless of the operating system receiving it.
-fn safe_name(name: &str) -> String {
-    let name = name
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .trim()
-        .trim_start_matches('.')
-        .trim_end_matches('.');
-    let mut components = Path::new(name).components();
-    let plain_name =
-        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
-
-    if name.is_empty()
-        || name
-            .chars()
-            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
-        || !plain_name
-    {
-        return "attachment".to_owned();
-    }
-
-    if is_windows_reserved(name) {
-        format!("_{name}")
-    } else {
-        name.to_owned()
-    }
-}
-
-fn is_windows_reserved(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name).trim_end();
-    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"]
-        .iter()
-        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
-    {
-        return true;
-    }
-    let bytes = stem.as_bytes();
-    bytes.len() == 4
-        && (bytes[..3].eq_ignore_ascii_case(b"COM") || bytes[..3].eq_ignore_ascii_case(b"LPT"))
-        && bytes[3].is_ascii_digit()
-}
-
 /// Create the destination exclusively, then write it. A concurrent download or
 /// symlink cannot replace an existing file between choosing its name and opening it.
 fn save_attachment(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    let name = safe_name(name);
+    let name = safe_attachment_name(name);
     let (stem, extension) = match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
         _ => (name.as_str(), String::new()),

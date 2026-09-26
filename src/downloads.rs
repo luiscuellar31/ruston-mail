@@ -1,8 +1,9 @@
 //! Saves attachments without accepting paths or overwriting existing files.
 
+use ruston_core::mail::attachments::safe_attachment_name as safe_name;
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Tried before giving up on a name, which only happens when a hundred files
 /// already share it.
@@ -35,66 +36,6 @@ pub fn save(name: &str, contents: &[u8]) -> Result<PathBuf, SaveError> {
         .ok_or(SaveError::NoFolder)?;
 
     save_to(&folder, &safe_name(name), contents)
-}
-
-/// The bare file name a sender asked for, with anything that could point
-/// outside the downloads folder or trigger Windows device names sanitized.
-fn safe_name(name: &str) -> String {
-    let name = name
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .trim()
-        .trim_start_matches('.')
-        .trim_end_matches('.');
-
-    if !is_plain_file_name(name) {
-        return "attachment".to_owned();
-    }
-
-    if is_windows_reserved(name) {
-        format!("_{name}")
-    } else {
-        name.to_owned()
-    }
-}
-
-/// Whether this is a bare name, including on Windows drive-qualified paths.
-fn is_plain_file_name(name: &str) -> bool {
-    let mut components = Path::new(name).components();
-
-    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
-}
-
-/// Whether `name` matches a Windows DOS device reserved name (e.g. `CON`, `PRN`,
-/// `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, `CONIN$`, `CONOUT$`, `CLOCK$`),
-/// with or without an extension.
-///
-/// On Windows, attempting to create or open a file with these names fails or
-/// targets a legacy device driver instead of the filesystem.
-fn is_windows_reserved(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name);
-
-    if stem.eq_ignore_ascii_case("CON")
-        || stem.eq_ignore_ascii_case("PRN")
-        || stem.eq_ignore_ascii_case("AUX")
-        || stem.eq_ignore_ascii_case("NUL")
-        || stem.eq_ignore_ascii_case("CONIN$")
-        || stem.eq_ignore_ascii_case("CONOUT$")
-        || stem.eq_ignore_ascii_case("CLOCK$")
-    {
-        return true;
-    }
-
-    let bytes = stem.as_bytes();
-    if bytes.len() == 4
-        && (bytes[..3].eq_ignore_ascii_case(b"COM") || bytes[..3].eq_ignore_ascii_case(b"LPT"))
-        && bytes[3].is_ascii_digit()
-    {
-        return true;
-    }
-
-    false
 }
 
 /// Exclusively creates `report.pdf`, then `report (2).pdf`, and so on. Opening
@@ -143,31 +84,10 @@ mod tests {
         // An ordinary name is left exactly as the sender wrote it.
         assert_eq!(safe_name("Q3 report.pdf"), "Q3 report.pdf");
 
-        // The sanitized name cannot escape the downloads folder.
-        for name in [
-            "../../etc/passwd",
-            "C:report.pdf",
-            r"C:\Windows\evil.exe",
-            r"\\server\share\file",
-            ".",
-            "..",
-            "/",
-        ] {
-            assert!(
-                is_plain_file_name(&safe_name(name)),
-                "{name} did not reduce to a plain file name"
-            );
-        }
-    }
-
-    #[test]
-    fn a_drive_qualified_name_does_not_pass_for_a_file_name() {
-        // On Windows this is a path on drive C, not a file called `C:report`.
-        // Everywhere else it is an ordinary, if odd, name.
-        assert_eq!(is_plain_file_name("C:report.pdf"), !cfg!(windows));
-        assert!(is_plain_file_name("report.pdf"));
-        assert!(!is_plain_file_name(""));
-        assert!(!is_plain_file_name("."));
+        // Names that include separators or a drive prefix still become safe.
+        assert_eq!(safe_name("C:report.pdf"), "attachment");
+        assert_eq!(safe_name(r"C:\Windows\evil.exe"), "evil.exe");
+        assert_eq!(safe_name(r"\\server\share\file"), "file");
     }
 
     #[test]

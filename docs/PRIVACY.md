@@ -75,9 +75,11 @@ applies an ad-hoc code signature (`codesign -s -`) with bundle identifier
 
 ## Attachments
 
-Attachments are downloaded only when selected. They go to the system Downloads
-folder. Sender-provided paths are reduced to a plain file name, and existing
-files are never overwritten.
+Desktop attachments are downloaded only when selected and saved to the system
+Downloads folder. The CLI saves them in `--output-dir`, or the current directory
+by default. Both reduce sender-provided paths to a plain file name. Names with
+invalid characters become `attachment`, Windows device names receive an
+underscore prefix, and existing files are never overwritten.
 
 ## HTTP diagnostics
 
