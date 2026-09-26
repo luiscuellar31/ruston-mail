@@ -91,12 +91,18 @@ unconfirmed because it may happen at any stage of the send pipeline.
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
   owns the filename policy shared by both frontends. Each frontend chooses its
-  destination and creates the file exclusively.
+  destination and creates the file exclusively. Core can pass decrypted
+  attachments to a caller one at a time; the CLI uses this path for `--all`,
+  fetching message metadata once and saving each file before the next download.
+  The convenience API that returns all attachment bytes has a total size limit.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
-  authentication headers, token refresh, and retries. Requests sharing auth
-  state coordinate refresh after a 401 and reuse successfully rotated tokens.
+  authentication headers, token refresh, retries, and bounded response bodies.
+  The application's own safety limits are 32 MiB for ordinary responses and
+  128 MiB for encrypted attachment responses. These are transport limits, not
+  Proton Mail attachment quotas. Requests sharing auth state coordinate refresh
+  after a 401 and reuse successfully rotated tokens.
 - [`auth/`](../crates/ruston-core/src/auth/) handles sign-in;
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
   message cryptography. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes

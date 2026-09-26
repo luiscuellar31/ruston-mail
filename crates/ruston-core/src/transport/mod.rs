@@ -16,6 +16,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 
+/// Maximum response body for ordinary API requests (32 MiB).
+pub const MAX_API_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
 /// Request body.
 #[derive(Debug, Clone)]
 pub enum Body {
@@ -48,6 +51,8 @@ pub struct Request {
     pub omit_auth: bool,
     /// Send `x-enforce-unauthsession: true` (session creation).
     pub enforce_unauth: bool,
+    /// Maximum response body size, including responses from retries.
+    pub max_response_bytes: usize,
 }
 
 impl Request {
@@ -63,6 +68,7 @@ impl Request {
             skip_refresh: false,
             omit_auth: false,
             enforce_unauth: false,
+            max_response_bytes: MAX_API_RESPONSE_BYTES,
         }
     }
     /// A `GET` request to `path`.
@@ -115,6 +121,11 @@ impl Request {
     /// Send the `x-enforce-unauthsession` header (for session creation).
     pub fn enforce_unauth(mut self) -> Self {
         self.enforce_unauth = true;
+        self
+    }
+    /// Set the maximum number of response body bytes accepted for this request.
+    pub fn max_response_bytes(mut self, limit: usize) -> Self {
+        self.max_response_bytes = limit;
         self
     }
 }
@@ -294,7 +305,7 @@ impl HttpClient {
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| retry::parse_retry_after(Some(s)));
-        let body = resp.bytes().await?.to_vec();
+        let body = read_bounded_body(resp, req.max_response_bytes).await?;
         tracing::debug!(target: "ruston_core::http", status, bytes = body.len(), ms = started.elapsed().as_millis() as u64, "← response");
         Ok(Response {
             status,
@@ -383,6 +394,20 @@ impl HttpClient {
         }
         Ok(())
     }
+}
+
+async fn read_bounded_body(mut resp: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+    if resp.content_length().is_some_and(|len| len > limit as u64) {
+        return Err(Error::ResponseTooLarge { limit });
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return Err(Error::ResponseTooLarge { limit });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Outcome of inspecting a response for the Proton error envelope.
@@ -506,6 +531,7 @@ mod tests {
     use super::*;
     use crate::session::{MemoryStore, Paths, SecretStore, Session};
     use serde::Deserialize;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -533,6 +559,51 @@ mod tests {
         let c = client(&server.uri());
         let v: ValueResp = c.decode(Request::get("/x")).await.unwrap();
         assert_eq!(v.value, 42);
+    }
+
+    #[tokio::test]
+    async fn response_limit_accepts_boundary_and_rejects_larger_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"abcd".to_vec()))
+            .mount(&server)
+            .await;
+        let c = client(&server.uri());
+        assert_eq!(
+            c.do_raw(Request::get("/x").max_response_bytes(4))
+                .await
+                .unwrap()
+                .body,
+            b"abcd"
+        );
+        assert!(matches!(
+            c.do_raw(Request::get("/x").max_response_bytes(3)).await,
+            Err(Error::ResponseTooLarge { limit: 3 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn response_limit_rejects_chunked_body_without_content_length() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request_line = [0; 7];
+            socket.read_exact(&mut request_line).await.unwrap();
+            assert_eq!(&request_line, b"GET /x ");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let c = client(&format!("http://{addr}"));
+        assert!(matches!(
+            c.do_raw(Request::get("/x").max_response_bytes(5)).await,
+            Err(Error::ResponseTooLarge { limit: 5 })
+        ));
+        server.await.unwrap();
     }
 
     #[tokio::test]

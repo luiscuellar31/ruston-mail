@@ -70,6 +70,20 @@ pub enum Error {
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// The response body exceeded the request's size limit.
+    #[error("response exceeds the {limit} byte limit")]
+    ResponseTooLarge {
+        /// Maximum accepted response body size.
+        limit: usize,
+    },
+
+    /// A bulk attachment result exceeded its total size limit.
+    #[error("attachments exceed the {limit} byte total limit")]
+    AttachmentBatchTooLarge {
+        /// Maximum accepted total plaintext size.
+        limit: usize,
+    },
+
     /// The final send request may have succeeded, but its result was not confirmed.
     #[error(
         "could not confirm whether message {message_id} was sent; check Sent before retrying: {source}"

@@ -91,8 +91,10 @@ async fn submit_send<D: Doer>(http: &D, message_id: &str, body: Value) -> Result
         .map_err(|error| {
             // A lost or unusable response does not prove that Proton rejected
             // the POST. Keep the draft ID so callers can check Sent first.
-            let uncertain = matches!(&error, Error::Http(_) | Error::Json(_))
-                || matches!(&error, Error::Api(api) if api.http_status >= 500);
+            let uncertain = matches!(
+                &error,
+                Error::Http(_) | Error::Json(_) | Error::ResponseTooLarge { .. }
+            ) || matches!(&error, Error::Api(api) if api.http_status >= 500);
             if uncertain {
                 Error::SendUnconfirmed {
                     message_id: message_id.to_owned(),
@@ -537,10 +539,37 @@ fn quote_block(parent: &crate::model::message::Message, body: &str, html: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::HttpClient;
+    use crate::transport::{HttpClient, Request, Response};
+    use async_trait::async_trait;
+    use serde::de::DeserializeOwned;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    struct OversizedResponse;
+
+    #[async_trait]
+    impl Doer for OversizedResponse {
+        async fn do_raw(&self, _req: Request) -> Result<Response> {
+            Err(Error::ResponseTooLarge { limit: 1 })
+        }
+
+        async fn decode<T: DeserializeOwned>(&self, _req: Request) -> Result<T> {
+            Err(Error::ResponseTooLarge { limit: 1 })
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_send_response_leaves_send_unconfirmed() {
+        let error = submit_send(&OversizedResponse, "draft-1", json!({"Packages": []}))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::SendUnconfirmed { message_id, source }
+                if message_id == "draft-1" && matches!(*source, Error::ResponseTooLarge { .. })
+        ));
+    }
 
     #[tokio::test]
     async fn incomplete_final_response_leaves_send_unconfirmed() {

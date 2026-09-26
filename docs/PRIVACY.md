@@ -87,6 +87,12 @@ Downloads folder. The CLI saves them in `--output-dir`, or the current directory
 by default. Both reduce sender-provided paths to a plain file name. Names with
 invalid characters become `attachment`, Windows device names receive an
 underscore prefix, and existing files are never overwritten.
+The application's own HTTP safety limits are 32 MiB for ordinary responses and
+128 MiB for an encrypted attachment response; they are not Proton Mail's
+attachment quotas.
+The CLI downloads and saves `--all` attachments one at a time. If a later
+attachment fails, files saved earlier in that command remain in the destination.
+The core API that returns all attachment bytes has a 128 MiB total limit.
 
 ## HTTP diagnostics
 

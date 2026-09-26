@@ -5,6 +5,8 @@ use crate::transport::{Doer, Request};
 use serde::Deserialize;
 
 const BOUNDARY: &str = "----protoncliBOUNDARYx7MA4YWxkTrZu0gW";
+/// Maximum encrypted attachment response (128 MiB).
+pub const MAX_ATTACHMENT_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct UploadResp {
@@ -53,7 +55,10 @@ fn build_multipart(parts: &[Part]) -> Vec<u8> {
 /// Download the raw (encrypted) attachment data packet.
 pub async fn get_attachment<D: Doer>(d: &D, id: &str) -> Result<Vec<u8>> {
     let resp = d
-        .do_raw(Request::get(format!("/mail/v4/attachments/{id}")))
+        .do_raw(
+            Request::get(format!("/mail/v4/attachments/{id}"))
+                .max_response_bytes(MAX_ATTACHMENT_RESPONSE_BYTES),
+        )
         .await?;
     Ok(resp.body)
 }
@@ -89,6 +94,37 @@ pub async fn upload_attachment<D: Doer>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::Response;
+    use async_trait::async_trait;
+    use serde::de::DeserializeOwned;
+
+    struct CheckAttachmentLimit;
+
+    #[async_trait]
+    impl Doer for CheckAttachmentLimit {
+        async fn do_raw(&self, req: Request) -> Result<Response> {
+            assert_eq!(req.max_response_bytes, MAX_ATTACHMENT_RESPONSE_BYTES);
+            Ok(Response {
+                status: 200,
+                body: b"encrypted".to_vec(),
+                retry_after: None,
+            })
+        }
+
+        async fn decode<T: DeserializeOwned>(&self, _req: Request) -> Result<T> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn attachment_download_uses_binary_response_limit() {
+        assert_eq!(
+            get_attachment(&CheckAttachmentLimit, "att-1")
+                .await
+                .unwrap(),
+            b"encrypted"
+        );
+    }
 
     #[test]
     fn multipart_contains_all_parts() {

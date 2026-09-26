@@ -4,8 +4,11 @@ use super::Client;
 use crate::api;
 use crate::crypto;
 use crate::error::{Error, Result};
-use crate::model::message::Attachment;
+use crate::model::message::{Attachment, Message};
 use std::path::{Component, Path};
+
+/// Maximum combined plaintext returned by `download_all_attachments` (128 MiB).
+pub const MAX_BULK_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
 
 /// Return a portable plain filename for an untrusted attachment name.
 /// Path components are removed; invalid characters and empty names become
@@ -81,6 +84,14 @@ impl Client {
             .ok_or_else(|| Error::NotFound {
                 kind: "attachment".into(),
             })?;
+        self.download_attachment_from_message(&msg, att).await
+    }
+
+    async fn download_attachment_from_message(
+        &self,
+        msg: &Message,
+        att: &Attachment,
+    ) -> Result<(String, Vec<u8>)> {
         let key_packets = att
             .key_packets
             .as_deref()
@@ -91,23 +102,53 @@ impl Client {
             .or_else(|| self.keys().primary_address())
             .ok_or_else(|| Error::Crypto("no address key for attachment".into()))?;
 
-        let data_packet = api::attachments::get_attachment(self.http(), attachment_id).await?;
+        let data_packet = api::attachments::get_attachment(self.http(), &att.id).await?;
         let provider = crypto::provider();
         let plain = crypto::decrypt_attachment(&provider, addr, key_packets, &data_packet)?;
         Ok((att.name.clone(), plain))
     }
 
-    /// Download all (non-inline) attachments of a message.
+    /// Download attachments sequentially, handing each plaintext to `receive`.
+    /// The callback completes before the next attachment is fetched.
+    pub async fn for_each_attachment<F>(
+        &self,
+        message_id: &str,
+        include_inline: bool,
+        mut receive: F,
+    ) -> Result<()>
+    where
+        F: FnMut(String, Vec<u8>) -> Result<()>,
+    {
+        let msg = api::messages::get_message(self.http(), message_id).await?;
+        for att in &msg.attachments {
+            if include_inline || !att.is_inline() {
+                let (name, bytes) = self.download_attachment_from_message(&msg, att).await?;
+                receive(name, bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Download all (non-inline) attachments of a message, up to 128 MiB total.
+    /// Use `for_each_attachment` to process larger collections one at a time.
     pub async fn download_all_attachments(
         &self,
         message_id: &str,
         include_inline: bool,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        let atts = self.list_attachments(message_id, include_inline).await?;
         let mut out = Vec::new();
-        for a in atts {
-            out.push(self.download_attachment(message_id, &a.id).await?);
-        }
+        let mut total = 0usize;
+        self.for_each_attachment(message_id, include_inline, |name, bytes| {
+            if bytes.len() > MAX_BULK_ATTACHMENT_BYTES.saturating_sub(total) {
+                return Err(Error::AttachmentBatchTooLarge {
+                    limit: MAX_BULK_ATTACHMENT_BYTES,
+                });
+            }
+            total += bytes.len();
+            out.push((name, bytes));
+            Ok(())
+        })
+        .await?;
         Ok(out)
     }
 }

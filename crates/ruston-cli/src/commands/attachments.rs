@@ -36,22 +36,23 @@ pub async fn run(ctx: &Ctx, cmd: AttachmentsCmd) -> Result<()> {
             let dir = output_dir.unwrap_or_else(|| PathBuf::from("."));
             std::fs::create_dir_all(&dir)?;
 
-            let files: Vec<(String, Vec<u8>)> = if all {
+            let mut written = Vec::new();
+            if all {
                 client
-                    .download_all_attachments(&msg_id, include_inline)
-                    .await?
+                    .for_each_attachment(&msg_id, include_inline, |name, bytes| {
+                        let path = save_attachment(&dir, &name, &bytes)?;
+                        written.push(path.to_string_lossy().to_string());
+                        Ok(())
+                    })
+                    .await?;
             } else if let Some(att_id) = attachment {
-                vec![client.download_attachment(&msg_id, &att_id).await?]
+                let (name, bytes) = client.download_attachment(&msg_id, &att_id).await?;
+                let path = save_attachment(&dir, &name, &bytes)?;
+                written.push(path.to_string_lossy().to_string());
             } else {
                 return Err(Error::Other(
                     "specify an attachment ID or use --all".to_string(),
                 ));
-            };
-
-            let mut written = Vec::with_capacity(files.len());
-            for (name, bytes) in &files {
-                let path = save_attachment(&dir, name, bytes)?;
-                written.push(path.to_string_lossy().to_string());
             }
 
             if ctx.json {
