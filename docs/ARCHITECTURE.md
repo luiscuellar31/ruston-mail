@@ -167,7 +167,10 @@ by this code. On Unix, core creates the cache directory and database with
 private permissions and tightens older cache permissions before opening them;
 explicit cache paths require a private parent directory. Cache writes and index
 maintenance live in [`cache.rs`](../crates/ruston-core/src/cache.rs), which
-removes indexed bodies when messages are deleted. The event stream in
+removes indexed bodies when messages are deleted. Cached folder listings use
+an index on label and message time. Opening an older cache backfills that time
+in one transaction; triggers keep the index current when an older process
+writes without the new column. The event stream in
 [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs)
 invalidates an indexed body on a full message update. Each incremental event
 batch and its cursor commit together only if the stored cursor still matches

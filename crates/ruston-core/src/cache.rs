@@ -6,6 +6,7 @@ use crate::model::message::MessageMetadata;
 use crate::session::validate_profile_name;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 fn map<E: std::fmt::Display>(e: E) -> Error {
     Error::Cache(e.to_string())
@@ -99,8 +100,8 @@ fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
         .map_err(map)?;
     for label in &m.label_ids {
         conn.execute(
-            "INSERT OR IGNORE INTO message_labels(message_id, label_id) VALUES(?1, ?2)",
-            rusqlite::params![m.id, label],
+            "INSERT OR IGNORE INTO message_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
+            rusqlite::params![m.id, label, m.time],
         )
         .map_err(map)?;
     }
@@ -130,6 +131,51 @@ fn delete_message(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
         .map_err(map)?;
     Ok(())
+}
+
+fn ensure_label_time_index(conn: &Connection) -> Result<()> {
+    // Serialize first-open migration across processes. A failed backfill leaves
+    // the old schema and cache contents intact.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    let has_time = {
+        let mut columns = tx
+            .prepare("PRAGMA table_info(message_labels)")
+            .map_err(map)?;
+        let names = columns
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(map)?;
+        let mut has_time = false;
+        for name in names {
+            has_time |= name.map_err(map)? == "time";
+        }
+        has_time
+    };
+    if !has_time {
+        tx.execute_batch(
+            "ALTER TABLE message_labels ADD COLUMN time INTEGER;
+             UPDATE message_labels SET time=(
+                 SELECT time FROM messages WHERE id=message_labels.message_id);",
+        )
+        .map_err(map)?;
+    }
+    tx.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS message_labels_insert_time
+         AFTER INSERT ON message_labels WHEN NEW.time IS NULL
+         BEGIN
+             UPDATE message_labels SET time=(
+                 SELECT time FROM messages WHERE id=NEW.message_id)
+             WHERE message_id=NEW.message_id AND label_id=NEW.label_id;
+         END;
+         CREATE TRIGGER IF NOT EXISTS messages_update_label_time
+         AFTER UPDATE OF time ON messages WHEN OLD.time IS NOT NEW.time
+         BEGIN
+             UPDATE message_labels SET time=NEW.time WHERE message_id=NEW.id;
+         END;
+         CREATE INDEX IF NOT EXISTS idx_ml_label_time
+         ON message_labels(label_id, time DESC, message_id);",
+    )
+    .map_err(map)?;
+    tx.commit().map_err(map)
 }
 
 /// A per-profile metadata cache.
@@ -170,16 +216,19 @@ impl Cache {
         #[cfg(not(unix))]
         let flags = OpenFlags::default();
         let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(map)?;
+        // Another CLI process may hold the write lock during sync or migration.
+        conn.busy_timeout(Duration::from_secs(30)).map_err(map)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
              CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
-             CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, PRIMARY KEY(message_id, label_id));
+             CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
              CREATE INDEX IF NOT EXISTS idx_ml_label ON message_labels(label_id);
              CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(id UNINDEXED, subject, body, participants);
              CREATE TRIGGER IF NOT EXISTS messages_delete_fts AFTER DELETE ON messages
              BEGIN DELETE FROM msg_fts WHERE id=OLD.id; END;",
         )
         .map_err(map)?;
+        ensure_label_time_index(&conn)?;
         Ok(Cache { conn })
     }
 
@@ -326,7 +375,7 @@ impl Cache {
     ) -> Result<Vec<MessageMetadata>> {
         let sql = format!(
             "SELECT m.json FROM messages m JOIN message_labels l ON m.id=l.message_id \
-             WHERE l.label_id=?1 {} ORDER BY m.time DESC LIMIT ?2 OFFSET ?3",
+             WHERE l.label_id=?1 {} ORDER BY l.time DESC LIMIT ?2 OFFSET ?3",
             if unread_only { "AND m.unread=1" } else { "" }
         );
         let mut stmt = self.conn.prepare(&sql).map_err(map)?;
@@ -373,7 +422,7 @@ impl Cache {
                 "CREATE TEMP TABLE IF NOT EXISTS resync_messages(
                      id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT NOT NULL);
                  CREATE TEMP TABLE IF NOT EXISTS resync_labels(
-                     message_id TEXT, label_id TEXT, PRIMARY KEY(message_id, label_id));
+                     message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
                  DELETE FROM resync_labels;
                  DELETE FROM resync_messages;",
             )
@@ -396,8 +445,8 @@ impl Cache {
                 .map_err(map)?;
             for label in &m.label_ids {
                 tx.execute(
-                    "INSERT OR IGNORE INTO resync_labels(message_id, label_id) VALUES(?1, ?2)",
-                    rusqlite::params![m.id, label],
+                    "INSERT OR IGNORE INTO resync_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
+                    rusqlite::params![m.id, label, m.time],
                 )
                 .map_err(map)?;
             }
@@ -442,8 +491,8 @@ impl Cache {
              DELETE FROM messages;
              INSERT INTO messages(id, time, unread, json)
              SELECT id, time, unread, json FROM resync_messages;
-             INSERT INTO message_labels(message_id, label_id)
-             SELECT message_id, label_id FROM resync_labels;",
+             INSERT INTO message_labels(message_id, label_id, time)
+             SELECT message_id, label_id, time FROM resync_labels;",
         )
         .map_err(map)?;
         tx.execute(
@@ -507,6 +556,9 @@ mod tests {
     use super::*;
     use crate::api::events::MessageEvent;
     use crate::model::message::Recipient;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
     fn cache_path_rejects_profile_with_parent_component() {
@@ -538,12 +590,13 @@ mod tests {
 
     fn temp_cache_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "ruston-cache-{}-{}",
+            "ruston-cache-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed)
         ));
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
@@ -668,6 +721,183 @@ mod tests {
         assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 1);
         c.clear().unwrap();
         assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn existing_cache_backfills_label_times_and_uses_ordered_index() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
+                 CREATE TABLE message_labels(message_id TEXT, label_id TEXT, PRIMARY KEY(message_id, label_id));",
+            )
+            .unwrap();
+        for m in [meta("older", "0", 0, 10), meta("newer", "0", 0, 20)] {
+            legacy
+                .execute(
+                    "INSERT INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)",
+                    rusqlite::params![m.id, m.time, m.unread, serde_json::to_string(&m).unwrap()],
+                )
+                .unwrap();
+            legacy
+                .execute(
+                    "INSERT INTO message_labels(message_id, label_id) VALUES(?1, '0')",
+                    [&m.id],
+                )
+                .unwrap();
+        }
+        drop(legacy);
+
+        let cache = Cache::open(&path).unwrap();
+        let ids: Vec<_> = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["newer", "older"]);
+        let times: Vec<i64> = cache
+            .conn
+            .prepare("SELECT time FROM message_labels WHERE label_id='0' ORDER BY time DESC")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(times, [20, 10]);
+
+        let plan: Vec<String> = cache
+            .conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT m.json FROM messages m
+                 JOIN message_labels l ON m.id=l.message_id
+                 WHERE l.label_id=?1 ORDER BY l.time DESC LIMIT ?2 OFFSET ?3",
+            )
+            .unwrap()
+            .query_map(rusqlite::params!["0", 10, 0], |row| row.get(3))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(plan.iter().any(|step| step.contains("idx_ml_label_time")));
+        assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")));
+
+        let old_reader_ids: Vec<String> = cache
+            .conn
+            .prepare(
+                "SELECT m.id FROM messages m JOIN message_labels l ON m.id=l.message_id
+                 WHERE l.label_id='0' ORDER BY m.time DESC",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(old_reader_ids, ["newer", "older"]);
+        drop(cache);
+        let reopened = Cache::open(&path).unwrap();
+        assert_eq!(reopened.list("0", false, 1, 0).unwrap()[0].id, "newer");
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_label_time_backfill_keeps_legacy_schema_and_rows() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
+                 CREATE TABLE message_labels(message_id TEXT, label_id TEXT, PRIMARY KEY(message_id, label_id));
+                 INSERT INTO messages VALUES('keep', 10, 0, '{}');
+                 INSERT INTO message_labels VALUES('keep', '0');
+                 CREATE TRIGGER reject_backfill BEFORE UPDATE ON message_labels
+                 BEGIN SELECT RAISE(ABORT, 'reject backfill'); END;",
+            )
+            .unwrap();
+        drop(legacy);
+
+        assert!(Cache::open(&path).is_err());
+        let legacy = Connection::open(&path).unwrap();
+        let columns: Vec<String> = legacy
+            .prepare("PRAGMA table_info(message_labels)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(!columns.contains(&"time".to_string()));
+        let count: i64 = legacy
+            .query_row("SELECT COUNT(*) FROM message_labels", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        drop(legacy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn label_times_follow_updates_rebuilds_and_legacy_writes() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.upsert_message(&meta("a", "0", 0, 10)).unwrap();
+        cache.upsert_message(&meta("b", "0", 0, 20)).unwrap();
+        cache.upsert_message_flags(&meta("a", "0", 1, 30)).unwrap();
+        assert_eq!(cache.list("0", false, 1, 0).unwrap()[0].id, "a");
+
+        // An older process does not know the new column; the trigger fills it.
+        let legacy = meta("legacy", "0", 0, 40);
+        cache
+            .conn
+            .execute(
+                "INSERT INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    legacy.id,
+                    legacy.time,
+                    legacy.unread,
+                    serde_json::to_string(&legacy).unwrap()
+                ],
+            )
+            .unwrap();
+        cache
+            .conn
+            .execute(
+                "INSERT INTO message_labels(message_id, label_id) VALUES('legacy', '0')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(cache.list("0", false, 1, 0).unwrap()[0].id, "legacy");
+        cache
+            .conn
+            .execute("UPDATE messages SET time=5 WHERE id='legacy'", [])
+            .unwrap();
+        let time: i64 = cache
+            .conn
+            .query_row(
+                "SELECT time FROM message_labels WHERE message_id='legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(time, 5);
+
+        cache.set_last_event_id("old").unwrap();
+        cache.begin_rebuild().unwrap();
+        cache
+            .stage_rebuild_page(&[meta("rebuilt", "0", 0, 50)])
+            .unwrap();
+        cache.finish_rebuild("old", "new", 1).unwrap();
+        assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "rebuilt");
+        let time: i64 = cache
+            .conn
+            .query_row(
+                "SELECT time FROM message_labels WHERE message_id='rebuilt'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(time, 50);
     }
 
     #[test]
