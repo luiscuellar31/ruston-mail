@@ -165,7 +165,11 @@ impl Client {
         }
         o.subject = with_prefix(&parent.meta.subject, "Re: ");
         if let Some(q) = quoted {
-            o.body = format!("{}\n\n{}", o.body, quote_block(&parent, &q.body, o.html));
+            o.body = format!(
+                "{}\n\n{}",
+                o.body,
+                quote_block(&parent, &q.body, &q.mime_type, o.html)
+            );
         }
         self.send_with_parent(
             &o,
@@ -186,7 +190,11 @@ impl Client {
         let mut o = opts.clone();
         o.subject = with_prefix(&parent.meta.subject, "Fw: ");
         if let Some(q) = quoted {
-            o.body = format!("{}\n\n{}", o.body, quote_block(&parent, &q.body, o.html));
+            o.body = format!(
+                "{}\n\n{}",
+                o.body,
+                quote_block(&parent, &q.body, &q.mime_type, o.html)
+            );
         }
         let inherited: Vec<(String, String)> = parent
             .attachments
@@ -517,7 +525,12 @@ fn with_prefix(subject: &str, prefix: &str) -> String {
     }
 }
 
-fn quote_block(parent: &crate::model::message::Message, body: &str, html: bool) -> String {
+fn quote_block(
+    parent: &crate::model::message::Message,
+    body: &str,
+    original_mime: &str,
+    html: bool,
+) -> String {
     let who = if parent.meta.sender.name.is_empty() {
         parent.meta.sender.address.clone()
     } else {
@@ -527,6 +540,12 @@ fn quote_block(parent: &crate::model::message::Message, body: &str, html: bool) 
         )
     };
     if html {
+        let who = crate::html::escape_text(&who);
+        let body = if crate::html::is_html_mime(original_mime) {
+            std::borrow::Cow::Borrowed(body)
+        } else {
+            std::borrow::Cow::Owned(crate::html::escape_text(body))
+        };
         format!(
             "<div class=\"protonmail_quote\">On {who} wrote:<blockquote class=\"protonmail_quote\" type=\"cite\">{body}</blockquote></div>"
         )
@@ -651,6 +670,39 @@ mod tests {
         assert_eq!(with_prefix("Hello", "Re: "), "Re: Hello");
         assert_eq!(with_prefix("Re: Hello", "Re: "), "Re: Hello");
         assert_eq!(with_prefix("RE: Hello", "Re: "), "RE: Hello");
+    }
+
+    #[test]
+    fn html_quote_escapes_sender_and_plain_text_body() {
+        let mut parent = crate::model::message::Message::default();
+        parent.meta.sender.name = "Eve <img src=x>".into();
+        parent.meta.sender.address = "a&b@example.test".into();
+        let quoted = quote_block(
+            &parent,
+            "<img src=\"https://example.test/t\"> & hi",
+            "text/plain",
+            true,
+        );
+
+        assert!(quoted.contains("Eve &lt;img src=x&gt; &lt;a&amp;b@example.test&gt;"));
+        assert!(quoted.contains("&lt;img src=&quot;https://example.test/t&quot;&gt; &amp; hi"));
+        assert!(!quoted.contains("<img"));
+    }
+
+    #[test]
+    fn html_quote_preserves_sanitized_html_body() {
+        let parent = crate::model::message::Message::default();
+        let quoted = quote_block(&parent, "<b>Original</b>", "text/html; charset=UTF-8", true);
+        assert!(quoted.contains(
+            "<blockquote class=\"protonmail_quote\" type=\"cite\"><b>Original</b></blockquote>"
+        ));
+    }
+
+    #[test]
+    fn plain_quote_keeps_original_text() {
+        let parent = crate::model::message::Message::default();
+        let quoted = quote_block(&parent, "<b>Original</b>", "text/plain", false);
+        assert!(quoted.contains("> <b>Original</b>\n"));
     }
 
     #[test]

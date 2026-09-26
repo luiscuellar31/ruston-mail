@@ -22,6 +22,8 @@ requested. This also blocks tracking pixels.
 The CLI's default text view converts HTML to readable Markdown-style text.
 It omits hidden content and images, including tracking pixels, without making
 remote requests. Explicit HTML and JSON output retain the sanitized HTML body.
+When replying or forwarding as HTML, sender details and quoted plain text are
+escaped before insertion; quoted HTML keeps the markup sanitized during reading.
 
 Links open in the system browser. Ruston Mail shows the real destination before
 opening it by default; this prompt can be disabled in Settings.

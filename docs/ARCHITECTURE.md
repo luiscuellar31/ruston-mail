@@ -89,6 +89,8 @@ unconfirmed because it may happen at any stage of the send pipeline.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
+  HTML replies and forwards escape sender details and quoted plain text; quoted
+  HTML retains the sanitized markup produced by the read path.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
   owns the filename policy shared by both frontends. Each frontend chooses its
   destination and creates the file exclusively. Core can pass decrypted

@@ -8,6 +8,22 @@ pub fn is_html_mime(mime_type: &str) -> bool {
         .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("text/html"))
 }
 
+/// Escape untrusted text before inserting it into HTML element content.
+pub fn escape_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(character),
+        }
+    }
+    out
+}
+
 /// Remove active and hidden content while retaining safe HTML formatting.
 /// Image tags may remain; renderers decide whether to display or fetch them.
 pub fn sanitize(html: &str) -> String {
