@@ -38,19 +38,24 @@ pub fn save(name: &str, contents: &[u8]) -> Result<PathBuf, SaveError> {
 }
 
 /// The bare file name a sender asked for, with anything that could point
-/// outside the downloads folder removed.
+/// outside the downloads folder or trigger Windows device names sanitized.
 fn safe_name(name: &str) -> String {
     let name = name
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or("")
         .trim()
-        .trim_start_matches('.');
+        .trim_start_matches('.')
+        .trim_end_matches('.');
 
-    if is_plain_file_name(name) {
-        name.to_owned()
+    if !is_plain_file_name(name) {
+        return "attachment".to_owned();
+    }
+
+    if is_windows_reserved(name) {
+        format!("_{name}")
     } else {
-        "attachment".to_owned()
+        name.to_owned()
     }
 }
 
@@ -59,6 +64,37 @@ fn is_plain_file_name(name: &str) -> bool {
     let mut components = Path::new(name).components();
 
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+}
+
+/// Whether `name` matches a Windows DOS device reserved name (e.g. `CON`, `PRN`,
+/// `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, `CONIN$`, `CONOUT$`, `CLOCK$`),
+/// with or without an extension.
+///
+/// On Windows, attempting to create or open a file with these names fails or
+/// targets a legacy device driver instead of the filesystem.
+fn is_windows_reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+
+    if stem.eq_ignore_ascii_case("CON")
+        || stem.eq_ignore_ascii_case("PRN")
+        || stem.eq_ignore_ascii_case("AUX")
+        || stem.eq_ignore_ascii_case("NUL")
+        || stem.eq_ignore_ascii_case("CONIN$")
+        || stem.eq_ignore_ascii_case("CONOUT$")
+        || stem.eq_ignore_ascii_case("CLOCK$")
+    {
+        return true;
+    }
+
+    let bytes = stem.as_bytes();
+    if bytes.len() == 4
+        && (bytes[..3].eq_ignore_ascii_case(b"COM") || bytes[..3].eq_ignore_ascii_case(b"LPT"))
+        && bytes[3].is_ascii_digit()
+    {
+        return true;
+    }
+
+    false
 }
 
 /// Exclusively creates `report.pdf`, then `report (2).pdf`, and so on. Opening
@@ -227,5 +263,63 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(folder.as_ref());
+    }
+
+    #[test]
+    fn windows_reserved_device_names_are_prefixed_safely() {
+        // Direct reserved devices
+        assert_eq!(safe_name("CON.txt"), "_CON.txt");
+        assert_eq!(safe_name("con.pdf"), "_con.pdf");
+        assert_eq!(safe_name("PRN.dat"), "_PRN.dat");
+        assert_eq!(safe_name("prn"), "_prn");
+        assert_eq!(safe_name("AUX.h"), "_AUX.h");
+        assert_eq!(safe_name("aux.tar.gz"), "_aux.tar.gz");
+        assert_eq!(safe_name("NUL.zip"), "_NUL.zip");
+        assert_eq!(safe_name("nul"), "_nul");
+        assert_eq!(safe_name("COM1.txt"), "_COM1.txt");
+        assert_eq!(safe_name("com9.bin"), "_com9.bin");
+        assert_eq!(safe_name("LPT1.doc"), "_LPT1.doc");
+        assert_eq!(safe_name("lpt9.pdf"), "_lpt9.pdf");
+        assert_eq!(safe_name("CONIN$.log"), "_CONIN$.log");
+        assert_eq!(safe_name("CONOUT$"), "_CONOUT$");
+        assert_eq!(safe_name("CLOCK$"), "_CLOCK$");
+
+        // Paths containing reserved device names
+        assert_eq!(safe_name(r"C:\temp\CON.pdf"), "_CON.pdf");
+        assert_eq!(safe_name("../../aux.png"), "_aux.png");
+        assert_eq!(safe_name("con."), "_con");
+    }
+
+    #[test]
+    fn non_reserved_similar_names_are_unmodified() {
+        assert_eq!(safe_name("contact.pdf"), "contact.pdf");
+        assert_eq!(safe_name("conversation.txt"), "conversation.txt");
+        assert_eq!(safe_name("auxiliary.c"), "auxiliary.c");
+        assert_eq!(safe_name("null.json"), "null.json");
+        assert_eq!(safe_name("COM10.txt"), "COM10.txt");
+        assert_eq!(safe_name("printer.png"), "printer.png");
+    }
+
+    #[test]
+    fn saving_reserved_name_creates_prefixed_files_and_deduplicates() {
+        let folder =
+            std::env::temp_dir().join(format!("ruston-save-reserved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+
+        let first = save_to(&folder, &safe_name("CON.pdf"), b"one").unwrap();
+        assert_eq!(first.file_name().unwrap(), "_CON.pdf");
+
+        let second = save_to(&folder, &safe_name("CON.pdf"), b"two").unwrap();
+        assert_eq!(second.file_name().unwrap(), "_CON (2).pdf");
+
+        let third = save_to(&folder, &safe_name("CON.pdf"), b"three").unwrap();
+        assert_eq!(third.file_name().unwrap(), "_CON (3).pdf");
+
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+        assert_eq!(std::fs::read(&third).unwrap(), b"three");
+
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }
