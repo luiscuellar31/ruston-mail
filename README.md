@@ -85,7 +85,7 @@ encrypt.
 
 ## License
 
-`ruston-core` is adapted from Filippo Finke's
+`ruston-core` and `ruston-cli` are adapted from Filippo Finke's
 [`protonmail-rs`](https://github.com/filippofinke/protonmail-rs).
 
 Ruston Mail is available under the [MIT License](LICENSE).
