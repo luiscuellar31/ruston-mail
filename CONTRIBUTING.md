@@ -1,17 +1,13 @@
 # Contributing
 
-Thanks for helping with Ruston Mail. Start with the
-[architecture map](docs/ARCHITECTURE.md) to find the owning package, then use
-the [development guide](docs/DEVELOPMENT.md) for local commands. The
-[privacy guide](docs/PRIVACY.md) describes the current storage and logging
-behavior.
+Thanks for helping with Ruston Mail. The
+[development guide](docs/DEVELOPMENT.md) has local commands, and the
+[privacy guide](docs/PRIVACY.md) describes local storage and logging.
 
 ## Make a change
 
-1. Identify the frontend and shared code involved. Desktop state belongs in
-   `src/app/`, widgets in `src/ui/`, and its SDK adapter in `src/mail/`. CLI
-   commands belong in `crates/ruston-cli/`; shared Proton behavior belongs in
-   `crates/ruston-core/`.
+1. Use the [architecture map](docs/ARCHITECTURE.md) to find the package that
+   owns your change.
 2. Make a focused change and add or adjust tests where the behavior is owned.
    Prefer readable, maintainable code consistent with the surrounding style
    over fewer lines.
@@ -26,17 +22,12 @@ behavior.
 4. Run the relevant checks. In the pull request, describe the affected
    packages, observed behavior, and whether the architecture map changed or
    remains accurate. For UI changes, use the fictional desktop mailbox when
-   possible; it needs no account or network connection.
+   possible; the demo itself does not contact Proton.
 
 ## Pull requests and AI assistance
 
-A human contributor must take responsibility for every pull request, including
-AI-assisted work. Review the complete diff, understand the behavior and
-tradeoffs, run relevant checks, and be ready to explain the change and respond
-to review feedback. Do not submit generated changes that you have not reviewed
-or cannot explain. If AI generated or substantially rewrote part of the change,
-briefly describe its role in the pull request. The same review standard applies
-to work written without AI.
+AI tools are welcome. Please review the full diff yourself and make sure you
+understand what you are submitting.
 
 Use the [pull request template](.github/pull_request_template.md) to record
 why the change is needed, what changed, and which checks you actually ran.
