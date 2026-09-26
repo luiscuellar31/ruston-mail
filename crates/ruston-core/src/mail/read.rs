@@ -170,7 +170,7 @@ impl Client {
         }
     }
 
-    async fn decrypt_message(&self, m: &Message) -> Result<FullMessage> {
+    pub(super) async fn decrypt_message(&self, m: &Message) -> Result<FullMessage> {
         let provider = crypto::provider();
         let addr = self
             .keys()

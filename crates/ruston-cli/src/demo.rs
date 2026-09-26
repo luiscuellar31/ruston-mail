@@ -4,6 +4,7 @@
 //! or requiring real user credentials. Activated via `--demo` or `RUSTON_DEMO=1`.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use ruston_core::model::ConversationLabel;
@@ -1331,7 +1332,15 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     m.meta.id,
                     m.body
                 );
-                fs::write(&eml_path, eml_content.as_bytes())?;
+                let mut options = fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                let mut file = options.open(&eml_path)?;
+                file.write_all(eml_content.as_bytes())?;
             }
 
             if ctx.json {

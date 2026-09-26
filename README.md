@@ -75,6 +75,12 @@ want a separate login; an existing CLI `default` session remains available with
 When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly.
 
+The CLI's `export --out DIRECTORY` saves reconstructed `.eml` messages with
+their decrypted attachments. These files are plaintext on disk. Existing files
+are not replaced, so use an empty output directory for another export. The
+export does not preserve the original wire message or every original header;
+see [Privacy and local data](docs/PRIVACY.md) for details.
+
 ## Privacy
 
 The desktop keeps mailbox content in memory, blocks remote images, and asks

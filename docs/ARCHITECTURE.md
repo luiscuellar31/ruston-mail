@@ -97,6 +97,12 @@ unconfirmed because it may happen at any stage of the send pipeline.
   attachments to a caller one at a time; the CLI uses this path for `--all`,
   fetching message metadata once and saving each file before the next download.
   The convenience API that returns all attachment bytes has a total size limit.
+- [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs) owns live CLI EML
+  reconstruction. It decrypts one message and then downloads each attachment
+  using the same metadata, writing MIME parts sequentially to a new file. It
+  encodes untrusted headers and never overwrites an existing export. The CLI
+  [export handler](../crates/ruston-cli/src/commands/export.rs) chooses the
+  destination and reports the result; demo mode writes fictional sample mail.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
@@ -121,6 +127,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 | CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
+| CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | CLI syntax, behavior, or output | [`crates/ruston-cli/src/cli.rs`](../crates/ruston-cli/src/cli.rs), [`commands/`](../crates/ruston-cli/src/commands/) | [`render.rs`](../crates/ruston-cli/src/render.rs), corresponding core `mail/` operation |
 | Proton request or response | [`crates/ruston-core/src/api/`](../crates/ruston-core/src/api/) | [`transport/`](../crates/ruston-core/src/transport/), [`model/`](../crates/ruston-core/src/model/), [wire tests](../crates/ruston-core/tests/api_wiremock.rs) |
 | Sessions and desktop preferences | Core [`session/`](../crates/ruston-core/src/session/) | Desktop [`settings.rs`](../src/settings.rs), [privacy guide](PRIVACY.md) |

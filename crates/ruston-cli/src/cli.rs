@@ -195,7 +195,7 @@ pub enum Command {
         #[arg(long)]
         conversations: bool,
     },
-    /// Export messages from a folder to `.eml` files.
+    /// Export reconstructed messages and attachments to `.eml` files.
     Export {
         #[arg(long, default_value = "all")]
         folder: String,

@@ -97,6 +97,22 @@ The CLI downloads and saves `--all` attachments one at a time. If a later
 attachment fails, files saved earlier in that command remain in the destination.
 The core API that returns all attachment bytes has a 128 MiB total limit.
 
+## CLI EML export
+
+The live CLI `export --out DIRECTORY` saves decrypted mail as reconstructed
+MIME `.eml` files. Each file contains the selected message body and all
+attachments available through the message API, including inline attachments.
+HTML bodies are sanitized before export. The export is not a byte-for-byte
+copy of the received message: the original MIME structure, some original
+headers, and inline Content-ID references are not preserved. The offline demo
+exports only fictional sample text and does not include attachment bytes.
+
+Exported files contain plaintext mail and attachments. On Unix, new files use
+mode `0600`; protect the destination directory and its backups on all systems.
+The command never replaces an existing file. In live export, if an attachment
+or write fails, it removes the current incomplete file and stops; files exported
+earlier remain. An interrupted process may leave an incomplete file.
+
 ## HTTP diagnostics
 
 `RUSTON_DEBUG_HTTP=1` prints Proton request methods, paths, body kinds, status

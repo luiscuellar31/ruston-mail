@@ -87,7 +87,7 @@ impl Client {
         self.download_attachment_from_message(&msg, att).await
     }
 
-    async fn download_attachment_from_message(
+    pub(super) async fn download_attachment_from_message(
         &self,
         msg: &Message,
         att: &Attachment,
