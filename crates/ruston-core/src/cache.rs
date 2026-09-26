@@ -2,11 +2,51 @@
 
 use crate::error::{Error, Result};
 use crate::model::message::MessageMetadata;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
+
+const FTS_ORPHAN_REPAIR_KEY: &str = "fts_orphans_repaired_v1";
 
 fn map<E: std::fmt::Display>(e: E) -> Error {
     Error::Cache(e.to_string())
+}
+
+fn participants(m: &MessageMetadata) -> String {
+    std::iter::once(m.sender.address.as_str())
+        .chain(m.to_list.iter().map(|r| r.address.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn orphan_repair_done(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)",
+        [FTS_ORPHAN_REPAIR_KEY],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|found| found != 0)
+    .map_err(map)
+}
+
+fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
+    let json = serde_json::to_string(m)?;
+    conn.execute(
+        "INSERT INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+         time=excluded.time, unread=excluded.unread, json=excluded.json",
+        rusqlite::params![m.id, m.time, m.unread, json],
+    )
+    .map_err(map)?;
+    conn.execute("DELETE FROM message_labels WHERE message_id=?1", [&m.id])
+        .map_err(map)?;
+    for label in &m.label_ids {
+        conn.execute(
+            "INSERT OR IGNORE INTO message_labels(message_id, label_id) VALUES(?1, ?2)",
+            rusqlite::params![m.id, label],
+        )
+        .map_err(map)?;
+    }
+    Ok(())
 }
 
 /// A per-profile metadata cache.
@@ -37,9 +77,31 @@ impl Cache {
              CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
              CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, PRIMARY KEY(message_id, label_id));
              CREATE INDEX IF NOT EXISTS idx_ml_label ON message_labels(label_id);
-             CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(id UNINDEXED, subject, body, participants);",
+             CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(id UNINDEXED, subject, body, participants);
+             CREATE TRIGGER IF NOT EXISTS messages_delete_fts AFTER DELETE ON messages
+             BEGIN DELETE FROM msg_fts WHERE id=OLD.id; END;",
         )
         .map_err(map)?;
+        // Older caches may already contain indexed bodies for deleted messages.
+        // Repair once; the trigger also protects deletes made by older clients.
+        if !orphan_repair_done(&conn)? {
+            let tx =
+                Transaction::new_unchecked(&conn, TransactionBehavior::Immediate).map_err(map)?;
+            if !orphan_repair_done(&tx)? {
+                tx.execute(
+                    "DELETE FROM msg_fts WHERE NOT EXISTS
+                     (SELECT 1 FROM messages WHERE messages.id=msg_fts.id)",
+                    [],
+                )
+                .map_err(map)?;
+                tx.execute(
+                    "INSERT INTO meta(key, value) VALUES(?1, 'done')",
+                    [FTS_ORPHAN_REPAIR_KEY],
+                )
+                .map_err(map)?;
+            }
+            tx.commit().map_err(map)?;
+        }
         Ok(Cache { conn })
     }
 
@@ -68,36 +130,50 @@ impl Cache {
         Ok(())
     }
 
-    /// Insert or replace a message's cached metadata and its label memberships.
+    /// Insert or replace cached metadata and labels, keeping searchable headers
+    /// current for a body that has already been indexed.
     pub fn upsert_message(&self, m: &MessageMetadata) -> Result<()> {
-        let json = serde_json::to_string(m)?;
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)",
-                rusqlite::params![m.id, m.time, m.unread, json],
-            )
-            .map_err(map)?;
-        self.conn
-            .execute("DELETE FROM message_labels WHERE message_id=?1", [&m.id])
-            .map_err(map)?;
-        for label in &m.label_ids {
-            self.conn
-                .execute(
-                    "INSERT OR IGNORE INTO message_labels(message_id, label_id) VALUES(?1, ?2)",
-                    rusqlite::params![m.id, label],
-                )
-                .map_err(map)?;
-        }
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        upsert_metadata(&tx, m)?;
+        tx.execute(
+            "UPDATE msg_fts SET subject=?2, participants=?3 WHERE id=?1",
+            rusqlite::params![m.id, m.subject, participants(m)],
+        )
+        .map_err(map)?;
+        tx.commit().map_err(map)?;
         Ok(())
     }
 
-    /// Remove a message (and its label memberships) from the cache.
+    /// Apply a flags/labels-only event without changing indexed headers or body.
+    pub fn upsert_message_flags(&self, m: &MessageMetadata) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        upsert_metadata(&tx, m)?;
+        tx.commit().map_err(map)?;
+        Ok(())
+    }
+
+    /// Remove a message, its labels, and its active full-text index entry.
     pub fn delete_message(&self, id: &str) -> Result<()> {
-        self.conn
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        // The messages_delete_fts trigger removes the indexed body in this transaction.
+        let deleted = tx
             .execute("DELETE FROM messages WHERE id=?1", [id])
             .map_err(map)?;
+        if deleted == 0 {
+            // A stray index row can still exist without cached metadata.
+            tx.execute("DELETE FROM msg_fts WHERE id=?1", [id])
+                .map_err(map)?;
+        }
+        tx.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
+            .map_err(map)?;
+        tx.commit().map_err(map)?;
+        Ok(())
+    }
+
+    /// Drop an indexed body when a full update may have changed its content.
+    pub fn invalidate_index(&self, id: &str) -> Result<()> {
         self.conn
-            .execute("DELETE FROM message_labels WHERE message_id=?1", [id])
+            .execute("DELETE FROM msg_fts WHERE id=?1", [id])
             .map_err(map)?;
         Ok(())
     }
@@ -145,28 +221,25 @@ impl Cache {
 
     /// Drop all cached messages (on a server-requested refresh).
     pub fn clear(&self) -> Result<()> {
-        self.conn
-            .execute_batch("DELETE FROM messages; DELETE FROM message_labels; DELETE FROM msg_fts;")
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        tx.execute_batch("DELETE FROM msg_fts; DELETE FROM message_labels; DELETE FROM messages;")
             .map_err(map)?;
+        tx.commit().map_err(map)?;
         Ok(())
     }
 
     /// Index a message's decrypted body for local full-text search.
     pub fn index_message(&self, m: &MessageMetadata, body: &str) -> Result<()> {
-        self.upsert_message(m)?;
-        let participants = std::iter::once(m.sender.address.clone())
-            .chain(m.to_list.iter().map(|r| r.address.clone()))
-            .collect::<Vec<_>>()
-            .join(" ");
-        self.conn
-            .execute("DELETE FROM msg_fts WHERE id=?1", [&m.id])
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        upsert_metadata(&tx, m)?;
+        tx.execute("DELETE FROM msg_fts WHERE id=?1", [&m.id])
             .map_err(map)?;
-        self.conn
-            .execute(
-                "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
-                rusqlite::params![m.id, m.subject, body, participants],
-            )
-            .map_err(map)?;
+        tx.execute(
+            "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
+            rusqlite::params![m.id, m.subject, body, participants(m)],
+        )
+        .map_err(map)?;
+        tx.commit().map_err(map)?;
         Ok(())
     }
 
@@ -205,6 +278,7 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::message::Recipient;
 
     fn meta(id: &str, label: &str, unread: i64, time: i64) -> MessageMetadata {
         MessageMetadata {
@@ -257,5 +331,129 @@ mod tests {
         // multi-token AND
         assert_eq!(c.search("hello rust", 10).unwrap().len(), 1);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn deleting_a_message_removes_its_decrypted_fts_entry() {
+        let c = Cache::open(Path::new(":memory:")).unwrap();
+        c.index_message(&meta("m1", "0", 0, 10), "privatebody")
+            .unwrap();
+        c.delete_message("m1").unwrap();
+
+        let remaining: i64 = c
+            .conn
+            .query_row("SELECT COUNT(*) FROM msg_fts WHERE id='m1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0);
+        assert!(c.search("privatebody", 10).unwrap().is_empty());
+
+        c.conn
+            .execute(
+                "INSERT INTO msg_fts(id, subject, body, participants)
+                 VALUES('orphan', '', 'orphanbody', '')",
+                [],
+            )
+            .unwrap();
+        c.delete_message("orphan").unwrap();
+        let orphan_rows: i64 = c
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM msg_fts WHERE id='orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_rows, 0);
+    }
+
+    #[test]
+    fn metadata_upsert_refreshes_searchable_headers_without_losing_body() {
+        let c = Cache::open(Path::new(":memory:")).unwrap();
+        c.conn
+            .execute_batch("PRAGMA recursive_triggers=ON")
+            .unwrap();
+        let mut original = meta("m1", "0", 0, 10);
+        original.subject = "oldsubject".into();
+        original.sender = Recipient::new("oldsender@example.test");
+        original.to_list = vec![Recipient::new("oldrecipient@example.test")];
+        c.index_message(&original, "samebody").unwrap();
+
+        let mut updated = original;
+        updated.subject = "newsubject".into();
+        updated.sender = Recipient::new("newsender@example.test");
+        updated.to_list = vec![Recipient::new("newrecipient@example.test")];
+        c.upsert_message(&updated).unwrap();
+
+        for old in ["oldsubject", "oldsender", "oldrecipient"] {
+            assert!(c.search(old, 10).unwrap().is_empty());
+        }
+        for current in ["newsubject", "newsender", "newrecipient", "samebody"] {
+            assert_eq!(c.search(current, 10).unwrap()[0].id, "m1");
+        }
+    }
+
+    #[test]
+    fn invalidated_body_stays_out_of_search_until_reindexed() {
+        let c = Cache::open(Path::new(":memory:")).unwrap();
+        let m = meta("m1", "0", 0, 10);
+        c.index_message(&m, "oldbody").unwrap();
+        c.invalidate_index(&m.id).unwrap();
+        assert!(c.search("oldbody", 10).unwrap().is_empty());
+
+        c.index_message(&m, "newbody").unwrap();
+        assert!(c.search("oldbody", 10).unwrap().is_empty());
+        assert_eq!(c.search("newbody", 10).unwrap()[0].id, "m1");
+    }
+
+    #[test]
+    fn opening_an_old_cache_repairs_orphans_and_keeps_valid_index_entries() {
+        let path =
+            std::env::temp_dir().join(format!("ruston-fts-repair-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = Cache::open(&path).unwrap();
+            c.index_message(&meta("orphan", "0", 0, 10), "oldprivatebody")
+                .unwrap();
+            c.index_message(&meta("keep", "0", 0, 20), "currentbody")
+                .unwrap();
+            c.conn
+                .execute_batch(
+                    "DROP TRIGGER messages_delete_fts;
+                     DELETE FROM messages WHERE id='orphan';
+                     DELETE FROM message_labels WHERE message_id='orphan';",
+                )
+                .unwrap();
+            c.conn
+                .execute("DELETE FROM meta WHERE key=?1", [FTS_ORPHAN_REPAIR_KEY])
+                .unwrap();
+        }
+
+        let c = Cache::open(&path).unwrap();
+        let orphan_rows: i64 = c
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM msg_fts WHERE id='orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_rows, 0);
+        assert_eq!(c.search("currentbody", 10).unwrap()[0].id, "keep");
+
+        // A client that still deletes metadata directly gets the same cleanup.
+        c.conn
+            .execute("DELETE FROM messages WHERE id='keep'", [])
+            .unwrap();
+        let remaining: i64 = c
+            .conn
+            .query_row("SELECT COUNT(*) FROM msg_fts WHERE id='keep'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0);
+        drop(c);
+        std::fs::remove_file(path).unwrap();
     }
 }

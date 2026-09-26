@@ -108,8 +108,13 @@ in `Ruston Mail`'s config directory.
 The desktop keeps mailbox data in memory. The core also offers a per-profile
 SQLite cache used by CLI sync and local search. Indexing a folder stores
 decrypted message bodies in that local database; it is not encrypted at rest
-by this code. See [Privacy and local data](PRIVACY.md) before changing storage
-or diagnostics. Demo modes use fictional data and do not contact Proton.
+by this code. Cache writes and index maintenance live in
+[`cache.rs`](../crates/ruston-core/src/cache.rs), which repairs old orphaned
+index entries once and removes indexed bodies when messages are deleted. The
+event stream in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs)
+invalidates an indexed body on a full message update. See
+[Privacy and local data](PRIVACY.md) before changing storage or diagnostics.
+Demo modes use fictional data and do not contact Proton.
 
 Most unit tests live beside the code they cover. Core HTTP contract tests are
 in [`tests/api_wiremock.rs`](../crates/ruston-core/tests/api_wiremock.rs).

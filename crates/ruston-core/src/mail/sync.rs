@@ -63,7 +63,12 @@ impl Client {
                         cache.delete_message(&ev.id)?;
                         deleted += 1;
                     }
-                    action::CREATE | action::UPDATE | action::UPDATE_FLAGS => {
+                    action::CREATE | action::UPDATE => {
+                        if ev.action == action::UPDATE {
+                            // Events carry metadata, not the decrypted body. Do not
+                            // leave an older body searchable after a full update.
+                            cache.invalidate_index(&ev.id)?;
+                        }
                         if let Some(m) = &ev.message {
                             cache.upsert_message(m)?;
                             if ev.action == action::CREATE {
@@ -71,6 +76,12 @@ impl Client {
                             } else {
                                 updated += 1;
                             }
+                        }
+                    }
+                    action::UPDATE_FLAGS => {
+                        if let Some(m) = &ev.message {
+                            cache.upsert_message_flags(m)?;
+                            updated += 1;
                         }
                     }
                     _ => {}
@@ -170,8 +181,9 @@ impl Client {
                         n += 1;
                     }
                     Err(_) => {
-                        // Index metadata even if the body can't be decrypted.
-                        let _ = cache.upsert_message(meta);
+                        // A failed refresh must not keep an older body searchable.
+                        cache.invalidate_index(&meta.id)?;
+                        cache.upsert_message(meta)?;
                     }
                 }
             }

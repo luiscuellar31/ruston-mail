@@ -30,7 +30,13 @@ the platform cache directory for `protonmail-cli`, in `<profile>.db`.
 Sync and backfill store message metadata. Running `index` also stores decrypted
 message bodies and other searchable fields in SQLite full-text search. This
 database is **not encrypted at rest by Ruston Mail**. The desktop client does
-not use this cache.
+not use this cache. Once `sync` applies a deletion, it removes the active search
+entry. Existing caches are also cleaned of older orphaned index entries when
+opened by this version. A full message update drops its old indexed body; run
+`index` again to make the updated body searchable. If you built an index with
+an older version, run `index` again to refresh its remaining entries. SQLite
+deletion does not guarantee secure erasure of bytes already written to disk or
+copied into backups.
 
 ## Saved session and settings
 
