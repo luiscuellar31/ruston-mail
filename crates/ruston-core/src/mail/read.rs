@@ -7,6 +7,11 @@ use crate::error::{Error, Result};
 use crate::model::Conversation;
 use crate::model::enums::resolve_folder;
 use crate::model::message::{Attachment, Message, MessageMetadata};
+use crate::transport::Doer;
+use futures::{Stream, StreamExt, TryStreamExt, stream};
+
+/// Keep conversation reads responsive without flooding Proton or buffering many bodies.
+const CONVERSATION_BODY_FETCH_CONCURRENCY: usize = 3;
 
 /// A decrypted message ready for display.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -218,13 +223,9 @@ impl Client {
         let (conv, mut msgs) = api::conversations::get_conversation(self.http(), id).await?;
         msgs.sort_by_key(|m| m.meta.time);
         let mut out = Vec::with_capacity(msgs.len());
-        for m in &msgs {
-            // Proton returns the full body only for the latest message; lazy-load the rest.
-            let full = if m.body.is_empty() {
-                api::messages::get_message(self.http(), &m.meta.id).await?
-            } else {
-                m.clone()
-            };
+        let fetched = fetch_conversation_bodies(self.http(), msgs);
+        futures::pin_mut!(fetched);
+        while let Some(full) = fetched.try_next().await? {
             out.push(self.decrypt_message(&full).await?);
         }
         Ok((conv, out))
@@ -238,6 +239,23 @@ impl Client {
     }
 }
 
+fn fetch_conversation_bodies<D: Doer>(
+    http: &D,
+    messages: Vec<Message>,
+) -> impl Stream<Item = Result<Message>> + '_ {
+    stream::iter(messages)
+        .map(move |message| async move {
+            // The conversation response may already include a body.
+            if message.body.is_empty() {
+                api::messages::get_message(http, &message.meta.id).await
+            } else {
+                Ok(message)
+            }
+        })
+        // buffered preserves conversation order while limiting in-flight requests.
+        .buffered(CONVERSATION_BODY_FETCH_CONCURRENCY)
+}
+
 fn metadata_oldest_first(mut messages: Vec<Message>) -> Vec<MessageMetadata> {
     messages.sort_by_key(|m| m.meta.time);
     messages.into_iter().map(|m| m.meta).collect()
@@ -246,6 +264,90 @@ fn metadata_oldest_first(mut messages: Vec<Message>) -> Vec<MessageMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::{Request, Response};
+    use serde::de::DeserializeOwned;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::Semaphore;
+
+    struct GatedDoer {
+        started: AtomicUsize,
+        completed: AtomicUsize,
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        gates: Vec<Semaphore>,
+        fail_on: Option<usize>,
+    }
+
+    impl GatedDoer {
+        fn new(gate_count: usize, fail_on: Option<usize>) -> Self {
+            Self {
+                started: AtomicUsize::new(0),
+                completed: AtomicUsize::new(0),
+                active: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                gates: (0..gate_count).map(|_| Semaphore::new(0)).collect(),
+                fail_on,
+            }
+        }
+
+        async fn wait_for(counter: &AtomicUsize, count: usize) {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while counter.load(Ordering::SeqCst) < count {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("body fetches did not make progress");
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Doer for GatedDoer {
+        async fn do_raw(&self, _req: Request) -> Result<Response> {
+            unreachable!("message lookup uses decode")
+        }
+
+        async fn decode<T: DeserializeOwned>(&self, req: Request) -> Result<T> {
+            let id = req.path.rsplit('/').next().expect("message ID");
+            let index: usize = id
+                .strip_prefix('m')
+                .expect("message ID prefix")
+                .parse()
+                .expect("message index");
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            self.started.fetch_add(1, Ordering::SeqCst);
+
+            let permit = self.gates[index].acquire().await.expect("open gate");
+            permit.forget();
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            if self.fail_on == Some(index) {
+                return Err(Error::Other("body fetch failed".into()));
+            }
+            Ok(serde_json::from_value(serde_json::json!({
+                "Message": { "ID": id }
+            }))?)
+        }
+    }
+
+    fn messages(count: usize, last_body_present: bool) -> Vec<Message> {
+        (0..count)
+            .map(|index| Message {
+                meta: MessageMetadata {
+                    id: format!("m{index}"),
+                    ..Default::default()
+                },
+                body: if last_body_present && index == count - 1 {
+                    "already present".into()
+                } else {
+                    String::new()
+                },
+                ..Default::default()
+            })
+            .collect()
+    }
 
     #[test]
     fn date_parsing() {
@@ -275,5 +377,54 @@ mod tests {
 
         let ids: Vec<_> = metadata.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn conversation_bodies_fetch_at_most_three_and_keep_order() {
+        let http = GatedDoer::new(4, None);
+        let read = async {
+            let fetched = fetch_conversation_bodies(&http, messages(5, true));
+            futures::pin_mut!(fetched);
+            let mut ids = Vec::new();
+            while let Some(message) = fetched.try_next().await.unwrap() {
+                ids.push(message.meta.id);
+            }
+            ids
+        };
+        let release = async {
+            GatedDoer::wait_for(&http.started, 3).await;
+            assert_eq!(http.active.load(Ordering::SeqCst), 3);
+
+            // Complete newer responses first. The oldest is still awaited,
+            // so no fourth request should begin yet.
+            http.gates[2].add_permits(1);
+            GatedDoer::wait_for(&http.completed, 1).await;
+            assert_eq!(http.started.load(Ordering::SeqCst), 3);
+            http.gates[1].add_permits(1);
+            GatedDoer::wait_for(&http.completed, 2).await;
+            assert_eq!(http.started.load(Ordering::SeqCst), 3);
+
+            http.gates[0].add_permits(1);
+            GatedDoer::wait_for(&http.started, 4).await;
+            http.gates[3].add_permits(1);
+        };
+
+        let (ids, ()) = tokio::join!(read, release);
+        assert_eq!(ids, ["m0", "m1", "m2", "m3", "m4"]);
+        assert_eq!(http.started.load(Ordering::SeqCst), 4);
+        assert_eq!(http.peak.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn conversation_body_fetch_error_is_returned() {
+        let http = GatedDoer::new(2, Some(1));
+        for gate in &http.gates {
+            gate.add_permits(1);
+        }
+
+        let result: Result<Vec<_>> = fetch_conversation_bodies(&http, messages(2, false))
+            .try_collect()
+            .await;
+        assert!(matches!(result, Err(Error::Other(message)) if message == "body fetch failed"));
     }
 }

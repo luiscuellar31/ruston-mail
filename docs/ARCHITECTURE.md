@@ -91,6 +91,9 @@ unconfirmed because it may happen at any stage of the send pipeline.
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
   HTML replies and forwards escape sender details and quoted plain text; quoted
   HTML retains the sanitized markup produced by the read path.
+  Conversation reads fetch missing bodies with at most three requests in flight,
+  then decrypt them in oldest-first order before returning the complete thread
+  to either frontend.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
   owns the filename policy shared by both frontends. Each frontend chooses its
   destination and creates the file exclusively. Core can pass decrypted
