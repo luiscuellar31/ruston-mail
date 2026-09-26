@@ -6,7 +6,11 @@ use crate::commands::resume;
 use crate::render;
 use ruston_core::{Error, Result};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
+use std::path::{Component, Path, PathBuf};
+
+const MAX_NAME_ATTEMPTS: u32 = 10_000;
 
 pub async fn run(ctx: &Ctx, cmd: AttachmentsCmd) -> Result<()> {
     let client = resume(&ctx.profile).await?;
@@ -45,8 +49,7 @@ pub async fn run(ctx: &Ctx, cmd: AttachmentsCmd) -> Result<()> {
 
             let mut written = Vec::with_capacity(files.len());
             for (name, bytes) in &files {
-                let path = unique_path(&dir, name);
-                std::fs::write(&path, bytes)?;
+                let path = save_attachment(&dir, name, bytes)?;
                 written.push(path.to_string_lossy().to_string());
             }
 
@@ -67,25 +70,152 @@ pub async fn run(ctx: &Ctx, cmd: AttachmentsCmd) -> Result<()> {
     }
 }
 
-/// Avoid clobbering existing files by appending ` (n)` before the extension.
-fn unique_path(dir: &Path, name: &str) -> PathBuf {
-    let safe = if name.is_empty() { "attachment" } else { name };
-    let candidate = dir.join(safe);
-    if !candidate.exists() {
-        return candidate;
+/// Keep only a plain filename, regardless of the operating system receiving it.
+fn safe_name(name: &str) -> String {
+    let name = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('.')
+        .trim_end_matches('.');
+    let mut components = Path::new(name).components();
+    let plain_name =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+
+    if name.is_empty()
+        || name
+            .chars()
+            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
+        || !plain_name
+    {
+        return "attachment".to_owned();
     }
-    let path = Path::new(safe);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(safe);
-    let ext = path.extension().and_then(|s| s.to_str());
-    for n in 1..10_000 {
-        let fname = match ext {
-            Some(e) => format!("{stem} ({n}).{e}"),
-            None => format!("{stem} ({n})"),
+
+    if is_windows_reserved(name) {
+        format!("_{name}")
+    } else {
+        name.to_owned()
+    }
+}
+
+fn is_windows_reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"]
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+    {
+        return true;
+    }
+    let bytes = stem.as_bytes();
+    bytes.len() == 4
+        && (bytes[..3].eq_ignore_ascii_case(b"COM") || bytes[..3].eq_ignore_ascii_case(b"LPT"))
+        && bytes[3].is_ascii_digit()
+}
+
+/// Create the destination exclusively, then write it. A concurrent download or
+/// symlink cannot replace an existing file between choosing its name and opening it.
+fn save_attachment(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let name = safe_name(name);
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
+        _ => (name.as_str(), String::new()),
+    };
+
+    for attempt in 0..MAX_NAME_ATTEMPTS {
+        let path = if attempt == 0 {
+            dir.join(&name)
+        } else {
+            dir.join(format!("{stem} ({attempt}){extension}"))
         };
-        let p = dir.join(fname);
-        if !p.exists() {
-            return p;
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = file.write_all(bytes) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
         }
+        return Ok(path);
     }
-    candidate
+
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "no available filename for attachment",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ruston-cli-attachments-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn untrusted_names_stay_inside_the_output_directory() {
+        let dir = test_dir("names");
+        for (untrusted, expected) in [
+            ("../../outside.txt", "outside.txt"),
+            ("/tmp/absolute.txt", "absolute.txt"),
+            (r"..\windows\file.txt", "file.txt"),
+            ("C:drive.txt", "attachment"),
+            ("CON.txt", "_CON.txt"),
+            ("CON .txt", "_CON .txt"),
+            ("...", "attachment (1)"),
+        ] {
+            let path = save_attachment(&dir, untrusted, b"mail").unwrap();
+            assert_eq!(path.parent(), Some(dir.as_path()));
+            assert_eq!(path.file_name().unwrap(), expected);
+            assert_eq!(std::fs::read(path).unwrap(), b"mail");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_saves_claim_different_names_without_overwriting() {
+        let dir = test_dir("concurrent");
+        std::fs::write(dir.join("report.txt"), b"existing").unwrap();
+        let handles: Vec<_> = (0..8)
+            .map(|value| {
+                let dir = dir.clone();
+                std::thread::spawn(move || save_attachment(&dir, "report.txt", &[value]).unwrap())
+            })
+            .collect();
+        let mut paths = std::collections::HashSet::new();
+        let mut contents = std::collections::HashSet::new();
+        for handle in handles {
+            let path = handle.join().unwrap();
+            assert!(paths.insert(path.clone()));
+            contents.insert(std::fs::read(path).unwrap()[0]);
+        }
+        assert_eq!(contents.len(), 8);
+        assert_eq!(std::fs::read(dir.join("report.txt")).unwrap(), b"existing");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_is_never_followed() {
+        let dir = test_dir("symlink");
+        let outside = dir.parent().unwrap().join(format!(
+            "ruston-cli-attachments-outside-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&outside);
+        std::os::unix::fs::symlink(&outside, dir.join("report.txt")).unwrap();
+        let path = save_attachment(&dir, "report.txt", b"mail").unwrap();
+        assert_eq!(path, dir.join("report (1).txt"));
+        assert!(!outside.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
