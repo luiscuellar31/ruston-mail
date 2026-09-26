@@ -1,5 +1,9 @@
 //! Output rendering: human-readable text by default, JSON with `--json`.
 
+mod html;
+
+use std::borrow::Cow;
+
 use crate::cli::ReadFormat;
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, Filter, FullMessage, Label,
@@ -222,9 +226,10 @@ pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only
         .ok()
         .map(|s| s.trim_matches('"').to_string())
         .unwrap_or_else(|| "unknown".to_string());
+    let body = displayed_body(&msg.body, &msg.mime_type, format);
     if body_only || matches!(format, ReadFormat::Raw) {
-        print!("{}", msg.body);
-        if !msg.body.ends_with('\n') {
+        print!("{body}");
+        if !body.ends_with('\n') {
             println!();
         }
         return;
@@ -237,9 +242,17 @@ pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only
         }
     }
     println!();
-    print!("{}", msg.body);
-    if !msg.body.ends_with('\n') {
+    print!("{body}");
+    if !body.ends_with('\n') {
         println!();
+    }
+}
+
+fn displayed_body<'a>(body: &'a str, mime_type: &str, format: ReadFormat) -> Cow<'a, str> {
+    if ruston_core::html::is_html_mime(mime_type) && matches!(format, ReadFormat::Text) {
+        Cow::Owned(html::to_markdown(body))
+    } else {
+        Cow::Borrowed(body)
     }
 }
 
@@ -328,6 +341,21 @@ pub fn sent(json: bool, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_format_converts_html_without_changing_explicit_formats() {
+        let html = "<p>Hello <b>team</b></p>";
+        assert_eq!(
+            displayed_body(html, "Text/HTML; charset=UTF-8", ReadFormat::Text),
+            "Hello **team**"
+        );
+        assert_eq!(displayed_body(html, "text/html", ReadFormat::Html), html);
+        assert_eq!(displayed_body(html, "text/html", ReadFormat::Raw), html);
+        assert_eq!(
+            displayed_body("Hello team", "text/plain", ReadFormat::Text),
+            "Hello team"
+        );
+    }
 
     #[test]
     fn fmt_time_handles_epoch_and_known_values() {

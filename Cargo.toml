@@ -39,6 +39,8 @@ futures = "0.3"
 urlencoding = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 ammonia = "4"
+html5ever = "0.39"
+url = "2"
 rpassword = "7"
 wiremock = "0.6"
 
@@ -60,7 +62,7 @@ path = "src/main.rs"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories = { workspace = true }
 futures = { workspace = true }
-html5ever = "0.39"
+html5ever = { workspace = true }
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 ruston-core = { workspace = true }
 secrecy = { workspace = true }
@@ -68,7 +70,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
-url = "2"
+url = { workspace = true }
 zeroize = { workspace = true }
 rfd = "0.17.2"
 

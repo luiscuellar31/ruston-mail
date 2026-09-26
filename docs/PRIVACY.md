@@ -19,6 +19,10 @@ HTML messages do not run in a browser view. They are sanitized, parsed, and
 drawn with native UI elements. Scripts do not run, and remote images are never
 requested. This also blocks tracking pixels.
 
+The CLI's default text view converts HTML to readable Markdown-style text.
+It omits hidden content and images, including tracking pixels, without making
+remote requests. Explicit HTML and JSON output retain the sanitized HTML body.
+
 Links open in the system browser. Ruston Mail shows the real destination before
 opening it by default; this prompt can be disabled in Settings.
 

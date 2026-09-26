@@ -316,7 +316,7 @@ pub struct SendArgs {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum ReadFormat {
-    /// Plain text with a header block.
+    /// Readable text with a header block; HTML becomes Markdown-style text.
     Text,
     /// HTML body with a header block.
     Html,

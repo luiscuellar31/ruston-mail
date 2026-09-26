@@ -20,5 +20,7 @@ clap = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
+html5ever = { workspace = true }
+url = { workspace = true }
 rpassword = { workspace = true }
 secrecy = { workspace = true }

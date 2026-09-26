@@ -75,7 +75,9 @@ unconfirmed because it may happen at any stage of the send pipeline.
   [`commands/`](../crates/ruston-cli/src/commands/).
 - Command handlers call `ruston_core::Client`. Put terminal prompts and output
   formatting in the CLI; put shared mail behavior in the core. Output helpers
-  are in [`render.rs`](../crates/ruston-cli/src/render.rs).
+  are in [`render.rs`](../crates/ruston-cli/src/render.rs). Its
+  [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) converts HTML
+  messages to readable Markdown-style text for the default read format.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
   commands. The desktop has its own demo mailbox in `src/mail/demo.rs`.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`
@@ -92,7 +94,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 - [`auth/`](../crates/ruston-core/src/auth/) handles sign-in;
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
   message cryptography. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
-  HTML before the desktop adapter parses it.
+  HTML before either frontend renders it.
 
 ## Where to start
 
@@ -102,6 +104,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 | CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
 | Mailbox lists, search, and thread grouping | [`src/app/mailbox.rs`](../src/app/mailbox.rs), [`src/mail/threading.rs`](../src/mail/threading.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`api/conversations.rs`](../crates/ruston-core/src/api/conversations.rs) |
 | Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | [`src/mail/html.rs`](../src/mail/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
+| CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | CLI syntax, behavior, or output | [`crates/ruston-cli/src/cli.rs`](../crates/ruston-cli/src/cli.rs), [`commands/`](../crates/ruston-cli/src/commands/) | [`render.rs`](../crates/ruston-cli/src/render.rs), corresponding core `mail/` operation |
