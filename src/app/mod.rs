@@ -82,7 +82,7 @@ pub enum Message {
     },
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
-    NewMailConversationLoaded(Result<ConversationPage, MailboxError>),
+    NewMailConversationLoaded(SessionEpoch, Result<ConversationPage, MailboxError>),
     /// The folders the account made, fetched once when the mailbox opens.
     FoldersLoaded(SessionEpoch, Result<Vec<Folder>, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
@@ -512,7 +512,12 @@ impl App {
                     return self.fetch_new_mail_notification();
                 }
             }
-            Message::NewMailConversationLoaded(result) => {
+            Message::NewMailConversationLoaded(epoch, result) => {
+                if !self.is_current_session(epoch)
+                    || !matches!(self.auth_state, AuthState::Authenticated { .. })
+                {
+                    return Effects::none();
+                }
                 if let Ok(page) = result
                     && let Some(conversation) = page.conversations.first()
                 {
@@ -1125,13 +1130,17 @@ impl App {
     }
 
     fn fetch_new_mail_notification(&self) -> Effects {
+        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+            return Effects::none();
+        }
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
         };
+        let epoch = self.session_epoch;
 
         Effects::perform(
             async move { backend.list_conversations(&Folder::INBOX, 0, 1).await },
-            Message::NewMailConversationLoaded,
+            move |result| Message::NewMailConversationLoaded(epoch, result),
         )
     }
 

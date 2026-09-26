@@ -1068,6 +1068,30 @@ fn automatic_refresh_notifies_when_inbox_unread_increases() {
 }
 
 #[test]
+fn late_new_mail_result_never_notifies_after_logout_or_in_another_session() {
+    let mut app = loaded_demo_app();
+    let effect = app
+        .fetch_new_mail_notification()
+        .into_iter()
+        .next()
+        .expect("notification request");
+    let Effect::Future(future) = effect else {
+        panic!("expected future effect");
+    };
+    let late_result = futures::executor::block_on(future);
+
+    app.auth_state = AuthState::SigningOut;
+    assert_eq!(app.update(late_result.clone()).units(), 0);
+    app.auth_state = AuthState::Authenticated { email: None };
+
+    let _ = app.update(Message::Logout);
+    assert_eq!(app.update(late_result.clone()).units(), 0);
+
+    let _ = app.open_mailbox(MailBackend::demo(), None);
+    assert_eq!(app.update(late_result).units(), 0);
+}
+
+#[test]
 fn automatic_refresh_does_not_notify_when_inbox_unread_stays_same() {
     let mut app = loaded_demo_app();
     let initial_unread = app

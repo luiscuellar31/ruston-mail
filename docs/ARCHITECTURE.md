@@ -54,6 +54,10 @@ result message updates [`app/reader.rs`](../src/app/reader.rs). The desktop
 adapter converts sanitized HTML into the native rich-body model in
 [`mail/html.rs`](../src/mail/html.rs).
 
+Desktop new-mail notifications also return through the app state machine. Their
+conversation result carries the session epoch and is ignored after sign-out or
+when another account opens.
+
 Sending follows the same return path: [`ui/compose.rs`](../src/ui/compose.rs)
 collects input; [`app/compose.rs`](../src/app/compose.rs) manages the draft in
 memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;

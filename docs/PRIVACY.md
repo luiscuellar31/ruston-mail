@@ -15,6 +15,10 @@ In addition to the conversation on screen, up to eight previously opened
 conversations can remain in memory for quick backtracking. The desktop client
 does not write a persistent mail cache to disk.
 
+When desktop notifications are enabled, a new-mail notification can show the
+sender and subject. A pending notification result is discarded during sign-out
+or after the session changes.
+
 HTML messages do not run in a browser view. They are sanitized, parsed, and
 drawn with native UI elements. Scripts do not run, and remote images are never
 requested. This also blocks tracking pixels.
