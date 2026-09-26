@@ -6,8 +6,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ruston_core::model::enums::{label_ids, resolve_folder};
 use ruston_core::model::ConversationLabel;
+use ruston_core::model::enums::{label_ids, resolve_folder};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, Error, Filter, FullMessage,
     Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
@@ -764,32 +764,30 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                                 return false;
                             }
                         }
-                        if let Some(from) = &args.from {
-                            if !m
+                        if let Some(from) = &args.from
+                            && !m
                                 .meta
                                 .sender
                                 .address
                                 .to_lowercase()
                                 .contains(&from.to_lowercase())
-                                && !m
-                                    .meta
-                                    .sender
-                                    .name
-                                    .to_lowercase()
-                                    .contains(&from.to_lowercase())
-                            {
-                                return false;
-                            }
+                            && !m
+                                .meta
+                                .sender
+                                .name
+                                .to_lowercase()
+                                .contains(&from.to_lowercase())
+                        {
+                            return false;
                         }
-                        if let Some(subject) = &args.subject {
-                            if !m
+                        if let Some(subject) = &args.subject
+                            && !m
                                 .meta
                                 .subject
                                 .to_lowercase()
                                 .contains(&subject.to_lowercase())
-                            {
-                                return false;
-                            }
+                        {
+                            return false;
                         }
                         if args.unread && m.meta.unread == 0 {
                             return false;
@@ -964,15 +962,15 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let mut results: Vec<Conversation> = fixtures_convs
                     .into_iter()
                     .filter(|c| {
-                        if let Some(kw) = &args.keyword {
-                            if !c.subject.to_lowercase().contains(&kw.to_lowercase()) {
-                                return false;
-                            }
+                        if let Some(kw) = &args.keyword
+                            && !c.subject.to_lowercase().contains(&kw.to_lowercase())
+                        {
+                            return false;
                         }
-                        if let Some(subject) = &args.subject {
-                            if !c.subject.to_lowercase().contains(&subject.to_lowercase()) {
-                                return false;
-                            }
+                        if let Some(subject) = &args.subject
+                            && !c.subject.to_lowercase().contains(&subject.to_lowercase())
+                        {
+                            return false;
                         }
                         if args.unread && c.num_unread == 0 {
                             return false;

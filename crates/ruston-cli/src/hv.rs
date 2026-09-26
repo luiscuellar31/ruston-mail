@@ -29,8 +29,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 const HV_TIMEOUT: Duration = Duration::from_secs(300);
@@ -190,7 +190,7 @@ fn wait_for_confirmation(
             Ok(Confirm::Closed) | Err(RecvTimeoutError::Disconnected) => {
                 return Err(Error::Other(
                     "human verification aborted: stdin closed before ENTER was pressed".into(),
-                ))
+                ));
             }
             Err(RecvTimeoutError::Timeout) => {
                 if !warned && chrome_exited() {
@@ -261,11 +261,11 @@ fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if let Some(token) = handle_conn(&mut stream) {
-                    if !token.is_empty() {
-                        let _ = writeln!(e, "Token received — continuing login.");
-                        break Ok((token, "captcha".to_string()));
-                    }
+                if let Some(token) = handle_conn(&mut stream)
+                    && !token.is_empty()
+                {
+                    let _ = writeln!(e, "Token received — continuing login.");
+                    break Ok((token, "captcha".to_string()));
                 }
             }
             Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -303,8 +303,7 @@ fn handle_conn(stream: &mut std::net::TcpStream) -> Option<String> {
             .split_once("value=")
             .map(|(_, v)| urldecode(v.split('&').next().unwrap_or("")))
             .unwrap_or_default();
-        let body =
-            "<!doctype html><meta charset=utf-8><body style=\"font:16px sans-serif;padding:40px\">\
+        let body = "<!doctype html><meta charset=utf-8><body style=\"font:16px sans-serif;padding:40px\">\
                     <h2>✓ Verified</h2><p>You can close this tab and return to your terminal.</p>";
         let _ = write!(
             stream,

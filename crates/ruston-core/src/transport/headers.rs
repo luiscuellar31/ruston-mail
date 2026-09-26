@@ -17,32 +17,32 @@ pub fn build_headers(auth: &AuthState, req: &Request) -> HeaderMap {
         h.insert(HeaderName::from_static("x-pm-appversion"), v);
     }
 
-    if let Some(ua) = &auth.user_agent {
-        if let Ok(v) = HeaderValue::from_str(ua) {
-            h.insert(reqwest::header::USER_AGENT, v);
-        }
+    if let Some(ua) = &auth.user_agent
+        && let Ok(v) = HeaderValue::from_str(ua)
+    {
+        h.insert(reqwest::header::USER_AGENT, v);
     }
 
-    if let Some(uid) = &auth.uid {
-        if let Ok(v) = HeaderValue::from_str(uid) {
-            h.insert(HeaderName::from_static("x-pm-uid"), v);
-        }
+    if let Some(uid) = &auth.uid
+        && let Ok(v) = HeaderValue::from_str(uid)
+    {
+        h.insert(HeaderName::from_static("x-pm-uid"), v);
     }
 
-    if let Some(token) = &auth.access {
-        if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", token.expose_secret())) {
-            h.insert(reqwest::header::AUTHORIZATION, v);
-        }
+    if let Some(token) = &auth.access
+        && let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", token.expose_secret()))
+    {
+        h.insert(reqwest::header::AUTHORIZATION, v);
     }
 
-    if let Some((token, ttype)) = &req.hv {
-        if let (Ok(tv), Ok(tt)) = (HeaderValue::from_str(token), HeaderValue::from_str(ttype)) {
-            h.insert(HeaderName::from_static("x-pm-human-verification-token"), tv);
-            h.insert(
-                HeaderName::from_static("x-pm-human-verification-token-type"),
-                tt,
-            );
-        }
+    if let Some((token, ttype)) = &req.hv
+        && let (Ok(tv), Ok(tt)) = (HeaderValue::from_str(token), HeaderValue::from_str(ttype))
+    {
+        h.insert(HeaderName::from_static("x-pm-human-verification-token"), tv);
+        h.insert(
+            HeaderName::from_static("x-pm-human-verification-token-type"),
+            tt,
+        );
     }
 
     if req.enforce_unauth {

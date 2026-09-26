@@ -155,11 +155,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 fn subject_or_empty(s: &str) -> &str {
-    if s.is_empty() {
-        "(no subject)"
-    } else {
-        s
-    }
+    if s.is_empty() { "(no subject)" } else { s }
 }
 
 pub fn messages_list(json: bool, total: u32, msgs: &[MessageMetadata]) {

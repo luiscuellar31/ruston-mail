@@ -71,7 +71,9 @@ pub enum Error {
     Http(#[from] reqwest::Error),
 
     /// The final send request may have succeeded, but its result was not confirmed.
-    #[error("could not confirm whether message {message_id} was sent; check Sent before retrying: {source}")]
+    #[error(
+        "could not confirm whether message {message_id} was sent; check Sent before retrying: {source}"
+    )]
     SendUnconfirmed {
         /// ID of the draft submitted to Proton.
         message_id: String,

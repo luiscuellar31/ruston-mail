@@ -169,7 +169,7 @@ async fn second_factor(
         (None, None) => {
             return Err(Error::Other(
                 "account requires 2FA but no TOTP code was provided".into(),
-            ))
+            ));
         }
     };
     tracing::debug!(target: "ruston_core::auth", "login: 2FA required — submitting TOTP (POST /core/v4/auth/2fa)");

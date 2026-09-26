@@ -3,8 +3,8 @@
 use super::Client;
 use crate::api;
 use crate::error::Result;
-use crate::model::enums::{label_ids, label_type, resolve_folder};
 use crate::model::Label;
+use crate::model::enums::{label_ids, label_type, resolve_folder};
 
 impl Client {
     /// Move messages to a folder/label (accepts a folder name or label ID).

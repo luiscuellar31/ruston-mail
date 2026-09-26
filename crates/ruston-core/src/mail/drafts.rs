@@ -1,7 +1,7 @@
 //! Draft lifecycle: save / update / list / delete (without sending).
 
-use super::send::{recipient_list, SendOptions};
 use super::Client;
+use super::send::{SendOptions, recipient_list};
 use crate::api;
 use crate::crypto;
 use crate::error::{Error, Result};

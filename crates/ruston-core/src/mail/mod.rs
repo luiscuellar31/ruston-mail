@@ -48,10 +48,10 @@ impl SenderKeyCache {
         }
         if let Some(index) = self.recency.iter().position(|cached| cached == &key) {
             self.recency.remove(index);
-        } else if self.entries.len() == SENDER_KEY_CACHE_CAPACITY {
-            if let Some(oldest) = self.recency.pop_front() {
-                self.entries.remove(&oldest);
-            }
+        } else if self.entries.len() == SENDER_KEY_CACHE_CAPACITY
+            && let Some(oldest) = self.recency.pop_front()
+        {
+            self.entries.remove(&oldest);
         }
         self.recency.push_back(key.clone());
         self.entries.insert(key, value);

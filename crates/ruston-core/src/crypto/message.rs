@@ -2,7 +2,7 @@
 
 use super::keys::AddressKeys;
 use crate::error::{Error, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_crypto::crypto::{
     DataEncoding, Decryptor, DecryptorSync, Encryptor, EncryptorSync, PGPMessage, PGPProviderSync,
     SessionKeyAlgorithm, Signer, SignerSync, VerificationError, VerifiedData,

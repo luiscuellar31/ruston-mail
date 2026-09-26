@@ -1,9 +1,10 @@
 # Development
 
-The desktop uses Rust 2024; the core and CLI crates use Rust 2021. The
-workspace requires Rust 1.96 or newer. Development happens on macOS, and CI
-checks both macOS and Linux. For ownership and code paths, see the
-[architecture map](ARCHITECTURE.md); for contribution rules, see
+All three packages use Rust 2024 and require Rust 1.96 or newer. Their shared
+version, edition, and minimum Rust version are set in the root
+[`Cargo.toml`](../Cargo.toml) under `[workspace.package]`. Development happens
+on macOS, and CI checks both macOS and Linux. For ownership and code paths,
+see the [architecture map](ARCHITECTURE.md); for contribution rules, see
 [Contributing](../CONTRIBUTING.md).
 
 ## Run the app

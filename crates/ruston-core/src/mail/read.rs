@@ -4,9 +4,9 @@ use super::Client;
 use crate::api::{self, messages::ListQuery};
 use crate::crypto::{self, Verdict};
 use crate::error::{Error, Result};
+use crate::model::Conversation;
 use crate::model::enums::resolve_folder;
 use crate::model::message::{Attachment, Message, MessageMetadata};
-use crate::model::Conversation;
 
 /// A decrypted message ready for display.
 #[derive(Debug, Clone, serde::Serialize)]

@@ -1,7 +1,7 @@
 [package]
 name = "ruston-cli"
 description = "Unofficial command-line client for Proton Mail, built on ruston-core."
-edition = "2021"
+edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors.workspace = true

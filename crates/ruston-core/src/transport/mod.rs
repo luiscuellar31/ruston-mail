@@ -359,31 +359,31 @@ fn detect(status: u16, body: &[u8]) -> Detected {
         .and_then(|c| c.as_i64());
 
     // Human verification (may arrive on HTTP 200 in the auth flow, or 422).
-    if code == Some(9001) {
-        if let Some(details) = json.as_ref().and_then(|j| j.get("Details")) {
-            let methods = details
-                .get("HumanVerificationMethods")
-                .and_then(|m| m.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            return Detected::Hv(HvChallenge {
-                token: details
-                    .get("HumanVerificationToken")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                methods,
-                web_url: details
-                    .get("WebUrl")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            });
-        }
+    if code == Some(9001)
+        && let Some(details) = json.as_ref().and_then(|j| j.get("Details"))
+    {
+        let methods = details
+            .get("HumanVerificationMethods")
+            .and_then(|m| m.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Detected::Hv(HvChallenge {
+            token: details
+                .get("HumanVerificationToken")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            methods,
+            web_url: details
+                .get("WebUrl")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        });
     }
 
     let success = matches!(code, Some(1000) | Some(1001));

@@ -2,13 +2,13 @@
 
 use super::Client;
 use crate::api;
-use crate::crypto::{self, keys::AddressKeys, SessionKeyMaterial};
+use crate::crypto::{self, SessionKeyMaterial, keys::AddressKeys};
 use crate::error::{Error, Result};
 use crate::model::enums::package_type;
 use crate::transport::Doer;
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_srp::{SRPAuth, SRPVerifierB64};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
 /// Options for composing a message.

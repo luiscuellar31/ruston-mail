@@ -1,7 +1,7 @@
 //! Mailbox-password (key-passphrase) derivation.
 
 use crate::error::{Error, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_srp::mailbox_password_hash;
 use secrecy::{ExposeSecret, SecretString};
 

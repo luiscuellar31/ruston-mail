@@ -1,7 +1,7 @@
 [package]
 name = "ruston-core"
 description = "Unofficial pure-Rust Proton Mail SDK: SRP authentication, OpenPGP end-to-end crypto, and the mail API (transport, send/read, drafts, filters, contacts, local encrypted search)."
-edition = "2021"
+edition.workspace = true
 version.workspace = true
 license.workspace = true
 authors = ["Filippo Finke <filippofinke@protonmail.ch>", "Luis Cuellar <luiscuellar31@proton.me>"]

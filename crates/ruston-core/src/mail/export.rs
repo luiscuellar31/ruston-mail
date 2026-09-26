@@ -1,7 +1,7 @@
 //! Export messages to `.eml` files (decrypt → RFC 822).
 
-use super::read::FullMessage;
 use super::Client;
+use super::read::FullMessage;
 use crate::api;
 use crate::api::messages::ListQuery;
 use crate::error::Result;

@@ -78,7 +78,7 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
                 (None, None) => {
                     return Err(ruston_core::Error::Other(
                         "provide --until <unix> or --in <duration>".into(),
-                    ))
+                    ));
                 }
             };
             client.snooze_conversations(&ids, ts).await?;
@@ -115,7 +115,7 @@ fn parse_duration_secs(s: &str) -> Result<i64> {
         other => {
             return Err(ruston_core::Error::Other(format!(
                 "bad duration unit: {other}"
-            )))
+            )));
         }
     };
     Ok(n * mult)
