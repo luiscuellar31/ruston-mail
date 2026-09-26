@@ -113,7 +113,10 @@ unconfirmed because it may happen at any stage of the send pipeline.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
-  authentication headers, token refresh, retries, and bounded response bodies.
+  authentication headers, token refresh, retries, bounded response bodies, and
+  a total deadline per HTTP attempt. Ordinary requests have 60 seconds;
+  attachment transfers have 180 seconds. The desktop also applies deadlines to
+  complete view operations; the CLI uses the transport deadlines directly.
   The application's own safety limits are 32 MiB for ordinary responses and
   128 MiB for encrypted attachment responses. These are transport limits, not
   Proton Mail attachment quotas. Requests sharing auth state coordinate refresh

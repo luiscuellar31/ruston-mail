@@ -14,10 +14,13 @@ use serde::de::DeserializeOwned;
 use std::fs::File;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 /// Maximum response body for ordinary API requests (32 MiB).
 pub const MAX_API_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+/// Total deadline for an ordinary HTTP request, including its response body.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Request body.
 #[derive(Debug, Clone)]
@@ -53,6 +56,8 @@ pub struct Request {
     pub enforce_unauth: bool,
     /// Maximum response body size, including responses from retries.
     pub max_response_bytes: usize,
+    /// Total deadline for each HTTP attempt, including response-body reading.
+    pub timeout: Duration,
 }
 
 impl Request {
@@ -69,6 +74,7 @@ impl Request {
             omit_auth: false,
             enforce_unauth: false,
             max_response_bytes: MAX_API_RESPONSE_BYTES,
+            timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
     /// A `GET` request to `path`.
@@ -126,6 +132,11 @@ impl Request {
     /// Set the maximum number of response body bytes accepted for this request.
     pub fn max_response_bytes(mut self, limit: usize) -> Self {
         self.max_response_bytes = limit;
+        self
+    }
+    /// Override the total deadline for this request's HTTP attempt.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 }
@@ -291,7 +302,11 @@ impl HttpClient {
         tracing::debug!(target: "ruston_core::http", method = %req.method, %url, body = body_kind, hv = req.hv.is_some(), "→ request");
         tracing::trace!(target: "ruston_core::http", headers = ?hdrs.keys().map(|k| k.as_str()).collect::<Vec<_>>(), "request headers");
 
-        let mut builder = self.client.request(req.method.clone(), &url).headers(hdrs);
+        let mut builder = self
+            .client
+            .request(req.method.clone(), &url)
+            .headers(hdrs)
+            .timeout(req.timeout);
         builder = match &req.body {
             Body::Empty => builder,
             Body::Json(v) => builder.body(serde_json::to_vec(v)?),
@@ -604,6 +619,36 @@ mod tests {
             Err(Error::ResponseTooLarge { limit: 5 })
         ));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_deadline_covers_stalled_response_body() {
+        assert_eq!(Request::get("/x").timeout, DEFAULT_REQUEST_TIMEOUT);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request_line = [0; 7];
+            socket.read_exact(&mut request_line).await.unwrap();
+            assert_eq!(&request_line, b"GET /x ");
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\na")
+                .await
+                .unwrap();
+            let _ = held.await;
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            client(&format!("http://{addr}"))
+                .do_raw(Request::get("/x").timeout(Duration::from_millis(50))),
+        )
+        .await
+        .expect("transport should enforce its own request deadline");
+        let _ = release.send(());
+        server.await.unwrap();
+        assert!(matches!(result, Err(Error::Http(error)) if error.is_timeout()));
     }
 
     #[tokio::test]

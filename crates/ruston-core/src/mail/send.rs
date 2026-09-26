@@ -561,11 +561,25 @@ mod tests {
     use crate::transport::{HttpClient, Request, Response};
     use async_trait::async_trait;
     use serde::de::DeserializeOwned;
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     struct OversizedResponse;
+
+    struct ShortDeadline(HttpClient);
+
+    #[async_trait]
+    impl Doer for ShortDeadline {
+        async fn do_raw(&self, req: Request) -> Result<Response> {
+            self.0.do_raw(req.timeout(Duration::from_millis(100))).await
+        }
+
+        async fn decode<T: DeserializeOwned>(&self, req: Request) -> Result<T> {
+            self.0.decode(req.timeout(Duration::from_millis(100))).await
+        }
+    }
 
     #[async_trait]
     impl Doer for OversizedResponse {
@@ -614,6 +628,41 @@ mod tests {
             error,
             Error::SendUnconfirmed { message_id, source }
                 if message_id == "draft-1" && matches!(*source, Error::Http(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn timed_out_final_send_leaves_send_unconfirmed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (received, waiting) = tokio::sync::oneshot::channel::<()>();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let expected = b"POST /mail/v4/messages/draft-1 ";
+            let mut prefix = vec![0; expected.len()];
+            socket.read_exact(&mut prefix).await.unwrap();
+            assert_eq!(prefix, expected);
+            received.send(()).unwrap();
+            let _ = held.await;
+        });
+
+        let http = ShortDeadline(HttpClient::new(format!("http://{addr}"), "Other"));
+        let body = json!({"Packages": []});
+        let send = tokio::spawn(async move { submit_send(&http, "draft-1", body).await });
+        waiting.await.unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(2), send)
+            .await
+            .expect("send should finish after the transport deadline")
+            .unwrap()
+            .unwrap_err();
+        let _ = release.send(());
+        server.await.unwrap();
+        assert!(matches!(
+            error,
+            Error::SendUnconfirmed { message_id, source }
+                if message_id == "draft-1"
+                    && matches!(*source, Error::Http(ref error) if error.is_timeout())
         ));
     }
 

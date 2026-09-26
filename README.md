@@ -75,6 +75,11 @@ want a separate login; an existing CLI `default` session remains available with
 When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly.
 
+Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
+seconds. Commands with multiple requests or a rate-limit retry can take longer.
+A timed-out final send is reported as unconfirmed with its draft ID. Check Sent
+before retrying, since Proton may have accepted the message.
+
 The CLI's `export --out DIRECTORY` saves reconstructed `.eml` messages with
 their decrypted attachments. These files are plaintext on disk. Existing files
 are not replaced, so use an empty output directory for another export. The

@@ -3,10 +3,13 @@
 use crate::error::Result;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
+use std::time::Duration;
 
 const BOUNDARY: &str = "----protoncliBOUNDARYx7MA4YWxkTrZu0gW";
 /// Maximum encrypted attachment response (128 MiB).
 pub const MAX_ATTACHMENT_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+/// Larger transfers have a longer deadline than small JSON requests.
+const ATTACHMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Deserialize)]
 struct UploadResp {
@@ -57,7 +60,8 @@ pub async fn get_attachment<D: Doer>(d: &D, id: &str) -> Result<Vec<u8>> {
     let resp = d
         .do_raw(
             Request::get(format!("/mail/v4/attachments/{id}"))
-                .max_response_bytes(MAX_ATTACHMENT_RESPONSE_BYTES),
+                .max_response_bytes(MAX_ATTACHMENT_RESPONSE_BYTES)
+                .timeout(ATTACHMENT_REQUEST_TIMEOUT),
         )
         .await?;
     Ok(resp.body)
@@ -86,7 +90,11 @@ pub async fn upload_attachment<D: Doer>(
     ]);
     let content_type = format!("multipart/form-data; boundary={BOUNDARY}");
     let r: UploadResp = d
-        .decode(Request::post("/mail/v4/attachments").raw(body, content_type))
+        .decode(
+            Request::post("/mail/v4/attachments")
+                .raw(body, content_type)
+                .timeout(ATTACHMENT_REQUEST_TIMEOUT),
+        )
         .await?;
     Ok(r.attachment.id)
 }
@@ -104,6 +112,7 @@ mod tests {
     impl Doer for CheckAttachmentLimit {
         async fn do_raw(&self, req: Request) -> Result<Response> {
             assert_eq!(req.max_response_bytes, MAX_ATTACHMENT_RESPONSE_BYTES);
+            assert_eq!(req.timeout, ATTACHMENT_REQUEST_TIMEOUT);
             Ok(Response {
                 status: 200,
                 body: b"encrypted".to_vec(),
@@ -111,8 +120,11 @@ mod tests {
             })
         }
 
-        async fn decode<T: DeserializeOwned>(&self, _req: Request) -> Result<T> {
-            unreachable!()
+        async fn decode<T: DeserializeOwned>(&self, req: Request) -> Result<T> {
+            assert_eq!(req.timeout, ATTACHMENT_REQUEST_TIMEOUT);
+            Ok(serde_json::from_value(serde_json::json!({
+                "Attachment": { "ID": "uploaded" }
+            }))?)
         }
     }
 
@@ -124,6 +136,23 @@ mod tests {
                 .unwrap(),
             b"encrypted"
         );
+    }
+
+    #[tokio::test]
+    async fn attachment_upload_uses_transfer_deadline() {
+        let id = upload_attachment(
+            &CheckAttachmentLimit,
+            "file.txt",
+            "message",
+            "content",
+            "text/plain",
+            b"keys",
+            b"data",
+            b"signature",
+        )
+        .await
+        .unwrap();
+        assert_eq!(id, "uploaded");
     }
 
     #[test]
