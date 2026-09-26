@@ -1,12 +1,9 @@
 # Ruston Mail
 
-Ruston Mail is a lightweight, unofficial Proton Mail desktop client written in
-Rust. It is a clean, minimal alternative to keeping Proton Mail open in a
-browser tab.
-
-The app uses a focused three-pane interface without an embedded web view. The
-project is still early: reading, organizing, and sending mail work, but some
-familiar mail features do not.
+Ruston Mail is an unofficial desktop client for Proton Mail, written in Rust.
+Its three-pane interface lets you read, organize, and send mail without an
+embedded browser. The project is still in early development, so some familiar
+mail features are missing.
 
 > Ruston Mail is not affiliated with or endorsed by Proton AG.
 
@@ -24,11 +21,7 @@ familiar mail features do not.
   apply custom labels.
 - Download received attachments.
 
-Remote images are never fetched. Links show their real destination before they
-open unless you turn that prompt off. Read more in
-[Privacy and local data](docs/PRIVACY.md).
-
-## Current limits
+## Desktop limitations
 
 Saved drafts, security-key sign-in, and folder or label management are not
 supported yet in the desktop client. It can move a message to Trash, but it
@@ -37,7 +30,7 @@ never permanently deletes mail. See the
 
 ## Run from source
 
-You need Rust 1.96 or newer. There are no packaged releases yet.
+You need Rust 1.96 or newer. To run the desktop client:
 
 ```sh
 git clone https://github.com/luiscuellar31/ruston-mail.git
@@ -45,21 +38,46 @@ cd ruston-mail
 cargo run
 ```
 
-The workspace includes the native desktop client (`ruston-mail`), the shared
-SDK (`crates/ruston-core`), and a separate command-line client
-(`crates/ruston-cli`). The [architecture map](docs/ARCHITECTURE.md) shows where
-each kind of change belongs. To inspect CLI commands:
+To explore a fictional mailbox without signing in, run:
+
+```sh
+RUSTON_DEMO=1 cargo run
+```
+
+On PowerShell:
+
+```powershell
+$env:RUSTON_DEMO = "1"
+cargo run
+Remove-Item Env:RUSTON_DEMO
+```
+
+The demo does not contact Proton. A first build may still need to download Rust
+dependencies.
+
+## In this repository
+
+- [`ruston-mail`](src/) is the desktop client.
+- [`ruston-cli`](crates/ruston-cli/) provides terminal commands.
+- [`ruston-core`](crates/ruston-core/) handles shared Proton authentication and
+  mail operations for both clients.
+
+See the [architecture map](docs/ARCHITECTURE.md) to find the code for a feature.
+To inspect the CLI commands, run:
 
 ```sh
 cargo run -p ruston-cli -- --help
 ```
 
-To look around without an account or network connection, start the fictional
-mailbox:
+## Privacy at a glance
 
-```sh
-RUSTON_DEMO=1 cargo run
-```
+The desktop keeps mailbox content in memory and does not save a persistent
+mail cache. The CLI's optional local search index stores decrypted message
+bodies in a SQLite database that Ruston Mail does not encrypt.
+
+In the desktop reader, remote images are never fetched, and links show their
+destination before opening unless you disable that prompt. See
+[Privacy and local data](docs/PRIVACY.md) for details.
 
 ## Documentation
 
@@ -69,11 +87,9 @@ RUSTON_DEMO=1 cargo run
 - [Architecture and code map](docs/ARCHITECTURE.md)
 - [Contributing](CONTRIBUTING.md)
 
-## Credits
+## License and attribution
 
-Authentication and Proton's mail cryptography are powered by
-[`ruston-core`](crates/ruston-core), originally adapted from
-[`protonmail-rs`](https://github.com/filippofinke/protonmail-rs) by
-Filippo Finke.
+`ruston-core` is adapted from Filippo Finke's
+[`protonmail-rs`](https://github.com/filippofinke/protonmail-rs).
 
 Ruston Mail is available under the [MIT License](LICENSE).
