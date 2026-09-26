@@ -72,7 +72,7 @@ pub struct EventBatch {
     pub event_id: String,
     /// More events are immediately available (loop until false).
     pub more: bool,
-    /// The server asked for a full resync (drop the cache and re-bootstrap).
+    /// The server asked for a full resync of the local cache.
     pub refresh: bool,
     /// Message changes in this batch.
     pub messages: Vec<MessageEvent>,

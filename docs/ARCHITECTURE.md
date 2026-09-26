@@ -117,7 +117,12 @@ by this code. Cache writes and index maintenance live in
 [`cache.rs`](../crates/ruston-core/src/cache.rs), which repairs old orphaned
 index entries once and removes indexed bodies when messages are deleted. The
 event stream in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs)
-invalidates an indexed body on a full message update. See
+invalidates an indexed body on a full message update. When Proton requests a
+full refresh, sync pages through all message metadata into temporary SQLite
+tables, then replaces the cache and event cursor in one transaction. A failed
+rebuild leaves the previous offline cache and cursor intact. Sync catches up
+on events from the new cursor after the replacement. The full refresh clears
+the local body index; run CLI `index` again to rebuild search. See
 [Privacy and local data](PRIVACY.md) before changing storage or diagnostics.
 Demo modes use fictional data and do not contact Proton.
 

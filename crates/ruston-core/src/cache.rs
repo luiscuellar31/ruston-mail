@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::message::MessageMetadata;
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
 
 const FTS_ORPHAN_REPAIR_KEY: &str = "fts_orphans_repaired_v1";
@@ -219,13 +219,102 @@ impl Cache {
             .map_err(map)
     }
 
-    /// Drop all cached messages (on a server-requested refresh).
+    /// Drop all cached messages and indexed bodies.
     pub fn clear(&self) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
         tx.execute_batch("DELETE FROM msg_fts; DELETE FROM message_labels; DELETE FROM messages;")
             .map_err(map)?;
         tx.commit().map_err(map)?;
         Ok(())
+    }
+
+    /// Start a full metadata rebuild without changing the visible cache.
+    pub(crate) fn begin_rebuild(&self) -> Result<()> {
+        self.conn
+            .execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS resync_messages(
+                     id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT NOT NULL);
+                 CREATE TEMP TABLE IF NOT EXISTS resync_labels(
+                     message_id TEXT, label_id TEXT, PRIMARY KEY(message_id, label_id));
+                 DELETE FROM resync_labels;
+                 DELETE FROM resync_messages;",
+            )
+            .map_err(map)
+    }
+
+    /// Stage one API page; a failed page leaves the visible cache untouched.
+    pub(crate) fn stage_rebuild_page(&self, messages: &[MessageMetadata]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        for m in messages {
+            let json = serde_json::to_string(m)?;
+            tx.execute(
+                "INSERT INTO resync_messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET
+                 time=excluded.time, unread=excluded.unread, json=excluded.json",
+                rusqlite::params![m.id, m.time, m.unread, json],
+            )
+            .map_err(map)?;
+            tx.execute("DELETE FROM resync_labels WHERE message_id=?1", [&m.id])
+                .map_err(map)?;
+            for label in &m.label_ids {
+                tx.execute(
+                    "INSERT OR IGNORE INTO resync_labels(message_id, label_id) VALUES(?1, ?2)",
+                    rusqlite::params![m.id, label],
+                )
+                .map_err(map)?;
+            }
+        }
+        tx.commit().map_err(map)
+    }
+
+    /// Replace metadata, labels, index, and cursor in one transaction.
+    pub(crate) fn finish_rebuild(
+        &self,
+        previous_cursor: &str,
+        new_cursor: &str,
+        expected_total: u32,
+    ) -> Result<usize> {
+        let tx =
+            Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(map)?;
+        let current_cursor: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key='last_event_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(map)?;
+        if current_cursor.as_deref() != Some(previous_cursor) {
+            return Err(Error::Cache(
+                "sync cursor changed during resync; retry".into(),
+            ));
+        }
+        let staged: i64 = tx
+            .query_row("SELECT COUNT(*) FROM resync_messages", [], |row| row.get(0))
+            .map_err(map)?;
+        if staged != i64::from(expected_total) {
+            return Err(Error::Cache(
+                "incomplete mailbox listing during resync; retry".into(),
+            ));
+        }
+
+        tx.execute_batch(
+            "DELETE FROM msg_fts;
+             DELETE FROM message_labels;
+             DELETE FROM messages;
+             INSERT INTO messages(id, time, unread, json)
+             SELECT id, time, unread, json FROM resync_messages;
+             INSERT INTO message_labels(message_id, label_id)
+             SELECT message_id, label_id FROM resync_labels;",
+        )
+        .map_err(map)?;
+        tx.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
+            [new_cursor],
+        )
+        .map_err(map)?;
+        tx.commit().map_err(map)?;
+        Ok(expected_total as usize)
     }
 
     /// Index a message's decrypted body for local full-text search.
@@ -313,6 +402,21 @@ mod tests {
         c.clear().unwrap();
         assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 0);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn incomplete_rebuild_cannot_replace_cache_or_cursor() {
+        let c = Cache::open(Path::new(":memory:")).unwrap();
+        c.set_last_event_id("old").unwrap();
+        c.index_message(&meta("keep", "0", 0, 1), "privatebody")
+            .unwrap();
+        c.begin_rebuild().unwrap();
+        c.stage_rebuild_page(&[meta("new", "0", 0, 2)]).unwrap();
+
+        assert!(c.finish_rebuild("old", "fresh", 2).is_err());
+        assert_eq!(c.last_event_id().unwrap().as_deref(), Some("old"));
+        assert_eq!(c.list("0", false, 10, 0).unwrap()[0].id, "keep");
+        assert_eq!(c.search("privatebody", 10).unwrap()[0].id, "keep");
     }
 
     #[test]

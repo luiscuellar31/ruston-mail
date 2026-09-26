@@ -26,6 +26,7 @@ pub async fn run(
             "updated": report.updated,
             "deleted": report.deleted,
             "event_id": report.event_id,
+            "rebuilt": report.rebuilt,
             "backfilled": backfilled,
         }));
     } else if report.initialized {
@@ -38,6 +39,10 @@ pub async fn run(
             "Synced: {} created, {} updated, {} deleted.",
             report.created, report.updated, report.deleted
         );
+        if let Some(rebuilt) = report.rebuilt {
+            println!("Rebuilt local cache: {rebuilt} message(s).");
+            println!("Run `index` to rebuild local search.");
+        }
         if backfilled > 0 {
             println!("Backfilled {backfilled} message(s).");
         }

@@ -14,7 +14,13 @@ pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()>
             let _ = client.cache_folder(f, 4, 50).await;
             let _ = client.index_folder(f, 2, 50).await;
         }
-        let tag = if r.initialized { " (initialized)" } else { "" };
+        let tag = if r.initialized {
+            " (initialized)".to_string()
+        } else if let Some(rebuilt) = r.rebuilt {
+            format!(" (rebuilt {rebuilt})")
+        } else {
+            String::new()
+        };
         println!("[sync] +{} ~{} -{}{tag}", r.created, r.updated, r.deleted);
         tokio::time::sleep(Duration::from_secs(interval)).await;
     }

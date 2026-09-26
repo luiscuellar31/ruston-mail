@@ -38,6 +38,11 @@ an older version, run `index` again to refresh its remaining entries. SQLite
 deletion does not guarantee secure erasure of bytes already written to disk or
 copied into backups.
 
+When Proton requests a full refresh, sync rebuilds all cached message metadata
+before replacing the old cache. If the rebuild fails, the old offline data and
+sync cursor remain available. A completed refresh clears the local search index;
+run `index` again to make message bodies searchable.
+
 ## Saved session and settings
 
 The Proton password is not saved. `ruston-core` stores the access token, refresh
