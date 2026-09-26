@@ -47,6 +47,13 @@ token, and key passphrase in the operating system's credential store:
 - Secret Service on Linux.
 - Windows Credential Manager on Windows.
 
+Access and refresh tokens are saved together in one credential-store entry.
+Sessions saved by older versions with separate entries can still be opened;
+those entries are removed when signing out. If the credential store rejects a
+token refresh, the request reports an error. The new tokens remain in memory,
+but reopening the app may require signing in again. Older app versions may also
+require a new sign-in after a token refresh.
+
 Non-secret session metadata is stored in `ruston-core`'s platform config
 directory under the current `protonmail-cli` storage name. On Unix, its session
 directory and file use modes `0700` and `0600`. The desktop uses the `ruston`

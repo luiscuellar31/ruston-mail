@@ -9,10 +9,24 @@ use crate::error::{Error, Result};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 const K_ACCESS: &str = "access_token";
 const K_REFRESH: &str = "refresh_token";
+const K_TOKENS: &str = "auth_tokens_v1";
 const K_SKP: &str = "skp";
+
+#[derive(Serialize)]
+struct StoredTokens<'a> {
+    access: &'a str,
+    refresh: &'a str,
+}
+
+#[derive(Deserialize)]
+struct LoadedTokens {
+    access: String,
+    refresh: String,
+}
 
 /// Auth tokens held in memory.
 #[derive(Clone)]
@@ -118,16 +132,19 @@ impl Session {
         std::fs::write(&file, json)?;
         set_mode(&file, 0o600)?;
 
-        store.set(K_ACCESS, tokens.access.expose_secret())?;
-        store.set(K_REFRESH, tokens.refresh.expose_secret())?;
+        Self::save_tokens(
+            store,
+            tokens.access.expose_secret(),
+            tokens.refresh.expose_secret(),
+        )?;
         store.set(K_SKP, skp.expose_secret())?;
         Ok(())
     }
 
     /// Persist only the rotated tokens (after a refresh).
     pub fn save_tokens(store: &dyn SecretStore, access: &str, refresh: &str) -> Result<()> {
-        store.set(K_ACCESS, access)?;
-        store.set(K_REFRESH, refresh)?;
+        let pair = Zeroizing::new(serde_json::to_string(&StoredTokens { access, refresh })?);
+        store.set(K_TOKENS, &pair)?;
         Ok(())
     }
 
@@ -147,13 +164,21 @@ impl Session {
             Ok(s) => s,
             Err(_) => return Ok(None),
         };
-        let (access, refresh, skp) = match (
-            store.get(K_ACCESS)?,
-            store.get(K_REFRESH)?,
-            store.get(K_SKP)?,
-        ) {
-            (Some(a), Some(r), Some(s)) => (a, r, s),
-            _ => return Ok(None),
+        let (access, refresh) = match store.get(K_TOKENS)? {
+            Some(pair) => {
+                let pair = Zeroizing::new(pair);
+                let pair: LoadedTokens = serde_json::from_str(&pair)
+                    .map_err(|e| Error::Session(format!("invalid stored auth tokens: {e}")))?;
+                (pair.access, pair.refresh)
+            }
+            None => match (store.get(K_ACCESS)?, store.get(K_REFRESH)?) {
+                (Some(access), Some(refresh)) => (access, refresh),
+                _ => return Ok(None),
+            },
+        };
+        let skp = match store.get(K_SKP)? {
+            Some(skp) => skp,
+            None => return Ok(None),
         };
         let tokens = Tokens {
             uid: session.uid.clone(),
@@ -175,6 +200,7 @@ impl Session {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
+        store.delete(K_TOKENS)?;
         store.delete(K_ACCESS)?;
         store.delete(K_REFRESH)?;
         store.delete(K_SKP)?;
@@ -185,6 +211,30 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Default)]
+    struct RejectTokenWrites {
+        inner: MemoryStore,
+        reject: AtomicBool,
+    }
+
+    impl SecretStore for RejectTokenWrites {
+        fn set(&self, key: &str, value: &str) -> Result<()> {
+            if self.reject.load(Ordering::Relaxed) && (key == K_REFRESH || key == K_TOKENS) {
+                return Err(Error::Session("simulated keyring write failure".into()));
+            }
+            self.inner.set(key, value)
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>> {
+            self.inner.get(key)
+        }
+
+        fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key)
+        }
+    }
 
     fn unique_base() -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -228,6 +278,9 @@ mod tests {
         );
         assert_eq!(loaded.tokens.access.expose_secret(), "acc");
         assert_eq!(loaded.skp.expose_secret(), "skp-secret");
+        assert!(store.get(K_TOKENS).unwrap().is_some());
+        assert!(store.get(K_ACCESS).unwrap().is_none());
+        assert!(store.get(K_REFRESH).unwrap().is_none());
 
         #[cfg(unix)]
         {
@@ -241,6 +294,7 @@ mod tests {
 
         Session::clear(&paths, "default", &store).unwrap();
         assert!(Session::load(&paths, "default", &store).unwrap().is_none());
+        assert!(store.get(K_TOKENS).unwrap().is_none());
     }
 
     #[test]
@@ -278,5 +332,87 @@ mod tests {
         let paths = Paths::with_base(unique_base());
         let store = MemoryStore::new();
         assert!(Session::load(&paths, "nope", &store).unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_refresh_write_keeps_the_previous_token_pair() {
+        let paths = Paths::with_base(unique_base());
+        let store = RejectTokenWrites::default();
+        let session = Session {
+            uid: "UID1".into(),
+            app_version: "Other".into(),
+            base_url: "https://mail.proton.me/api".into(),
+            password_mode: 1,
+            user_agent: None,
+        };
+        let tokens = Tokens {
+            uid: "UID1".into(),
+            access: SecretString::from("old-access"),
+            refresh: SecretString::from("old-refresh"),
+        };
+        session
+            .save(
+                &paths,
+                "default",
+                &store,
+                &tokens,
+                &SecretString::from("skp"),
+            )
+            .unwrap();
+
+        store.reject.store(true, Ordering::Relaxed);
+        assert!(Session::save_tokens(&store, "new-access", "new-refresh").is_err());
+        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
+        assert_eq!(loaded.tokens.access.expose_secret(), "old-access");
+        assert_eq!(loaded.tokens.refresh.expose_secret(), "old-refresh");
+    }
+
+    #[test]
+    fn legacy_tokens_load_and_migrate_on_refresh() {
+        let paths = Paths::with_base(unique_base());
+        let store = MemoryStore::new();
+        let session = Session {
+            uid: "UID1".into(),
+            app_version: "Other".into(),
+            base_url: "https://mail.proton.me/api".into(),
+            password_mode: 1,
+            user_agent: None,
+        };
+        let tokens = Tokens {
+            uid: "UID1".into(),
+            access: SecretString::from("old-access"),
+            refresh: SecretString::from("old-refresh"),
+        };
+        session
+            .save(
+                &paths,
+                "default",
+                &store,
+                &tokens,
+                &SecretString::from("skp"),
+            )
+            .unwrap();
+        store.delete(K_TOKENS).unwrap();
+        store.set(K_ACCESS, "old-access").unwrap();
+        store.set(K_REFRESH, "old-refresh").unwrap();
+
+        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
+        assert_eq!(loaded.tokens.access.expose_secret(), "old-access");
+        assert_eq!(loaded.tokens.refresh.expose_secret(), "old-refresh");
+
+        Session::save_tokens(&store, "new-access", "new-refresh").unwrap();
+        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
+        assert_eq!(loaded.tokens.access.expose_secret(), "new-access");
+        assert_eq!(loaded.tokens.refresh.expose_secret(), "new-refresh");
+
+        store.set(K_TOKENS, "broken").unwrap();
+        assert!(matches!(
+            Session::load(&paths, "default", &store),
+            Err(Error::Session(_))
+        ));
+        Session::clear(&paths, "default", &store).unwrap();
+        assert!(store.get(K_ACCESS).unwrap().is_none());
+        assert!(store.get(K_REFRESH).unwrap().is_none());
+        assert!(store.get(K_TOKENS).unwrap().is_none());
     }
 }

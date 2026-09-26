@@ -99,8 +99,8 @@ impl Client {
     }
 
     fn wire_refresh(http: &mut HttpClient, store: Arc<dyn SecretStore>) {
-        http.set_refresh_persist(Arc::new(move |_uid, access, refresh| {
-            let _ = Session::save_tokens(store.as_ref(), access, refresh);
+        http.set_refresh_persist_fallible(Arc::new(move |_uid, access, refresh| {
+            Session::save_tokens(store.as_ref(), access, refresh)
         }));
     }
 

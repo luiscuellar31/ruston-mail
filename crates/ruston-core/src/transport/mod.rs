@@ -156,8 +156,10 @@ impl AuthState {
 }
 
 /// Callback invoked after a successful token refresh (uid, access, refresh) —
-/// used by the Client to persist rotated tokens.
+/// use [`FallibleRefreshPersist`] when storage can fail.
 pub type RefreshPersist = Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
+/// A token-refresh callback whose persistence failure is returned to the request.
+pub type FallibleRefreshPersist = Arc<dyn Fn(&str, &str, &str) -> Result<()> + Send + Sync>;
 /// Resolver for human-verification challenges (returns token, token-type).
 pub type HvResolver =
     Arc<dyn Fn(HvChallenge) -> BoxFuture<'static, Result<(String, String)>> + Send + Sync>;
@@ -176,7 +178,7 @@ pub struct HttpClient {
     client: reqwest::Client,
     base_url: String,
     auth: Arc<RwLock<AuthState>>,
-    on_refresh: Option<RefreshPersist>,
+    on_refresh: Option<FallibleRefreshPersist>,
     hv: Option<HvResolver>,
 }
 
@@ -210,6 +212,14 @@ impl HttpClient {
     }
     /// Register a callback invoked with rotated tokens after each refresh.
     pub fn set_refresh_persist(&mut self, cb: RefreshPersist) {
+        self.on_refresh = Some(Arc::new(move |uid, access, refresh| {
+            cb(uid, access, refresh);
+            Ok(())
+        }));
+    }
+    /// Register a callback whose persistence error aborts the triggering request.
+    /// Rotated tokens remain available in memory when that callback fails.
+    pub fn set_refresh_persist_fallible(&mut self, cb: FallibleRefreshPersist) {
         self.on_refresh = Some(cb);
     }
     /// Register a resolver to satisfy human-verification (9001) challenges.
@@ -328,7 +338,7 @@ impl HttpClient {
         a.refresh = Some(SecretString::from(parsed.refresh_token.clone()));
         drop(a);
         if let Some(cb) = &self.on_refresh {
-            cb(&uid, &parsed.access_token, &parsed.refresh_token);
+            cb(&uid, &parsed.access_token, &parsed.refresh_token)?;
         }
         Ok(())
     }
@@ -593,6 +603,44 @@ mod tests {
         // Tokens were rotated.
         let a = c.auth.read().await;
         assert_eq!(a.access.as_ref().unwrap().expose_secret(), "new-acc");
+    }
+
+    #[tokio::test]
+    async fn refresh_persistence_failure_reaches_the_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code":401})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"Code":1000,"AccessToken":"new-acc","RefreshToken":"new-ref"}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut c = client(&server.uri());
+        c.set_tokens(
+            "uid".into(),
+            SecretString::from("old-acc"),
+            SecretString::from("old-ref"),
+        )
+        .await;
+        c.set_refresh_persist_fallible(Arc::new(|_, _, _| {
+            Err(Error::Session("keyring unavailable".into()))
+        }));
+        let err = c
+            .decode::<ValueResp>(Request::get("/protected"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Session(message) if message == "keyring unavailable"));
+        let state = c.auth.read().await;
+        assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
+        assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
     }
 
     #[tokio::test]

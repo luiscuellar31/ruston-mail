@@ -104,7 +104,11 @@ The desktop uses the `ruston` session profile; the CLI defaults to `default`
 and accepts `--profile`. Both use core session storage: non-secret metadata in
 a platform config directory and credentials in the OS keychain. The current
 storage identifier is `protonmail-cli`. Desktop preferences live separately
-in `Ruston Mail`'s config directory.
+in `Ruston Mail`'s config directory. Core [`session/`](../crates/ruston-core/src/session/)
+stores access and refresh tokens as one keychain entry and still reads older
+separate entries. Token refresh writes go through
+[`transport/`](../crates/ruston-core/src/transport/), which returns persistence
+errors to the request.
 
 The desktop keeps mailbox data in memory. The core also offers a per-profile
 SQLite cache used by CLI sync and local search. Indexing a folder stores
