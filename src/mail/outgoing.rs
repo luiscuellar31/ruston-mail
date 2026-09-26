@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use super::MailboxError;
@@ -146,29 +147,75 @@ fn escape(text: &str) -> String {
 }
 
 /// What can stop a message from leaving.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendError {
     /// The fictional mailbox takes only a few messages per run.
     DemoLimitReached,
     Mailbox(MailboxError),
+    /// An attached file could not be found or read on disk.
+    MissingAttachment(String),
 }
 
 impl SendError {
-    pub fn message(self) -> &'static str {
+    pub fn message(&self) -> Cow<'static, str> {
         match self {
-            Self::DemoLimitReached => {
-                "The demo mailbox takes only a few messages per run. Restart it to send more."
-            }
+            Self::DemoLimitReached => Cow::Borrowed(
+                "The demo mailbox takes only a few messages per run. Restart it to send more.",
+            ),
             Self::Mailbox(MailboxError::Connection) => {
-                "Ruston Mail could not reach Proton. The message was not sent."
+                Cow::Borrowed("Ruston Mail could not reach Proton. The message was not sent.")
             }
-            Self::Mailbox(MailboxError::SessionExpired) => {
-                "Your Proton session has expired. Sign in again; the message was not sent."
-            }
+            Self::Mailbox(MailboxError::SessionExpired) => Cow::Borrowed(
+                "Your Proton session has expired. Sign in again; the message was not sent.",
+            ),
             Self::Mailbox(MailboxError::Service | MailboxError::Unavailable) => {
-                "Proton would not accept the message. It was not sent."
+                Cow::Borrowed("Proton would not accept the message. It was not sent.")
+            }
+            Self::MissingAttachment(name) => {
+                Cow::Owned(format!("Attachment cannot be found: {name}"))
             }
         }
+    }
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message())
+    }
+}
+
+impl std::error::Error for SendError {}
+
+/// Verifies that all attachments exist and can be read.
+///
+/// Running this off the UI thread and off Tokio asynchronous worker threads
+/// prevents slow or hanging filesystems (e.g. NFS/SMB mounts) from stalling
+/// the application.
+pub async fn validate_attachments(attachments: &[PathBuf]) -> Result<(), SendError> {
+    if attachments.is_empty() {
+        return Ok(());
+    }
+
+    let paths = attachments.to_vec();
+    let check = move || {
+        for path in &paths {
+            if !path.is_file() || std::fs::File::open(path).is_err() {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Attachment");
+                return Err(SendError::MissingAttachment(name.to_owned()));
+            }
+        }
+        Ok(())
+    };
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::spawn_blocking(check)
+            .await
+            .unwrap_or(Err(SendError::Mailbox(MailboxError::Service)))
+    } else {
+        check()
     }
 }
 
@@ -279,5 +326,38 @@ mod tests {
             "<p>2 &lt; 3 &amp; &quot;quoted&quot; &lt;b&gt;not bold&lt;/b&gt;</p>"
         );
         assert!(!html("<script>alert(1)</script>").contains("<script"));
+    }
+
+    #[tokio::test]
+    async fn validate_attachments_accepts_existing_file() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        assert!(validate_attachments(&[manifest]).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_attachments_rejects_missing_file() {
+        let missing = PathBuf::from("/tmp/this_file_does_not_exist_ruston_test.xyz");
+        let result = validate_attachments(&[missing]).await;
+        assert_eq!(
+            result,
+            Err(SendError::MissingAttachment(
+                "this_file_does_not_exist_ruston_test.xyz".to_owned()
+            ))
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .message()
+                .contains("this_file_does_not_exist_ruston_test.xyz")
+        );
+    }
+
+    #[test]
+    fn send_error_messages_match_expectation() {
+        assert_eq!(
+            SendError::MissingAttachment("photo.jpg".into()).message(),
+            "Attachment cannot be found: photo.jpg"
+        );
+        assert!(SendError::DemoLimitReached.message().contains("Restart"));
     }
 }

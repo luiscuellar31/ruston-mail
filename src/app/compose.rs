@@ -24,8 +24,6 @@ pub enum NotReady {
     /// Pieces of a recipient field that do not look like an address. Sending
     /// anyway would reach fewer people than the sender believes.
     BadAddresses(Vec<String>),
-    /// An attached file could not be found on disk.
-    MissingAttachment(String),
 }
 
 impl NotReady {
@@ -34,9 +32,6 @@ impl NotReady {
             Self::NoRecipients => "Add someone to send this to.".to_owned(),
             Self::BadAddresses(pieces) => {
                 format!("This does not look like an address: {}", pieces.join(", "))
-            }
-            Self::MissingAttachment(name) => {
-                format!("Attachment cannot be found: {name}")
             }
         }
     }
@@ -148,6 +143,9 @@ impl Compose {
         if index < self.attachments.len() {
             self.attachments.remove(index);
             self.confirming_discard = false;
+            if matches!(self.state, State::Failed(_)) {
+                self.state = State::Writing;
+            }
         }
     }
 
@@ -170,7 +168,7 @@ impl Compose {
         match &self.state {
             State::Writing => Sending::Writing,
             State::InFlight => Sending::InFlight,
-            State::Failed(error) => Sending::Failed(*error),
+            State::Failed(error) => Sending::Failed(error.clone()),
         }
     }
 
@@ -218,16 +216,6 @@ impl Compose {
             && bcc.accepted.is_empty()
         {
             return Err(NotReady::NoRecipients);
-        }
-
-        for path in &self.attachments {
-            if !path.exists() {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Attachment");
-                return Err(NotReady::MissingAttachment(name.to_owned()));
-            }
         }
 
         Ok(Outgoing {
@@ -577,26 +565,15 @@ mod tests {
     }
 
     #[test]
-    fn ready_carries_existing_attachments_and_rejects_missing_ones() {
+    fn ready_carries_attachments_without_blocking_io() {
         let mut compose = written("alex@example.com");
         let non_existent = PathBuf::from("/tmp/this_file_does_not_exist_ruston_test.xyz");
-        compose.add_attachments([non_existent]);
+        compose.add_attachments([non_existent.clone()]);
 
-        let not_ready = compose.not_ready();
-        assert!(matches!(not_ready, Some(NotReady::MissingAttachment(_))));
-        assert!(
-            not_ready
-                .unwrap()
-                .message()
-                .contains("this_file_does_not_exist_ruston_test.xyz")
-        );
-
-        compose.remove_attachment(0);
-        let existing = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        compose.add_attachments([existing.clone()]);
+        // In-memory UI readiness must not perform blocking disk I/O
         assert_eq!(compose.not_ready(), None);
 
         let outgoing = compose.ready(BodyFormat::PlainText).unwrap();
-        assert_eq!(outgoing.attachments, vec![existing]);
+        assert_eq!(outgoing.attachments, vec![non_existent]);
     }
 }

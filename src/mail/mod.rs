@@ -13,7 +13,7 @@ pub use model::{
     MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError,
     MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
 };
-pub use outgoing::{BodyFormat, Kind, Outgoing, SendError, recipients};
+pub use outgoing::{BodyFormat, Kind, Outgoing, SendError, recipients, validate_attachments};
 #[cfg(test)]
 pub use proton::Reply;
 pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
@@ -67,6 +67,7 @@ impl MailBackend {
 
     /// Sends through the active backend; demo messages remain local.
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
+        validate_attachments(&outgoing.attachments).await?;
         match self {
             Self::Proton(service) => service.send(outgoing).await,
             Self::Demo(service) => service.send(outgoing, demo::now()),

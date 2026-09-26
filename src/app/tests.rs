@@ -2155,3 +2155,51 @@ fn thread_inspected_stale_epoch_or_folder_is_ignored() {
     assert!(!visible.contains(&"split-ignored"));
     assert!(visible.contains(&"demo-0"));
 }
+
+#[tokio::test]
+async fn sending_with_missing_attachment_fails_gracefully_in_background() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::To,
+        "alex@example.com".into(),
+    ));
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
+    let non_existent = PathBuf::from("/tmp/missing_attachment_test_ruston.pdf");
+    let compose_id = app.compose().unwrap().id();
+    let _ = app.update(Message::AddComposeAttachments(
+        compose_id,
+        vec![non_existent],
+    ));
+
+    // In-memory UI readiness must be immediate and non-blocking
+    assert!(app.compose().unwrap().not_ready().is_none());
+
+    // User triggers Send
+    let effects = app.update(Message::Send);
+    assert_eq!(effects.units(), 1);
+    assert!(app.compose().unwrap().in_flight());
+
+    // Execute background effect
+    let effect = effects.into_iter().next().unwrap();
+    let Effect::Future(future) = effect else {
+        panic!("expected future effect");
+    };
+    let message = future.await;
+    let _ = app.update(message);
+
+    // Compose should transition to Failed with MissingAttachment, preserving draft content
+    let sending = app.compose().unwrap().sending();
+    assert_eq!(
+        sending,
+        Sending::Failed(SendError::MissingAttachment(
+            "missing_attachment_test_ruston.pdf".to_owned()
+        ))
+    );
+    assert_eq!(app.compose().unwrap().field(ComposeField::Body), "Hello");
+
+    // Removing the missing attachment clears the refusal state back to Writing
+    let _ = app.update(Message::RemoveComposeAttachment(0));
+    assert_eq!(app.compose().unwrap().sending(), Sending::Writing);
+    assert!(app.compose().unwrap().attachments().is_empty());
+}
