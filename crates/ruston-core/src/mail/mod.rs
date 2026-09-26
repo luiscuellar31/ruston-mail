@@ -14,7 +14,7 @@ use crate::api;
 use crate::auth::{self, TotpPrompt};
 use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
-use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens};
+use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens, validate_profile_name};
 use crate::transport::HttpClient;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::{HashMap, VecDeque};
@@ -133,6 +133,7 @@ impl Client {
     }
 
     async fn login_inner(opts: LoginOptions, totp_prompt: Option<TotpPrompt>) -> Result<Client> {
+        validate_profile_name(&opts.profile)?;
         let base_url = opts
             .base_url
             .clone()
@@ -200,6 +201,7 @@ impl Client {
 
     /// Resume a saved session and unlock keys using the stored `skp`.
     pub async fn resume(profile: &str) -> Result<Client> {
+        validate_profile_name(profile)?;
         tracing::info!(target: "ruston_core::mail", profile, "resume: loading saved session");
         let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(profile.to_string()));
         let paths = Paths::system()?;

@@ -86,6 +86,27 @@ mod tests {
     }
 
     #[test]
+    fn profile_must_be_one_path_component() {
+        for profile in [
+            "",
+            ".",
+            "..",
+            "../settings",
+            r"..\settings",
+            "folder/work",
+            r"folder\work",
+            "C:settings",
+            "/tmp/work",
+        ] {
+            assert!(
+                Cli::try_parse_from(["ruston-cli", "--profile", profile, "whoami"]).is_err(),
+                "accepted invalid profile {profile:?}"
+            );
+        }
+        assert!(Cli::try_parse_from(["ruston-cli", "--profile", "work.mail", "whoami"]).is_ok());
+    }
+
+    #[test]
     fn watch_requires_positive_interval() {
         assert!(Cli::try_parse_from(["ruston-cli", "watch", "--interval", "0"]).is_err());
         assert!(Cli::try_parse_from(["ruston-cli", "watch", "--interval", "1"]).is_ok());

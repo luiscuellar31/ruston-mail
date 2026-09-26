@@ -9,11 +9,26 @@ use crate::error::{Error, Result};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
 
 const K_TOKENS: &str = "auth_tokens_v1";
 const K_SKP: &str = "skp";
+
+/// Reject empty profile names, path syntax, and control characters.
+pub fn validate_profile_name(profile: &str) -> Result<()> {
+    let mut components = Path::new(profile).components();
+    if profile.contains(['/', '\\', ':'])
+        || profile.chars().any(char::is_control)
+        || !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(Error::Session(
+            "profile must be a non-empty filename without path syntax or control characters".into(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Serialize)]
 struct StoredTokens<'a> {
@@ -87,12 +102,7 @@ impl Paths {
         self.base.join("sessions")
     }
     fn session_file(&self, profile: &str) -> PathBuf {
-        let p = if profile.is_empty() {
-            "default"
-        } else {
-            profile
-        };
-        self.sessions_dir().join(format!("{p}.json"))
+        self.sessions_dir().join(format!("{profile}.json"))
     }
 }
 
@@ -109,6 +119,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
 
 impl Session {
     fn lock(paths: &Paths, profile: &str) -> Result<File> {
+        validate_profile_name(profile)?;
         let dir = paths.sessions_dir();
         std::fs::create_dir_all(&dir)?;
         set_mode(&dir, 0o700)?;
@@ -268,6 +279,41 @@ mod tests {
             std::process::id(),
             nanos
         ))
+    }
+
+    #[test]
+    fn invalid_profile_cannot_write_outside_sessions_directory() {
+        let base = unique_base();
+        std::fs::create_dir_all(&base).unwrap();
+        let outside = base.join("outside.json");
+        std::fs::write(&outside, b"keep this file").unwrap();
+        let paths = Paths::with_base(&base);
+        let store = MemoryStore::new();
+        let session = Session {
+            uid: "UID1".into(),
+            app_version: "Other".into(),
+            base_url: "https://mail.proton.me/api".into(),
+            password_mode: 1,
+            user_agent: None,
+        };
+        let tokens = Tokens {
+            uid: "UID1".into(),
+            access: SecretString::from("acc"),
+            refresh: SecretString::from("ref"),
+        };
+        assert!(matches!(
+            session.save(
+                &paths,
+                "../outside",
+                &store,
+                &tokens,
+                &SecretString::from("skp"),
+            ),
+            Err(Error::Session(_))
+        ));
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep this file");
+        assert!(!base.join("outside.lock").exists());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

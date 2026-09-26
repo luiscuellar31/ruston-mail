@@ -131,6 +131,8 @@ unconfirmed because it may happen at any stage of the send pipeline.
 Both frontends use the `ruston` session profile by default, so a login in one
 can be resumed by the other. The CLI accepts `--profile` for separate sessions;
 its former `default` session and cache remain available with `--profile default`.
+Core validates profile names as single path components before resolving session
+and cache paths; the CLI applies the same validation while parsing `--profile`.
 Both use core session storage: non-secret metadata in a platform config
 directory and credentials in the OS keychain. The storage identifier is
 `ruston-mail`, defined in core

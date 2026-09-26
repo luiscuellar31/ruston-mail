@@ -2,6 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::message::MessageMetadata;
+use crate::session::validate_profile_name;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::{Path, PathBuf};
 
@@ -45,16 +46,12 @@ pub struct Cache {
 impl Cache {
     /// Default cache path: `<cache_dir>/ruston-mail/<profile>.db`.
     pub fn default_path(profile: &str) -> Result<PathBuf> {
+        validate_profile_name(profile)?;
         let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
             .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
         let dir = dirs.cache_dir().to_path_buf();
         std::fs::create_dir_all(&dir).map_err(map)?;
-        let p = if profile.is_empty() {
-            "default"
-        } else {
-            profile
-        };
-        Ok(dir.join(format!("{p}.db")))
+        Ok(dir.join(format!("{profile}.db")))
     }
 
     /// Open (creating if needed) the cache database at `path`, ensuring its schema.
@@ -336,6 +333,14 @@ impl Cache {
 mod tests {
     use super::*;
     use crate::model::message::Recipient;
+
+    #[test]
+    fn cache_path_rejects_profile_with_parent_component() {
+        assert!(matches!(
+            Cache::default_path("../outside"),
+            Err(Error::Session(_))
+        ));
+    }
 
     fn meta(id: &str, label: &str, unread: i64, time: i64) -> MessageMetadata {
         MessageMetadata {

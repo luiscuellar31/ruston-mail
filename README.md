@@ -70,7 +70,7 @@ cargo run -p ruston-cli -- --help
 
 The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with
-`--profile default`.
+`--profile default`. `NAME` must be a single path component without separators.
 
 When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly.

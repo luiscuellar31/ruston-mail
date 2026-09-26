@@ -63,7 +63,8 @@ directory under the `ruston-mail` storage name. On Unix, its session
 directory and file use modes `0700` and `0600`. The desktop and CLI share the
 `ruston` profile by default. Use CLI `--profile` for a separate session; an
 earlier CLI `default` session and cache are still accessible with
-`--profile default`.
+`--profile default`. Profile names must be a single path component; empty names
+and names with path separators are rejected.
 Signing out of the shared profile affects both frontends.
 
 Ruston Mail keeps `settings.json` in its own platform config directory. It
