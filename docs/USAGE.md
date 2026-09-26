@@ -19,6 +19,8 @@ FIDO2 and WebAuthn security keys are not supported yet.
 
 The sidebar contains Proton's standard folders, followed by your custom folders
 and labels. Unread counts update as mail changes.
+While the desktop has focus, it checks for new mail about once a minute. After
+being away for at least 30 seconds, it checks again when you return.
 
 Typing in the search field narrows the conversations already loaded. Press
 `Enter` to ask Proton to search the whole mailbox. Clear the field to return to
@@ -92,6 +94,7 @@ Settings control:
 - Plain-text or HTML sending.
 - The folder shown at startup.
 - Interface scale.
+- On macOS, whether the Dock icon shows the unread inbox count.
 
 Window size and pane widths are remembered automatically.
 

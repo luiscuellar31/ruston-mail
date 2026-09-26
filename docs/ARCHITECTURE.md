@@ -155,8 +155,9 @@ Demo modes use fictional data and do not contact Proton.
 CLI [`watch --folder`](../crates/ruston-cli/src/commands/watch.rs) backfills
 metadata and indexes the selected folder on its first tick. Later ticks use
 sync events for metadata and reindex only after creates, updates, or a full
-refresh. Backfill and indexing failures stop the command instead of producing
-a successful tick.
+refresh. `watch` polls the event API at the configured interval; it does not
+use Server-Sent Events. Backfill and indexing failures stop the command
+instead of producing a successful tick.
 
 Most unit tests live beside the code they cover. Core HTTP contract tests are
 in [`tests/api_wiremock.rs`](../crates/ruston-core/tests/api_wiremock.rs).
