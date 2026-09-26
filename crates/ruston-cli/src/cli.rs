@@ -285,7 +285,8 @@ pub struct SendArgs {
     /// Blind carbon-copy recipient(s) (repeatable).
     #[arg(long = "bcc")]
     pub bcc: Vec<String>,
-    /// Sender address (defaults to the primary address).
+    /// Sender address (prompted for on a terminal with multiple addresses;
+    /// otherwise defaults to the primary address).
     #[arg(long)]
     pub from: Option<String>,
     /// Message subject.

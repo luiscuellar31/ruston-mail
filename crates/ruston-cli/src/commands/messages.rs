@@ -4,7 +4,8 @@ use crate::cli::Ctx;
 use crate::cli::{LabelAction, MessagesCmd, SearchArgs, SendArgs};
 use crate::commands::{read_body, resolve_all, resume};
 use crate::render;
-use ruston_core::{Client, Result, SearchOpts, SendOptions};
+use ruston_core::{AddressInfo, Client, Result, SearchOpts, SendOptions};
+use std::io::{self, BufRead, IsTerminal, Write};
 
 fn search_opts(a: SearchArgs) -> SearchOpts {
     SearchOpts {
@@ -32,6 +33,40 @@ pub(crate) fn send_options(a: SendArgs, body: String) -> SendOptions {
         attachments: a.attach,
         send_at: a.send_at,
         expires_in: a.expires,
+    }
+}
+
+fn prompt_sender(
+    addresses: &[AddressInfo],
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> io::Result<String> {
+    writeln!(output, "Choose a sender address:")?;
+    for (index, address) in addresses.iter().enumerate() {
+        let default = if index == 0 { " (default)" } else { "" };
+        writeln!(output, "  {}. {}{default}", index + 1, address.email)?;
+    }
+
+    loop {
+        write!(output, "Sender [1]: ")?;
+        output.flush()?;
+        let mut answer = String::new();
+        if input.read_line(&mut answer)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "sender selection cancelled",
+            ));
+        }
+        let answer = answer.trim();
+        let index = if answer.is_empty() {
+            Some(0)
+        } else {
+            answer.parse::<usize>().ok().and_then(|n| n.checked_sub(1))
+        };
+        if let Some(address) = index.and_then(|index| addresses.get(index)) {
+            return Ok(address.email.clone());
+        }
+        writeln!(output, "Choose a number from 1 to {}.", addresses.len())?;
     }
 }
 
@@ -82,8 +117,22 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             }
             Ok(())
         }
-        MessagesCmd::Send(args) => {
+        MessagesCmd::Send(mut args) => {
             let client = resume(&ctx.profile).await?;
+            if args.from.is_none()
+                && !ctx.json
+                && io::stdin().is_terminal()
+                && io::stderr().is_terminal()
+            {
+                let addresses = client.addresses();
+                if addresses.len() > 1 {
+                    args.from = Some(prompt_sender(
+                        &addresses,
+                        &mut io::stdin().lock(),
+                        &mut io::stderr().lock(),
+                    )?);
+                }
+            }
             let body = read_body(&args.body)?;
             let eo_password = args.eo_password.clone();
             let eo_hint = args.eo_hint.clone();
@@ -246,4 +295,39 @@ where
     op(client, ids.clone()).await?;
     render::action_result(ctx.json, action, &ids);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prompt_sender;
+    use ruston_core::AddressInfo;
+    use std::io::{self, Cursor};
+
+    #[test]
+    fn sender_prompt_selects_defaults_and_cancels_on_eof() {
+        let addresses = [
+            AddressInfo {
+                id: "primary".into(),
+                email: "primary@example.test".into(),
+            },
+            AddressInfo {
+                id: "alias".into(),
+                email: "alias@example.test".into(),
+            },
+        ];
+
+        for (answer, expected) in [
+            ("\n", "primary@example.test"),
+            ("2\n", "alias@example.test"),
+            ("3\n2\n", "alias@example.test"),
+        ] {
+            let selected = prompt_sender(&addresses, &mut Cursor::new(answer), &mut Vec::new())
+                .expect("a valid choice should select a sender");
+            assert_eq!(selected, expected);
+        }
+
+        let error = prompt_sender(&addresses, &mut Cursor::new(""), &mut Vec::new())
+            .expect_err("EOF must cancel the send");
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
 }

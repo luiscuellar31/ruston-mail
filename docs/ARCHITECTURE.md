@@ -78,6 +78,10 @@ unconfirmed because it may happen at any stage of the send pipeline.
   are in [`render.rs`](../crates/ruston-cli/src/render.rs). Its
   [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) converts HTML
   messages to readable Markdown-style text for the default read format.
+- [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs)
+  offers a numbered sender choice when `messages send` runs in a terminal with
+  multiple account addresses and no `--from`. Noninteractive and JSON sends
+  keep the primary-address default from core.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
   commands. The desktop has its own demo mailbox in `src/mail/demo.rs`.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`
