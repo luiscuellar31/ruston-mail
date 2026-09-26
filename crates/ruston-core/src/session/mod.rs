@@ -8,6 +8,7 @@ pub use secret_store::{KeyringStore, MemoryStore, SecretStore};
 use crate::error::{Error, Result};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
@@ -107,6 +108,32 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
 }
 
 impl Session {
+    fn lock(paths: &Paths, profile: &str) -> Result<File> {
+        let dir = paths.sessions_dir();
+        std::fs::create_dir_all(&dir)?;
+        set_mode(&dir, 0o700)?;
+        let path = paths.session_file(profile).with_extension("lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        set_mode(&path, 0o600)?;
+        file.lock()?;
+        Ok(file)
+    }
+
+    pub(crate) fn lock_and_load(
+        paths: &Paths,
+        profile: &str,
+        store: &dyn SecretStore,
+    ) -> Result<(File, Option<LoadedSession>)> {
+        let lock = Self::lock(paths, profile)?;
+        let loaded = Self::load_unlocked(paths, profile, store)?;
+        Ok((lock, loaded))
+    }
+
     /// Persist metadata to disk and secrets to the store.
     pub fn save(
         &self,
@@ -116,6 +143,7 @@ impl Session {
         tokens: &Tokens,
         skp: &SecretString,
     ) -> Result<()> {
+        let _lock = Self::lock(paths, profile)?;
         let dir = paths.sessions_dir();
         std::fs::create_dir_all(&dir)?;
         set_mode(&dir, 0o700)?;
@@ -142,6 +170,15 @@ impl Session {
 
     /// Load a session if present and complete.
     pub fn load(
+        paths: &Paths,
+        profile: &str,
+        store: &dyn SecretStore,
+    ) -> Result<Option<LoadedSession>> {
+        let (_lock, loaded) = Self::lock_and_load(paths, profile, store)?;
+        Ok(loaded)
+    }
+
+    fn load_unlocked(
         paths: &Paths,
         profile: &str,
         store: &dyn SecretStore,
@@ -180,6 +217,7 @@ impl Session {
 
     /// Remove the on-disk file and stored secrets.
     pub fn clear(paths: &Paths, profile: &str, store: &dyn SecretStore) -> Result<()> {
+        let _lock = Self::lock(paths, profile)?;
         let file = paths.session_file(profile);
         match std::fs::remove_file(&file) {
             Ok(()) => {}

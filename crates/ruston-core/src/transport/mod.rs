@@ -5,12 +5,15 @@ mod headers;
 mod retry;
 
 use crate::error::{ApiError, Error, HvChallenge, Result};
+use crate::session::Tokens;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use reqwest::Method;
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
+use std::fs::File;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 
 /// Request body.
@@ -160,6 +163,7 @@ impl AuthState {
 pub type RefreshPersist = Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
 /// A token-refresh callback whose persistence failure is returned to the request.
 pub type FallibleRefreshPersist = Arc<dyn Fn(&str, &str, &str) -> Result<()> + Send + Sync>;
+type RefreshLoad = Arc<dyn Fn() -> Result<(File, Option<Tokens>)> + Send + Sync>;
 /// Resolver for human-verification challenges (returns token, token-type).
 pub type HvResolver =
     Arc<dyn Fn(HvChallenge) -> BoxFuture<'static, Result<(String, String)>> + Send + Sync>;
@@ -179,6 +183,8 @@ pub struct HttpClient {
     base_url: String,
     auth: Arc<RwLock<AuthState>>,
     on_refresh: Option<FallibleRefreshPersist>,
+    refresh_load: Option<RefreshLoad>,
+    refresh_unsaved: AtomicBool,
     hv: Option<HvResolver>,
 }
 
@@ -202,6 +208,8 @@ impl HttpClient {
             base_url: base_url.into(),
             auth,
             on_refresh: None,
+            refresh_load: None,
+            refresh_unsaved: AtomicBool::new(false),
             hv: None,
         }
     }
@@ -221,6 +229,10 @@ impl HttpClient {
     /// Rotated tokens remain available in memory when that callback fails.
     pub fn set_refresh_persist_fallible(&mut self, cb: FallibleRefreshPersist) {
         self.on_refresh = Some(cb);
+    }
+    /// Coordinate a refresh with another process using the same saved session.
+    pub(crate) fn set_refresh_load(&mut self, cb: RefreshLoad) {
+        self.refresh_load = Some(cb);
     }
     /// Register a resolver to satisfy human-verification (9001) challenges.
     pub fn set_hv_resolver(&mut self, cb: HvResolver) {
@@ -304,6 +316,31 @@ impl HttpClient {
         {
             return Ok(());
         }
+        // Hold the cross-process lock until the rotated pair is persisted.
+        // Another process may have refreshed while this client was idle.
+        let _session_lock = if let Some(load) = &self.refresh_load {
+            let load = load.clone();
+            let (lock, saved) = tokio::task::spawn_blocking(move || load())
+                .await
+                .map_err(|e| Error::Session(format!("refresh lock task failed: {e}")))??;
+            let saved = saved.ok_or(Error::Unauthorized)?;
+            if a.uid.as_deref() != Some(saved.uid.as_str()) {
+                return Err(Error::Unauthorized);
+            }
+            if !self.refresh_unsaved.load(Ordering::Acquire)
+                && (a.access.as_ref().map(|t| t.expose_secret())
+                    != Some(saved.access.expose_secret())
+                    || a.refresh.as_ref().map(|t| t.expose_secret())
+                        != Some(saved.refresh.expose_secret()))
+            {
+                a.access = Some(saved.access);
+                a.refresh = Some(saved.refresh);
+                return Ok(());
+            }
+            Some(lock)
+        } else {
+            None
+        };
         let (uid, refresh) = {
             match (&a.uid, &a.refresh) {
                 (Some(u), Some(r)) => (u.clone(), r.expose_secret().to_string()),
@@ -336,9 +373,13 @@ impl HttpClient {
         let parsed: RefreshResp = serde_json::from_slice(&resp.body)?;
         a.access = Some(SecretString::from(parsed.access_token.clone()));
         a.refresh = Some(SecretString::from(parsed.refresh_token.clone()));
+        if self.on_refresh.is_some() {
+            self.refresh_unsaved.store(true, Ordering::Release);
+        }
         drop(a);
         if let Some(cb) = &self.on_refresh {
             cb(&uid, &parsed.access_token, &parsed.refresh_token)?;
+            self.refresh_unsaved.store(false, Ordering::Release);
         }
         Ok(())
     }
@@ -463,6 +504,7 @@ impl Doer for HttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::{MemoryStore, Paths, SecretStore, Session};
     use serde::Deserialize;
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -644,6 +686,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_persistence_keeps_newer_in_memory_tokens_for_next_refresh() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer old-acc"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code":401})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .and(body_json(serde_json::json!({
+                "UID":"uid", "RefreshToken":"old-ref", "ResponseType":"token",
+                "GrantType":"refresh_token", "RedirectURI":"https://protonmail.ch", "State":"0"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"Code":1000,"AccessToken":"first-acc","RefreshToken":"first-ref"}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer first-acc"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code":401})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .and(body_json(serde_json::json!({
+                "UID":"uid", "RefreshToken":"first-ref", "ResponseType":"token",
+                "GrantType":"refresh_token", "RedirectURI":"https://protonmail.ch", "State":"0"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"Code":1000,"AccessToken":"second-acc","RefreshToken":"second-ref"}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer second-acc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code":1000,"Value":99})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "ruston-unsaved-refresh-{}-{unique}",
+            std::process::id()
+        ));
+        let paths = Paths::with_base(&base);
+        let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
+        Session {
+            uid: "uid".into(),
+            app_version: "Other".into(),
+            base_url: server.uri(),
+            password_mode: 1,
+            user_agent: None,
+        }
+        .save(
+            &paths,
+            "ruston",
+            store.as_ref(),
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("old-acc"),
+                refresh: SecretString::from("old-ref"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
+
+        let mut client = client(&server.uri());
+        client
+            .set_tokens(
+                "uid".into(),
+                SecretString::from("old-acc"),
+                SecretString::from("old-ref"),
+            )
+            .await;
+        let load_paths = paths.clone();
+        let load_store = store.clone();
+        client.set_refresh_load(Arc::new(move || {
+            let (lock, loaded) =
+                Session::lock_and_load(&load_paths, "ruston", load_store.as_ref())?;
+            Ok((lock, loaded.map(|session| session.tokens)))
+        }));
+        client.set_refresh_persist_fallible(Arc::new(|_, _, _| {
+            Err(Error::Session("keyring unavailable".into()))
+        }));
+        assert!(matches!(
+            client.decode::<ValueResp>(Request::get("/protected")).await,
+            Err(Error::Session(_))
+        ));
+        let save_store = store.clone();
+        client.set_refresh_persist_fallible(Arc::new(move |_, access, refresh| {
+            Session::save_tokens(save_store.as_ref(), access, refresh)
+        }));
+
+        let result: ValueResp = client.decode(Request::get("/protected")).await.unwrap();
+        assert_eq!(result.value, 99);
+        server.verify().await;
+        assert_eq!(
+            Session::load(&paths, "ruston", store.as_ref())
+                .unwrap()
+                .unwrap()
+                .tokens
+                .refresh
+                .expose_secret(),
+            "second-ref"
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
     async fn concurrent_401s_refresh_shared_session_once() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -704,6 +870,112 @@ mod tests {
         let state = auth.read().await;
         assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
         assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
+    }
+
+    #[tokio::test]
+    async fn separate_clients_reuse_rotated_tokens_from_shared_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer old-acc"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"Code":401}))
+                    .set_delay(std::time::Duration::from_millis(100)),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"Code":1000,"AccessToken":"new-acc","RefreshToken":"new-ref"}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer new-acc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code":1000,"Value":99})),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "ruston-shared-refresh-{}-{unique}",
+            std::process::id()
+        ));
+        let paths = Paths::with_base(&base);
+        let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
+        Session {
+            uid: "uid".into(),
+            app_version: "Other".into(),
+            base_url: server.uri(),
+            password_mode: 1,
+            user_agent: None,
+        }
+        .save(
+            &paths,
+            "ruston",
+            store.as_ref(),
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("old-acc"),
+                refresh: SecretString::from("old-ref"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
+
+        let mut clients = Vec::new();
+        for _ in 0..2 {
+            let mut client = client(&server.uri());
+            client
+                .set_tokens(
+                    "uid".into(),
+                    SecretString::from("old-acc"),
+                    SecretString::from("old-ref"),
+                )
+                .await;
+            let load_paths = paths.clone();
+            let load_store = store.clone();
+            client.set_refresh_load(Arc::new(move || {
+                let (lock, loaded) =
+                    Session::lock_and_load(&load_paths, "ruston", load_store.as_ref())?;
+                Ok((lock, loaded.map(|session| session.tokens)))
+            }));
+            let save_store = store.clone();
+            client.set_refresh_persist_fallible(Arc::new(move |_, access, refresh| {
+                Session::save_tokens(save_store.as_ref(), access, refresh)
+            }));
+            clients.push(client);
+        }
+
+        let (first, second) = tokio::join!(
+            clients[0].decode::<ValueResp>(Request::get("/protected")),
+            clients[1].decode::<ValueResp>(Request::get("/protected")),
+        );
+        assert_eq!(first.unwrap().value, 99);
+        assert_eq!(second.unwrap().value, 99);
+        server.verify().await;
+        assert_eq!(
+            Session::load(&paths, "ruston", store.as_ref())
+                .unwrap()
+                .unwrap()
+                .tokens
+                .refresh
+                .expose_secret(),
+            "new-ref"
+        );
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[tokio::test]

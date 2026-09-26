@@ -98,7 +98,19 @@ impl Client {
         &self.keys
     }
 
-    fn wire_refresh(http: &mut HttpClient, store: Arc<dyn SecretStore>) {
+    fn wire_refresh(
+        http: &mut HttpClient,
+        store: Arc<dyn SecretStore>,
+        paths: Paths,
+        profile: &str,
+    ) {
+        let load_store = store.clone();
+        let load_profile = profile.to_owned();
+        http.set_refresh_load(Arc::new(move || {
+            let (lock, loaded) =
+                Session::lock_and_load(&paths, &load_profile, load_store.as_ref())?;
+            Ok((lock, loaded.map(|session| session.tokens)))
+        }));
         http.set_refresh_persist_fallible(Arc::new(move |_uid, access, refresh| {
             Session::save_tokens(store.as_ref(), access, refresh)
         }));
@@ -172,19 +184,14 @@ impl Client {
             password_mode: login.password_mode,
             user_agent: opts.user_agent.clone(),
         };
-        session.save(
-            &Paths::system()?,
-            &opts.profile,
-            store.as_ref(),
-            &login.tokens,
-            &skp,
-        )?;
+        let paths = Paths::system()?;
+        session.save(&paths, &opts.profile, store.as_ref(), &login.tokens, &skp)?;
 
-        Self::wire_refresh(&mut http, store.clone());
+        Self::wire_refresh(&mut http, store.clone(), paths.clone(), &opts.profile);
         Ok(Client {
             http,
             keys,
-            paths: Paths::system()?,
+            paths,
             profile: opts.profile,
             store,
             sender_cache: Mutex::new(SenderKeyCache::default()),
@@ -212,7 +219,7 @@ impl Client {
             refresh,
         } = loaded.tokens;
         http.set_tokens(uid, access, refresh).await;
-        Self::wire_refresh(&mut http, store.clone());
+        Self::wire_refresh(&mut http, store.clone(), paths.clone(), profile);
 
         let provider = crypto::provider();
         let user = api::keys::get_user(&http).await?;

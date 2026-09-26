@@ -122,16 +122,19 @@ unconfirmed because it may happen at any stage of the send pipeline.
 
 ## Local state and tests
 
-The desktop uses the `ruston` session profile; the CLI defaults to `default`
-and accepts `--profile`. Both use core session storage: non-secret metadata in
-a platform config directory and credentials in the OS keychain. The storage
-identifier is `ruston-mail`, defined in core
+Both frontends use the `ruston` session profile by default, so a login in one
+can be resumed by the other. The CLI accepts `--profile` for separate sessions;
+its former `default` session and cache remain available with `--profile default`.
+Both use core session storage: non-secret metadata in a platform config
+directory and credentials in the OS keychain. The storage identifier is
+`ruston-mail`, defined in core
 [`lib.rs`](../crates/ruston-core/src/lib.rs). Desktop preferences live
 separately in `Ruston Mail`'s config directory. Core
 [`session/`](../crates/ruston-core/src/session/) stores access and refresh
-tokens as one keychain entry. Token refresh writes go through
-[`transport/`](../crates/ruston-core/src/transport/), which returns persistence
-errors to the request.
+tokens as one keychain entry. Session writes and token refresh use a per-profile
+file lock. On a 401, another process's rotated tokens are reloaded before
+refreshing again; persistence errors still reach the request. Signing out of a
+shared profile signs out both frontends.
 
 The desktop keeps mailbox data in memory. The core also offers a per-profile
 SQLite cache used by CLI sync and local search. Indexing a folder stores

@@ -11,8 +11,8 @@ use std::path::PathBuf;
     about = "Ruston Mail command-line client"
 )]
 pub struct Cli {
-    /// Session profile to use (separates stored credentials).
-    #[arg(long, global = true, default_value = "default")]
+    /// Session profile to use (shared with the desktop by default).
+    #[arg(long, global = true, default_value = ruston_core::DEFAULT_SESSION_PROFILE)]
     pub profile: String,
 
     /// Emit machine-readable JSON instead of human-readable text.

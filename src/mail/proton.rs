@@ -43,7 +43,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 /// Shared deadline for page metadata inspection; timeouts keep Proton grouping.
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
-const PROFILE: &str = "ruston";
+const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
 const SIGN_IN_CANCELLED: &str = "sign-in cancelled";
 /// Proton's standalone human-verification page.
 const VERIFY_ORIGIN: &str = "https://verify.proton.me";

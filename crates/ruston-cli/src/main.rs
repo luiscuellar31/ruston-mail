@@ -74,6 +74,18 @@ mod tests {
     }
 
     #[test]
+    fn shared_session_profile_is_default_but_can_be_overridden() {
+        assert_eq!(
+            parse(&["ruston-cli", "whoami"]).profile,
+            ruston_core::DEFAULT_SESSION_PROFILE
+        );
+        assert_eq!(
+            parse(&["ruston-cli", "--profile", "default", "whoami"]).profile,
+            "default"
+        );
+    }
+
+    #[test]
     fn watch_requires_positive_interval() {
         assert!(Cli::try_parse_from(["ruston-cli", "watch", "--interval", "0"]).is_err());
         assert!(Cli::try_parse_from(["ruston-cli", "watch", "--interval", "1"]).is_ok());

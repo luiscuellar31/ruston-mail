@@ -72,6 +72,9 @@ pub mod transport;
 /// Shared local storage identity for sessions, credentials, and the CLI cache.
 pub(crate) const STORAGE_NAME: &str = "ruston-mail";
 
+/// Session profile used by both frontends unless the CLI selects another.
+pub const DEFAULT_SESSION_PROFILE: &str = "ruston";
+
 pub use api::contacts::{Contact, ContactEmail};
 pub use api::events::LabelCount;
 pub use api::filters::Filter;
