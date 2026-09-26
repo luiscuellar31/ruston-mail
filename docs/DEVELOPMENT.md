@@ -9,8 +9,7 @@ on macOS, and CI checks both macOS and Linux.
 cargo run
 ```
 
-The first build needs network access because Cargo fetches `proton-core` from a
-pinned Git revision.
+Cargo builds the workspace locally (`ruston-mail`, `crates/ruston-core`, and `crates/ruston-cli`).
 
 ## Demo mailbox
 
@@ -34,8 +33,8 @@ Run the same checks used by CI before sending a change:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
 ```
 
 ## Packaging (macOS)
@@ -71,12 +70,12 @@ attachments safely.
 Files usually match across layers. For example, `app/auth.rs` decides the login
 flow and `ui/login.rs` draws it. Tests stay beside the code they cover.
 
-## Proton dependency
+## Workspace layout
 
-The project uses a fork of
-[`proton-core`](https://github.com/filippofinke/protonmail-rs/tree/main/crates/proton-core)
-with fixes needed by Ruston Mail's sign-in flow. `Cargo.toml` pins an exact Git
-revision, so dependency changes remain deliberate and reproducible.
+The repository is structured as a Cargo workspace:
+- `.` (`ruston-mail`): Native desktop GUI client.
+- `crates/ruston-core`: Pure-Rust Proton Mail SDK providing SRP auth, OpenPGP crypto, and the Mail API.
+- `crates/ruston-cli`: Command-line interface frontend for terminal users.
 
 ## HTTP diagnostics
 

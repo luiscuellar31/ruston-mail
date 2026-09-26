@@ -44,7 +44,7 @@ cd ruston-mail
 cargo run
 ```
 
-The first build downloads a pinned fork of `proton-core` from GitHub.
+The workspace includes the native desktop client (`ruston-mail`), the core SDK (`crates/ruston-core`), and the command-line interface (`crates/ruston-cli`).
 
 To look around without an account or network connection, start the fictional
 mailbox:
@@ -61,9 +61,9 @@ RUSTON_DEMO=1 cargo run
 
 ## Credits
 
-Authentication and Proton's mail cryptography come from
-[`proton-core`](https://github.com/filippofinke/protonmail-rs/tree/main/crates/proton-core),
-part of [`protonmail-rs`](https://github.com/filippofinke/protonmail-rs) by
+Authentication and Proton's mail cryptography are powered by
+[`ruston-core`](crates/ruston-core), originally adapted from
+[`protonmail-rs`](https://github.com/filippofinke/protonmail-rs) by
 Filippo Finke.
 
 Ruston Mail is available under the [MIT License](LICENSE).

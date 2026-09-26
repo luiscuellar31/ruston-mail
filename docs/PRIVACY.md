@@ -5,8 +5,8 @@ security audit. This page describes what the current code does.
 
 ## Mail content
 
-Ruston Mail talks directly to Proton through `proton-core`; it has no separate
-application server. `proton-core` handles authentication, key unlocking, and
+Ruston Mail talks directly to Proton through `ruston-core`; it has no separate
+application server. `ruston-core` handles authentication, key unlocking, and
 mail cryptography.
 
 Mail and mailbox lists stay in memory while the app runs. In addition to the
@@ -23,14 +23,14 @@ opening it by default; this prompt can be disabled in Settings.
 
 ## Saved session and settings
 
-The Proton password is not saved. `proton-core` stores the access token, refresh
+The Proton password is not saved. `ruston-core` stores the access token, refresh
 token, and key passphrase in the operating system's credential store:
 
 - Keychain on macOS.
 - Secret Service on Linux.
 - Windows Credential Manager on Windows.
 
-Non-secret session metadata is stored in `proton-core`'s platform config
+Non-secret session metadata is stored in `ruston-core`'s platform config
 directory. On Unix, its session directory and file use modes `0700` and `0600`.
 
 Ruston Mail keeps `settings.json` in its own platform config directory. It
