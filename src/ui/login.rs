@@ -429,11 +429,9 @@ fn signup_prompt(ui: &mut egui::Ui, messages: &mut Vec<Message>) -> egui::Rect {
 fn brand(ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.add(
-            egui::Image::new(egui::include_image!(
-                "../../assets/macos/ruston-mail-1024.png"
-            ))
-            .fit_to_exact_size(egui::Vec2::splat(LOGO_SIZE))
-            .alt_text("Ruston Mail logo"),
+            egui::Image::new(egui::include_image!("../../assets/ui/ruston-mail-128.png"))
+                .fit_to_exact_size(egui::Vec2::splat(LOGO_SIZE))
+                .alt_text("Ruston Mail logo"),
         );
         ui.label(egui::RichText::new("Ruston Mail").size(23.0).strong());
     });
