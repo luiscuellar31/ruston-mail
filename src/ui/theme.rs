@@ -104,13 +104,38 @@ pub enum Icon {
     Mail,
 }
 
+impl Icon {
+    fn source(self) -> egui::ImageSource<'static> {
+        match self {
+            Self::Inbox => egui::include_image!("../../assets/icons/bootstrap/inbox.svg"),
+            Self::Drafts => {
+                egui::include_image!("../../assets/icons/bootstrap/file-earmark-text.svg")
+            }
+            Self::Sent => egui::include_image!("../../assets/icons/bootstrap/send.svg"),
+            Self::Star => egui::include_image!("../../assets/icons/bootstrap/star.svg"),
+            Self::Archive => egui::include_image!("../../assets/icons/bootstrap/archive.svg"),
+            Self::Spam => {
+                egui::include_image!("../../assets/icons/bootstrap/exclamation-circle.svg")
+            }
+            Self::Trash => egui::include_image!("../../assets/icons/bootstrap/trash.svg"),
+            Self::Folder => egui::include_image!("../../assets/icons/bootstrap/folder.svg"),
+            Self::Label => egui::include_image!("../../assets/icons/bootstrap/tag.svg"),
+            Self::Mail => egui::include_image!("../../assets/icons/bootstrap/envelope.svg"),
+        }
+    }
+}
+
 pub fn icon_atom() -> Atom<'static> {
     Atom::custom(Id::new(ICON_ATOM_ID), egui::Vec2::splat(ICON_SIZE))
 }
 
 pub fn paint_atom_icon(ui: &egui::Ui, response: &AtomLayoutResponse, icon: Icon, color: Color32) {
-    if let Some(rect) = response.rect(Id::new(ICON_ATOM_ID)) {
-        paint_icon(ui.painter(), rect.center(), icon, color);
+    if let Some(rect) = response.rect(Id::new(ICON_ATOM_ID))
+        && ui.is_rect_visible(rect)
+    {
+        egui::Image::new(icon.source())
+            .tint(color)
+            .paint_at(ui, rect);
     }
 }
 
@@ -170,120 +195,6 @@ impl Widget for IconButton<'_> {
             None => WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), self.label),
         });
         response.on_hover_text(self.label)
-    }
-}
-
-pub fn paint_icon(painter: &egui::Painter, center: egui::Pos2, icon: Icon, color: Color32) {
-    let stroke = Stroke::new(1.4, color);
-    let point = |x, y| center + egui::vec2(x, y);
-    let line = |points: &[(f32, f32)]| {
-        painter.add(egui::Shape::line(
-            points.iter().map(|(x, y)| point(*x, *y)).collect(),
-            stroke,
-        ));
-    };
-
-    match icon {
-        Icon::Inbox => {
-            painter.rect_stroke(
-                egui::Rect::from_min_max(point(-6.5, -5.0), point(6.5, 5.5)),
-                CornerRadius::same(2),
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            line(&[
-                (-6.0, 1.0),
-                (-2.5, 1.0),
-                (-1.0, 3.0),
-                (1.0, 3.0),
-                (2.5, 1.0),
-                (6.0, 1.0),
-            ]);
-        }
-        Icon::Drafts => {
-            line(&[
-                (-5.0, -7.0),
-                (2.0, -7.0),
-                (6.0, -3.0),
-                (6.0, 7.0),
-                (-5.0, 7.0),
-                (-5.0, -7.0),
-            ]);
-            line(&[(2.0, -7.0), (2.0, -3.0), (6.0, -3.0)]);
-            painter.line_segment([point(-2.5, 0.0), point(3.0, 0.0)], stroke);
-            painter.line_segment([point(-2.5, 3.0), point(2.0, 3.0)], stroke);
-        }
-        Icon::Sent => {
-            line(&[
-                (-7.0, -5.5),
-                (7.0, 0.0),
-                (-7.0, 5.5),
-                (-3.0, 0.0),
-                (-7.0, -5.5),
-            ]);
-            painter.line_segment([point(-3.0, 0.0), point(7.0, 0.0)], stroke);
-        }
-        Icon::Star => {
-            let mut points = Vec::with_capacity(11);
-            for index in 0..=10 {
-                let angle =
-                    -std::f32::consts::FRAC_PI_2 + index as f32 * std::f32::consts::PI / 5.0;
-                let radius = if index % 2 == 0 { 7.0 } else { 3.1 };
-                points.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
-            }
-            painter.add(egui::Shape::line(points, stroke));
-        }
-        Icon::Archive => {
-            painter.rect_stroke(
-                egui::Rect::from_min_max(point(-5.5, -2.5), point(5.5, 6.0)),
-                CornerRadius::same(1),
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            painter.rect_stroke(
-                egui::Rect::from_min_max(point(-7.0, -6.0), point(7.0, -2.5)),
-                CornerRadius::same(1),
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            painter.line_segment([point(-2.0, 1.0), point(2.0, 1.0)], stroke);
-        }
-        Icon::Spam => {
-            painter.circle_stroke(center, 6.5, stroke);
-            painter.line_segment([point(0.0, -3.5), point(0.0, 1.5)], stroke);
-            painter.circle_filled(point(0.0, 4.0), 1.0, color);
-        }
-        Icon::Trash => {
-            line(&[(-5.0, -3.5), (-4.0, 6.5), (4.0, 6.5), (5.0, -3.5)]);
-            painter.line_segment([point(-6.5, -3.5), point(6.5, -3.5)], stroke);
-            line(&[(-2.5, -3.5), (-1.5, -6.0), (1.5, -6.0), (2.5, -3.5)]);
-            painter.line_segment([point(-1.5, -0.5), point(-1.0, 4.0)], stroke);
-            painter.line_segment([point(1.5, -0.5), point(1.0, 4.0)], stroke);
-        }
-        Icon::Folder => {
-            line(&[
-                (-7.0, -4.5),
-                (-1.5, -4.5),
-                (0.5, -2.5),
-                (7.0, -2.5),
-                (6.0, 5.5),
-                (-7.0, 5.5),
-                (-7.0, -4.5),
-            ]);
-        }
-        Icon::Label => {
-            painter.circle_filled(center, 4.0, color);
-        }
-        Icon::Mail => {
-            let rect = egui::Rect::from_min_max(point(-7.0, -5.0), point(7.0, 5.0));
-            painter.rect_stroke(
-                rect,
-                CornerRadius::same(2),
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            line(&[(-6.5, -4.0), (0.0, 1.0), (6.5, -4.0)]);
-        }
     }
 }
 
@@ -512,6 +423,45 @@ pub fn card(ui: &egui::Ui) -> egui::Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_ui_icons_render_and_can_be_tinted() {
+        let context = egui::Context::default();
+        install(&context);
+
+        for icon in [
+            Icon::Inbox,
+            Icon::Drafts,
+            Icon::Sent,
+            Icon::Star,
+            Icon::Archive,
+            Icon::Spam,
+            Icon::Trash,
+            Icon::Folder,
+            Icon::Label,
+            Icon::Mail,
+        ] {
+            let egui::ImageSource::Bytes { bytes, .. } = icon.source() else {
+                panic!("{icon:?} must be bundled");
+            };
+            let image = egui_extras::image::load_svg_bytes(bytes.as_ref(), &Default::default())
+                .expect("bundled icon must render");
+            assert_eq!(image.size, [16, 16], "{icon:?}");
+            assert!(
+                image.pixels.iter().any(|pixel| {
+                    pixel.a() > 0 && pixel.r() == 255 && pixel.g() == 255 && pixel.b() == 255
+                }),
+                "{icon:?} must have white pixels for tinting"
+            );
+            assert!(
+                egui::Image::new(icon.source())
+                    .load_for_size(&context, egui::Vec2::splat(ICON_SIZE))
+                    .expect("bundled icon must load through egui")
+                    .is_ready(),
+                "{icon:?} must be ready to paint"
+            );
+        }
+    }
 
     #[test]
     fn white_text_on_accent_buttons_keeps_adequate_contrast() {
