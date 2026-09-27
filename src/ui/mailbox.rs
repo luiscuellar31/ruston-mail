@@ -170,13 +170,15 @@ fn sidebar(
                     .color(theme::colors(ui).danger),
             );
         }
-        detail(
-            ui,
-            if app.is_demo() {
-                "Demo mode · fictional mail"
-            } else {
-                email.unwrap_or("Proton Mail account")
-            },
+        let account_label = if app.is_demo() {
+            "Demo mode"
+        } else {
+            email.unwrap_or("Proton Mail account")
+        };
+        ui.label(
+            egui::RichText::new(account_label)
+                .size(12.0)
+                .color(theme::colors(ui).muted),
         );
     });
 }
