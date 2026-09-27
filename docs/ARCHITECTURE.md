@@ -52,6 +52,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   `App::update`; password visibility stays only in transient UI state. The
   desktop dispatch clears it on submit, cancellation, or a move away from a
   password step.
+- With a mailbox open, [`ui/mailbox.rs`](../src/ui/mailbox.rs) keeps the sidebar
+  visible and replaces the conversation list and reader with
+  [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. The desktop
+  UI holds preference edits until Apply and confirms whether to apply or discard
+  them before leaving for a folder, composer, or sign-out.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches

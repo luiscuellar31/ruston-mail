@@ -70,7 +70,8 @@ impl App {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
         };
-        // Modal UI blocks mailbox shortcuts except Escape and toggling settings.
+        // Settings blocks mailbox shortcuts except Escape and its toggle;
+        // link prompts allow only Escape.
         let shortcut_blocked = (self.showing_settings && shortcut != Shortcut::ToggleSettings)
             || self.pending_link.is_some();
         if shortcut_blocked && shortcut != Shortcut::Dismiss {
@@ -102,8 +103,7 @@ impl App {
             }
             // One layer at a time, starting with the most recent.
             Shortcut::Dismiss => {
-                // Leave settings before touching a message still open in the
-                // mailbox window.
+                // Leave settings before touching a message still open behind it.
                 if self.showing_settings {
                     self.showing_settings = false;
                     return Effects::none();

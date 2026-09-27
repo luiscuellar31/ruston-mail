@@ -100,7 +100,7 @@ pub enum Message {
     AttachmentSaved(SessionEpoch, Result<PathBuf, SaveError>),
     /// Reveals a downloaded file in the system file manager.
     RevealAttachment(PathBuf),
-    /// Opens or closes the settings window.
+    /// Shows or hides Settings beside the mailbox sidebar.
     ShowSettings(bool),
     /// Marks opened mail as read, or leaves it unread.
     SetMarkReadOnOpen(bool),
@@ -179,7 +179,7 @@ pub struct App {
     /// The UI waits for resizing to settle before calling [`Self::save_settings`].
     settings_revision: u64,
     settings_written: u64,
-    /// Whether the settings window is open.
+    /// Whether Settings replaces the conversation list and reader.
     showing_settings: bool,
     /// The message being written, if there is one.
     compose: Option<Compose>,
@@ -633,7 +633,10 @@ impl App {
             Message::SetComposePlacement(placement) => {
                 self.remember(|settings| settings.compose_placement = placement);
             }
-            Message::OpenCompose => self.open_compose(),
+            Message::OpenCompose => {
+                self.showing_settings = false;
+                self.open_compose();
+            }
             Message::Answer {
                 message_id,
                 forward,
@@ -993,6 +996,7 @@ impl App {
     }
 
     fn select_folder(&mut self, folder: Folder) -> Effects {
+        self.showing_settings = false;
         self.pending_link = None;
         self.saved_attachment = None;
         self.remember_folder(&folder);

@@ -85,6 +85,13 @@ messages yet.
 
 ## Settings
 
+Select **Settings** in the sidebar to show preferences beside it, in place of
+the conversation list and reader. **Apply** saves changes without leaving.
+Press `Esc`, select a folder, or choose **Back to mail** to return. If you have
+unapplied changes, Ruston Mail asks whether to apply them, discard them, or keep
+editing. The same confirmation appears before writing a new message or signing
+out from Settings.
+
 Settings control:
 
 - Whether opening mail marks it read.

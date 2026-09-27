@@ -2,16 +2,17 @@ use chrono::{DateTime, Datelike, Local, TimeZone};
 use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
-use super::{UiState, UndoNotice, compose, reader, theme};
+use super::{UiState, UndoNotice, compose, reader, settings, theme};
 use crate::app::{App, ListStatus, Mailbox, Message, UndoMove, panel_ratios, panel_widths};
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
-use crate::settings::ComposePlacement;
+use crate::settings::{ComposePlacement, Settings};
 
 pub(super) fn show(
     root: &mut egui::Ui,
     app: &App,
     email: Option<&str>,
     signing_out: bool,
+    settings_draft: Option<&mut Settings>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
@@ -29,6 +30,21 @@ pub(super) fn show(
         .show(root, |ui| {
             sidebar(ui, app, mailbox, email, signing_out, messages)
         });
+
+    if let Some(draft) = settings_draft {
+        egui::CentralPanel::default()
+            .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
+            .show(root, |ui| {
+                settings::show(ui, app.settings(), draft, messages)
+            });
+
+        let mut actual = app.panels();
+        actual.sidebar = sidebar.response.rect.width() / window_width;
+        if (actual.sidebar - app.panels().sidebar).abs() > 0.002 {
+            messages.push(Message::PanelsResized(actual));
+        }
+        return;
+    }
 
     let remaining = (window_width - sidebar.response.rect.width()).max(400.0);
     let conversations = egui::Panel::left("conversation-list")
@@ -743,6 +759,57 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+
+    #[test]
+    fn settings_replaces_mail_panes_and_preserves_their_split() {
+        fn contains_text(shape: &egui::epaint::Shape, text: &str) -> bool {
+            match shape {
+                egui::epaint::Shape::Text(label) => label.galley.text() == text,
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().any(|shape| contains_text(shape, text))
+                }
+                _ => false,
+            }
+        }
+
+        let (app, _) = App::boot(true, Settings::default());
+        let mut draft = app.settings().clone();
+        let mut state = UiState::default();
+        let mut messages = Vec::new();
+        let original_split = app.panels().conversations;
+        let context = egui::Context::default();
+        theme::install(&context);
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(820.0, 480.0),
+                )),
+                ..Default::default()
+            },
+            |root| {
+                show(
+                    root,
+                    &app,
+                    None,
+                    false,
+                    Some(&mut draft),
+                    &mut state,
+                    &mut messages,
+                );
+            },
+        );
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|clipped| { contains_text(&clipped.shape, "Back to mail") })
+        );
+        assert!(messages.iter().all(|message| {
+            !matches!(message, Message::PanelsResized(panels) if panels.conversations != original_split)
+        }));
+        output.drop_without_applying_deltas();
+    }
 
     #[test]
     fn new_message_text_is_centered_in_its_button() {

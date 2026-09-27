@@ -218,14 +218,14 @@ fn a_link_skips_the_prompt_only_when_confirmation_is_off() {
 }
 
 #[test]
-fn the_settings_window_opens_and_steps_back() {
+fn the_settings_pane_opens_and_steps_back() {
     let mut app = loaded_demo_app();
     assert!(!app.showing_settings());
 
     let _ = app.update(Message::ShowSettings(true));
     assert!(app.showing_settings());
 
-    // Escape closes the settings window first.
+    // Escape closes the settings pane first.
     press(&mut app, Key::Escape);
 
     assert!(!app.showing_settings());
@@ -529,19 +529,18 @@ fn signing_out_takes_the_account_folders_with_it() {
 }
 
 #[test]
-fn signing_out_from_the_settings_window_comes_back_to_the_mailbox() {
+fn signing_out_closes_the_settings_pane() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::ShowSettings(true));
 
     let _ = app.update(Message::Logout);
 
-    // Otherwise signing back in opens the settings window again, with
-    // no sign that it was ever left open.
+    // Signing back in must not restore the previous account's Settings view.
     assert!(!app.showing_settings());
 }
 
 #[test]
-fn settings_shortcuts_do_not_reach_the_mailbox_window() {
+fn settings_shortcuts_do_not_reach_the_hidden_mailbox_panes() {
     let mut app = loaded_demo_app();
     press(&mut app, Key::Character('j'));
     let opened = app
@@ -552,8 +551,7 @@ fn settings_shortcuts_do_not_reach_the_mailbox_window() {
     assert!(opened.is_some());
 
     let _ = app.update(Message::ShowSettings(true));
-    // Stepping the list from the settings window would change the selection
-    // in the other window, and ask Proton for a conversation unexpectedly.
+    // Stepping the hidden list would change the selection unexpectedly.
     press(&mut app, Key::Character('j'));
     assert_eq!(
         app.mailbox().unwrap().selected_conversation(),

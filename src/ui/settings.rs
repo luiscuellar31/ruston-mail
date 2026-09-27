@@ -5,42 +5,7 @@ use crate::app::Message;
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{Appearance, ComposePlacement, Settings, StartFolder};
 
-const WINDOW_SIZE: [f32; 2] = [720.0, 720.0];
-const MIN_WINDOW_SIZE: [f32; 2] = [520.0, 420.0];
-
-pub(super) fn viewport_id() -> egui::ViewportId {
-    egui::ViewportId::from_hash_of("settings-window")
-}
-
-pub(super) fn show_window(
-    context: &egui::Context,
-    current: &Settings,
-    draft: &mut Settings,
-) -> Vec<Message> {
-    context.show_viewport_immediate(
-        viewport_id(),
-        egui::ViewportBuilder::default()
-            .with_title("Settings")
-            .with_inner_size(WINDOW_SIZE)
-            .with_min_inner_size(MIN_WINDOW_SIZE),
-        |root, _class| {
-            let mut messages = Vec::new();
-            show(root, current, draft, &mut messages);
-
-            if root.input(|input| {
-                input.viewport().close_requested()
-                    || input.key_pressed(egui::Key::Escape)
-                    || (input.modifiers.command && input.key_pressed(egui::Key::Comma))
-            }) {
-                messages.push(Message::ShowSettings(false));
-            }
-
-            messages
-        },
-    )
-}
-
-fn show(
+pub(super) fn show(
     root: &mut egui::Ui,
     current: &Settings,
     draft: &mut Settings,
@@ -53,7 +18,7 @@ fn show(
         )
         .show(root, |ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Close").clicked() {
+                if ui.button("Back to mail").clicked() {
                     messages.push(Message::ShowSettings(false));
                 }
 
@@ -72,13 +37,47 @@ fn show(
             });
         });
 
-    egui::CentralPanel::default()
-        .frame(theme::panel_frame(theme::colors(root).panel))
-        .show(root, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| page(ui, draft));
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(root, |ui| page(ui, draft));
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ExitDecision {
+    KeepEditing,
+    Discard,
+    Apply,
+}
+
+pub(super) fn confirm_exit(context: &egui::Context) -> Option<ExitDecision> {
+    let mut decision = None;
+    let modal = egui::Modal::new(egui::Id::new("unsaved-settings")).show(context, |ui| {
+        ui.heading("Unsaved settings");
+        ui.label("Apply your changes before leaving Settings?");
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Keep editing").clicked() {
+                decision = Some(ExitDecision::KeepEditing);
+            }
+            if ui.button("Discard changes").clicked() {
+                decision = Some(ExitDecision::Discard);
+            }
+            if ui
+                .add(
+                    egui::Button::new("Apply and continue")
+                        .fill(theme::colors(ui).accent_soft)
+                        .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
+                )
+                .clicked()
+            {
+                decision = Some(ExitDecision::Apply);
+            }
         });
+    });
+    if decision.is_none() && modal.should_close() {
+        decision = Some(ExitDecision::KeepEditing);
+    }
+    decision
 }
 
 fn page(ui: &mut egui::Ui, settings: &mut Settings) {
@@ -239,7 +238,7 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings) {
     });
 }
 
-fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
+pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
     let mut messages = Vec::new();
     if draft.mark_read_on_open != current.mark_read_on_open {
         messages.push(Message::SetMarkReadOnOpen(draft.mark_read_on_open));

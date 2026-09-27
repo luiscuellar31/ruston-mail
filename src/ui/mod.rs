@@ -69,8 +69,10 @@ struct DesktopApp {
     title: String,
     dock_badge: Option<u32>,
     auto_refresh: AutoRefresh,
-    /// Preferences being edited in the settings window until Apply is pressed.
+    /// Preferences being edited in the settings pane until Apply is pressed.
     settings_draft: Option<Settings>,
+    /// Where to go after the user decides what to do with unsaved preferences.
+    pending_settings_exit: Option<Message>,
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
@@ -98,6 +100,7 @@ impl DesktopApp {
             dock_badge: None,
             auto_refresh: AutoRefresh::default(),
             settings_draft: None,
+            pending_settings_exit: None,
             settings_seen: 0,
             settings_seen_at: 0.0,
             last_window_size: None,
@@ -107,6 +110,40 @@ impl DesktopApp {
     }
 
     fn dispatch(&mut self, message: Message, context: &egui::Context) {
+        let message = if self.app.showing_settings() {
+            match message {
+                Message::KeyPressed(press)
+                    if (press.key == Key::Escape && !press.command && !press.other_modifier)
+                        || (press.key == Key::Character(',') && press.command) =>
+                {
+                    Message::ShowSettings(false)
+                }
+                other => other,
+            }
+        } else {
+            message
+        };
+        if self.app.showing_settings()
+            && matches!(
+                message,
+                Message::ShowSettings(false)
+                    | Message::SelectFolder(_)
+                    | Message::OpenCompose
+                    | Message::Logout
+            )
+        {
+            if self.pending_settings_exit.is_some() {
+                return;
+            }
+            if self.settings_draft.as_ref().is_some_and(|draft| {
+                !settings::preference_changes(self.app.settings(), draft).is_empty()
+            }) {
+                self.pending_settings_exit = Some(message);
+                context.request_repaint();
+                return;
+            }
+        }
+
         let now = context.input(|input| input.time);
         let submitted_or_cancelled = matches!(&message, Message::Submit | Message::CancelChallenge);
         if matches!(&message, Message::RefreshMailbox) {
@@ -129,6 +166,26 @@ impl DesktopApp {
         if let Some((request, succeeded)) = page {
             self.auto_refresh.page_finished(request, succeeded, now);
         }
+    }
+
+    fn resolve_settings_exit(&mut self, decision: settings::ExitDecision, context: &egui::Context) {
+        let Some(destination) = self.pending_settings_exit.take() else {
+            return;
+        };
+        context.request_repaint();
+        match decision {
+            settings::ExitDecision::KeepEditing => return,
+            settings::ExitDecision::Discard => {}
+            settings::ExitDecision::Apply => {
+                if let Some(draft) = &self.settings_draft {
+                    for change in settings::preference_changes(self.app.settings(), draft) {
+                        self.dispatch(change, context);
+                    }
+                }
+            }
+        }
+        self.settings_draft = None;
+        self.dispatch(destination, context);
     }
 
     fn execute(&mut self, effects: Effects, context: &egui::Context) {
@@ -259,8 +316,6 @@ impl DesktopApp {
 
     fn app_has_focus(&self, context: &egui::Context) -> bool {
         context.input_for(egui::ViewportId::ROOT, |input| input.focused)
-            || self.app.showing_settings()
-                && context.input_for(settings::viewport_id(), |input| input.focused)
             || self.app.settings().compose_placement == ComposePlacement::Window
                 && self.app.compose().is_some()
                 && context.input_for(compose::viewport_id(), |input| input.focused)
@@ -369,6 +424,12 @@ impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = ui.ctx().clone();
         let mut messages = Vec::new();
+        if !self.app.showing_settings()
+            || !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+        {
+            self.settings_draft = None;
+            self.pending_settings_exit = None;
+        }
         version_footer(ui);
         match self.app.auth_state() {
             AuthState::CheckingSession => status_view(ui, "Opening Ruston Mail…"),
@@ -381,25 +442,25 @@ impl eframe::App for DesktopApp {
             }
             AuthState::Authenticated { email } => {
                 if self.app.mailbox().is_some() {
+                    let draft = if self.app.showing_settings() {
+                        Some(
+                            self.settings_draft
+                                .get_or_insert_with(|| self.app.settings().clone()),
+                        )
+                    } else {
+                        None
+                    };
                     mailbox::show(
                         ui,
                         &self.app,
                         email.as_deref(),
                         false,
+                        draft,
                         &mut self.ui,
                         &mut messages,
                     );
                 } else {
                     status_view(ui, "Opening mailbox…");
-                }
-
-                if self.app.showing_settings() {
-                    let draft = self
-                        .settings_draft
-                        .get_or_insert_with(|| self.app.settings().clone());
-                    messages.extend(settings::show_window(&context, self.app.settings(), draft));
-                } else {
-                    self.settings_draft = None;
                 }
 
                 if self.app.settings().compose_placement == ComposePlacement::Window
@@ -410,16 +471,23 @@ impl eframe::App for DesktopApp {
             }
             AuthState::SigningOut => {
                 if self.app.mailbox().is_some() {
-                    mailbox::show(ui, &self.app, None, true, &mut self.ui, &mut messages);
+                    mailbox::show(ui, &self.app, None, true, None, &mut self.ui, &mut messages);
                 } else {
                     status_view(ui, "Signing out…");
                 }
             }
         }
 
+        let exit_decision = self
+            .pending_settings_exit
+            .as_ref()
+            .and_then(|_| settings::confirm_exit(&context));
         let has_messages = !messages.is_empty();
         for message in messages {
             self.dispatch(message, &context);
+        }
+        if let Some(decision) = exit_decision {
+            self.resolve_settings_exit(decision, &context);
         }
         if has_messages {
             context.request_repaint();
@@ -539,6 +607,131 @@ fn show_desktop_notification(_sender: &str, _subject: &str) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn demo_with_settings() -> (DesktopApp, egui::Context) {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::ShowSettings(true), &context);
+        desktop.settings_draft = Some(desktop.app.settings().clone());
+        (desktop, context)
+    }
+
+    #[test]
+    fn unchanged_settings_close_with_escape_or_a_folder() {
+        let (mut desktop, context) = demo_with_settings();
+        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        assert!(!desktop.app.showing_settings());
+        assert!(desktop.pending_settings_exit.is_none());
+
+        let (mut desktop, context) = demo_with_settings();
+        desktop.dispatch(Message::SelectFolder(Folder::INBOX), &context);
+        assert!(!desktop.app.showing_settings());
+        assert_eq!(desktop.app.mailbox().unwrap().folder(), &Folder::INBOX);
+        assert!(desktop.pending_settings_exit.is_none());
+    }
+
+    #[test]
+    fn escape_and_command_comma_confirm_dirty_settings() {
+        let (mut desktop, context) = demo_with_settings();
+        desktop.settings_draft.as_mut().unwrap().confirm_links = false;
+
+        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        assert!(desktop.app.showing_settings());
+        assert!(matches!(
+            desktop.pending_settings_exit,
+            Some(Message::ShowSettings(false))
+        ));
+        desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
+
+        desktop.dispatch(
+            Message::KeyPressed(key(Key::Character(','), true)),
+            &context,
+        );
+        assert!(matches!(
+            desktop.pending_settings_exit,
+            Some(Message::ShowSettings(false))
+        ));
+        desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
+        assert!(!desktop.app.showing_settings());
+        assert!(desktop.app.settings().confirm_links);
+    }
+
+    #[test]
+    fn applying_settings_keeps_the_pane_open_and_allows_a_clean_exit() {
+        let (mut desktop, context) = demo_with_settings();
+        desktop.settings_draft.as_mut().unwrap().confirm_links = false;
+        let changes = settings::preference_changes(
+            desktop.app.settings(),
+            desktop.settings_draft.as_ref().unwrap(),
+        );
+        for change in changes {
+            desktop.dispatch(change, &context);
+        }
+        assert!(desktop.app.showing_settings());
+        assert!(!desktop.app.settings().confirm_links);
+
+        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        assert!(!desktop.app.showing_settings());
+        assert!(desktop.pending_settings_exit.is_none());
+    }
+
+    #[test]
+    fn dirty_settings_keep_the_requested_folder_until_a_decision() {
+        let (mut desktop, context) = demo_with_settings();
+        desktop.settings_draft.as_mut().unwrap().confirm_links = false;
+        let original = desktop.app.mailbox().unwrap().folder().clone();
+        let sent = Folder::System(crate::mail::MailFolder::Sent);
+
+        desktop.dispatch(Message::SelectFolder(sent.clone()), &context);
+        assert!(desktop.app.showing_settings());
+        assert_eq!(desktop.app.mailbox().unwrap().folder(), &original);
+        assert!(matches!(
+            desktop.pending_settings_exit,
+            Some(Message::SelectFolder(_))
+        ));
+
+        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        assert!(matches!(
+            desktop.pending_settings_exit,
+            Some(Message::SelectFolder(_)),
+        ));
+        desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
+        assert!(desktop.app.showing_settings());
+        assert!(desktop.pending_settings_exit.is_none());
+
+        desktop.dispatch(Message::SelectFolder(sent.clone()), &context);
+        desktop.resolve_settings_exit(settings::ExitDecision::Apply, &context);
+        assert!(!desktop.app.showing_settings());
+        assert_eq!(desktop.app.mailbox().unwrap().folder(), &sent);
+        assert!(!desktop.app.settings().confirm_links);
+        assert!(desktop.settings_draft.is_none());
+    }
+
+    #[test]
+    fn dirty_settings_can_be_discarded_before_composing_or_signing_out() {
+        let (mut desktop, context) = demo_with_settings();
+        desktop.settings_draft.as_mut().unwrap().appearance = crate::settings::Appearance::Light;
+        desktop.dispatch(Message::OpenCompose, &context);
+        assert!(desktop.app.compose().is_none());
+        desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
+        assert!(!desktop.app.showing_settings());
+        assert!(desktop.app.compose().is_some());
+        assert_eq!(
+            desktop.app.settings().appearance,
+            crate::settings::Appearance::Dark
+        );
+
+        let (mut desktop, context) = demo_with_settings();
+        desktop.settings_draft.as_mut().unwrap().confirm_links = false;
+        desktop.dispatch(Message::Logout, &context);
+        assert!(matches!(
+            desktop.app.auth_state(),
+            AuthState::Authenticated { .. }
+        ));
+        desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
+        assert!(matches!(desktop.app.auth_state(), AuthState::SignedOut));
+        assert!(desktop.app.settings().confirm_links);
+    }
 
     #[test]
     fn show_desktop_notification_does_not_panic() {
