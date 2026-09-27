@@ -38,7 +38,7 @@ pub(super) fn show(
         ui.spacing_mut().scroll = theme::panel_scroll_style();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| page(ui, draft));
+            .show(ui, |ui| page(ui, draft, messages));
     });
 }
 
@@ -92,7 +92,7 @@ pub(super) fn confirm_exit(context: &egui::Context) -> Option<ExitDecision> {
     decision
 }
 
-fn page(ui: &mut egui::Ui, settings: &mut Settings) {
+fn page(ui: &mut egui::Ui, settings: &mut Settings, messages: &mut Vec<Message>) {
     ui.heading(egui::RichText::new("Settings").size(24.0));
     ui.add_space(18.0);
 
@@ -229,6 +229,11 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings) {
             ui,
             "Displays a system notification with the sender and subject when new mail arrives.",
         );
+        ui.add_space(12.0);
+        if ui.button("Reset window and pane sizes").clicked() {
+            messages.push(Message::ResetLayout);
+        }
+        description(ui, "Restores the default layout immediately.");
     });
     ui.add_space(14.0);
     section(ui, "Keyboard", |ui| {
@@ -240,13 +245,6 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings) {
         for (keys, what) in SHORTCUTS {
             shortcut(ui, keys, what);
         }
-    });
-    ui.add_space(14.0);
-    section(ui, "Remembered automatically", |ui| {
-        description(
-            ui,
-            "Window size and pane widths return the way you left them.",
-        );
     });
     ui.add_space(14.0);
     ui.with_layout(Layout::right_to_left(Align::Center), version_label);

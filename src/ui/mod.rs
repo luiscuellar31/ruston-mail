@@ -17,6 +17,7 @@ use auto_refresh::AutoRefresh;
 const MIN_WINDOW_SIZE: [f32; 2] = [820.0, 480.0];
 /// Debounces settings writes while a window or divider is dragged.
 const SETTINGS_QUIET: f32 = 0.75;
+const LAYOUT_RESET_WAIT: f64 = 2.0;
 
 #[derive(Default)]
 pub(super) struct UiState {
@@ -78,6 +79,8 @@ struct DesktopApp {
     settings_seen_at: f64,
     /// Last window size dispatched, avoiding busy-loop repainting when window size is unchanged.
     last_window_size: Option<Window>,
+    /// Waits for the requested window size before resetting egui's cached pane widths.
+    layout_reset_at: Option<f64>,
 }
 
 impl DesktopApp {
@@ -104,6 +107,7 @@ impl DesktopApp {
             settings_seen: 0,
             settings_seen_at: 0.0,
             last_window_size: None,
+            layout_reset_at: None,
         };
         desktop.execute(effects, context);
         desktop
@@ -142,6 +146,10 @@ impl DesktopApp {
                 context.request_repaint();
                 return;
             }
+        }
+        // The reset click was drawn with the previous pane widths.
+        if self.layout_reset_at.is_some() && matches!(message, Message::PanelsResized(_)) {
+            return;
         }
 
         let now = context.input(|input| input.time);
@@ -199,6 +207,18 @@ impl DesktopApp {
                 UiEffect::FocusSearch => self.ui.focus_search = true,
                 UiEffect::ScrollReaderTop => self.ui.scroll_reader_top = true,
                 UiEffect::RevealConversation(id) => self.ui.reveal_conversation = Some(id),
+                UiEffect::ResetLayout => {
+                    let window = self.app.settings().window;
+                    let zoom = context.zoom_factor();
+                    context.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                        window.width / zoom,
+                        window.height / zoom,
+                    )));
+                    self.layout_reset_at = Some(context.input(|input| input.time));
+                    context.request_repaint_after(std::time::Duration::from_secs_f64(
+                        LAYOUT_RESET_WAIT,
+                    ));
+                }
                 UiEffect::NotifyNewMail { sender, subject } => {
                     show_desktop_notification(&sender, &subject);
                 }
@@ -243,6 +263,18 @@ impl DesktopApp {
             width: unscaled.x,
             height: unscaled.y,
         };
+        if let Some(started_at) = self.layout_reset_at {
+            let target = Window::default();
+            let reached = (current.width - target.width).abs() <= 1.0
+                && (current.height - target.height).abs() <= 1.0;
+            let timed_out = context.input(|input| input.time) - started_at >= LAYOUT_RESET_WAIT;
+            if !reached && !timed_out {
+                return;
+            }
+            self.layout_reset_at = None;
+            self.last_window_size = None;
+            mailbox::reset_panel_sizes(context);
+        }
         if let Some(last) = self.last_window_size
             && (last.width - current.width).abs() < f32::EPSILON
             && (last.height - current.height).abs() < f32::EPSILON
@@ -906,5 +938,116 @@ mod tests {
         assert_eq!(desktop.app.settings().window.width, 1200.0);
         assert_eq!(desktop.app.settings().window.height, 800.0);
         assert!(desktop.app.settings_revision() > revision_before);
+    }
+
+    #[test]
+    fn reset_layout_handles_window_resize_and_rejection() {
+        fn input(size: egui::Vec2) -> egui::RawInput {
+            let mut input = egui::RawInput::default();
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .inner_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+            input
+        }
+
+        let context = egui::Context::default();
+        let old = Window {
+            width: 1_300.0,
+            height: 900.0,
+        };
+        context
+            .run_ui(input(egui::vec2(old.width, old.height)), |_| {})
+            .drop_without_applying_deltas();
+        let mut settings = Settings::default();
+        settings.window = old;
+        let mut desktop = DesktopApp::with_context(&context, true, settings);
+        desktop.remember_window_size(&context);
+
+        let panel_ids = ["mailbox-sidebar", "conversation-list"].map(egui::Id::new);
+        context.data_mut(|data| {
+            for id in panel_ids {
+                data.insert_persisted(
+                    id,
+                    egui::containers::panel::PanelState {
+                        outer_rect: egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(350.0, 900.0),
+                        ),
+                    },
+                );
+            }
+        });
+
+        desktop.dispatch(Message::ResetLayout, &context);
+        desktop.dispatch(
+            Message::PanelsResized(crate::settings::Panels {
+                sidebar: 0.35,
+                conversations: 0.6,
+            }),
+            &context,
+        );
+        desktop.remember_window_size(&context);
+        assert_eq!(desktop.app.settings().window, Window::default());
+        assert_eq!(desktop.app.panels(), crate::settings::Panels::default());
+        assert!(desktop.layout_reset_at.is_some());
+        for id in panel_ids {
+            assert!(egui::containers::panel::PanelState::load(&context, id).is_some());
+        }
+
+        let default = Window::default();
+        context
+            .run_ui(input(egui::vec2(default.width, default.height)), |_| {})
+            .drop_without_applying_deltas();
+        desktop.remember_window_size(&context);
+        assert_eq!(desktop.layout_reset_at, None);
+        assert_eq!(desktop.app.settings().window, default);
+        for id in panel_ids {
+            assert!(egui::containers::panel::PanelState::load(&context, id).is_none());
+        }
+
+        // If the window manager refuses a later resize, keep its actual size.
+        context
+            .run_ui(input(egui::vec2(old.width, old.height)), |_| {})
+            .drop_without_applying_deltas();
+        desktop.remember_window_size(&context);
+        desktop.dispatch(Message::ResetLayout, &context);
+        let mut denied = input(egui::vec2(old.width, old.height));
+        denied.time = Some(desktop.layout_reset_at.unwrap() + LAYOUT_RESET_WAIT + 1.0);
+        context
+            .run_ui(denied, |_| {})
+            .drop_without_applying_deltas();
+        desktop.remember_window_size(&context);
+        assert_eq!(desktop.layout_reset_at, None);
+        assert_eq!(desktop.app.settings().window, old);
+    }
+
+    #[test]
+    fn reset_layout_requests_the_default_window_size_at_current_zoom() {
+        let context = egui::Context::default();
+        let mut settings = Settings::default();
+        settings.zoom = 2.0;
+        let mut desktop = DesktopApp::with_context(&context, true, settings);
+        context.set_zoom_factor(2.0);
+        context
+            .run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+
+        let output = context.run_ui(egui::RawInput::default(), |_| {
+            desktop.dispatch(Message::ResetLayout, &context);
+        });
+        let expected = egui::vec2(
+            Window::default().width / 2.0,
+            Window::default().height / 2.0,
+        );
+        let requested = output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|command| {
+                matches!(command, egui::ViewportCommand::InnerSize(size) if *size == expected)
+            });
+        output.drop_without_applying_deltas();
+        assert!(requested);
     }
 }

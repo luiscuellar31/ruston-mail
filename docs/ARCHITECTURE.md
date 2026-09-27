@@ -56,7 +56,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   visible and replaces the conversation list and reader with
   [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. The desktop
   UI holds preference edits until Apply and confirms whether to apply or discard
-  them before leaving for a folder, composer, or sign-out.
+  them before leaving for a folder, composer, or sign-out. Resetting the layout
+  immediately restores the default window and pane sizes in `App`; the UI
+  requests the window resize and clears egui's cached pane widths once it settles.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches

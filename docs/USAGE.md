@@ -102,9 +102,12 @@ Settings control:
 - The folder shown at startup.
 - Dark or light appearance. Dark remains the default for existing settings.
 - Interface scale.
+- A button to reset the window and pane sizes to their defaults immediately.
 - On macOS, whether the Dock icon shows the unread inbox count.
 
-Window size and pane widths are remembered automatically.
+Window size and pane widths are remembered automatically. Use **Reset window and
+pane sizes** under Settings → Interface to restore the defaults; this action
+takes effect immediately and does not apply other pending preference changes.
 Choose Dark or Light under Settings → Interface and press Apply. The selection
 is saved for the next run; the app does not follow the system theme.
 The sign-in screen also has a theme button in its header and a control beside

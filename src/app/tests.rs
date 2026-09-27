@@ -1565,6 +1565,30 @@ fn resizing_panels_only_changes_layout() {
 }
 
 #[test]
+fn resetting_layout_preserves_other_preferences() {
+    let mut app = authenticated_app();
+    app.settings.window = Window {
+        width: 1_300.0,
+        height: 900.0,
+    };
+    app.settings.panels = Panels {
+        sidebar: 0.35,
+        conversations: 0.6,
+    };
+    app.settings.appearance = Appearance::Light;
+    let revision = app.settings_revision();
+
+    let effect = app.update(Message::ResetLayout).into_iter().next();
+
+    assert!(matches!(effect, Some(Effect::Ui(UiEffect::ResetLayout))));
+    assert_eq!(app.settings.window, Window::default());
+    assert_eq!(app.settings.panels, Panels::default());
+    assert_eq!(app.settings.appearance, Appearance::Light);
+    assert_eq!(app.settings_revision(), revision + 1);
+    assert!(app.mailbox().is_some());
+}
+
+#[test]
 fn exiting_demo_clears_mailbox_and_opens_login() {
     let (mut app, _) = App::boot(true, Settings::default());
     deliver_demo_page(&mut app, 1, 0);

@@ -22,6 +22,7 @@ pub enum UiEffect {
     FocusSearch,
     ScrollReaderTop,
     RevealConversation(String),
+    ResetLayout,
     NotifyNewMail { sender: String, subject: String },
     PickComposeAttachments(ComposeId),
 }
@@ -32,7 +33,10 @@ impl UiEffect {
     pub fn is_visual(&self) -> bool {
         matches!(
             self,
-            UiEffect::FocusSearch | UiEffect::ScrollReaderTop | UiEffect::RevealConversation(_)
+            UiEffect::FocusSearch
+                | UiEffect::ScrollReaderTop
+                | UiEffect::RevealConversation(_)
+                | UiEffect::ResetLayout
         )
     }
 }

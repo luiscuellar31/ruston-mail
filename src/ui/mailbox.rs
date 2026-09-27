@@ -7,6 +7,18 @@ use crate::app::{App, ListStatus, Mailbox, Message, UndoMove, panel_ratios, pane
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
 use crate::settings::{ComposePlacement, Settings};
 
+const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
+const CONVERSATION_PANEL_ID: &str = "conversation-list";
+
+pub(super) fn reset_panel_sizes(context: &egui::Context) {
+    // egui's remembered widths take precedence over each panel's default_size.
+    context.data_mut(|data| {
+        for id in [SIDEBAR_PANEL_ID, CONVERSATION_PANEL_ID] {
+            data.remove::<egui::containers::panel::PanelState>(egui::Id::new(id));
+        }
+    });
+}
+
 pub(super) fn show(
     root: &mut egui::Ui,
     app: &App,
@@ -22,7 +34,7 @@ pub(super) fn show(
     let widths = panel_widths(app.panels(), window_width);
     let inset = theme::titlebar_inset(&context);
 
-    let sidebar = egui::Panel::left("mailbox-sidebar")
+    let sidebar = egui::Panel::left(SIDEBAR_PANEL_ID)
         .default_size(widths.sidebar)
         .size_range(200.0..=(window_width - 400.0).max(200.0))
         .resizable(true)
@@ -47,7 +59,7 @@ pub(super) fn show(
     }
 
     let remaining = (window_width - sidebar.response.rect.width()).max(400.0);
-    let conversations = egui::Panel::left("conversation-list")
+    let conversations = egui::Panel::left(CONVERSATION_PANEL_ID)
         .default_size(widths.conversations)
         .size_range(200.0..=(remaining - 200.0).max(200.0))
         .resizable(true)

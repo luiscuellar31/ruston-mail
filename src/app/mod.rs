@@ -90,6 +90,8 @@ pub enum Message {
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
+    /// Restores the default window size and mailbox pane widths.
+    ResetLayout,
     /// A key the focused widget did not take.
     KeyPressed(KeyPress),
     /// The window changed size, which is worth remembering for next time.
@@ -575,6 +577,13 @@ impl App {
             Message::DismissLink => self.pending_link = None,
             Message::PanelsResized(panels) => {
                 self.remember(|settings| settings.panels = panels);
+            }
+            Message::ResetLayout => {
+                self.remember(|settings| {
+                    settings.window = Window::default();
+                    settings.panels = Panels::default();
+                });
+                return Effects::ui(UiEffect::ResetLayout);
             }
             Message::KeyPressed(press) => return self.handle_key(press),
             // A drag reports many sizes; only a real change is worth a write.
