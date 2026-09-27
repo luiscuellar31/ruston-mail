@@ -214,7 +214,7 @@ pub enum Command {
         #[arg(long)]
         folder: Option<String>,
     },
-    /// Build the local encrypted-search index (decrypts + indexes message bodies).
+    /// Build the local full-text index (stores decrypted message bodies in SQLite).
     Index {
         #[arg(long, default_value = "all")]
         folder: String,

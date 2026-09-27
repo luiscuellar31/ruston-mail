@@ -22,7 +22,8 @@
 //!   forward (including PGP-to-external and encrypted-outside), attachments,
 //!   drafts, Sieve filters, contacts, addresses, settings, and organize
 //!   (move/trash/delete/label/star/spam/snooze).
-//! - **Local** — event-sync into a SQLite cache and encrypted full-text search.
+//! - **Local** — event-sync into a SQLite cache and full-text search over
+//!   decrypted message bodies.
 //!
 //! Sending defaults to the primary address (the first alias by API `Order`);
 //! pass a `from` address to [`SendOptions`] to use a different alias.

@@ -1,4 +1,4 @@
-//! Local encrypted-search commands: build index, query it.
+//! Local full-text search commands: build index, query it.
 
 use crate::cli::Ctx;
 use crate::commands::resume;

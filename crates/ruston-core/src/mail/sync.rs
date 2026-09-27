@@ -187,7 +187,7 @@ impl Client {
         self.open_cache()?.count(&resolve_folder(folder))
     }
 
-    /// Build the local encrypted-search index: page a folder, decrypt each
+    /// Build the local full-text search index: page a folder, decrypt each
     /// message body, and index it (bounded by `max_pages`).
     pub async fn index_folder(
         &self,
@@ -226,7 +226,7 @@ impl Client {
                 break;
             }
         }
-        tracing::info!(target: "ruston_core::sync", folder, indexed = n, "encrypted-search index built");
+        tracing::info!(target: "ruston_core::sync", folder, indexed = n, "local search index built");
         Ok(n)
     }
 
