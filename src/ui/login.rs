@@ -14,7 +14,15 @@ pub(super) fn show(
     show_password: &mut bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    egui::CentralPanel::default()
+    if !matches!(
+        app.auth_state(),
+        AuthState::SignedOut | AuthState::NeedsMailboxPassword
+    ) {
+        *show_password = false;
+    }
+    // The sizing pass must not change the live password visibility.
+    let mut measured_password_visibility = *show_password;
+    let response = egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
                 .fill(theme::colors(root).login_background)
@@ -41,7 +49,12 @@ pub(super) fn show(
                             .sizing_pass()
                             .invisible(),
                     );
-                    body(&mut measure, app, show_password, &mut Vec::new());
+                    body(
+                        &mut measure,
+                        app,
+                        &mut measured_password_visibility,
+                        &mut Vec::new(),
+                    );
                     let body_height = measure.min_rect().height();
                     let centered_top = viewport_top + (viewport_height - body_height) * 0.5;
                     ui.add_space((centered_top - ui.cursor().top()).max(24.0));
@@ -51,7 +64,14 @@ pub(super) fn show(
                 })
                 .inner
         })
-        .inner
+        .inner;
+    if messages
+        .iter()
+        .any(|message| matches!(message, Message::Submit | Message::CancelChallenge))
+    {
+        *show_password = false;
+    }
+    response
 }
 
 fn body(
@@ -63,7 +83,6 @@ fn body(
     ui.scope(|ui| {
         card(ui, |ui| {
             if matches!(app.auth_state(), AuthState::NeedsHumanVerification { .. }) {
-                *show_password = false;
                 verification(ui, app, messages);
             } else {
                 sign_in(ui, app, show_password, messages);
@@ -168,9 +187,6 @@ fn sign_in(
         _ => (SignInStep::Credentials, false),
     };
 
-    if busy || step == SignInStep::Totp {
-        *show_password = false;
-    }
     ui.heading(egui::RichText::new("Sign in").size(28.0).strong());
     ui.label(
         egui::RichText::new("Continue to Ruston Mail with your Proton account.")
@@ -283,13 +299,6 @@ fn sign_in(
     };
     if cancelled {
         messages.push(Message::CancelChallenge);
-    }
-    if messages
-        .iter()
-        .any(|message| matches!(message, Message::Submit))
-        || cancelled
-    {
-        *show_password = false;
     }
 }
 
@@ -788,19 +797,26 @@ mod tests {
     }
 
     #[test]
-    fn password_is_hidden_again_during_sign_in() {
+    fn password_visibility_survives_measurement_and_resets_during_sign_in() {
         let mut app = App::signed_out();
-        *app.username_mut() = "name@proton.me".into();
-        *app.password_mut() = "example password".into();
-        let _ = app.update(Message::Submit);
-        assert!(matches!(app.auth_state(), AuthState::SigningIn(_)));
-
         let context = egui::Context::default();
         theme::install(&context);
         let mut show_password = true;
         context
             .run_ui(egui::RawInput::default(), |ui| {
-                sign_in(ui, &mut app, &mut show_password, &mut Vec::new());
+                show(ui, &mut app, &mut show_password, &mut Vec::new());
+            })
+            .drop_without_applying_deltas();
+        assert!(show_password);
+
+        *app.username_mut() = "name@proton.me".into();
+        *app.password_mut() = "example password".into();
+        let _ = app.update(Message::Submit);
+        assert!(matches!(app.auth_state(), AuthState::SigningIn(_)));
+
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                show(ui, &mut app, &mut show_password, &mut Vec::new());
             })
             .drop_without_applying_deltas();
         assert!(!show_password);
