@@ -8,6 +8,7 @@ use eframe::egui::{
 
 pub const ACCENT: Color32 = Color32::from_rgb(109, 92, 245);
 pub const ACCENT_HOVER: Color32 = Color32::from_rgb(100, 83, 226);
+pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(86, 69, 198);
 pub const PANEL_PADDING: i8 = 16;
 pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
@@ -30,6 +31,7 @@ pub struct Colors {
     pub danger: Color32,
     pub success: Color32,
     pub selected_folder_text: Color32,
+    pub sidebar_button_hover: Color32,
     pub row_hover: Color32,
     pub quote_fill: Color32,
     pub code_fill: Color32,
@@ -50,6 +52,7 @@ const DARK: Colors = Colors {
     danger: Color32::from_rgb(245, 112, 112),
     success: Color32::from_rgb(105, 210, 160),
     selected_folder_text: Color32::WHITE,
+    sidebar_button_hover: Color32::from_rgb(55, 47, 99),
     row_hover: Color32::from_rgb(28, 29, 36),
     quote_fill: Color32::from_rgb(27, 28, 35),
     code_fill: Color32::from_rgb(18, 19, 24),
@@ -70,6 +73,7 @@ const LIGHT: Colors = Colors {
     danger: Color32::from_rgb(174, 43, 57),
     success: Color32::from_rgb(23, 117, 76),
     selected_folder_text: Color32::from_rgb(64, 49, 150),
+    sidebar_button_hover: Color32::from_rgb(222, 214, 255),
     row_hover: Color32::from_rgb(241, 240, 249),
     quote_fill: Color32::from_rgb(246, 246, 250),
     code_fill: Color32::from_rgb(241, 242, 247),
@@ -473,7 +477,7 @@ mod tests {
                 ((value + 0.055) / 1.055).powf(2.4)
             }
         };
-        for fill in [ACCENT, ACCENT_HOVER] {
+        for fill in [ACCENT, ACCENT_HOVER, ACCENT_PRESSED] {
             let luminance =
                 0.2126 * linear(fill.r()) + 0.7152 * linear(fill.g()) + 0.0722 * linear(fill.b());
             let contrast = 1.05 / (luminance + 0.05);

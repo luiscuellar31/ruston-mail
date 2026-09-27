@@ -51,29 +51,41 @@ pub(super) enum ExitDecision {
 
 pub(super) fn confirm_exit(context: &egui::Context) -> Option<ExitDecision> {
     let mut decision = None;
-    let modal = egui::Modal::new(egui::Id::new("unsaved-settings")).show(context, |ui| {
-        ui.heading("Unsaved settings");
-        ui.label("Apply your changes before leaving Settings?");
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.button("Keep editing").clicked() {
-                decision = Some(ExitDecision::KeepEditing);
-            }
-            if ui.button("Discard changes").clicked() {
-                decision = Some(ExitDecision::Discard);
-            }
-            if ui
-                .add(
-                    egui::Button::new("Apply and continue")
-                        .fill(theme::colors(ui).accent_soft)
-                        .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
-                )
-                .clicked()
-            {
-                decision = Some(ExitDecision::Apply);
-            }
+    let width = (context.content_rect().width() - 48.0).clamp(0.0, 440.0);
+    let frame = egui::Frame::popup(&context.style_of(context.theme())).inner_margin(20);
+    let modal = egui::Modal::new(egui::Id::new("unsaved-settings"))
+        .frame(frame)
+        .show(context, |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+            ui.heading("Unsaved settings");
+            ui.label("Apply your changes before leaving Settings?");
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(egui::Button::new("Keep editing").min_size(egui::vec2(0.0, 32.0)))
+                    .clicked()
+                {
+                    decision = Some(ExitDecision::KeepEditing);
+                }
+                if ui
+                    .add(egui::Button::new("Discard changes").min_size(egui::vec2(0.0, 32.0)))
+                    .clicked()
+                {
+                    decision = Some(ExitDecision::Discard);
+                }
+                if ui
+                    .add(
+                        egui::Button::new("Apply and continue")
+                            .min_size(egui::vec2(0.0, 32.0))
+                            .fill(theme::colors(ui).accent_soft)
+                            .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
+                    )
+                    .clicked()
+                {
+                    decision = Some(ExitDecision::Apply);
+                }
+            });
         });
-    });
     if decision.is_none() && modal.should_close() {
         decision = Some(ExitDecision::KeepEditing);
     }
@@ -377,6 +389,62 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsaved_settings_actions_fit_at_large_zoom() {
+        fn find_text(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Rect> {
+            match shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().find_map(|shape| find_text(shape, label))
+                }
+                _ => None,
+            }
+        }
+
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(410.0, 240.0));
+        let context = egui::Context::default();
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(viewport),
+                    ..Default::default()
+                },
+                |_| {
+                    confirm_exit(&context);
+                },
+            )
+            .drop_without_applying_deltas();
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                ..Default::default()
+            },
+            |_| {
+                confirm_exit(&context);
+            },
+        );
+
+        let actions = ["Keep editing", "Discard changes", "Apply and continue"].map(|label| {
+            (
+                label,
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| find_text(&shape.shape, label)),
+            )
+        });
+        output.drop_without_applying_deltas();
+        for (label, text) in actions {
+            let text = text.unwrap_or_else(|| panic!("missing {label}"));
+            assert!(
+                viewport.contains_rect(text),
+                "{label} falls outside {viewport:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_card_fills_the_page_however_little_it_says() {

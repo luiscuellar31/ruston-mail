@@ -148,17 +148,7 @@ fn sidebar(
         {
             messages.push(Message::Logout);
         }
-        // Same frame and height as Sign out below it, outlined instead of
-        // filled: one button, plainly a different kind of action.
-        if ui
-            .add(
-                egui::Button::new("Settings")
-                    .min_size(egui::vec2(ui.available_width(), 32.0))
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, theme::ACCENT)),
-            )
-            .clicked()
-        {
+        if settings_button(ui, app.showing_settings() && !signing_out).clicked() {
             messages.push(Message::ShowSettings(true));
         }
         if let Some(error) = app.error_message() {
@@ -177,6 +167,33 @@ fn sidebar(
             },
         );
     });
+}
+
+fn settings_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let width = ui.available_width();
+    let hover = theme::colors(ui).sidebar_button_hover;
+    ui.scope(|ui| {
+        let widgets = &mut ui.visuals_mut().widgets;
+        let outline = Stroke::new(1.0, theme::ACCENT);
+        widgets.inactive.weak_bg_fill = if selected {
+            theme::ACCENT
+        } else {
+            Color32::TRANSPARENT
+        };
+        widgets.hovered.weak_bg_fill = if selected { theme::ACCENT_HOVER } else { hover };
+        widgets.active.weak_bg_fill = theme::ACCENT_PRESSED;
+        if selected {
+            widgets.inactive.fg_stroke.color = Color32::WHITE;
+            widgets.hovered.fg_stroke.color = Color32::WHITE;
+        }
+        widgets.active.fg_stroke.color = Color32::WHITE;
+        widgets.inactive.bg_stroke = outline;
+        widgets.hovered.bg_stroke = outline;
+        widgets.active.bg_stroke = outline;
+
+        ui.add(egui::Button::new("Settings").min_size(egui::vec2(width, 32.0)))
+    })
+    .inner
 }
 
 const NEW_MESSAGE_LABEL_ID: &str = "new-message-label";
@@ -759,6 +776,86 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+
+    #[test]
+    fn settings_button_responds_to_hover_press_and_selection_in_both_themes() {
+        fn fills(shape: &egui::epaint::Shape, found: &mut Vec<Color32>) {
+            match shape {
+                egui::epaint::Shape::Rect(rect) => found.push(rect.fill),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        fills(shape, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for appearance in [
+            crate::settings::Appearance::Dark,
+            crate::settings::Appearance::Light,
+        ] {
+            for selected in [false, true] {
+                let context = egui::Context::default();
+                theme::install(&context);
+                theme::apply(&context, appearance);
+                let render = |input| {
+                    let mut button = egui::Rect::NOTHING;
+                    let mut hover_fill = Color32::TRANSPARENT;
+                    let output = context.run_ui(input, |ui| {
+                        ui.set_width(240.0);
+                        hover_fill = theme::colors(ui).sidebar_button_hover;
+                        button = settings_button(ui, selected).rect;
+                    });
+                    let mut colors = Vec::new();
+                    for clipped in &output.shapes {
+                        fills(&clipped.shape, &mut colors);
+                    }
+                    output.drop_without_applying_deltas();
+                    (button, colors, hover_fill)
+                };
+
+                let (button, idle, hover_fill) = render(egui::RawInput::default());
+                let idle_fill = if selected {
+                    theme::ACCENT
+                } else {
+                    Color32::TRANSPARENT
+                };
+                assert!(idle.contains(&idle_fill), "{appearance:?}, {selected}");
+                let position = button.center();
+                let hover = || egui::RawInput {
+                    events: vec![egui::Event::PointerMoved(position)],
+                    ..Default::default()
+                };
+                render(hover());
+                let (_, hovered, _) = render(hover());
+                let expected_hover = if selected {
+                    theme::ACCENT_HOVER
+                } else {
+                    hover_fill
+                };
+                assert!(
+                    hovered.contains(&expected_hover),
+                    "{appearance:?}, {selected}"
+                );
+
+                render(egui::RawInput {
+                    events: vec![egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    }],
+                    ..Default::default()
+                });
+                let (_, pressed, _) = render(egui::RawInput::default());
+                assert!(
+                    pressed.contains(&theme::ACCENT_PRESSED),
+                    "{appearance:?}, {selected}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn settings_replaces_mail_panes_and_preserves_their_split() {
