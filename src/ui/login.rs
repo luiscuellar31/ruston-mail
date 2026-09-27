@@ -475,15 +475,42 @@ fn error(ui: &mut egui::Ui, app: &App) {
 mod tests {
     use super::*;
 
-    /// Lays the sign-in screen out in a window of `size` and answers with the
-    /// card-and-footer group's rectangle and the window's.
-    fn laid_out(size: egui::Vec2, appearance: Appearance) -> (egui::Rect, egui::Rect) {
+    /// Lays out a physical window at the requested zoom and returns the
+    /// card-and-footer group's rectangle and the window in egui points.
+    fn laid_out(
+        physical_size: egui::Vec2,
+        appearance: Appearance,
+        zoom: f32,
+    ) -> (egui::Rect, egui::Rect) {
         let mut app = App::signed_out();
+        let _ = app.update(Message::SetAppearance(appearance));
+        let _ = app.update(Message::SetZoom(zoom));
         let mut show_password = false;
         let context = egui::Context::default();
         theme::install(&context);
         theme::apply(&context, appearance);
-        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let physical_window = egui::Rect::from_min_size(egui::Pos2::ZERO, physical_size);
+        // egui applies a zoom change on the next pass using the previous viewport.
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(physical_window),
+                    ..Default::default()
+                },
+                |_| {},
+            )
+            .drop_without_applying_deltas();
+        context.set_zoom_factor(zoom);
+        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, physical_size / zoom);
+        assert_eq!(app.settings().appearance, appearance);
+        assert_eq!(
+            context.theme(),
+            match appearance {
+                Appearance::Dark => egui::Theme::Dark,
+                Appearance::Light => egui::Theme::Light,
+            }
+        );
+        assert_eq!(app.settings().zoom, zoom);
         let mut card = egui::Rect::NOTHING;
         context
             .run_ui(
@@ -491,20 +518,24 @@ mod tests {
                     screen_rect: Some(window),
                     ..Default::default()
                 },
-                |ui| card = show(ui, &mut app, &mut show_password, &mut Vec::new()).rect,
+                |ui| {
+                    assert_eq!(ui.pixels_per_point(), zoom);
+                    card = show(ui, &mut app, &mut show_password, &mut Vec::new()).rect;
+                },
             )
             .drop_without_applying_deltas();
+        assert_eq!(context.zoom_factor(), zoom);
 
         (card, window)
     }
 
     #[test]
     fn the_login_group_is_centered_vertically_and_scrolls_when_space_is_short() {
-        let (group, window) = laid_out(egui::vec2(1200.0, 800.0), Appearance::Dark);
-        let (taller, tall_window) = laid_out(egui::vec2(1200.0, 1400.0), Appearance::Dark);
-        let (small, minimum) = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark);
-        let (zoomed, narrow) = laid_out(egui::vec2(410.0, 240.0), Appearance::Dark);
-        let (light, _) = laid_out(egui::vec2(820.0, 480.0), Appearance::Light);
+        let (group, window) = laid_out(egui::vec2(1200.0, 800.0), Appearance::Dark, 1.0);
+        let (taller, tall_window) = laid_out(egui::vec2(1200.0, 1400.0), Appearance::Dark, 1.0);
+        let (small, minimum) = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 1.0);
+        let (zoomed, zoomed_window) = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 2.0);
+        let (light, _) = laid_out(egui::vec2(820.0, 480.0), Appearance::Light, 1.0);
 
         assert!(group.height() > 0.0, "the login group was never laid out");
         assert!(
@@ -522,7 +553,7 @@ mod tests {
         for (group, window) in [
             (group, window),
             (small, minimum),
-            (zoomed, narrow),
+            (zoomed, zoomed_window),
             (light, minimum),
         ] {
             assert!(
@@ -538,11 +569,11 @@ mod tests {
                 "login group is not horizontally centered: {group:?} in {window:?}"
             );
         }
-        for (group, window) in [(small, minimum), (zoomed, narrow), (light, minimum)] {
+        for (group, window) in [(small, minimum), (zoomed, zoomed_window), (light, minimum)] {
             assert!(group.top() >= window.top());
             assert!(
                 group.bottom() > window.bottom(),
-                "small window should scroll"
+                "the login group should scroll when available height is short"
             );
         }
     }
@@ -656,26 +687,35 @@ mod tests {
 
     #[test]
     fn theme_button_stays_at_the_right_of_the_header() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let mut rect = egui::Rect::NOTHING;
-        context
-            .run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(820.0, 480.0),
-                    )),
-                    ..Default::default()
-                },
-                |ui| rect = header(ui, Appearance::Dark, &mut Vec::new()).rect,
-            )
-            .drop_without_applying_deltas();
-        assert!(
-            rect.left() > 700.0,
-            "theme button stayed beside the logo: {rect:?}"
-        );
-        assert!(rect.right() <= 820.0);
+        for width in [820.0, 1200.0] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            let mut button = egui::Rect::NOTHING;
+            let mut available = egui::Rect::NOTHING;
+            let mut spacing = 0.0;
+            context
+                .run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 480.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        available = ui.available_rect_before_wrap();
+                        spacing = ui.spacing().item_spacing.x;
+                        button = header(ui, Appearance::Dark, &mut Vec::new()).rect;
+                    },
+                )
+                .drop_without_applying_deltas();
+            assert!(
+                button.center().x > available.center().x,
+                "theme button stayed beside the logo: {button:?} in {available:?}"
+            );
+            assert!(button.right() <= available.right());
+            assert!(available.right() - button.right() <= spacing);
+        }
     }
 
     #[test]
