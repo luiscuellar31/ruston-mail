@@ -241,6 +241,7 @@ pub const STAR: &str = "★";
 pub const DOT: &str = "·";
 
 pub fn install(context: &egui::Context) {
+    egui_extras::install_image_loaders(context);
     context.set_theme(egui::Theme::Dark);
     let mut style = (*context.style_of(egui::Theme::Dark)).clone();
     style.visuals = egui::Visuals::dark();
