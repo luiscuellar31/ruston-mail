@@ -171,7 +171,7 @@ fn sidebar(
             );
         }
         let account_label = if app.is_demo() {
-            "Demo mode"
+            "demo@example.com"
         } else {
             email.unwrap_or("Proton Mail account")
         };
