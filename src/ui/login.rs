@@ -453,19 +453,23 @@ fn footer(ui: &mut egui::Ui) -> egui::Rect {
     ui.vertical_centered(|ui| {
         ui.label(
             egui::RichText::new("Not affiliated with Proton")
-                .small()
+                .size(theme::FOOTNOTE_SIZE)
                 .color(color),
         );
         ui.add(
             egui::AtomLayout::new((
-                egui::RichText::new("Made with").small().color(color),
+                egui::RichText::new("Made with")
+                    .size(theme::FOOTNOTE_SIZE)
+                    .color(color),
                 egui::Image::new(egui::include_image!(
                     "../../assets/icons/bootstrap/heart.svg"
                 ))
                 .fit_to_exact_size(egui::Vec2::splat(14.0))
                 .tint(theme::ACCENT)
                 .alt_text("heart"),
-                egui::RichText::new("by Luis Cuellar").small().color(color),
+                egui::RichText::new("by Luis Cuellar")
+                    .size(theme::FOOTNOTE_SIZE)
+                    .color(color),
             ))
             .gap(ui.spacing().item_spacing.x),
         )

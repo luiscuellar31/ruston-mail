@@ -10,6 +10,7 @@ pub const ACCENT: Color32 = Color32::from_rgb(109, 92, 245);
 pub const ACCENT_HOVER: Color32 = Color32::from_rgb(100, 83, 226);
 pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(86, 69, 198);
 pub const PANEL_PADDING: i8 = 16;
+pub const FOOTNOTE_SIZE: f32 = 11.0;
 pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
 const SKELETON_FRAME: Duration = Duration::from_millis(50);

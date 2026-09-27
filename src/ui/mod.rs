@@ -549,7 +549,7 @@ fn status_view(root: &mut egui::Ui, message: &str) {
 fn version_label(ui: &mut egui::Ui) -> egui::Response {
     ui.label(
         egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
-            .small()
+            .size(theme::FOOTNOTE_SIZE)
             .color(theme::colors(ui).muted),
     )
 }
