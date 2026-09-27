@@ -7,7 +7,7 @@ use eframe::egui::{
 };
 
 pub const ACCENT: Color32 = Color32::from_rgb(109, 92, 245);
-pub const ACCENT_HOVER: Color32 = Color32::from_rgb(122, 107, 247);
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(100, 83, 226);
 pub const PANEL_PADDING: i8 = 16;
 pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
@@ -512,6 +512,27 @@ pub fn card(ui: &egui::Ui) -> egui::Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn white_text_on_accent_buttons_keeps_adequate_contrast() {
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        for fill in [ACCENT, ACCENT_HOVER] {
+            let luminance =
+                0.2126 * linear(fill.r()) + 0.7152 * linear(fill.g()) + 0.0722 * linear(fill.b());
+            let contrast = 1.05 / (luminance + 0.05);
+            assert!(
+                contrast >= 4.5,
+                "white on {fill:?} has {contrast:.2}:1 contrast"
+            );
+        }
+    }
 
     /// Lays `content` out through [`centered_group`] in a 400x600 panel and
     /// answers with the group's rectangle and the panel's.
