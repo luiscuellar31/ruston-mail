@@ -451,7 +451,7 @@ fn footer(ui: &mut egui::Ui) -> egui::Rect {
                 egui::Image::new(egui::include_image!(
                     "../../assets/icons/bootstrap/heart.svg"
                 ))
-                .fit_to_exact_size(egui::Vec2::splat(16.0))
+                .fit_to_exact_size(egui::Vec2::splat(14.0))
                 .tint(theme::ACCENT)
                 .alt_text("heart"),
                 egui::RichText::new("by Luis Cuellar").small().color(color),
@@ -592,6 +592,17 @@ mod tests {
                 pixel.r() > 0 && pixel.r() == pixel.g() && pixel.g() == pixel.b()
             }));
         }
+    }
+
+    #[test]
+    fn footer_heart_is_filled() {
+        let heart = egui_extras::image::load_svg_bytes(
+            include_bytes!("../../assets/icons/bootstrap/heart.svg"),
+            &Default::default(),
+        )
+        .expect("bundled heart SVG must render");
+        let center = 8 * heart.size[0] + 8;
+        assert!(heart.pixels[center].a() > 200, "heart center is hollow");
     }
 
     #[test]
