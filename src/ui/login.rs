@@ -402,6 +402,8 @@ fn password_toggle(ui: &mut egui::Ui, show_password: &mut bool, busy: bool) -> e
 }
 
 fn signup_prompt(ui: &mut egui::Ui, messages: &mut Vec<Message>) -> egui::Rect {
+    // A horizontal layout fills the available width, so center the two
+    // separate widgets using their measured widths.
     let font = egui::TextStyle::Body.resolve(ui.style());
     let text_width = |text: &str| {
         ui.painter()
@@ -437,7 +439,7 @@ fn brand(ui: &mut egui::Ui) {
     });
 }
 
-fn footer(ui: &mut egui::Ui) {
+fn footer(ui: &mut egui::Ui) -> egui::Rect {
     let color = theme::colors(ui).muted;
     ui.vertical_centered(|ui| {
         ui.label(
@@ -445,30 +447,22 @@ fn footer(ui: &mut egui::Ui) {
                 .small()
                 .color(color),
         );
-    });
-    let font = egui::TextStyle::Small.resolve(ui.style());
-    let text_width = |text: &str| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font.clone(), color)
-            .size()
-            .x
-    };
-    let gap = ui.spacing().item_spacing.x;
-    let width = text_width("Made with") + 16.0 + text_width("by Luis Cuellar") + gap * 2.0;
-    let inset = ((ui.available_width() - width) * 0.5).max(0.0);
-    ui.horizontal(|ui| {
-        ui.add_space(inset);
-        ui.label(egui::RichText::new("Made with").small().color(color));
         ui.add(
-            egui::Image::new(egui::include_image!(
-                "../../assets/icons/bootstrap/heart.svg"
+            egui::AtomLayout::new((
+                egui::RichText::new("Made with").small().color(color),
+                egui::Image::new(egui::include_image!(
+                    "../../assets/icons/bootstrap/heart.svg"
+                ))
+                .fit_to_exact_size(egui::Vec2::splat(16.0))
+                .tint(theme::ACCENT)
+                .alt_text("heart"),
+                egui::RichText::new("by Luis Cuellar").small().color(color),
             ))
-            .fit_to_exact_size(egui::Vec2::splat(16.0))
-            .tint(theme::ACCENT)
-            .alt_text("heart"),
-        );
-        ui.label(egui::RichText::new("by Luis Cuellar").small().color(color));
-    });
+            .gap(ui.spacing().item_spacing.x),
+        )
+        .rect
+    })
+    .inner
 }
 
 fn error(ui: &mut egui::Ui, app: &App) {
@@ -628,6 +622,35 @@ mod tests {
         assert!(
             (prompt_rect.center().x - card_rect.center().x).abs() <= 2.0,
             "signup {prompt_rect:?} is not centered under card {card_rect:?}"
+        );
+    }
+
+    #[test]
+    fn footer_credit_is_centered_in_the_card() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut card_rect = egui::Rect::NOTHING;
+        let mut credit_rect = egui::Rect::NOTHING;
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    card_rect = card(ui, |ui| {
+                        credit_rect = footer(ui);
+                    })
+                    .rect;
+                },
+            )
+            .drop_without_applying_deltas();
+        assert!(
+            (credit_rect.center().x - card_rect.center().x).abs() <= 2.0,
+            "footer credit {credit_rect:?} is not centered in card {card_rect:?}"
         );
     }
 
