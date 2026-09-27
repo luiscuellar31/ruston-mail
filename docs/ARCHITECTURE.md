@@ -89,7 +89,8 @@ unconfirmed because it may happen at any stage of the send pipeline.
   an interactive send without `--html` and asks before changing the format;
   scripted sends keep the explicit flag behavior.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
-  commands. The desktop has its own demo mailbox in `src/mail/demo.rs`.
+  commands and uses the shared attachment filename policy. The desktop has its
+  own demo mailbox in `src/mail/demo.rs`.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).

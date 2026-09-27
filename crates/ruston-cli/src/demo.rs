@@ -5,8 +5,9 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use ruston_core::mail::attachments::safe_attachment_name;
 use ruston_core::model::ConversationLabel;
 use ruston_core::model::enums::{label_ids, resolve_folder};
 use ruston_core::{
@@ -633,53 +634,6 @@ fn demo_filters() -> Vec<Filter> {
         status: 1,
         version: 1,
     }]
-}
-
-/// Sanitizes an attachment filename to prevent directory traversal and Windows DOS reserved names.
-fn safe_attachment_name(name: &str) -> String {
-    let basename = Path::new(name)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("attachment.bin");
-
-    let clean: String = basename
-        .chars()
-        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
-        .collect();
-
-    let stem = clean.split('.').next().unwrap_or(&clean);
-    let upper = stem.to_ascii_uppercase();
-    let is_reserved = matches!(
-        upper.as_str(),
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    );
-
-    if clean.is_empty() || clean == "." || clean == ".." || is_reserved {
-        format!("safe_{clean}")
-    } else {
-        clean
-    }
 }
 
 /// Dispatcher for CLI commands in offline demo mode.
