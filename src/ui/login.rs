@@ -16,7 +16,7 @@ pub(super) fn show(
 ) -> egui::Response {
     // The sizing pass must not change the live password visibility.
     let mut measured_password_visibility = *show_password;
-    egui::CentralPanel::default()
+    let response = egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
                 .fill(theme::colors(root).login_background)
@@ -58,6 +58,17 @@ pub(super) fn show(
                 })
                 .inner
         })
+        .inner;
+    version_overlay(root.ctx());
+    response
+}
+
+fn version_overlay(context: &egui::Context) -> egui::Response {
+    egui::Area::new(egui::Id::new("login-version"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -5.0))
+        .interactable(false)
+        .fade_in(false)
+        .show(context, super::version_label)
         .inner
 }
 
@@ -472,6 +483,43 @@ fn error(ui: &mut egui::Ui, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_uses_login_corner_without_reserving_a_footer() {
+        // The smallest viewport matches an 820x480 window at 2x zoom.
+        for size in [
+            egui::vec2(410.0, 240.0),
+            egui::vec2(820.0, 480.0),
+            egui::vec2(1200.0, 800.0),
+        ] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let mut version = egui::Rect::NOTHING;
+            let mut content = egui::Rect::NOTHING;
+            for _ in 0..2 {
+                context
+                    .run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(window),
+                            ..Default::default()
+                        },
+                        |root| {
+                            content = egui::CentralPanel::default()
+                                .show(root, |ui| ui.max_rect())
+                                .inner;
+                            version = version_overlay(root.ctx()).rect;
+                        },
+                    )
+                    .drop_without_applying_deltas();
+            }
+
+            assert!(window.contains_rect(version));
+            assert!(window.right() - version.right() <= 20.0);
+            assert!(window.bottom() - version.bottom() <= 20.0);
+            assert!(window.bottom() - content.bottom() <= 10.0);
+        }
+    }
 
     /// Lays out a physical window at the requested zoom and returns the
     /// card-and-footer group's rectangle and the window in egui points.

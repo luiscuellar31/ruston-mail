@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align, Layout};
 
-use super::theme;
+use super::{theme, version_label};
 use crate::app::Message;
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{Appearance, ComposePlacement, Settings, StartFolder};
@@ -248,6 +248,8 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings) {
             "Window size and pane widths return the way you left them.",
         );
     });
+    ui.add_space(14.0);
+    ui.with_layout(Layout::right_to_left(Align::Center), version_label);
 }
 
 pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {

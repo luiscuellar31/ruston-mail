@@ -430,7 +430,6 @@ impl eframe::App for DesktopApp {
             self.settings_draft = None;
             self.pending_settings_exit = None;
         }
-        version_footer(ui);
         match self.app.auth_state() {
             AuthState::CheckingSession => status_view(ui, "Opening Ruston Mail…"),
             AuthState::SignedOut
@@ -515,24 +514,12 @@ fn status_view(root: &mut egui::Ui, message: &str) {
     });
 }
 
-fn version_footer(root: &mut egui::Ui) -> egui::Response {
-    egui::Panel::bottom("app-version")
-        .frame(
-            egui::Frame::new()
-                .fill(theme::colors(root).panel)
-                .inner_margin(egui::Margin::symmetric(12, 4)),
-        )
-        .show(root, |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
-                        .small()
-                        .color(theme::colors(ui).muted),
-                )
-            })
-            .inner
-        })
-        .inner
+fn version_label(ui: &mut egui::Ui) -> egui::Response {
+    ui.label(
+        egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+            .small()
+            .color(theme::colors(ui).muted),
+    )
 }
 
 fn window_title(app: &App, demo: bool) -> String {
@@ -744,37 +731,6 @@ mod tests {
         assert_eq!(title_label(Some(0), false), "Ruston Mail");
         assert_eq!(title_label(None, false), "Ruston Mail");
         assert_eq!(title_label(Some(3), true), "Ruston Mail (demo) (3)");
-    }
-
-    #[test]
-    fn version_stays_in_the_bottom_right_without_covering_content() {
-        for size in [egui::vec2(820.0, 480.0), egui::vec2(1200.0, 800.0)] {
-            let context = egui::Context::default();
-            theme::install(&context);
-            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            let mut version = egui::Rect::NOTHING;
-            let mut content = egui::Rect::NOTHING;
-            context
-                .run_ui(
-                    egui::RawInput {
-                        screen_rect: Some(window),
-                        ..Default::default()
-                    },
-                    |root| {
-                        version = version_footer(root).rect;
-                        content = egui::CentralPanel::default()
-                            .show(root, |ui| ui.max_rect())
-                            .inner;
-                    },
-                )
-                .drop_without_applying_deltas();
-
-            assert!(version.right() <= window.right());
-            assert!(window.right() - version.right() <= 20.0);
-            assert!(version.bottom() <= window.bottom());
-            assert!(window.bottom() - version.bottom() <= 20.0);
-            assert!(content.bottom() <= version.top());
-        }
     }
 
     #[test]
