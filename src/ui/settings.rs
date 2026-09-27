@@ -12,10 +12,7 @@ pub(super) fn show(
     messages: &mut Vec<Message>,
 ) {
     egui::Panel::bottom("settings-actions")
-        .frame(
-            theme::panel_frame(theme::colors(root).panel)
-                .stroke(egui::Stroke::new(1.0, theme::colors(root).border)),
-        )
+        .frame(theme::panel_frame(theme::colors(root).panel))
         .show(root, |ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Back to mail").clicked() {
@@ -37,9 +34,12 @@ pub(super) fn show(
             });
         });
 
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(root, |ui| page(ui, draft));
+    root.scope(|ui| {
+        ui.spacing_mut().scroll = theme::panel_scroll_style();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| page(ui, draft));
+    });
 }
 
 #[derive(Clone, Copy)]
