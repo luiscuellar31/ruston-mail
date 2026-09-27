@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::downloads::{self, SaveError};
-use crate::settings::{ComposePlacement, Panels, Settings, StartFolder, Window};
+use crate::settings::{Appearance, ComposePlacement, Panels, Settings, StartFolder, Window};
 
 /// How far the window must change before its new size is worth storing.
 const RESIZE_STEP: f32 = 8.0;
@@ -112,6 +112,8 @@ pub enum Message {
     SetShowQuotedText(bool),
     /// Scales the whole interface.
     SetZoom(f32),
+    /// Chooses the desktop color scheme.
+    SetAppearance(Appearance),
     /// Shows or hides the unread mail badge on the dock/app icon.
     SetShowUnreadBadge(bool),
     /// Shows or hides desktop notifications for incoming mail.
@@ -615,6 +617,9 @@ impl App {
                 self.remember(|settings| settings.show_quoted_text = on);
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
+            Message::SetAppearance(appearance) => {
+                self.remember(|settings| settings.appearance = appearance);
+            }
             Message::SetShowUnreadBadge(on) => {
                 self.remember(|settings| settings.show_unread_badge = on);
             }

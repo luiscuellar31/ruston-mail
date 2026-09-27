@@ -93,10 +93,15 @@ Settings control:
 - Whether the composer opens in the reading pane or a new window.
 - Plain-text or HTML sending.
 - The folder shown at startup.
+- Dark or light appearance. Dark remains the default for existing settings.
 - Interface scale.
 - On macOS, whether the Dock icon shows the unread inbox count.
 
 Window size and pane widths are remembered automatically.
+Choose Dark or Light under Settings → Interface and press Apply. The selection
+is saved for the next run; the app does not follow the system theme.
+The sign-in screen also has a theme button in its header and a control beside
+each password field to show or hide what you type.
 
 ## Keyboard shortcuts
 

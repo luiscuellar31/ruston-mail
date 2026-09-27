@@ -42,6 +42,9 @@ pub struct Settings {
     pub compose_format: BodyFormat,
     /// Where new messages, replies and forwards open.
     pub compose_placement: ComposePlacement,
+    /// Color scheme of the desktop interface.
+    #[serde(default)]
+    pub appearance: Appearance,
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
@@ -68,6 +71,7 @@ impl Default for Settings {
             show_quoted_text: false,
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
+            appearance: Appearance::Dark,
             zoom: 1.0,
             show_unread_badge: true,
             desktop_notifications: true,
@@ -126,6 +130,13 @@ pub enum ComposePlacement {
     ReadingPane,
     /// Opens in a separate native window.
     Window,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Appearance {
+    #[default]
+    Dark,
+    Light,
 }
 
 /// The subset of settings that controls initial reader expansion.
@@ -286,12 +297,21 @@ mod tests {
         let settings = Settings {
             folder: Folder::System(crate::mail::MailFolder::Archive),
             mark_read_on_open: false,
+            appearance: Appearance::Light,
             ..Settings::default()
         };
 
         let text = serde_json::to_string(&settings).unwrap();
 
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), settings);
+    }
+
+    #[test]
+    fn older_settings_keep_the_dark_appearance() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("appearance");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.appearance, Appearance::Dark);
     }
 
     #[test]

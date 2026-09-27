@@ -155,11 +155,13 @@ fn settings_changes_reach_the_app() {
     let _ = app.update(Message::SetShowQuotedText(true));
     let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
     let _ = app.update(Message::SetZoom(1.3));
+    let _ = app.update(Message::SetAppearance(Appearance::Light));
 
     assert!(!app.settings().mark_read_on_open);
     assert!(!app.settings().confirm_links);
     assert_eq!(app.settings().compose_placement, ComposePlacement::Window);
     assert_eq!(app.settings().zoom, 1.3);
+    assert_eq!(app.settings().appearance, Appearance::Light);
     assert_eq!(
         app.settings().reading(),
         Reading {

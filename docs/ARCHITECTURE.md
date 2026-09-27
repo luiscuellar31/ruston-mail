@@ -45,6 +45,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   [`model.rs`](../src/mail/model.rs) defines the types the desktop uses.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences;
   [`src/downloads.rs`](../src/downloads.rs) writes downloaded attachments.
+  The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
+  to egui visuals and the colors of custom-painted widgets. The desktop shell
+  applies the choice to open windows and stores it for the next run.
+  The signed-out screen offers the same appearance choice directly through
+  `App::update`; password visibility stays only in transient UI state.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches

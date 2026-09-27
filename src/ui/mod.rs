@@ -20,6 +20,8 @@ const SETTINGS_QUIET: f32 = 0.75;
 
 #[derive(Default)]
 pub(super) struct UiState {
+    /// Password reveal is local to the current sign-in interaction.
+    show_password: bool,
     focus_search: bool,
     scroll_reader_top: bool,
     reveal_conversation: Option<String>,
@@ -83,6 +85,7 @@ impl DesktopApp {
 
     fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
         theme::install(context);
+        theme::apply(context, settings.appearance);
         let runtime = Runtime::new().expect("failed to start background runtime");
         runtime.attach(context);
         let (app, effects) = App::boot(demo, settings);
@@ -336,6 +339,7 @@ impl DesktopApp {
 impl eframe::App for DesktopApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.runtime.attach(context);
+        theme::apply(context, self.app.settings().appearance);
         self.apply_zoom(context);
         self.drain_runtime(context);
         self.remember_window_size(context);
@@ -363,9 +367,10 @@ impl eframe::App for DesktopApp {
             | AuthState::NeedsTotp
             | AuthState::NeedsMailboxPassword
             | AuthState::NeedsHumanVerification { .. } => {
-                login::show(ui, &mut self.app, &mut messages);
+                login::show(ui, &mut self.app, &mut self.ui.show_password, &mut messages);
             }
             AuthState::Authenticated { email } => {
+                self.ui.show_password = false;
                 if self.app.mailbox().is_some() {
                     mailbox::show(
                         ui,
@@ -395,6 +400,7 @@ impl eframe::App for DesktopApp {
                 }
             }
             AuthState::SigningOut => {
+                self.ui.show_password = false;
                 if self.app.mailbox().is_some() {
                     mailbox::show(ui, &self.app, None, true, &mut self.ui, &mut messages);
                 } else {

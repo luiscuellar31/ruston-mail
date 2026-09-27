@@ -3,7 +3,7 @@ use eframe::egui::{self, Align, Layout};
 use super::theme;
 use crate::app::Message;
 use crate::mail::{BodyFormat, MailFolder};
-use crate::settings::{ComposePlacement, Settings, StartFolder};
+use crate::settings::{Appearance, ComposePlacement, Settings, StartFolder};
 
 const WINDOW_SIZE: [f32; 2] = [720.0, 720.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [520.0, 420.0];
@@ -47,7 +47,10 @@ fn show(
     messages: &mut Vec<Message>,
 ) {
     egui::Panel::bottom("settings-actions")
-        .frame(theme::panel_frame(theme::PANEL).stroke(egui::Stroke::new(1.0, theme::BORDER)))
+        .frame(
+            theme::panel_frame(theme::colors(root).panel)
+                .stroke(egui::Stroke::new(1.0, theme::colors(root).border)),
+        )
         .show(root, |ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Close").clicked() {
@@ -59,7 +62,7 @@ fn show(
                     .add_enabled(
                         !changes.is_empty(),
                         egui::Button::new("Apply")
-                            .fill(theme::ACCENT_SOFT)
+                            .fill(theme::colors(ui).accent_soft)
                             .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
                     )
                     .clicked()
@@ -70,7 +73,7 @@ fn show(
         });
 
     egui::CentralPanel::default()
-        .frame(theme::panel_frame(theme::PANEL))
+        .frame(theme::panel_frame(theme::colors(root).panel))
         .show(root, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -176,6 +179,12 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings) {
     });
     ui.add_space(14.0);
     section(ui, "Interface", |ui| {
+        ui.label("Appearance");
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut settings.appearance, Appearance::Dark, "Dark");
+            ui.selectable_value(&mut settings.appearance, Appearance::Light, "Light");
+        });
+        ui.add_space(8.0);
         egui::ComboBox::from_id_salt("interface-scale")
             .selected_text(zoom_label(settings.zoom))
             .width(100.0)
@@ -255,6 +264,9 @@ fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
     }
     if (draft.zoom - current.zoom).abs() > f32::EPSILON {
         messages.push(Message::SetZoom(draft.zoom));
+    }
+    if draft.appearance != current.appearance {
+        messages.push(Message::SetAppearance(draft.appearance));
     }
     if draft.show_unread_badge != current.show_unread_badge {
         messages.push(Message::SetShowUnreadBadge(draft.show_unread_badge));
@@ -348,11 +360,11 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str) {
 const KEYS_WIDTH: f32 = 120.0;
 
 fn description(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).color(theme::MUTED));
+    ui.label(egui::RichText::new(text).color(theme::colors(ui).muted));
 }
 
 fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) -> egui::Response {
-    theme::card()
+    theme::card(ui)
         .show(ui, |ui| {
             // Cards fill the page instead of sizing to their longest line.
             ui.set_width(ui.available_width());
@@ -406,8 +418,9 @@ mod tests {
         draft.zoom = 1.15;
         draft.show_unread_badge = false;
         draft.desktop_notifications = false;
+        draft.appearance = Appearance::Light;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 4);
+        assert_eq!(changes.len(), 5);
         assert!(
             changes
                 .iter()
@@ -427,6 +440,11 @@ mod tests {
             changes
                 .iter()
                 .any(|message| matches!(message, Message::SetDesktopNotifications(false)))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetAppearance(Appearance::Light)))
         );
     }
 

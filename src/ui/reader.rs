@@ -22,7 +22,6 @@ const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
 const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
 const MARKER_WIDTH: f32 = 12.0;
-const CODE_FILL: Color32 = Color32::from_rgb(18, 19, 24);
 /// Code background padding, kept clear of adjacent lines.
 const CODE_PADDING: f32 = 2.5;
 
@@ -53,7 +52,7 @@ pub(super) fn show(
                     ui.label(
                         egui::RichText::new(format!("Saved to {}", path.display()))
                             .small()
-                            .color(theme::SUCCESS),
+                            .color(theme::colors(ui).success),
                     );
                     if ui.add(theme::compact_button(REVEAL_LABEL)).clicked() {
                         messages.push(Message::RevealAttachment(path.to_path_buf()));
@@ -64,7 +63,7 @@ pub(super) fn show(
                 ui.label(
                     egui::RichText::new(error.message())
                         .small()
-                        .color(theme::DANGER),
+                        .color(theme::colors(ui).danger),
                 );
             }
         }
@@ -105,8 +104,8 @@ pub(super) fn show(
 }
 
 fn link_prompt(ui: &mut egui::Ui, link: &PendingLink, messages: &mut Vec<Message>) {
-    theme::card()
-        .fill(theme::ACCENT_SOFT)
+    theme::card(ui)
+        .fill(theme::colors(ui).accent_soft)
         .stroke(Stroke::new(1.0, theme::ACCENT))
         .show(ui, |ui| {
             ui.label(format!("Open a link to {}?", link.target));
@@ -226,7 +225,7 @@ fn conversation_skeleton(ui: &mut egui::Ui) {
 }
 
 fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32) -> egui::Response {
-    theme::card()
+    theme::card(ui)
         .show(ui, |ui| {
             let width = ui.available_width();
             ui.set_min_width(width);
@@ -287,7 +286,7 @@ fn reading_column(
             ui.label(
                 egui::RichText::new(error.action_message())
                     .small()
-                    .color(theme::DANGER),
+                    .color(theme::colors(ui).danger),
             );
         }
     }
@@ -449,7 +448,7 @@ fn message_card(
 ) {
     let expanded = reader.is_expanded(&message.id, reading);
     ui.push_id(&message.id, |ui| {
-        theme::card().show(ui, |ui| {
+        theme::card(ui).show(ui, |ui| {
             if message_header(ui, message, preview, expanded).clicked() {
                 messages.push(Message::ToggleMessageExpanded(message.id.clone()));
             }
@@ -470,7 +469,7 @@ fn message_card(
                             let mut button = theme::compact_button(label);
                             if label == "Reply" {
                                 button = button
-                                    .fill(theme::ACCENT_SOFT)
+                                    .fill(theme::colors(ui).accent_soft)
                                     .stroke(Stroke::new(1.0, theme::ACCENT));
                             }
                             if ui.add(button).clicked() {
@@ -506,9 +505,9 @@ fn message_header(
     let icon_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
     let points = chevron_points(icon_center, expanded);
     let color = if response.hovered() {
-        Color32::WHITE
+        ui.visuals().strong_text_color()
     } else {
-        theme::MUTED
+        theme::colors(ui).muted
     };
     ui.painter()
         .line_segment([points[0], points[1]], Stroke::new(1.5, color));
@@ -536,6 +535,7 @@ fn message_header(
                 &painter,
                 copy_rect.left_top() + egui::vec2(0.0, 20.0),
                 &message.sender.address,
+                theme::colors(ui).muted,
                 copy_rect.width(),
             );
         }
@@ -543,6 +543,7 @@ fn message_header(
             &painter,
             copy_rect.left_top() + egui::vec2(0.0, 39.0),
             &format!("To: {}", recipients_label(&message.recipients)),
+            theme::colors(ui).muted,
             copy_rect.width(),
         );
     } else {
@@ -551,7 +552,7 @@ fn message_header(
             copy_rect.left_top() + egui::vec2(0.0, 22.0),
             preview,
             FontId::proportional(14.0),
-            theme::MUTED,
+            theme::colors(ui).muted,
             copy_rect.width(),
         );
     }
@@ -565,7 +566,7 @@ fn message_header(
         Align2::RIGHT_TOP,
         time,
         FontId::proportional(11.0),
-        theme::MUTED,
+        theme::colors(ui).muted,
     );
 
     response.widget_info(|| {
@@ -576,13 +577,19 @@ fn message_header(
         .on_hover_text(if expanded { "Collapse" } else { "Expand" })
 }
 
-fn header_detail(painter: &egui::Painter, position: egui::Pos2, text: &str, width: f32) {
+fn header_detail(
+    painter: &egui::Painter,
+    position: egui::Pos2,
+    text: &str,
+    color: Color32,
+    width: f32,
+) {
     theme::paint_truncated_text(
         painter,
         position,
         text,
         FontId::proportional(11.0),
-        theme::MUTED,
+        color,
         width,
     );
 }
@@ -718,8 +725,8 @@ fn blocks(ui: &mut egui::Ui, rich_blocks: &[RichBlock], depth: u8, messages: &mu
 
 fn quote_box(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(Color32::from_rgb(27, 28, 35))
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::colors(ui).quote_fill)
+        .stroke(Stroke::new(1.0, theme::colors(ui).border))
         .inner_margin(10)
         .show(ui, content);
 }
@@ -751,7 +758,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
         }
         BlockKind::Preformatted(content) => {
             egui::Frame::new()
-                .fill(CODE_FILL)
+                .fill(theme::colors(ui).code_fill)
                 .corner_radius(6)
                 .inner_margin(10)
                 .show(ui, |ui| {
@@ -766,7 +773,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
             // Remote images are never fetched; the description stands in for
             // one, as a placeholder rather than a footnote.
             egui::Frame::new()
-                .stroke(Stroke::new(1.0, theme::BORDER))
+                .stroke(Stroke::new(1.0, theme::colors(ui).border))
                 .corner_radius(6)
                 .inner_margin(10)
                 .show(ui, |ui| {
@@ -774,7 +781,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
                         egui::Label::new(
                             egui::RichText::new(format!("Image not loaded: {description}"))
                                 .size(BODY_SIZE - 2.0)
-                                .color(theme::MUTED),
+                                .color(theme::colors(ui).muted),
                         )
                         .selectable(true)
                         .wrap(),
@@ -842,7 +849,7 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>) -> LayoutJob
         ..Default::default()
     };
     if span.code {
-        format.background = CODE_FILL;
+        format.background = theme::colors(ui).code_fill;
         format.expand_bg = CODE_PADDING;
     }
     if span.struck {
@@ -866,7 +873,7 @@ fn heading_size(level: u8) -> f32 {
 
 fn placeholder(ui: &mut egui::Ui, message: &str) {
     ui.centered_and_justified(|ui| {
-        ui.label(egui::RichText::new(message).color(theme::MUTED));
+        ui.label(egui::RichText::new(message).color(theme::colors(ui).muted));
     });
 }
 

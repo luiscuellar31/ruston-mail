@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::settings::Appearance;
 use eframe::egui::{
     self, Atom, AtomLayoutResponse, Color32, CornerRadius, Id, Response, Stroke, Widget,
     WidgetInfo, WidgetType,
@@ -7,23 +8,87 @@ use eframe::egui::{
 
 pub const ACCENT: Color32 = Color32::from_rgb(109, 92, 245);
 pub const ACCENT_HOVER: Color32 = Color32::from_rgb(122, 107, 247);
-pub const ACCENT_SOFT: Color32 = Color32::from_rgb(43, 38, 79);
-pub const PANEL: Color32 = Color32::from_rgb(24, 25, 31);
-pub const PANEL_RAISED: Color32 = Color32::from_rgb(31, 32, 40);
-pub const SIDEBAR: Color32 = Color32::from_rgb(20, 21, 27);
-pub const BORDER: Color32 = Color32::from_rgb(51, 53, 64);
-pub const MUTED: Color32 = Color32::from_rgb(159, 162, 178);
-pub const DANGER: Color32 = Color32::from_rgb(245, 112, 112);
-pub const SUCCESS: Color32 = Color32::from_rgb(105, 210, 160);
 pub const PANEL_PADDING: i8 = 16;
 pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
-const SKELETON_LOW: Color32 = Color32::from_rgb(37, 38, 47);
-const SKELETON_HIGH: Color32 = Color32::from_rgb(54, 56, 68);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
 const SKELETON_FRAME: Duration = Duration::from_millis(50);
 const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
+
+/// Colors used by the custom-painted parts of the interface. egui's native
+/// widgets use the matching `Visuals` installed below.
+#[derive(Clone, Copy)]
+pub struct Colors {
+    pub login_background: Color32,
+    pub accent_soft: Color32,
+    pub panel: Color32,
+    pub panel_raised: Color32,
+    pub sidebar: Color32,
+    pub border: Color32,
+    pub muted: Color32,
+    pub danger: Color32,
+    pub success: Color32,
+    pub selected_folder_text: Color32,
+    pub row_hover: Color32,
+    pub quote_fill: Color32,
+    pub code_fill: Color32,
+    skeleton_low: Color32,
+    skeleton_high: Color32,
+    extreme_bg: Color32,
+    hyperlink: Color32,
+}
+
+const DARK: Colors = Colors {
+    login_background: Color32::from_rgb(21, 19, 34),
+    accent_soft: Color32::from_rgb(43, 38, 79),
+    panel: Color32::from_rgb(24, 25, 31),
+    panel_raised: Color32::from_rgb(31, 32, 40),
+    sidebar: Color32::from_rgb(20, 21, 27),
+    border: Color32::from_rgb(51, 53, 64),
+    muted: Color32::from_rgb(159, 162, 178),
+    danger: Color32::from_rgb(245, 112, 112),
+    success: Color32::from_rgb(105, 210, 160),
+    selected_folder_text: Color32::WHITE,
+    row_hover: Color32::from_rgb(28, 29, 36),
+    quote_fill: Color32::from_rgb(27, 28, 35),
+    code_fill: Color32::from_rgb(18, 19, 24),
+    skeleton_low: Color32::from_rgb(37, 38, 47),
+    skeleton_high: Color32::from_rgb(54, 56, 68),
+    extreme_bg: Color32::from_rgb(17, 18, 23),
+    hyperlink: Color32::from_rgb(150, 139, 255),
+};
+
+const LIGHT: Colors = Colors {
+    login_background: Color32::from_rgb(245, 243, 255),
+    accent_soft: Color32::from_rgb(235, 231, 255),
+    panel: Color32::from_rgb(250, 250, 253),
+    panel_raised: Color32::WHITE,
+    sidebar: Color32::from_rgb(242, 241, 250),
+    border: Color32::from_rgb(211, 213, 226),
+    muted: Color32::from_rgb(91, 96, 113),
+    danger: Color32::from_rgb(174, 43, 57),
+    success: Color32::from_rgb(23, 117, 76),
+    selected_folder_text: Color32::from_rgb(64, 49, 150),
+    row_hover: Color32::from_rgb(241, 240, 249),
+    quote_fill: Color32::from_rgb(246, 246, 250),
+    code_fill: Color32::from_rgb(241, 242, 247),
+    skeleton_low: Color32::from_rgb(230, 231, 239),
+    skeleton_high: Color32::from_rgb(242, 243, 248),
+    extreme_bg: Color32::from_rgb(237, 238, 246),
+    hyperlink: Color32::from_rgb(80, 62, 192),
+};
+
+fn colors_for(theme: egui::Theme) -> Colors {
+    match theme {
+        egui::Theme::Dark => DARK,
+        egui::Theme::Light => LIGHT,
+    }
+}
+
+pub fn colors(ui: &egui::Ui) -> Colors {
+    colors_for(ui.ctx().theme())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Icon {
@@ -89,7 +154,7 @@ impl Widget for IconButton<'_> {
         let color = if !ui.is_enabled() {
             ui.visuals().widgets.noninteractive.fg_stroke.color
         } else if self.danger {
-            DANGER
+            colors(ui).danger
         } else if self.selected == Some(true) {
             Color32::WHITE
         } else {
@@ -242,32 +307,45 @@ pub const DOT: &str = "·";
 
 pub fn install(context: &egui::Context) {
     egui_extras::install_image_loaders(context);
+    for mode in [egui::Theme::Dark, egui::Theme::Light] {
+        let colors = colors_for(mode);
+        let mut style = (*context.style_of(mode)).clone();
+        style.visuals = mode.default_visuals();
+        style.visuals.panel_fill = colors.panel;
+        style.visuals.window_fill = colors.panel_raised;
+        style.visuals.extreme_bg_color = colors.extreme_bg;
+        style.visuals.faint_bg_color = colors.skeleton_low;
+        style.visuals.selection.bg_fill = ACCENT;
+        style.visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+        style.visuals.hyperlink_color = colors.hyperlink;
+        style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, colors.border);
+        style.visuals.widgets.hovered.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
+        style.visuals.widgets.active.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
+        style.visuals.widgets.inactive.corner_radius = CornerRadius::same(7);
+        style.visuals.widgets.hovered.corner_radius = CornerRadius::same(7);
+        style.visuals.widgets.active.corner_radius = CornerRadius::same(7);
+        style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
+        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        // Solid scrollbars reserve space instead of covering content.
+        style.spacing.scroll = egui::style::ScrollStyle::solid();
+        style.scroll_animation =
+            egui::style::ScrollAnimation::new(1_200.0, egui::Rangef::new(0.08, 0.24));
+        // Only message bodies opt into selectable labels.
+        style.interaction.selectable_labels = false;
+        context.set_style_of(mode, style);
+    }
     context.set_theme(egui::Theme::Dark);
-    let mut style = (*context.style_of(egui::Theme::Dark)).clone();
-    style.visuals = egui::Visuals::dark();
-    style.visuals.panel_fill = PANEL;
-    style.visuals.window_fill = PANEL_RAISED;
-    style.visuals.extreme_bg_color = Color32::from_rgb(17, 18, 23);
-    style.visuals.faint_bg_color = Color32::from_rgb(37, 38, 47);
-    style.visuals.selection.bg_fill = ACCENT;
-    style.visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
-    style.visuals.hyperlink_color = Color32::from_rgb(150, 139, 255);
-    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, BORDER);
-    style.visuals.widgets.hovered.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
-    style.visuals.widgets.active.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
-    style.visuals.widgets.inactive.corner_radius = CornerRadius::same(7);
-    style.visuals.widgets.hovered.corner_radius = CornerRadius::same(7);
-    style.visuals.widgets.active.corner_radius = CornerRadius::same(7);
-    style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
-    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    // Solid scrollbars reserve space instead of covering content.
-    style.spacing.scroll = egui::style::ScrollStyle::solid();
-    style.scroll_animation =
-        egui::style::ScrollAnimation::new(1_200.0, egui::Rangef::new(0.08, 0.24));
-    // Only message bodies opt into selectable labels.
-    style.interaction.selectable_labels = false;
-    context.set_style_of(egui::Theme::Dark, style);
+}
+
+pub fn apply(context: &egui::Context, appearance: Appearance) {
+    let mode = match appearance {
+        Appearance::Dark => egui::Theme::Dark,
+        Appearance::Light => egui::Theme::Light,
+    };
+    if context.theme() != mode {
+        context.set_theme(mode);
+    }
 }
 
 pub fn selectable_text<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -290,21 +368,21 @@ pub fn skeleton_fill(ui: &egui::Ui) -> Color32 {
     } else {
         0.0
     };
-    skeleton_fill_at(time)
+    skeleton_fill_at(time, colors(ui))
 }
 
 pub fn paint_skeleton(painter: &egui::Painter, rect: egui::Rect, fill: Color32) {
     painter.rect_filled(rect, CornerRadius::same(4), fill);
 }
 
-fn skeleton_fill_at(time: f64) -> Color32 {
+fn skeleton_fill_at(time: f64, colors: Colors) -> Color32 {
     let wave = ((time * std::f64::consts::TAU / SKELETON_PERIOD_SECONDS).sin() as f32 + 1.0) * 0.5;
     let channel =
         |low: u8, high: u8| (low as f32 + (high as f32 - low as f32) * wave).round() as u8;
     Color32::from_rgb(
-        channel(SKELETON_LOW.r(), SKELETON_HIGH.r()),
-        channel(SKELETON_LOW.g(), SKELETON_HIGH.g()),
-        channel(SKELETON_LOW.b(), SKELETON_HIGH.b()),
+        channel(colors.skeleton_low.r(), colors.skeleton_high.r()),
+        channel(colors.skeleton_low.g(), colors.skeleton_high.g()),
+        channel(colors.skeleton_low.b(), colors.skeleton_high.b()),
     )
 }
 
@@ -422,10 +500,11 @@ pub fn panel_scroll_style() -> egui::style::ScrollStyle {
     style
 }
 
-pub fn card() -> egui::Frame {
+pub fn card(ui: &egui::Ui) -> egui::Frame {
+    let colors = colors(ui);
     egui::Frame::new()
-        .fill(PANEL_RAISED)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(colors.panel_raised)
+        .stroke(Stroke::new(1.0, colors.border))
         .corner_radius(CornerRadius::same(10))
         .inner_margin(14)
 }
@@ -567,7 +646,7 @@ mod tests {
                     rect = ui
                         .add(
                             compact_button("Reply")
-                                .fill(ACCENT_SOFT)
+                                .fill(DARK.accent_soft)
                                 .stroke(Stroke::new(1.0, ACCENT)),
                         )
                         .rect;
@@ -623,15 +702,49 @@ mod tests {
     }
 
     #[test]
+    fn appearance_switches_visuals_and_custom_colors() {
+        let context = egui::Context::default();
+        install(&context);
+        assert_eq!(context.theme(), egui::Theme::Dark);
+        assert_eq!(
+            context.style_of(egui::Theme::Dark).visuals.panel_fill,
+            DARK.panel
+        );
+
+        apply(&context, Appearance::Light);
+        assert_eq!(context.theme(), egui::Theme::Light);
+        assert_eq!(
+            context.style_of(egui::Theme::Light).visuals.panel_fill,
+            LIGHT.panel
+        );
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                assert!(!ui.visuals().dark_mode);
+                assert_eq!(colors(ui).muted, LIGHT.muted);
+                assert_eq!(card(ui).fill, LIGHT.panel_raised);
+            })
+            .drop_without_applying_deltas();
+
+        apply(&context, Appearance::Dark);
+        assert_eq!(context.theme(), egui::Theme::Dark);
+        assert_eq!(
+            context.style_of(egui::Theme::Dark).visuals.panel_fill,
+            DARK.panel
+        );
+    }
+
+    #[test]
     fn skeleton_pulse_stays_between_its_theme_colors() {
-        assert_eq!(
-            skeleton_fill_at(SKELETON_PERIOD_SECONDS * 0.25),
-            SKELETON_HIGH
-        );
-        assert_eq!(
-            skeleton_fill_at(SKELETON_PERIOD_SECONDS * 0.75),
-            SKELETON_LOW
-        );
+        for colors in [DARK, LIGHT] {
+            assert_eq!(
+                skeleton_fill_at(SKELETON_PERIOD_SECONDS * 0.25, colors),
+                colors.skeleton_high
+            );
+            assert_eq!(
+                skeleton_fill_at(SKELETON_PERIOD_SECONDS * 0.75, colors),
+                colors.skeleton_low
+            );
+        }
     }
 
     #[test]
@@ -656,13 +769,13 @@ mod tests {
 
     #[test]
     fn top_panel_frame_adds_inset_to_panel_padding() {
-        let zero_inset = top_panel_frame(SIDEBAR, 0.0);
+        let zero_inset = top_panel_frame(DARK.sidebar, 0.0);
         assert_eq!(zero_inset.inner_margin.top, PANEL_PADDING);
         assert_eq!(zero_inset.inner_margin.left, PANEL_PADDING);
         assert_eq!(zero_inset.inner_margin.right, PANEL_PADDING);
         assert_eq!(zero_inset.inner_margin.bottom, PANEL_PADDING);
 
-        let inset_frame = top_panel_frame(SIDEBAR, 28.0);
+        let inset_frame = top_panel_frame(DARK.sidebar, 28.0);
         assert_eq!(inset_frame.inner_margin.top, PANEL_PADDING + 28);
         assert_eq!(inset_frame.inner_margin.left, PANEL_PADDING);
         assert_eq!(inset_frame.inner_margin.right, PANEL_PADDING);

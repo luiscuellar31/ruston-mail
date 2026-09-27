@@ -25,7 +25,7 @@ pub(super) fn show(
         .default_size(widths.sidebar)
         .size_range(200.0..=(window_width - 400.0).max(200.0))
         .resizable(true)
-        .frame(theme::top_panel_frame(theme::SIDEBAR, inset))
+        .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
         .show(root, |ui| {
             sidebar(ui, app, mailbox, email, signing_out, messages)
         });
@@ -35,11 +35,11 @@ pub(super) fn show(
         .default_size(widths.conversations)
         .size_range(200.0..=(remaining - 200.0).max(200.0))
         .resizable(true)
-        .frame(theme::top_panel_frame(theme::PANEL, inset))
+        .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
         .show(root, |ui| conversation_pane(ui, mailbox, state, messages));
 
     egui::CentralPanel::default()
-        .frame(theme::top_panel_frame(theme::PANEL, inset))
+        .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
         .show(root, |ui| {
             if app.settings().compose_placement == ComposePlacement::ReadingPane
                 && let Some(writing) = app.compose()
@@ -146,7 +146,11 @@ fn sidebar(
             messages.push(Message::ShowSettings(true));
         }
         if let Some(error) = app.error_message() {
-            ui.label(egui::RichText::new(error).small().color(theme::DANGER));
+            ui.label(
+                egui::RichText::new(error)
+                    .small()
+                    .color(theme::colors(ui).danger),
+            );
         }
         detail(
             ui,
@@ -197,7 +201,7 @@ fn folder_button(
         .and_then(|counts| counts.unread(&folder))
         .filter(|count| *count > 0);
     let name = if selected {
-        egui::RichText::new(folder.name()).color(Color32::WHITE)
+        egui::RichText::new(folder.name()).color(theme::colors(ui).selected_folder_text)
     } else {
         egui::RichText::new(folder.name())
     }
@@ -210,16 +214,23 @@ fn folder_button(
         .frame(true)
         .frame_when_inactive(selected);
     if let Some(count) = unread {
-        button = button.right_text(count.to_string());
+        let text = egui::RichText::new(count.to_string());
+        button = button.right_text(if selected {
+            text.color(theme::colors(ui).selected_folder_text)
+        } else {
+            text
+        });
     }
     if selected {
-        button = button.fill(theme::ACCENT_SOFT).stroke(Stroke::NONE);
+        button = button
+            .fill(theme::colors(ui).accent_soft)
+            .stroke(Stroke::NONE);
     }
     let layout = button.atom_ui(ui);
     let icon_color = if icon == theme::Icon::Label {
         theme::ACCENT
     } else if selected {
-        Color32::WHITE
+        theme::colors(ui).selected_folder_text
     } else {
         ui.style().interact(&layout.response).fg_stroke.color
     };
@@ -232,7 +243,7 @@ fn folder_button(
             Align2::LEFT_CENTER,
             folder.name(),
             egui::TextStyle::Button.resolve(ui.style()),
-            Color32::WHITE,
+            theme::colors(ui).selected_folder_text,
             rect.width() - SELECTED_FOLDER_TEXT_OFFSET,
         );
     }
@@ -373,7 +384,7 @@ fn undo_notice(
         .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
         .order(egui::Order::Foreground)
         .show(context, |ui| {
-            theme::card()
+            theme::card(ui)
                 .stroke(Stroke::new(1.0, theme::ACCENT))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -497,14 +508,14 @@ fn conversation_row(
         .map(|time| format_time(time, now))
         .unwrap_or_default();
     let fill = if selected {
-        theme::ACCENT_SOFT
+        theme::colors(ui).accent_soft
     } else {
         Color32::TRANSPARENT
     };
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), Sense::click());
     let hovered_fill = if response.hovered() && !selected {
-        Color32::from_rgb(28, 29, 36)
+        theme::colors(ui).row_hover
     } else {
         fill
     };
@@ -548,7 +559,7 @@ fn conversation_row(
         Align2::LEFT_CENTER,
         subject,
         FontId::proportional(14.0),
-        theme::MUTED,
+        theme::colors(ui).muted,
         text_width,
     );
 
@@ -558,7 +569,7 @@ fn conversation_row(
         Align2::RIGHT_CENTER,
         time,
         meta_font.clone(),
-        theme::MUTED,
+        theme::colors(ui).muted,
     );
 
     let mut facts = Vec::new();
@@ -574,14 +585,14 @@ fn conversation_row(
             Align2::RIGHT_CENTER,
             facts.join(&format!(" {} ", theme::DOT)),
             meta_font,
-            theme::MUTED,
+            theme::colors(ui).muted,
         )
         .left();
     if conversation.has_attachments {
         theme::paint_clip(
             &painter,
             egui::pos2(facts_left - 9.0, subject_center_y),
-            theme::MUTED,
+            theme::colors(ui).muted,
         );
     }
 
@@ -686,12 +697,16 @@ fn load_more(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) 
 fn centered(ui: &mut egui::Ui, text: &str) {
     ui.add_space(24.0);
     ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new(text).color(theme::MUTED));
+        ui.label(egui::RichText::new(text).color(theme::colors(ui).muted));
     });
 }
 
 pub(super) fn detail(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).small().color(theme::MUTED));
+    ui.label(
+        egui::RichText::new(text)
+            .small()
+            .color(theme::colors(ui).muted),
+    );
 }
 
 fn search_scope_label(results: Option<&str>, loaded: usize) -> String {

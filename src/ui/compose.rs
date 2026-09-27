@@ -58,7 +58,7 @@ pub(super) fn show_window(context: &egui::Context, compose: &Compose) -> Vec<Mes
 
 fn show(root: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     egui::CentralPanel::default()
-        .frame(theme::panel_frame(theme::PANEL))
+        .frame(theme::panel_frame(theme::colors(root).panel))
         .show(root, |ui| page(ui, compose, messages));
 }
 
@@ -83,7 +83,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
                     } else {
                         "Send"
                     })
-                    .fill(theme::ACCENT_SOFT)
+                    .fill(theme::colors(ui).accent_soft)
                     .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
                 )
                 .clicked()
@@ -107,18 +107,18 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     ui.add_space(10.0);
 
     if compose.confirming_discard() {
-        theme::card()
-            .stroke(egui::Stroke::new(1.0, theme::DANGER))
+        theme::card(ui)
+            .stroke(egui::Stroke::new(1.0, theme::colors(ui).danger))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Discard unsaved message?")
                             .strong()
-                            .color(theme::DANGER),
+                            .color(theme::colors(ui).danger),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .button(egui::RichText::new("Discard").color(theme::DANGER))
+                            .button(egui::RichText::new("Discard").color(theme::colors(ui).danger))
                             .clicked()
                         {
                             messages.push(Message::DiscardCompose);
@@ -213,7 +213,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             ui.label(
                 egui::RichText::new(error.message())
                     .small()
-                    .color(theme::DANGER),
+                    .color(theme::colors(ui).danger),
             );
         }
         _ => {
