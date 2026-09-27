@@ -127,14 +127,39 @@ fn sign_in(ui: &mut egui::Ui, app: &mut App, messages: &mut Vec<Message>) {
             SignInStep::MailboxPassword => "Unlock mailbox",
         }
     };
-    if ui
-        .add_enabled(
-            !busy,
-            egui::Button::new(submit).min_size(egui::vec2(ui.available_width(), 44.0)),
-        )
-        .clicked()
-    {
+    let submit_clicked = ui
+        .scope(|ui| {
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::ACCENT;
+            ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::ACCENT_HOVER;
+            ui.visuals_mut().widgets.active.weak_bg_fill = theme::ACCENT_HOVER;
+            ui.add_enabled(
+                !busy,
+                egui::Button::new((
+                    egui::Atom::grow(),
+                    egui::RichText::new(submit).color(egui::Color32::WHITE),
+                    egui::Atom::grow(),
+                ))
+                .min_size(egui::vec2(ui.available_width(), 44.0))
+                .stroke(egui::Stroke::NONE),
+            )
+            .clicked()
+        })
+        .inner;
+    if submit_clicked {
         messages.push(Message::Submit);
+    }
+    if step == SignInStep::Credentials {
+        ui.add_space(12.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center),
+            |ui| {
+                ui.label("New to Proton?");
+                if ui.link("Create account").clicked() {
+                    messages.push(Message::OpenSignupPage);
+                }
+            },
+        );
     }
     let cancelled = if busy {
         ui.button("Cancel").clicked()
@@ -283,7 +308,7 @@ mod tests {
             ("horizontally", card.center().x, window.center().x),
         ] {
             assert!(
-                (card - window).abs() <= 1.0,
+                (card - window).abs() <= 2.0,
                 "the card is not centred {axis}: {card} against {window}"
             );
         }

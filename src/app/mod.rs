@@ -35,6 +35,7 @@ pub use reader::{ConversationReader, ReaderState};
 
 type SessionEpoch = u64;
 pub(crate) type AuthAttempt = u64;
+const PROTON_SIGNUP_URL: &str = "https://account.proton.me/mail/signup";
 
 #[derive(Clone)]
 pub enum Message {
@@ -44,6 +45,7 @@ pub enum Message {
     SignInFinished(AuthAttempt, SignInOutcome),
     SignInPrompt(AuthAttempt, SignInPrompt),
     OpenVerificationPage,
+    OpenSignupPage,
     CopyVerificationLink,
     LinkClicked(String),
     OpenLink,
@@ -368,6 +370,7 @@ impl App {
                     return open_in_browser(url.clone());
                 }
             }
+            Message::OpenSignupPage => return open_in_browser(PROTON_SIGNUP_URL.to_owned()),
             Message::CopyVerificationLink => {
                 if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
                     return Effects::ui(UiEffect::CopyText(url.clone()));
