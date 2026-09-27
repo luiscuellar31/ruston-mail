@@ -108,6 +108,7 @@ impl DesktopApp {
 
     fn dispatch(&mut self, message: Message, context: &egui::Context) {
         let now = context.input(|input| input.time);
+        let submitted_or_cancelled = matches!(&message, Message::Submit | Message::CancelChallenge);
         if matches!(&message, Message::RefreshMailbox) {
             self.auto_refresh.postpone(now);
         }
@@ -116,6 +117,14 @@ impl DesktopApp {
             _ => None,
         };
         let effects = self.app.update(message);
+        if submitted_or_cancelled
+            || !matches!(
+                self.app.auth_state(),
+                AuthState::SignedOut | AuthState::NeedsMailboxPassword
+            )
+        {
+            self.ui.show_password = false;
+        }
         self.execute(effects, context);
         if let Some((request, succeeded)) = page {
             self.auto_refresh.page_finished(request, succeeded, now);
@@ -370,7 +379,6 @@ impl eframe::App for DesktopApp {
                 login::show(ui, &mut self.app, &mut self.ui.show_password, &mut messages);
             }
             AuthState::Authenticated { email } => {
-                self.ui.show_password = false;
                 if self.app.mailbox().is_some() {
                     mailbox::show(
                         ui,
@@ -400,7 +408,6 @@ impl eframe::App for DesktopApp {
                 }
             }
             AuthState::SigningOut => {
-                self.ui.show_password = false;
                 if self.app.mailbox().is_some() {
                     mailbox::show(ui, &self.app, None, true, &mut self.ui, &mut messages);
                 } else {
@@ -555,6 +562,35 @@ mod tests {
         assert_eq!(viewport.fullsize_content_view, None);
         assert_eq!(viewport.titlebar_shown, None);
         assert_eq!(viewport.title_shown, None);
+    }
+
+    #[test]
+    fn dispatch_clears_password_visibility_on_submit_cancel_or_other_auth_step() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+
+        desktop.ui.show_password = true;
+        desktop.dispatch(
+            Message::SetAppearance(crate::settings::Appearance::Light),
+            &context,
+        );
+        assert!(!desktop.ui.show_password);
+
+        desktop.app = App::signed_out();
+        desktop.ui.show_password = true;
+        desktop.dispatch(
+            Message::SetAppearance(crate::settings::Appearance::Dark),
+            &context,
+        );
+        assert!(desktop.ui.show_password);
+
+        desktop.dispatch(Message::Submit, &context);
+        assert!(matches!(desktop.app.auth_state(), AuthState::SignedOut));
+        assert!(!desktop.ui.show_password);
+
+        desktop.ui.show_password = true;
+        desktop.dispatch(Message::CancelChallenge, &context);
+        assert!(!desktop.ui.show_password);
     }
 
     #[test]

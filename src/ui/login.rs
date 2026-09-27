@@ -14,15 +14,9 @@ pub(super) fn show(
     show_password: &mut bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    if !matches!(
-        app.auth_state(),
-        AuthState::SignedOut | AuthState::NeedsMailboxPassword
-    ) {
-        *show_password = false;
-    }
     // The sizing pass must not change the live password visibility.
     let mut measured_password_visibility = *show_password;
-    let response = egui::CentralPanel::default()
+    egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
                 .fill(theme::colors(root).login_background)
@@ -64,14 +58,7 @@ pub(super) fn show(
                 })
                 .inner
         })
-        .inner;
-    if messages
-        .iter()
-        .any(|message| matches!(message, Message::Submit | Message::CancelChallenge))
-    {
-        *show_password = false;
-    }
-    response
+        .inner
 }
 
 fn body(
@@ -797,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn password_visibility_survives_measurement_and_resets_during_sign_in() {
+    fn password_visibility_survives_measurement() {
         let mut app = App::signed_out();
         let context = egui::Context::default();
         theme::install(&context);
@@ -808,17 +795,5 @@ mod tests {
             })
             .drop_without_applying_deltas();
         assert!(show_password);
-
-        *app.username_mut() = "name@proton.me".into();
-        *app.password_mut() = "example password".into();
-        let _ = app.update(Message::Submit);
-        assert!(matches!(app.auth_state(), AuthState::SigningIn(_)));
-
-        context
-            .run_ui(egui::RawInput::default(), |ui| {
-                show(ui, &mut app, &mut show_password, &mut Vec::new());
-            })
-            .drop_without_applying_deltas();
-        assert!(!show_password);
     }
 }
