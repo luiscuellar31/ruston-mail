@@ -1,30 +1,16 @@
 //! Message commands.
 
 use crate::cli::Ctx;
-use crate::cli::{LabelAction, MessagesCmd, SearchArgs, SendArgs};
+use crate::cli::{LabelAction, MessagesCmd, SendArgs};
 use crate::commands::{read_body, resolve_all, resume};
 use crate::render;
 use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::{
     BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
-use ruston_core::{AddressInfo, Client, Result, SearchOpts, SendOptions};
+use ruston_core::{AddressInfo, Client, Result, SendOptions};
 use std::cell::Cell;
 use std::io::{self, BufRead, IsTerminal, Write};
-
-fn search_opts(a: SearchArgs) -> SearchOpts {
-    SearchOpts {
-        keyword: a.keyword,
-        from: a.from,
-        to: a.to,
-        subject: a.subject,
-        after: a.after,
-        before: a.before,
-        folder: a.folder,
-        unread: a.unread,
-        limit: a.limit,
-    }
-}
 
 pub(crate) fn send_options(a: SendArgs, body: String) -> SendOptions {
     SendOptions {
@@ -150,7 +136,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::Search(args) => {
             let client = resume(&ctx.profile).await?;
-            let opts = search_opts(args);
+            let opts = args.into();
             let msgs = client.search_messages(&opts).await?;
             render::messages_list(ctx.json, msgs.len() as u32, &msgs);
             Ok(())

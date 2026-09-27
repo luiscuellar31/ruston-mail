@@ -4,24 +4,9 @@
 //! `resolve_ref` helper resolves to *message* IDs, and there is no
 //! conversation-level resolver, so free-text resolution is not available here.
 
-use crate::cli::Ctx;
-use crate::cli::{ConversationsCmd, SearchArgs};
+use crate::cli::{ConversationsCmd, Ctx};
 use crate::render;
-use ruston_core::{Result, SearchOpts};
-
-fn search_opts(a: SearchArgs) -> SearchOpts {
-    SearchOpts {
-        keyword: a.keyword,
-        from: a.from,
-        to: a.to,
-        subject: a.subject,
-        after: a.after,
-        before: a.before,
-        folder: a.folder,
-        unread: a.unread,
-        limit: a.limit,
-    }
-}
+use ruston_core::Result;
 
 pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
     let client = crate::commands::resume(&ctx.profile).await?;
@@ -38,7 +23,8 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
             render::conversations_list(ctx.json, total, &convs);
         }
         ConversationsCmd::Search(args) => {
-            let convs = client.search_conversations(&search_opts(args)).await?;
+            let opts = args.into();
+            let convs = client.search_conversations(&opts).await?;
             render::conversations_list(ctx.json, convs.len() as u32, &convs);
         }
         ConversationsCmd::Read { id } => {

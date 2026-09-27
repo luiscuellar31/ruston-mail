@@ -1,6 +1,7 @@
 //! Command-line interface definition (clap v4 derive).
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use ruston_core::SearchOpts;
 use std::path::PathBuf;
 
 /// Ruston Mail command-line client.
@@ -276,6 +277,22 @@ pub struct SearchArgs {
     /// Maximum number of results.
     #[arg(long)]
     pub limit: Option<u32>,
+}
+
+impl From<SearchArgs> for SearchOpts {
+    fn from(args: SearchArgs) -> Self {
+        Self {
+            keyword: args.keyword,
+            from: args.from,
+            to: args.to,
+            subject: args.subject,
+            after: args.after,
+            before: args.before,
+            folder: args.folder,
+            unread: args.unread,
+            limit: args.limit,
+        }
+    }
 }
 
 /// Compose options shared by `send`.
