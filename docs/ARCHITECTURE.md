@@ -230,7 +230,15 @@ writes without the new column. The event stream in
 invalidates an indexed body on a full message update. Each incremental event
 batch and its cursor commit together only if the stored cursor still matches
 the one used to fetch the batch; a competing sync causes a retry error without
-applying stale data. Initial cursor creation is also conditional. When Proton
+applying stale data. Backfill and indexing capture the local cursor before each
+page request and retain it for all body downloads from that page. Before writing,
+SQLite's immediate transaction checks that cursor, including an uninitialized
+cursor. A competing sync or resync causes a retry error without applying the
+stale result. Backfill commits each page atomically; indexing commits metadata
+and the body together, or metadata and body invalidation when a read fails.
+No database transaction is held during a network request or decryption, and
+completed pages or messages remain cached if a later result is rejected.
+Initial cursor creation is also conditional. When Proton
 requests a full refresh, sync pages through all message metadata into temporary
 SQLite tables, then replaces the cache and event cursor in one transaction. A
 failed rebuild leaves the cached offline data and cursor intact. Sync catches up

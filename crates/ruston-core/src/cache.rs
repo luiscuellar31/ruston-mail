@@ -120,6 +120,20 @@ fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
     Ok(())
 }
 
+fn replace_index(conn: &Connection, m: &MessageMetadata, body: Option<&str>) -> Result<()> {
+    upsert_metadata(conn, m)?;
+    conn.execute("DELETE FROM msg_fts WHERE id=?1", [&m.id])
+        .map_err(map)?;
+    if let Some(body) = body {
+        conn.execute(
+            "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
+            rusqlite::params![m.id, m.subject, body, participants(m)],
+        )
+        .map_err(map)?;
+    }
+    Ok(())
+}
+
 fn delete_message(conn: &Connection, id: &str) -> Result<()> {
     // The messages_delete_fts trigger removes the indexed body in this transaction.
     let deleted = conn
@@ -363,6 +377,54 @@ impl Cache {
             == 1)
     }
 
+    fn transaction_at_cursor(&self, expected: Option<&str>) -> Result<Transaction<'_>> {
+        // Claim the SQLite write lock before checking; other processes cannot
+        // advance the cursor between this check and the commit.
+        let tx =
+            Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(map)?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key='last_event_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(map)?;
+        if current.as_deref() != expected {
+            return Err(Error::Cache(
+                "sync cursor changed during cache download; retry".into(),
+            ));
+        }
+        Ok(tx)
+    }
+
+    /// Commit a downloaded page only if sync has not changed since its request.
+    pub(crate) fn store_metadata_page(
+        &self,
+        expected_cursor: Option<&str>,
+        messages: &[MessageMetadata],
+    ) -> Result<()> {
+        let tx = self.transaction_at_cursor(expected_cursor)?;
+        for m in messages {
+            upsert_message(&tx, m)?;
+        }
+        tx.commit().map_err(map)
+    }
+
+    /// Commit a downloaded body, or invalidate a failed refresh, only while the
+    /// cursor captured before listing the page still matches. Both outcomes
+    /// update metadata and the body index atomically without changing the cursor.
+    pub(crate) fn store_index_result(
+        &self,
+        expected_cursor: Option<&str>,
+        m: &MessageMetadata,
+        body: Option<&str>,
+    ) -> Result<()> {
+        let tx = self.transaction_at_cursor(expected_cursor)?;
+        replace_index(&tx, m, body)?;
+        tx.commit().map_err(map)
+    }
+
     /// Apply a server batch and its cursor only if the cursor we fetched from
     /// still owns the cache. A stale process leaves both data and cursor intact.
     pub(crate) fn apply_event_batch(
@@ -601,14 +663,7 @@ impl Cache {
     /// Index a message's decrypted body for local full-text search.
     pub fn index_message(&self, m: &MessageMetadata, body: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
-        upsert_metadata(&tx, m)?;
-        tx.execute("DELETE FROM msg_fts WHERE id=?1", [&m.id])
-            .map_err(map)?;
-        tx.execute(
-            "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
-            rusqlite::params![m.id, m.subject, body, participants(m)],
-        )
-        .map_err(map)?;
+        replace_index(&tx, m, Some(body))?;
         tx.commit().map_err(map)?;
         Ok(())
     }
@@ -897,6 +952,118 @@ mod tests {
         );
         drop(cache);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn downloaded_body_cannot_restore_a_deleted_message() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let indexer = Cache::open(&path).unwrap();
+        let syncer = Cache::open(&path).unwrap();
+        indexer.set_last_event_id("before-download").unwrap();
+        let old = meta("m1", "0", 0, 1);
+        indexer.index_message(&old, "privatebody").unwrap();
+        let cursor = indexer.last_event_id().unwrap();
+
+        // The indexer has a response in flight when another connection deletes it.
+        syncer
+            .apply_event_batch(
+                "before-download",
+                &event_batch(
+                    "after-delete",
+                    vec![MessageEvent {
+                        id: old.id.clone(),
+                        action: action::DELETE,
+                        message: None,
+                    }],
+                ),
+            )
+            .unwrap();
+        assert!(
+            indexer
+                .store_index_result(cursor.as_deref(), &old, Some("privatebody"))
+                .is_err()
+        );
+
+        assert_eq!(
+            indexer.last_event_id().unwrap().as_deref(),
+            Some("after-delete")
+        );
+        assert!(indexer.list("0", false, 10, 0).unwrap().is_empty());
+        assert!(indexer.search("privatebody", 10).unwrap().is_empty());
+        drop(indexer);
+        drop(syncer);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cursor_initialization_rejects_downloads_started_without_a_cursor() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        let old_cursor = cache.last_event_id().unwrap();
+        assert!(cache.initialize_cursor("initialized").unwrap());
+        let message = meta("m1", "0", 0, 1);
+
+        assert!(
+            cache
+                .store_metadata_page(old_cursor.as_deref(), std::slice::from_ref(&message))
+                .is_err()
+        );
+        for body in [None, Some("privatebody")] {
+            assert!(
+                cache
+                    .store_index_result(old_cursor.as_deref(), &message, body)
+                    .is_err()
+            );
+        }
+        assert_eq!(cache.count("0").unwrap(), (0, 0));
+        assert!(cache.search("privatebody", 10).unwrap().is_empty());
+        assert_eq!(
+            cache.last_event_id().unwrap().as_deref(),
+            Some("initialized")
+        );
+    }
+
+    #[test]
+    fn failed_download_commits_roll_back_metadata_labels_and_bodies() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        let original = meta("keep", "0", 0, 1);
+        cache.index_message(&original, "privatebody").unwrap();
+        cache
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_bad BEFORE INSERT ON messages
+             WHEN NEW.id='bad' BEGIN SELECT RAISE(ABORT, 'bad'); END;",
+            )
+            .unwrap();
+        let updated = meta("keep", "5", 1, 2);
+        assert!(
+            cache
+                .store_metadata_page(Some("old"), &[updated.clone(), meta("bad", "0", 0, 3)])
+                .is_err()
+        );
+        assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].time, 1);
+        assert!(cache.list("5", false, 10, 0).unwrap().is_empty());
+
+        cache
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_changed_label BEFORE INSERT ON message_labels
+             WHEN NEW.label_id='5' BEGIN SELECT RAISE(ABORT, 'bad label'); END;",
+            )
+            .unwrap();
+        for body in [None, Some("downloadedbody")] {
+            assert!(
+                cache
+                    .store_index_result(Some("old"), &updated, body)
+                    .is_err()
+            );
+            assert_eq!(cache.search("privatebody", 10).unwrap()[0].time, 1);
+            assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].unread, 0);
+            assert!(cache.list("5", false, 10, 0).unwrap().is_empty());
+            assert!(cache.search("downloadedbody", 10).unwrap().is_empty());
+        }
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
     }
 
     #[test]

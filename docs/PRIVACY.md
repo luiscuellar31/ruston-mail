@@ -89,6 +89,13 @@ search index; run `index` again to make message bodies searchable.
 Concurrent incremental sync runs commit each event batch with its cursor. If
 another process has advanced the cursor, the stale run stops with a retry error
 and leaves that batch unapplied.
+Backfill and indexing also check the cursor before saving downloaded data,
+including when a body download fails. If sync changes the cursor while a page
+or body is being downloaded, the operation stops with a retry error and does
+not restore deleted mail or overwrite the newer cached data with that result.
+Run the command again to continue; earlier committed pages and messages remain
+cached. These checks apply to changes already synchronized into the local
+cache; run `sync` to receive remote changes.
 
 ## Saved session and settings
 
