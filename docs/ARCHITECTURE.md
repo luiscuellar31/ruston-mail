@@ -222,7 +222,20 @@ by this code. On Unix, core creates the cache directory and database with
 private permissions and tightens older cache permissions before opening them;
 explicit cache paths require a private parent directory. Cache writes and index
 maintenance live in [`cache.rs`](../crates/ruston-core/src/cache.rs), which
-removes indexed bodies when messages are deleted. Cached folder listings use
+removes indexed bodies when messages are deleted. FTS maintenance resolves
+message IDs through the indexed `msg_fts_rows` table and targets FTS `rowid`s,
+avoiding a full scan for each deletion, invalidation, or header update. Opening
+an older cache migrates this relation in an immediate transaction: it renames
+the existing FTS table to `msg_fts_index`, preserves its contents and rowids,
+and backfills only the ID/rowid map. `msg_fts` remains a compatibility view;
+its mutation triggers update FTS and the map together, including writes from
+older processes. The view exposes the FTS search and rank columns so existing
+readers keep working. Bulk cache resets clear FTS and the map directly in the
+same transaction to avoid materializing bodies through the view.
+Duplicate IDs and orphaned bodies are included in the
+map, and deletion removes every matching row. A failed migration rolls back;
+reopening is idempotent. Shadow tables are not accessed or modified directly.
+Cached folder listings use
 an index on label and message time. Opening an older cache backfills that time
 in one transaction; triggers keep the index current when an older process
 writes without the new column. The event stream in

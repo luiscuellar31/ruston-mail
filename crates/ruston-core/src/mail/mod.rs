@@ -412,7 +412,8 @@ mod tests {
         }
         assert_session_cleared(&client, &base);
         tokio::time::pause();
-        tokio::time::advance(LOGOUT_REVOCATION_TIMEOUT).await;
+        // Tokio rounds timer deadlines up to the next millisecond.
+        tokio::time::advance(LOGOUT_REVOCATION_TIMEOUT + Duration::from_millis(1)).await;
         assert!(matches!(
             futures::poll!(&mut logout),
             std::task::Poll::Ready(Ok(()))

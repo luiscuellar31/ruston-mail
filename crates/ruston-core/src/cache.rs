@@ -89,6 +89,11 @@ fn participants(m: &MessageMetadata) -> String {
         .join(" ")
 }
 
+const DELETE_INDEX_SQL: &str = "DELETE FROM msg_fts WHERE rowid IN (
+    SELECT fts_rowid FROM msg_fts_rows WHERE message_id=?1)";
+const UPDATE_INDEX_SQL: &str = "UPDATE msg_fts SET subject=?2, participants=?3 WHERE rowid IN (
+    SELECT fts_rowid FROM msg_fts_rows WHERE message_id=?1)";
+
 fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
     let json = serde_json::to_string(m)?;
     conn.execute(
@@ -113,7 +118,7 @@ fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
 fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
     upsert_metadata(conn, m)?;
     conn.execute(
-        "UPDATE msg_fts SET subject=?2, participants=?3 WHERE id=?1",
+        UPDATE_INDEX_SQL,
         rusqlite::params![m.id, m.subject, participants(m)],
     )
     .map_err(map)?;
@@ -122,8 +127,7 @@ fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
 
 fn replace_index(conn: &Connection, m: &MessageMetadata, body: Option<&str>) -> Result<()> {
     upsert_metadata(conn, m)?;
-    conn.execute("DELETE FROM msg_fts WHERE id=?1", [&m.id])
-        .map_err(map)?;
+    conn.execute(DELETE_INDEX_SQL, [&m.id]).map_err(map)?;
     if let Some(body) = body {
         conn.execute(
             "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
@@ -141,8 +145,7 @@ fn delete_message(conn: &Connection, id: &str) -> Result<()> {
         .map_err(map)?;
     if deleted == 0 {
         // A stray index row can still exist without cached metadata.
-        conn.execute("DELETE FROM msg_fts WHERE id=?1", [id])
-            .map_err(map)?;
+        conn.execute(DELETE_INDEX_SQL, [id]).map_err(map)?;
     }
     conn.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
         .map_err(map)?;
@@ -189,6 +192,67 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
          END;
          CREATE INDEX IF NOT EXISTS idx_ml_label_time
          ON message_labels(label_id, time DESC, message_id);",
+    )
+    .map_err(map)?;
+    tx.commit().map_err(map)
+}
+
+fn ensure_fts_rowid_index(conn: &Connection) -> Result<()> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    let kind: String = tx
+        .query_row(
+            "SELECT type FROM sqlite_schema WHERE name='msg_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(map)?;
+    if kind == "view" {
+        return tx.commit().map_err(map);
+    }
+
+    // Preserve existing FTS data and rowids. FTS5 does not allow table triggers,
+    // so a compatibility view keeps the ID/rowid map in sync for every writer,
+    // including a process using the previous schema. Do not modify shadow tables.
+    tx.execute_batch(
+        "DROP TRIGGER IF EXISTS messages_delete_fts;
+         ALTER TABLE msg_fts RENAME TO msg_fts_index;
+         CREATE TABLE msg_fts_rows(fts_rowid INTEGER PRIMARY KEY, message_id TEXT NOT NULL);
+         CREATE INDEX idx_fts_message_id ON msg_fts_rows(message_id);
+         INSERT INTO msg_fts_rows(fts_rowid, message_id) SELECT rowid, id FROM msg_fts_index;
+         CREATE VIEW msg_fts AS
+         SELECT rowid, id, subject, body, participants, rank, msg_fts_index AS msg_fts
+         FROM msg_fts_index;
+         CREATE TRIGGER msg_fts_insert INSTEAD OF INSERT ON msg_fts
+         WHEN NEW.msg_fts IS NULL
+         BEGIN
+             INSERT INTO msg_fts_index(rowid, id, subject, body, participants)
+             VALUES(NEW.rowid, NEW.id, NEW.subject, NEW.body, NEW.participants);
+             INSERT INTO msg_fts_rows(fts_rowid, message_id) VALUES(last_insert_rowid(), NEW.id);
+         END;
+         CREATE TRIGGER msg_fts_command INSTEAD OF INSERT ON msg_fts
+         WHEN NEW.msg_fts IS NOT NULL
+         BEGIN
+             INSERT INTO msg_fts_index(msg_fts_index, rank) VALUES(NEW.msg_fts, NEW.rank);
+         END;
+         CREATE TRIGGER msg_fts_update INSTEAD OF UPDATE ON msg_fts
+         BEGIN
+             UPDATE msg_fts_index
+             SET rowid=NEW.rowid, id=NEW.id, subject=NEW.subject,
+                 body=NEW.body, participants=NEW.participants
+             WHERE rowid=OLD.rowid;
+             UPDATE msg_fts_rows SET fts_rowid=NEW.rowid, message_id=NEW.id
+             WHERE fts_rowid=OLD.rowid;
+         END;
+         CREATE TRIGGER msg_fts_delete INSTEAD OF DELETE ON msg_fts
+         BEGIN
+             DELETE FROM msg_fts_index WHERE rowid=OLD.rowid;
+             DELETE FROM msg_fts_rows WHERE fts_rowid=OLD.rowid;
+         END;
+         CREATE TRIGGER messages_delete_fts AFTER DELETE ON messages
+         BEGIN
+             DELETE FROM msg_fts WHERE rowid IN (
+                 SELECT fts_rowid FROM msg_fts_rows WHERE message_id=OLD.id);
+         END;",
     )
     .map_err(map)?;
     tx.commit().map_err(map)
@@ -331,12 +395,11 @@ impl Cache {
              CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
              CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
              CREATE INDEX IF NOT EXISTS idx_ml_label ON message_labels(label_id);
-             CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(id UNINDEXED, subject, body, participants);
-             CREATE TRIGGER IF NOT EXISTS messages_delete_fts AFTER DELETE ON messages
-             BEGIN DELETE FROM msg_fts WHERE id=OLD.id; END;",
+             CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(id UNINDEXED, subject, body, participants);",
         )
         .map_err(map)?;
         ensure_label_time_index(&conn)?;
+        ensure_fts_rowid_index(&conn)?;
         Ok(Cache { conn })
     }
 
@@ -458,8 +521,7 @@ impl Cache {
                 action::CREATE | action::UPDATE => {
                     if ev.action == action::UPDATE {
                         // Events carry metadata, not the decrypted body.
-                        tx.execute("DELETE FROM msg_fts WHERE id=?1", [&ev.id])
-                            .map_err(map)?;
+                        tx.execute(DELETE_INDEX_SQL, [&ev.id]).map_err(map)?;
                     }
                     if let Some(m) = &ev.message {
                         upsert_message(&tx, m)?;
@@ -515,9 +577,7 @@ impl Cache {
 
     /// Drop an indexed body when a full update may have changed its content.
     pub fn invalidate_index(&self, id: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM msg_fts WHERE id=?1", [id])
-            .map_err(map)?;
+        self.conn.execute(DELETE_INDEX_SQL, [id]).map_err(map)?;
         Ok(())
     }
 
@@ -565,8 +625,12 @@ impl Cache {
     /// Drop all cached messages and indexed bodies.
     pub fn clear(&self) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
-        tx.execute_batch("DELETE FROM msg_fts; DELETE FROM message_labels; DELETE FROM messages;")
-            .map_err(map)?;
+        // Bulk resets do not need to materialize the compatibility view's bodies.
+        tx.execute_batch(
+            "DELETE FROM msg_fts_index; DELETE FROM msg_fts_rows;
+             DELETE FROM message_labels; DELETE FROM messages;",
+        )
+        .map_err(map)?;
         tx.commit().map_err(map)?;
         Ok(())
     }
@@ -642,7 +706,8 @@ impl Cache {
         }
 
         tx.execute_batch(
-            "DELETE FROM msg_fts;
+            "DELETE FROM msg_fts_index;
+             DELETE FROM msg_fts_rows;
              DELETE FROM message_labels;
              DELETE FROM messages;
              INSERT INTO messages(id, time, unread, json)
@@ -1361,6 +1426,352 @@ mod tests {
         assert_eq!(c.last_event_id().unwrap().as_deref(), Some("old"));
         assert_eq!(c.list("0", false, 10, 0).unwrap()[0].id, "keep");
         assert_eq!(c.search("privatebody", 10).unwrap()[0].id, "keep");
+    }
+
+    #[test]
+    fn fts_id_maintenance_does_not_scan_unrelated_rows() {
+        use rusqlite::StatementStatus;
+
+        let mut measurements = Vec::new();
+        for count in [128, 2048] {
+            let cache = Cache::open(Path::new(":memory:")).unwrap();
+            let tx = cache.conn.unchecked_transaction().unwrap();
+            for index in 0..count {
+                tx.execute(
+                    "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, '', 'body', '')",
+                    [format!("m{index}")],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+            let mut delete = cache.conn.prepare(DELETE_INDEX_SQL).unwrap();
+            delete.execute(["missing"]).unwrap();
+            let mut update = cache.conn.prepare(UPDATE_INDEX_SQL).unwrap();
+            update
+                .execute(rusqlite::params!["missing", "subject", "sender"])
+                .unwrap();
+            measurements.push((
+                delete.get_status(StatementStatus::VmStep),
+                update.get_status(StatementStatus::VmStep),
+            ));
+            for sql in [DELETE_INDEX_SQL, UPDATE_INDEX_SQL] {
+                let plan: Vec<String> = cache
+                    .conn
+                    .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                    .unwrap()
+                    .query_map(
+                        rusqlite::params_from_iter(
+                            (0..sql.matches('?').count()).map(|_| "missing"),
+                        ),
+                        |row| row.get(3),
+                    )
+                    .unwrap()
+                    .map(|row| row.unwrap())
+                    .collect();
+                assert!(
+                    plan.iter()
+                        .any(|step| step.contains("USING COVERING INDEX idx_fts_message_id")),
+                    "{plan:?}"
+                );
+                assert!(
+                    plan.iter()
+                        .any(|step| step.contains("msg_fts_index VIRTUAL TABLE INDEX")
+                            && step.ends_with('=')),
+                    "{plan:?}"
+                );
+            }
+        }
+        eprintln!("FTS maintenance VM steps (128 / 2048 rows): {measurements:?}");
+        assert!(measurements[1].0 <= measurements[0].0 * 2);
+        assert!(measurements[1].1 <= measurements[0].1 * 2);
+    }
+
+    fn create_legacy_fts_cache(path: &Path) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta VALUES('last_event_id', 'old-cursor');
+             INSERT INTO meta VALUES('account_identity_v1', 'original-account-binding');
+             CREATE TABLE messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
+             CREATE TABLE message_labels(message_id TEXT, label_id TEXT, time INTEGER,
+                 PRIMARY KEY(message_id, label_id));
+             CREATE VIRTUAL TABLE msg_fts USING fts5(id UNINDEXED, subject, body, participants);
+             CREATE TRIGGER messages_delete_fts AFTER DELETE ON messages
+             BEGIN DELETE FROM msg_fts WHERE id=OLD.id; END;
+             INSERT INTO msg_fts(rowid,id,subject,body,participants) VALUES
+                 (7,'m1','oldsubject','privatebody','sender'),
+                 (11,'m1','oldsubject','duplicatebody','sender'),
+                 (17,'orphan','','orphanbody',''),
+                 (21,'m2','','otherbody','');",
+        )
+        .unwrap();
+        upsert_metadata(&conn, &meta("m1", "0", 1, 42)).unwrap();
+        upsert_metadata(&conn, &meta("m2", "5", 0, 43)).unwrap();
+        conn
+    }
+
+    fn assert_fts_rowid_map_matches(conn: &Connection) {
+        let mismatches: i64 = conn.query_row(
+            "SELECT
+             (SELECT COUNT(*) FROM (
+                 SELECT rowid,id FROM msg_fts_index EXCEPT SELECT fts_rowid,message_id FROM msg_fts_rows)) +
+             (SELECT COUNT(*) FROM (
+                 SELECT fts_rowid,message_id FROM msg_fts_rows EXCEPT SELECT rowid,id FROM msg_fts_index))",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(mismatches, 0);
+        conn.execute("INSERT INTO msg_fts(msg_fts) VALUES('integrity-check')", [])
+            .unwrap();
+    }
+
+    #[test]
+    fn fts_migration_preserves_rows_search_cursor_and_binding_on_reopen() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let legacy = create_legacy_fts_cache(&path);
+        let before: Vec<(i64, String, String)> = legacy
+            .prepare("SELECT rowid,id,body FROM msg_fts ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        let cache = Cache::open(&path).unwrap();
+        let after: Vec<(i64, String, String)> = cache
+            .conn
+            .prepare("SELECT rowid,id,body FROM msg_fts ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(before, after);
+        assert_eq!(cache.search("privatebody", 10).unwrap()[0].id, "m1");
+        assert_eq!(cache.list("0", true, 10, 0).unwrap()[0].time, 42);
+        assert_eq!(
+            cache.last_event_id().unwrap().as_deref(),
+            Some("old-cursor")
+        );
+        let binding: String = cache
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='account_identity_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(binding, "original-account-binding");
+        assert_fts_rowid_map_matches(&cache.conn);
+        drop(cache);
+        let cache = Cache::open(&path).unwrap();
+        assert_eq!(cache.search("duplicatebody", 10).unwrap()[0].id, "m1");
+        assert_fts_rowid_map_matches(&cache.conn);
+        drop(cache);
+        drop(legacy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_fts_migration_rolls_back_and_can_be_retried() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let legacy = create_legacy_fts_cache(&path);
+        // Force failure after the rename and trigger removal inside migration.
+        legacy
+            .execute_batch("CREATE VIEW msg_fts_rows AS SELECT 1")
+            .unwrap();
+        assert!(Cache::open(&path).is_err());
+        let kind: String = legacy
+            .query_row(
+                "SELECT type FROM sqlite_schema WHERE name='msg_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "table");
+        let new_objects: i64 = legacy.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name IN ('msg_fts_index','idx_fts_message_id','msg_fts_insert')", [], |row| row.get(0)).unwrap();
+        assert_eq!(new_objects, 0);
+        let old_trigger: String = legacy
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE name='messages_delete_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(old_trigger.contains("WHERE id=OLD.id"));
+        assert_eq!(
+            legacy
+                .query_row("SELECT body FROM msg_fts WHERE rowid=7", [], |row| row
+                    .get::<_, String>(
+                    0
+                ))
+                .unwrap(),
+            "privatebody"
+        );
+        assert_eq!(
+            legacy
+                .query_row(
+                    "SELECT value FROM meta WHERE key='last_event_id'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "old-cursor"
+        );
+        legacy.execute_batch("DROP VIEW msg_fts_rows").unwrap();
+        let cache = Cache::open(&path).unwrap();
+        assert_eq!(cache.search("privatebody", 10).unwrap()[0].id, "m1");
+        assert_fts_rowid_map_matches(&cache.conn);
+        drop(cache);
+        drop(legacy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_writes_and_new_writes_share_the_rowid_map() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        // This connection predates migration and keeps using the original SQL.
+        let legacy = create_legacy_fts_cache(&path);
+        let cache = Cache::open(&path).unwrap();
+        legacy
+            .execute(
+                "UPDATE msg_fts SET subject='legacysubject' WHERE id='m1'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(cache.search("legacysubject", 10).unwrap().len(), 2);
+        cache.invalidate_index("m1").unwrap();
+        assert!(cache.search("privatebody", 10).unwrap().is_empty());
+        assert!(cache.search("duplicatebody", 10).unwrap().is_empty());
+        legacy
+            .execute(
+                "INSERT INTO msg_fts(id,subject,body,participants) VALUES('m1','','legacybody','')",
+                [],
+            )
+            .unwrap();
+        assert_fts_rowid_map_matches(&cache.conn);
+        assert_eq!(cache.search("legacybody", 10).unwrap()[0].id, "m1");
+        cache
+            .index_message(&meta("m1", "0", 1, 42), "newbody")
+            .unwrap();
+        let old_reader: String = legacy
+            .query_row(
+                "SELECT id FROM msg_fts WHERE msg_fts MATCH 'newbody' ORDER BY rank LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_reader, "m1");
+        assert_fts_rowid_map_matches(&legacy);
+        legacy
+            .execute("DELETE FROM messages WHERE id='m1'", [])
+            .unwrap();
+        assert!(cache.search("newbody", 10).unwrap().is_empty());
+        cache.delete_message("orphan").unwrap();
+        assert_fts_rowid_map_matches(&cache.conn);
+        legacy.execute("DELETE FROM msg_fts", []).unwrap();
+        assert_fts_rowid_map_matches(&cache.conn);
+        cache
+            .index_message(&meta("m2", "5", 0, 43), "reindexedbody")
+            .unwrap();
+        cache.clear().unwrap();
+        assert_eq!(
+            cache
+                .conn
+                .query_row("SELECT COUNT(*) FROM msg_fts_rows", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_fts_rowid_map_matches(&cache.conn);
+        drop(cache);
+        drop(legacy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_rowid_map_write_restores_metadata_body_and_mapping() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        let original = meta("m1", "0", 0, 42);
+        cache.index_message(&original, "privatebody").unwrap();
+        cache
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_map_insert BEFORE INSERT ON msg_fts_rows
+             BEGIN SELECT RAISE(ABORT, 'reject rowid map'); END;",
+            )
+            .unwrap();
+        // The new FTS row is inserted before the trigger tries to insert its map.
+        // Both that row and the prior deletion must roll back with the metadata.
+        assert!(
+            cache
+                .store_index_result(Some("old"), &meta("m1", "5", 1, 43), Some("newbody"))
+                .is_err()
+        );
+        assert_eq!(cache.search("privatebody", 10).unwrap()[0].time, 42);
+        assert!(cache.search("newbody", 10).unwrap().is_empty());
+        assert_eq!(cache.count("0").unwrap(), (1, 0));
+        assert_eq!(cache.count("5").unwrap(), (0, 0));
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
+        assert_fts_rowid_map_matches(&cache.conn);
+    }
+
+    #[test]
+    fn concurrent_fts_migrations_and_writers_preserve_the_map() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let legacy = create_legacy_fts_cache(&path);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2)
+            .map(|index| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let cache = Cache::open(&path).unwrap();
+                    cache
+                        .index_message(&meta(&format!("new{index}"), "0", 0, index), "newbody")
+                        .unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let cache = Cache::open(&path).unwrap();
+        assert_eq!(cache.search("newbody", 10).unwrap().len(), 2);
+        assert_eq!(cache.search("privatebody", 10).unwrap()[0].id, "m1");
+        assert_fts_rowid_map_matches(&cache.conn);
+        drop(cache);
+        drop(legacy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual scaling benchmark with fictional in-memory mail"]
+    fn measure_fts_index_scaling() {
+        for count in [1000, 2000, 4000] {
+            let cache = Cache::open(Path::new(":memory:")).unwrap();
+            let start = std::time::Instant::now();
+            for index in 0..count {
+                cache
+                    .index_message(
+                        &meta(&format!("m{index}"), "0", 0, index),
+                        "fictional message body",
+                    )
+                    .unwrap();
+            }
+            eprintln!(
+                "Cache::index_message: {count} messages in {:?}",
+                start.elapsed()
+            );
+            assert_eq!(
+                cache.search("fictional", count as u32).unwrap().len(),
+                count as usize
+            );
+        }
     }
 
     #[test]

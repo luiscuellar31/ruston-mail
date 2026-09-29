@@ -71,6 +71,11 @@ not use this cache. Once `sync` applies a deletion, it removes the active search
 entry. A full message update removes its indexed body; run `index` again to
 make the updated body searchable. SQLite deletion does not guarantee secure
 erasure of bytes already written to disk or copied into backups.
+Opening an existing cache upgrades its search lookup automatically in a
+transaction, preserving the stored bodies, metadata, account binding, and sync
+cursor. This upgrade does not require downloading or indexing mail again. If
+it fails, the previous search data remains intact and the operation reports an
+error; a later opening can retry the upgrade.
 
 On Unix, the default cache directory uses mode `0700` and each SQLite database
 uses mode `0600`. Opening an older cache at the default location tightens those
