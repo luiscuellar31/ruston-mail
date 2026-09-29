@@ -95,7 +95,15 @@ unconfirmed because it may happen at any stage of the send pipeline.
   formatting in the CLI; put shared mail behavior in the core. Output helpers
   are in [`render.rs`](../crates/ruston-cli/src/render.rs). Its
   [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) converts HTML
-  messages to readable Markdown-style text for the default read format.
+  messages to readable Markdown-style text for the default read format. It
+  represents at most eight levels of quotes and lists and caps converted output
+  at 1 MiB, including a truncation notice. Output is accumulated directly in a
+  bounded buffer; staging text, span metadata, and link targets also have a byte
+  budget, so conversion can stop earlier when staging is full. The tokenizer
+  receives UTF-8 chunks and stops receiving input after truncation. List state
+  stores only represented levels and counts omitted levels for correct unwinding.
+  Link targets are shared across spans, and oversized destinations are rendered
+  as plain labels. Explicit HTML/raw, JSON, and file exports keep the full body.
 - [`terminal.rs`](../crates/ruston-cli/src/terminal.rs) owns the CLI output
   boundary. Renderers, command status messages, interactive prompts, argument
   errors, and diagnostics use its shared control filter. It processes formatted

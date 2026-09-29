@@ -355,6 +355,17 @@ mod tests {
     }
 
     #[test]
+    fn large_html_is_bounded_only_in_the_converted_text_view() {
+        let html = format!("<p>{}</p>", "x".repeat(2 * 1024 * 1024));
+        let text = displayed_body(&html, "text/html", ReadFormat::Text);
+        assert!(text.len() < html.len());
+        assert!(text.contains("[Message truncated."));
+        for format in [ReadFormat::Html, ReadFormat::Raw] {
+            assert_eq!(displayed_body(&html, "text/html", format), html);
+        }
+    }
+
+    #[test]
     fn fmt_time_handles_epoch_and_known_values() {
         // Non-positive timestamps render as a placeholder.
         assert_eq!(fmt_time(0), "-");

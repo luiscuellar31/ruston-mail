@@ -1,6 +1,7 @@
 //! Readable terminal text from a decrypted HTML message.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::states::RawKind;
@@ -18,12 +19,26 @@ const VOID: &[&str] = &[
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
     "wbr",
 ];
+const MAX_RENDER_DEPTH: usize = 8;
+const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const TRUNCATION_NOTICE: &str =
+    "\n\n[Message truncated. Use --format raw or --output to read the full body.]";
+const MAX_CONTENT_BYTES: usize = MAX_OUTPUT_BYTES - TRUNCATION_NOTICE.len();
+const INPUT_CHUNK_BYTES: usize = 8 * 1024;
 
 pub(super) fn to_markdown(html: &str) -> String {
     let tokenizer = Tokenizer::new(Sink::default(), TokenizerOpts::default());
     let input = BufferQueue::default();
-    input.push_back(StrTendril::from_slice(html));
-    let _ = tokenizer.feed(&input);
+    let mut remaining = html;
+    while !remaining.is_empty() && !tokenizer.sink.0.borrow().truncated {
+        let mut end = remaining.len().min(INPUT_CHUNK_BYTES);
+        while !remaining.is_char_boundary(end) {
+            end -= 1;
+        }
+        input.push_back(StrTendril::from_slice(&remaining[..end]));
+        let _ = tokenizer.feed(&input);
+        remaining = &remaining[end..];
+    }
     tokenizer.end();
     std::mem::take(&mut *tokenizer.sink.0.borrow_mut()).finish()
 }
@@ -36,6 +51,9 @@ impl TokenSink for Sink {
 
     fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
         let mut builder = self.0.borrow_mut();
+        if builder.truncated {
+            return TokenSinkResult::Continue;
+        }
         match token {
             Token::TagToken(tag) => return builder.tag(&tag),
             Token::CharacterTokens(text) => builder.text(&text),
@@ -51,7 +69,7 @@ struct Style {
     bold: bool,
     italic: bool,
     code: bool,
-    link: Option<String>,
+    link: Option<Rc<str>>,
 }
 
 struct Span {
@@ -59,27 +77,69 @@ struct Span {
     style: Style,
 }
 
-struct Block {
+/// Keep output and temporary text within the same byte budget, including UTF-8.
+struct BoundedText {
     text: String,
-    list_item: bool,
+    limit: usize,
+    truncated: bool,
+}
+
+impl Default for BoundedText {
+    fn default() -> Self {
+        Self::new(MAX_CONTENT_BYTES)
+    }
+}
+
+impl BoundedText {
+    fn new(limit: usize) -> Self {
+        Self {
+            text: String::new(),
+            limit,
+            truncated: false,
+        }
+    }
+
+    fn remaining(&self) -> usize {
+        self.limit.saturating_sub(self.text.len())
+    }
+
+    fn push(&mut self, text: &str) {
+        if self.truncated {
+            return;
+        }
+        let mut end = text.len().min(self.remaining());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.text.push_str(&text[..end]);
+        self.truncated = end != text.len();
+    }
+
+    fn push_char(&mut self, c: char) {
+        self.push(c.encode_utf8(&mut [0; 4]));
+    }
 }
 
 #[derive(Default)]
 struct Builder {
-    blocks: Vec<Block>,
+    output: BoundedText,
+    prior_list_item: bool,
+    truncated: bool,
     spans: Vec<Span>,
+    pending_bytes: usize,
     pending_space: bool,
     hidden: Option<String>,
     heading: Option<usize>,
     quote_depth: usize,
     lists: Vec<Option<u32>>,
+    omitted_list_depth: usize,
     item_marker: Option<String>,
-    pre_depth: u16,
-    pre_text: String,
-    bold: u16,
-    italic: u16,
-    code: u16,
-    link: Option<String>,
+    pre_depth: usize,
+    pre_text: BoundedText,
+    bold: usize,
+    italic: usize,
+    code: usize,
+    link: Option<Rc<str>>,
 }
 
 impl Builder {
@@ -120,22 +180,28 @@ impl Builder {
             }
             "ul" => {
                 self.flush();
-                self.lists.push(None);
+                self.start_list(None);
             }
             "ol" => {
                 self.flush();
-                self.lists.push(Some(1));
+                self.start_list(Some(1));
             }
             "li" => {
                 self.flush();
-                self.item_marker = Some(match self.lists.last_mut() {
-                    Some(Some(number)) => {
-                        let marker = format!("{number}.");
-                        *number = number.saturating_add(1);
-                        marker
-                    }
-                    _ => "-".to_owned(),
-                });
+                self.item_marker = Some(
+                    match self
+                        .lists
+                        .last_mut()
+                        .filter(|_| self.omitted_list_depth == 0)
+                    {
+                        Some(Some(number)) => {
+                            let marker = format!("{number}.");
+                            *number = number.saturating_add(1);
+                            marker
+                        }
+                        _ => "-".to_owned(),
+                    },
+                );
             }
             "blockquote" => {
                 self.flush();
@@ -172,7 +238,11 @@ impl Builder {
             }
             "ul" | "ol" => {
                 self.flush();
-                self.lists.pop();
+                if self.omitted_list_depth > 0 {
+                    self.omitted_list_depth -= 1;
+                } else {
+                    self.lists.pop();
+                }
                 self.item_marker = None;
             }
             "li" => {
@@ -199,13 +269,22 @@ impl Builder {
             return;
         }
         if self.pre_depth > 0 {
-            self.pre_text.extend(
-                text.chars()
-                    .filter(|c| !c.is_control() || matches!(c, '\n' | '\t')),
-            );
+            for c in text
+                .chars()
+                .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            {
+                self.pre_text.push_char(c);
+                if self.pre_text.truncated {
+                    self.truncated = true;
+                    break;
+                }
+            }
             return;
         }
         for c in text.chars() {
+            if self.truncated {
+                break;
+            }
             if c.is_whitespace() {
                 self.pending_space = self
                     .spans
@@ -229,6 +308,20 @@ impl Builder {
     }
 
     fn push_char(&mut self, c: char, style: Style) {
+        let new_span = self.spans.last().is_none_or(|span| span.style != style);
+        // Count span storage as well as text, so many tiny style changes cannot
+        // allocate an unbounded staging vector before the next block flush.
+        let cost = c.len_utf8()
+            + if new_span {
+                std::mem::size_of::<Span>() + style.link.as_ref().map_or(0, |link| link.len())
+            } else {
+                0
+            };
+        if self.pending_bytes.saturating_add(cost) > self.output.remaining() {
+            self.truncated = true;
+            return;
+        }
+        self.pending_bytes += cost;
         match self.spans.last_mut() {
             Some(span) if span.style == style => span.text.push(c),
             _ => self.spans.push(Span {
@@ -254,7 +347,8 @@ impl Builder {
     fn line_break(&mut self) {
         self.pending_space = false;
         if self.pre_depth > 0 {
-            self.pre_text.push('\n');
+            self.pre_text.push_char('\n');
+            self.truncated |= self.pre_text.truncated;
         } else if !self.spans.is_empty() {
             self.push_char('\n', Style::default());
         }
@@ -262,6 +356,7 @@ impl Builder {
 
     fn flush(&mut self) {
         self.pending_space = false;
+        self.pending_bytes = 0;
         while let Some(last) = self.spans.last_mut() {
             last.text.truncate(last.text.trim_end().len());
             if last.text.is_empty() {
@@ -274,11 +369,13 @@ impl Builder {
             return;
         }
 
-        let text = render_spans(std::mem::take(&mut self.spans));
+        let rendered = render_spans(std::mem::take(&mut self.spans), self.output.remaining());
+        self.truncated |= rendered.truncated;
+        let text = rendered.text;
         let (text, list_item) = if let Some(level) = self.heading {
             (format!("{} {text}", "#".repeat(level)), false)
         } else if let Some(marker) = self.item_marker.as_mut() {
-            let depth = self.lists.len().saturating_sub(1);
+            let depth = self.lists.len().saturating_sub(1).min(MAX_RENDER_DEPTH - 1);
             let text = format!("{}{} {text}", "  ".repeat(depth), marker);
             let list_item = !marker.is_empty();
             marker.clear();
@@ -297,29 +394,59 @@ impl Builder {
         if self.pre_depth > 0 {
             return;
         }
-        let text = std::mem::take(&mut self.pre_text);
-        let text = text
+        let buffered = std::mem::take(&mut self.pre_text);
+        self.truncated |= buffered.truncated;
+        let text = buffered
+            .text
             .strip_prefix('\n')
-            .unwrap_or(&text)
+            .unwrap_or(&buffered.text)
             .trim_end_matches('\n');
         if !text.trim().is_empty() {
-            let indented = text
-                .lines()
-                .map(|line| format!("    {line}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            self.push_block(indented, false);
+            let mut indented = BoundedText::new(self.output.remaining());
+            for (index, line) in text.lines().enumerate() {
+                if index > 0 {
+                    indented.push("\n");
+                }
+                indented.push("    ");
+                indented.push(line);
+                if indented.truncated {
+                    break;
+                }
+            }
+            self.truncated |= indented.truncated;
+            self.push_block(indented.text, false);
         }
     }
 
     fn push_block(&mut self, text: String, list_item: bool) {
-        let prefix = "> ".repeat(self.quote_depth);
-        let text = text
-            .lines()
-            .map(|line| format!("{prefix}{line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.blocks.push(Block { text, list_item });
+        let prefix = "> ".repeat(self.quote_depth.min(MAX_RENDER_DEPTH));
+        if !self.output.text.is_empty() {
+            self.output.push(if self.prior_list_item && list_item {
+                "\n"
+            } else {
+                "\n\n"
+            });
+        }
+        for (index, line) in text.lines().enumerate() {
+            if index > 0 {
+                self.output.push("\n");
+            }
+            self.output.push(&prefix);
+            self.output.push(line);
+            if self.output.truncated {
+                break;
+            }
+        }
+        self.prior_list_item = list_item;
+        self.truncated |= self.output.truncated;
+    }
+
+    fn start_list(&mut self, number: Option<u32>) {
+        if self.lists.len() < MAX_RENDER_DEPTH {
+            self.lists.push(number);
+        } else {
+            self.omitted_list_depth = self.omitted_list_depth.saturating_add(1);
+        }
     }
 
     fn finish(mut self) -> String {
@@ -328,56 +455,61 @@ impl Builder {
             self.pre_depth = 1;
             self.end_pre();
         }
-        let mut output = String::new();
-        let mut prior_list_item = false;
-        for block in self.blocks {
-            if !output.is_empty() {
-                output.push_str(if prior_list_item && block.list_item {
-                    "\n"
-                } else {
-                    "\n\n"
-                });
-            }
-            prior_list_item = block.list_item;
-            output.push_str(&block.text);
+        if self.truncated {
+            self.output.text.push_str(TRUNCATION_NOTICE);
         }
-        output
+        self.output.text
     }
 }
 
-fn render_spans(spans: Vec<Span>) -> String {
-    let mut output = String::new();
-    let mut link: Option<String> = None;
+fn render_spans(spans: Vec<Span>, limit: usize) -> BoundedText {
+    let mut output = BoundedText::new(limit);
+    let mut link: Option<Rc<str>> = None;
     for span in spans {
         if span.style.link != link {
             if let Some(url) = link.take() {
-                output.push_str(&format!("]({url})"));
+                output.push("](");
+                output.push(&url);
+                output.push(")");
             }
             if span.style.link.is_some() {
-                output.push('[');
+                output.push("[");
             }
             link = span.style.link.clone();
         }
-        output.push_str(&render_span(span));
+        render_span(span, &mut output);
+        if output.truncated {
+            break;
+        }
     }
     if let Some(url) = link {
-        output.push_str(&format!("]({url})"));
+        output.push("](");
+        output.push(&url);
+        output.push(")");
     }
     output
 }
 
-fn render_span(span: Span) -> String {
-    let mut text = span.text;
-    if span.style.code {
-        text = format!("`{text}`");
+fn render_span(span: Span, output: &mut BoundedText) {
+    if span.style.bold {
+        output.push("**");
     }
     if span.style.italic {
-        text = format!("*{text}*");
+        output.push("*");
+    }
+    if span.style.code {
+        output.push("`");
+    }
+    output.push(&span.text);
+    if span.style.code {
+        output.push("`");
+    }
+    if span.style.italic {
+        output.push("*");
     }
     if span.style.bold {
-        text = format!("**{text}**");
+        output.push("**");
     }
-    text
 }
 
 fn raw_content(name: &str) -> TokenSinkResult<()> {
@@ -389,21 +521,196 @@ fn raw_content(name: &str) -> TokenSinkResult<()> {
     }
 }
 
-fn link_target(tag: &Tag) -> Option<String> {
+fn link_target(tag: &Tag) -> Option<Rc<str>> {
     let href = tag
         .attrs
         .iter()
         .find(|attribute| &*attribute.name.local == "href")?
         .value
         .trim();
+    if href.len() > MAX_CONTENT_BYTES {
+        return None;
+    }
     let url = url::Url::parse(href).ok()?;
-    matches!(url.scheme(), "http" | "https" | "mailto")
-        .then(|| url.to_string().replace('(', "%28").replace(')', "%29"))
+    if !matches!(url.scheme(), "http" | "https" | "mailto") {
+        return None;
+    }
+    let target = url.to_string().replace('(', "%28").replace(')', "%29");
+    (target.len() <= MAX_CONTENT_BYTES).then(|| Rc::from(target))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::to_markdown;
+    use super::*;
+
+    #[test]
+    fn sanitized_deep_quotes_do_not_amplify_each_paragraph() {
+        let mut previous_size = None;
+        for depth in [1024, 2048, 4096] {
+            let html = format!(
+                "{}{}{}",
+                "<blockquote>".repeat(depth),
+                "<p>x</p>".repeat(depth),
+                "</blockquote>".repeat(depth)
+            );
+            let sanitized = ruston_core::html::sanitize(&html);
+            let output = to_markdown(&sanitized);
+            eprintln!(
+                "depth={depth}, input={} bytes, output={} bytes",
+                sanitized.len(),
+                output.len()
+            );
+            assert!(output.len() <= sanitized.len() * 4);
+            if let Some(previous_size) = previous_size {
+                assert!(output.len() <= previous_size * 2 + 32);
+            }
+            previous_size = Some(output.len());
+        }
+    }
+
+    #[test]
+    fn sanitized_deep_lists_have_bounded_indentation_and_linear_growth() {
+        let mut previous_size = None;
+        for depth in [512, 1024, 2048] {
+            let html = format!(
+                "{}{}{}",
+                "<ul><li>".repeat(depth),
+                "<p>x</p>".repeat(depth),
+                "</li></ul>".repeat(depth)
+            );
+            let sanitized = ruston_core::html::sanitize(&html);
+            let output = to_markdown(&sanitized);
+            assert!(
+                output
+                    .lines()
+                    .all(|line| line.chars().take_while(|c| *c == ' ').count()
+                        <= 2 * (MAX_RENDER_DEPTH - 1) + 1)
+            );
+            assert!(output.len() <= sanitized.len() * 4);
+            if let Some(previous_size) = previous_size {
+                assert!(output.len() <= previous_size * 2 + 32);
+            }
+            previous_size = Some(output.len());
+        }
+    }
+
+    #[test]
+    fn flattened_nesting_unwinds_to_the_correct_outer_level() {
+        let html = format!(
+            "{}<p>deep</p>{}<p>outer</p></blockquote><p>outside</p>",
+            "<blockquote>".repeat(128),
+            "</blockquote>".repeat(127)
+        );
+        assert_eq!(
+            to_markdown(&html),
+            format!(
+                "{}deep\n\n> outer\n\noutside",
+                "> ".repeat(MAX_RENDER_DEPTH)
+            )
+        );
+
+        let html = format!(
+            "<ol><li>first</li><li>{}deep{}</li><li>last</li></ol>",
+            "<ul><li>".repeat(128),
+            "</li></ul>".repeat(128)
+        );
+        let output = to_markdown(&html);
+        assert!(output.starts_with("1. first\n"));
+        assert!(output.ends_with("3. last"));
+        assert!(output.contains(&format!("{}- deep", "  ".repeat(MAX_RENDER_DEPTH - 1))));
+    }
+
+    #[test]
+    fn output_limit_covers_large_blocks_preformatted_text_and_many_blocks() {
+        for html in [
+            format!("<p>{}</p><p>AFTER_LIMIT</p>", "é".repeat(MAX_OUTPUT_BYTES)),
+            format!(
+                "<pre>{}</pre><p>AFTER_LIMIT</p>",
+                "é\n".repeat(MAX_OUTPUT_BYTES / 2)
+            ),
+            format!(
+                "{}<p>AFTER_LIMIT</p>",
+                "<blockquote><p>text</p></blockquote>".repeat(MAX_OUTPUT_BYTES / 4)
+            ),
+        ] {
+            let output = to_markdown(&html);
+            assert!(output.len() <= MAX_OUTPUT_BYTES);
+            assert!(output.ends_with(TRUNCATION_NOTICE));
+            assert_eq!(output.matches(TRUNCATION_NOTICE).count(), 1);
+            assert!(!output.contains("AFTER_LIMIT"));
+        }
+    }
+
+    #[test]
+    fn temporary_buffers_and_list_stack_stop_growing_at_their_limits() {
+        let mut builder = Builder::default();
+        for index in 0..MAX_OUTPUT_BYTES {
+            builder.bold = index % 2;
+            builder.text("x");
+            if builder.truncated {
+                break;
+            }
+        }
+        assert!(builder.truncated);
+        assert!(builder.pending_bytes <= MAX_CONTENT_BYTES);
+        assert!(builder.spans.len() * std::mem::size_of::<Span>() <= MAX_CONTENT_BYTES);
+        assert!(builder.finish().ends_with(TRUNCATION_NOTICE));
+
+        let mut builder = Builder {
+            pre_depth: 1,
+            ..Builder::default()
+        };
+        builder.text(&"x".repeat(MAX_OUTPUT_BYTES * 2));
+        assert!(builder.truncated);
+        assert!(builder.pre_text.text.len() <= MAX_CONTENT_BYTES);
+
+        let mut builder = Builder::default();
+        for _ in 0..1024 {
+            builder.start_list(Some(1));
+        }
+        assert_eq!(builder.lists.len(), MAX_RENDER_DEPTH);
+        assert_eq!(builder.omitted_list_depth, 1024 - MAX_RENDER_DEPTH);
+    }
+
+    #[test]
+    fn bounded_text_preserves_utf8_and_link_targets_are_shared() {
+        let mut text = BoundedText::new(4);
+        text.push("é猫");
+        assert_eq!(text.text, "é");
+        assert!(text.truncated);
+
+        let target: Rc<str> = Rc::from(format!("https://example.test/{}", "x".repeat(32 * 1024)));
+        let mut builder = Builder {
+            link: Some(target.clone()),
+            ..Builder::default()
+        };
+        builder.text(&"a".repeat(64 * 1024));
+        assert_eq!(builder.spans.len(), 1);
+        assert!(Rc::ptr_eq(
+            builder.spans[0].style.link.as_ref().unwrap(),
+            &target
+        ));
+        let output = builder.finish();
+        assert!(output.contains(target.as_ref()));
+        assert!(!output.ends_with(TRUNCATION_NOTICE));
+    }
+
+    #[test]
+    fn chunked_html_preserves_unicode_entities_and_links() {
+        let text = "é".repeat(INPUT_CHUNK_BYTES / 2 - 2);
+        let target = format!("https://example.test/{}", "x".repeat(INPUT_CHUNK_BYTES * 2));
+        let html = format!("<p>{text}🐈 &amp; tail <a href='{target}'>link</a></p>");
+        assert_eq!(
+            to_markdown(&html),
+            format!("{text}🐈 & tail [link]({target})")
+        );
+
+        let target = format!("https://example.test/{}", "x".repeat(MAX_OUTPUT_BYTES));
+        assert_eq!(
+            to_markdown(&format!("<a href='{target}'>visible label</a>")),
+            "visible label"
+        );
+    }
 
     #[test]
     fn renders_common_html_as_readable_markdown() {

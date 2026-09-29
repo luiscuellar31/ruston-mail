@@ -25,7 +25,14 @@ requested. This also blocks tracking pixels.
 
 The CLI's default text view converts HTML to readable Markdown-style text.
 It omits hidden content and images, including tracking pixels, without making
-remote requests. The CLI filters terminal controls in displayed mail, metadata,
+remote requests. Quotes and lists show at most eight nesting levels. Converted
+text is limited to 1 MiB including its truncation notice; conversion may stop
+earlier if its temporary buffers reach their limit. Oversized link destinations
+are shown as plain labels. The notice explains how to read the full body with
+`--format raw` or save it with `--output`. These display limits do not truncate
+explicit HTML/raw formats, JSON, or exported files.
+
+The CLI filters terminal controls in displayed mail, metadata,
 prompts, status messages, errors, and diagnostics; line feeds and tabs remain.
 This includes escape sequences that could otherwise change the clipboard,
 terminal title, or cursor position. The default text output is filtered even
