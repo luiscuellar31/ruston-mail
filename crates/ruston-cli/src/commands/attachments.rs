@@ -4,6 +4,7 @@ use crate::cli::AttachmentsCmd;
 use crate::cli::Ctx;
 use crate::commands::resume;
 use crate::render;
+use crate::terminal;
 use ruston_core::mail::attachments::safe_attachment_name;
 use ruston_core::{Error, Result};
 use serde_json::json;
@@ -62,9 +63,9 @@ pub async fn run(ctx: &Ctx, cmd: AttachmentsCmd) -> Result<()> {
                     "files": written,
                 }));
             } else {
-                println!("Downloaded {} file(s):", written.len());
+                terminal::println!("Downloaded {} file(s):", written.len());
                 for f in &written {
-                    println!("  {f}");
+                    terminal::println!("  {f}");
                 }
             }
             Ok(())

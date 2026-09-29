@@ -2,6 +2,7 @@
 
 use crate::cli::Ctx;
 use crate::commands::resume;
+use crate::terminal;
 use ruston_core::{Result, SyncReport};
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ fn needs_index(report: &SyncReport, first_tick: bool) -> bool {
 
 pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()> {
     let client = resume(&ctx.profile).await?;
-    eprintln!("watching (every {interval}s; Ctrl-C to stop)…");
+    terminal::eprintln!("watching (every {interval}s; Ctrl-C to stop)…");
     let mut first_tick = true;
     loop {
         let r = client.sync().await?;
@@ -31,7 +32,7 @@ pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()>
         } else {
             String::new()
         };
-        println!("[sync] +{} ~{} -{}{tag}", r.created, r.updated, r.deleted);
+        terminal::println!("[sync] +{} ~{} -{}{tag}", r.created, r.updated, r.deleted);
         tokio::time::sleep(Duration::from_secs(interval)).await;
     }
 }

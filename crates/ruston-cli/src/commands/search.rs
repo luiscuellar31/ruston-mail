@@ -3,6 +3,7 @@
 use crate::cli::Ctx;
 use crate::commands::resume;
 use crate::render;
+use crate::terminal;
 use ruston_core::Result;
 use serde_json::json;
 
@@ -12,7 +13,7 @@ pub async fn index(ctx: &Ctx, folder: String, max_pages: u32, page_size: u32) ->
     if ctx.json {
         render::json_out(&json!({ "indexed": n }));
     } else {
-        println!("Indexed {n} message(s) for local search.");
+        terminal::println!("Indexed {n} message(s) for local search.");
     }
     Ok(())
 }

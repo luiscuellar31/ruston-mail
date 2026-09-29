@@ -3,6 +3,7 @@
 //! Enables testing, CI automation, and CLI demonstrations without contacting Proton
 //! or requiring real user credentials. Activated via `--demo` or `RUSTON_DEMO=1`.
 
+use crate::terminal;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -649,7 +650,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     "mode": "demo"
                 }));
             } else {
-                println!("Logged in as {DEMO_EMAIL} (offline demo mode)");
+                terminal::println!("Logged in as {DEMO_EMAIL} (offline demo mode)");
             }
             Ok(())
         }
@@ -660,7 +661,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     "message": "Demo session ended"
                 }));
             } else {
-                println!("Logged out of demo session.");
+                terminal::println!("Logged out of demo session.");
             }
             Ok(())
         }
@@ -671,7 +672,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     "mode": "demo"
                 }));
             } else {
-                println!("{DEMO_EMAIL} (demo)");
+                terminal::println!("{DEMO_EMAIL} (demo)");
             }
             Ok(())
         }
@@ -783,7 +784,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if let Some(path) = output {
                     fs::write(&path, &full.body)?;
                     if !ctx.json {
-                        println!("Wrote {} bytes to {}", full.body.len(), path.display());
+                        terminal::println!("Wrote {} bytes to {}", full.body.len(), path.display());
                     }
                 } else {
                     render::full_message(ctx.json, &full, format, body_only);
@@ -795,7 +796,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::sent(true, id);
                 } else {
-                    println!("Sent (id {id}) to {}", args.to.join(", "));
+                    terminal::println!("Sent (id {id}) to {}", args.to.join(", "));
                 }
                 Ok(())
             }
@@ -804,7 +805,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::sent(true, &id);
                 } else {
-                    println!("Reply sent (id {id})");
+                    terminal::println!("Reply sent (id {id})");
                 }
                 Ok(())
             }
@@ -813,7 +814,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::sent(true, &id);
                 } else {
-                    println!("Forwarded to {} (id {id})", to.join(", "));
+                    terminal::println!("Forwarded to {} (id {id})", to.join(", "));
                 }
                 Ok(())
             }
@@ -1042,7 +1043,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     );
                     fs::write(&target, sample_content.as_bytes())?;
                     if !ctx.json {
-                        println!("Saved attachment '{}' to {}", a.name, target.display());
+                        terminal::println!("Saved attachment '{}' to {}", a.name, target.display());
                     }
                 }
 
@@ -1080,7 +1081,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::sent(true, id);
                 } else {
-                    println!("Draft saved (id {id}) for subject: '{}'", args.subject);
+                    terminal::println!("Draft saved (id {id}) for subject: '{}'", args.subject);
                 }
                 Ok(())
             }
@@ -1088,7 +1089,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::sent(true, &id);
                 } else {
-                    println!("Draft updated (id {id}) for subject: '{}'", args.subject);
+                    terminal::println!("Draft updated (id {id}) for subject: '{}'", args.subject);
                 }
                 Ok(())
             }
@@ -1106,7 +1107,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::json_out(&json!({ "valid": true, "sieve": sieve }));
                 } else {
-                    println!("Sieve script is valid syntax.");
+                    terminal::println!("Sieve script is valid syntax.");
                 }
                 Ok(())
             }
@@ -1175,7 +1176,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::json_out(&json!({ "status": "ok", "id": id }));
                 } else {
-                    println!(
+                    terminal::println!(
                         "Updated address {id} with display name '{:?}'",
                         display_name
                     );
@@ -1197,7 +1198,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::json_out(&json!({ "status": "ok", "sign": value.as_bool() }));
                 } else {
-                    println!("Set sign outgoing mail to: {value:?}");
+                    terminal::println!("Set sign outgoing mail to: {value:?}");
                 }
                 Ok(())
             }
@@ -1207,7 +1208,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                         &json!({ "status": "ok", "attach_public_key": value.as_bool() }),
                     );
                 } else {
-                    println!("Set attach public key to: {value:?}");
+                    terminal::println!("Set attach public key to: {value:?}");
                 }
                 Ok(())
             }
@@ -1305,7 +1306,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     "output_dir": out.display().to_string(),
                 }));
             } else {
-                println!(
+                terminal::println!(
                     "Exported {} demo message(s) from folder '{}' to {}",
                     exported.len(),
                     folder,
@@ -1340,7 +1341,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     "new_events": 0
                 }));
             } else {
-                println!("Demo cache sync complete (0 new events, offline mode).");
+                terminal::println!("Demo cache sync complete (0 new events, offline mode).");
             }
             Ok(())
         }
@@ -1352,7 +1353,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     "folder": folder
                 }));
             } else {
-                println!("Indexed 8 demo messages for folder '{folder}'.");
+                terminal::println!("Indexed 8 demo messages for folder '{folder}'.");
             }
             Ok(())
         }
@@ -1365,7 +1366,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     "folder": folder
                 }));
             } else {
-                println!(
+                terminal::println!(
                     "[demo] Simulated watch event stream (interval: {interval}s). 0 new events."
                 );
             }

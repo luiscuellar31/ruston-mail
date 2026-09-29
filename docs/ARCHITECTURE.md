@@ -96,6 +96,15 @@ unconfirmed because it may happen at any stage of the send pipeline.
   are in [`render.rs`](../crates/ruston-cli/src/render.rs). Its
   [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) converts HTML
   messages to readable Markdown-style text for the default read format.
+- [`terminal.rs`](../crates/ruston-cli/src/terminal.rs) owns the CLI output
+  boundary. Renderers, command status messages, interactive prompts, argument
+  errors, and diagnostics use its shared control filter. It processes formatted
+  text in one pass, removing C0/C1 controls and DEL except line feeds and tabs.
+  Human-readable output is filtered even when redirected. JSON escapes controls
+  without changing the decoded values. Explicit `raw` and `html` bodies retain
+  their contents when redirected, but are filtered on a terminal. File exports,
+  attachment writes, and the CAPTCHA helper's HTTP responses bypass this display
+  layer. Core and the desktop retain their own logging setup.
 - [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs)
   offers a numbered sender choice when `messages send` runs in a terminal with
   multiple account addresses and no `--from`. Noninteractive and JSON sends

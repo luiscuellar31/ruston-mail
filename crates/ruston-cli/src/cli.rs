@@ -341,9 +341,9 @@ pub struct SendArgs {
 pub enum ReadFormat {
     /// Readable text with a header block; HTML becomes Markdown-style text.
     Text,
-    /// HTML body with a header block.
+    /// HTML body with a header block; terminal controls are filtered on a terminal.
     Html,
-    /// Raw decrypted body only.
+    /// Raw decrypted body only; terminal controls are filtered on a terminal.
     Raw,
 }
 

@@ -3,6 +3,7 @@
 use crate::cli::{Ctx, FiltersCmd};
 use crate::commands::{read_body, resume};
 use crate::render;
+use crate::terminal;
 use ruston_core::Result;
 
 pub async fn run(ctx: &Ctx, cmd: FiltersCmd) -> Result<()> {
@@ -23,7 +24,7 @@ pub async fn run(ctx: &Ctx, cmd: FiltersCmd) -> Result<()> {
             if ctx.json {
                 render::json_out(&serde_json::json!({ "valid": true }));
             } else {
-                println!("Sieve script is valid.");
+                terminal::println!("Sieve script is valid.");
             }
         }
         FiltersCmd::Delete { id } => {

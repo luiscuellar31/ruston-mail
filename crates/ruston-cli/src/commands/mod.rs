@@ -13,6 +13,7 @@ pub mod search;
 pub mod sync;
 pub mod watch;
 
+use crate::terminal;
 use ruston_core::{Client, Result};
 use std::io::{Read, Write};
 
@@ -34,7 +35,7 @@ pub fn read_body(body: &str) -> std::io::Result<String> {
 
 /// Prompt on stderr (keeping stdout clean) and read a trimmed line.
 pub fn prompt_line(prompt: &str) -> std::io::Result<String> {
-    eprint!("{prompt}");
+    terminal::eprint!("{prompt}");
     std::io::stderr().flush()?;
     let mut s = String::new();
     std::io::stdin().read_line(&mut s)?;

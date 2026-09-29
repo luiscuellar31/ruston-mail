@@ -2,6 +2,7 @@
 
 mod html;
 
+use crate::terminal;
 use std::borrow::Cow;
 
 use crate::cli::ReadFormat;
@@ -18,7 +19,7 @@ pub fn counts(json_mode: bool, counts: &[LabelCount]) {
         return;
     }
     for c in counts {
-        println!(
+        terminal::println!(
             "  {:<14} total {:>6}  unread {:>6}",
             label_name(&c.label_id),
             c.total,
@@ -50,10 +51,10 @@ pub fn contacts_list(json_mode: bool, total: u32, contacts: &[Contact]) {
         json_out(&json!({ "total": total, "contacts": contacts }));
         return;
     }
-    println!("{} contact(s) (total {total})", contacts.len());
+    terminal::println!("{} contact(s) (total {total})", contacts.len());
     for c in contacts {
         let emails: Vec<&str> = c.emails.iter().map(|e| e.email.as_str()).collect();
-        println!("  {}  {}  [{}]", c.id, c.name, emails.join(", "));
+        terminal::println!("  {}  {}  [{}]", c.id, c.name, emails.join(", "));
     }
 }
 
@@ -63,9 +64,9 @@ pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
         json_out(&emails);
         return;
     }
-    println!("{} email(s)", emails.len());
+    terminal::println!("{} email(s)", emails.len());
     for e in emails {
-        println!("  {}  {}", e.email, e.name);
+        terminal::println!("  {}  {}", e.email, e.name);
     }
 }
 
@@ -75,9 +76,9 @@ pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
         json_out(&addrs);
         return;
     }
-    println!("{} address(es)", addrs.len());
+    terminal::println!("{} address(es)", addrs.len());
     for a in addrs {
-        println!("  {}  {}", a.email, a.id);
+        terminal::println!("  {}  {}", a.email, a.id);
     }
 }
 
@@ -87,10 +88,10 @@ pub fn filters_list(json_mode: bool, filters: &[Filter]) {
         json_out(&filters.iter().map(filter_json).collect::<Vec<_>>());
         return;
     }
-    println!("{} filter(s)", filters.len());
+    terminal::println!("{} filter(s)", filters.len());
     for f in filters {
         let state = if f.status == 1 { "enabled" } else { "disabled" };
-        println!("  [{state}] {}  {}", f.id, f.name);
+        terminal::println!("  [{state}] {}  {}", f.id, f.name);
     }
 }
 
@@ -99,7 +100,7 @@ pub fn filter_created(json_mode: bool, f: &Filter) {
     if json_mode {
         json_out(&filter_json(f));
     } else {
-        println!("Filter created: {} ({})", f.name, f.id);
+        terminal::println!("Filter created: {} ({})", f.name, f.id);
     }
 }
 
@@ -110,8 +111,8 @@ fn filter_json(f: &Filter) -> serde_json::Value {
 /// Serialize a value as pretty JSON to stdout.
 pub fn json_out<T: serde::Serialize + ?Sized>(value: &T) {
     match serde_json::to_string_pretty(value) {
-        Ok(s) => println!("{s}"),
-        Err(_) => println!("null"),
+        Ok(s) => std::println!("{}", terminal::JsonText(&s)),
+        Err(_) => terminal::println!("null"),
     }
 }
 
@@ -167,17 +168,17 @@ pub fn messages_list(json: bool, total: u32, msgs: &[MessageMetadata]) {
         json_out(&json!({ "total": total, "messages": msgs }));
         return;
     }
-    println!("{} message(s) (total {total})", msgs.len());
+    terminal::println!("{} message(s) (total {total})", msgs.len());
     for m in msgs {
         let mark = if m.unread != 0 { "*" } else { " " };
-        println!();
-        println!("{mark} {}", subject_or_empty(&m.subject));
-        println!("    from: {}", fmt_addr(&m.sender));
-        println!("    date: {}", fmt_time(m.time));
+        terminal::println!();
+        terminal::println!("{mark} {}", subject_or_empty(&m.subject));
+        terminal::println!("    from: {}", fmt_addr(&m.sender));
+        terminal::println!("    date: {}", fmt_time(m.time));
         if m.num_attachments > 0 {
-            println!("    attachments: {}", m.num_attachments);
+            terminal::println!("    attachments: {}", m.num_attachments);
         }
-        println!("    id:   {}", m.id);
+        terminal::println!("    id:   {}", m.id);
     }
 }
 
@@ -186,31 +187,31 @@ pub fn conversations_list(json: bool, total: u32, convs: &[Conversation]) {
         json_out(&json!({ "total": total, "conversations": convs }));
         return;
     }
-    println!("{} conversation(s) (total {total})", convs.len());
+    terminal::println!("{} conversation(s) (total {total})", convs.len());
     for c in convs {
         let mark = if c.num_unread != 0 { "*" } else { " " };
-        println!();
-        println!("{mark} {}", subject_or_empty(&c.subject));
-        println!("    from:     {}", fmt_addrs(&c.senders));
-        println!("    messages: {} ({} unread)", c.num_messages, c.num_unread);
+        terminal::println!();
+        terminal::println!("{mark} {}", subject_or_empty(&c.subject));
+        terminal::println!("    from:     {}", fmt_addrs(&c.senders));
+        terminal::println!("    messages: {} ({} unread)", c.num_messages, c.num_unread);
         if c.num_attachments > 0 {
-            println!("    attachments: {}", c.num_attachments);
+            terminal::println!("    attachments: {}", c.num_attachments);
         }
-        println!("    id:       {}", c.id);
+        terminal::println!("    id:       {}", c.id);
     }
 }
 
 fn print_message_header(m: &MessageMetadata, verdict: &str, mime_type: &str) {
-    println!("Subject: {}", subject_or_empty(&m.subject));
-    println!("From:    {}", fmt_addr(&m.sender));
-    println!("To:      {}", fmt_addrs(&m.to_list));
+    terminal::println!("Subject: {}", subject_or_empty(&m.subject));
+    terminal::println!("From:    {}", fmt_addr(&m.sender));
+    terminal::println!("To:      {}", fmt_addrs(&m.to_list));
     if !m.cc_list.is_empty() {
-        println!("Cc:      {}", fmt_addrs(&m.cc_list));
+        terminal::println!("Cc:      {}", fmt_addrs(&m.cc_list));
     }
-    println!("Date:    {}", fmt_time(m.time));
-    println!("Verdict: {verdict}");
-    println!("Type:    {mime_type}");
-    println!("Id:      {}", m.id);
+    terminal::println!("Date:    {}", fmt_time(m.time));
+    terminal::println!("Verdict: {verdict}");
+    terminal::println!("Type:    {mime_type}");
+    terminal::println!("Id:      {}", m.id);
 }
 
 pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only: bool) {
@@ -227,25 +228,20 @@ pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only
         .map(|s| s.trim_matches('"').to_string())
         .unwrap_or_else(|| "unknown".to_string());
     let body = displayed_body(&msg.body, &msg.mime_type, format);
+    let explicit_format = matches!(format, ReadFormat::Raw | ReadFormat::Html);
     if body_only || matches!(format, ReadFormat::Raw) {
-        print!("{body}");
-        if !body.ends_with('\n') {
-            println!();
-        }
+        terminal::print_body(&body, explicit_format);
         return;
     }
     print_message_header(&msg.meta, &verdict, &msg.mime_type);
     if !msg.attachments.is_empty() {
-        println!("Attachments:");
+        terminal::println!("Attachments:");
         for a in &msg.attachments {
-            println!("  - {} ({} bytes, id {})", a.name, a.size, a.id);
+            terminal::println!("  - {} ({} bytes, id {})", a.name, a.size, a.id);
         }
     }
-    println!();
-    print!("{body}");
-    if !body.ends_with('\n') {
-        println!();
-    }
+    terminal::println!();
+    terminal::print_body(&body, explicit_format);
 }
 
 fn displayed_body<'a>(body: &'a str, mime_type: &str, format: ReadFormat) -> Cow<'a, str> {
@@ -261,23 +257,24 @@ pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[FullMessage]) 
         json_out(&json!({ "conversation": conv, "messages": msgs }));
         return;
     }
-    println!("Conversation: {}", subject_or_empty(&conv.subject));
-    println!(
+    terminal::println!("Conversation: {}", subject_or_empty(&conv.subject));
+    terminal::println!(
         "Messages: {} ({} unread)",
-        conv.num_messages, conv.num_unread
+        conv.num_messages,
+        conv.num_unread
     );
-    println!("Id: {}", conv.id);
+    terminal::println!("Id: {}", conv.id);
     for (i, m) in msgs.iter().enumerate() {
         let verdict = serde_json::to_string(&m.verdict)
             .ok()
             .map(|s| s.trim_matches('"').to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        println!("\n--- message {}/{} ---", i + 1, msgs.len());
+        terminal::println!("\n--- message {}/{} ---", i + 1, msgs.len());
         print_message_header(&m.meta, &verdict, &m.mime_type);
-        println!();
-        print!("{}", m.body);
+        terminal::println!();
+        terminal::print!("{}", m.body);
         if !m.body.ends_with('\n') {
-            println!();
+            terminal::println!();
         }
     }
 }
@@ -288,14 +285,14 @@ pub fn labels_list(json: bool, labels: &[Label], folders: bool) {
         return;
     }
     let kind = if folders { "folder" } else { "label" };
-    println!("{} {kind}(s)", labels.len());
+    terminal::println!("{} {kind}(s)", labels.len());
     for l in labels {
         let parent = l
             .parent_id
             .as_deref()
             .map(|p| format!("  parent={p}"))
             .unwrap_or_default();
-        println!("  {} {}  ({}){}", l.id, l.name, l.color, parent);
+        terminal::println!("  {} {}  ({}){}", l.id, l.name, l.color, parent);
     }
 }
 
@@ -304,7 +301,7 @@ pub fn label_created(json: bool, label: &Label) {
         json_out(label);
         return;
     }
-    println!("Created '{}' (id {})", label.name, label.id);
+    terminal::println!("Created '{}' (id {})", label.name, label.id);
 }
 
 pub fn attachments_list(json: bool, atts: &[Attachment]) {
@@ -312,11 +309,11 @@ pub fn attachments_list(json: bool, atts: &[Attachment]) {
         json_out(atts);
         return;
     }
-    println!("{} attachment(s)", atts.len());
+    terminal::println!("{} attachment(s)", atts.len());
     for a in atts {
         let mime = a.mime_type.as_deref().unwrap_or("application/octet-stream");
         let disp = a.disposition.as_deref().unwrap_or("attachment");
-        println!("  {} {}  ({} bytes, {mime}, {disp})", a.id, a.name, a.size);
+        terminal::println!("  {} {}  ({} bytes, {mime}, {disp})", a.id, a.name, a.size);
     }
 }
 
@@ -326,7 +323,7 @@ pub fn action_result(json: bool, action: &str, ids: &[String]) {
         json_out(&json!({ "status": "ok", "action": action, "count": ids.len(), "ids": ids }));
         return;
     }
-    println!("{action}: {} item(s)", ids.len());
+    terminal::println!("{action}: {} item(s)", ids.len());
 }
 
 /// Report a successful send (returns message ID).
@@ -335,7 +332,7 @@ pub fn sent(json: bool, id: &str) {
         json_out(&json!({ "status": "ok", "id": id }));
         return;
     }
-    println!("Sent (id {id})");
+    terminal::println!("Sent (id {id})");
 }
 
 #[cfg(test)]

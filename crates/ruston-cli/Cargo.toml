@@ -24,3 +24,5 @@ html5ever = { workspace = true }
 url = { workspace = true }
 rpassword = { workspace = true }
 secrecy = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

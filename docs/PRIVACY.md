@@ -25,7 +25,15 @@ requested. This also blocks tracking pixels.
 
 The CLI's default text view converts HTML to readable Markdown-style text.
 It omits hidden content and images, including tracking pixels, without making
-remote requests. Explicit HTML and JSON output retain the sanitized HTML body.
+remote requests. The CLI filters terminal controls in displayed mail, metadata,
+prompts, status messages, errors, and diagnostics; line feeds and tabs remain.
+This includes escape sequences that could otherwise change the clipboard,
+terminal title, or cursor position. The default text output is filtered even
+when redirected. JSON escapes these controls while retaining the original
+decoded values. Explicit `--format html` and `--format raw` preserve body content
+when redirected to a file or pipe; when displayed on a terminal, they also
+filter controls. `messages read --output` and EML exports preserve the body
+content supplied by core, including its HTML sanitization.
 When replying or forwarding as HTML, sender details and quoted plain text are
 escaped before insertion; quoted HTML keeps the markup sanitized during reading.
 

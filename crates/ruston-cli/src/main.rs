@@ -5,6 +5,7 @@ mod commands;
 mod demo;
 mod hv;
 mod render;
+mod terminal;
 
 use clap::Parser;
 use cli::{Cli, Command, Ctx};
@@ -12,13 +13,23 @@ use ruston_core::Result;
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            if error.use_stderr() {
+                terminal::eprint!("{error}");
+            } else {
+                terminal::print!("{error}");
+            }
+            std::process::exit(error.exit_code());
+        }
+    };
     // Logs go to stderr so stdout stays clean for text/JSON output.
     // -v debug, -vv trace(core), -vvv trace(all); RUST_LOG overrides.
-    ruston_core::init_tracing(cli.verbose);
+    terminal::init_tracing(cli.verbose);
 
     if let Err(e) = dispatch(cli).await {
-        eprintln!("error: {e}");
+        terminal::eprintln!("error: {e}");
         std::process::exit(e.exit_code());
     }
 }

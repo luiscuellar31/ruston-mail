@@ -3,6 +3,7 @@
 use crate::cli::{ClientPreset, Ctx};
 use crate::commands::{prompt_line, resume};
 use crate::render;
+use crate::terminal;
 use ruston_core::{Client, Error, LoginOptions, Result, TotpPrompt};
 use secrecy::SecretString;
 use serde_json::json;
@@ -52,7 +53,7 @@ pub async fn login(ctx: &Ctx) -> Result<()> {
     if ctx.json {
         render::json_out(&json!({ "status": "ok", "email": email }));
     } else {
-        println!("Logged in as {email}");
+        terminal::println!("Logged in as {email}");
     }
     Ok(())
 }
@@ -91,7 +92,7 @@ pub async fn logout(ctx: &Ctx) -> Result<()> {
     if ctx.json {
         render::json_out(&json!({ "status": "ok" }));
     } else {
-        println!("Logged out");
+        terminal::println!("Logged out");
     }
     Ok(())
 }
@@ -102,7 +103,7 @@ pub async fn whoami(ctx: &Ctx) -> Result<()> {
     if ctx.json {
         render::json_out(&json!({ "email": email }));
     } else {
-        println!("{email}");
+        terminal::println!("{email}");
     }
     Ok(())
 }

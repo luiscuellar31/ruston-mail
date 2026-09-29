@@ -23,6 +23,7 @@
 //! challenge itself, and once the user presses ENTER the request is retried
 //! with the original challenge token. Nothing is captured from the page.
 
+use crate::terminal;
 use ruston_core::{Error, HvChallenge, HvResolver, Result};
 use std::future::Future;
 use std::io::{Read, Write};
@@ -108,21 +109,23 @@ fn verify_url(chal: &HvChallenge) -> String {
 /// `--captcha-chrome`: open the verification page in an isolated Chrome window
 /// and wait (bounded) for the user to confirm completion with ENTER.
 fn run_external_flow(url: &str) -> Result<()> {
-    eprintln!("\n── Human verification (CAPTCHA) ──");
+    terminal::eprintln!("\n── Human verification (CAPTCHA) ──");
     let mut chrome = match launch_chrome(url, &std::process::id().to_string()) {
         Ok(c) => {
-            eprintln!("Opened the verification page in an isolated Chrome window.");
+            terminal::eprintln!("Opened the verification page in an isolated Chrome window.");
             Some(c)
         }
         Err(msg) => {
-            eprintln!("Chrome launch failed ({msg}); opening your default browser instead.");
+            terminal::eprintln!(
+                "Chrome launch failed ({msg}); opening your default browser instead."
+            );
             if open_browser(url).is_err() {
-                eprintln!("Could not open a browser. Open this URL manually:\n{url}");
+                terminal::eprintln!("Could not open a browser. Open this URL manually:\n{url}");
             }
             None
         }
     };
-    eprintln!(
+    terminal::eprintln!(
         "Solve the CAPTCHA there. When the page says verification is complete, \
          press ENTER here (waiting up to {} minutes).",
         HV_TIMEOUT.as_secs() / 60
@@ -142,7 +145,7 @@ fn run_external_flow(url: &str) -> Result<()> {
         let _ = std::fs::remove_dir_all(&profile);
     }
     if outcome.is_ok() {
-        eprintln!("Verification confirmed — retrying.");
+        terminal::eprintln!("Verification confirmed — retrying.");
     }
     outcome
 }
@@ -195,7 +198,7 @@ fn wait_for_confirmation(
             Err(RecvTimeoutError::Timeout) => {
                 if !warned && chrome_exited() {
                     warned = true;
-                    eprintln!(
+                    terminal::eprintln!(
                         "The Chrome window was closed. Press ENTER if verification \
                          completed, or Ctrl+C to abort."
                     );
@@ -222,34 +225,34 @@ fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
     let snippet = capture_snippet(port);
     let err = std::io::stderr();
     let mut e = err.lock();
-    let _ = writeln!(e, "\n── Human verification (CAPTCHA) ──");
-    let _ = writeln!(
+    let _ = terminal::writeln!(e, "\n── Human verification (CAPTCHA) ──");
+    let _ = terminal::writeln!(
         e,
         "A browser tab is opening at the captcha page. Then EITHER:"
     );
-    let _ = writeln!(
+    let _ = terminal::writeln!(
         e,
         "\n  [A] Console: open DevTools → Console (F12) and paste once:"
     );
-    let _ = writeln!(e, "      {snippet}");
-    let _ = writeln!(
+    let _ = terminal::writeln!(e, "      {snippet}");
+    let _ = terminal::writeln!(
         e,
         "\n  [B] Bookmarklet (one-time): save this as a bookmark, then click it"
     );
-    let _ = writeln!(
+    let _ = terminal::writeln!(
         e,
         "      on the captcha page (no console, no \"allow pasting\"):"
     );
-    let _ = writeln!(e, "      javascript:{snippet}");
-    let _ = writeln!(
+    let _ = terminal::writeln!(e, "      javascript:{snippet}");
+    let _ = terminal::writeln!(
         e,
         "\nSolve the CAPTCHA — the token returns here automatically."
     );
-    let _ = writeln!(
+    let _ = terminal::writeln!(
         e,
         "(Fallback: copy the token, re-run login with --captcha-token <token>.)"
     );
-    let _ = writeln!(e, "\nCaptcha URL: {captcha_url}");
+    let _ = terminal::writeln!(e, "\nCaptcha URL: {captcha_url}");
     let _ = e.flush();
 
     let _ = open_browser(captcha_url);
@@ -264,7 +267,7 @@ fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
                 if let Some(token) = handle_conn(&mut stream)
                     && !token.is_empty()
                 {
-                    let _ = writeln!(e, "Token received — continuing login.");
+                    let _ = terminal::writeln!(e, "Token received — continuing login.");
                     break Ok((token, "captcha".to_string()));
                 }
             }

@@ -4,6 +4,7 @@ use crate::cli::Ctx;
 use crate::cli::{LabelAction, MessagesCmd, SendArgs};
 use crate::commands::{read_body, resolve_all, resume};
 use crate::render;
+use crate::terminal;
 use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::{
     BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
@@ -32,14 +33,14 @@ fn prompt_sender(
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> io::Result<String> {
-    writeln!(output, "Choose a sender address:")?;
+    terminal::writeln!(output, "Choose a sender address:")?;
     for (index, address) in addresses.iter().enumerate() {
         let default = if index == 0 { " (default)" } else { "" };
-        writeln!(output, "  {}. {}{default}", index + 1, address.email)?;
+        terminal::writeln!(output, "  {}. {}{default}", index + 1, address.email)?;
     }
 
     loop {
-        write!(output, "Sender [1]: ")?;
+        terminal::write!(output, "Sender [1]: ")?;
         output.flush()?;
         let mut answer = String::new();
         if input.read_line(&mut answer)? == 0 {
@@ -57,7 +58,7 @@ fn prompt_sender(
         if let Some(address) = index.and_then(|index| addresses.get(index)) {
             return Ok(address.email.clone());
         }
-        writeln!(output, "Choose a number from 1 to {}.", addresses.len())?;
+        terminal::writeln!(output, "Choose a number from 1 to {}.", addresses.len())?;
     }
 }
 
@@ -96,7 +97,7 @@ fn looks_like_html(body: &str) -> bool {
 
 fn confirm_html(input: &mut impl BufRead, output: &mut impl Write) -> io::Result<bool> {
     loop {
-        write!(output, "Body looks like HTML. Send as HTML? [y/N]: ")?;
+        terminal::write!(output, "Body looks like HTML. Send as HTML? [y/N]: ")?;
         output.flush()?;
         let mut answer = String::new();
         if input.read_line(&mut answer)? == 0 {
@@ -108,7 +109,7 @@ fn confirm_html(input: &mut impl BufRead, output: &mut impl Write) -> io::Result
         match answer.trim().to_ascii_lowercase().as_str() {
             "y" | "yes" => return Ok(true),
             "" | "n" | "no" => return Ok(false),
-            _ => writeln!(output, "Enter y or n.")?,
+            _ => terminal::writeln!(output, "Enter y or n.")?,
         }
     }
 }
@@ -153,7 +154,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             if let Some(path) = output {
                 std::fs::write(&path, &msg.body)?;
                 if !ctx.json {
-                    println!("Wrote {} bytes to {}", msg.body.len(), path.display());
+                    terminal::println!("Wrote {} bytes to {}", msg.body.len(), path.display());
                 }
             } else {
                 render::full_message(ctx.json, &msg, format, body_only);
@@ -344,6 +345,24 @@ mod tests {
     use super::{confirm_html, looks_like_html, prompt_sender};
     use ruston_core::AddressInfo;
     use std::io::{self, Cursor};
+
+    #[test]
+    fn sender_prompt_does_not_emit_terminal_controls() {
+        let untrusted = "sender\x1b]52;c;Y2xpcGJvYXJk\x07\u{9b}2J\r@example.test";
+        let addresses = [AddressInfo {
+            id: "a".into(),
+            email: untrusted.into(),
+        }];
+        let mut output = Vec::new();
+        let selected = prompt_sender(&addresses, &mut Cursor::new("\n"), &mut output).unwrap();
+        assert_eq!(selected, untrusted);
+        let displayed = String::from_utf8(output).unwrap();
+        assert!(
+            displayed
+                .chars()
+                .all(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        );
+    }
 
     #[test]
     fn sender_prompt_selects_defaults_and_cancels_on_eof() {

@@ -3,6 +3,7 @@
 use crate::cli::Ctx;
 use crate::commands::resume;
 use crate::render;
+use crate::terminal;
 use ruston_core::Result;
 use serde_json::json;
 
@@ -30,21 +31,23 @@ pub async fn run(
             "backfilled": backfilled,
         }));
     } else if report.initialized {
-        println!("Sync cursor initialized — run `sync` again to pull deltas.");
+        terminal::println!("Sync cursor initialized — run `sync` again to pull deltas.");
         if backfilled > 0 {
-            println!("Backfilled {backfilled} message(s).");
+            terminal::println!("Backfilled {backfilled} message(s).");
         }
     } else {
-        println!(
+        terminal::println!(
             "Synced: {} created, {} updated, {} deleted.",
-            report.created, report.updated, report.deleted
+            report.created,
+            report.updated,
+            report.deleted
         );
         if let Some(rebuilt) = report.rebuilt {
-            println!("Rebuilt local cache: {rebuilt} message(s).");
-            println!("Run `index` to rebuild local search.");
+            terminal::println!("Rebuilt local cache: {rebuilt} message(s).");
+            terminal::println!("Run `index` to rebuild local search.");
         }
         if backfilled > 0 {
-            println!("Backfilled {backfilled} message(s).");
+            terminal::println!("Backfilled {backfilled} message(s).");
         }
     }
     Ok(())
