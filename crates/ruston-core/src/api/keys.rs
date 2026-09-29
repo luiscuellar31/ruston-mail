@@ -154,6 +154,21 @@ pub fn pick_encryption_key(keys: &[ApiPublicKey]) -> Option<&ApiPublicKey> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn authenticated_user_requires_the_account_id() {
+        let response: UserResp = serde_json::from_value(serde_json::json!({
+            "User": {"ID": "account-id", "Keys": []}
+        }))
+        .unwrap();
+        assert_eq!(response.user.id, "account-id");
+        assert!(
+            serde_json::from_value::<UserResp>(serde_json::json!({
+                "User": {"Keys": []}
+            }))
+            .is_err()
+        );
+    }
+
     fn k(public_key: &str, flags: u32, primary: u8) -> ApiPublicKey {
         ApiPublicKey {
             public_key: public_key.into(),

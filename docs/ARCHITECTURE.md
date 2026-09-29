@@ -164,7 +164,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 
 Both frontends use the `ruston` session profile by default, so a login in one
 can be resumed by the other. The CLI accepts `--profile` for separate sessions;
-its former `default` session and cache remain available with `--profile default`.
+its former `default` session remains available with `--profile default`.
 Core validates profile names as single path components before resolving session
 and cache paths; the CLI applies the same validation while parsing `--profile`.
 Both use core session storage: non-secret metadata in a platform config
@@ -185,9 +185,22 @@ cannot erase a replacement login in the same profile.
 Local storage failures reach the CLI and are shown on the desktop sign-in screen;
 the desktop still discards its in-memory mailbox and draft.
 
-The desktop keeps mailbox data in memory. The core also offers a per-profile
-SQLite cache used by CLI sync and local search. Indexing a folder stores
-decrypted message bodies in that local database; it is not encrypted at rest
+The desktop keeps mailbox data in memory. The core also offers a SQLite cache
+used by CLI sync and local search. Login and resume retain the authenticated
+`User.ID` alongside the API base URL in `Client`; session UIDs and email addresses
+are not cache identities. All client cache operations go through `open_cache`
+in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs). It selects
+`accounts/<profile>/<sha256-of-identity>.db` under the cache directory and checks
+the complete account identity stored in SQLite before using the database.
+An empty database is bound under an immediate transaction; an unexpected owner
+or unbound data causes an error. Account bindings are never reassigned, so a
+pending index or sync for one account cannot write into another account's cache.
+Signing in again to the same account and server reuses its cache. Legacy
+`<profile>.db` caches have no verified owner and are left untouched and unused;
+run CLI sync/backfill and `index` to recreate them for the current account.
+Signing out clears credentials, but retains the account's disk cache.
+Indexing a folder stores decrypted message bodies in that local database;
+it is not encrypted at rest
 by this code. On Unix, core creates the cache directory and database with
 private permissions and tightens older cache permissions before opening them;
 explicit cache paths require a private parent directory. Cache writes and index

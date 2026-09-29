@@ -50,6 +50,9 @@ fn default_active() -> u8 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct User {
+    /// Account identity returned by the authenticated user endpoint.
+    #[serde(rename = "ID")]
+    pub id: String,
     /// User keys (the root of the key hierarchy).
     pub keys: Vec<ApiKey>,
 }

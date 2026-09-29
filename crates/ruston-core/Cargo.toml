@@ -17,6 +17,7 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 keyring = { workspace = true }
 mail-parser = { workspace = true }
 thiserror = { workspace = true }

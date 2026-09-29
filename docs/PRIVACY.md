@@ -34,9 +34,21 @@ opening it by default; this prompt can be disabled in Settings.
 
 ## CLI cache
 
-The CLI uses `ruston-core`'s per-profile SQLite cache for `sync`, optional
+The CLI uses `ruston-core`'s SQLite cache for `sync`, optional
 backfills, and local `index` and `search` commands. The cache is stored under
-the platform cache directory for `ruston-mail`, in `<profile>.db`.
+the platform cache directory for `ruston-mail`, in
+`accounts/<profile>/<account-fingerprint>.db`. The fingerprint is SHA-256 of
+the API base URL and authenticated account ID; the database also stores and
+checks that full identity before use. Different accounts in the same profile
+use separate databases, including when an earlier sync or index is still running.
+A new login to the same account and server reuses its cache. Signing out does
+not delete these databases.
+
+Older `<profile>.db` caches have no verified account identity. Ruston Mail leaves
+them on disk and does not use or import their contents. Run `sync` with backfill
+and `index` again to rebuild the current account's cache; local search is empty
+until you index again. Remove old databases yourself if you no longer need them.
+
 Sync and backfill store message metadata. Running `index` also stores decrypted
 message bodies and other searchable fields in SQLite full-text search. This
 database is **not encrypted at rest by Ruston Mail**. The desktop client does
@@ -81,7 +93,7 @@ Non-secret session metadata is stored in `ruston-core`'s platform config
 directory under the `ruston-mail` storage name. On Unix, its session
 directory and file use modes `0700` and `0600`. The desktop and CLI share the
 `ruston` profile by default. Use CLI `--profile` for a separate session; an
-earlier CLI `default` session and cache are still accessible with
+earlier CLI `default` session is still accessible with
 `--profile default`. Profile names must be a single path component; empty names
 and names with path separators are rejected.
 Signing out of the shared profile affects both frontends.

@@ -5,6 +5,8 @@ use crate::error::{Error, Result};
 use crate::model::message::MessageMetadata;
 use crate::session::validate_profile_name;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -178,13 +180,39 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
     tx.commit().map_err(map)
 }
 
-/// A per-profile metadata cache.
+/// Authenticated account identity, independent of session tokens and addresses.
+#[derive(Serialize)]
+pub(crate) struct CacheIdentity {
+    base_url: String,
+    user_id: String,
+}
+
+impl CacheIdentity {
+    pub(crate) fn new(base_url: &str, user_id: &str) -> Result<Self> {
+        if base_url.trim().is_empty() || user_id.trim().is_empty() {
+            return Err(Error::Cache(
+                "cache requires an authenticated account identity".into(),
+            ));
+        }
+        Ok(Self {
+            base_url: base_url.to_owned(),
+            user_id: user_id.to_owned(),
+        })
+    }
+
+    fn serialized(&self) -> Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+}
+
+/// A local metadata cache. Client operations use an account-specific database.
 pub struct Cache {
     conn: Connection,
 }
 
 impl Cache {
-    /// Default cache path: `<cache_dir>/ruston-mail/<profile>.db`.
+    /// Legacy cache path: `<cache_dir>/ruston-mail/<profile>.db`.
+    /// Client operations no longer use this path because its owner is unknown.
     pub fn default_path(profile: &str) -> Result<PathBuf> {
         validate_profile_name(profile)?;
         let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
@@ -197,7 +225,73 @@ impl Cache {
         Ok(dir.join(format!("{profile}.db")))
     }
 
+    pub(crate) fn default_account_path(profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
+        let legacy_path = Self::default_path(profile)?;
+        Self::account_path(legacy_path.parent().unwrap(), profile, identity)
+    }
+
+    fn account_path(root: &Path, profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
+        validate_profile_name(profile)?;
+        let accounts = root.join("accounts");
+        let dir = accounts.join(profile);
+        for directory in [&accounts, &dir] {
+            #[cfg(unix)]
+            secure_cache_dir(directory)?;
+            #[cfg(not(unix))]
+            std::fs::create_dir_all(directory).map_err(map)?;
+        }
+        // A fixed-size lowercase name also avoids path separators and collisions
+        // caused by case-insensitive filesystems. Verify the full identity in SQLite.
+        let digest = Sha256::digest(identity.serialized()?.as_bytes());
+        Ok(dir.join(format!("{digest:x}.db")))
+    }
+
+    /// Open a database only for its authenticated account. The binding is
+    /// immutable: another account, or unbound existing data, is rejected.
+    pub(crate) fn open_for_account(path: &Path, identity: &CacheIdentity) -> Result<Cache> {
+        let cache = Self::open(path)?;
+        let tx =
+            Transaction::new_unchecked(&cache.conn, TransactionBehavior::Immediate).map_err(map)?;
+        let expected = identity.serialized()?;
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key='account_identity_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(map)?;
+        match owner {
+            Some(owner) if owner == expected => {}
+            Some(_) => return Err(Error::Cache("cache belongs to a different account".into())),
+            None => {
+                let has_data: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM meta UNION ALL SELECT 1 FROM messages
+                     UNION ALL SELECT 1 FROM message_labels UNION ALL SELECT 1 FROM msg_fts)",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(map)?;
+                if has_data {
+                    return Err(Error::Cache(
+                        "cache has data without a verified account identity; rebuild it".into(),
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO meta(key, value) VALUES('account_identity_v1', ?1)",
+                    [expected],
+                )
+                .map_err(map)?;
+            }
+        }
+        tx.commit().map_err(map)?;
+        Ok(cache)
+    }
+
     /// Open (creating if needed) the cache database at `path`, ensuring its schema.
+    /// This low-level API does not verify ownership; Client operations do so
+    /// before returning a cache for use.
     /// On Unix, the parent must be a private directory; existing database files
     /// are restricted to mode `0600` before SQLite opens them.
     pub fn open(path: &Path) -> Result<Cache> {
@@ -616,6 +710,193 @@ mod tests {
         assert!(cache.initialize_cursor("first").unwrap());
         assert!(!cache.initialize_cursor("stale").unwrap());
         assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn account_switch_does_not_expose_previous_mail() {
+        let dir = temp_cache_dir();
+        let identity_a = CacheIdentity::new("https://mail.example.test/api", "account-a").unwrap();
+        let identity_b = CacheIdentity::new("https://mail.example.test/api", "account-b").unwrap();
+        let path_a = Cache::account_path(&dir, "shared-profile", &identity_a).unwrap();
+        let path_b = Cache::account_path(&dir, "shared-profile", &identity_b).unwrap();
+        let account_a = Cache::open_for_account(&path_a, &identity_a).unwrap();
+        account_a
+            .index_message(&meta("a", "0", 0, 1), "accountaprivatebody")
+            .unwrap();
+        account_a.set_last_event_id("account-a-cursor").unwrap();
+
+        let account_b = Cache::open_for_account(&path_b, &identity_b).unwrap();
+        assert!(
+            account_b
+                .search("accountaprivatebody", 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(account_b.list("0", false, 10, 0).unwrap().is_empty());
+        assert_eq!(account_b.count("0").unwrap(), (0, 0));
+        assert!(account_b.last_event_id().unwrap().is_none());
+
+        // An old indexing process can finish after B opens the same profile.
+        account_a
+            .index_message(&meta("late-a", "0", 0, 2), "accountaprivatebody")
+            .unwrap();
+        account_b
+            .index_message(&meta("b", "0", 1, 3), "accountbprivatebody")
+            .unwrap();
+        account_b.set_last_event_id("account-b-cursor").unwrap();
+        let late_batch = event_batch(
+            "late-account-a-cursor",
+            vec![MessageEvent {
+                id: "a".into(),
+                action: action::UPDATE_FLAGS,
+                message: Some(meta("a", "0", 1, 1)),
+            }],
+        );
+        account_a
+            .apply_event_batch("account-a-cursor", &late_batch)
+            .unwrap();
+        assert_eq!(
+            account_b.last_event_id().unwrap().as_deref(),
+            Some("account-b-cursor")
+        );
+        assert!(
+            account_b
+                .search("accountaprivatebody", 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            account_a
+                .search("accountbprivatebody", 10)
+                .unwrap()
+                .is_empty()
+        );
+        drop((account_a, account_b));
+
+        // A new session for the same account retains its index and cursor.
+        let reopened = Cache::open_for_account(&path_a, &identity_a).unwrap();
+        assert_eq!(reopened.search("accountaprivatebody", 10).unwrap().len(), 2);
+        assert_eq!(
+            reopened.last_event_id().unwrap().as_deref(),
+            Some("late-account-a-cursor")
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn account_cache_paths_separate_servers_profiles_and_case_sensitive_ids() {
+        let dir = temp_cache_dir();
+        let identity = CacheIdentity::new("https://mail.example.test/api", "account-a").unwrap();
+        let other_server =
+            CacheIdentity::new("https://other.example.test/api", "account-a").unwrap();
+        let other_case = CacheIdentity::new("https://mail.example.test/api", "Account-a").unwrap();
+        let original = Cache::account_path(&dir, "profile", &identity).unwrap();
+        for different in [
+            Cache::account_path(&dir, "other-profile", &identity).unwrap(),
+            Cache::account_path(&dir, "profile", &other_server).unwrap(),
+            Cache::account_path(&dir, "profile", &other_case).unwrap(),
+        ] {
+            assert_ne!(original, different);
+        }
+        assert_eq!(
+            original,
+            Cache::account_path(&dir, "profile", &identity).unwrap()
+        );
+
+        let unusual =
+            CacheIdentity::new("https://mail.example.test/api", "../../outside\\user").unwrap();
+        let safe_path = Cache::account_path(&dir, "profile", &unusual).unwrap();
+        assert_eq!(safe_path.parent().unwrap(), dir.join("accounts/profile"));
+        assert_eq!(safe_path.file_stem().unwrap().len(), 64);
+        assert!(Cache::account_path(&dir, "../outside", &identity).is_err());
+        assert!(CacheIdentity::new("", "account-a").is_err());
+        assert!(CacheIdentity::new("https://mail.example.test/api", " ").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn account_binding_rejects_another_owner_and_legacy_data() {
+        let dir = temp_cache_dir();
+        let identity_a = CacheIdentity::new("https://mail.example.test/api", "account-a").unwrap();
+        let identity_b = CacheIdentity::new("https://mail.example.test/api", "account-b").unwrap();
+        let path = dir.join("bound.db");
+        let account_a = Cache::open_for_account(&path, &identity_a).unwrap();
+        account_a
+            .index_message(&meta("a", "0", 0, 1), "privatebody")
+            .unwrap();
+        assert!(matches!(
+            Cache::open_for_account(&path, &identity_b),
+            Err(Error::Cache(_))
+        ));
+        assert_eq!(account_a.search("privatebody", 10).unwrap().len(), 1);
+        account_a.clear().unwrap();
+        assert!(Cache::open_for_account(&path, &identity_b).is_err());
+        assert!(Cache::open_for_account(&path, &identity_a).is_ok());
+        drop(account_a);
+
+        let legacy_path = dir.join("legacy.db");
+        let legacy = Cache::open(&legacy_path).unwrap();
+        legacy
+            .index_message(&meta("unknown", "0", 0, 1), "legacybody")
+            .unwrap();
+        legacy.set_last_event_id("unknown-cursor").unwrap();
+        assert!(matches!(
+            Cache::open_for_account(&legacy_path, &identity_b),
+            Err(Error::Cache(_))
+        ));
+        // Refusing an unsafe cache neither claims nor destroys its contents.
+        assert_eq!(legacy.search("legacybody", 10).unwrap().len(), 1);
+        let owner_count: i64 = legacy
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key='account_identity_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner_count, 0);
+        drop(legacy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_account_binding_has_only_one_owner() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = ["account-a", "account-b"]
+            .into_iter()
+            .map(|id| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let identity = CacheIdentity::new("https://mail.example.test/api", id).unwrap();
+                    barrier.wait();
+                    Cache::open_for_account(&path, &identity).is_ok()
+                })
+            })
+            .collect();
+        let successes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|success| *success)
+            .count();
+        assert_eq!(successes, 1);
+        let cache = Cache::open(&path).unwrap();
+        assert_eq!(
+            cache
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM meta WHERE key='account_identity_v1'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        drop(cache);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub mod sync;
 
 use crate::api;
 use crate::auth::{self, TotpPrompt};
+use crate::cache::CacheIdentity;
 use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens, validate_profile_name};
@@ -90,6 +91,7 @@ pub struct Client {
     paths: Paths,
     profile: String,
     session_uid: String,
+    cache_identity: CacheIdentity,
     store: Arc<dyn SecretStore>,
     sender_cache: Mutex<SenderKeyCache>,
 }
@@ -167,6 +169,7 @@ impl Client {
         let provider = crypto::provider();
         let salts = api::keys::get_key_salts(&http).await?;
         let user = api::keys::get_user(&http).await?;
+        let cache_identity = CacheIdentity::new(&base_url, &user.id)?;
         let addresses = api::keys::get_addresses(&http).await?;
 
         let mailbox_pw = if login.password_mode == 2 {
@@ -199,6 +202,7 @@ impl Client {
             paths,
             profile: opts.profile,
             session_uid: session.uid,
+            cache_identity,
             store,
             sender_cache: Mutex::new(SenderKeyCache::default()),
         })
@@ -230,6 +234,7 @@ impl Client {
 
         let provider = crypto::provider();
         let user = api::keys::get_user(&http).await?;
+        let cache_identity = CacheIdentity::new(&loaded.session.base_url, &user.id)?;
         let addresses = api::keys::get_addresses(&http).await?;
         let keys = crypto::keys::unlock_with_skp(&provider, &user, &addresses, &loaded.skp)?;
 
@@ -239,6 +244,7 @@ impl Client {
             paths,
             profile: profile.to_string(),
             session_uid: loaded.session.uid,
+            cache_identity,
             store,
             sender_cache: Mutex::new(SenderKeyCache::default()),
         })
@@ -336,6 +342,7 @@ mod tests {
                 paths,
                 profile: "test".into(),
                 session_uid: "logout-uid".into(),
+                cache_identity: CacheIdentity::new(base_url, "logout-account").unwrap(),
                 store,
                 sender_cache: Mutex::new(SenderKeyCache::default()),
             },

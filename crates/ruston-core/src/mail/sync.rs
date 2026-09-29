@@ -128,8 +128,8 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
 
 impl Client {
     pub(crate) fn open_cache(&self) -> Result<Cache> {
-        let path = Cache::default_path(&self.profile)?;
-        Cache::open(&path)
+        let path = Cache::default_account_path(&self.profile, &self.cache_identity)?;
+        Cache::open_for_account(&path, &self.cache_identity)
     }
 
     /// Apply incremental events from the cached cursor into the local cache.
