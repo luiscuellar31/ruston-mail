@@ -2,6 +2,7 @@
 //! Preserves readable structure and inline styles without CSS or remote content.
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::states::RawKind;
@@ -88,7 +89,7 @@ struct Builder {
     emphasis: u16,
     code: u16,
     struck: u16,
-    link: Option<String>,
+    link: Option<Arc<str>>,
     heading: Option<u8>,
     /// Open lists, innermost last: the next number of ordered ones.
     lists: Vec<Option<u32>>,
@@ -220,20 +221,28 @@ impl Builder {
         }
 
         // Collapse whitespace runs like a browser does.
-        for c in text.chars() {
-            if c.is_whitespace() {
-                self.separate();
-                continue;
+        for run in text.split_inclusive(char::is_whitespace) {
+            let last = run.chars().next_back().unwrap();
+            let whitespace = last.is_whitespace();
+            let word = if whitespace {
+                &run[..run.len() - last.len_utf8()]
+            } else {
+                run
+            };
+            if !word.is_empty() {
+                self.space = false;
+                self.push_text(word);
             }
-            self.space = false;
-            self.push_char(c);
+            if whitespace {
+                self.separate();
+            }
         }
     }
 
     /// Writes pending space with the preceding run's style; `flush` drops it.
     fn separate(&mut self) {
         if !self.space && self.wants_space() {
-            self.push_char(' ');
+            self.push_text(" ");
             self.space = true;
         }
     }
@@ -245,7 +254,7 @@ impl Builder {
             .is_some_and(|span| !span.text.ends_with('\n'))
     }
 
-    fn push_char(&mut self, c: char) {
+    fn push_text(&mut self, text: &str) {
         let (strong, emphasis, code, struck) = (
             self.strong > 0,
             self.emphasis > 0,
@@ -260,10 +269,13 @@ impl Builder {
                     && span.struck == struck
                     && span.link == self.link =>
             {
-                span.text.push(c);
+                span.text.push_str(text);
+                // Equal adjacent anchors may have separate allocations. Retain
+                // the current target so later runs use Arc's pointer fast path.
+                span.link = self.link.clone();
             }
             _ => self.spans.push(RichSpan {
-                text: c.to_string(),
+                text: text.to_owned(),
                 strong,
                 emphasis,
                 code,
@@ -277,7 +289,7 @@ impl Builder {
         if self.pre > 0 {
             self.pre_text.push('\n');
         } else if !self.spans.is_empty() {
-            self.push_char('\n');
+            self.push_text("\n");
             self.space = false;
         }
     }
@@ -391,9 +403,9 @@ fn attribute<'t>(tag: &'t Tag, name: &str) -> Option<&'t str> {
 }
 
 /// Only absolute web and mail links stay clickable.
-fn link_target(tag: &Tag) -> Option<String> {
+fn link_target(tag: &Tag) -> Option<Arc<str>> {
     let url = url::Url::parse(attribute(tag, "href")?.trim()).ok()?;
-    matches!(url.scheme(), "http" | "https" | "mailto").then(|| url.into())
+    matches!(url.scheme(), "http" | "https" | "mailto").then(|| Arc::from(url.as_str()))
 }
 
 #[cfg(test)]
@@ -433,6 +445,79 @@ mod tests {
         {
             Some(BlockKind::Paragraph(spans)) => spans,
             other => panic!("expected a paragraph, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn styled_runs_share_one_long_link_target() {
+        let target = format!("https://example.test/{}", "x".repeat(32 * 1024));
+        let body = spans(&format!(
+            "<a href='{target}'>plain<b>bold</b><i>italic</i>tail</a>"
+        ));
+        assert_eq!(body.len(), 4);
+        let first = body[0].link.as_deref().unwrap();
+        assert_eq!(first, target);
+        for span in &body {
+            let link = span.link.as_deref().unwrap();
+            assert!(std::ptr::eq(first, link));
+        }
+    }
+
+    #[test]
+    fn equal_adjacent_links_refresh_the_shared_target_when_runs_merge() {
+        let target: Arc<str> = Arc::from(format!("https://example.test/{}", "x".repeat(32 * 1024)));
+        let next: Arc<str> = Arc::from(target.as_ref());
+        assert!(!Arc::ptr_eq(&target, &next));
+        let mut builder = Builder {
+            link: Some(target),
+            ..Builder::default()
+        };
+        builder.text("first");
+        builder.link = Some(next.clone());
+        builder.text("second");
+        assert_eq!(builder.spans.len(), 1);
+        assert_eq!(builder.spans[0].text, "firstsecond");
+        assert!(Arc::ptr_eq(builder.spans[0].link.as_ref().unwrap(), &next));
+        let cloned = builder.spans[0].clone();
+        assert!(Arc::ptr_eq(cloned.link.as_ref().unwrap(), &next));
+    }
+
+    #[test]
+    fn text_runs_keep_unicode_whitespace_entities_and_link_styles() {
+        let body = spans(
+            "<p>\u{2003}<a href='https://example.test/'>α\t β<br><b>猫 &amp; <i>é</i></b></a> tail</p>",
+        );
+        assert_eq!(
+            body.iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
+            "α β\n猫 & é tail"
+        );
+        let cat = body.iter().find(|span| span.text.contains('猫')).unwrap();
+        assert!(cat.strong);
+        let accented = body.iter().find(|span| span.text == "é").unwrap();
+        assert!(accented.strong && accented.emphasis);
+        assert!(Arc::ptr_eq(
+            cat.link.as_ref().unwrap(),
+            accented.link.as_ref().unwrap()
+        ));
+        assert!(body.last().unwrap().link.is_none());
+        fn require_send_sync<T: Send + Sync>() {}
+        require_send_sync::<RichBody>();
+    }
+
+    #[test]
+    #[ignore = "manual scaling benchmark with fictional long HTML links"]
+    fn measure_long_link_conversion_scaling() {
+        for size in [32 * 1024, 64 * 1024, 128 * 1024] {
+            let target = format!("https://example.test/{}", "x".repeat(size));
+            let label = "z".repeat(size);
+            let html = format!("<a href='{target}'>x</a><a href='{target}'>{label}</a>");
+            let sanitized = ruston_core::html::sanitize(&html);
+            let start = std::time::Instant::now();
+            let body = parse(&sanitized);
+            eprintln!("desktop: URL/label={size} bytes in {:?}", start.elapsed());
+            assert_eq!(body.plain_text(), format!("x{label}\n"));
         }
     }
 

@@ -814,7 +814,7 @@ fn rich_spans(
         let job = span_layout(ui, span, heading);
         if let Some(link) = &span.link {
             if ui.add(egui::Link::new(job)).clicked() {
-                messages.push(Message::LinkClicked(link.clone()));
+                messages.push(Message::LinkClicked(link.to_string()));
             }
         } else {
             ui.add(egui::Label::new(job).selectable(true).wrap());

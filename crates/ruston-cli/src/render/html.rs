@@ -281,60 +281,77 @@ impl Builder {
             }
             return;
         }
-        for c in text.chars() {
+        let style = Style {
+            bold: self.bold > 0,
+            italic: self.italic > 0,
+            code: self.code > 0,
+            link: self.link.clone(),
+        };
+        for run in text.split_inclusive(|c: char| c.is_whitespace() || c.is_control()) {
             if self.truncated {
                 break;
             }
-            if c.is_whitespace() {
+            let last = run.chars().next_back().unwrap();
+            let separator = last.is_whitespace() || last.is_control();
+            let word = if separator {
+                &run[..run.len() - last.len_utf8()]
+            } else {
+                run
+            };
+            if !word.is_empty() {
+                self.consume_pending_space();
+                self.push_text(word, style.clone());
+            }
+            if last.is_whitespace() {
                 self.pending_space = self
                     .spans
                     .last()
                     .is_some_and(|span| !span.text.ends_with('\n'));
-            } else if !c.is_control() {
-                if self.pending_space {
-                    self.consume_pending_space();
-                }
-                self.push_char(
-                    c,
-                    Style {
-                        bold: self.bold > 0,
-                        italic: self.italic > 0,
-                        code: self.code > 0,
-                        link: self.link.clone(),
-                    },
-                );
             }
         }
     }
 
-    fn push_char(&mut self, c: char, style: Style) {
+    fn push_text(&mut self, text: &str, style: Style) {
+        if self.truncated || text.is_empty() {
+            return;
+        }
         let new_span = self.spans.last().is_none_or(|span| span.style != style);
         // Count span storage as well as text, so many tiny style changes cannot
         // allocate an unbounded staging vector before the next block flush.
-        let cost = c.len_utf8()
-            + if new_span {
-                std::mem::size_of::<Span>() + style.link.as_ref().map_or(0, |link| link.len())
-            } else {
-                0
-            };
-        if self.pending_bytes.saturating_add(cost) > self.output.remaining() {
+        let overhead = if new_span {
+            std::mem::size_of::<Span>() + style.link.as_ref().map_or(0, |link| link.len())
+        } else {
+            0
+        };
+        let available = self.output.remaining().saturating_sub(self.pending_bytes);
+        let mut end = text.len().min(available.saturating_sub(overhead));
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 {
             self.truncated = true;
             return;
         }
-        self.pending_bytes += cost;
+        self.pending_bytes += overhead + end;
         match self.spans.last_mut() {
-            Some(span) if span.style == style => span.text.push(c),
+            Some(span) if span.style == style => {
+                span.text.push_str(&text[..end]);
+                // Equal adjacent anchors can have separate allocations. Keep
+                // the current one to avoid repeatedly comparing URL contents.
+                span.style.link = style.link;
+            }
             _ => self.spans.push(Span {
-                text: c.to_string(),
+                text: text[..end].to_owned(),
                 style,
             }),
         }
+        self.truncated |= end < text.len();
     }
 
     fn consume_pending_space(&mut self) {
         if self.pending_space && !self.spans.is_empty() {
-            self.push_char(
-                ' ',
+            self.push_text(
+                " ",
                 Style {
                     link: self.link.clone(),
                     ..Style::default()
@@ -350,7 +367,7 @@ impl Builder {
             self.pre_text.push_char('\n');
             self.truncated |= self.pre_text.truncated;
         } else if !self.spans.is_empty() {
-            self.push_char('\n', Style::default());
+            self.push_text("\n", Style::default());
         }
     }
 
@@ -475,8 +492,10 @@ fn render_spans(spans: Vec<Span>, limit: usize) -> BoundedText {
             if span.style.link.is_some() {
                 output.push("[");
             }
-            link = span.style.link.clone();
         }
+        // Refresh the representative even when equal adjacent anchors merge;
+        // subsequent styled spans then compare a shared pointer.
+        link = span.style.link.clone();
         render_span(span, &mut output);
         if output.truncated {
             break;
@@ -542,6 +561,71 @@ fn link_target(tag: &Tag) -> Option<Rc<str>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equal_adjacent_links_refresh_the_shared_target_when_runs_merge() {
+        let target: Rc<str> = Rc::from(format!("https://example.test/{}", "x".repeat(32 * 1024)));
+        let next: Rc<str> = Rc::from(target.as_ref());
+        assert!(!Rc::ptr_eq(&target, &next));
+        let mut builder = Builder {
+            link: Some(target),
+            ..Builder::default()
+        };
+        builder.text("first");
+        builder.link = Some(next.clone());
+        builder.text("second");
+        assert_eq!(builder.spans.len(), 1);
+        assert!(Rc::ptr_eq(
+            builder.spans[0].style.link.as_ref().unwrap(),
+            &next
+        ));
+    }
+
+    #[test]
+    fn batched_runs_obey_the_staging_budget_at_utf8_boundaries() {
+        let text = "é猫";
+        let overhead = std::mem::size_of::<Span>();
+        for (budget, expected) in [(overhead - 1, ""), (overhead + 1, ""), (overhead + 4, "é")] {
+            let mut builder = Builder {
+                output: BoundedText::new(budget),
+                ..Builder::default()
+            };
+            builder.text(text);
+            assert!(builder.truncated);
+            assert!(builder.pending_bytes <= budget);
+            let visible: String = builder
+                .spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect();
+            assert_eq!(visible, expected);
+        }
+    }
+
+    #[test]
+    fn text_runs_preserve_controls_whitespace_and_equal_link_grouping() {
+        let html = "<p>\u{2003}<a href='https://example.test/'>α\t β</a>\
+                    <a href='https://example.test/'><b>猫 &amp; <i>é</i></b>\u{1b}tail</a></p>";
+        assert_eq!(
+            to_markdown(html),
+            "[α β**猫** **&** ***é***tail](https://example.test/)"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual scaling benchmark with fictional long HTML links"]
+    fn measure_long_link_conversion_scaling() {
+        for size in [32 * 1024, 64 * 1024, 128 * 1024] {
+            let target = format!("https://example.test/{}", "x".repeat(size));
+            let label = "z".repeat(size);
+            let html = format!("<a href='{target}'>x</a><a href='{target}'>{label}</a>");
+            let sanitized = ruston_core::html::sanitize(&html);
+            let start = std::time::Instant::now();
+            let output = to_markdown(&sanitized);
+            eprintln!("CLI: URL/label={size} bytes in {:?}", start.elapsed());
+            assert_eq!(output, format!("[x{label}]({target})"));
+        }
+    }
 
     #[test]
     fn sanitized_deep_quotes_do_not_amplify_each_paragraph() {

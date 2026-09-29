@@ -66,7 +66,12 @@ For example, opening a conversation starts in
 The runtime executes it, `ruston-core` reads and decrypts the messages, and a
 result message updates [`app/reader.rs`](../src/app/reader.rs). The desktop
 adapter converts sanitized HTML into the native rich-body model in
-[`mail/html.rs`](../src/mail/html.rs).
+[`mail/html.rs`](../src/mail/html.rs). It appends visible text in runs instead
+of comparing styles and link targets for every character. Styled spans share
+each normalized target as `Arc<str>`, keeping the body safe to send between
+workers and the UI. When equal adjacent anchors merge, the stored span adopts
+the current shared target so later runs compare the same allocation. The reader
+creates an owned URL string when dispatching a link click.
 
 Desktop new-mail notifications also return through the app state machine. Their
 conversation result carries the session epoch and is ignored after sign-out or
@@ -103,7 +108,11 @@ unconfirmed because it may happen at any stage of the send pipeline.
   receives UTF-8 chunks and stops receiving input after truncation. List state
   stores only represented levels and counts omitted levels for correct unwinding.
   Link targets are shared across spans, and oversized destinations are rendered
-  as plain labels. Explicit HTML/raw, JSON, and file exports keep the full body.
+  as plain labels. Visible text is appended in runs within the staging budget
+  at UTF-8 boundaries. Merging spans and formatting link groups retain the
+  current shared target, including equal adjacent anchors, so subsequent runs
+  use pointer equality instead of rereading a long URL. Explicit HTML/raw, JSON,
+  and file exports keep the full body.
 - [`terminal.rs`](../crates/ruston-cli/src/terminal.rs) owns the CLI output
   boundary. Renderers, command status messages, interactive prompts, argument
   errors, and diagnostics use its shared control filter. It processes formatted

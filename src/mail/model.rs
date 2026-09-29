@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -283,7 +284,8 @@ pub struct RichSpan {
     pub code: bool,
     pub struck: bool,
     /// Only absolute `http`, `https` and `mailto` links are kept.
-    pub link: Option<String>,
+    /// Styled runs of the same anchor share its normalized target.
+    pub link: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
