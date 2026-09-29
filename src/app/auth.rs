@@ -326,12 +326,13 @@ impl App {
     ///
     /// Remote session revocation is best-effort. Regardless of whether the
     /// Proton server acknowledges revocation or fails (e.g. offline, timeout,
-    /// network error), local mailbox state, cached credentials, and drafts
-    /// must always be destroyed to prevent exposing private data.
+    /// network error), in-memory mailbox state and drafts are discarded.
+    /// Core completes local credential cleanup before revocation; a storage
+    /// failure is shown on the sign-in screen rather than silently ignored.
     pub(super) fn finish_logout(
         &mut self,
         epoch: super::SessionEpoch,
-        _result: Result<(), AuthError>,
+        result: Result<(), AuthError>,
     ) {
         if !self.is_current_session(epoch) {
             return;
@@ -341,7 +342,7 @@ impl App {
             return;
         }
 
-        self.close_mailbox(None);
+        self.close_mailbox(result.err());
     }
 
     /// Drops all session state and returns to the login screen.

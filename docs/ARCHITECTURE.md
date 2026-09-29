@@ -176,7 +176,14 @@ separately in `Ruston Mail`'s config directory. Core
 tokens as one keychain entry. Session writes and token refresh use a per-profile
 file lock. On a 401, another process's rotated tokens are reloaded before
 refreshing again; persistence errors still reach the request. Signing out of a
-shared profile signs out both frontends.
+shared profile signs out both frontends. Core runs local session cleanup under
+that lock on a blocking worker before trying remote revocation. The 30-second
+revocation deadline does not include or cancel cleanup, and a started cleanup
+worker continues if its caller is cancelled. Revocation never refreshes tokens.
+Cleanup checks the saved session UID under the profile lock so a pending logout
+cannot erase a replacement login in the same profile.
+Local storage failures reach the CLI and are shown on the desktop sign-in screen;
+the desktop still discards its in-memory mailbox and draft.
 
 The desktop keeps mailbox data in memory. The core also offers a per-profile
 SQLite cache used by CLI sync and local search. Indexing a folder stores

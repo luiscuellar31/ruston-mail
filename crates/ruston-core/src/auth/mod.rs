@@ -186,7 +186,10 @@ async fn second_factor(
 
 /// Revoke the current session server-side.
 pub async fn logout(http: &HttpClient) -> Result<()> {
-    let _: serde_json::Value = http.decode(Request::delete("/core/v4/auth")).await?;
+    // The saved session is already cleared; do not refresh or persist new tokens.
+    let _: serde_json::Value = http
+        .decode(Request::delete("/core/v4/auth").no_refresh())
+        .await?;
     Ok(())
 }
 
@@ -210,6 +213,35 @@ mod tests {
             .await;
         let http = HttpClient::new(server.uri(), "Other");
         logout(&http).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn logout_does_not_refresh_expired_tokens() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/core/v4/auth"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code": 401})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let http = HttpClient::new(server.uri(), "Other");
+        http.set_tokens(
+            "uid".into(),
+            SecretString::from("expired-access"),
+            SecretString::from("refresh-token"),
+        )
+        .await;
+
+        assert!(matches!(logout(&http).await, Err(Error::Unauthorized)));
+        server.verify().await;
     }
 
     /// A prompt returning `code` and counting its invocations.

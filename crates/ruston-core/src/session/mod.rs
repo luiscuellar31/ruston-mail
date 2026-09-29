@@ -229,15 +229,44 @@ impl Session {
     /// Remove the on-disk file and stored secrets.
     pub fn clear(paths: &Paths, profile: &str, store: &dyn SecretStore) -> Result<()> {
         let _lock = Self::lock(paths, profile)?;
+        Self::clear_unlocked(paths, profile, store)
+    }
+
+    /// A pending logout must not remove a later login in the same profile.
+    pub(crate) fn clear_if_current(
+        paths: &Paths,
+        profile: &str,
+        store: &dyn SecretStore,
+        uid: &str,
+    ) -> Result<()> {
+        let _lock = Self::lock(paths, profile)?;
         let file = paths.session_file(profile);
-        match std::fs::remove_file(&file) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        match std::fs::read(&file) {
+            Ok(bytes) => {
+                // Incomplete metadata cannot resume a session; still remove its secrets.
+                if let Ok(session) = serde_json::from_slice::<Session>(&bytes)
+                    && session.uid != uid
+                {
+                    return Ok(());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        store.delete(K_TOKENS)?;
-        store.delete(K_SKP)?;
-        Ok(())
+        Self::clear_unlocked(paths, profile, store)
+    }
+
+    fn clear_unlocked(paths: &Paths, profile: &str, store: &dyn SecretStore) -> Result<()> {
+        let file = paths.session_file(profile);
+        let metadata = match std::fs::remove_file(&file) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::from(e)),
+        };
+        // Attempt every removal under the lock even if an earlier one fails.
+        let tokens = store.delete(K_TOKENS);
+        let skp = store.delete(K_SKP);
+        metadata.and(tokens).and(skp)
     }
 }
 
@@ -279,6 +308,25 @@ mod tests {
             std::process::id(),
             nanos
         ))
+    }
+
+    #[test]
+    fn clear_removes_secrets_even_when_metadata_cannot_be_removed() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        // A directory at the metadata path makes remove_file fail deterministically.
+        std::fs::create_dir_all(paths.session_file("test")).unwrap();
+        let store = MemoryStore::new();
+        store.set(K_TOKENS, "tokens").unwrap();
+        store.set(K_SKP, "skp").unwrap();
+
+        assert!(matches!(
+            Session::clear(&paths, "test", &store),
+            Err(Error::Io(_))
+        ));
+        assert!(store.get(K_TOKENS).unwrap().is_none());
+        assert!(store.get(K_SKP).unwrap().is_none());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

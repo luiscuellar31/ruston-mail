@@ -177,15 +177,12 @@ impl ProtonMailService {
         events.close_channel();
     }
 
-    /// Revokes the session within the standard request timeout.
+    /// Waits for local cleanup; core bounds only the remote revocation.
     pub async fn logout(&self) -> Result<(), AuthError> {
-        timed_with(
-            self.client.logout(),
-            REQUEST_TIMEOUT,
-            AuthError::Connection,
-            map_error,
-        )
-        .await
+        self.client
+            .logout()
+            .await
+            .map_err(|_| AuthError::LogoutUnavailable)
     }
 
     pub fn email(&self) -> Option<&str> {

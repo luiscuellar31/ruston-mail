@@ -91,8 +91,15 @@ contains preferences, the last folder, window size, and pane widths. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged
 settings file falls back to defaults.
 
-Signing out tries to revoke the server session, then removes the local session
-metadata and credentials.
+Signing out first removes local session metadata and credentials, then tries
+to revoke the server session for up to 30 seconds. Remote failures or timeouts
+do not prevent local cleanup. Cleanup runs outside the asynchronous workers
+under the profile lock, attempts every removal, and continues if its caller is
+cancelled after cleanup starts. If local storage rejects a removal, the CLI
+reports an error and the desktop warns that credentials may remain on the device;
+the desktop still clears its in-memory mailbox and draft.
+A pending logout checks the saved session identity before deleting it, protecting
+a later login in the same profile.
 
 Self-built macOS binaries may ask for Keychain access again after a rebuild.
 Without a stable code signature, macOS can treat each build as a different app.

@@ -1731,30 +1731,26 @@ fn terminal_sign_in_failure_clears_secrets() {
 }
 
 #[test]
-fn failed_remote_logout_still_closes_mailbox_and_signs_out() {
-    for error in [
-        AuthError::Connection,
-        AuthError::SessionUnavailable,
-        AuthError::Service {
-            http_status: 500,
-            code: 5000,
-        },
-    ] {
-        let mut app = authenticated_app();
-        let _ = app.update(Message::OpenCompose);
-        let _ = app.update(Message::ComposeChanged(
-            ComposeField::Body,
-            "private draft".to_owned(),
-        ));
-        app.auth_state = AuthState::SigningOut;
+fn failed_local_logout_closes_mailbox_and_reports_remaining_credentials() {
+    let mut app = authenticated_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "private draft".to_owned(),
+    ));
+    app.auth_state = AuthState::SigningOut;
 
-        deliver_logout(&mut app, Err(error));
+    deliver_logout(&mut app, Err(AuthError::LogoutUnavailable));
 
-        assert_eq!(app.auth_state, AuthState::SignedOut);
-        assert_eq!(app.auth_error, None);
-        assert!(app.mailbox().is_none());
-        assert!(app.compose().is_none());
-    }
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::LogoutUnavailable));
+    assert!(
+        app.error_message()
+            .unwrap()
+            .contains("may remain on this device")
+    );
+    assert!(app.mailbox().is_none());
+    assert!(app.compose().is_none());
 }
 
 #[test]
