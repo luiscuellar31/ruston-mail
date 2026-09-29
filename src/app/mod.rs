@@ -886,8 +886,22 @@ impl App {
             .as_mut()
             .map(|mailbox| mailbox.finish_mark_read(&request, result))
         {
-            Some(Ok(true)) => self.reload_counts(),
-            // Only an expired session matters; the row simply stays unread.
+            Some(Ok(completion)) => {
+                let next = match (completion.next_action, self.backend.clone()) {
+                    (Some(action), Some(MailBackend::Proton(service))) => {
+                        run_action(service, action, Message::ActionFinished)
+                    }
+                    _ => Effects::none(),
+                };
+                let counts = if completion.changed {
+                    self.reload_counts()
+                } else {
+                    Effects::none()
+                };
+                Effects::batch([next, counts])
+            }
+            // The mailbox also records an error for any queued explicit action.
+            // An expired session closes the mailbox.
             Some(Err(error)) => {
                 self.handle_mailbox_error(Some(error));
                 Effects::none()

@@ -415,7 +415,7 @@ fn a_search_result_is_marked_read_like_any_other_row() {
         .expect("opening a search result marks it read");
     assert_eq!(request.context, None);
 
-    assert_eq!(mailbox.finish_mark_read(&request, Ok(())), Ok(true));
+    assert!(mailbox.finish_mark_read(&request, Ok(())).unwrap().changed);
     assert!(!mailbox.selected_summary().unwrap().unread);
 }
 
@@ -1455,7 +1455,7 @@ fn opened_unread_rows_are_marked_read_once_confirmed() {
     assert_eq!(mailbox.start_mark_read(4), None);
     assert!(mailbox.selected_summary().unwrap().unread);
 
-    assert_eq!(mailbox.finish_mark_read(&request, Ok(())), Ok(true));
+    assert!(mailbox.finish_mark_read(&request, Ok(())).unwrap().changed);
     assert!(!mailbox.selected_summary().unwrap().unread);
     assert_eq!(mailbox.start_mark_read(5), None);
 }
@@ -1491,7 +1491,10 @@ fn failed_or_stale_reads_leave_the_row_unread() {
         ..request.clone()
     };
 
-    assert_eq!(mailbox.finish_mark_read(&stale, Ok(())), Ok(false));
+    assert_eq!(
+        mailbox.finish_mark_read(&stale, Ok(())),
+        Ok(ReadCompletion::default())
+    );
     assert_eq!(
         mailbox.finish_mark_read(&request, Err(MailboxError::Connection)),
         Err(MailboxError::Connection)
@@ -1501,15 +1504,251 @@ fn failed_or_stale_reads_leave_the_row_unread() {
 }
 
 #[test]
+fn explicit_read_mutations_wait_for_the_automatic_read() {
+    for unread in [true, false] {
+        let mut mailbox = opened_unread(&["a"], "a");
+        let _read = mailbox.start_mark_read(3).unwrap();
+
+        assert_eq!(mailbox.start_action(MailAction::SetUnread(unread), 4), None);
+        assert!(mailbox.action_pending(), "the user's action stays queued");
+        assert_eq!(mailbox.start_mark_read(5), None);
+    }
+}
+
+#[test]
+fn automatic_reads_wait_for_explicit_read_mutations_on_the_same_row() {
+    let mut mailbox = opened_unread(&["a", "b"], "a");
+    mailbox
+        .start_action(MailAction::SetUnread(true), 3)
+        .unwrap();
+
+    assert_eq!(mailbox.start_mark_read(4), None);
+    let load = mailbox.start_conversation_load("b".into(), 5).unwrap();
+    mailbox.finish_conversation(&load, Ok(detail("b", &["message-b"])));
+    assert!(
+        mailbox.start_mark_read(6).is_some(),
+        "another row remains independent"
+    );
+}
+
+#[test]
+fn failed_automatic_reads_fail_the_queued_action_without_sending_it() {
+    for error in [
+        MailboxError::Connection,
+        MailboxError::Service,
+        MailboxError::SessionExpired,
+    ] {
+        let mut mailbox = opened_unread(&["a"], "a");
+        let read = mailbox.start_mark_read(3).unwrap();
+        assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
+
+        assert_eq!(mailbox.finish_mark_read(&read, Err(error)), Err(error));
+        assert!(!mailbox.action_pending());
+        assert_eq!(mailbox.action_error(), Some(error));
+        assert!(mailbox.selected_summary().unwrap().unread);
+        assert_eq!(
+            mailbox.finish_mark_read(&read, Ok(())),
+            Ok(ReadCompletion::default())
+        );
+    }
+}
+
+#[test]
+fn a_failed_explicit_unread_keeps_the_confirmed_automatic_read() {
+    let mut mailbox = opened_unread(&["a"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
+    let action = mailbox
+        .finish_mark_read(&read, Ok(()))
+        .unwrap()
+        .next_action
+        .unwrap();
+
+    assert_eq!(
+        mailbox.finish_action(&action, Err(MailboxError::Connection)),
+        Err(MailboxError::Connection)
+    );
+    assert!(!mailbox.selected_summary().unwrap().unread);
+    assert_eq!(mailbox.action_error(), Some(MailboxError::Connection));
+}
+
+#[test]
+fn only_the_current_read_of_the_same_row_releases_a_queued_action() {
+    let mut mailbox = opened_unread(&["a", "b"], "a");
+    let first = mailbox.start_mark_read(3).unwrap();
+    let load = mailbox.start_conversation_load("b".into(), 4).unwrap();
+    mailbox.finish_conversation(&load, Ok(detail("b", &["message-b"])));
+    let second = mailbox.start_mark_read(5).unwrap();
+    assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 6), None);
+
+    let stale = ActionRequest {
+        id: 99,
+        ..second.clone()
+    };
+    assert_eq!(
+        mailbox.finish_mark_read(&stale, Ok(())),
+        Ok(ReadCompletion::default())
+    );
+    assert!(
+        mailbox
+            .finish_mark_read(&first, Ok(()))
+            .unwrap()
+            .next_action
+            .is_none()
+    );
+    let completion = mailbox.finish_mark_read(&second, Ok(())).unwrap();
+    assert_eq!(completion.next_action.unwrap().id, 6);
+    assert_eq!(
+        mailbox.finish_mark_read(&second, Ok(())),
+        Ok(ReadCompletion::default())
+    );
+}
+
+#[test]
+fn queued_read_actions_keep_their_original_folder_after_navigation() {
+    let mut mailbox = opened_unread(&["a"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
+    mailbox.select_folder(sys(MailFolder::Sent), 5);
+    mailbox.finish_page(5, page(&["b"], 1));
+
+    let completion = mailbox.finish_mark_read(&read, Ok(())).unwrap();
+    assert!(!completion.changed);
+    let action = completion.next_action.unwrap();
+    assert_eq!(action.context, Some(Folder::INBOX));
+    assert_eq!(action.folder, Folder::INBOX);
+    assert_eq!(mailbox.finish_action(&action, Ok(())), Ok(None));
+    assert_eq!(ids(&mailbox), ["b"]);
+}
+
+#[test]
+fn unrelated_actions_do_not_wait_for_automatic_reads() {
+    let mut mailbox = opened_unread(&["a"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    let star = mailbox
+        .start_action(MailAction::SetStarred(true), 4)
+        .unwrap();
+    assert!(
+        mailbox
+            .finish_mark_read(&read, Ok(()))
+            .unwrap()
+            .next_action
+            .is_none()
+    );
+    assert_eq!(mailbox.finish_action(&star, Ok(())), Ok(None));
+    assert!(mailbox.selected_summary().unwrap().starred);
+}
+
+#[tokio::test]
+async fn delayed_remote_reads_finish_before_explicit_unread_requests() {
+    use ruston_core::transport::HttpClient;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn send(http: &HttpClient, action: &ActionRequest) {
+        let MailAction::SetUnread(unread) = action.action else {
+            panic!("expected read action")
+        };
+        let ids = [action.row_id.clone()];
+        let result = match action.kind {
+            SummaryKind::Conversation => {
+                ruston_core::api::conversations::mark(http, !unread, &ids, "0").await
+            }
+            SummaryKind::Message if unread => {
+                ruston_core::api::messages::mark_unread(http, &ids).await
+            }
+            SummaryKind::Message => ruston_core::api::messages::mark_read(http, &ids).await,
+        };
+        result.unwrap();
+    }
+
+    for kind in [SummaryKind::Conversation, SummaryKind::Message] {
+        let server = MockServer::start().await;
+        let remote = Arc::new(Mutex::new(Vec::new()));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let resource = match kind {
+            SummaryKind::Conversation => "conversations",
+            SummaryKind::Message => "messages",
+        };
+        for unread in [false, true] {
+            let op = if unread { "unread" } else { "read" };
+            let mut body = serde_json::json!({"IDs": ["a"]});
+            if unread && kind == SummaryKind::Conversation {
+                body["LabelID"] = "0".into();
+            }
+            let remote = remote.clone();
+            let started = started.clone();
+            Mock::given(method("PUT"))
+                .and(path(format!("/mail/v4/{resource}/{op}")))
+                .and(body_json(body))
+                .respond_with(move |_: &wiremock::Request| {
+                    remote.lock().unwrap().push(unread);
+                    let response =
+                        ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000}));
+                    if unread {
+                        response
+                    } else {
+                        started.notify_one();
+                        response.set_delay(Duration::from_millis(100))
+                    }
+                })
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut mailbox = opened_unread(&["a"], "a");
+            mailbox.conversations[0].kind = kind;
+            let read = mailbox.start_mark_read(3).unwrap();
+            let http = HttpClient::new(server.uri(), "Other");
+            let pending = tokio::spawn({
+                let read = read.clone();
+                async move {
+                    send(&http, &read).await;
+                    http
+                }
+            });
+            started.notified().await;
+            assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
+            assert_eq!(*remote.lock().unwrap(), [false]);
+
+            let http = pending.await.unwrap();
+            let completion = mailbox.finish_mark_read(&read, Ok(())).unwrap();
+            let unread = completion
+                .next_action
+                .expect("only a confirmed read releases the next request");
+            send(&http, &unread).await;
+            mailbox.finish_action(&unread, Ok(())).unwrap();
+
+            assert_eq!(*remote.lock().unwrap(), [false, true]);
+            assert!(mailbox.selected_summary().unwrap().unread);
+            assert_eq!(
+                mailbox.finish_mark_read(&read, Ok(())),
+                Ok(ReadCompletion::default())
+            );
+            server.verify().await;
+        })
+        .await
+        .expect("read mutation sequence must complete");
+    }
+}
+
+#[test]
 fn explicit_unread_wins_over_an_automatic_read() {
     let mut mailbox = opened_unread(&["a"], "a");
     let read = mailbox.start_mark_read(3).unwrap();
-    let unread = mailbox
-        .start_action(MailAction::SetUnread(true), 4)
-        .unwrap();
+    assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
 
-    assert_eq!(mailbox.finish_mark_read(&read, Ok(())), Ok(false));
-    assert!(mailbox.selected_summary().unwrap().unread);
+    let completion = mailbox.finish_mark_read(&read, Ok(())).unwrap();
+    assert!(completion.changed);
+    assert!(!mailbox.selected_summary().unwrap().unread);
+    let unread = completion
+        .next_action
+        .expect("the explicit action is now ready");
+    assert_eq!(unread.id, 4);
+    assert_eq!(unread.action, MailAction::SetUnread(true));
     assert_eq!(mailbox.finish_action(&unread, Ok(())), Ok(None));
     assert!(mailbox.selected_summary().unwrap().unread);
 }
@@ -1531,7 +1770,10 @@ fn reads_after_a_folder_switch_change_nothing() {
         }),
     );
 
-    assert_eq!(mailbox.finish_mark_read(&request, Ok(())), Ok(false));
+    assert_eq!(
+        mailbox.finish_mark_read(&request, Ok(())),
+        Ok(ReadCompletion::default())
+    );
     assert!(mailbox.conversations()[0].unread);
 
     let refresh = mailbox
@@ -1565,7 +1807,7 @@ fn automatic_refresh_waits_for_pending_mail_changes() {
 
     let read = mailbox.start_mark_read(3).unwrap();
     assert!(!mailbox.auto_refresh_available());
-    assert_eq!(mailbox.finish_mark_read(&read, Ok(())), Ok(true));
+    assert!(mailbox.finish_mark_read(&read, Ok(())).unwrap().changed);
 
     let action = mailbox
         .start_action(MailAction::SetStarred(true), 4)

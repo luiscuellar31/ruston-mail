@@ -45,6 +45,13 @@ pub struct ActionRequest {
     pub action: MailAction,
 }
 
+/// Confirmed automatic read and an explicit action now ready to send.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReadCompletion {
+    pub changed: bool,
+    pub next_action: Option<ActionRequest>,
+}
+
 /// A move the user can take back: the row, and where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UndoMove {
@@ -177,8 +184,8 @@ pub struct Mailbox {
     action_error: Option<MailboxError>,
     /// The last move, while it can still be taken back.
     undo: Option<UndoMove>,
-    /// Automatic reads in flight, by row, so each response only affects its
-    /// own row and never blocks the action toolbar.
+    /// Automatic reads in flight, by row. Explicit read mutations on the same
+    /// row wait here without blocking independent rows or other action kinds.
     pending_reads: HashMap<String, RequestId>,
 }
 
@@ -762,7 +769,12 @@ impl Mailbox {
             return None;
         };
         let row = self.row(reader.conversation_id())?;
-        if !row.unread || self.pending_reads.contains_key(&row.id) {
+        if !row.unread
+            || self.pending_reads.contains_key(&row.id)
+            || self.action_request.as_ref().is_some_and(|action| {
+                action.row_id == row.id && matches!(action.action, MailAction::SetUnread(_))
+            })
+        {
             return None;
         }
         let (row_id, kind) = (row.id.clone(), row.kind);
@@ -780,21 +792,38 @@ impl Mailbox {
         Some(request)
     }
 
-    /// Applies a confirmed automatic read. Returns whether the row changed.
-    /// Stale or failed responses leave it unread, so "Mark read" still works.
+    /// Applies a confirmed automatic read and releases a queued explicit read
+    /// mutation only after that confirmation. Stale responses release nothing.
+    /// A failed predecessor also fails its queued action: a timed-out request
+    /// might still be applied remotely, so it is unsafe to send its successor.
     pub fn finish_mark_read(
         &mut self,
         request: &ActionRequest,
         result: Result<(), MailboxError>,
-    ) -> Result<bool, MailboxError> {
+    ) -> Result<ReadCompletion, MailboxError> {
         if self.pending_reads.get(&request.row_id) != Some(&request.id) {
-            return Ok(false);
+            return Ok(ReadCompletion::default());
         }
         self.pending_reads.remove(&request.row_id);
-        result?;
+        let next_action = self
+            .action_request
+            .as_ref()
+            .filter(|action| {
+                action.row_id == request.row_id && matches!(action.action, MailAction::SetUnread(_))
+            })
+            .cloned();
+        if let Err(error) = result {
+            if let Some(action) = next_action {
+                let _ = self.finish_action(&action, Err(error));
+            }
+            return Err(error);
+        }
         self.invalidate_listings();
         if request.folder != self.folder {
-            return Ok(false);
+            return Ok(ReadCompletion {
+                changed: false,
+                next_action,
+            });
         }
 
         let mut found = false;
@@ -803,7 +832,10 @@ impl Mailbox {
             found = true;
         }
 
-        Ok(found)
+        Ok(ReadCompletion {
+            changed: found,
+            next_action,
+        })
     }
 
     /// The move the user can still take back, if any.
@@ -839,8 +871,9 @@ impl Mailbox {
         }
     }
 
-    /// Starts an action on the selected row. Only one action runs at a time,
-    /// and none while the list itself is loading.
+    /// Accepts an action on the selected row. Returns it only when ready to
+    /// send; a read mutation waits for an automatic read already in flight.
+    /// Only one explicit action is pending, and none starts while loading.
     pub fn start_action(
         &mut self,
         action: MailAction,
@@ -854,7 +887,8 @@ impl Mailbox {
     }
 
     /// Starts an action on a row by name, for rows the list no longer shows,
-    /// such as one being moved back where it came from.
+    /// such as one being moved back where it came from. Like `start_action`,
+    /// returns a request only when ready to send.
     pub fn start_action_on(
         &mut self,
         row_id: String,
@@ -877,12 +911,10 @@ impl Mailbox {
         self.action_error = None;
         // Only the last move can be taken back, and only until the next one.
         self.undo = None;
-        // An explicit read or unread wins over an automatic read in flight.
-        if matches!(request.action, MailAction::SetUnread(_)) {
-            self.pending_reads.remove(&request.row_id);
-        }
+        let wait_for_read = matches!(request.action, MailAction::SetUnread(_))
+            && self.pending_reads.contains_key(&request.row_id);
         self.action_request = Some(request.clone());
-        Some(request)
+        (!wait_for_read).then_some(request)
     }
 
     /// Applies a current action response and returns the next row or error.

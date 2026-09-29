@@ -36,6 +36,16 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`app/mailbox.rs`](../src/app/mailbox.rs) owns folder and search pagination.
   Loaded folders keep their rows, ID index, and page cursor together when
   cached; older pages append in date order, while overlapping dates are merged.
+  It also orders read mutations by row. An explicit read/unread action accepted
+  during an automatic read remains in the existing single action slot until
+  that read succeeds. Its completion returns the next request to `App`, which
+  creates the asynchronous effect only then. A failed or timed-out predecessor
+  fails the queued action visibly instead of sending it with uncertain remote
+  ordering. Automatic reads cannot start while an explicit read mutation on the
+  same row is pending; other rows and action kinds keep their existing behavior.
+  Stale or duplicate completions never release a queued request. Successful
+  automatic reads still update local state, so a later explicit failure does
+  not hide an already confirmed read.
 - [`src/runtime.rs`](../src/runtime.rs) runs asynchronous effects off the UI
   thread and sends their results back as messages. UI drawing does not wait for
   network operations.

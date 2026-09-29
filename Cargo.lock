@@ -5284,6 +5284,7 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "url",
+ "wiremock",
  "zeroize",
 ]
 

@@ -48,6 +48,10 @@ The reader can:
 - Add or remove a custom label.
 - Undo the latest move while its notice remains visible.
 
+If an automatic read is still pending, **Mark unread** waits for it to succeed
+before applying your choice. If that read fails or times out, the pending action
+reports an error; it is not shown as a successful change.
+
 Ruston Mail does not permanently delete mail. It also cannot create, rename, or
 remove folders and labels yet.
 
