@@ -2066,6 +2066,135 @@ fn answering_a_message_that_is_not_there_opens_nothing() {
     assert!(app.compose().is_none());
 }
 
+fn inspection_page(app: &App, count: usize) -> ConversationPage {
+    let template = app
+        .mailbox()
+        .unwrap()
+        .visible_conversations()
+        .next()
+        .unwrap();
+    let conversations: Vec<_> = (0..count)
+        .map(|i| ConversationSummary {
+            id: format!("candidate-{i}"),
+            ..template.clone()
+        })
+        .collect();
+    ConversationPage {
+        inspect_candidates: conversations.iter().map(|row| row.id.clone()).collect(),
+        conversations,
+        total: count as u32,
+    }
+}
+
+#[test]
+fn inspection_candidates_do_not_spawn_an_unbounded_number_of_tasks() {
+    let mut app = loaded_demo_app();
+    let mut page = inspection_page(&app, 100);
+    page.inspect_candidates
+        .extend(page.inspect_candidates.clone());
+    let _ = app.update(Message::RefreshMailbox);
+    let request = app.last_request - 1;
+    let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
+    assert_eq!(effects.units(), 4);
+}
+
+#[test]
+fn stale_page_response_does_not_start_inspections() {
+    let mut app = loaded_demo_app();
+    let page = inspection_page(&app, 2);
+    let effects = app.update(Message::ConversationsLoaded(0, Ok(page)));
+    assert_eq!(effects.units(), 0);
+}
+
+#[test]
+fn inspection_queue_drains_with_bounded_deduplicated_work() {
+    let mut app = loaded_demo_app();
+    let mut page = inspection_page(&app, 100);
+    page.inspect_candidates
+        .extend(page.inspect_candidates.clone());
+    let _ = app.update(Message::RefreshMailbox);
+    let request = app.last_request - 1;
+    let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
+    let mut running: std::collections::VecDeque<_> = effects.into_iter().collect();
+    let mut completed = std::collections::HashSet::new();
+    while let Some(effect) = running.pop_front() {
+        let Effect::Future(future) = effect else {
+            panic!("expected an inspection")
+        };
+        let message = futures::executor::block_on(future);
+        let Message::ThreadInspected {
+            conversation_id, ..
+        } = &message
+        else {
+            panic!("expected an inspection result");
+        };
+        assert!(
+            completed.insert(conversation_id.clone()),
+            "duplicate candidate"
+        );
+        let next = app.update(message.clone());
+        assert!(next.units() <= 1);
+        // A duplicate completion cannot release another slot or launch work.
+        assert_eq!(app.update(message).units(), 0);
+        running.extend(next.into_iter());
+        assert!(running.len() <= 4);
+    }
+    assert_eq!(completed.len(), 50, "overflow must keep Proton grouping");
+}
+
+#[test]
+fn inspections_are_cancelled_when_the_context_changes() {
+    for transition in [
+        Message::SelectFolder(sys(MailFolder::Sent)),
+        Message::SearchSubmitted,
+        Message::RefreshMailbox,
+        Message::Logout,
+    ] {
+        let mut app = loaded_demo_app();
+        let effects = app.inspect_candidates(vec!["demo-0".into()]);
+        let request = app.last_request;
+        let Effect::Future(future) = effects.into_iter().next().unwrap() else {
+            panic!("expected an inspection");
+        };
+        if matches!(transition, Message::SearchSubmitted) {
+            let _ = app.update(Message::SearchChanged("mail".into()));
+        }
+        let _ = app.update(transition);
+        let mut message = futures::executor::block_on(future);
+        // Even a success or session error already queued before cancellation
+        // must be discarded, without starting the next candidate.
+        let Message::ThreadInspected { result, .. } = &mut message else {
+            panic!("expected an inspection result");
+        };
+        *result = Err(MailboxError::SessionExpired);
+        let expected_auth = app.auth_state.clone();
+        assert_eq!(app.update(message).units(), 0);
+        assert_eq!(app.auth_state, expected_auth);
+        assert!(!app.inspections.finish(request, "demo-0"));
+    }
+}
+
+#[test]
+fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
+    let mut app = loaded_demo_app();
+    let _ = app.inspect_candidates(vec!["demo-0".into()]);
+    let old_request = app.last_request;
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
+    let _ = app.update(Message::SelectFolder(Folder::INBOX));
+    let _ = app.inspect_candidates(vec!["demo-0".into()]);
+    let current_request = app.last_request;
+    let effects = app.update(Message::ThreadInspected {
+        epoch: app.session_epoch,
+        request: old_request,
+        folder: Folder::INBOX,
+        conversation_id: "demo-0".into(),
+        result: Err(MailboxError::SessionExpired),
+    });
+    assert_eq!(effects.units(), 0);
+    assert!(matches!(app.auth_state, AuthState::Authenticated { .. }));
+    assert!(app.inspections.finish(current_request, "demo-0"));
+}
+
 #[test]
 fn conversations_loaded_with_candidates_starts_inspection_effects() {
     let mut app = loaded_demo_app();
@@ -2091,13 +2220,16 @@ fn conversations_loaded_with_candidates_starts_inspection_effects() {
     };
 
     let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
-    assert_eq!(effects.units(), 2);
+    // Only a candidate present in the accepted listing may be inspected.
+    assert_eq!(effects.units(), 1);
 }
 
 #[test]
 fn thread_inspected_splits_conversation_when_successful() {
     let mut app = loaded_demo_app();
     let epoch = app.session_epoch;
+    let _ = app.inspect_candidates(vec!["demo-0".into()]);
+    let request = app.last_request;
 
     let split_rows = vec![
         ConversationSummary {
@@ -2130,6 +2262,7 @@ fn thread_inspected_splits_conversation_when_successful() {
 
     let _ = app.update(Message::ThreadInspected {
         epoch,
+        request,
         folder: Folder::INBOX,
         conversation_id: "demo-0".into(),
         result: Ok(Some(split_rows)),
@@ -2150,6 +2283,8 @@ fn thread_inspected_splits_conversation_when_successful() {
 fn thread_inspected_stale_epoch_or_folder_is_ignored() {
     let mut app = loaded_demo_app();
     let stale_epoch = app.session_epoch + 99;
+    let _ = app.inspect_candidates(vec!["demo-0".into()]);
+    let request = app.last_request;
 
     let split_rows = vec![ConversationSummary {
         id: "split-ignored".into(),
@@ -2168,6 +2303,7 @@ fn thread_inspected_stale_epoch_or_folder_is_ignored() {
     // Wrong epoch
     let _ = app.update(Message::ThreadInspected {
         epoch: stale_epoch,
+        request,
         folder: Folder::INBOX,
         conversation_id: "demo-0".into(),
         result: Ok(Some(split_rows.clone())),
@@ -2185,6 +2321,7 @@ fn thread_inspected_stale_epoch_or_folder_is_ignored() {
     // Wrong folder
     let _ = app.update(Message::ThreadInspected {
         epoch: app.session_epoch,
+        request,
         folder: Folder::System(crate::mail::MailFolder::Trash),
         conversation_id: "demo-0".into(),
         result: Ok(Some(split_rows)),

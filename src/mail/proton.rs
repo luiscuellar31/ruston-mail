@@ -15,7 +15,6 @@ use ruston_core::{
 };
 use secrecy::SecretString;
 
-use super::MailAction;
 use super::outgoing::{Kind, Outgoing, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
@@ -23,12 +22,10 @@ use super::{
     MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
     SummaryKind, html,
 };
+use super::{INSPECTION_CONCURRENCY, MailAction};
 
 /// Conversations requested per page from Proton.
 pub const PAGE_SIZE: u32 = 50;
-
-/// Maximum number of background metadata inspection requests in flight simultaneously.
-const METADATA_CONCURRENCY: usize = 4;
 
 /// Longest wait for any Proton request a view is waiting on. Without it a
 /// stuck call leaves the view loading forever, with no way back.
@@ -40,7 +37,7 @@ const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(120);
 /// message. It is given longer than a request that only reads.
 const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Shared deadline for page metadata inspection; timeouts keep Proton grouping.
+/// Per-inspection deadline, including semaphore wait; timeouts keep Proton grouping.
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
 const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
@@ -234,23 +231,17 @@ impl ProtonMailService {
         conversation_id: &str,
         folder: &Folder,
     ) -> Result<Option<Vec<ConversationSummary>>, MailboxError> {
-        let _permit = self
-            .inspection_limiter
-            .acquire()
-            .await
-            .map_err(|_| MailboxError::Unavailable)?;
-
-        let inspection = tokio::time::timeout(
+        let inspection = limited_inspection(
+            &self.inspection_limiter,
             INSPECTION_BUDGET,
             self.client.conversation_messages(conversation_id),
         )
-        .await
-        .ok();
+        .await;
 
-        match inspection.map(|res| res.map_err(map_mailbox_error)) {
-            Some(Ok(messages)) => Ok(inspect_messages(messages, folder, &self.own_addresses)),
-            Some(Err(MailboxError::SessionExpired)) => Err(MailboxError::SessionExpired),
-            Some(Err(_)) | None => Ok(None),
+        match inspection {
+            Ok(messages) => Ok(inspect_messages(messages, folder, &self.own_addresses)),
+            Err(MailboxError::SessionExpired) => Err(MailboxError::SessionExpired),
+            Err(_) => Ok(None),
         }
     }
 
@@ -469,9 +460,27 @@ impl ProtonMailService {
             client,
             email,
             own_addresses,
-            inspection_limiter: Arc::new(Semaphore::new(METADATA_CONCURRENCY)),
+            inspection_limiter: Arc::new(Semaphore::new(INSPECTION_CONCURRENCY)),
         }
     }
+}
+
+/// Admission and request share a deadline; dropping this future releases the
+/// permit and the request, even when cancelled before admission.
+async fn limited_inspection<T>(
+    limiter: &Semaphore,
+    within: Duration,
+    call: impl Future<Output = ruston_core::Result<T>>,
+) -> Result<T, MailboxError> {
+    tokio::time::timeout(within, async {
+        let _permit = limiter
+            .acquire()
+            .await
+            .map_err(|_| MailboxError::Unavailable)?;
+        call.await.map_err(map_mailbox_error)
+    })
+    .await
+    .map_err(|_| MailboxError::Unavailable)?
 }
 
 /// Runs one Proton request under `REQUEST_TIMEOUT`. A call that outlives it
@@ -951,6 +960,57 @@ mod tests {
     use ruston_core::model::ConversationLabel;
 
     use super::*;
+
+    #[tokio::test]
+    async fn inspection_deadline_includes_waiting_for_a_permit() {
+        let limiter = Semaphore::new(1);
+        let _permit = limiter.acquire().await.unwrap();
+        let called = AtomicBool::new(false);
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            limited_inspection(&limiter, Duration::from_millis(20), async {
+                called.store(true, Ordering::SeqCst);
+                Ok(())
+            }),
+        )
+        .await
+        .expect("admission must also have a deadline");
+        assert_eq!(result, Err(MailboxError::Unavailable));
+        assert!(!called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cancelled_inspection_releases_request_and_permit() {
+        use futures::FutureExt;
+
+        let limiter = Semaphore::new(1);
+        let client = Arc::new(());
+        let weak = Arc::downgrade(&client);
+        let mut inspection = Box::pin(limited_inspection(
+            &limiter,
+            INSPECTION_BUDGET,
+            async move {
+                let _client = client;
+                std::future::pending::<ruston_core::Result<()>>().await
+            },
+        ));
+        assert!(inspection.as_mut().now_or_never().is_none());
+        assert_eq!(limiter.available_permits(), 0);
+        drop(inspection);
+        assert_eq!(limiter.available_permits(), 1);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[tokio::test]
+    async fn inspection_preserves_expired_session_errors() {
+        let limiter = Semaphore::new(1);
+        let result = limited_inspection(&limiter, INSPECTION_BUDGET, async {
+            Err::<(), _>(Error::Unauthorized)
+        })
+        .await;
+        assert_eq!(result, Err(MailboxError::SessionExpired));
+        assert_eq!(limiter.available_permits(), 1);
+    }
 
     fn person(name: &str, address: &str) -> Recipient {
         Recipient {

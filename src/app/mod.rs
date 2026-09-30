@@ -1,6 +1,7 @@
 mod auth;
 mod compose;
 mod effect;
+mod inspection;
 mod keys;
 mod layout;
 mod mailbox;
@@ -8,6 +9,9 @@ mod reader;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use futures::future::Abortable;
+use inspection::Inspections;
 
 use crate::downloads::{self, SaveError};
 use crate::settings::{Appearance, ComposePlacement, Panels, Settings, StartFolder, Window};
@@ -78,6 +82,7 @@ pub enum Message {
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
     ThreadInspected {
         epoch: SessionEpoch,
+        request: RequestId,
         folder: Folder,
         conversation_id: String,
         result: Result<Option<Vec<ConversationSummary>>, MailboxError>,
@@ -172,6 +177,7 @@ pub struct App {
     /// never mutate another session.
     session_epoch: SessionEpoch,
     last_request: RequestId,
+    inspections: Inspections,
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
     folders: Vec<Folder>,
@@ -222,6 +228,7 @@ impl App {
             mailbox: None,
             session_epoch: 0,
             last_request: 0,
+            inspections: Inspections::default(),
             folders: Vec::new(),
             settings,
             settings_revision: 0,
@@ -244,6 +251,7 @@ impl App {
     }
 
     fn advance_session_epoch(&mut self) {
+        self.inspections.cancel();
         self.session_epoch = self
             .session_epoch
             .checked_add(1)
@@ -422,8 +430,18 @@ impl App {
             Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),
             Message::ConversationsLoaded(request, result) => {
-                let candidates = match &result {
-                    Ok(page) => page.inspect_candidates.clone(),
+                if !matches!(self.auth_state, AuthState::Authenticated { .. })
+                    || !self.mailbox.as_ref().is_some_and(|mailbox| {
+                        matches!(mailbox.status(),
+                            ListStatus::Loading(id) | ListStatus::Refreshing(id) | ListStatus::LoadingMore(id)
+                            if id == request)
+                    })
+                {
+                    return Effects::none();
+                }
+                let mut result = result;
+                let candidates = match &mut result {
+                    Ok(page) => std::mem::take(&mut page.inspect_candidates),
                     Err(_) => Vec::new(),
                 };
                 let error = self
@@ -450,11 +468,18 @@ impl App {
             }
             Message::ThreadInspected {
                 epoch,
+                request,
                 folder,
                 conversation_id,
                 result,
             } => {
-                if !self.is_current_session(epoch) {
+                if !self.is_current_session(epoch)
+                    || !self
+                        .mailbox
+                        .as_ref()
+                        .is_some_and(|mailbox| mailbox.folder() == &folder)
+                    || !self.inspections.finish(request, &conversation_id)
+                {
                     return Effects::none();
                 }
                 match result {
@@ -468,6 +493,7 @@ impl App {
                         self.handle_mailbox_error(Some(error));
                     }
                 }
+                return self.start_inspections();
             }
             Message::ConversationLoaded(request, result) => {
                 let error = self
@@ -1019,6 +1045,14 @@ impl App {
     }
 
     fn select_folder(&mut self, folder: Folder) -> Effects {
+        if matches!(self.auth_state, AuthState::Authenticated { .. })
+            && self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.folder() != &folder)
+        {
+            self.inspections.cancel();
+        }
         self.showing_settings = false;
         self.pending_link = None;
         self.saved_attachment = None;
@@ -1042,6 +1076,7 @@ impl App {
             return Effects::none();
         };
 
+        self.inspections.cancel();
         self.fetch_search(request)
     }
 
@@ -1066,6 +1101,10 @@ impl App {
         };
         let page = mailbox.refresh(page_request);
         let counts = mailbox.refresh_counts(counts_request);
+
+        if page.is_some() {
+            self.inspections.cancel();
+        }
 
         Effects::batch([self.fetch_page(page), self.fetch_counts(counts)])
     }
@@ -1110,32 +1149,62 @@ impl App {
         )
     }
 
-    fn inspect_candidates(&self, candidates: Vec<String>) -> Effects {
+    fn inspect_candidates(&mut self, candidates: Vec<String>) -> Effects {
+        let Some(mailbox) = self.mailbox.as_ref() else {
+            return Effects::none();
+        };
+        if mailbox.search_results().is_some() {
+            return Effects::none();
+        }
+        self.inspections
+            .enqueue(candidates.into_iter().filter(|id| mailbox.has_row(id)));
+        self.start_inspections()
+    }
+
+    fn start_inspections(&mut self) -> Effects {
+        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+            return Effects::none();
+        }
         let (Some(backend), Some(mailbox)) = (self.backend.clone(), self.mailbox.as_ref()) else {
             return Effects::none();
         };
         let epoch = self.session_epoch;
         let folder = mailbox.folder().clone();
-
-        Effects::batch(candidates.into_iter().map(|id| {
+        let mut effects = Vec::new();
+        while let Some((id, registration)) = self.inspections.start(self.last_request + 1) {
+            let request = self.next_request();
+            // A queued row may have been moved or removed before its turn.
+            if !self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.has_row(&id))
+            {
+                self.inspections.finish(request, &id);
+                continue;
+            }
             let backend = backend.clone();
             let target_folder = folder.clone();
             let callback_folder = folder.clone();
             let conversation_id = id.clone();
-            Effects::perform(
+            let future = Abortable::new(
                 async move {
                     backend
                         .inspect_conversation(&conversation_id, &target_folder)
                         .await
                 },
-                move |result| Message::ThreadInspected {
+                registration,
+            );
+            effects.push(Effects::perform(future, move |result| {
+                Message::ThreadInspected {
                     epoch,
+                    request,
                     folder: callback_folder,
                     conversation_id: id,
-                    result,
-                },
-            )
-        }))
+                    result: result.unwrap_or(Ok(None)),
+                }
+            }));
+        }
+        Effects::batch(effects)
     }
 
     /// Asks once for the folders the account made. They change rarely, so

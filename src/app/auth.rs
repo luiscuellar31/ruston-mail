@@ -301,6 +301,7 @@ impl App {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
             return Effects::none();
         }
+        self.inspections.cancel();
         let service = match &self.backend {
             Some(MailBackend::Proton(service)) => service.clone(),
             // Leaving demo mode has no Proton session to revoke.

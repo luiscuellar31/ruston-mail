@@ -33,6 +33,17 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine.
+- [`app/inspection.rs`](../src/app/inspection.rs) bounds best-effort conversation
+  inspection to 50 distinct candidate IDs including at most four running tasks.
+  Waiting IDs retain no backend or task; completion admits the next candidate.
+  Only accepted page responses enqueue work, and rows removed before admission
+  are skipped. Folder changes, server search, accepted refreshes, and sign-out
+  cancel running futures and clear waiting IDs; dropping the owner does too.
+  Completion must match its session, folder, and unique running request before
+  applying results or releasing a slot. Cancelled responses cannot affect a
+  later visit to the same folder. The Proton adapter's 15-second deadline covers
+  both semaphore admission and the metadata request. Overflow, timeout, and
+  non-authentication failures preserve Proton's grouping.
 - [`app/mailbox.rs`](../src/app/mailbox.rs) owns folder and search pagination.
   Loaded folders keep their rows, ID index, and page cursor together when
   cached; older pages append in date order, while overlapping dates are merged.

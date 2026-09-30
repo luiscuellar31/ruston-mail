@@ -8,6 +8,9 @@ mod threading;
 
 use std::sync::Arc;
 
+/// Shared bound for scheduled inspections and their backend requests.
+pub(crate) const INSPECTION_CONCURRENCY: usize = 4;
+
 pub use model::{
     BlockKind, ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder,
     MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError,

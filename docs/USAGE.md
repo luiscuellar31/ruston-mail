@@ -35,6 +35,11 @@ Messages in a conversation appear oldest first. The newest message starts open;
 older messages and quoted replies start folded. These defaults can be changed in
 Settings.
 
+Ruston checks some grouped conversations in the background to separate repeated
+incoming messages. These checks are limited and cancelled when you change
+folders, submit a search, refresh, or sign out. Conversations keep Proton's
+grouping when a check cannot run or finish.
+
 HTML mail is converted to native text and layout. Headings, lists, links, basic
 formatting, and quotes remain, but scripts and remote content do not run. Remote
 images appear as their description when one is available.
