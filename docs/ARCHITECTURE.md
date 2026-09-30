@@ -224,6 +224,14 @@ unconfirmed because it may happen at any stage of the send pipeline.
   The public `Request` and `Body` types retain their existing constructors and
   representations. Requests sharing auth state coordinate refresh
   after a 401 and reuse successfully rotated tokens.
+  HTTP request diagnostics borrow the prepared URL's path rather than rebuilding
+  or logging the complete URL. They omit queries, origins, URL credentials and
+  fragments on every attempt. Core [`error.rs`](../crates/ruston-core/src/error.rs)
+  owns the shared `From<reqwest::Error>` conversion, which strips the attached
+  URL while preserving the error kind and source. This covers request building,
+  execution and response-body failures, so both frontends receive the same
+  sanitized HTTP errors. Paths can still contain resource IDs; other logging
+  targets and server-provided errors keep their existing behavior.
 - [`auth/`](../crates/ruston-core/src/auth/) handles sign-in;
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
   message cryptography. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes

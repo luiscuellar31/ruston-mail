@@ -313,13 +313,14 @@ impl HttpClient {
         if req.omit_auth {
             hdrs.remove(reqwest::header::AUTHORIZATION);
         }
-        let url = self.url(req);
         let body_kind = match &req.body {
             Body::Empty => "empty",
             Body::Json(_) => "json",
             Body::Bytes(_) => "bytes",
         };
-        tracing::debug!(target: "ruston_core::http", method = %req.method, %url, body = body_kind, hv = req.hv.is_some(), "→ request");
+        // Borrow the parsed path: never log queries, fragments or URL credentials,
+        // including ones supplied directly in Request.path or the base URL.
+        tracing::debug!(target: "ruston_core::http", method = %req.method, path = prepared.url().path(), body = body_kind, hv = req.hv.is_some(), "→ request");
         tracing::trace!(target: "ruston_core::http", headers = ?hdrs.keys().map(|k| k.as_str()).collect::<Vec<_>>(), "request headers");
 
         let mut attempt = prepared
@@ -568,6 +569,38 @@ mod tests {
 
     fn client(base: &str) -> HttpClient {
         HttpClient::new(base, "Other")
+    }
+
+    #[tokio::test]
+    async fn http_timeouts_omit_request_url_in_error_and_source() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+            .mount(&server)
+            .await;
+        let error = client(&server.uri())
+            .do_raw(
+                Request::get("/messages")
+                    .query("Keyword", "private-search")
+                    .timeout(Duration::from_millis(20)),
+            )
+            .await
+            .unwrap_err();
+        let Error::Http(http) = &error else {
+            panic!("expected HTTP timeout")
+        };
+        assert!(http.is_timeout());
+        assert!(http.url().is_none());
+        for rendered in [
+            error.to_string(),
+            format!("{error:?}"),
+            std::error::Error::source(&error).unwrap().to_string(),
+        ] {
+            assert!(!rendered.contains("private-search"));
+            assert!(!rendered.contains("Keyword"));
+            assert!(!rendered.contains(&server.uri()));
+        }
     }
 
     #[derive(Deserialize, Debug)]

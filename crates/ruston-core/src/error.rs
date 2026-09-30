@@ -66,9 +66,10 @@ pub enum Error {
     #[error("human verification required")]
     HumanVerification(HvChallenge),
 
-    /// A transport-level HTTP failure.
+    /// A transport-level HTTP failure. Conversion removes its attached URL so
+    /// displaying the error cannot expose request queries or URL credentials.
     #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[source] reqwest::Error),
 
     /// The response body exceeded the request's size limit.
     #[error("response exceeds the {limit} byte limit")]
@@ -158,6 +159,12 @@ pub enum Error {
     Other(String),
 }
 
+impl From<reqwest::Error> for Error {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(error.without_url())
+    }
+}
+
 /// Convenience exit-code mapping for any error (defaults to 1 for non-API).
 impl Error {
     /// Map this error to a CLI process exit code (defaults to 1 for non-API errors).
@@ -178,6 +185,44 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_conversion_removes_url_without_losing_error_kind_or_cause() {
+        let url = reqwest::Url::parse(
+            "https://user:private-password@example.com/messages?Keyword=private-search#private-fragment",
+        )
+        .unwrap();
+        let original = reqwest::Client::new()
+            .get("://invalid")
+            .build()
+            .unwrap_err()
+            .with_url(url);
+        assert!(original.is_builder());
+        assert!(original.url().is_some());
+        let cause = std::error::Error::source(&original).unwrap().to_string();
+        let error = Error::from(original);
+        let Error::Http(http) = &error else {
+            panic!("expected HTTP error")
+        };
+        assert!(
+            http.url().is_none(),
+            "HTTP errors must not retain request URLs"
+        );
+        assert!(http.is_builder());
+        assert_eq!(std::error::Error::source(http).unwrap().to_string(), cause);
+        assert!(std::error::Error::source(&error).is_some());
+        for rendered in [error.to_string(), format!("{error:?}")] {
+            for secret in [
+                "private-search",
+                "private-password",
+                "private-fragment",
+                "example.com",
+                "Keyword",
+            ] {
+                assert!(!rendered.contains(secret), "leaked URL data: {rendered}");
+            }
+        }
+    }
 
     fn api(status: u16) -> ApiError {
         ApiError {

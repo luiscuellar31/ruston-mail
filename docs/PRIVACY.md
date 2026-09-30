@@ -200,3 +200,14 @@ earlier remain. An interrupted process may leave an incomplete file.
 `RUSTON_DEBUG_HTTP=1` prints Proton request methods, paths, body kinds, status
 codes, response sizes, and timings to standard error. It does not print
 credentials, tokens, headers, request bodies, or response bodies.
+Request diagnostics use only the prepared URL's path; they omit its query
+entirely, including parameter names and values, as well as its origin, URL
+credentials, and fragment. Search terms and filters are still sent to Proton
+but do not appear in these events, including retry attempts. Core also removes
+the attached URL when converting a `reqwest` error, so displayed HTTP errors
+retain their failure kind and cause without that URL.
+
+Paths may contain resource IDs. This policy covers core's HTTP request events
+and its conversion of HTTP errors; it does not anonymize other core targets,
+server-provided error text, or dependency diagnostics enabled by the CLI's
+broader verbosity levels or `RUST_LOG`.
