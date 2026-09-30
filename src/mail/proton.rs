@@ -299,7 +299,8 @@ impl ProtonMailService {
             SendError::Unconfirmed,
             |error| match error {
                 Error::SendUnconfirmed { .. } => SendError::Unconfirmed,
-                other => SendError::Mailbox(map_mailbox_error(other)),
+                other => SendError::from_attachment(&other)
+                    .unwrap_or_else(|| SendError::Mailbox(map_mailbox_error(other))),
             },
         )
         .await

@@ -160,6 +160,16 @@ The CLI downloads and saves `--all` attachments one at a time. If a later
 attachment fails, files saved earlier in that command remain in the destination.
 The core API that returns all attachment bytes has a 128 MiB total limit.
 
+New outgoing local attachments have plaintext limits of 32 MiB per file and
+128 MiB combined. Ruston checks sizes before creating a draft and bounds the
+actual read even if a file changes. It reads and encrypts files on blocking
+workers, allowing at most two preparations or uploads per process. Plaintext
+buffers are zeroized after encryption; encrypted request buffers are shared
+across HTTP retries. Cancelling a send can leave a started blocking operation
+running until it finishes, but that operation retains its admission slot and
+cannot start uploading after cancellation. Forwarded attachments already on
+Proton are not read from local files and do not count toward these limits.
+
 ## CLI EML export
 
 The live CLI `export --out DIRECTORY` saves decrypted mail as reconstructed

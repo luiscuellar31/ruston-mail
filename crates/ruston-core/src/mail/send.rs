@@ -5,11 +5,163 @@ use crate::api;
 use crate::crypto::{self, SessionKeyMaterial, keys::AddressKeys};
 use crate::error::{Error, Result};
 use crate::model::enums::package_type;
-use crate::transport::Doer;
+use crate::transport::{Doer, Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_srp::{SRPAuth, SRPVerifierB64};
 use serde_json::{Map, Value, json};
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use tokio::sync::{Semaphore, SemaphorePermit};
+use zeroize::Zeroizing;
+
+/// Local maximum plaintext size of each newly attached file (32 MiB).
+pub const MAX_OUTGOING_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
+/// Local maximum combined plaintext size of newly attached files (128 MiB).
+pub const MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES: usize = 128 * 1024 * 1024;
+// Bound memory across concurrent clients and sends, including blocking work
+// that continues after its caller is cancelled. Sequential files share this cap.
+static ATTACHMENT_SLOTS: Semaphore = Semaphore::const_new(2);
+
+async fn attachment_work<T: Send + 'static>(
+    slots: &'static Semaphore,
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<(T, SemaphorePermit<'static>)> {
+    let permit = slots
+        .acquire()
+        .await
+        .map_err(|_| Error::Other("attachment worker unavailable".into()))?;
+    tokio::task::spawn_blocking(move || work().map(|value| (value, permit)))
+        .await
+        .map_err(|error| Error::Other(format!("attachment worker failed: {error}")))?
+}
+
+fn open_attachment(path: &Path) -> Result<(File, u64)> {
+    let unavailable = |source| Error::AttachmentUnavailable {
+        path: path.to_owned(),
+        source,
+    };
+    // Reject directories and special files before opening, then check the
+    // opened handle again so a replacement is not trusted by its old metadata.
+    let metadata = std::fs::metadata(path).map_err(unavailable)?;
+    if !metadata.is_file() {
+        return Err(unavailable(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "attachment must be a regular file",
+        )));
+    }
+    let file = File::open(path).map_err(unavailable)?;
+    let metadata = file.metadata().map_err(unavailable)?;
+    if !metadata.is_file() {
+        return Err(unavailable(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "attachment must be a regular file",
+        )));
+    }
+    Ok((file, metadata.len()))
+}
+
+fn check_attachment_size(size: u64, remaining: usize) -> Result<()> {
+    if size > MAX_OUTGOING_ATTACHMENT_BYTES as u64 {
+        return Err(Error::AttachmentTooLarge {
+            limit: MAX_OUTGOING_ATTACHMENT_BYTES,
+        });
+    }
+    if size > remaining as u64 {
+        return Err(Error::AttachmentBatchTooLarge {
+            limit: MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES,
+        });
+    }
+    Ok(())
+}
+
+/// Checks regular readable files and local size limits before creating a draft.
+/// Sending rechecks opened files and counts the bytes actually read, since a
+/// path or file length can change after this preflight. Inherited forwarded
+/// attachments are already on Proton and are not part of this local budget.
+pub async fn validate_attachments(paths: &[PathBuf]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let paths = paths.to_vec();
+    let check = move || {
+        let mut remaining = MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES;
+        for path in paths {
+            let (_, size) = open_attachment(&path)?;
+            check_attachment_size(size, remaining)?;
+            remaining -= size as usize;
+        }
+        Ok(())
+    };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let (_, _permit) = attachment_work(&ATTACHMENT_SLOTS, check).await?;
+    } else {
+        // Keep the desktop's preflight usable by synchronous executors too.
+        check()?;
+    }
+    Ok(())
+}
+
+fn read_attachment_bytes(
+    reader: impl Read,
+    size: u64,
+    remaining: usize,
+) -> Result<Zeroizing<Vec<u8>>> {
+    check_attachment_size(size, remaining)?;
+    let limit = MAX_OUTGOING_ATTACHMENT_BYTES.min(remaining);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(size as usize));
+    // Metadata is only a preflight. Read one extra byte to detect a growing
+    // file without ever loading its unbounded remainder.
+    reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    check_attachment_size(bytes.len() as u64, remaining)?;
+    Ok(bytes)
+}
+
+struct PreparedAttachment {
+    request: Request,
+    material: SessionKeyMaterial,
+    size: usize,
+    // Keep the slot until the multipart buffer is uploaded or dropped.
+    _permit: SemaphorePermit<'static>,
+}
+
+async fn prepare_attachment(
+    path: PathBuf,
+    addr: AddressKeys,
+    message_id: String,
+    remaining: usize,
+) -> Result<PreparedAttachment> {
+    let ((request, material, size), permit) = attachment_work(&ATTACHMENT_SLOTS, move || {
+        let (file, size) = open_attachment(&path)?;
+        let bytes = read_attachment_bytes(file, size, remaining)?;
+        let size = bytes.len();
+        // Instantiate the provider on this worker; its opaque types need not
+        // be moved between Tokio and the blocking pool.
+        let up = crypto::encrypt_attachment(&crypto::provider(), &addr, &bytes)?;
+        drop(bytes);
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("attachment");
+        let request = api::attachments::upload_request(
+            name,
+            &message_id,
+            "",
+            &guess_mime(&path),
+            &up.key_packet,
+            &up.data_packet,
+            &up.signature,
+        )?;
+        Ok((request, up.material, size))
+    })
+    .await?;
+    Ok(PreparedAttachment {
+        request,
+        material,
+        size,
+        _permit: permit,
+    })
+}
 
 /// Options for composing a message.
 #[derive(Debug, Default, Clone)]
@@ -28,7 +180,8 @@ pub struct SendOptions {
     pub body: String,
     /// Whether the body is HTML (otherwise plain text).
     pub html: bool,
-    /// File paths to attach.
+    /// Regular readable file paths to attach, limited to 32 MiB each and
+    /// 128 MiB combined. Files are checked again when read.
     pub attachments: Vec<PathBuf>,
     /// Unix delivery time for scheduled send.
     pub send_at: Option<i64>,
@@ -226,6 +379,7 @@ impl Client {
         forwarded: &(String, Vec<(String, String)>),
         eo: Option<&(String, String)>,
     ) -> Result<String> {
+        validate_attachments(&opts.attachments).await?;
         let provider = crypto::provider();
         let addr = match &opts.from {
             Some(e) => self.keys().address_for_email(e),
@@ -306,29 +460,16 @@ impl Client {
     ) -> Result<()> {
         // 2. upload attachments.
         let mut uploaded: Vec<Uploaded> = Vec::new();
+        let mut remaining = MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES;
         for path in &opts.attachments {
-            let bytes = std::fs::read(path)?;
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("attachment")
-                .to_string();
-            let mime = guess_mime(path);
-            let up = crypto::encrypt_attachment(provider, addr, &bytes)?;
-            let att_id = api::attachments::upload_attachment(
-                self.http(),
-                &name,
-                message_id,
-                "",
-                &mime,
-                &up.key_packet,
-                &up.data_packet,
-                &up.signature,
-            )
-            .await?;
+            let prepared =
+                prepare_attachment(path.clone(), addr.clone(), message_id.to_owned(), remaining)
+                    .await?;
+            remaining -= prepared.size;
+            let att_id = api::attachments::upload_prepared(self.http(), prepared.request).await?;
             uploaded.push(Uploaded {
                 id: att_id,
-                material: up.material,
+                material: prepared.material,
             });
         }
 
@@ -565,6 +706,231 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn attachment_path() -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ruston-outgoing-{}-{unique}.txt",
+            std::process::id()
+        ))
+    }
+
+    #[tokio::test]
+    async fn attachment_preflight_checks_individual_and_combined_limits() {
+        let path = attachment_path();
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_OUTGOING_ATTACHMENT_BYTES as u64).unwrap();
+        assert!(validate_attachments(&vec![path.clone(); 4]).await.is_ok());
+        assert!(
+            matches!(validate_attachments(&vec![path.clone(); 5]).await, Err(Error::AttachmentBatchTooLarge { limit }) if limit == MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES)
+        );
+        file.set_len(MAX_OUTGOING_ATTACHMENT_BYTES as u64 + 1)
+            .unwrap();
+        assert!(
+            matches!(validate_attachments(std::slice::from_ref(&path)).await, Err(Error::AttachmentTooLarge { limit }) if limit == MAX_OUTGOING_ATTACHMENT_BYTES)
+        );
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            matches!(validate_attachments(std::slice::from_ref(&path)).await, Err(Error::AttachmentUnavailable { path: missing, .. }) if missing == path)
+        );
+        assert!(matches!(
+            validate_attachments(&[std::env::temp_dir()]).await,
+            Err(Error::AttachmentUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn attachment_reads_enforce_actual_lengths_after_metadata_changes() {
+        let mut reader = std::io::Cursor::new(b"123456789");
+        let error = read_attachment_bytes(&mut reader, 0, 4).unwrap_err();
+        assert!(matches!(error, Error::AttachmentBatchTooLarge { .. }));
+        assert_eq!(
+            reader.position(),
+            5,
+            "do not read beyond the overflow sentinel"
+        );
+        let bytes = read_attachment_bytes(std::io::Cursor::new(b"1234"), 0, 4).unwrap();
+        assert_eq!(&**bytes, b"1234");
+        assert!(
+            read_attachment_bytes(std::io::empty(), 0, 0)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            read_attachment_bytes(
+                std::io::empty(),
+                MAX_OUTGOING_ATTACHMENT_BYTES as u64 + 1,
+                MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES
+            ),
+            Err(Error::AttachmentTooLarge { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_attachments_are_rejected_before_draft_creation() {
+        let server = MockServer::start().await;
+        let path = attachment_path();
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_OUTGOING_ATTACHMENT_BYTES as u64 + 1)
+            .unwrap();
+        let client = Client {
+            http: HttpClient::new(server.uri(), "Other"),
+            keys: crypto::keys::KeyStore {
+                user_keys: vec![],
+                addresses: vec![],
+            },
+            paths: crate::session::Paths::with_base(path.with_extension("session")),
+            profile: "test".into(),
+            session_uid: "test".into(),
+            cache_identity: crate::cache::CacheIdentity::new(&server.uri(), "outgoing-test")
+                .unwrap(),
+            store: std::sync::Arc::new(crate::session::MemoryStore::new()),
+            sender_cache: tokio::sync::Mutex::new(Default::default()),
+        };
+        let opts = SendOptions {
+            attachments: vec![path.clone()],
+            ..SendOptions::default()
+        };
+        assert!(matches!(
+            client.send(&opts).await,
+            Err(Error::AttachmentTooLarge { .. })
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn blocking_attachment_jobs_keep_their_slot_after_cancellation() {
+        // Isolate this saturation test from other tests preparing real files.
+        static SLOTS: Semaphore = Semaphore::const_new(2);
+        let current = std::thread::current().id();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let operation = tokio::spawn(attachment_work(&SLOTS, move || {
+            assert_ne!(std::thread::current().id(), current);
+            started.send(()).unwrap();
+            held.recv().unwrap();
+            Ok(())
+        }));
+        waiting.await.unwrap();
+        operation.abort();
+        assert!(operation.await.unwrap_err().is_cancelled());
+        let spare = SLOTS.acquire().await.unwrap();
+        let mut next = Box::pin(attachment_work(&SLOTS, || Ok(std::thread::current().id())));
+        assert!(
+            futures::poll!(&mut next).is_pending(),
+            "the detached worker still owns a slot"
+        );
+        release.send(()).unwrap();
+        let (worker, permit) = tokio::time::timeout(Duration::from_secs(5), next)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(worker, current);
+        drop(permit);
+        drop(spare);
+    }
+
+    #[tokio::test]
+    async fn prepared_attachment_packets_round_trip_and_keep_the_upload_slot() {
+        use proton_crypto::crypto::{
+            DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
+        };
+        let addr = tokio::task::spawn_blocking(|| {
+            let provider = crypto::provider();
+            let key = provider
+                .new_key_generator()
+                .with_user_id("Test", "sender@example.test")
+                .with_algorithm(KeyGeneratorAlgorithm::ECC)
+                .generate()
+                .unwrap();
+            let armored = provider
+                .private_key_export(&key, "test-passphrase", DataEncoding::Armor)
+                .unwrap();
+            AddressKeys {
+                address_id: "test-address".into(),
+                email: "sender@example.test".into(),
+                keys: vec![crypto::keys::StoredKey {
+                    armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+                    passphrase: secrecy::SecretString::from("test-passphrase"),
+                }],
+            }
+        })
+        .await
+        .unwrap();
+        let path = attachment_path();
+        let plain = b"attachment payload\x00\xfe";
+        std::fs::write(&path, plain).unwrap();
+        let prepared = prepare_attachment(
+            path.clone(),
+            addr.clone(),
+            "draft-1".into(),
+            MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES,
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.size, plain.len());
+        let crate::transport::Body::Bytes(body) = &prepared.request.body else {
+            panic!("expected buffered multipart")
+        };
+        let boundary = prepared
+            .request
+            .content_type
+            .as_ref()
+            .unwrap()
+            .split("boundary=")
+            .nth(1)
+            .unwrap();
+        let part = |name: &str| {
+            let marker = format!("name=\"{name}\"");
+            let start = body
+                .windows(marker.len())
+                .position(|bytes| bytes == marker.as_bytes())
+                .unwrap()
+                + marker.len();
+            let start = start
+                + body[start..]
+                    .windows(4)
+                    .position(|bytes| bytes == b"\r\n\r\n")
+                    .unwrap()
+                + 4;
+            let delimiter = format!("\r\n--{boundary}");
+            let end = start
+                + body[start..]
+                    .windows(delimiter.len())
+                    .position(|bytes| bytes == delimiter.as_bytes())
+                    .unwrap();
+            &body[start..end]
+        };
+        let decoded = crypto::decrypt_attachment(
+            &crypto::provider(),
+            &addr,
+            &STANDARD.encode(part("KeyPackets")),
+            part("DataPacket"),
+        )
+        .unwrap();
+        assert_eq!(decoded, plain);
+        assert!(!part("Signature").is_empty());
+        assert_eq!(part("MessageID"), b"draft-1");
+        // A ready request retains its admission slot while waiting for upload.
+        let spare = ATTACHMENT_SLOTS.acquire().await.unwrap();
+        let mut next = Box::pin(ATTACHMENT_SLOTS.acquire());
+        assert!(futures::poll!(&mut next).is_pending());
+        drop(prepared);
+        drop(
+            tokio::time::timeout(Duration::from_secs(5), next)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        drop(spare);
+        std::fs::remove_file(path).unwrap();
+    }
 
     struct OversizedResponse;
 

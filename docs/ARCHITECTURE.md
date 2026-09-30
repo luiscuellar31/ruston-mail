@@ -94,6 +94,25 @@ memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
 result returns to the app as a message.
 
+Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
+validation, shared by the desktop backend and all SDK/CLI send paths. New local
+attachments must be regular readable files, at most 32 MiB each and 128 MiB in
+total. Core validates sizes before creating a draft, then checks each opened
+handle and the actual bytes read against the remaining budget. A bounded read
+includes only one overflow byte, so a growing file cannot bypass the limit.
+Inherited forwarded attachments remain on Proton and are outside this local
+file budget. Reading, encryption, and multipart construction run together on a
+blocking worker. Plaintext is zeroized and dropped before constructing multipart;
+the encrypted intermediate is dropped before network upload. A process-wide
+semaphore admits at most two preparations or uploads across clients and sends.
+The worker owns its permit, and a prepared upload retains it until completion
+or cancellation, so detached blocking work cannot escape admission limits.
+Started filesystem or crypto work can continue after its caller is cancelled;
+it cannot resume the cancelled send pipeline or start its upload.
+Desktop Proton sends rely on that core preflight inside the existing send
+deadline, rather than checking files outside the timeout. The local demo backend
+uses the same validator before accepting a fictional send.
+
 If the final send request has no reliable success or explicit rejection, core
 [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) returns an unconfirmed
 outcome and does not try to delete the draft. The desktop leaves the
@@ -170,7 +189,13 @@ unconfirmed because it may happen at any stage of the send pipeline.
   complete view operations; the CLI uses the transport deadlines directly.
   The application's own safety limits are 32 MiB for ordinary responses and
   128 MiB for encrypted attachment responses. These are transport limits, not
-  Proton Mail attachment quotas. Requests sharing auth state coordinate refresh
+  Proton Mail attachment quotas. Complete attachment multipart uploads also
+  have a 128 MiB safety cap and reserve their final size once. The HTTP transport
+  moves raw buffers into a prepared reqwest request and shares its allocation
+  between attempts, including authentication, rate-limit, and verification
+  retries; it does not clone the byte vector or rebuild JSON on each attempt.
+  The public `Request` and `Body` types retain their existing constructors and
+  representations. Requests sharing auth state coordinate refresh
   after a 401 and reuse successfully rotated tokens.
 - [`auth/`](../crates/ruston-core/src/auth/) handles sign-in;
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles

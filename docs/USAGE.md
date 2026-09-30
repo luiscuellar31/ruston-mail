@@ -67,6 +67,12 @@ the new name instead.
 The app can reveal a saved attachment in the file manager. Use **Attach files**
 in the composer to add local files to an outgoing message.
 
+New local attachments are limited to 32 MiB per file and 128 MiB combined in
+both the desktop and CLI. These are Ruston's safety limits; Proton may impose
+additional limits. Files that become too large before upload are rejected too.
+The desktop keeps your message open and displays the size error. Forwarded
+attachments already stored on Proton do not count toward this local file limit.
+
 ## Writing
 
 Select **Write** for a new message. Recipient fields accept multiple addresses

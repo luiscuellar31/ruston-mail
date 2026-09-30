@@ -156,9 +156,37 @@ pub enum SendError {
     Unconfirmed,
     /// An attached file could not be found or read on disk.
     MissingAttachment(String),
+    /// A file exceeds core's local outgoing attachment size limit.
+    AttachmentTooLarge {
+        limit: usize,
+    },
+    /// The newly attached files exceed core's combined plaintext limit.
+    AttachmentTotalTooLarge {
+        limit: usize,
+    },
 }
 
 impl SendError {
+    pub(super) fn from_attachment(error: &ruston_core::Error) -> Option<Self> {
+        match error {
+            ruston_core::Error::AttachmentUnavailable { path, .. } => {
+                Some(Self::MissingAttachment(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Attachment")
+                        .to_owned(),
+                ))
+            }
+            ruston_core::Error::AttachmentTooLarge { limit } => {
+                Some(Self::AttachmentTooLarge { limit: *limit })
+            }
+            ruston_core::Error::AttachmentBatchTooLarge { limit } => {
+                Some(Self::AttachmentTotalTooLarge { limit: *limit })
+            }
+            _ => None,
+        }
+    }
+
     pub fn message(&self) -> Cow<'static, str> {
         match self {
             Self::DemoLimitReached => Cow::Borrowed(
@@ -179,6 +207,14 @@ impl SendError {
             Self::MissingAttachment(name) => {
                 Cow::Owned(format!("Attachment cannot be found: {name}"))
             }
+            Self::AttachmentTooLarge { limit } => Cow::Owned(format!(
+                "Each attachment must be at most {} MiB. The message was not sent.",
+                limit / (1024 * 1024)
+            )),
+            Self::AttachmentTotalTooLarge { limit } => Cow::Owned(format!(
+                "Attachments must total at most {} MiB. The message was not sent.",
+                limit / (1024 * 1024)
+            )),
         }
     }
 }
@@ -191,37 +227,17 @@ impl std::fmt::Display for SendError {
 
 impl std::error::Error for SendError {}
 
-/// Verifies that all attachments exist and can be read.
+/// Uses core's shared readability and size checks for outgoing attachments.
 ///
 /// Running this off the UI thread and off Tokio asynchronous worker threads
 /// prevents slow or hanging filesystems (e.g. NFS/SMB mounts) from stalling
 /// the application.
 pub async fn validate_attachments(attachments: &[PathBuf]) -> Result<(), SendError> {
-    if attachments.is_empty() {
-        return Ok(());
-    }
-
-    let paths = attachments.to_vec();
-    let check = move || {
-        for path in &paths {
-            if !path.is_file() || std::fs::File::open(path).is_err() {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Attachment");
-                return Err(SendError::MissingAttachment(name.to_owned()));
-            }
-        }
-        Ok(())
-    };
-
-    if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::task::spawn_blocking(check)
-            .await
-            .unwrap_or(Err(SendError::Mailbox(MailboxError::Service)))
-    } else {
-        check()
-    }
+    ruston_core::mail::send::validate_attachments(attachments)
+        .await
+        .map_err(|error| {
+            SendError::from_attachment(&error).unwrap_or(SendError::Mailbox(MailboxError::Service))
+        })
 }
 
 #[cfg(test)]
@@ -337,6 +353,53 @@ mod tests {
     async fn validate_attachments_accepts_existing_file() {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         assert!(validate_attachments(&[manifest]).await.is_ok());
+    }
+
+    #[test]
+    fn attachment_preflight_keeps_synchronous_executor_support() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        assert!(futures::executor::block_on(validate_attachments(&[manifest])).is_ok());
+    }
+
+    #[tokio::test]
+    async fn outgoing_size_errors_show_the_local_limits() {
+        use ruston_core::mail::send::{
+            MAX_OUTGOING_ATTACHMENT_BYTES, MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES,
+        };
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ruston-outgoing-limit-{}-{unique}",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_OUTGOING_ATTACHMENT_BYTES as u64 + 1)
+            .unwrap();
+        let error = validate_attachments(std::slice::from_ref(&path))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            SendError::AttachmentTooLarge {
+                limit: MAX_OUTGOING_ATTACHMENT_BYTES
+            }
+        );
+        assert!(error.message().contains("32 MiB"));
+        file.set_len(MAX_OUTGOING_ATTACHMENT_BYTES as u64).unwrap();
+        let error = validate_attachments(&vec![path.clone(); 5])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            SendError::AttachmentTotalTooLarge {
+                limit: MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES
+            }
+        );
+        assert!(error.message().contains("128 MiB"));
+        drop(file);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

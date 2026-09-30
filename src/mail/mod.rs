@@ -67,10 +67,13 @@ impl MailBackend {
 
     /// Sends through the active backend; demo messages remain local.
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
-        validate_attachments(&outgoing.attachments).await?;
         match self {
+            // Core validates files inside the Proton service's send deadline.
             Self::Proton(service) => service.send(outgoing).await,
-            Self::Demo(service) => service.send(outgoing, demo::now()),
+            Self::Demo(service) => {
+                validate_attachments(&outgoing.attachments).await?;
+                service.send(outgoing, demo::now())
+            }
         }
     }
 

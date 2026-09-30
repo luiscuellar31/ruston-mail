@@ -77,11 +77,28 @@ pub enum Error {
         limit: usize,
     },
 
-    /// A bulk attachment result exceeded its total size limit.
+    /// An attachment collection exceeded its combined plaintext size limit.
     #[error("attachments exceed the {limit} byte total limit")]
     AttachmentBatchTooLarge {
         /// Maximum accepted total plaintext size.
         limit: usize,
+    },
+
+    /// An outgoing attachment exceeded the local plaintext size limit.
+    #[error("attachment exceeds the {limit} byte limit")]
+    AttachmentTooLarge {
+        /// Maximum accepted plaintext size of one file.
+        limit: usize,
+    },
+
+    /// An outgoing attachment is unavailable or is not a regular file.
+    #[error("cannot read attachment {path}: {source}")]
+    AttachmentUnavailable {
+        /// The path selected by the sender.
+        path: std::path::PathBuf,
+        /// The filesystem error or invalid file type.
+        #[source]
+        source: std::io::Error,
     },
 
     /// The final send request may have succeeded, but its result was not confirmed.

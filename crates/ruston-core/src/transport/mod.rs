@@ -288,7 +288,27 @@ impl HttpClient {
         u
     }
 
-    async fn execute_once(&self, req: &Request, auth: &AuthState) -> Result<Response> {
+    /// Move byte buffers into reqwest once. Its buffered requests share their
+    /// body allocation when cloned for authentication, rate-limit or HV retries.
+    fn prepare_request(&self, req: &mut Request) -> Result<reqwest::Request> {
+        let builder = self
+            .client
+            .request(req.method.clone(), self.url(req))
+            .timeout(req.timeout);
+        let builder = match &mut req.body {
+            Body::Empty => builder,
+            Body::Json(v) => builder.body(serde_json::to_vec(v)?),
+            Body::Bytes(bytes) => builder.body(std::mem::take(bytes)),
+        };
+        Ok(builder.build()?)
+    }
+
+    async fn execute_once(
+        &self,
+        req: &Request,
+        prepared: &reqwest::Request,
+        auth: &AuthState,
+    ) -> Result<Response> {
         let mut hdrs = headers::build_headers(auth, req);
         if req.omit_auth {
             hdrs.remove(reqwest::header::AUTHORIZATION);
@@ -302,18 +322,12 @@ impl HttpClient {
         tracing::debug!(target: "ruston_core::http", method = %req.method, %url, body = body_kind, hv = req.hv.is_some(), "→ request");
         tracing::trace!(target: "ruston_core::http", headers = ?hdrs.keys().map(|k| k.as_str()).collect::<Vec<_>>(), "request headers");
 
-        let mut builder = self
-            .client
-            .request(req.method.clone(), &url)
-            .headers(hdrs)
-            .timeout(req.timeout);
-        builder = match &req.body {
-            Body::Empty => builder,
-            Body::Json(v) => builder.body(serde_json::to_vec(v)?),
-            Body::Bytes(b) => builder.body(b.clone()),
-        };
+        let mut attempt = prepared
+            .try_clone()
+            .ok_or_else(|| Error::Other("request body cannot be replayed".into()))?;
+        *attempt.headers_mut() = hdrs;
         let started = std::time::Instant::now();
-        let resp = builder.send().await?;
+        let resp = self.client.execute(attempt).await?;
         let status = resp.status().as_u16();
         let retry_after = resp
             .headers()
@@ -381,11 +395,12 @@ impl HttpClient {
             "RedirectURI": "https://protonmail.ch",
             "State": "0",
         });
-        let req = Request::post("/auth/v4/refresh")
+        let mut req = Request::post("/auth/v4/refresh")
             .json(body)
             .no_refresh()
             .omit_auth();
-        let resp = self.execute_once(&req, &a).await?;
+        let prepared = self.prepare_request(&mut req)?;
+        let resp = self.execute_once(&req, &prepared, &a).await?;
         if !(200..300).contains(&resp.status) {
             return Err(Error::Unauthorized);
         }
@@ -494,14 +509,15 @@ fn detect(status: u16, body: &[u8]) -> Detected {
 #[async_trait]
 impl Doer for HttpClient {
     async fn do_raw(&self, req: Request) -> Result<Response> {
-        let mut work = req.clone();
+        let mut work = req;
+        let prepared = self.prepare_request(&mut work)?;
         let mut refreshed = false;
         let mut rate_limited = false;
         let mut hv_tried = false;
 
         loop {
             let sent_auth = self.auth.read().await.clone();
-            let resp = self.execute_once(&work, &sent_auth).await?;
+            let resp = self.execute_once(&work, &prepared, &sent_auth).await?;
             match detect(resp.status, &resp.body) {
                 Detected::Ok => return Ok(resp),
                 Detected::Api(e) if e.http_status == 401 && !work.skip_refresh && !refreshed => {
@@ -558,6 +574,56 @@ mod tests {
     struct ValueResp {
         #[serde(rename = "Value")]
         value: i64,
+    }
+
+    #[test]
+    fn buffered_requests_move_and_share_raw_bytes_for_retries() {
+        let bytes = vec![0x7f; 64 * 1024];
+        let pointer = bytes.as_ptr();
+        let mut request = Request::post("/upload").raw(bytes, "application/octet-stream");
+        let prepared = client("http://127.0.0.1")
+            .prepare_request(&mut request)
+            .unwrap();
+        assert!(matches!(request.body, Body::Bytes(ref bytes) if bytes.is_empty()));
+        assert_eq!(
+            prepared.body().unwrap().as_bytes().unwrap().as_ptr(),
+            pointer
+        );
+        for _ in 0..3 {
+            let retry = prepared.try_clone().unwrap();
+            let data = retry.body().unwrap().as_bytes().unwrap();
+            assert_eq!(data.len(), 64 * 1024);
+            assert_eq!(data.as_ptr(), pointer);
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_body_and_content_type_survive_rate_limit_retry() {
+        use std::sync::atomic::AtomicUsize;
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let bytes = vec![0x7f; 64 * 1024];
+        let expected = bytes.clone();
+        Mock::given(method("POST"))
+            .and(path("/upload"))
+            .and(header("content-type", "application/octet-stream"))
+            .respond_with(move |request: &wiremock::Request| {
+                assert_eq!(request.body, expected);
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(429).set_body_json(serde_json::json!({"Code": 429}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000}))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        client(&server.uri())
+            .do_raw(Request::post("/upload").raw(bytes, "application/octet-stream"))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
