@@ -94,6 +94,12 @@ workers and the UI. When equal adjacent anchors merge, the stored span adopts
 the current shared target so later runs compare the same allocation. The reader
 creates an owned URL string when dispatching a link click.
 
+The adapter maps the entire core `FullMessage` into `MailMessage`, preserving
+the body's `Verdict` through both conversation and individual message reads.
+The reader shows verified, unsigned, unverified, or invalid status on each
+message card, including collapsed cards. An invalid body signature is shown in
+the danger color. This verdict applies to the body alone, not its attachments.
+
 Desktop new-mail notifications also return through the app state machine. Their
 conversation result carries the session epoch and is ignored after sign-out or
 when another account opens.
@@ -185,6 +191,16 @@ unconfirmed because it may happen at any stage of the send pipeline.
   attachments to a caller one at a time; the CLI uses this path for `--all`,
   fetching message metadata once and saving each file before the next download.
   The convenience API that returns all attachment bytes has a total size limit.
+  Before downloading a signed attachment, core resolves the sender's public
+  keys through its bounded key cache. After decryption it verifies the nonempty
+  armored detached `Signature` against the plaintext. Missing usable keys,
+  malformed signatures, and mismatches return `AttachmentVerificationFailed`
+  before any bytes reach a caller or saving callback; discarded plaintext is
+  zeroized. Unsigned attachments retain their existing behavior. All download
+  methods and EML export share this check. The desktop preserves the typed
+  failure through its adapter and shows that the file was not saved; the CLI
+  reports the core error. Low-level crypto decryption remains separate from
+  signature verification for compatibility.
 - [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs) owns live CLI EML
   reconstruction. It decrypts one message and then downloads each attachment
   using the same metadata, writing MIME parts sequentially to a new file. It

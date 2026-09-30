@@ -70,6 +70,7 @@ fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
             .enumerate()
             .map(|(time, message_id)| MailMessage {
                 id: (*message_id).to_owned(),
+                verdict: crate::mail::Verdict::Unverified,
                 sender: MailAddress::default(),
                 recipients: Vec::new(),
                 time: Some(time as i64),

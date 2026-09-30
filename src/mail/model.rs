@@ -296,6 +296,8 @@ pub struct MailMessage {
     /// Unix timestamp in seconds.
     pub time: Option<i64>,
     pub body: MessageBody,
+    /// Core's signature verification result for this body, before rendering.
+    pub verdict: super::Verdict,
     /// Files the message carries, without their contents: those are fetched
     /// only when someone asks to save one.
     pub attachments: Vec<MailAttachment>,
@@ -405,6 +407,7 @@ pub enum MailboxError {
     SessionExpired,
     Service,
     Unavailable,
+    AttachmentVerificationFailed,
 }
 
 impl MailboxError {
@@ -414,6 +417,9 @@ impl MailboxError {
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service => "Proton Mail could not load this folder. Try again later.",
             Self::Unavailable => "Ruston Mail could not load this folder. Try again.",
+            Self::AttachmentVerificationFailed => {
+                "Ruston Mail could not verify the attachment signature."
+            }
         }
     }
 
@@ -423,6 +429,9 @@ impl MailboxError {
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service => "Proton Mail could not load this conversation. Try again later.",
             Self::Unavailable => "Ruston Mail could not load this conversation. Try again.",
+            Self::AttachmentVerificationFailed => {
+                "Ruston Mail could not verify the attachment signature."
+            }
         }
     }
 
@@ -432,6 +441,9 @@ impl MailboxError {
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
             Self::Service => "Proton Mail could not update this conversation. Try again later.",
             Self::Unavailable => "Ruston Mail could not update this conversation. Try again.",
+            Self::AttachmentVerificationFailed => {
+                "Ruston Mail could not verify the attachment signature."
+            }
         }
     }
 }

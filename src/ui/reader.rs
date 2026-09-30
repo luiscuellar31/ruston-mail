@@ -12,7 +12,7 @@ use crate::downloads::SaveError;
 use crate::mail::{
     BlockKind, ConversationDetail, ConversationSummary, CustomKind, Folder, MailAction,
     MailAddress, MailAttachment, MailFolder, MailMessage, MessageBody, RichBlock, RichBody,
-    RichSpan,
+    RichSpan, Verdict,
 };
 use crate::settings::Reading;
 
@@ -452,6 +452,7 @@ fn message_card(
             if message_header(ui, message, preview, expanded).clicked() {
                 messages.push(Message::ToggleMessageExpanded(message.id.clone()));
             }
+            signature_status(ui, message.verdict);
             if expanded {
                 for attachment in &message.attachments {
                     attachment_row(ui, &message.id, attachment, saving_attachment, messages);
@@ -489,6 +490,36 @@ fn message_card(
             }
         });
     });
+}
+
+/// Kept outside the expandable body so a collapsed message cannot hide a
+/// failed signature. The label describes only the body, never its attachments.
+fn signature_status(ui: &mut egui::Ui, verdict: Verdict) {
+    let colors = theme::colors(ui);
+    let (label, color, explanation) = match verdict {
+        Verdict::Verified => (
+            "Body signature verified",
+            colors.success,
+            "The body signature matches an available sender key. This does not verify attachments.",
+        ),
+        Verdict::Unsigned => (
+            "Body is not signed",
+            colors.muted,
+            "This message body has no signature to verify.",
+        ),
+        Verdict::Unverified => (
+            "Body signature not verified",
+            colors.muted,
+            "No usable verification key was available. The body has not been authenticated.",
+        ),
+        Verdict::Invalid => (
+            "Invalid body signature",
+            colors.danger,
+            "The body signature failed verification. Treat the message contents with caution.",
+        ),
+    };
+    ui.label(egui::RichText::new(label).small().color(color))
+        .on_hover_text(explanation);
 }
 
 /// The whole header is one disclosure control. Copy selection is enabled only
@@ -1110,6 +1141,7 @@ mod tests {
     fn message_header_is_one_full_width_click_target() {
         let message = MailMessage {
             id: "message".into(),
+            verdict: Verdict::Unverified,
             sender: address(Some("Alex Rivera"), "alex@example.com"),
             recipients: Vec::new(),
             time: None,
@@ -1158,6 +1190,7 @@ mod tests {
             labels: Vec::new(),
             messages: vec![MailMessage {
                 id: "message".into(),
+                verdict: Verdict::Unverified,
                 sender: address(Some("Alex Rivera"), "alex@example.com"),
                 recipients: vec![address(None, "team@example.org")],
                 time: None,
@@ -1206,6 +1239,80 @@ mod tests {
 
         assert!(closed[1].x > closed[0].x && closed[1].x > closed[2].x);
         assert!(open[1].y > open[0].y && open[1].y > open[2].y);
+    }
+
+    #[test]
+    fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
+        fn has_label(shape: &egui::epaint::Shape, label: &str, color: Color32) -> bool {
+            match shape {
+                egui::epaint::Shape::Text(text) => {
+                    text.galley.text() == label
+                        && text
+                            .galley
+                            .job
+                            .sections
+                            .iter()
+                            .any(|section| section.format.color == color)
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().any(|shape| has_label(shape, label, color))
+                }
+                _ => false,
+            }
+        }
+        for (verdict, label) in [
+            (Verdict::Verified, "Body signature verified"),
+            (Verdict::Unsigned, "Body is not signed"),
+            (Verdict::Unverified, "Body signature not verified"),
+            (Verdict::Invalid, "Invalid body signature"),
+        ] {
+            for expanded in [false, true] {
+                let message = MailMessage {
+                    id: "message".into(),
+                    sender: address(None, "sender@proton.me"),
+                    recipients: Vec::new(),
+                    time: None,
+                    body: MessageBody::PlainText("Body".into()),
+                    attachments: Vec::new(),
+                    verdict,
+                };
+                let mut reader = ConversationReader::new(ConversationDetail {
+                    id: "conversation".into(),
+                    subject: None,
+                    labels: Vec::new(),
+                    messages: vec![message],
+                });
+                if !expanded {
+                    reader.toggle("message");
+                }
+                assert_eq!(reader.is_expanded("message", Reading::default()), expanded);
+                let context = egui::Context::default();
+                let mut color = Color32::TRANSPARENT;
+                let output = context.run_ui(egui::RawInput::default(), |ui| {
+                    let colors = theme::colors(ui);
+                    color = match verdict {
+                        Verdict::Invalid => colors.danger,
+                        Verdict::Verified => colors.success,
+                        _ => colors.muted,
+                    };
+                    message_card(
+                        ui,
+                        &reader.detail().messages[0],
+                        reader.preview_at(0),
+                        &reader,
+                        None,
+                        Reading::default(),
+                        &mut Vec::new(),
+                    );
+                });
+                let found = output
+                    .shapes
+                    .iter()
+                    .any(|shape| has_label(&shape.shape, label, color));
+                output.drop_without_applying_deltas();
+                assert!(found, "missing {label}, expanded={expanded}");
+            }
+        }
     }
 
     #[test]

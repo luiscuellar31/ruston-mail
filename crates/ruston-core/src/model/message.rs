@@ -54,7 +54,8 @@ pub struct Attachment {
     /// Content disposition (`inline` or `attachment`).
     #[serde(default)]
     pub disposition: Option<String>,
-    /// Detached signature over the attachment, if present.
+    /// Armored detached PGP signature over the plaintext attachment, if present.
+    /// Proton may return an empty string for an unsigned attachment.
     #[serde(default)]
     pub signature: Option<String>,
 }

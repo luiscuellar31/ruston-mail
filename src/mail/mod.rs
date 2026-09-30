@@ -6,6 +6,7 @@ mod proton;
 mod service;
 mod threading;
 
+pub use ruston_core::Verdict;
 use std::sync::Arc;
 
 /// Shared bound for scheduled inspections and their backend requests.

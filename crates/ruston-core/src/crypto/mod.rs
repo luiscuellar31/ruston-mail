@@ -8,8 +8,8 @@ pub use keys::{Address, AddressKeys, ApiKey, KeySalt, KeyStore, StoredKey, User}
 pub use message::{
     SessionKeyMaterial, UploadedAttachment, Verdict, algo_name, decrypt_attachment, decrypt_body,
     encrypt_attachment, encrypt_for_transport, encrypt_self_draft, encrypt_text_with_password,
-    new_session_key, rewrap_attachment_session_key, wrap_session_key, wrap_session_key_to_self,
-    wrap_session_key_with_password,
+    new_session_key, rewrap_attachment_session_key, verify_attachment_signature, wrap_session_key,
+    wrap_session_key_to_self, wrap_session_key_with_password,
 };
 
 /// Obtain a pure-Rust PGP provider (rustpgp backend; no cgo).

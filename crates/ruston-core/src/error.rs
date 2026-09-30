@@ -121,6 +121,11 @@ pub enum Error {
     #[error("crypto error: {0}")]
     Crypto(String),
 
+    /// A present attachment signature could not be verified. No plaintext is
+    /// released to the caller, including when sender keys are unavailable.
+    #[error("attachment signature could not be verified; attachment was not released")]
+    AttachmentVerificationFailed,
+
     /// An SRP authentication step failed.
     #[error("srp error: {0}")]
     Srp(String),

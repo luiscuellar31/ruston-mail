@@ -1046,6 +1046,7 @@ fn message(
 
     MailMessage {
         id: format!("demo-{index}-{position}"),
+        verdict: super::Verdict::Unverified,
         sender,
         recipients,
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),

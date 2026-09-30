@@ -17,6 +17,8 @@ pub enum SaveError {
     Failed,
     /// Nothing was written because no attachment arrived.
     NotFetched,
+    /// A present signature could not be verified, so core withheld the bytes.
+    VerificationFailed,
 }
 
 impl SaveError {
@@ -25,6 +27,9 @@ impl SaveError {
             Self::NoFolder => "Ruston Mail could not find a downloads folder to save into.",
             Self::Failed => "Ruston Mail could not save the file.",
             Self::NotFetched => "Ruston Mail could not download the file from Proton.",
+            Self::VerificationFailed => {
+                "Ruston Mail could not verify this attachment's signature. The file was not saved."
+            }
         }
     }
 }

@@ -40,6 +40,12 @@ incoming messages. These checks are limited and cancelled when you change
 folders, submit a search, refresh, or sign out. Conversations keep Proton's
 grouping when a check cannot run or finish.
 
+Each message shows its body signature status, even when folded: verified,
+unsigned, not verified, or invalid. An invalid signature is highlighted in red;
+treat that message's contents with caution. The status applies to the body,
+not to its attachments. Verification uses available sender keys and does not
+establish the sender's identity independently.
+
 HTML mail is converted to native text and layout. Headings, lists, links, basic
 formatting, and quotes remain, but scripts and remote content do not run. Remote
 images appear as their description when one is available.
@@ -71,6 +77,13 @@ the new name instead.
 
 The app can reveal a saved attachment in the file manager. Use **Attach files**
 in the composer to add local files to an outgoing message.
+
+When an incoming attachment carries a signature, Ruston verifies it before
+saving the file. An invalid or malformed signature, or missing verification
+keys, prevents the download and shows an error. You can retry if keys become
+available later. Attachments without a signature can still be saved; their
+contents have not been authenticated by a signature. These checks also apply
+to CLI downloads and EML exports.
 
 New local attachments are limited to 32 MiB per file and 128 MiB combined in
 both the desktop and CLI. These are Ruston's safety limits; Proton may impose

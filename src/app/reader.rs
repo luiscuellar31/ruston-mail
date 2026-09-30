@@ -156,6 +156,7 @@ mod tests {
     fn message(id: &str, time: i64) -> MailMessage {
         MailMessage {
             id: id.to_owned(),
+            verdict: crate::mail::Verdict::Unverified,
             sender: MailAddress::default(),
             recipients: Vec::new(),
             time: Some(time),

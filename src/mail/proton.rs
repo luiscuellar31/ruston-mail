@@ -10,8 +10,8 @@ use futures::channel::{mpsc, oneshot};
 use ruston_core::model::enums::{label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
-    Client, Conversation, Error, HvChallenge, HvResolver, Label, LabelCount, LoginOptions,
-    MessageMetadata, Recipient, SearchOpts, SendOptions, TotpPrompt,
+    Client, Conversation, Error, FullMessage, HvChallenge, HvResolver, Label, LabelCount,
+    LoginOptions, MessageMetadata, Recipient, SearchOpts, SendOptions, TotpPrompt,
 };
 use secrecy::SecretString;
 
@@ -321,17 +321,7 @@ impl ProtonMailService {
             id: id.to_owned(),
             subject: (!subject.is_empty()).then(|| subject.to_owned()),
             labels,
-            messages: messages
-                .into_iter()
-                .map(|message| {
-                    mail_message(
-                        message.meta,
-                        message.body,
-                        &message.mime_type,
-                        message.attachments,
-                    )
-                })
-                .collect(),
+            messages: messages.into_iter().map(mail_message).collect(),
         })
     }
 
@@ -345,12 +335,7 @@ impl ProtonMailService {
             id: id.to_owned(),
             subject: (!subject.is_empty()).then_some(subject),
             labels,
-            messages: vec![mail_message(
-                message.meta,
-                message.body,
-                &message.mime_type,
-                message.attachments,
-            )],
+            messages: vec![mail_message(message)],
         })
     }
 
@@ -811,13 +796,15 @@ fn mail_address(person: &Recipient) -> MailAddress {
     }
 }
 
-fn mail_message(
-    meta: MessageMetadata,
-    body: String,
-    mime_type: &str,
-    attachments: Vec<Attachment>,
-) -> MailMessage {
-    let body = if ruston_core::html::is_html_mime(mime_type) {
+fn mail_message(message: FullMessage) -> MailMessage {
+    let FullMessage {
+        meta,
+        body,
+        mime_type,
+        verdict,
+        attachments,
+    } = message;
+    let body = if ruston_core::html::is_html_mime(&mime_type) {
         MessageBody::Rich(html::parse(&body))
     } else {
         MessageBody::PlainText(body)
@@ -841,6 +828,7 @@ fn mail_message(
             .collect(),
         time: (meta.time > 0).then_some(meta.time),
         body,
+        verdict,
         id: meta.id,
     }
 }
@@ -894,6 +882,7 @@ fn map_mailbox_error(error: Error) -> MailboxError {
         Error::Unauthorized => MailboxError::SessionExpired,
         Error::Api(error) if error.http_status == 401 => MailboxError::SessionExpired,
         Error::Http(_) => MailboxError::Connection,
+        Error::AttachmentVerificationFailed => MailboxError::AttachmentVerificationFailed,
         Error::Api(_) | Error::HumanVerification(_) => MailboxError::Service,
         _ => MailboxError::Unavailable,
     }
@@ -1049,14 +1038,16 @@ mod tests {
             ..Default::default()
         };
 
-        let message = mail_message(
+        let message = mail_message(FullMessage {
             meta,
-            "<p>Hello &amp; welcome</p>".into(),
-            "text/html",
-            Vec::new(),
-        );
+            body: "<p>Hello &amp; welcome</p>".into(),
+            mime_type: "text/html".into(),
+            attachments: Vec::new(),
+            verdict: ruston_core::Verdict::Invalid,
+        });
 
         assert_eq!(message.id, "message");
+        assert_eq!(message.verdict, ruston_core::Verdict::Invalid);
         assert_eq!(message.sender.name, None);
         assert_eq!(message.sender.address, "alex@example.com");
         assert_eq!(message.recipients.len(), 3);
@@ -1071,15 +1062,43 @@ mod tests {
     fn plain_text_bodies_are_kept_verbatim() {
         let body = "Line <one>\n\n  indented & raw";
 
-        let message = mail_message(
-            MessageMetadata::default(),
-            body.into(),
-            "text/plain",
-            Vec::new(),
-        );
+        let message = mail_message(FullMessage {
+            meta: MessageMetadata::default(),
+            body: body.into(),
+            mime_type: "text/plain".into(),
+            attachments: Vec::new(),
+            verdict: ruston_core::Verdict::Unverified,
+        });
 
         assert_eq!(message.body, MessageBody::PlainText(body.into()));
         assert_eq!(message.time, None);
+    }
+
+    #[test]
+    fn every_body_verdict_survives_plain_and_html_conversion() {
+        use ruston_core::Verdict;
+
+        for verdict in [
+            Verdict::Verified,
+            Verdict::Unsigned,
+            Verdict::Unverified,
+            Verdict::Invalid,
+        ] {
+            for mime_type in ["text/plain", "text/html"] {
+                let message = mail_message(FullMessage {
+                    meta: MessageMetadata::default(),
+                    body: "body".into(),
+                    mime_type: mime_type.into(),
+                    attachments: Vec::new(),
+                    verdict,
+                });
+                assert_eq!(message.verdict, verdict);
+            }
+        }
+        assert_eq!(
+            map_mailbox_error(Error::AttachmentVerificationFailed),
+            MailboxError::AttachmentVerificationFailed
+        );
     }
 
     #[test]

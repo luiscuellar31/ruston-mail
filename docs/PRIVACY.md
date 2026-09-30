@@ -153,6 +153,15 @@ Downloads folder. The CLI saves them in `--output-dir`, or the current directory
 by default. Both reduce sender-provided paths to a plain file name. Names with
 invalid characters become `attachment`, Windows device names receive an
 underscore prefix, and existing files are never overwritten.
+Attachments with a nonempty detached signature are verified against available
+sender keys before their plaintext reaches a file writer. Missing usable keys,
+malformed signatures, and signature mismatches fail the download; plaintext
+discarded on this path is zeroized. This check is shared by desktop and CLI
+downloads, including bulk downloads and EML export. Unsigned attachments remain
+downloadable without a signature-based authenticity guarantee. Body signature
+status is shown separately in the desktop reader, including invalid and
+unverified results; it does not authenticate the sender's identity independently
+or describe an attachment's verification status.
 The application's own HTTP safety limits are 32 MiB for ordinary responses and
 128 MiB for an encrypted attachment response; they are not Proton Mail's
 attachment quotas.

@@ -5,7 +5,8 @@ use crate::error::{Error, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_crypto::crypto::{
     DataEncoding, Decryptor, DecryptorSync, Encryptor, EncryptorSync, PGPMessage, PGPProviderSync,
-    SessionKeyAlgorithm, Signer, SignerSync, VerificationError, VerifiedData,
+    SessionKeyAlgorithm, Signer, SignerSync, VerificationError, VerifiedData, Verifier,
+    VerifierSync,
 };
 use zeroize::Zeroizing;
 
@@ -110,6 +111,9 @@ pub fn decrypt_body<P: PGPProviderSync>(
 
 /// Decrypt an attachment: recover the session key from its key packet, then
 /// symmetric-decrypt the data packet.
+/// This low-level operation does not check detached signatures. Call
+/// [`verify_attachment_signature`] before releasing signed attachment bytes;
+/// the high-level `Client` download methods do this automatically.
 pub fn decrypt_attachment<P: PGPProviderSync>(
     provider: &P,
     addr: &AddressKeys,
@@ -132,6 +136,33 @@ pub fn decrypt_attachment<P: PGPProviderSync>(
         .decrypt(data_packet, DataEncoding::Bytes)
         .map_err(|e| Error::Crypto(format!("attachment data decrypt failed: {e}")))?;
     Ok(out.as_bytes().to_vec())
+}
+
+/// Verify a detached armored attachment signature against the sender's keys.
+/// Missing usable keys, malformed signatures and mismatches all fail closed.
+pub fn verify_attachment_signature<P: PGPProviderSync>(
+    provider: &P,
+    verify_pubs_armored: &[String],
+    plaintext: &[u8],
+    signature: &str,
+) -> Result<()> {
+    let pubs: Vec<P::PublicKey> = verify_pubs_armored
+        .iter()
+        .filter_map(|key| {
+            provider
+                .public_key_import(key.as_bytes(), DataEncoding::Armor)
+                .ok()
+        })
+        .collect();
+    if pubs.is_empty() {
+        return Err(Error::AttachmentVerificationFailed);
+    }
+    provider
+        .new_verifier()
+        .with_verification_keys(pubs.iter())
+        .verify_detached(plaintext, signature.as_bytes(), DataEncoding::Armor)
+        .map_err(|_| Error::AttachmentVerificationFailed)?;
+    Ok(())
 }
 
 /// Encrypt + sign a draft body to the sender's own address key (armored).
@@ -375,8 +406,8 @@ mod tests {
     use super::*;
     use crate::crypto::keys::{AddressKeys, StoredKey};
     use proton_crypto::crypto::{
-        AccessKeyInfo, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
-        SessionKey,
+        AccessKeyInfo, ArmorerSync, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync,
+        PGPProviderSync, SessionKey,
     };
     use secrecy::SecretString;
 
@@ -445,6 +476,46 @@ mod tests {
         let kp_b64 = STANDARD.encode(&up.key_packet);
         let out = decrypt_attachment(&provider, &addr, &kp_b64, &up.data_packet).unwrap();
         assert_eq!(out, data);
+    }
+
+    #[test]
+    fn detached_attachment_signatures_require_matching_content_and_sender_keys() {
+        let provider = proton_crypto::new_pgp_provider();
+        let (sender, sender_pub) = make_address(&provider, "sender@proton.me");
+        let (_, wrong_pub) = make_address(&provider, "other@proton.me");
+        let payload = b"signed attachment payload";
+        let upload = encrypt_attachment(&provider, &sender, payload).unwrap();
+        let signature = String::from_utf8(
+            provider
+                .armorer()
+                .armor_signature(&upload.signature)
+                .unwrap(),
+        )
+        .unwrap();
+        // Old or malformed keys in the ring must not hide a usable signer key.
+        let keys = vec!["not a key".into(), wrong_pub.clone(), sender_pub.clone()];
+        verify_attachment_signature(&provider, &keys, payload, &signature).unwrap();
+        for (keys, data, signature) in [
+            (
+                vec![sender_pub.clone()],
+                b"changed payload".as_slice(),
+                signature.as_str(),
+            ),
+            (vec![wrong_pub], payload.as_slice(), signature.as_str()),
+            (Vec::new(), payload.as_slice(), signature.as_str()),
+            (
+                vec!["not a key".into()],
+                payload.as_slice(),
+                signature.as_str(),
+            ),
+            (vec![sender_pub.clone()], payload.as_slice(), "malformed"),
+            (vec![sender_pub], payload.as_slice(), ""),
+        ] {
+            assert!(matches!(
+                verify_attachment_signature(&provider, &keys, data, signature),
+                Err(Error::AttachmentVerificationFailed)
+            ));
+        }
     }
 
     #[test]

@@ -316,6 +316,9 @@ impl App {
                             .await
                             .unwrap_or(Err(SaveError::Failed))
                     }
+                    Err(MailboxError::AttachmentVerificationFailed) => {
+                        Err(SaveError::VerificationFailed)
+                    }
                     Err(_) => Err(SaveError::NotFetched),
                 }
             },

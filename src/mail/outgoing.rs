@@ -201,6 +201,9 @@ impl SendError {
             Self::Mailbox(MailboxError::Service | MailboxError::Unavailable) => {
                 Cow::Borrowed("Proton would not accept the message. It was not sent.")
             }
+            Self::Mailbox(MailboxError::AttachmentVerificationFailed) => Cow::Borrowed(
+                "An attachment signature could not be verified. The message was not sent.",
+            ),
             Self::Unconfirmed => Cow::Borrowed(
                 "Could not confirm whether Proton sent this message. Check Sent before trying again.",
             ),
