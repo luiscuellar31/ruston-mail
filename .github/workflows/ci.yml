@@ -18,9 +18,13 @@ jobs:
   check:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # GitHub provides Bash on Windows too; keep fail-fast command handling
+        # consistent across the matrix.
+        shell: bash
     strategy:
-      # Both answers are wanted: one platform failing should not hide the
-      # other's result.
+      # One platform failing should not hide the other platforms' results.
       fail-fast: false
       matrix:
         include:
@@ -36,6 +40,9 @@ jobs:
           - name: macOS (x86_64)
             os: macos-15-intel
             cache-key: macos-x86_64
+          - name: Windows (x86_64)
+            os: windows-2025
+            cache-key: windows-x86_64
 
     steps:
       # Actions are pinned to a commit SHA so CI builds remain deterministic.
@@ -58,7 +65,9 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Documentation
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --locked --workspace --no-deps --all-features
 
       - name: Tests
         run: cargo test --locked --workspace --all-features

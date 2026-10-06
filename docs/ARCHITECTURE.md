@@ -388,6 +388,13 @@ test credentials and otherwise skips its live cases. CLI parser and demo tests
 are in [`crates/ruston-cli/src/main.rs`](../crates/ruston-cli/src/main.rs).
 Run and check commands are in [Development](DEVELOPMENT.md).
 
+The shared [CI workflow](../.github/workflows/ci.yml) checks Linux and macOS on
+x86_64 and arm64, and Windows on x86_64 using the native MSVC toolchain. All
+platforms run the same formatting, Clippy, documentation, and test gates.
+Native Windows Credential Manager, file dialogs, and window behavior need an
+interactive session; the [development guide](DEVELOPMENT.md#windows-native-validation)
+defines those manual smoke checks separately from automated test coverage.
+
 ## Keeping this map current
 
 Review this page with every change. Update the affected section in the same
