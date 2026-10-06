@@ -1090,8 +1090,8 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
 
     assert_eq!(mailbox.reader_state(), &reader);
     assert_eq!(mailbox.selected_conversation(), Some("m40-a"));
-    assert!(mailbox.selected_summary().is_none());
-    assert!(mailbox.reader_stamp.is_none());
+    assert!(mailbox.selected_summary().is_some());
+    assert!(mailbox.reader_stamp.is_some());
     mailbox.split_conversation(&Folder::INBOX, "p40", split);
     assert!(mailbox.selected_summary().is_some());
     assert_eq!(mailbox.reader_state(), &reader);
@@ -2346,4 +2346,170 @@ fn cached_split_rows_are_not_added_again_by_the_next_page() {
     mailbox.finish_page(next.id, page(&["m1", "c3"], 120));
 
     assert_eq!(ids(&mailbox), ["m1", "m2", "c2", "c3"]);
+}
+
+fn split_message(id: &str, time: i64) -> ConversationSummary {
+    ConversationSummary {
+        kind: SummaryKind::Message,
+        ..dated(id, time)
+    }
+}
+
+fn inspected_last_inbox() -> (Mailbox, Vec<ConversationSummary>) {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    let members = vec![
+        split_message("m49-a", 999_951),
+        split_message("m49-b", 999_940),
+    ];
+    mailbox.split_conversation(&Folder::INBOX, "p49", members.clone());
+    (mailbox, members)
+}
+
+#[test]
+fn repeated_refresh_reuses_split_rows_and_reinspection_updates_without_duplicates() {
+    let (mut mailbox, split) = inspected_last_inbox();
+    let original = visible_ids(&mailbox)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for request in 10..14 {
+        let refresh = mailbox.refresh(request).unwrap();
+        mailbox.finish_page(refresh.id, full_page(0, 120));
+        assert_eq!(visible_ids(&mailbox), original);
+        assert!(mailbox.has_inspection_target("p49"));
+        let mut updated = split.clone();
+        updated[1].subject = Some(format!("fresh {request}"));
+        mailbox.split_conversation(&Folder::INBOX, "p49", updated);
+        assert_eq!(visible_ids(&mailbox), original);
+        assert_eq!(mailbox.visible_count(), 51);
+        assert_eq!(mailbox.row_ids.len(), 51);
+        assert_eq!(
+            mailbox.row("m49-b").unwrap().subject.as_deref(),
+            Some(format!("fresh {request}").as_str())
+        );
+    }
+}
+
+#[test]
+fn changed_conversation_invalidates_its_split_members_even_below_the_page_boundary() {
+    let (mut mailbox, _) = inspected_last_inbox();
+    let refresh = mailbox.refresh(10).unwrap();
+    let mut changed = full_page(0, 120).unwrap();
+    changed.conversations[49].message_count += 1;
+    mailbox.finish_page(refresh.id, Ok(changed));
+    assert_eq!(mailbox.visible_count(), 50);
+    assert!(mailbox.has_row("p49"));
+    assert!(!mailbox.has_row("m49-a"));
+    assert!(!mailbox.has_row("m49-b"));
+    assert!(mailbox.groups.splits.is_empty());
+    assert!(mailbox.groups.parents.is_empty());
+}
+
+#[test]
+fn refreshed_read_and_star_flags_keep_grouping_until_fresh_inspection_updates_members() {
+    let (mut mailbox, mut split) = inspected_last_inbox();
+    let refresh = mailbox.refresh(10).unwrap();
+    let mut page = full_page(0, 120).unwrap();
+    page.conversations[49].unread = true;
+    page.conversations[49].starred = true;
+    mailbox.finish_page(refresh.id, Ok(page));
+    assert_eq!(mailbox.visible_count(), 51);
+    assert!(!mailbox.has_row("p49"));
+    assert!(mailbox.groups.splits["p49"].source.unread);
+    assert!(mailbox.groups.splits["p49"].source.starred);
+    split[1].unread = true;
+    split[1].starred = true;
+    mailbox.split_conversation(&Folder::INBOX, "p49", split);
+    assert!(mailbox.row("m49-b").unwrap().unread);
+    assert!(mailbox.row("m49-b").unwrap().starred);
+    assert_eq!(mailbox.row_ids.len(), 51);
+}
+
+#[test]
+fn overlapping_pages_keep_verified_groups_and_deduplicate_new_rows() {
+    let (mut mailbox, _) = inspected_last_inbox();
+    let next = mailbox.load_more(10).unwrap();
+    let mut page = full_page(50, 120).unwrap();
+    page.conversations.insert(0, dated("p49", 999_951));
+    page.conversations.push(dated("p50", 999_950));
+    mailbox.finish_page(next.id, Ok(page));
+    assert_eq!(mailbox.visible_count(), 101);
+    assert_eq!(mailbox.row_ids.len(), 101);
+    assert!(!mailbox.has_row("p49"));
+    assert!(mailbox.has_row("m49-b"));
+}
+
+#[test]
+fn split_refresh_decisions_follow_cached_folders_and_are_pruned_with_their_rows() {
+    let (mut mailbox, _) = inspected_last_inbox();
+    let sent = mailbox.select_folder(sys(MailFolder::Sent), 10).unwrap();
+    mailbox.finish_page(sent.id, page(&["sent"], 1));
+    assert!(mailbox.groups.splits.is_empty());
+    assert_eq!(mailbox.select_folder(Folder::INBOX, 11), None);
+    let refresh = mailbox.refresh(12).unwrap();
+    mailbox.finish_page(refresh.id, full_page(0, 120));
+    assert!(mailbox.has_row("m49-b"));
+    assert_eq!(mailbox.groups.splits.len(), 1);
+    let refresh = mailbox.refresh(13).unwrap();
+    mailbox.finish_page(refresh.id, page(&[], 0));
+    assert!(mailbox.groups.splits.is_empty());
+    assert!(mailbox.groups.parents.is_empty());
+}
+
+#[test]
+fn deeper_split_conversations_keep_all_members_by_parent_time() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    let next = mailbox.load_more(10).unwrap();
+    mailbox.finish_page(next.id, full_page(50, 120));
+    mailbox.split_conversation(
+        &Folder::INBOX,
+        "p60",
+        vec![
+            split_message("m60-a", 999_940),
+            split_message("m60-b", 999_800),
+        ],
+    );
+    let refresh = mailbox.refresh(11).unwrap();
+    mailbox.finish_page(refresh.id, full_page(0, 120));
+    assert!(mailbox.has_row("m60-a") && mailbox.has_row("m60-b"));
+    assert!(mailbox.has_inspection_target("p60"));
+    assert_eq!(mailbox.visible_count(), 101);
+}
+
+#[test]
+fn inspection_replaces_old_members_and_duplicate_input_with_fresh_metadata() {
+    let mut mailbox = loaded_inbox(&["c1", "m2", "other"], 3);
+    let mut fresh = split_message("m2", 50);
+    fresh.subject = Some("fresh metadata".into());
+    mailbox.split_conversation(
+        &Folder::INBOX,
+        "c1",
+        vec![split_message("m1", 60), fresh.clone(), fresh],
+    );
+    assert_eq!(ids(&mailbox), ["m1", "m2", "other"]);
+    assert_eq!(
+        mailbox.row("m2").unwrap().subject.as_deref(),
+        Some("fresh metadata")
+    );
+    mailbox.split_conversation(&Folder::INBOX, "c1", vec![split_message("m3", 70)]);
+    assert_eq!(ids(&mailbox), ["m3", "other"]);
+    assert_eq!(mailbox.groups.parents.len(), 1);
+    assert!(!mailbox.groups.parents.contains_key("m1"));
+}
+
+#[test]
+fn a_locally_removed_member_cannot_be_restored_from_a_cached_group() {
+    let mut mailbox = loaded_inbox(&["c1"], 1);
+    mailbox.split_conversation(
+        &Folder::INBOX,
+        "c1",
+        vec![split_message("m1", 60), split_message("m2", 50)],
+    );
+    mailbox.remove_row("m1");
+    let refresh = mailbox.refresh(10).unwrap();
+    mailbox.finish_page(refresh.id, page(&["c1"], 1));
+    assert_eq!(ids(&mailbox), ["c1"]);
+    assert!(mailbox.groups.splits.is_empty());
 }

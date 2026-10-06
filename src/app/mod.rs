@@ -83,6 +83,7 @@ pub enum Message {
     ThreadInspected {
         epoch: SessionEpoch,
         request: RequestId,
+        revision: u64,
         folder: Folder,
         conversation_id: String,
         result: Result<Option<Vec<ConversationSummary>>, MailboxError>,
@@ -477,6 +478,7 @@ impl App {
             Message::ThreadInspected {
                 epoch,
                 request,
+                revision,
                 folder,
                 conversation_id,
                 result,
@@ -492,7 +494,9 @@ impl App {
                 }
                 match result {
                     Ok(Some(split_rows)) => {
-                        if let Some(mailbox) = self.mailbox.as_mut() {
+                        if let Some(mailbox) = self.mailbox.as_mut()
+                            && mailbox.inspection_revision() == revision
+                        {
                             mailbox.split_conversation(&folder, &conversation_id, split_rows);
                         }
                     }
@@ -1164,8 +1168,11 @@ impl App {
         if mailbox.search_results().is_some() {
             return Effects::none();
         }
-        self.inspections
-            .enqueue(candidates.into_iter().filter(|id| mailbox.has_row(id)));
+        self.inspections.enqueue(
+            candidates
+                .into_iter()
+                .filter(|id| mailbox.has_inspection_target(id)),
+        );
         self.start_inspections()
     }
 
@@ -1178,6 +1185,7 @@ impl App {
         };
         let epoch = self.session_epoch;
         let folder = mailbox.folder().clone();
+        let revision = mailbox.inspection_revision();
         let mut effects = Vec::new();
         while let Some((id, registration)) = self.inspections.start(self.last_request + 1) {
             let request = self.next_request();
@@ -1185,7 +1193,7 @@ impl App {
             if !self
                 .mailbox
                 .as_ref()
-                .is_some_and(|mailbox| mailbox.has_row(&id))
+                .is_some_and(|mailbox| mailbox.has_inspection_target(&id))
             {
                 self.inspections.finish(request, &id);
                 continue;
@@ -1206,6 +1214,7 @@ impl App {
                 Message::ThreadInspected {
                     epoch,
                     request,
+                    revision,
                     folder: callback_folder,
                     conversation_id: id,
                     result: result.unwrap_or(Ok(None)),

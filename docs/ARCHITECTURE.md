@@ -36,28 +36,47 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`app/inspection.rs`](../src/app/inspection.rs) bounds best-effort conversation
   inspection to 50 distinct candidate IDs including at most four running tasks.
   Waiting IDs retain no backend or task; completion admits the next candidate.
-  Only accepted page responses enqueue work, and rows removed before admission
-  are skipped. Folder changes, server search, accepted refreshes, and sign-out
-  cancel running futures and clear waiting IDs; dropping the owner does too.
+  Only accepted page responses enqueue work, including already displayed splits;
+  targets removed before admission are skipped. Folder changes, server search,
+  accepted refreshes, and sign-out cancel running futures and clear waiting IDs;
+  dropping the owner does too.
   Completion must match its session, folder, and unique running request before
-  applying results or releasing a slot. Cancelled responses cannot affect a
-  later visit to the same folder. The Proton adapter's 15-second deadline covers
+  applying results or releasing a slot. A confirmed local read or organizing
+  mutation advances the mailbox's inspection revision. Older inspection data
+  cannot overwrite that mutation, but completion still releases its slot and
+  admits queued work. Cancelled responses cannot affect a later visit to the
+  same folder. The Proton adapter's 15-second deadline covers
   both semaphore admission and the metadata request. Overflow, timeout, and
   non-authentication failures preserve Proton's grouping.
 - [`app/mailbox.rs`](../src/app/mailbox.rs) owns folder and search pagination.
-  Loaded folders keep their rows, ID index, and page cursor together when
-  cached; older pages append in date order, while overlapping dates are merged.
+  Loaded folders keep their rows, ID index, page cursor, and inspected grouping
+  decisions together when cached; older pages append in date order, while
+  overlapping dates are merged. Each split retains its server conversation
+  metadata and member IDs, with a reverse message-to-conversation index. Refresh
+  reuses the displayed members when that conversation's metadata is unchanged
+  apart from read/star flags. Deeper split rows are classified by their parent's
+  time and identity, so an older member cannot survive as an unrelated page row.
+  Changed conversations invalidate their old members before using the new server
+  row. Inspection replaces all prior members together, with fresh metadata and
+  unique IDs, and can update an already displayed split without collapsing it.
+  Grouping records are pruned with their loaded rows; no disk storage is added.
+  Ordinary appended pages do not rebuild or scan the grouping index; refresh
+  uses an ID-to-row index to move existing metadata into the new listing.
   Page responses preserve the open reader, including expansion and quote state.
   A refreshed listing can regroup a message or omit its row without proving
   deletion; the reader remains visible and loses its cache stamp if its row is
   absent. Explicit filtering, folder changes, and organizing actions retain their
   existing selection behavior. Reader scroll resets only when opening another row.
-  [`ui/mailbox.rs`](../src/ui/mailbox.rs) keeps two visible row IDs, their indices,
-  and the scroll offset for the current folder and search. Appends with unchanged
+  [`ui/mailbox.rs`](../src/ui/mailbox.rs) keeps two visible row IDs, their parent
+  conversation, indices, and the scroll offset for the current folder and search.
+  Appends with unchanged
   indices take a constant-time check. When a merge, refresh, or inspection moves
-  those rows, the next frame restores the first surviving anchor at its previous
-  screen position, using egui's scroll state. Explicit reveal requests take
-  precedence, and sign-out clears the anchors. No complete listing snapshot or
+  those rows, the next frame restores the exact message or its conversation's
+  visible representative at the previous screen position, using egui's scroll
+  state. A message anchor survives a temporary grouped parent. A list at offset
+  zero stays at the top during startup and inspection. A new mailbox view resets
+  native scroll and animation state left by a previous session. Explicit reveal
+  requests take precedence, and sign-out clears the anchors. No complete listing snapshot or
   persistent scroll data is added.
   The mailbox state machine also orders read mutations by row. An explicit
   read/unread action accepted during an automatic read remains in the existing

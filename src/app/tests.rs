@@ -2200,6 +2200,7 @@ fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
     let current_request = app.last_request;
     let effects = app.update(Message::ThreadInspected {
+        revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
         epoch: app.session_epoch,
         request: old_request,
         folder: Folder::INBOX,
@@ -2241,6 +2242,67 @@ fn conversations_loaded_with_candidates_starts_inspection_effects() {
 }
 
 #[test]
+fn verified_split_conversations_can_be_reinspected_without_regrouping_rows() {
+    let mut app = loaded_demo_app();
+    let rows = vec![ConversationSummary {
+        id: "split-member".into(),
+        kind: crate::mail::SummaryKind::Message,
+        ..app.mailbox().unwrap().visible_row(0).unwrap().clone()
+    }];
+    app.mailbox
+        .as_mut()
+        .unwrap()
+        .split_conversation(&Folder::INBOX, "demo-0", rows);
+    assert!(app.mailbox().unwrap().has_row("split-member"));
+    assert!(!app.mailbox().unwrap().has_row("demo-0"));
+    assert_eq!(app.inspect_candidates(vec!["demo-0".into()]).units(), 1);
+    assert!(app.mailbox().unwrap().has_row("split-member"));
+}
+
+#[test]
+fn inspection_before_a_confirmed_mutation_cannot_replace_rows_and_releases_its_slot() {
+    let mut app = loaded_demo_app();
+    let effects = app.inspect_candidates((0..5).map(|index| format!("demo-{index}")).collect());
+    let Effect::Future(future) = effects.into_iter().next().unwrap() else {
+        panic!("expected an inspection");
+    };
+    let mut message = futures::executor::block_on(future);
+    let stale = ConversationSummary {
+        id: "stale-member".into(),
+        kind: crate::mail::SummaryKind::Message,
+        ..app.mailbox().unwrap().visible_row(0).unwrap().clone()
+    };
+    let Message::ThreadInspected {
+        result, revision, ..
+    } = &mut message
+    else {
+        panic!("expected an inspection result");
+    };
+    *result = Ok(Some(vec![stale]));
+    let previous = *revision;
+    let mailbox = app.mailbox.as_mut().unwrap();
+    mailbox.record_action("demo-0", &MailAction::SetUnread(false));
+    mailbox.invalidate_listings();
+    let current = mailbox.inspection_revision();
+    assert!(current > previous);
+
+    let next = app.update(message);
+    assert!(app.mailbox().unwrap().has_row("demo-0"));
+    assert!(!app.mailbox().unwrap().has_row("stale-member"));
+    assert_eq!(
+        next.units(),
+        1,
+        "the next candidate can use the released slot"
+    );
+    let Effect::Future(future) = next.into_iter().next().unwrap() else {
+        panic!("expected the next inspection");
+    };
+    assert!(
+        matches!(futures::executor::block_on(future), Message::ThreadInspected { revision, .. } if revision == current)
+    );
+}
+
+#[test]
 fn thread_inspected_splits_conversation_when_successful() {
     let mut app = loaded_demo_app();
     let epoch = app.session_epoch;
@@ -2277,6 +2339,7 @@ fn thread_inspected_splits_conversation_when_successful() {
     ];
 
     let _ = app.update(Message::ThreadInspected {
+        revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
         epoch,
         request,
         folder: Folder::INBOX,
@@ -2318,6 +2381,7 @@ fn thread_inspected_stale_epoch_or_folder_is_ignored() {
 
     // Wrong epoch
     let _ = app.update(Message::ThreadInspected {
+        revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
         epoch: stale_epoch,
         request,
         folder: Folder::INBOX,
@@ -2336,6 +2400,7 @@ fn thread_inspected_stale_epoch_or_folder_is_ignored() {
 
     // Wrong folder
     let _ = app.update(Message::ThreadInspected {
+        revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
         epoch: app.session_epoch,
         request,
         folder: Folder::System(crate::mail::MailFolder::Trash),

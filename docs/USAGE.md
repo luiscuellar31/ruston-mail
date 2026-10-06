@@ -28,9 +28,11 @@ the open folder.
 
 Folder lists and server search load 50 conversations at a time. Use **Load more**
 at the end of the list to request another page when available. Loading another
-page keeps the open message and your position in the list. Background refreshes
-and conversation grouping also preserve the reader and anchor the list to a
-nearby visible row, even when rows are reordered. If the open message's row is
+page keeps the open message and your position in the list. Refresh keeps verified
+message groups visible while updating them in the background. Repeated refreshes
+do not add duplicate messages. Conversation grouping preserves the reader and
+anchors the list to the same message or conversation when rows change. A list
+at the top stays at the top, including on startup. If the open message's row is
 temporarily absent, its content stays visible; row actions become available again
 when that row returns.
 

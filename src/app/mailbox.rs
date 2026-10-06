@@ -102,6 +102,132 @@ struct CachedListing {
     /// A confirmed mailbox change may have affected this folder. It can still
     /// be shown immediately, but must be refreshed before it is cached clean.
     dirty: bool,
+    groups: ConversationGroups,
+}
+
+struct SplitConversation {
+    source: ConversationSummary,
+    message_ids: Vec<String>,
+}
+
+impl SplitConversation {
+    fn matches(&self, source: &ConversationSummary) -> bool {
+        // Read/star flags do not change threading. Reinspection refreshes the
+        // individual flags while these rows remain visible.
+        let mut current = source.clone();
+        current.unread = self.source.unread;
+        current.starred = self.source.starred;
+        current == self.source
+    }
+}
+
+/// Presentation decisions belong to the loaded folder, not to the session or
+/// disk cache. The reverse index also identifies a row's conversation for UI
+/// anchoring and keeps reconciliation proportional to the loaded rows.
+#[derive(Default)]
+struct ConversationGroups {
+    splits: HashMap<String, SplitConversation>,
+    parents: HashMap<String, String>,
+}
+
+impl ConversationGroups {
+    fn forget(&mut self, id: &str) -> Option<SplitConversation> {
+        let group = self.splits.remove(id)?;
+        for message in &group.message_ids {
+            if self.parents.get(message).map(String::as_str) == Some(id) {
+                self.parents.remove(message);
+            }
+        }
+        Some(group)
+    }
+
+    fn retain_rows(&mut self, rows: &HashSet<String>) {
+        self.splits.retain(|id, group| {
+            group
+                .message_ids
+                .iter()
+                .any(|message| rows.contains(message) && self.parents.get(message) == Some(id))
+        });
+        self.parents
+            .retain(|message, parent| rows.contains(message) && self.splits.contains_key(parent));
+    }
+
+    fn reusable(
+        &mut self,
+        source: &ConversationSummary,
+        rows: &HashSet<String>,
+    ) -> Option<&mut SplitConversation> {
+        if !self.contains_members(&source.id, rows) {
+            return None;
+        }
+        self.splits
+            .get_mut(&source.id)
+            .filter(|group| group.matches(source))
+    }
+
+    fn contains_members(&self, id: &str, rows: &HashSet<String>) -> bool {
+        self.splits.get(id).is_some_and(|group| {
+            group.message_ids.iter().all(|message| {
+                rows.contains(message) && self.parents.get(message).map(String::as_str) == Some(id)
+            })
+        })
+    }
+
+    /// Replace the parent and any older copies of its members together. Fresh
+    /// inspected metadata wins, including when a member was retained below a
+    /// page boundary or already appeared in another response.
+    fn apply_split(
+        &mut self,
+        rows: &mut Vec<ConversationSummary>,
+        id: &str,
+        mut incoming: Vec<ConversationSummary>,
+    ) -> bool {
+        deduplicate_rows(&mut incoming);
+        if incoming.is_empty() {
+            return false;
+        }
+        let source = rows
+            .iter()
+            .find(|row| row.id == id)
+            .cloned()
+            .or_else(|| self.splits.get(id).map(|group| group.source.clone()));
+        let Some(source) = source else {
+            return false;
+        };
+        let message_ids: Vec<_> = incoming.iter().map(|row| row.id.clone()).collect();
+        let mut replaced: HashSet<&str> = message_ids.iter().map(String::as_str).collect();
+        replaced.insert(id);
+        if let Some(group) = self.splits.get(id) {
+            replaced.extend(group.message_ids.iter().map(String::as_str));
+        }
+        let index = rows
+            .iter()
+            .position(|row| {
+                row.id == id || self.parents.get(&row.id).is_some_and(|parent| parent == id)
+            })
+            .unwrap_or(rows.len());
+        let insertion = rows[..index]
+            .iter()
+            .filter(|row| !replaced.contains(row.id.as_str()))
+            .count();
+        rows.retain(|row| !replaced.contains(row.id.as_str()));
+        let _ = self.forget(id);
+        for message in &message_ids {
+            self.parents.insert(message.clone(), id.to_owned());
+        }
+        self.splits.insert(
+            id.to_owned(),
+            SplitConversation {
+                source,
+                message_ids,
+            },
+        );
+        rows.splice(insertion..insertion, incoming);
+        deduplicate_rows(rows);
+        sort_newest_first(rows);
+        self.retain_rows(&collect_ids(rows));
+        true
+    }
 }
 
 /// List metadata that tells whether a loaded reader still describes its row.
@@ -167,6 +293,9 @@ pub struct Mailbox {
     next_page: u32,
     has_more: bool,
     cached_listings: HashMap<FolderKey, CachedListing>,
+    groups: ConversationGroups,
+    /// Confirmed local mutations invalidate older inspection metadata.
+    inspection_revision: u64,
     /// Whether the active listing must be revalidated before being considered
     /// a clean cache entry.
     active_dirty: bool,
@@ -209,6 +338,8 @@ impl Mailbox {
             next_page: 0,
             has_more: false,
             cached_listings: HashMap::new(),
+            groups: ConversationGroups::default(),
+            inspection_revision: 0,
             active_dirty: false,
             counts: None,
             counts_request: Some(counts_request),
@@ -472,6 +603,39 @@ impl Mailbox {
             Some(search) => search.row_ids.contains(row_id),
             None => self.row_ids.contains(row_id),
         }
+    }
+
+    pub(super) fn has_inspection_target(&self, id: &str) -> bool {
+        self.row_ids.contains(id) || self.groups.splits.contains_key(id)
+    }
+
+    pub(super) fn inspection_revision(&self) -> u64 {
+        self.inspection_revision
+    }
+
+    pub fn row_conversation<'a>(&'a self, row: &'a ConversationSummary) -> Option<&'a str> {
+        match row.kind {
+            SummaryKind::Conversation => Some(&row.id),
+            SummaryKind::Message => self.groups.parents.get(&row.id).map(String::as_str),
+        }
+    }
+
+    /// Prefer the exact message; a grouped parent or its first visible member
+    /// represents the same conversation while inspection updates presentation.
+    pub fn visible_anchor_index(&self, id: &str, conversation: Option<&str>) -> Option<usize> {
+        let mut representative = None;
+        for (index, row) in self.visible_conversations().enumerate() {
+            if row.id == id {
+                return Some(index);
+            }
+            if representative.is_none()
+                && conversation.is_some()
+                && self.row_conversation(row) == conversation
+            {
+                representative = Some(index);
+            }
+        }
+        representative
     }
 
     /// How many conversations are loaded, which is all a search can look at.
@@ -994,6 +1158,7 @@ impl Mailbox {
             .position(|row| row.id == row_id);
         self.conversations.retain(|row| row.id != row_id);
         self.row_ids.remove(row_id);
+        self.groups.retain_rows(&self.row_ids);
         self.last_dated_time = last_dated_time(&self.conversations);
         if let Some(search) = &mut self.search {
             search.rows.retain(|row| row.id != row_id);
@@ -1049,6 +1214,7 @@ impl Mailbox {
             self.next_page = cached.next_page;
             self.has_more = cached.has_more;
             self.active_dirty = cached.dirty;
+            self.groups = cached.groups;
             self.recompute_visible();
             if cached.dirty {
                 // From this point on only a change made while this request is
@@ -1067,6 +1233,7 @@ impl Mailbox {
             self.next_page = 0;
             self.has_more = false;
             self.active_dirty = false;
+            self.groups = ConversationGroups::default();
             self.recompute_visible();
             self.status = ListStatus::Loading(request);
             Some(self.page_request(request, 0))
@@ -1089,12 +1256,17 @@ impl Mailbox {
                 next_page: self.next_page,
                 has_more: self.has_more,
                 dirty,
+                groups: std::mem::take(&mut self.groups),
             },
         );
     }
 
     /// Marks cached folders stale after a confirmed server mutation.
     pub(super) fn invalidate_listings(&mut self) {
+        self.inspection_revision = self
+            .inspection_revision
+            .checked_add(1)
+            .expect("inspection revision exhausted");
         self.active_dirty = true;
         self.invalidate_cached_listings();
     }
@@ -1162,6 +1334,7 @@ impl Mailbox {
         let total = page.total;
 
         self.conversations = page.conversations;
+        self.groups = ConversationGroups::default();
         self.row_ids = collect_ids(&self.conversations);
         self.last_dated_time = last_dated_time(&self.conversations);
         self.counts = Some(counts);
@@ -1227,30 +1400,20 @@ impl Mailbox {
         conversation_id: &str,
         split_rows: Vec<ConversationSummary>,
     ) {
-        if split_rows.is_empty() {
-            return;
-        }
-
         if &self.folder == folder {
-            if let Some(pos) = self
-                .conversations
-                .iter()
-                .position(|c| c.id == conversation_id)
+            if self
+                .groups
+                .apply_split(&mut self.conversations, conversation_id, split_rows)
             {
-                self.conversations.splice(pos..=pos, split_rows);
-                sort_newest_first(&mut self.conversations);
                 self.row_ids = collect_ids(&self.conversations);
                 self.last_dated_time = last_dated_time(&self.conversations);
                 self.recompute_visible();
             }
         } else if let Some(cached) = self.cached_listings.get_mut(&FolderKey::of(folder))
-            && let Some(pos) = cached
-                .conversations
-                .iter()
-                .position(|c| c.id == conversation_id)
+            && cached
+                .groups
+                .apply_split(&mut cached.conversations, conversation_id, split_rows)
         {
-            cached.conversations.splice(pos..=pos, split_rows);
-            sort_newest_first(&mut cached.conversations);
             cached.row_ids = collect_ids(&cached.conversations);
             cached.last_dated_time = last_dated_time(&cached.conversations);
         }
@@ -1277,19 +1440,55 @@ impl Mailbox {
         }
     }
 
-    /// Returns loaded rows older than the refreshed first page.
-    fn rows_below(&mut self, fresh: &[ConversationSummary]) -> Vec<ConversationSummary> {
-        let Some(oldest) = fresh.iter().filter_map(|row| row.time).min() else {
-            return Vec::new();
-        };
-        let covered: HashSet<&str> = fresh.iter().map(|row| row.id.as_str()).collect();
-
-        self.conversations
-            .drain(..)
-            .filter(|row| {
-                row.time.is_some_and(|time| time < oldest) && !covered.contains(row.id.as_str())
-            })
-            .collect()
+    /// Refresh by server conversation identity. A split member's old timestamp
+    /// must not make it look like a different, deeper server conversation.
+    fn refreshed_rows(
+        &mut self,
+        mut fresh: Vec<ConversationSummary>,
+        keep_deeper: bool,
+    ) -> Vec<ConversationSummary> {
+        deduplicate_rows(&mut fresh);
+        let oldest = fresh.iter().filter_map(|row| row.time).min();
+        let mut covered = collect_ids(&fresh);
+        for source in &fresh {
+            if let Some(group) = self.groups.splits.get(&source.id) {
+                covered.extend(group.message_ids.iter().cloned());
+            }
+        }
+        let mut previous = HashMap::new();
+        let mut deeper = Vec::new();
+        for row in std::mem::take(&mut self.conversations) {
+            if covered.contains(&row.id) {
+                previous.entry(row.id.clone()).or_insert(row);
+            } else if keep_deeper && let Some(oldest) = oldest {
+                let parent = self.groups.parents.get(&row.id);
+                let time = parent
+                    .and_then(|id| self.groups.splits.get(id))
+                    .map_or(row.time, |group| group.source.time);
+                if time.is_some_and(|time| time < oldest)
+                    && !parent.is_some_and(|id| covered.contains(id))
+                {
+                    deeper.push(row);
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        for source in fresh {
+            if let Some(group) = self.groups.reusable(&source, &self.row_ids) {
+                let members = group
+                    .message_ids
+                    .iter()
+                    .filter_map(|id| previous.remove(id));
+                rows.extend(members);
+                group.source = source;
+            } else {
+                let _ = self.groups.forget(&source.id);
+                rows.push(source);
+            }
+        }
+        rows.extend(deeper);
+        deduplicate_rows(&mut rows);
+        rows
     }
 
     fn page_request(&self, id: RequestId, page: u32) -> PageRequest {
@@ -1305,37 +1504,58 @@ impl Mailbox {
         let received = page.conversations.len();
 
         if append {
+            let mut invalidated = HashSet::new();
+            for source in &page.conversations {
+                if let Some(group) = self.groups.reusable(source, &self.row_ids) {
+                    group.source = source.clone();
+                } else if let Some(group) = self.groups.forget(&source.id) {
+                    invalidated.extend(group.message_ids);
+                }
+            }
+            if !invalidated.is_empty() {
+                self.conversations
+                    .retain(|row| !invalidated.contains(&row.id));
+                self.row_ids = collect_ids(&self.conversations);
+                self.last_dated_time = last_dated_time(&self.conversations);
+            }
+            let mut incoming_ids = HashSet::new();
             let new: Vec<_> = page
                 .conversations
                 .into_iter()
-                .filter(|conversation| !self.row_ids.contains(&conversation.id))
+                .filter(|conversation| {
+                    // Metadata was checked above; removals can still leave a
+                    // previously reusable group with missing members.
+                    !self
+                        .groups
+                        .contains_members(&conversation.id, &self.row_ids)
+                        && !self.row_ids.contains(&conversation.id)
+                        && incoming_ids.insert(conversation.id.clone())
+                })
                 .collect();
             self.row_ids.extend(new.iter().map(|row| row.id.clone()));
             let from = self.conversations.len();
             let (last_dated_time, appended_at_end) =
                 append_newest_first(&mut self.conversations, new, self.last_dated_time);
             self.last_dated_time = last_dated_time;
-            if appended_at_end && self.search.is_none() {
+            if appended_at_end && invalidated.is_empty() && self.search.is_none() {
                 self.append_visible(from);
             } else {
                 self.recompute_visible();
             }
             self.next_page += 1;
+            if !invalidated.is_empty() {
+                self.groups.retain_rows(&self.row_ids);
+            }
         } else {
-            // Preserve deeper pages unless a short first page proves they are gone.
-            let deeper = if received >= self.page_size as usize {
-                self.rows_below(&page.conversations)
-            } else {
-                Vec::new()
-            };
-            self.conversations = page.conversations;
-            self.conversations.extend(deeper);
+            self.conversations =
+                self.refreshed_rows(page.conversations, received >= self.page_size as usize);
             self.row_ids = collect_ids(&self.conversations);
             // Rows split out of a conversation carry their own, older times.
             sort_newest_first(&mut self.conversations);
             self.last_dated_time = last_dated_time(&self.conversations);
             self.recompute_visible();
             self.next_page = self.next_page.max(1);
+            self.groups.retain_rows(&self.row_ids);
         }
         if !append
             && self
@@ -1351,6 +1571,11 @@ impl Mailbox {
         self.has_more = received > 0
             && u64::from(self.next_page) * u64::from(self.page_size) < u64::from(page.total);
     }
+}
+
+fn deduplicate_rows(rows: &mut Vec<ConversationSummary>) {
+    let mut seen = HashSet::new();
+    rows.retain(|row| seen.insert(row.id.clone()));
 }
 
 fn collect_ids(rows: &[ConversationSummary]) -> HashSet<String> {

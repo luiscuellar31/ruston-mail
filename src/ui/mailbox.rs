@@ -473,6 +473,7 @@ const ROW_LINE_CENTER_OFFSET: f32 = 12.5;
 struct RowAnchor {
     id: String,
     index: usize,
+    conversation: Option<String>,
 }
 
 /// Two visible rows are enough to retain a nearby survivor when inspection
@@ -487,7 +488,13 @@ pub(super) struct ConversationScroll {
 }
 
 impl ConversationScroll {
-    fn capture(mailbox: &Mailbox, scroll_id: egui::Id, offset: f32) -> Self {
+    fn capture(
+        mailbox: &Mailbox,
+        scroll_id: egui::Id,
+        offset: f32,
+        previous: Option<&Self>,
+    ) -> Self {
+        let previous = previous.filter(|saved| saved.same_view(mailbox, scroll_id));
         let first = (offset / (ROW_HEIGHT + ROW_GAP)).floor() as usize;
         let first = first.min(mailbox.visible_count().saturating_sub(1));
         Self {
@@ -498,20 +505,36 @@ impl ConversationScroll {
             offset,
             anchors: std::array::from_fn(|extra| {
                 let index = first + extra;
-                mailbox.visible_row(index).map(|row| RowAnchor {
-                    id: row.id.clone(),
+                let row = mailbox.visible_row(index)?;
+                // Keep a message's identity while its grouped parent is
+                // temporarily displayed, so later inspection can restore it.
+                let retained = previous.and_then(|saved| {
+                    saved.anchors.iter().flatten().find(|anchor| {
+                        anchor.id != row.id
+                            && anchor.conversation.as_deref() == Some(row.id.as_str())
+                            && !mailbox.has_row(&anchor.id)
+                    })
+                });
+                Some(RowAnchor {
+                    id: retained.map_or_else(|| row.id.clone(), |anchor| anchor.id.clone()),
                     index,
+                    conversation: mailbox.row_conversation(row).map(str::to_owned),
                 })
             }),
         }
     }
 
+    fn same_view(&self, mailbox: &Mailbox, scroll_id: egui::Id) -> bool {
+        self.scroll_id == scroll_id
+            && &self.folder == mailbox.folder()
+            && self.query == mailbox.search_query()
+            && self.search.as_deref() == mailbox.search_results()
+    }
+
     fn offset_after_update(&self, mailbox: &Mailbox, scroll_id: egui::Id) -> Option<f32> {
-        if self.scroll_id != scroll_id
-            || &self.folder != mailbox.folder()
-            || self.query != mailbox.search_query()
-            || self.search.as_deref() != mailbox.search_results()
-        {
+        // An untouched list starts at the top and remains there as inspection
+        // turns its first conversation into individual messages.
+        if !self.same_view(mailbox, scroll_id) || self.offset == 0.0 {
             return None;
         }
         let first = self.anchors[0].as_ref()?;
@@ -523,9 +546,7 @@ impl ConversationScroll {
             return None;
         }
         self.anchors.iter().flatten().find_map(|anchor| {
-            let index = mailbox
-                .visible_conversations()
-                .position(|row| row.id == anchor.id)?;
+            let index = mailbox.visible_anchor_index(&anchor.id, anchor.conversation.as_deref())?;
             let delta = (index as f32 - anchor.index as f32) * (ROW_HEIGHT + ROW_GAP);
             Some((self.offset + delta).max(0.0))
         })
@@ -549,6 +570,11 @@ fn conversation_list(
         ui.spacing_mut().item_spacing.y = ROW_GAP;
         ui.spacing_mut().scroll = theme::panel_scroll_style();
         let scroll_id = ui.make_persistent_id(egui::IdSalt::new("conversation-scroll"));
+        if state.conversation_scroll.is_none() {
+            // A new mailbox must not inherit native scroll or animation state
+            // left in this window by a previous signed-in session.
+            egui::scroll_area::State::default().store(ui.ctx(), scroll_id);
+        }
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt("conversation-scroll")
             .auto_shrink([false, false]);
@@ -606,6 +632,7 @@ fn conversation_list(
             mailbox,
             output.id,
             output.state.offset.y,
+            state.conversation_scroll.as_ref(),
         ));
         if reveal.is_some() {
             state.reveal_conversation = None;
@@ -968,13 +995,17 @@ mod tests {
             .all_styles_mut(|style| style.scroll_animation = egui::style::ScrollAnimation::none());
         let mut state = UiState::default();
         pagination_frame(&context, mailbox, &mut state, Default::default());
-        let id = state.conversation_scroll.as_ref().unwrap().scroll_id;
-        let mut scroll = egui::scroll_area::State::load(&context, id).unwrap();
-        scroll.offset.y = 100_000.0;
-        scroll.store(&context, id);
+        set_list_offset(&context, &state, 100_000.0);
         pagination_frame(&context, mailbox, &mut state, Default::default());
         let frame = pagination_frame(&context, mailbox, &mut state, Default::default());
         (context, state, frame)
+    }
+
+    fn set_list_offset(context: &egui::Context, state: &UiState, offset: f32) {
+        let id = state.conversation_scroll.as_ref().unwrap().scroll_id;
+        let mut scroll = egui::scroll_area::State::load(context, id).unwrap();
+        scroll.offset.y = offset;
+        scroll.store(context, id);
     }
 
     #[test]
@@ -1046,11 +1077,8 @@ mod tests {
     fn interleaved_pages_and_refreshes_keep_the_first_visible_row_in_place() {
         for refreshing in [false, true] {
             let mut mailbox = pagination_mailbox(false);
-            let (context, mut state, _) = pagination_view(&mailbox);
-            let id = state.conversation_scroll.as_ref().unwrap().scroll_id;
-            let mut scroll = egui::scroll_area::State::load(&context, id).unwrap();
-            scroll.offset.y -= 17.25;
-            scroll.store(&context, id);
+            let (context, mut state, frame) = pagination_view(&mailbox);
+            set_list_offset(&context, &state, frame.offset - 17.25);
             let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
             let request = if refreshing {
                 mailbox.refresh(10)
@@ -1129,6 +1157,110 @@ mod tests {
                 .is_none()
         );
         drop(context);
+    }
+
+    fn inspected_page_members(parent: i64) -> Vec<ConversationSummary> {
+        [0, 1]
+            .map(|offset| ConversationSummary {
+                kind: SummaryKind::Message,
+                ..pagination_row(&format!("m{parent}-{offset}"), 1000 - parent - offset)
+            })
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn startup_inspection_keeps_an_untouched_list_at_the_top() {
+        let mut mailbox = pagination_mailbox(false);
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        mailbox.split_conversation(&Folder::INBOX, "p0", inspected_page_members(0));
+        let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        assert_eq!(before.offset, 0.0);
+        assert_eq!(after.offset, 0.0);
+        assert!(after.subjects.contains_key("m0-0"));
+    }
+
+    #[test]
+    fn a_new_mailbox_view_starts_at_the_top_even_with_old_native_scroll_state() {
+        let mailbox = pagination_mailbox(false);
+        let (context, mut state, before) = pagination_view(&mailbox);
+        assert!(before.offset > 0.0);
+        state.conversation_scroll = None;
+        let fresh = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        assert_eq!(fresh.offset, 0.0);
+        assert!(fresh.subjects.contains_key("p0"));
+    }
+
+    #[test]
+    fn first_inspection_keeps_its_conversation_at_the_same_position_in_a_scrolled_list() {
+        let mut mailbox = pagination_mailbox(false);
+        let (context, mut state, before) = pagination_view(&mailbox);
+        mailbox.split_conversation(&Folder::INBOX, "p44", inspected_page_members(44));
+        let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        assert_eq!(after.offset, before.offset);
+        assert_eq!(after.subjects["m44-0"], before.subjects["p44"]);
+    }
+
+    #[test]
+    fn repeated_refresh_and_reinspection_keep_top_middle_and_bottom_without_duplicates() {
+        for parent in [0, 20, 45] {
+            let mut mailbox = pagination_mailbox(false);
+            let id = format!("p{parent}");
+            mailbox.split_conversation(&Folder::INBOX, &id, inspected_page_members(parent));
+            let (context, mut state, _) = pagination_view(&mailbox);
+            set_list_offset(&context, &state, parent as f32 * (ROW_HEIGHT + ROW_GAP));
+            let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
+            for request in 20..24 {
+                let refresh = mailbox.refresh(request).unwrap();
+                let waiting = pagination_frame(&context, &mailbox, &mut state, Default::default());
+                assert_eq!(waiting.offset, before.offset);
+                let mut page = pagination_page(0, 50, 120);
+                page.conversations[parent as usize].unread = request % 2 == 0;
+                page.conversations[parent as usize].starred = request % 2 != 0;
+                mailbox.finish_page(refresh.id, Ok(page));
+                let refreshed =
+                    pagination_frame(&context, &mailbox, &mut state, Default::default());
+                assert_eq!(refreshed.offset, before.offset);
+                mailbox.split_conversation(&Folder::INBOX, &id, inspected_page_members(parent));
+                let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
+                assert_eq!(after.offset, before.offset);
+                assert_eq!(
+                    after.subjects[&format!("m{parent}-0")],
+                    before.subjects[&format!("m{parent}-0")]
+                );
+                assert_eq!(mailbox.visible_count(), 51);
+                assert_eq!(
+                    mailbox
+                        .visible_conversations()
+                        .map(|row| &row.id)
+                        .collect::<std::collections::HashSet<_>>()
+                        .len(),
+                    51
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changed_group_retains_the_original_message_anchor_until_reinspection() {
+        let mut mailbox = pagination_mailbox(false);
+        mailbox.split_conversation(&Folder::INBOX, "p20", inspected_page_members(20));
+        let (context, mut state, _) = pagination_view(&mailbox);
+        set_list_offset(&context, &state, 21.0 * (ROW_HEIGHT + ROW_GAP));
+        let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        let refresh = mailbox.refresh(20).unwrap();
+        let mut page = pagination_page(0, 50, 120);
+        page.conversations[20].message_count += 1;
+        mailbox.finish_page(refresh.id, Ok(page));
+        pagination_frame(&context, &mailbox, &mut state, Default::default());
+        pagination_frame(&context, &mailbox, &mut state, Default::default());
+        mailbox.split_conversation(&Folder::INBOX, "p20", inspected_page_members(20));
+        let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        assert_eq!(after.offset, before.offset);
+        assert_eq!(after.subjects["m20-1"], before.subjects["m20-1"]);
     }
 
     #[test]
