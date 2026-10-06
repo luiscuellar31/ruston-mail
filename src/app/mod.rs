@@ -109,6 +109,8 @@ pub enum Message {
     RevealAttachment(PathBuf),
     /// Shows or hides Settings beside the mailbox sidebar.
     ShowSettings(bool),
+    /// Opens the project's own repository from the About card.
+    OpenSourceCode,
     /// Marks opened mail as read, or leaves it unread.
     SetMarkReadOnOpen(bool),
     /// Asks where a link goes before opening it, or opens it straight away.
@@ -386,6 +388,9 @@ impl App {
                 }
             }
             Message::OpenSignupPage => return open_in_browser(PROTON_SIGNUP_URL.to_owned()),
+            Message::OpenSourceCode => {
+                return open_in_browser(env!("CARGO_PKG_REPOSITORY").to_owned());
+            }
             Message::CopyVerificationLink => {
                 if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
                     return Effects::ui(UiEffect::CopyText(url.clone()));

@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align, Layout};
 
-use super::{theme, version_label};
+use super::theme;
 use crate::app::Message;
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{Appearance, ComposePlacement, Settings, StartFolder};
@@ -247,7 +247,44 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings, messages: &mut Vec<Message>)
         }
     });
     ui.add_space(14.0);
-    ui.with_layout(Layout::right_to_left(Align::Center), version_label);
+    about(ui, messages);
+}
+
+fn about(ui: &mut egui::Ui, messages: &mut Vec<Message>) -> egui::Response {
+    section(ui, "About", |ui| {
+        ui.horizontal_top(|ui| {
+            ui.add(
+                egui::Image::new(egui::include_image!("../../assets/ui/ruston-mail-128.png"))
+                    .fit_to_exact_size(egui::Vec2::splat(40.0))
+                    .alt_text("Ruston Mail logo"),
+            );
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(concat!("Ruston Mail ", env!("CARGO_PKG_VERSION")))
+                        .size(18.0)
+                        .strong(),
+                );
+                description(ui, "A native Proton Mail client.");
+            });
+        });
+        ui.add_space(8.0);
+        description(
+            ui,
+            "Built with Rust, egui, and proton-crypto. Not affiliated with Proton.",
+        );
+        description(
+            ui,
+            concat!(
+                "Made by Luis Cuellar. ",
+                env!("CARGO_PKG_LICENSE"),
+                " License."
+            ),
+        );
+        ui.add_space(8.0);
+        if ui.add(theme::compact_button("Source code")).clicked() {
+            messages.push(Message::OpenSourceCode);
+        }
+    })
 }
 
 pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
@@ -389,6 +426,105 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_rect(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Rect> {
+        match shape {
+            egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                shapes.iter().find_map(|shape| text_rect(shape, label))
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn about_is_the_last_settings_section() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 4000.0),
+                )),
+                ..Default::default()
+            },
+            |ui| page(ui, &mut Settings::default(), &mut Vec::new()),
+        );
+        let find = |label| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| text_rect(&shape.shape, label))
+                .unwrap()
+        };
+        assert!(find("About").top() > find("Keyboard").bottom());
+        assert!(
+            find(concat!("Ruston Mail ", env!("CARGO_PKG_VERSION"))).top() > find("About").top()
+        );
+        assert!(find("Source code").top() > find("About").top());
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn about_fits_both_themes_and_source_button_requests_the_repository() {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            for width in [240.0, 720.0] {
+                let context = egui::Context::default();
+                theme::install(&context);
+                theme::apply(&context, appearance);
+                let viewport =
+                    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 480.0));
+                let mut messages = Vec::new();
+                let mut card = egui::Rect::NOTHING;
+                let mut draw = |events| {
+                    context.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(viewport),
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| {
+                            card = about(ui, &mut messages).rect;
+                        },
+                    )
+                };
+                draw(Vec::new()).drop_without_applying_deltas();
+                let output = draw(Vec::new());
+                let button = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| text_rect(&shape.shape, "Source code"))
+                    .unwrap();
+                assert!(viewport.contains_rect(button));
+                for clipped in &output.shapes {
+                    if let egui::epaint::Shape::Text(text) = &clipped.shape {
+                        assert!(viewport.contains_rect(egui::Rect::from_min_size(
+                            text.pos,
+                            text.galley.size()
+                        )));
+                    }
+                }
+                output.drop_without_applying_deltas();
+                for pressed in [true, false] {
+                    draw(vec![
+                        egui::Event::PointerMoved(button.center()),
+                        egui::Event::PointerButton {
+                            pos: button.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ])
+                    .drop_without_applying_deltas();
+                }
+                assert!(viewport.contains_rect(card));
+                assert!(matches!(messages.as_slice(), [Message::OpenSourceCode]));
+            }
+        }
+    }
 
     #[test]
     fn unsaved_settings_actions_fit_at_large_zoom() {

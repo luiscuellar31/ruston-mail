@@ -92,6 +92,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   them before leaving for a folder, composer, or sign-out. Resetting the layout
   immediately restores the default window and pane sizes in `App`; the UI
   requests the window resize and clears egui's cached pane widths once it settles.
+  Settings ends with an About card containing the existing logo, package version,
+  technology and author credits, license, and a Source code button. The button
+  dispatches `OpenSourceCode` through `App`, which opens the package repository
+  using the existing background browser effect.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches

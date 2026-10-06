@@ -1603,6 +1603,22 @@ fn exiting_demo_clears_mailbox_and_opens_login() {
 }
 
 #[test]
+fn about_source_code_uses_the_background_browser_effect() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ShowSettings(true));
+    let settings = app.settings().clone();
+    let effects = app.update(Message::OpenSourceCode);
+
+    assert_eq!(effects.units(), 1);
+    assert!(matches!(
+        effects.into_iter().next(),
+        Some(Effect::Background(_))
+    ));
+    assert!(app.showing_settings());
+    assert_eq!(app.settings(), &settings);
+}
+
+#[test]
 fn absent_saved_session_opens_login() {
     let mut app = App::new(Settings::default());
 

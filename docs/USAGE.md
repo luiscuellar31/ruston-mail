@@ -125,6 +125,9 @@ unapplied changes, Ruston Mail asks whether to apply them, discard them, or keep
 editing. The same confirmation appears before writing a new message or signing
 out from Settings.
 
+The **About** section at the bottom shows the app version, credits, and license.
+Choose **Source code** to open the project's repository in your browser.
+
 Settings control:
 
 - Whether opening mail marks it read.
