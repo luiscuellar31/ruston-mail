@@ -1045,6 +1045,59 @@ fn load_more_appends_without_duplicates() {
 }
 
 #[test]
+fn load_more_preserves_the_open_reader_on_success_and_failure() {
+    for result in [page(&["c"], 3), Err(MailboxError::Connection)] {
+        let mut mailbox = loaded_inbox(&["a", "b"], 120);
+        load_detail(&mut mailbox, "b", detail("b", &["b1", "b2"]), 9);
+        mailbox.toggle_message("b1");
+        mailbox.toggle_quote("b2", 0);
+        let reader = mailbox.reader_state().clone();
+
+        let request = mailbox.load_more(10).unwrap();
+        assert_eq!(mailbox.reader_state(), &reader);
+        mailbox.finish_page(request.id, result);
+        assert_eq!(mailbox.reader_state(), &reader);
+    }
+}
+
+#[test]
+fn load_more_and_read_completion_refresh_preserve_split_reader() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    let split = vec![
+        ConversationSummary {
+            kind: SummaryKind::Message,
+            unread: true,
+            ..dated("m40-a", 999_960)
+        },
+        ConversationSummary {
+            kind: SummaryKind::Message,
+            ..dated("m40-b", 999_950)
+        },
+    ];
+    mailbox.split_conversation(&Folder::INBOX, "p40", split.clone());
+    load_detail(&mut mailbox, "m40-a", detail("m40-a", &["m40-a"]), 9);
+    mailbox.toggle_message("m40-a");
+    let reader = mailbox.reader_state().clone();
+    let read = mailbox.start_mark_read(10).unwrap();
+    let next = mailbox.load_more(11).unwrap();
+
+    mailbox.finish_mark_read(&read, Ok(())).unwrap();
+    mailbox.finish_page(next.id, full_page(50, 120));
+    assert!(mailbox.needs_revalidation());
+    let refresh = mailbox.refresh(12).unwrap();
+    mailbox.finish_page(refresh.id, full_page(0, 120));
+
+    assert_eq!(mailbox.reader_state(), &reader);
+    assert_eq!(mailbox.selected_conversation(), Some("m40-a"));
+    assert!(mailbox.selected_summary().is_none());
+    assert!(mailbox.reader_stamp.is_none());
+    mailbox.split_conversation(&Folder::INBOX, "p40", split);
+    assert!(mailbox.selected_summary().is_some());
+    assert_eq!(mailbox.reader_state(), &reader);
+}
+
+#[test]
 fn later_pages_merge_interleaved_dates_and_keep_earlier_rows_first_on_ties() {
     let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
     mailbox.finish_page(first.id, dated_page(&[("a", 100), ("b", 80), ("c", 50)], 7));
@@ -1179,14 +1232,24 @@ fn refresh_replaces_list_only_after_success() {
 }
 
 #[test]
-fn refresh_closes_reader_when_conversation_disappears() {
+fn refresh_keeps_reader_when_row_is_absent_from_the_page() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
-    mailbox.start_conversation_load("b".into(), 9);
+    load_detail(&mut mailbox, "b", detail("b", &["b1"]), 9);
+    let reader = mailbox.reader_state().clone();
 
     let request = mailbox.refresh(3).unwrap();
     mailbox.finish_page(request.id, page(&["a"], 1));
 
-    assert!(mailbox.reader().is_none());
+    assert_eq!(mailbox.reader_state(), &reader);
+    assert!(mailbox.reader_stamp.is_none());
+
+    // Explicit filtering and folder navigation still close the old reader.
+    mailbox.set_search_query("no match".into());
+    assert_eq!(mailbox.selected_conversation(), None);
+    mailbox.set_search_query(String::new());
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 10);
+    mailbox.select_folder(sys(MailFolder::Sent), 11);
+    assert_eq!(mailbox.selected_conversation(), None);
 }
 
 #[test]

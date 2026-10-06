@@ -47,11 +47,23 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`app/mailbox.rs`](../src/app/mailbox.rs) owns folder and search pagination.
   Loaded folders keep their rows, ID index, and page cursor together when
   cached; older pages append in date order, while overlapping dates are merged.
-  It also orders read mutations by row. An explicit read/unread action accepted
-  during an automatic read remains in the existing single action slot until
-  that read succeeds. Its completion returns the next request to `App`, which
-  creates the asynchronous effect only then. A failed or timed-out predecessor
-  fails the queued action visibly instead of sending it with uncertain remote
+  Page responses preserve the open reader, including expansion and quote state.
+  A refreshed listing can regroup a message or omit its row without proving
+  deletion; the reader remains visible and loses its cache stamp if its row is
+  absent. Explicit filtering, folder changes, and organizing actions retain their
+  existing selection behavior. Reader scroll resets only when opening another row.
+  [`ui/mailbox.rs`](../src/ui/mailbox.rs) keeps two visible row IDs, their indices,
+  and the scroll offset for the current folder and search. Appends with unchanged
+  indices take a constant-time check. When a merge, refresh, or inspection moves
+  those rows, the next frame restores the first surviving anchor at its previous
+  screen position, using egui's scroll state. Explicit reveal requests take
+  precedence, and sign-out clears the anchors. No complete listing snapshot or
+  persistent scroll data is added.
+  The mailbox state machine also orders read mutations by row. An explicit
+  read/unread action accepted during an automatic read remains in the existing
+  single action slot until that read succeeds. Its completion returns the next
+  request to `App`, which creates the asynchronous effect only then. A failed or
+  timed-out predecessor fails the queued action visibly instead of sending it with uncertain remote
   ordering. Automatic reads cannot start while an explicit read mutation on the
   same row is pending; other rows and action kinds keep their existing behavior.
   Stale or duplicate completions never release a queued request. Successful

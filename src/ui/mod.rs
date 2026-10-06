@@ -26,6 +26,7 @@ pub(super) struct UiState {
     focus_search: bool,
     scroll_reader_top: bool,
     reveal_conversation: Option<String>,
+    conversation_scroll: Option<mailbox::ConversationScroll>,
     undo_notice: Option<UndoNotice>,
 }
 
@@ -162,6 +163,9 @@ impl DesktopApp {
             _ => None,
         };
         let effects = self.app.update(message);
+        if self.app.mailbox().is_none() {
+            self.ui.conversation_scroll = None;
+        }
         if submitted_or_cancelled
             || !matches!(
                 self.app.auth_state(),
@@ -633,6 +637,37 @@ mod tests {
         desktop.dispatch(Message::ShowSettings(true), &context);
         desktop.settings_draft = Some(desktop.app.settings().clone());
         (desktop, context)
+    }
+
+    #[test]
+    fn sign_out_clears_the_saved_conversation_viewport() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        let page = crate::mail::demo::DemoMailbox::new().list_conversations(
+            &Folder::INBOX,
+            0,
+            crate::mail::demo::PAGE_SIZE,
+            crate::mail::demo::now(),
+        );
+        desktop.dispatch(Message::ConversationsLoaded(1, page), &context);
+        context
+            .run_ui(egui::RawInput::default(), |root| {
+                mailbox::show(
+                    root,
+                    &desktop.app,
+                    None,
+                    false,
+                    None,
+                    &mut desktop.ui,
+                    &mut Vec::new(),
+                );
+            })
+            .drop_without_applying_deltas();
+        assert!(desktop.ui.conversation_scroll.is_some());
+
+        desktop.dispatch(Message::Logout, &context);
+        assert!(desktop.app.mailbox().is_none());
+        assert!(desktop.ui.conversation_scroll.is_none());
     }
 
     #[test]

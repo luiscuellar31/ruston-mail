@@ -1337,10 +1337,15 @@ impl Mailbox {
             self.recompute_visible();
             self.next_page = self.next_page.max(1);
         }
-        if !append {
-            // Search results are not part of this answer and stay on screen,
-            // so what the reader holds is only closed when it truly left.
-            self.close_reader_if_hidden();
+        if !append
+            && self
+                .selected_conversation()
+                .is_some_and(|id| !self.has_row(id))
+        {
+            // A refreshed page can regroup a split message or omit its row.
+            // Keep the open content; absence from a page is not a deletion.
+            // It must not become a cache hit using the old row's metadata.
+            self.reader_stamp = None;
         }
 
         self.has_more = received > 0

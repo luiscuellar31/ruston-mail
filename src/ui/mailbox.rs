@@ -470,6 +470,68 @@ const ROW_GAP: f32 = 10.0;
 const ROW_HORIZONTAL_PADDING: f32 = 18.0;
 const ROW_LINE_CENTER_OFFSET: f32 = 12.5;
 
+struct RowAnchor {
+    id: String,
+    index: usize,
+}
+
+/// Two visible rows are enough to retain a nearby survivor when inspection
+/// replaces the first one. No snapshot of the complete listing is retained.
+pub(super) struct ConversationScroll {
+    scroll_id: egui::Id,
+    folder: Folder,
+    query: String,
+    search: Option<String>,
+    offset: f32,
+    anchors: [Option<RowAnchor>; 2],
+}
+
+impl ConversationScroll {
+    fn capture(mailbox: &Mailbox, scroll_id: egui::Id, offset: f32) -> Self {
+        let first = (offset / (ROW_HEIGHT + ROW_GAP)).floor() as usize;
+        let first = first.min(mailbox.visible_count().saturating_sub(1));
+        Self {
+            scroll_id,
+            folder: mailbox.folder().clone(),
+            query: mailbox.search_query().to_owned(),
+            search: mailbox.search_results().map(str::to_owned),
+            offset,
+            anchors: std::array::from_fn(|extra| {
+                let index = first + extra;
+                mailbox.visible_row(index).map(|row| RowAnchor {
+                    id: row.id.clone(),
+                    index,
+                })
+            }),
+        }
+    }
+
+    fn offset_after_update(&self, mailbox: &Mailbox, scroll_id: egui::Id) -> Option<f32> {
+        if self.scroll_id != scroll_id
+            || &self.folder != mailbox.folder()
+            || self.query != mailbox.search_query()
+            || self.search.as_deref() != mailbox.search_results()
+        {
+            return None;
+        }
+        let first = self.anchors[0].as_ref()?;
+        // Ordinary appends and idle frames need only one indexed lookup.
+        if mailbox
+            .visible_row(first.index)
+            .is_some_and(|row| row.id == first.id)
+        {
+            return None;
+        }
+        self.anchors.iter().flatten().find_map(|anchor| {
+            let index = mailbox
+                .visible_conversations()
+                .position(|row| row.id == anchor.id)?;
+            let delta = (index as f32 - anchor.index as f32) * (ROW_HEIGHT + ROW_GAP);
+            Some((self.offset + delta).max(0.0))
+        })
+    }
+}
+
 fn conversation_list(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
@@ -486,7 +548,8 @@ fn conversation_list(
         // on this `Ui` and not inside the closure.
         ui.spacing_mut().item_spacing.y = ROW_GAP;
         ui.spacing_mut().scroll = theme::panel_scroll_style();
-        let scroll = egui::ScrollArea::vertical()
+        let scroll_id = ui.make_persistent_id(egui::IdSalt::new("conversation-scroll"));
+        let mut scroll = egui::ScrollArea::vertical()
             .id_salt("conversation-scroll")
             .auto_shrink([false, false]);
 
@@ -497,7 +560,18 @@ fn conversation_list(
                 .position(|row| row.id == wanted)
         });
 
-        scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
+        // Explicit keyboard navigation takes precedence over restoring the
+        // viewport after a background listing update.
+        if reveal.is_none()
+            && let Some(offset) = state
+                .conversation_scroll
+                .as_ref()
+                .and_then(|saved| saved.offset_after_update(mailbox, scroll_id))
+        {
+            scroll = scroll.vertical_scroll_offset(offset);
+        }
+
+        let output = scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
             if let Some(index) = reveal {
                 let row_step = ROW_HEIGHT + ROW_GAP;
                 let content_top = ui.max_rect().top() - range.start as f32 * row_step;
@@ -528,6 +602,11 @@ fn conversation_list(
                 }
             }
         });
+        state.conversation_scroll = Some(ConversationScroll::capture(
+            mailbox,
+            output.id,
+            output.state.offset.y,
+        ));
         if reveal.is_some() {
             state.reveal_conversation = None;
         }
@@ -790,6 +869,267 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+    use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
+
+    fn pagination_row(id: &str, time: i64) -> ConversationSummary {
+        ConversationSummary {
+            id: id.to_owned(),
+            kind: SummaryKind::Conversation,
+            time: Some(time),
+            subject: Some(id.to_owned()),
+            correspondents: Some("Test sender".into()),
+            participants: Vec::new(),
+            preview: None,
+            unread: false,
+            starred: false,
+            message_count: 1,
+            has_attachments: false,
+        }
+    }
+
+    fn pagination_page(start: i64, count: i64, total: u32) -> ConversationPage {
+        ConversationPage {
+            conversations: (start..start + count)
+                .map(|n| pagination_row(&format!("p{n}"), 1000 - n))
+                .collect(),
+            total,
+            inspect_candidates: Vec::new(),
+        }
+    }
+
+    fn pagination_mailbox(search: bool) -> Mailbox {
+        let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+        mailbox.finish_page(first.id, Ok(pagination_page(0, 50, 120)));
+        if search {
+            mailbox.set_search_query("needle".into());
+            let request = mailbox.start_search(3).unwrap();
+            mailbox.finish_search(&request, Ok(pagination_page(0, 50, 120)));
+        }
+        let open = mailbox.start_conversation_load("p40".into(), 9).unwrap();
+        mailbox.finish_conversation(
+            &open,
+            Ok(ConversationDetail {
+                id: "p40".into(),
+                subject: None,
+                messages: Vec::new(),
+                labels: Vec::new(),
+            }),
+        );
+        mailbox
+    }
+
+    struct ListFrame {
+        messages: Vec<Message>,
+        button: Option<egui::Pos2>,
+        subjects: std::collections::HashMap<String, f32>,
+        offset: f32,
+    }
+
+    fn pagination_frame(
+        context: &egui::Context,
+        mailbox: &Mailbox,
+        state: &mut UiState,
+        input: egui::RawInput,
+    ) -> ListFrame {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(320.0, 480.0),
+                )),
+                ..input
+            },
+            |ui| conversation_list(ui, mailbox, state, &mut messages),
+        );
+        let mut button = None;
+        let mut subjects = std::collections::HashMap::new();
+        for clipped in &output.shapes {
+            if let egui::epaint::Shape::Text(text) = &clipped.shape {
+                if text.galley.text() == "Load more" {
+                    button = Some(text.pos + text.galley.size() * 0.5);
+                }
+                subjects.insert(text.galley.text().to_owned(), text.pos.y);
+            }
+        }
+        output.drop_without_applying_deltas();
+        ListFrame {
+            messages,
+            button,
+            subjects,
+            offset: state.conversation_scroll.as_ref().unwrap().offset,
+        }
+    }
+
+    fn pagination_view(mailbox: &Mailbox) -> (egui::Context, UiState, ListFrame) {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context
+            .all_styles_mut(|style| style.scroll_animation = egui::style::ScrollAnimation::none());
+        let mut state = UiState::default();
+        pagination_frame(&context, mailbox, &mut state, Default::default());
+        let id = state.conversation_scroll.as_ref().unwrap().scroll_id;
+        let mut scroll = egui::scroll_area::State::load(&context, id).unwrap();
+        scroll.offset.y = 100_000.0;
+        scroll.store(&context, id);
+        pagination_frame(&context, mailbox, &mut state, Default::default());
+        let frame = pagination_frame(&context, mailbox, &mut state, Default::default());
+        (context, state, frame)
+    }
+
+    #[test]
+    fn load_more_keeps_reader_and_viewport_while_waiting_and_after_success_or_failure() {
+        for search in [false, true] {
+            for failed in [false, true] {
+                let mut mailbox = pagination_mailbox(search);
+                let reader = mailbox.reader_state().clone();
+                let (context, mut state, before) = pagination_view(&mailbox);
+                let button = before.button.unwrap();
+                for pressed in [true, false] {
+                    let frame = pagination_frame(
+                        &context,
+                        &mailbox,
+                        &mut state,
+                        egui::RawInput {
+                            events: vec![
+                                egui::Event::PointerMoved(button),
+                                egui::Event::PointerButton {
+                                    pos: button,
+                                    button: egui::PointerButton::Primary,
+                                    pressed,
+                                    modifiers: Default::default(),
+                                },
+                            ],
+                            ..Default::default()
+                        },
+                    );
+                    assert!(
+                        frame
+                            .messages
+                            .iter()
+                            .all(|message| matches!(message, Message::LoadMoreConversations))
+                    );
+                    if !pressed {
+                        assert_eq!(frame.messages.len(), 1);
+                    }
+                }
+                let result = if failed {
+                    Err(MailboxError::Connection)
+                } else {
+                    Ok(pagination_page(50, 50, 100))
+                };
+                if search {
+                    let next = mailbox.load_more_search(10).unwrap();
+                    let waiting =
+                        pagination_frame(&context, &mailbox, &mut state, Default::default());
+                    assert_eq!(waiting.offset, before.offset);
+                    assert_eq!(mailbox.reader_state(), &reader);
+                    mailbox.finish_search(&next, result);
+                } else {
+                    let next = mailbox.load_more(10).unwrap();
+                    let waiting =
+                        pagination_frame(&context, &mailbox, &mut state, Default::default());
+                    assert_eq!(waiting.offset, before.offset);
+                    assert_eq!(mailbox.reader_state(), &reader);
+                    mailbox.finish_page(next.id, result);
+                }
+                let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
+                assert_eq!(after.offset, before.offset);
+                assert_eq!(after.subjects["p44"], before.subjects["p44"]);
+                assert_eq!(mailbox.reader_state(), &reader);
+                assert_eq!(mailbox.has_more(), failed);
+            }
+        }
+    }
+
+    #[test]
+    fn interleaved_pages_and_refreshes_keep_the_first_visible_row_in_place() {
+        for refreshing in [false, true] {
+            let mut mailbox = pagination_mailbox(false);
+            let (context, mut state, _) = pagination_view(&mailbox);
+            let id = state.conversation_scroll.as_ref().unwrap().scroll_id;
+            let mut scroll = egui::scroll_area::State::load(&context, id).unwrap();
+            scroll.offset.y -= 17.25;
+            scroll.store(&context, id);
+            let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
+            let request = if refreshing {
+                mailbox.refresh(10)
+            } else {
+                mailbox.load_more(10)
+            }
+            .unwrap();
+            let mut page = if refreshing {
+                pagination_page(0, 49, 120)
+            } else {
+                pagination_page(50, 1, 120)
+            };
+            page.conversations
+                .insert(0, pagination_row("overlap", 1001));
+            mailbox.finish_page(request.id, Ok(page));
+            let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
+            assert_eq!(after.offset, before.offset + ROW_HEIGHT + ROW_GAP);
+            assert_eq!(after.subjects["p44"], before.subjects["p44"]);
+            assert_eq!(mailbox.selected_conversation(), Some("p40"));
+        }
+    }
+
+    #[test]
+    fn background_split_keeps_the_next_visible_row_when_the_first_is_replaced() {
+        let mut mailbox = pagination_mailbox(false);
+        let (context, mut state, before) = pagination_view(&mailbox);
+        mailbox.split_conversation(
+            &Folder::INBOX,
+            "p44",
+            vec![
+                pagination_row("split-a", 1002),
+                pagination_row("split-b", 1001),
+            ],
+        );
+        let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        assert_eq!(after.subjects["p45"], before.subjects["p45"]);
+        assert_eq!(mailbox.selected_conversation(), Some("p40"));
+    }
+
+    #[test]
+    fn explicit_navigation_takes_precedence_over_the_saved_viewport() {
+        let mut mailbox = pagination_mailbox(false);
+        let (context, mut state, _) = pagination_view(&mailbox);
+        let next = mailbox.load_more(10).unwrap();
+        mailbox.finish_page(
+            next.id,
+            Ok(ConversationPage {
+                conversations: vec![pagination_row("overlap", 1001)],
+                total: 120,
+                inspect_candidates: Vec::new(),
+            }),
+        );
+        state.reveal_conversation = Some("overlap".into());
+        pagination_frame(&context, &mailbox, &mut state, Default::default());
+        let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        assert_eq!(after.offset, 0.0);
+        assert!(state.reveal_conversation.is_none());
+    }
+
+    #[test]
+    fn saved_viewport_does_not_apply_to_another_folder_or_search() {
+        let mut mailbox = pagination_mailbox(false);
+        let (context, state, _) = pagination_view(&mailbox);
+        let saved = state.conversation_scroll.unwrap();
+        mailbox.set_search_query("p4".into());
+        assert!(
+            saved
+                .offset_after_update(&mailbox, saved.scroll_id)
+                .is_none()
+        );
+        mailbox.set_search_query(String::new());
+        mailbox.select_folder(Folder::System(MailFolder::Sent), 10);
+        assert!(
+            saved
+                .offset_after_update(&mailbox, saved.scroll_id)
+                .is_none()
+        );
+        drop(context);
+    }
 
     #[test]
     fn settings_button_responds_to_hover_press_and_selection_in_both_themes() {
