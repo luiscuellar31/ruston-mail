@@ -109,10 +109,25 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   `App::update`; password visibility stays only in transient UI state. The
   desktop dispatch clears it on submit, cancellation, or a move away from a
   password step.
-- With a mailbox open, [`ui/mailbox.rs`](../src/ui/mailbox.rs) keeps the sidebar
-  visible and replaces the conversation list and reader with
+- [`app/layout.rs`](../src/app/layout.rs) owns the minimum width for usable
+  columns and chooses compact presentation below 602 available egui points.
+  [`ui/mailbox.rs`](../src/ui/mailbox.rs) then shows a single pane with Folders,
+  Mail, and Reading/Message navigation. The local selection lives in `UiState`;
+  `DesktopApp` follows accepted folder selections, opened conversations, search
+  focus, and new drafts without adding persistent navigation state. Compact
+  rendering never sends `PanelsResized`, so returning to columns preserves the
+  saved ratios and egui's remembered divider widths. Explicit UI identities
+  keep list and reader scroll/expansion state when their parent pane changes.
+  The sidebar scrolls its folders and labels independently, reserving the
+  account, Settings, and sign-out actions at the bottom;
+  [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.
+- With a mailbox open, [`ui/mailbox.rs`](../src/ui/mailbox.rs) replaces the
+  conversation list and reader with
   [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. The desktop
-  UI holds preference edits until Apply and confirms whether to apply or discard
+  keeps the sidebar visible in the three-pane layout and gives Settings the
+  full content width in compact presentation. Compact navigation leaves
+  Settings through the same unsaved-change confirmation as normal navigation.
+  The UI holds preference edits until Apply and confirms whether to apply or discard
   them before leaving for a folder, composer, or sign-out. Resetting the layout
   immediately restores the default window and pane sizes in `App`; the UI
   requests the window resize and clears egui's cached pane widths once it settles.

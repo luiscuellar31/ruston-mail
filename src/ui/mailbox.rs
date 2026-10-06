@@ -3,12 +3,23 @@ use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
 use super::{UiState, UndoNotice, compose, reader, settings, theme};
-use crate::app::{App, ListStatus, Mailbox, Message, UndoMove, panel_ratios, panel_widths};
+use crate::app::{
+    App, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, UndoMove, compact_layout, panel_ratios,
+    panel_widths,
+};
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
 use crate::settings::{ComposePlacement, Settings};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
 const CONVERSATION_PANEL_ID: &str = "conversation-list";
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompactView {
+    Folders,
+    #[default]
+    Mail,
+    Reader,
+}
 
 pub(super) fn reset_panel_sizes(context: &egui::Context) {
     // egui's remembered widths take precedence over each panel's default_size.
@@ -31,16 +42,29 @@ pub(super) fn show(
     let mailbox = app.mailbox().expect("authenticated mailbox");
     let context = root.ctx().clone();
     let window_width = root.available_width();
+    if compact_layout(window_width) {
+        show_compact(
+            root,
+            app,
+            email,
+            signing_out,
+            settings_draft,
+            state,
+            messages,
+        );
+        undo_notice(&context, mailbox, state, messages);
+        return;
+    }
     let widths = panel_widths(app.panels(), window_width);
     let inset = theme::titlebar_inset(&context);
 
     let sidebar = egui::Panel::left(SIDEBAR_PANEL_ID)
         .default_size(widths.sidebar)
-        .size_range(200.0..=(window_width - 400.0).max(200.0))
+        .size_range(MIN_PANEL_WIDTH..=(window_width - 2.0 * MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH))
         .resizable(true)
         .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
         .show(root, |ui| {
-            sidebar(ui, app, mailbox, email, signing_out, messages)
+            sidebar(ui, app, mailbox, email, signing_out, messages);
         });
 
     if let Some(draft) = settings_draft {
@@ -58,36 +82,17 @@ pub(super) fn show(
         return;
     }
 
-    let remaining = (window_width - sidebar.response.rect.width()).max(400.0);
+    let remaining = (window_width - sidebar.response.rect.width()).max(2.0 * MIN_PANEL_WIDTH);
     let conversations = egui::Panel::left(CONVERSATION_PANEL_ID)
         .default_size(widths.conversations)
-        .size_range(200.0..=(remaining - 200.0).max(200.0))
+        .size_range(MIN_PANEL_WIDTH..=(remaining - MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH))
         .resizable(true)
         .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
         .show(root, |ui| conversation_pane(ui, mailbox, state, messages));
 
     egui::CentralPanel::default()
         .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-        .show(root, |ui| {
-            if app.settings().compose_placement == ComposePlacement::ReadingPane
-                && let Some(writing) = app.compose()
-            {
-                compose::show_in_pane(ui, writing, messages);
-            } else {
-                reader::show(
-                    ui,
-                    mailbox,
-                    app.folders(),
-                    app.mailbox_actions_available(),
-                    app.pending_link(),
-                    app.saving_attachment(),
-                    app.saved_attachment(),
-                    app.settings().reading(),
-                    state,
-                    messages,
-                );
-            }
-        });
+        .show(root, |ui| reading_pane(ui, app, state, messages));
 
     undo_notice(&context, mailbox, state, messages);
 
@@ -104,6 +109,101 @@ pub(super) fn show(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn show_compact(
+    root: &mut egui::Ui,
+    app: &App,
+    email: Option<&str>,
+    signing_out: bool,
+    settings_draft: Option<&mut Settings>,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    let mailbox = app.mailbox().expect("authenticated mailbox");
+    let inset = theme::titlebar_inset(root.ctx());
+    let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
+        && app.compose().is_some();
+    if state.compact_view == CompactView::Reader
+        && mailbox.selected_conversation().is_none()
+        && !writing
+    {
+        state.compact_view = CompactView::Mail;
+    }
+    egui::Panel::top("compact-navigation")
+        .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
+        .show(root, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (view, label) in [
+                    (CompactView::Folders, "Folders"),
+                    (CompactView::Mail, "Mail"),
+                    (
+                        CompactView::Reader,
+                        if writing { "Message" } else { "Reading" },
+                    ),
+                ] {
+                    let enabled = view != CompactView::Reader
+                        || writing
+                        || mailbox.selected_conversation().is_some();
+                    if ui
+                        .add_enabled(
+                            enabled,
+                            egui::Button::new(label)
+                                .selected(settings_draft.is_none() && state.compact_view == view),
+                        )
+                        .clicked()
+                    {
+                        state.compact_view = view;
+                        if settings_draft.is_some() {
+                            // Leaving Settings still goes through the existing unsaved-change guard.
+                            messages.push(Message::ShowSettings(false));
+                        }
+                    }
+                }
+            });
+        });
+    let fill = if settings_draft.is_none() && state.compact_view == CompactView::Folders {
+        theme::colors(root).sidebar
+    } else {
+        theme::colors(root).panel
+    };
+    egui::CentralPanel::default()
+        .frame(theme::panel_frame(fill))
+        .show(root, |ui| {
+            if let Some(draft) = settings_draft {
+                settings::show(ui, app.settings(), draft, messages);
+            } else {
+                match state.compact_view {
+                    CompactView::Folders => {
+                        sidebar(ui, app, mailbox, email, signing_out, messages);
+                    }
+                    CompactView::Mail => conversation_pane(ui, mailbox, state, messages),
+                    CompactView::Reader => reading_pane(ui, app, state, messages),
+                }
+            }
+        });
+}
+
+fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mut Vec<Message>) {
+    if app.settings().compose_placement == ComposePlacement::ReadingPane
+        && let Some(writing) = app.compose()
+    {
+        compose::show_in_pane(ui, writing, messages);
+    } else {
+        reader::show(
+            ui,
+            app.mailbox().expect("authenticated mailbox"),
+            app.folders(),
+            app.mailbox_actions_available(),
+            app.pending_link(),
+            app.saving_attachment(),
+            app.saved_attachment(),
+            app.settings().reading(),
+            state,
+            messages,
+        );
+    }
+}
+
 fn sidebar(
     ui: &mut egui::Ui,
     app: &App,
@@ -111,7 +211,33 @@ fn sidebar(
     email: Option<&str>,
     signing_out: bool,
     messages: &mut Vec<Message>,
-) {
+) -> egui::scroll_area::ScrollAreaOutput<()> {
+    ui.scope_builder(
+        egui::UiBuilder::new().id(egui::Id::new("mailbox-folder-content")),
+        |ui| {
+            let available = ui.available_rect_before_wrap();
+            let account = egui::Panel::bottom("sidebar-account-actions")
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    sidebar_account(ui, app, email, signing_out, messages)
+                });
+            if account.response.rect.bottom() > available.bottom() + 1.0 {
+                // A bottom panel needs one measured frame before its height is
+                // known. Schedule that frame even if the pointer is stationary.
+                ui.ctx().request_repaint();
+            }
+            ui.spacing_mut().scroll = theme::panel_scroll_style();
+            egui::ScrollArea::vertical()
+                .id_salt("sidebar-scroll")
+                .min_scrolled_height(0.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| sidebar_content(ui, app, mailbox, messages))
+        },
+    )
+    .inner
+}
+
+fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
     ui.heading(egui::RichText::new("Ruston Mail").size(23.0));
     ui.add_space(12.0);
 
@@ -142,8 +268,40 @@ fn sidebar(
             folder_button(ui, mailbox, label, messages);
         }
     }
+}
 
-    ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+fn sidebar_account(
+    ui: &mut egui::Ui,
+    app: &App,
+    email: Option<&str>,
+    signing_out: bool,
+    messages: &mut Vec<Message>,
+) {
+    ui.vertical(|ui| {
+        let account_label = if app.is_demo() {
+            "demo@example.com"
+        } else {
+            email.unwrap_or("Proton Mail account")
+        };
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(account_label)
+                    .size(12.0)
+                    .color(theme::colors(ui).muted),
+            )
+            .truncate(),
+        )
+        .on_hover_text(account_label);
+        if let Some(error) = app.error_message() {
+            ui.label(
+                egui::RichText::new(error)
+                    .small()
+                    .color(theme::colors(ui).danger),
+            );
+        }
+        if settings_button(ui, app.showing_settings() && !signing_out).clicked() {
+            messages.push(Message::ShowSettings(true));
+        }
         let logout_label = if signing_out {
             "Signing out…"
         } else if app.is_demo() {
@@ -160,26 +318,6 @@ fn sidebar(
         {
             messages.push(Message::Logout);
         }
-        if settings_button(ui, app.showing_settings() && !signing_out).clicked() {
-            messages.push(Message::ShowSettings(true));
-        }
-        if let Some(error) = app.error_message() {
-            ui.label(
-                egui::RichText::new(error)
-                    .small()
-                    .color(theme::colors(ui).danger),
-            );
-        }
-        let account_label = if app.is_demo() {
-            "demo@example.com"
-        } else {
-            email.unwrap_or("Proton Mail account")
-        };
-        ui.label(
-            egui::RichText::new(account_label)
-                .size(12.0)
-                .color(theme::colors(ui).muted),
-        );
     });
 }
 
@@ -353,7 +491,11 @@ fn conversation_pane(
     ui.add_space(6.0);
 
     let mut query = mailbox.search_query().to_owned();
-    ui.horizontal(|ui| {
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        // Reserve the clear action before the field consumes the remaining width.
+        if !query.is_empty() && ui.button("Clear").clicked() {
+            messages.push(Message::SearchChanged(String::new()));
+        }
         let response = ui.add(
             theme::text_field(&mut query)
                 .id(egui::Id::new("mail-search"))
@@ -370,9 +512,6 @@ fn conversation_pane(
         }
         if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             messages.push(Message::SearchSubmitted);
-        }
-        if !query.is_empty() && ui.button("Clear").clicked() {
-            messages.push(Message::SearchChanged(String::new()));
         }
     });
     if !mailbox.search_query().is_empty() {
@@ -564,80 +703,83 @@ fn conversation_list(
     let visible_count = mailbox.visible_count();
     let total = visible_count + usize::from(ends_with_load_more(mailbox));
 
-    ui.scope(|ui| {
-        // Read by `show_rows` to work out where each row goes, so it is set
-        // on this `Ui` and not inside the closure.
-        ui.spacing_mut().item_spacing.y = ROW_GAP;
-        ui.spacing_mut().scroll = theme::panel_scroll_style();
-        let scroll_id = ui.make_persistent_id(egui::IdSalt::new("conversation-scroll"));
-        if state.conversation_scroll.is_none() {
-            // A new mailbox must not inherit native scroll or animation state
-            // left in this window by a previous signed-in session.
-            egui::scroll_area::State::default().store(ui.ctx(), scroll_id);
-        }
-        let mut scroll = egui::ScrollArea::vertical()
-            .id_salt("conversation-scroll")
-            .auto_shrink([false, false]);
+    ui.scope_builder(
+        egui::UiBuilder::new().id(egui::Id::new("mailbox-list-content")),
+        |ui| {
+            // Read by `show_rows` to work out where each row goes, so it is set
+            // on this `Ui` and not inside the closure.
+            ui.spacing_mut().item_spacing.y = ROW_GAP;
+            ui.spacing_mut().scroll = theme::panel_scroll_style();
+            let scroll_id = ui.make_persistent_id(egui::IdSalt::new("conversation-scroll"));
+            if state.conversation_scroll.is_none() {
+                // A new mailbox must not inherit native scroll or animation state
+                // left in this window by a previous signed-in session.
+                egui::scroll_area::State::default().store(ui.ctx(), scroll_id);
+            }
+            let mut scroll = egui::ScrollArea::vertical()
+                .id_salt("conversation-scroll")
+                .auto_shrink([false, false]);
 
-        // Synthesized rectangles can reveal rows outside the rendered range.
-        let reveal = state.reveal_conversation.as_deref().and_then(|wanted| {
-            mailbox
-                .visible_conversations()
-                .position(|row| row.id == wanted)
-        });
+            // Synthesized rectangles can reveal rows outside the rendered range.
+            let reveal = state.reveal_conversation.as_deref().and_then(|wanted| {
+                mailbox
+                    .visible_conversations()
+                    .position(|row| row.id == wanted)
+            });
 
-        // Explicit keyboard navigation takes precedence over restoring the
-        // viewport after a background listing update.
-        if reveal.is_none()
-            && let Some(offset) = state
-                .conversation_scroll
-                .as_ref()
-                .and_then(|saved| saved.offset_after_update(mailbox, scroll_id))
-        {
-            scroll = scroll.vertical_scroll_offset(offset);
-        }
-
-        let output = scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
-            if let Some(index) = reveal {
-                let row_step = ROW_HEIGHT + ROW_GAP;
-                let content_top = ui.max_rect().top() - range.start as f32 * row_step;
-                let row_rect = egui::Rect::from_min_size(
-                    egui::pos2(ui.max_rect().left(), content_top + index as f32 * row_step),
-                    egui::vec2(ui.available_width(), ROW_HEIGHT),
-                );
-                ui.scroll_to_rect(row_rect, Some(egui::Align::Center));
+            // Explicit keyboard navigation takes precedence over restoring the
+            // viewport after a background listing update.
+            if reveal.is_none()
+                && let Some(offset) = state
+                    .conversation_scroll
+                    .as_ref()
+                    .and_then(|saved| saved.offset_after_update(mailbox, scroll_id))
+            {
+                scroll = scroll.vertical_scroll_offset(offset);
             }
 
-            for index in range {
-                let Some(conversation) = mailbox.visible_row(index) else {
-                    load_more(ui, mailbox, messages);
-                    continue;
-                };
-                let response = ui
-                    .push_id(&conversation.id, |ui| {
-                        conversation_row(
-                            ui,
-                            conversation,
-                            selected == Some(conversation.id.as_str()),
-                            &now,
-                        )
-                    })
-                    .inner;
-                if response.clicked() {
-                    messages.push(Message::SelectConversation(conversation.id.clone()));
+            let output = scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
+                if let Some(index) = reveal {
+                    let row_step = ROW_HEIGHT + ROW_GAP;
+                    let content_top = ui.max_rect().top() - range.start as f32 * row_step;
+                    let row_rect = egui::Rect::from_min_size(
+                        egui::pos2(ui.max_rect().left(), content_top + index as f32 * row_step),
+                        egui::vec2(ui.available_width(), ROW_HEIGHT),
+                    );
+                    ui.scroll_to_rect(row_rect, Some(egui::Align::Center));
                 }
+
+                for index in range {
+                    let Some(conversation) = mailbox.visible_row(index) else {
+                        load_more(ui, mailbox, messages);
+                        continue;
+                    };
+                    let response = ui
+                        .push_id(&conversation.id, |ui| {
+                            conversation_row(
+                                ui,
+                                conversation,
+                                selected == Some(conversation.id.as_str()),
+                                &now,
+                            )
+                        })
+                        .inner;
+                    if response.clicked() {
+                        messages.push(Message::SelectConversation(conversation.id.clone()));
+                    }
+                }
+            });
+            state.conversation_scroll = Some(ConversationScroll::capture(
+                mailbox,
+                output.id,
+                output.state.offset.y,
+                state.conversation_scroll.as_ref(),
+            ));
+            if reveal.is_some() {
+                state.reveal_conversation = None;
             }
-        });
-        state.conversation_scroll = Some(ConversationScroll::capture(
-            mailbox,
-            output.id,
-            output.state.offset.y,
-            state.conversation_scroll.as_ref(),
-        ));
-        if reveal.is_some() {
-            state.reveal_conversation = None;
-        }
-    });
+        },
+    );
 }
 
 /// Whether the virtualized list needs a trailing load-more row.
@@ -897,6 +1039,337 @@ mod tests {
 
     use super::*;
     use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
+
+    fn mailbox_frame(
+        context: &egui::Context,
+        app: &App,
+        state: &mut UiState,
+        size: egui::Vec2,
+        mut draft: Option<&mut Settings>,
+        input: egui::RawInput,
+    ) -> (Vec<Message>, Vec<egui::epaint::ClippedShape>) {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..input
+            },
+            |root| {
+                show(
+                    root,
+                    app,
+                    None,
+                    false,
+                    draft.as_deref_mut(),
+                    state,
+                    &mut messages,
+                )
+            },
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (messages, shapes)
+    }
+
+    fn visible_text_rect(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Rect> {
+        shapes.iter().find_map(|clipped| {
+            if let egui::epaint::Shape::Text(text) = &clipped.shape
+                && text.galley.text() == label
+            {
+                let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                if clipped.clip_rect.contains_rect(rect) {
+                    return Some(rect);
+                }
+            }
+            None
+        })
+    }
+
+    #[test]
+    fn folders_scroll_independently_while_account_actions_remain_accessible() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::FoldersLoaded(
+            1,
+            Ok((0..30)
+                .map(|n| Folder::label(format!("label-{n}"), format!("Label {n}")))
+                .collect()),
+        ));
+        let size = egui::vec2(410.0, 240.0);
+        let mut scroll_id = egui::Id::NULL;
+        let mut messages = Vec::new();
+        for _ in 0..2 {
+            context
+                .run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            let scroll = sidebar(
+                                ui,
+                                &app,
+                                app.mailbox().unwrap(),
+                                None,
+                                false,
+                                &mut messages,
+                            );
+                            scroll_id = scroll.id;
+                            assert!(scroll.content_size.y > scroll.inner_rect.height());
+                            assert!(scroll.content_size.x <= scroll.inner_rect.width() + 1.0);
+                        });
+                    },
+                )
+                .drop_without_applying_deltas();
+        }
+        let mut scroll = egui::scroll_area::State::load(&context, scroll_id).unwrap();
+        scroll.offset.y = 100_000.0;
+        scroll.store(&context, scroll_id);
+        let mut button = None;
+        let mut exit_button = None;
+        for _ in 0..3 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        sidebar(ui, &app, app.mailbox().unwrap(), None, false, &mut messages);
+                    });
+                },
+            );
+            button = visible_text_rect(&output.shapes, "Settings");
+            exit_button = visible_text_rect(&output.shapes, "Exit demo");
+            output.drop_without_applying_deltas();
+        }
+        assert!(
+            exit_button.is_some(),
+            "sign-out must be reachable after scrolling settles"
+        );
+        let position = button
+            .expect("Settings must be reachable at the end of the sidebar")
+            .center();
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events: vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        sidebar(ui, &app, app.mailbox().unwrap(), None, false, &mut messages);
+                    });
+                },
+            )
+            .drop_without_applying_deltas();
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::ShowSettings(true)))
+        );
+    }
+
+    #[test]
+    fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
+        for appearance in [
+            crate::settings::Appearance::Dark,
+            crate::settings::Appearance::Light,
+        ] {
+            for zoom in [1.5, 1.75, 2.0] {
+                let context = egui::Context::default();
+                theme::install(&context);
+                theme::apply(&context, appearance);
+                let mut preferences = Settings::default();
+                preferences.zoom = zoom;
+                preferences.appearance = appearance;
+                let (mut app, _) = App::boot(true, preferences);
+                app.update(Message::SearchChanged("needle".into()));
+                context
+                    .run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(820.0, 480.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |_| {},
+                    )
+                    .drop_without_applying_deltas();
+                context.set_zoom_factor(zoom);
+                let size = egui::vec2(820.0, 480.0) / zoom;
+                let window = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                let mut state = UiState::default();
+                for view in [CompactView::Mail, CompactView::Folders] {
+                    state.compact_view = view;
+                    for frame in 0..3 {
+                        let (messages, shapes) = mailbox_frame(
+                            &context,
+                            &app,
+                            &mut state,
+                            size,
+                            None,
+                            Default::default(),
+                        );
+                        assert!(
+                            !messages
+                                .iter()
+                                .any(|message| matches!(message, Message::PanelsResized(_)))
+                        );
+                        if frame < 2 {
+                            continue; // Let egui settle the measured bottom panel height.
+                        }
+                        for label in ["Folders", "Mail", "Reading"] {
+                            assert!(
+                                window.contains_rect(
+                                    visible_text_rect(&shapes, label).unwrap_or_else(|| panic!(
+                                        "{label} not visible at zoom {zoom}"
+                                    ))
+                                ),
+                                "{label} clipped at zoom {zoom}"
+                            );
+                        }
+                        if view == CompactView::Folders {
+                            for label in ["Settings", "Exit demo"] {
+                                assert!(
+                                    window.contains_rect(
+                                        visible_text_rect(&shapes, label).unwrap_or_else(
+                                            || panic!("{label} not visible at zoom {zoom}")
+                                        )
+                                    ),
+                                    "{label} clipped at zoom {zoom}"
+                                );
+                            }
+                        } else {
+                            assert!(
+                                window
+                                    .contains_rect(visible_text_rect(&shapes, "Clear").expect(
+                                        "search clear action must fit in the compact pane"
+                                    ))
+                            );
+                        }
+                        assert!(
+                            !messages
+                                .iter()
+                                .any(|message| matches!(message, Message::PanelsResized(_)))
+                        );
+                    }
+                }
+                let mut draft = app.settings().clone();
+                for _ in 0..3 {
+                    let (_, shapes) = mailbox_frame(
+                        &context,
+                        &app,
+                        &mut state,
+                        size,
+                        Some(&mut draft),
+                        Default::default(),
+                    );
+                    for label in ["Back to mail", "Apply"] {
+                        assert!(
+                            window.contains_rect(visible_text_rect(&shapes, label).unwrap()),
+                            "{label} clipped at zoom {zoom}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn switching_between_compact_and_columns_keeps_the_list_offset_and_split_ratios() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::ConversationsLoaded(
+            1,
+            Ok(pagination_page(0, 50, 120)),
+        ));
+        let mut state = UiState::default();
+        let wide = egui::vec2(1100.0, 700.0);
+        for _ in 0..3 {
+            mailbox_frame(&context, &app, &mut state, wide, None, Default::default());
+        }
+        set_list_offset(&context, &state, 500.0);
+        mailbox_frame(&context, &app, &mut state, wide, None, Default::default());
+        let before = state.conversation_scroll.as_ref().unwrap();
+        let (scroll_id, offset) = (before.scroll_id, before.offset);
+        let ratios = app.panels();
+        let sidebar_before =
+            egui::containers::panel::PanelState::load(&context, egui::Id::new(SIDEBAR_PANEL_ID))
+                .unwrap()
+                .outer_rect
+                .width();
+        for size in [egui::vec2(410.0, 240.0), wide] {
+            for _ in 0..3 {
+                mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+                let after = state.conversation_scroll.as_ref().unwrap();
+                assert_eq!(after.scroll_id, scroll_id);
+                assert_eq!(after.offset, offset);
+                assert_eq!(app.panels(), ratios);
+            }
+        }
+        let sidebar_after =
+            egui::containers::panel::PanelState::load(&context, egui::Id::new(SIDEBAR_PANEL_ID))
+                .unwrap()
+                .outer_rect
+                .width();
+        assert_eq!(sidebar_before, sidebar_after);
+    }
+
+    #[test]
+    fn high_zoom_uses_the_available_width_without_overwriting_panel_preferences() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (app, _) = App::boot(true, Settings::default());
+        let mut state = UiState::default();
+        let mut messages = Vec::new();
+        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(820.0, 480.0) / 1.75);
+        for _ in 0..3 {
+            messages.clear();
+            context
+                .run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(window),
+                        ..Default::default()
+                    },
+                    |root| show(root, &app, None, false, None, &mut state, &mut messages),
+                )
+                .drop_without_applying_deltas();
+        }
+        assert!(
+            egui::containers::panel::PanelState::load(
+                &context,
+                egui::Id::new(CONVERSATION_PANEL_ID)
+            )
+            .is_none(),
+            "three columns must not be forced into a narrow viewport"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|message| matches!(message, Message::PanelsResized(_))),
+            "a temporary compact layout must not overwrite saved split ratios"
+        );
+    }
 
     fn pagination_row(id: &str, time: i64) -> ConversationSummary {
         ConversationSummary {

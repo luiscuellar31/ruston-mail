@@ -88,6 +88,16 @@ cargo test --locked --workspace --all-features
 
 ## Windows native validation
 
+For mailbox layout changes, also check an 820×480 window at interface scales
+of 100%, 150%, 175%, and 200% in both themes. At high scales, use Folders/Mail/
+Reading to navigate the compact view, scroll to the sidebar's final label,
+verify Settings/sign-out stay accessible, open a conversation, and write a
+draft with Cc/Bcc and attachments. Grow and shrink the window while preserving
+the open message, draft, and list position. Verify that unsaved Settings changes still require
+a decision when leaving. Run these checks on macOS and Linux as well; automated
+egui geometry/input tests cover clipping and navigation, while native smoke
+checks cover compositor and platform behavior.
+
 CI checks compilation through Clippy and the test builds, documentation, and
 automated tests. Tests use mock servers and in-memory secret stores; they do
 not establish that Credential Manager, native dialogs, or window behavior work

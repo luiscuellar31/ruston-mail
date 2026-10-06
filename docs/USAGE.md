@@ -4,6 +4,14 @@ Ruston Mail has three panes: folders on the left, conversations in the middle,
 and the open conversation on the right. Drag either divider to resize them.
 The app remembers the layout for the next run.
 
+When a small window or a high interface scale leaves too little room for all
+three panes, the app shows one pane at a time. Use **Folders**, **Mail**, and
+**Reading** at the top to move between them; **Reading** becomes **Message**
+while writing in the reading pane. Opening a conversation switches to its
+content, and the search shortcut returns to **Mail**. Widening the window or
+reducing the interface scale brings back the three panes and their saved widths.
+Switching panes keeps the open conversation, draft, and list position.
+
 ## Signing in
 
 Enter your Proton username or email and password. Ruston Mail asks for a TOTP
@@ -19,6 +27,8 @@ FIDO2 and WebAuthn security keys are not supported yet.
 
 The sidebar contains Proton's standard folders, followed by your custom folders
 and labels. Unread counts update as mail changes.
+Folders and labels scroll independently when they do not fit. The account,
+Settings, and sign-out actions remain at the bottom of the sidebar.
 While the desktop has focus, it checks for new mail about once a minute. After
 being away for at least 30 seconds, it checks again when you return.
 
@@ -107,6 +117,8 @@ of being silently skipped.
 The composer opens in the reading pane by default, so folders and conversations
 stay visible. Settings can open it in a separate window instead. The same choice
 applies to new messages, replies, and forwards.
+The composer scrolls vertically when its fields or attachments exceed the
+available height, in either placement.
 
 The reader also offers **Reply**, **Reply all**, and **Forward**. Proton
 derives reply recipients and subjects from the original message.

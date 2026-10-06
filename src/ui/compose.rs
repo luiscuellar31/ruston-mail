@@ -12,7 +12,13 @@ pub(super) fn viewport_id() -> egui::ViewportId {
 }
 
 pub(super) fn show_in_pane(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
-    page(ui, compose, messages);
+    ui.scope(|ui| {
+        ui.spacing_mut().scroll = theme::panel_scroll_style();
+        egui::ScrollArea::vertical()
+            .id_salt("compose-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| page(ui, compose, messages));
+    });
 }
 
 pub(super) fn window_viewport(compose: &Compose) -> egui::ViewportBuilder {
@@ -58,7 +64,7 @@ pub(super) fn show_window(context: &egui::Context, compose: &Compose) -> Vec<Mes
 fn show(root: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     egui::CentralPanel::default()
         .frame(theme::panel_frame(theme::colors(root).panel))
-        .show(root, |ui| page(ui, compose, messages));
+        .show(root, |ui| show_in_pane(ui, compose, messages));
 }
 
 fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
@@ -66,42 +72,45 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     let leaving = sending == Sending::InFlight;
 
     let heading = heading(compose);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.heading(egui::RichText::new(heading).size(24.0));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // Nothing is offered while the message is on its way: it is out
-            // of the sender's hands, and a second press must not send twice.
-            let ready = compose.not_ready().is_none();
-            if ui
-                .add_enabled(
-                    ready && !leaving,
-                    egui::Button::new(if leaving {
-                        "Sending…"
-                    } else if sending == Sending::Failed(SendError::Unconfirmed) {
-                        "Send again"
-                    } else {
-                        "Send"
-                    })
-                    .fill(theme::colors(ui).accent_soft)
-                    .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
-                )
-                .clicked()
-            {
-                messages.push(Message::Send);
-            }
-            if ui
-                .add_enabled(!leaving, egui::Button::new("Discard"))
-                .clicked()
-            {
-                messages.push(Message::CloseCompose);
-            }
-            if ui
-                .add_enabled(!leaving, egui::Button::new("Attach…"))
-                .clicked()
-            {
-                messages.push(Message::PickComposeAttachments);
-            }
-        });
+        ui.with_layout(
+            Layout::right_to_left(Align::Center).with_main_wrap(true),
+            |ui| {
+                // Nothing is offered while the message is on its way: it is out
+                // of the sender's hands, and a second press must not send twice.
+                let ready = compose.not_ready().is_none();
+                if ui
+                    .add_enabled(
+                        ready && !leaving,
+                        egui::Button::new(if leaving {
+                            "Sending…"
+                        } else if sending == Sending::Failed(SendError::Unconfirmed) {
+                            "Send again"
+                        } else {
+                            "Send"
+                        })
+                        .fill(theme::colors(ui).accent_soft)
+                        .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
+                    )
+                    .clicked()
+                {
+                    messages.push(Message::Send);
+                }
+                if ui
+                    .add_enabled(!leaving, egui::Button::new("Discard"))
+                    .clicked()
+                {
+                    messages.push(Message::CloseCompose);
+                }
+                if ui
+                    .add_enabled(!leaving, egui::Button::new("Attach…"))
+                    .clicked()
+                {
+                    messages.push(Message::PickComposeAttachments);
+                }
+            },
+        );
     });
     ui.add_space(10.0);
 
@@ -109,23 +118,28 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         theme::card(ui)
             .stroke(egui::Stroke::new(1.0, theme::colors(ui).danger))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new("Discard unsaved message?")
                             .strong()
                             .color(theme::colors(ui).danger),
                     );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .button(egui::RichText::new("Discard").color(theme::colors(ui).danger))
-                            .clicked()
-                        {
-                            messages.push(Message::DiscardCompose);
-                        }
-                        if ui.button("Keep writing").clicked() {
-                            messages.push(Message::CancelDiscard);
-                        }
-                    });
+                    ui.with_layout(
+                        Layout::right_to_left(Align::Center).with_main_wrap(true),
+                        |ui| {
+                            if ui
+                                .button(
+                                    egui::RichText::new("Discard").color(theme::colors(ui).danger),
+                                )
+                                .clicked()
+                            {
+                                messages.push(Message::DiscardCompose);
+                            }
+                            if ui.button("Keep writing").clicked() {
+                                messages.push(Message::CancelDiscard);
+                            }
+                        },
+                    );
                 });
             });
         ui.add_space(10.0);
@@ -289,6 +303,52 @@ fn line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_small_composer_keeps_actions_visible_and_fields_scrollable() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        app.update(Message::ToggleComposeCopies);
+        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(410.0, 240.0));
+        let mut messages = Vec::new();
+        for _ in 0..3 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(window),
+                    ..Default::default()
+                },
+                |ui| show(ui, app.compose().unwrap(), &mut messages),
+            );
+            for label in ["Send", "Discard", "Attach…"] {
+                let (rect, clip) = output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| {
+                        if let egui::epaint::Shape::Text(text) = &clipped.shape
+                            && text.galley.text() == label
+                        {
+                            return Some((
+                                egui::Rect::from_min_size(text.pos, text.galley.size()),
+                                clipped.clip_rect,
+                            ));
+                        }
+                        None
+                    })
+                    .unwrap();
+                assert!(
+                    window.contains_rect(rect) && clip.contains_rect(rect),
+                    "{label} is clipped: {rect:?} in {clip:?}"
+                );
+            }
+            output.drop_without_applying_deltas();
+        }
+        assert!(!messages.iter().any(|message| matches!(
+            message,
+            Message::Send | Message::CloseCompose | Message::ComposeChanged(_, _)
+        )));
+    }
 
     #[test]
     fn compose_fields_start_at_the_left_and_are_taller_than_the_default() {

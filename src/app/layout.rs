@@ -6,6 +6,11 @@ pub const DIVIDER_WIDTH: f32 = 1.0;
 /// Narrowest width a panel can be dragged or squeezed to.
 pub const MIN_PANEL_WIDTH: f32 = 200.0;
 
+/// Switch to one pane when the three usable columns and dividers cannot fit.
+pub fn compact(window_width: f32) -> bool {
+    window_width < 3.0 * MIN_PANEL_WIDTH + 2.0 * DIVIDER_WIDTH
+}
+
 /// Sidebar, conversation list and reader widths for a window.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PanelWidths {
@@ -15,7 +20,8 @@ pub struct PanelWidths {
 }
 
 /// Applies the persisted split ratios while ensuring that all panes remain
-/// usable. The renderer only consumes these dimensions; it does not own them.
+/// usable in the three-pane layout. Below its minimum, the renderer must use
+/// the compact layout instead of placing these columns outside the viewport.
 pub fn widths(ratios: Panels, window_width: f32) -> PanelWidths {
     let available = (window_width - 2.0 * DIVIDER_WIDTH).max(3.0 * MIN_PANEL_WIDTH);
     let sidebar =
@@ -104,5 +110,15 @@ mod tests {
         let large = widths(Panels::default(), 2_560.0);
 
         assert!(large.reader > normal.reader);
+    }
+
+    #[test]
+    fn compact_layout_tracks_usable_points_at_every_supported_zoom() {
+        for zoom in [1.0, 1.15, 1.3, 1.5, 1.75, 2.0] {
+            let available = 820.0 / zoom;
+            assert_eq!(compact(available), available < TIGHTEST_WINDOW);
+        }
+        assert!(compact(TIGHTEST_WINDOW - 1.0));
+        assert!(!compact(TIGHTEST_WINDOW));
     }
 }

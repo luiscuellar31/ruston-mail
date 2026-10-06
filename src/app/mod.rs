@@ -30,7 +30,9 @@ pub use auth::{AuthState, SignInStep};
 pub use compose::{Answering, Compose, ComposeField, ComposeId, Sending};
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
-pub use layout::{ratios as panel_ratios, widths as panel_widths};
+pub use layout::{
+    MIN_PANEL_WIDTH, compact as compact_layout, ratios as panel_ratios, widths as panel_widths,
+};
 pub use mailbox::{
     ActionRequest, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
 };

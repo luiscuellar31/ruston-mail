@@ -138,36 +138,41 @@ fn conversation(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    ui.scope(|ui| {
-        ui.spacing_mut().scroll = theme::panel_scroll_style();
-        let mut scroll = egui::ScrollArea::vertical()
-            .id_salt("reader-scroll")
-            .auto_shrink([false, false]);
-        if std::mem::take(&mut state.scroll_reader_top) {
-            scroll = scroll.vertical_scroll_offset(0.0);
-        }
-        scroll.show(ui, |ui| {
-            let (gap, width) = reading_column_place(ui.available_width());
-            ui.horizontal_top(|ui| {
-                ui.add_space(gap);
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    reading_column(
-                        ui,
-                        reader,
-                        places,
-                        current_folder,
-                        summary,
-                        actions_enabled,
-                        action_error,
-                        saving_attachment,
-                        reading,
-                        messages,
-                    );
+    // Keep scrolling and message expansion attached to the reader when its
+    // parent changes between a side-by-side layout and a compact central pane.
+    ui.scope_builder(
+        egui::UiBuilder::new().id(egui::Id::new("mailbox-reader-content")),
+        |ui| {
+            ui.spacing_mut().scroll = theme::panel_scroll_style();
+            let mut scroll = egui::ScrollArea::vertical()
+                .id_salt("reader-scroll")
+                .auto_shrink([false, false]);
+            if std::mem::take(&mut state.scroll_reader_top) {
+                scroll = scroll.vertical_scroll_offset(0.0);
+            }
+            scroll.show(ui, |ui| {
+                let (gap, width) = reading_column_place(ui.available_width());
+                ui.horizontal_top(|ui| {
+                    ui.add_space(gap);
+                    ui.vertical(|ui| {
+                        ui.set_width(width);
+                        reading_column(
+                            ui,
+                            reader,
+                            places,
+                            current_folder,
+                            summary,
+                            actions_enabled,
+                            action_error,
+                            saving_attachment,
+                            reading,
+                            messages,
+                        );
+                    });
                 });
             });
-        });
-    });
+        },
+    );
 }
 
 /// Centers the bounded reading column, shrinking it when necessary.

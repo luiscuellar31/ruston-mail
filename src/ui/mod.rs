@@ -28,6 +28,7 @@ pub(super) struct UiState {
     scroll_reader_top: bool,
     reveal_conversation: Option<String>,
     conversation_scroll: Option<mailbox::ConversationScroll>,
+    compact_view: mailbox::CompactView,
     undo_notice: Option<UndoNotice>,
 }
 
@@ -166,9 +167,30 @@ impl DesktopApp {
             Message::ConversationsLoaded(request, result) => Some((*request, result.is_ok())),
             _ => None,
         };
+        let compact_destination = match &message {
+            Message::SelectFolder(_) => Some(mailbox::CompactView::Mail),
+            Message::SelectConversation(_) => Some(mailbox::CompactView::Reader),
+            Message::KeyPressed(press)
+                if press.key == Key::Enter && !press.command && !press.other_modifier =>
+            {
+                Some(mailbox::CompactView::Reader)
+            }
+            _ => None,
+        };
+        let was_composing = self.app.compose().is_some();
         let effects = self.app.update(message);
+        if let Some(view) = compact_destination {
+            self.ui.compact_view = view;
+        }
+        if self.app.settings().compose_placement == ComposePlacement::ReadingPane
+            && self.app.compose().is_some()
+            && !was_composing
+        {
+            self.ui.compact_view = mailbox::CompactView::Reader;
+        }
         if self.app.mailbox().is_none() {
             self.ui.conversation_scroll = None;
+            self.ui.compact_view = mailbox::CompactView::default();
         }
         if submitted_or_cancelled
             || !matches!(
@@ -212,8 +234,14 @@ impl DesktopApp {
             }
             match effect {
                 UiEffect::CopyText(text) => context.copy_text(text),
-                UiEffect::FocusSearch => self.ui.focus_search = true,
-                UiEffect::ScrollReaderTop => self.ui.scroll_reader_top = true,
+                UiEffect::FocusSearch => {
+                    self.ui.focus_search = true;
+                    self.ui.compact_view = mailbox::CompactView::Mail;
+                }
+                UiEffect::ScrollReaderTop => {
+                    self.ui.scroll_reader_top = true;
+                    self.ui.compact_view = mailbox::CompactView::Reader;
+                }
                 UiEffect::RevealConversation(id) => self.ui.reveal_conversation = Some(id),
                 UiEffect::ResetLayout => {
                     let window = self.app.settings().window;
@@ -634,6 +662,66 @@ fn show_desktop_notification(_sender: &str, _subject: &str) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_navigation_follows_open_search_and_compose_without_losing_a_draft() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        let page = crate::mail::demo::DemoMailbox::new().list_conversations(
+            &Folder::INBOX,
+            0,
+            crate::mail::demo::PAGE_SIZE,
+            crate::mail::demo::now(),
+        );
+        let id = page.as_ref().unwrap().conversations[0].id.clone();
+        desktop.dispatch(Message::ConversationsLoaded(1, page), &context);
+        desktop.dispatch(Message::SelectConversation(id.clone()), &context);
+        assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Reader);
+        desktop.ui.compact_view = mailbox::CompactView::Mail;
+        desktop.dispatch(Message::SelectConversation(id), &context);
+        assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Reader);
+        desktop.dispatch(
+            Message::KeyPressed(key(Key::Character('f'), true)),
+            &context,
+        );
+        assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Mail);
+        assert!(desktop.ui.focus_search);
+        desktop.dispatch(
+            Message::KeyPressed(key(Key::Character('n'), true)),
+            &context,
+        );
+        assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Reader);
+        desktop.dispatch(
+            Message::ComposeChanged(crate::app::ComposeField::Body, "Keep this draft".into()),
+            &context,
+        );
+        desktop.ui.compact_view = mailbox::CompactView::Mail;
+        desktop.dispatch(Message::SelectFolder(Folder::INBOX), &context);
+        assert_eq!(
+            desktop
+                .app
+                .compose()
+                .unwrap()
+                .field(crate::app::ComposeField::Body),
+            "Keep this draft"
+        );
+        desktop.dispatch(Message::ShowSettings(true), &context);
+        desktop.settings_draft = Some(desktop.app.settings().clone());
+        desktop.settings_draft.as_mut().unwrap().confirm_links = false;
+        desktop.dispatch(Message::ShowSettings(false), &context);
+        assert!(desktop.app.showing_settings());
+        assert!(desktop.pending_settings_exit.is_some());
+        desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
+        assert!(desktop.app.showing_settings());
+        assert_eq!(
+            desktop
+                .app
+                .compose()
+                .unwrap()
+                .field(crate::app::ComposeField::Body),
+            "Keep this draft"
+        );
+    }
 
     fn demo_with_settings() -> (DesktopApp, egui::Context) {
         let context = egui::Context::default();
