@@ -60,6 +60,12 @@ CI uses Bash on all runners, including Git Bash on Windows, and sets
 from the Linux and macOS caches. All platforms run the same checks; a failure
 on one platform does not cancel the other jobs.
 
+Linux also validates the desktop entry with `desktop-file-validate`. Windows
+builds `ruston.exe` and checks its version information against the desktop
+package; this catches missing resources without requiring a graphical session.
+A Windows-only test also sets and reads back the process AppUserModelID through
+the native APIs.
+
 In PowerShell, run the same checks with the documentation environment variable
 set separately:
 
@@ -127,6 +133,10 @@ try {
   pointer targets, and the file dialog position.
 - Set the composer placement to a separate window. Verify focus switching and
   that closing an edited composer offers the existing discard confirmation.
+- Check that the main and composer windows display the Ruston logo in Alt+Tab
+  and group under Ruston Mail in the taskbar. In Explorer, verify the executable
+  icon and its Properties > Details: product and file description **Ruston
+  Mail**, the Cargo package version, and original filename `ruston.exe`.
 - Attach a readable file whose path contains spaces and non-ASCII characters.
   Verify the native picker opens, the chosen filename appears, cancellation
   leaves the composer unchanged, and removing the attachment works. A demo
@@ -174,6 +184,71 @@ pass/fail result for each check in the PR or release notes. Mark unavailable
 checks as **not run**. Record failures with reproduction steps; do not include
 passwords, tokens, or personal message contents. Desktop notifications and
 unread icon badges are not implemented on Windows yet.
+
+## Desktop identity and icons
+
+Native windows use `com.luiscuellar.ruston-mail`, matching the existing macOS
+bundle identifier. Both the mailbox and separate composer use the existing
+Ruston logo. On Windows, the process sets this AppUserModelID before opening
+windows, and the build embeds a multi-resolution icon and version metadata in
+`ruston.exe`. Native Windows builds require the Windows SDK resource compiler
+alongside the MSVC toolchain described above; failure to embed resources fails
+the build. The version comes from Cargo rather than a second version setting.
+
+Linux's launcher filename and icon name match the Wayland app ID. On X11,
+`StartupWMClass=ruston` matches the native window class supplied by winit for
+the `ruston` executable. The desktop identity does not change session profiles
+or preference storage paths.
+
+Generated PNGs and the Windows ICO are committed, so ordinary builds do not
+need image tools. To regenerate them from the existing 1024-pixel logo on
+macOS, use Python 3 and the system `sips` tool:
+
+```sh
+python3 packaging/generate-desktop-icons.py
+```
+
+The source logo is [`assets/macos/ruston-mail-1024.png`](../assets/macos/ruston-mail-1024.png).
+Regenerating these assets does not regenerate the existing macOS ICNS; use
+[`packaging/macos/generate-icon.swift`](../packaging/macos/generate-icon.swift)
+when changing that artwork.
+
+## Desktop installation (Linux)
+
+From the repository root, build and install the desktop client in the standard
+system locations. These commands require administrator access and replace a
+previous installation at the same paths:
+
+```sh
+cargo build --locked --release --bin ruston
+sudo install -Dm755 target/release/ruston /usr/local/bin/ruston
+sudo install -Dm644 packaging/linux/com.luiscuellar.ruston-mail.desktop \
+  /usr/local/share/applications/com.luiscuellar.ruston-mail.desktop
+for size in 16 24 32 48 64 128 256 512; do
+  sudo install -Dm644 \
+    "assets/icons/hicolor/${size}x${size}/apps/com.luiscuellar.ruston-mail.png" \
+    "/usr/local/share/icons/hicolor/${size}x${size}/apps/com.luiscuellar.ruston-mail.png"
+done
+```
+
+The launcher expects `ruston` on the graphical session's `PATH`. Standard
+desktop sessions include `/usr/local/bin`, and `/usr/local/share` is a standard
+XDG data location. If your desktop overrides those paths, adjust its `PATH` and
+`XDG_DATA_DIRS` accordingly. Packagers can install the same desktop file and
+icon tree under `/usr/share` with the executable under `/usr/bin`.
+
+If available, run `desktop-file-validate` on the installed desktop file and
+`sudo gtk-update-icon-cache --force --ignore-theme-index /usr/local/share/icons/hicolor`.
+Desktop caches may require a new login before the launcher appears.
+
+Validate in both a Wayland and an X11 session when available: launch Ruston
+Mail from the application menu, verify its logo in the menu and Alt+Tab, and
+check that the mailbox and separate composer group together in the taskbar or
+dock. Repeat with light and dark desktop themes and more than one display
+scale. For an account-free run, close the app and run `RUSTON_DEMO=1 ruston`.
+Record the desktop environment, session type, scale, commit, and results;
+mark unavailable sessions as **not run**. Automated entry and icon checks do
+not establish how a particular desktop shell displays them.
 
 ## Packaging (macOS)
 

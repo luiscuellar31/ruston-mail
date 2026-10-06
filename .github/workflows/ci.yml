@@ -72,6 +72,33 @@ jobs:
       - name: Tests
         run: cargo test --locked --workspace --all-features
 
+      - name: Validate Linux desktop entry
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y desktop-file-utils
+          desktop-file-validate packaging/linux/com.luiscuellar.ruston-mail.desktop
+
+      - name: Build Windows desktop executable
+        if: runner.os == 'Windows'
+        run: cargo build --locked --bin ruston
+
+      - name: Verify Windows executable metadata
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read Cargo metadata' }
+          $package = $metadata.packages | Where-Object { $_.name -eq 'ruston-mail' }
+          $version = (Get-Item target/debug/ruston.exe).VersionInfo
+          if ($version.ProductName -ne 'Ruston Mail' -or
+              $version.ProductVersion -ne $package.version -or
+              $version.FileDescription -ne 'Ruston Mail' -or
+              $version.Comments -ne $package.description -or
+              $version.OriginalFilename -ne 'ruston.exe') {
+              throw 'Windows executable metadata does not match the desktop package'
+          }
+
       - name: Ensure clean workspace
         run: git diff --exit-code
 

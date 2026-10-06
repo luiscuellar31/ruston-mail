@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Ruston Mail
+GenericName=Mail Client
+Comment=Unofficial native desktop client for Proton Mail
+Exec=ruston
+Icon=com.luiscuellar.ruston-mail
+Terminal=false
+Categories=Network;Email;
+StartupWMClass=ruston

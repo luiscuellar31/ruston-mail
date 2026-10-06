@@ -54,6 +54,12 @@ Remove-Item Env:RUSTON_DEMO
 The demo does not contact Proton. A first build may still need to download Rust
 dependencies.
 
+For a Linux application-menu launcher and icons, follow the
+[desktop installation instructions](docs/DEVELOPMENT.md#desktop-installation-linux).
+Windows builds embed the same logo and executable version information;
+building requires the MSVC toolchain and Windows SDK described in the
+[development guide](docs/DEVELOPMENT.md#windows-native-validation).
+
 ## In this repository
 
 - [`ruston-mail`](src/) is the desktop client.

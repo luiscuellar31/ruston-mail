@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align, Layout};
 
-use super::{mailbox::detail, reader, theme};
+use super::{identity, mailbox::detail, reader, theme};
 use crate::app::{Answering, Compose, ComposeField, Message, Sending};
 use crate::mail::SendError;
 
@@ -15,45 +15,44 @@ pub(super) fn show_in_pane(ui: &mut egui::Ui, compose: &Compose, messages: &mut 
     page(ui, compose, messages);
 }
 
+pub(super) fn window_viewport(compose: &Compose) -> egui::ViewportBuilder {
+    identity::viewport()
+        .with_title(heading(compose))
+        .with_inner_size(WINDOW_SIZE)
+        .with_min_inner_size(MIN_WINDOW_SIZE)
+}
+
 pub(super) fn show_window(context: &egui::Context, compose: &Compose) -> Vec<Message> {
-    context.show_viewport_immediate(
-        viewport_id(),
-        egui::ViewportBuilder::default()
-            .with_title(heading(compose))
-            .with_inner_size(WINDOW_SIZE)
-            .with_min_inner_size(MIN_WINDOW_SIZE),
-        |root, _class| {
-            let mut messages = Vec::new();
-            show(root, compose, &mut messages);
+    context.show_viewport_immediate(viewport_id(), window_viewport(compose), |root, _class| {
+        let mut messages = Vec::new();
+        show(root, compose, &mut messages);
 
-            if root.input(|input| input.viewport().close_requested()) {
-                if compose.in_flight() {
-                    root.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                } else if compose.is_untouched() || compose.confirming_discard() {
-                    messages.push(Message::DiscardCompose);
-                } else {
-                    root.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                    messages.push(Message::CloseCompose);
-                }
-            } else if root.input(|input| input.key_pressed(egui::Key::Escape)) {
-                if compose.confirming_discard() {
-                    messages.push(Message::CancelDiscard);
-                } else {
-                    messages.push(Message::CloseCompose);
-                }
-            } else if root
-                .input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter))
-                && compose.not_ready().is_none()
-                && !compose.in_flight()
-            {
-                messages.push(Message::Send);
+        if root.input(|input| input.viewport().close_requested()) {
+            if compose.in_flight() {
+                root.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            } else if compose.is_untouched() || compose.confirming_discard() {
+                messages.push(Message::DiscardCompose);
+            } else {
+                root.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                messages.push(Message::CloseCompose);
             }
+        } else if root.input(|input| input.key_pressed(egui::Key::Escape)) {
+            if compose.confirming_discard() {
+                messages.push(Message::CancelDiscard);
+            } else {
+                messages.push(Message::CloseCompose);
+            }
+        } else if root.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter))
+            && compose.not_ready().is_none()
+            && !compose.in_flight()
+        {
+            messages.push(Message::Send);
+        }
 
-            messages
-        },
-    )
+        messages
+    })
 }
 
 fn show(root: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {

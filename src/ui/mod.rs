@@ -1,5 +1,6 @@
 mod auto_refresh;
 mod compose;
+mod identity;
 mod login;
 mod mailbox;
 mod reader;
@@ -36,7 +37,7 @@ struct UndoNotice {
 }
 
 pub(crate) fn main_viewport(settings: &Settings) -> egui::ViewportBuilder {
-    let viewport = egui::ViewportBuilder::default()
+    let viewport = identity::viewport()
         .with_inner_size([settings.window.width, settings.window.height])
         .with_min_inner_size(MIN_WINDOW_SIZE);
 
@@ -50,6 +51,9 @@ pub(crate) fn main_viewport(settings: &Settings) -> egui::ViewportBuilder {
 }
 
 pub fn run(demo: bool) -> eframe::Result {
+    #[cfg(target_os = "windows")]
+    identity::set_process_app_id()?;
+
     let settings = Settings::load();
     let options = eframe::NativeOptions {
         viewport: main_viewport(&settings),
@@ -830,6 +834,21 @@ mod tests {
         assert_eq!(viewport.fullsize_content_view, None);
         assert_eq!(viewport.titlebar_shown, None);
         assert_eq!(viewport.title_shown, None);
+    }
+
+    #[test]
+    fn mailbox_and_composer_share_the_desktop_identity_and_icon() {
+        let settings = Settings::default();
+        let (mut app, _) = App::boot(true, settings.clone());
+        app.update(Message::OpenCompose);
+        let main = main_viewport(&settings);
+        let composer = compose::window_viewport(app.compose().unwrap());
+        assert_eq!(main.app_id.as_deref(), Some(identity::APP_ID));
+        assert_eq!(composer.app_id, main.app_id);
+        assert!(std::sync::Arc::ptr_eq(
+            main.icon.as_ref().unwrap(),
+            composer.icon.as_ref().unwrap(),
+        ));
     }
 
     #[test]

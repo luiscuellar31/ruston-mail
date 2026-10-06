@@ -30,6 +30,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 
 - [`src/ui/`](../src/ui/) draws widgets with `eframe` and `egui`, gathers user
   actions, dispatches `Message`s, and applies effects that require the UI thread.
+- [`ui/identity.rs`](../src/ui/identity.rs) supplies the shared logo and app ID
+  to the mailbox and composer viewports. It sets the Windows process identity
+  before native windows are created. The ID matches the existing macOS bundle
+  and the Linux desktop filename; session and preference paths keep their
+  separate storage identifiers.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine.
@@ -289,7 +294,8 @@ unconfirmed because it may happen at any stage of the send pipeline.
 | Sessions and desktop preferences | Core [`session/`](../crates/ruston-core/src/session/) | Desktop [`settings.rs`](../src/settings.rs), [privacy guide](PRIVACY.md) |
 | CLI sync, watch, and local search | [`commands/sync.rs`](../crates/ruston-cli/src/commands/sync.rs), [`commands/watch.rs`](../crates/ruston-cli/src/commands/watch.rs), [`commands/search.rs`](../crates/ruston-cli/src/commands/search.rs) | Core [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs), [`cache.rs`](../crates/ruston-core/src/cache.rs), [privacy guide](PRIVACY.md) |
 | Offline demo data | [`src/mail/demo.rs`](../src/mail/demo.rs), [`crates/ruston-cli/src/demo.rs`](../crates/ruston-cli/src/demo.rs) | Each frontend's entry point |
-| Build, packaging, and CI | [Workspace manifest](../Cargo.toml), [`packaging/macos/`](../packaging/macos/) | [CI workflows](../.github/workflows/), [development guide](DEVELOPMENT.md) |
+| Desktop identity and icons | [`src/ui/identity.rs`](../src/ui/identity.rs), [`build.rs`](../build.rs) | [`packaging/linux/`](../packaging/linux/), [`assets/icons/hicolor/`](../assets/icons/hicolor/), [`assets/windows/`](../assets/windows/), [`packaging/macos/`](../packaging/macos/) |
+| Build, packaging, and CI | [Workspace manifest](../Cargo.toml), [`packaging/`](../packaging/) | [CI workflows](../.github/workflows/), [development guide](DEVELOPMENT.md) |
 
 ## Local state and tests
 
@@ -391,6 +397,14 @@ Run and check commands are in [Development](DEVELOPMENT.md).
 The shared [CI workflow](../.github/workflows/ci.yml) checks Linux and macOS on
 x86_64 and arm64, and Windows on x86_64 using the native MSVC toolchain. All
 platforms run the same formatting, Clippy, documentation, and test gates.
+Linux validates the desktop entry. Windows additionally builds the desktop
+executable and checks its embedded version information. Root [`build.rs`](../build.rs)
+uses `winresource` only for Windows targets to embed the ICO and Cargo version;
+it leaves the CLI and core packages' binaries untouched. Committed Linux PNGs
+and the Windows ICO are derived from the existing logo by
+[`packaging/generate-desktop-icons.py`](../packaging/generate-desktop-icons.py).
+A Windows-only identity test reads back the process AppUserModelID with the
+native API without opening a window.
 Native Windows Credential Manager, file dialogs, and window behavior need an
 interactive session; the [development guide](DEVELOPMENT.md#windows-native-validation)
 defines those manual smoke checks separately from automated test coverage.
