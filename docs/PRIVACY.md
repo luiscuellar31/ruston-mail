@@ -148,11 +148,16 @@ applies an ad-hoc code signature (`codesign -s -`) with bundle identifier
 
 ## Attachments
 
-Desktop attachments are downloaded only when selected and saved to the system
-Downloads folder. The CLI saves them in `--output-dir`, or the current directory
+Desktop attachments are downloaded only after **Save** or a confirmed **Save as…**
+destination. **Save** uses the system Downloads folder; **Save as…** uses the
+exact path chosen by the user, and cancelling its dialog starts no download.
+The CLI saves them in `--output-dir`, or the current directory
 by default. Both reduce sender-provided paths to a plain file name. Names with
 invalid characters become `attachment`, Windows device names receive an
 underscore prefix, and existing files are never overwritten.
+Sender-provided names are sanitized before suggesting a name in the save
+dialog too. Revealing a saved file sends its local path to the operating
+system's file manager (a file URI over the session bus on Linux).
 Attachments with a nonempty detached signature are verified against available
 sender keys before their plaintext reaches a file writer. Missing usable keys,
 malformed signatures, and signature mismatches fail the download; plaintext

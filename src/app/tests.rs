@@ -83,8 +83,8 @@ fn deliver_folders(app: &mut App, result: Result<Vec<Folder>, MailboxError>) {
 }
 
 fn deliver_attachment(app: &mut App, result: Result<PathBuf, SaveError>) {
-    let epoch = app.session_epoch;
-    let _ = app.update(Message::AttachmentSaved(epoch, result));
+    let request = app.saving_attachment.as_ref().unwrap().request.clone();
+    let _ = app.update(Message::AttachmentSaved(request, result));
 }
 
 fn deliver_logout(app: &mut App, result: Result<(), AuthError>) {
@@ -474,8 +474,8 @@ fn trash_shortcuts_move_selected_conversation() {
 #[test]
 fn a_save_in_flight_does_not_outlive_the_session() {
     let mut app = loaded_demo_app();
-    let previous_epoch = app.session_epoch;
     let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    let previous_request = app.saving_attachment.as_ref().unwrap().request.clone();
     assert_eq!(app.saving_attachment(), Some("file"));
 
     let _ = app.update(Message::Logout);
@@ -487,7 +487,7 @@ fn a_save_in_flight_does_not_outlive_the_session() {
 
     // A late save from the previous session must not replace the new one.
     let _ = app.update(Message::AttachmentSaved(
-        previous_epoch,
+        previous_request,
         Ok(PathBuf::from("/tmp/x.pdf")),
     ));
     assert!(app.saved_attachment().is_none());
@@ -1314,6 +1314,113 @@ fn one_attachment_is_saved_at_a_time() {
     // Once the first one is done, the next press is free to go.
     let _ = app.update(Message::SaveAttachment("demo-0".into(), "other".into()));
     assert_eq!(app.saving_attachment(), Some("other"));
+}
+
+fn choose_attachment_destination(app: &mut App) -> AttachmentSaveRequest {
+    let effects = app.update(Message::SaveAttachmentAs(
+        "demo-0".into(),
+        "file".into(),
+        "../../report.pdf".into(),
+    ));
+    let mut effects = effects.into_iter();
+    let Some(Effect::Ui(UiEffect::PickAttachmentDestination {
+        request,
+        suggested_name,
+    })) = effects.next()
+    else {
+        panic!("save as should only request a native destination dialog");
+    };
+    assert_eq!(suggested_name, "report.pdf");
+    assert!(
+        effects.next().is_none(),
+        "no download before the destination is chosen"
+    );
+    request
+}
+
+#[test]
+fn cancelling_save_as_does_not_download_or_change_a_later_save() {
+    let mut app = loaded_demo_app();
+    let first = choose_attachment_destination(&mut app);
+    assert_eq!(
+        app.update(Message::SaveAttachment("demo-0".into(), "other".into()))
+            .units(),
+        0
+    );
+    assert_eq!(
+        app.update(Message::AttachmentDestinationChosen(first.clone(), None))
+            .units(),
+        0
+    );
+    assert!(app.saving_attachment().is_none());
+    assert!(app.saved_attachment().is_none());
+
+    let second = choose_attachment_destination(&mut app);
+    assert_ne!(first, second);
+    for stale in [
+        Message::AttachmentDestinationChosen(
+            first.clone(),
+            Some(std::env::temp_dir().join("stale.pdf")),
+        ),
+        Message::AttachmentDestinationChosen(first.clone(), None),
+        Message::AttachmentSaved(first, Err(SaveError::Failed)),
+        // A completion cannot skip the destination-selection phase.
+        Message::AttachmentSaved(second, Err(SaveError::Failed)),
+    ] {
+        assert_eq!(app.update(stale).units(), 0);
+        assert_eq!(app.saving_attachment(), Some("file"));
+        assert!(app.saved_attachment().is_none());
+    }
+}
+
+#[tokio::test]
+async fn chosen_destination_starts_one_download_and_failure_creates_no_file() {
+    let mut app = loaded_demo_app();
+    let request = choose_attachment_destination(&mut app);
+    let path = std::env::temp_dir().join(format!("ruston-unfetched-{}.pdf", std::process::id()));
+    assert!(!path.exists());
+    let effects = app.update(Message::AttachmentDestinationChosen(
+        request.clone(),
+        Some(path.clone()),
+    ));
+    assert_eq!(effects.units(), 1);
+    assert_eq!(
+        app.update(Message::AttachmentDestinationChosen(
+            request,
+            Some(path.clone())
+        ))
+        .units(),
+        0
+    );
+    let Some(Effect::Future(task)) = effects.into_iter().next() else {
+        panic!("expected attachment download");
+    };
+    let _ = app.update(task.await);
+    assert!(app.saving_attachment().is_none());
+    assert_eq!(app.saved_attachment(), Some(Err(SaveError::NotFetched)));
+    assert!(
+        !path.exists(),
+        "failed downloads must not create the selected file"
+    );
+}
+
+#[test]
+fn save_as_dialog_results_after_sign_out_cannot_start_a_download() {
+    let mut app = loaded_demo_app();
+    let previous = choose_attachment_destination(&mut app);
+    let _ = app.update(Message::Logout);
+    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let current = choose_attachment_destination(&mut app);
+    assert_ne!(previous.session, current.session);
+    assert_eq!(
+        app.update(Message::AttachmentDestinationChosen(
+            previous,
+            Some(std::env::temp_dir().join("stale.pdf"))
+        ))
+        .units(),
+        0
+    );
+    assert_eq!(app.saving_attachment.as_ref().unwrap().request, current);
 }
 
 #[test]

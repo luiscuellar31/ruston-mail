@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use crate::mail::LoginRequest;
 
-use super::{AuthAttempt, ComposeId, Message};
+use super::{AttachmentSaveRequest, AuthAttempt, ComposeId, Message};
 
 /// Work requested by the state machine and performed by the desktop shell.
 /// This boundary deliberately contains no GUI types.
@@ -23,8 +23,15 @@ pub enum UiEffect {
     ScrollReaderTop,
     RevealConversation(String),
     ResetLayout,
-    NotifyNewMail { sender: String, subject: String },
+    NotifyNewMail {
+        sender: String,
+        subject: String,
+    },
     PickComposeAttachments(ComposeId),
+    PickAttachmentDestination {
+        request: AttachmentSaveRequest,
+        suggested_name: String,
+    },
 }
 
 impl UiEffect {

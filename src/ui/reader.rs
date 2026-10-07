@@ -655,7 +655,7 @@ fn attachment_row(
 ) {
     let saving = saving_attachment.is_some();
     let this_one = saving_attachment == Some(attachment.id.as_str());
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         detail(ui, &format!("Attachment: {}", attachment.name));
         detail(ui, &size_label(attachment.size));
         if ui
@@ -668,6 +668,16 @@ fn attachment_row(
             messages.push(Message::SaveAttachment(
                 message_id.to_owned(),
                 attachment.id.clone(),
+            ));
+        }
+        if ui
+            .add_enabled(!saving, theme::compact_button("Save as…"))
+            .clicked()
+        {
+            messages.push(Message::SaveAttachmentAs(
+                message_id.to_owned(),
+                attachment.id.clone(),
+                attachment.name.clone(),
             ));
         }
     });

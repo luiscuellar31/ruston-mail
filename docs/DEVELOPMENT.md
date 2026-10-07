@@ -195,6 +195,39 @@ checks as **not run**. Record failures with reproduction steps; do not include
 passwords, tokens, or personal message contents. Desktop notifications and
 unread icon badges are not implemented on Windows yet.
 
+## Native file dialogs and file manager validation
+
+Use the fictional mailbox to check **Attach files** in both composer placements
+(reading pane and separate window). Verify the picker stays associated with
+Ruston, cancelling leaves the draft unchanged, and repeated clicks do not open
+multiple dialogs. On macOS, verify an attached sheet on the owning window; on
+Windows, check ownership and focus after closing the dialog. On Linux, check
+the portal under Wayland and X11 where available. eframe exposes only the root
+native window, so a Linux picker opened from the separate composer is currently
+associated with the mailbox window. A late result after closing/replacing the
+composer must not add files to another draft.
+
+Downloads require an explicitly authorized test account because the desktop
+demo has no attachment bytes. Use harmless test files and verify:
+
+- **Save** still writes distinct numbered copies in Downloads.
+- **Save as…** opens the native selector, suggests a safe filename, and saves
+  verified bytes to the chosen path. Test spaces, Unicode, `%`, `#`, and quotes.
+- Cancelling **Save as…** starts no download. Selecting an existing file leaves
+  its contents unchanged and reports that another filename is needed, even if
+  the native selector offered replacement. A failed download creates no file.
+- Where the desktop permits it, sign out while choosing a destination and
+  verify the old dialog result cannot start a download in the next session.
+- Reveal selects the exact saved file in Finder/Explorer. On Linux with a
+  FileManager1 service it selects the file; without that interface, or when its
+  request fails or times out, it opens the containing folder instead.
+
+Record OS, desktop/compositor, session type, composer placement, commit, and
+observations. Mark untested combinations as **not run**. Automated state, file
+creation, and in-memory D-Bus tests cover cancellation/stale responses,
+exclusive writes, URI encoding, method signatures, and service errors; they do
+not prove real sheet, portal, or file-manager behavior.
+
 ## Desktop identity and icons
 
 Native windows use `com.luiscuellar.ruston-mail`, matching the existing macOS

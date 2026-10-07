@@ -1,5 +1,6 @@
 mod auto_refresh;
 mod compose;
+mod dialogs;
 mod identity;
 mod login;
 mod mailbox;
@@ -87,11 +88,17 @@ struct DesktopApp {
     last_window_size: Option<Window>,
     /// Waits for the requested window size before resetting egui's cached pane widths.
     layout_reset_at: Option<f64>,
+    /// Retained until each native dialog completes, including portal export.
+    dialog_parent: Option<std::sync::Arc<winit::window::Window>>,
+    /// Native dialog completion, including cancellation, releases this slot.
+    file_dialog_open: bool,
 }
 
 impl DesktopApp {
     fn new(creation: &eframe::CreationContext<'_>, demo: bool, settings: Settings) -> Self {
-        Self::with_context(&creation.egui_ctx, demo, settings)
+        let mut app = Self::with_context(&creation.egui_ctx, demo, settings);
+        app.dialog_parent = creation.winit_window().cloned();
+        app
     }
 
     fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
@@ -114,12 +121,28 @@ impl DesktopApp {
             settings_seen_at: 0.0,
             last_window_size: None,
             layout_reset_at: None,
+            dialog_parent: None,
+            file_dialog_open: false,
         };
         desktop.execute(effects, context);
         desktop
     }
 
     fn dispatch(&mut self, message: Message, context: &egui::Context) {
+        if matches!(
+            &message,
+            Message::AddComposeAttachments(_, _) | Message::AttachmentDestinationChosen(_, _)
+        ) {
+            self.file_dialog_open = false;
+        }
+        if self.file_dialog_open
+            && matches!(
+                &message,
+                Message::PickComposeAttachments | Message::SaveAttachmentAs(_, _, _)
+            )
+        {
+            return;
+        }
         let message = if self.app.showing_settings() {
             match message {
                 Message::KeyPressed(press)
@@ -259,19 +282,40 @@ impl DesktopApp {
                     show_desktop_notification(&sender, &subject);
                 }
                 UiEffect::PickComposeAttachments(id) => {
-                    let task = rfd::AsyncFileDialog::new().pick_files();
+                    self.file_dialog_open = true;
+                    let parent = self.dialog_parent.clone();
+                    let task = dialogs::open(
+                        parent.as_ref(),
+                        self.app.settings().compose_placement == ComposePlacement::Window,
+                        |dialog| dialog.set_title("Attach files").pick_files(),
+                    );
                     self.runtime.spawn_message(async move {
+                        let _keep_parent_alive = parent;
                         let files = task.await;
                         let paths: Vec<std::path::PathBuf> = files
                             .unwrap_or_default()
                             .into_iter()
                             .map(|f| f.path().to_path_buf())
                             .collect();
-                        if !paths.is_empty() {
-                            Some(Message::AddComposeAttachments(id, paths))
-                        } else {
-                            None
-                        }
+                        Some(Message::AddComposeAttachments(id, paths))
+                    });
+                }
+                UiEffect::PickAttachmentDestination {
+                    request,
+                    suggested_name,
+                } => {
+                    self.file_dialog_open = true;
+                    let parent = self.dialog_parent.clone();
+                    let task = dialogs::open(parent.as_ref(), false, |dialog| {
+                        dialog
+                            .set_title("Save attachment as (choose a new filename)")
+                            .set_file_name(suggested_name)
+                            .save_file()
+                    });
+                    self.runtime.spawn_message(async move {
+                        let _keep_parent_alive = parent;
+                        let destination = task.await.map(|file| file.path().to_path_buf());
+                        Some(Message::AttachmentDestinationChosen(request, destination))
                     });
                 }
             }
@@ -662,6 +706,28 @@ fn show_desktop_notification(_sender: &str, _subject: &str) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_dialog_slot_blocks_duplicates_and_releases_after_a_stale_cancellation() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        let draft = desktop.app.compose().unwrap().id();
+        // Model an already-open native picker without opening a GUI in CI.
+        desktop.file_dialog_open = true;
+        desktop.dispatch(Message::PickComposeAttachments, &context);
+        desktop.dispatch(
+            Message::SaveAttachmentAs("message".into(), "file".into(), "report.pdf".into()),
+            &context,
+        );
+        assert!(desktop.file_dialog_open);
+        assert!(desktop.app.saving_attachment().is_none());
+        desktop.dispatch(Message::CloseCompose, &context);
+        assert!(desktop.app.compose().is_none());
+        desktop.dispatch(Message::AddComposeAttachments(draft, Vec::new()), &context);
+        assert!(!desktop.file_dialog_open);
+        assert!(desktop.app.compose().is_none());
+    }
 
     #[test]
     fn compact_navigation_follows_open_search_and_compose_without_losing_a_draft() {

@@ -35,6 +35,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   before native windows are created. The ID matches the existing macOS bundle
   and the Linux desktop filename; session and preference paths keep their
   separate storage identifiers.
+- [`ui/dialogs.rs`](../src/ui/dialogs.rs) associates rfd file dialogs with native
+  windows. The shell retains the root winit window until a dialog finishes and
+  admits only one file dialog at a time. macOS and Windows use the active native
+  window for a separate composer; Linux uses the root because eframe's public
+  API exposes no native handle for an immediate child viewport. Dialog creation
+  stays on the UI thread; results return through the runtime. Cancelled compose
+  pickers return an empty result to release the dialog slot, while draft IDs
+  still prevent results from modifying a closed or replaced composer.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine.
@@ -102,6 +110,17 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   [`model.rs`](../src/mail/model.rs) defines the types the desktop uses.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences;
   [`src/downloads.rs`](../src/downloads.rs) writes downloaded attachments.
+  Incoming attachment saves have a session and unique request ID. **Save as**
+  chooses a destination before downloading; cancellation starts no download,
+  and stale or duplicate choices/completions cannot change a later save. Both
+  save actions use the backend's signature checks before starting filesystem
+  work on a blocking worker. Downloads use sanitized sender names with numeric
+  collision suffixes; explicit destinations use the user's exact absolute path.
+  Both use exclusive creation and never replace existing files or follow a
+  final-component symlink. [`src/file_manager.rs`](../src/file_manager.rs)
+  reveals saved files: Finder/Explorer on macOS/Windows and FileManager1.ShowItems
+  with an encoded file URI on Linux. Linux bounds connection and reply to three
+  seconds and falls back to opening the containing folder with `xdg-open`.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
   to egui visuals and the colors of custom-painted widgets. The desktop shell
   applies the choice to open windows and stores it for the next run.
@@ -303,6 +322,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 | CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
+| Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | CLI syntax, behavior, or output | [`crates/ruston-cli/src/cli.rs`](../crates/ruston-cli/src/cli.rs), [`commands/`](../crates/ruston-cli/src/commands/) | [`render.rs`](../crates/ruston-cli/src/render.rs), corresponding core `mail/` operation |
 | Proton request or response | [`crates/ruston-core/src/api/`](../crates/ruston-core/src/api/) | [`transport/`](../crates/ruston-core/src/transport/), [`model/`](../crates/ruston-core/src/model/), [wire tests](../crates/ruston-core/tests/api_wiremock.rs) |

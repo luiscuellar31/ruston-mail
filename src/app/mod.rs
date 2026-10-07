@@ -39,6 +39,20 @@ pub use mailbox::{
 use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
+/// Identifies one file operation across a destination dialog and download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentSaveRequest {
+    id: RequestId,
+    session: SessionEpoch,
+    message_id: String,
+    attachment_id: String,
+}
+
+struct AttachmentSave {
+    request: AttachmentSaveRequest,
+    choosing_destination: bool,
+}
+
 type SessionEpoch = u64;
 pub(crate) type AuthAttempt = u64;
 const PROTON_SIGNUP_URL: &str = "https://account.proton.me/mail/signup";
@@ -106,8 +120,11 @@ pub enum Message {
     WindowResized(Window),
     /// Fetches one attachment and saves it, by message and attachment id.
     SaveAttachment(String, String),
+    /// Selects a destination before fetching the attachment.
+    SaveAttachmentAs(String, String, String),
+    AttachmentDestinationChosen(AttachmentSaveRequest, Option<PathBuf>),
     /// Where an attachment landed, or why it did not.
-    AttachmentSaved(SessionEpoch, Result<PathBuf, SaveError>),
+    AttachmentSaved(AttachmentSaveRequest, Result<PathBuf, SaveError>),
     /// Reveals a downloaded file in the system file manager.
     RevealAttachment(PathBuf),
     /// Shows or hides Settings beside the mailbox sidebar.
@@ -202,7 +219,7 @@ pub struct App {
     /// What became of the last attachment someone asked to save.
     saved_attachment: Option<Result<PathBuf, SaveError>>,
     /// The attachment in flight, preventing duplicate downloads.
-    saving_attachment: Option<String>,
+    saving_attachment: Option<AttachmentSave>,
     /// Whether the current refresh was started by background polling.
     is_polling: bool,
 }
@@ -287,7 +304,9 @@ impl App {
     /// Where the last saved attachment landed, or why it did not.
     /// The attachment now being fetched, so its row can say so.
     pub fn saving_attachment(&self) -> Option<&str> {
-        self.saving_attachment.as_deref()
+        self.saving_attachment
+            .as_ref()
+            .map(|save| save.request.attachment_id.as_str())
     }
 
     pub fn saved_attachment(&self) -> Option<Result<&Path, SaveError>> {
@@ -297,29 +316,85 @@ impl App {
     }
 
     /// Fetches an attachment and writes it off the UI thread.
-    fn save_attachment(&mut self, message_id: String, attachment_id: String) -> Effects {
+    fn save_attachment(
+        &mut self,
+        message_id: String,
+        attachment_id: String,
+        suggested_name: Option<String>,
+    ) -> Effects {
+        if !self.mailbox_actions_available() || self.saving_attachment.is_some() {
+            return Effects::none();
+        }
+        let request = AttachmentSaveRequest {
+            id: self.next_request(),
+            session: self.session_epoch,
+            message_id,
+            attachment_id,
+        };
+        self.saved_attachment = None;
+        self.saving_attachment = Some(AttachmentSave {
+            request: request.clone(),
+            choosing_destination: suggested_name.is_some(),
+        });
+        if let Some(name) = suggested_name {
+            Effects::ui(UiEffect::PickAttachmentDestination {
+                request,
+                suggested_name: ruston_core::mail::attachments::safe_attachment_name(&name),
+            })
+        } else {
+            self.download_attachment(request, None)
+        }
+    }
+
+    fn attachment_destination_chosen(
+        &mut self,
+        request: AttachmentSaveRequest,
+        destination: Option<PathBuf>,
+    ) -> Effects {
+        if !self.is_current_session(request.session)
+            || !self
+                .saving_attachment
+                .as_ref()
+                .is_some_and(|save| save.request == request && save.choosing_destination)
+        {
+            return Effects::none();
+        }
+        let Some(path) = destination else {
+            self.saving_attachment = None;
+            return Effects::none();
+        };
+        self.saving_attachment
+            .as_mut()
+            .unwrap()
+            .choosing_destination = false;
+        self.download_attachment(request, Some(path))
+    }
+
+    fn download_attachment(
+        &self,
+        request: AttachmentSaveRequest,
+        destination: Option<PathBuf>,
+    ) -> Effects {
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
         };
-        if self.saving_attachment.is_some() {
-            return Effects::none();
-        }
-        self.saved_attachment = None;
-        self.saving_attachment = Some(attachment_id.clone());
-        let epoch = self.session_epoch;
+        let completion = request.clone();
 
         Effects::perform(
             async move {
                 match backend
-                    .download_attachment(&message_id, &attachment_id)
+                    .download_attachment(&request.message_id, &request.attachment_id)
                     .await
                 {
                     // File I/O is blocking, so keep it off both the interface
                     // thread and Tokio's asynchronous workers.
                     Ok((name, contents)) => {
-                        tokio::task::spawn_blocking(move || downloads::save(&name, &contents))
-                            .await
-                            .unwrap_or(Err(SaveError::Failed))
+                        tokio::task::spawn_blocking(move || match destination {
+                            Some(path) => downloads::save_selected(&path, &contents),
+                            None => downloads::save(&name, &contents),
+                        })
+                        .await
+                        .unwrap_or(Err(SaveError::Failed))
                     }
                     Err(MailboxError::AttachmentVerificationFailed) => {
                         Err(SaveError::VerificationFailed)
@@ -327,7 +402,7 @@ impl App {
                     Err(_) => Err(SaveError::NotFetched),
                 }
             },
-            move |outcome| Message::AttachmentSaved(epoch, outcome),
+            move |outcome| Message::AttachmentSaved(completion, outcome),
         )
     }
 
@@ -640,10 +715,21 @@ impl App {
                 }
             }
             Message::SaveAttachment(message_id, attachment_id) => {
-                return self.save_attachment(message_id, attachment_id);
+                return self.save_attachment(message_id, attachment_id, None);
             }
-            Message::AttachmentSaved(epoch, outcome) => {
-                if !self.is_current_session(epoch) {
+            Message::SaveAttachmentAs(message_id, attachment_id, name) => {
+                return self.save_attachment(message_id, attachment_id, Some(name));
+            }
+            Message::AttachmentDestinationChosen(request, path) => {
+                return self.attachment_destination_chosen(request, path);
+            }
+            Message::AttachmentSaved(request, outcome) => {
+                if !self.is_current_session(request.session)
+                    || !self
+                        .saving_attachment
+                        .as_ref()
+                        .is_some_and(|save| save.request == request && !save.choosing_destination)
+                {
                     return Effects::none();
                 }
                 self.saving_attachment = None;
@@ -1360,33 +1446,8 @@ fn open_url(url: &str) -> std::io::Result<()> {
 
 fn reveal_in_file_manager(path: PathBuf) -> Effects {
     Effects::background(async move {
-        let _ = reveal_file(&path);
+        let _ = crate::file_manager::reveal(&path).await;
     })
-}
-
-/// Reveals `path` in the system file manager without going through a shell.
-fn reveal_file(path: &Path) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = std::process::Command::new("open");
-        command.arg("-R").arg(path);
-        command
-    };
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("explorer");
-        command.arg(format!("/select,{}", path.display()));
-        command
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let mut command = {
-        let parent = path.parent().unwrap_or(path);
-        let mut command = std::process::Command::new("xdg-open");
-        command.arg(parent);
-        command
-    };
-
-    command.spawn().map(drop)
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 mod app;
 mod downloads;
+mod file_manager;
 mod mail;
 mod runtime;
 mod settings;

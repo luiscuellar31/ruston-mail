@@ -1,4 +1,5 @@
-//! Saves attachments without accepting paths or overwriting existing files.
+//! Saves attachments using safe sender names or user-selected destinations,
+//! without overwriting existing files.
 
 use ruston_core::mail::attachments::safe_attachment_name as safe_name;
 use std::fs::OpenOptions;
@@ -19,6 +20,8 @@ pub enum SaveError {
     NotFetched,
     /// A present signature could not be verified, so core withheld the bytes.
     VerificationFailed,
+    /// The explicitly selected destination already exists.
+    AlreadyExists,
 }
 
 impl SaveError {
@@ -27,6 +30,9 @@ impl SaveError {
             Self::NoFolder => "Ruston Mail could not find a downloads folder to save into.",
             Self::Failed => "Ruston Mail could not save the file.",
             Self::NotFetched => "Ruston Mail could not download the file from Proton.",
+            Self::AlreadyExists => {
+                "A file already exists at this location. Choose a different name."
+            }
             Self::VerificationFailed => {
                 "Ruston Mail could not verify this attachment's signature. The file was not saved."
             }
@@ -41,6 +47,31 @@ pub fn save(name: &str, contents: &[u8]) -> Result<PathBuf, SaveError> {
         .ok_or(SaveError::NoFolder)?;
 
     save_to(&folder, &safe_name(name), contents)
+}
+
+/// Uses the exact path chosen by the user while retaining exclusive creation.
+/// A file created after the save dialog closes must not be overwritten either.
+pub fn save_selected(path: &Path, contents: &[u8]) -> Result<PathBuf, SaveError> {
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(SaveError::Failed);
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            if error.kind() == ErrorKind::AlreadyExists {
+                SaveError::AlreadyExists
+            } else {
+                SaveError::Failed
+            }
+        })?;
+    if file.write_all(contents).is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(SaveError::Failed);
+    }
+    Ok(path.to_path_buf())
 }
 
 /// Exclusively creates `report.pdf`, then `report (2).pdf`, and so on. Opening
@@ -76,6 +107,39 @@ fn save_to(folder: &Path, name: &str, contents: &[u8]) -> Result<PathBuf, SaveEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_destination_preserves_existing_files_and_exact_names() {
+        let folder =
+            std::env::temp_dir().join(format!("ruston-save-selected-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("informe español 100% # ' final.pdf");
+        assert_eq!(save_selected(&path, b"original").unwrap(), path);
+        assert_eq!(
+            save_selected(&path, b"replacement"),
+            Err(SaveError::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(
+            save_selected(Path::new("relative.pdf"), b"x"),
+            Err(SaveError::Failed)
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_destination_rejects_dangling_symlinks() {
+        let folder =
+            std::env::temp_dir().join(format!("ruston-save-selected-link-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let outside = folder.join("outside.pdf");
+        let path = folder.join("chosen.pdf");
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        assert_eq!(save_selected(&path, b"x"), Err(SaveError::AlreadyExists));
+        assert!(!outside.exists());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn a_sender_cannot_steer_the_write_out_of_the_folder() {
