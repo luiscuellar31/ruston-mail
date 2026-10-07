@@ -14,8 +14,8 @@ pub(crate) const INSPECTION_CONCURRENCY: usize = 4;
 
 pub use model::{
     BlockKind, ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder,
-    MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError,
-    MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
+    IncomingMail, MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
+    MailboxError, MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
 };
 pub use outgoing::{BodyFormat, Kind, Outgoing, SendError, recipients, validate_attachments};
 #[cfg(test)]
@@ -32,6 +32,25 @@ pub enum MailBackend {
 }
 
 impl MailBackend {
+    /// A bounded metadata-only Inbox check, independent of the displayed folder.
+    pub async fn recent_inbox(&self, limit: u32) -> Result<Vec<IncomingMail>, MailboxError> {
+        match self {
+            Self::Proton(service) => service.recent_inbox(limit).await,
+            Self::Demo(service) => Ok(service
+                .list_conversations(&Folder::INBOX, 0, limit, demo::now())?
+                .conversations
+                .into_iter()
+                .map(|row| IncomingMail {
+                    id: row.id,
+                    time: row.time.unwrap_or_default(),
+                    unread: row.unread,
+                    sender: row.correspondents.unwrap_or_default(),
+                    subject: row.subject.unwrap_or_default(),
+                })
+                .collect()),
+        }
+    }
+
     pub fn demo() -> Self {
         Self::Demo(demo::DemoMailbox::new())
     }

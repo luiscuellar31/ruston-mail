@@ -17,7 +17,29 @@ does not write a persistent mail cache to disk.
 
 When desktop notifications are enabled, a new-mail notification can show the
 sender and subject. A pending notification result is discarded during sign-out
-or after the session changes.
+or after the session changes. Disabling the option also invalidates pending
+detection and native delivery work. Once handed to the operating system,
+notifications can remain in its notification history; signing out does not
+remove notifications already delivered. No email content is logged by the
+notification integration. Headers are bounded and treated as literal text;
+notification delivery does not load links or remote images.
+
+The open desktop polls about once a minute with focus and every three minutes
+without it, with failure backoff up to five minutes. It stops on sign-out or
+application exit and does not install a background service. If notifications
+are enabled, an additional bounded request reads the latest 20 Inbox message
+metadata records, including read records, without downloading bodies or
+attachments. Its reference IDs and timestamp stay in process memory. The first
+successful snapshot is silent; new unread IDs can notify even when the unread
+count does not grow. Turning the option off clears this reference.
+
+Windows toast registration creates `Ruston Mail.lnk` in the user's Start menu
+Programs folder, pointing to the running executable and carrying Ruston's
+AppUserModelID. It does not replace a shortcut belonging to another application
+and requires no administrator privileges. The shortcut remains when the app
+closes; remove it when uninstalling a manually copied executable. macOS asks
+for system authorization when notifications become active for a signed-in
+account; a bare development executable does not request permission or notify.
 
 HTML messages do not run in a browser view. They are sanitized, parsed, and
 drawn with native UI elements. Scripts do not run, and remote images are never

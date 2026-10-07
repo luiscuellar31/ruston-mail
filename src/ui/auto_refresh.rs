@@ -1,6 +1,7 @@
-//! Foreground refresh timing, independent of rendering and network work.
+//! Foreground and background refresh timing, independent of network work.
 
 const INTERVAL: f64 = 60.0;
+const BACKGROUND_INTERVAL: f64 = 180.0;
 const AFTER_IDLE: f64 = 30.0;
 const MAX_BACKOFF: f64 = 300.0;
 
@@ -13,6 +14,7 @@ pub(super) struct AutoRefresh {
     away_since: Option<f64>,
     focus_due: bool,
     next_at: f64,
+    last_activity: f64,
     pending: Option<u64>,
     failures: u32,
 }
@@ -33,22 +35,28 @@ impl AutoRefresh {
             self.active = true;
             self.focused = focused;
             self.away_since = (!focused).then_some(now);
-            self.next_at = now + INTERVAL;
+            self.last_activity = now;
+            self.next_at = now + self.delay();
             return false;
         }
 
         if !focused {
             if self.focused {
                 self.away_since = Some(now);
+                self.focus_due = false;
             }
-            self.focused = false;
-            return false;
+        } else if !self.focused {
+            self.focus_due = self.away_since.is_some_and(|away| now - away >= AFTER_IDLE)
+                && now - self.last_activity >= AFTER_IDLE;
+            self.away_since = None;
         }
-        if !self.focused {
-            self.focus_due = self.away_since.is_some_and(|away| now - away >= AFTER_IDLE);
+        if self.focused != focused {
+            self.focused = focused;
+            // Returning to the app must not shorten a failed request's backoff.
+            if self.failures == 0 {
+                self.next_at = self.last_activity + self.delay();
+            }
         }
-        self.focused = true;
-        self.away_since = None;
 
         if self.pending.is_some() || !available {
             return false;
@@ -66,8 +74,17 @@ impl AutoRefresh {
         self.pending = Some(request);
     }
 
+    /// Navigation can replace a page request without accepting its response.
+    pub(super) fn cancel_superseded(&mut self, accepts: impl FnOnce(u64) -> bool, now: f64) {
+        if self.pending.is_some_and(|request| !accepts(request)) {
+            self.pending = None;
+            self.postpone(now);
+        }
+    }
+
     pub(super) fn postpone(&mut self, now: f64) {
         self.focus_due = false;
+        self.last_activity = now;
         self.next_at = now + self.delay();
     }
 
@@ -78,11 +95,14 @@ impl AutoRefresh {
             if self.active && succeeded {
                 self.failures = 0;
                 self.focus_due = false;
-                self.next_at = now + INTERVAL;
+                self.last_activity = now;
+                self.next_at = now + self.delay();
             }
             return;
         }
         self.pending = None;
+        self.focus_due = false;
+        self.last_activity = now;
         if succeeded {
             self.failures = 0;
         } else {
@@ -92,12 +112,17 @@ impl AutoRefresh {
     }
 
     pub(super) fn repaint_after(&self, now: f64, available: bool) -> Option<std::time::Duration> {
-        (self.active && self.focused && self.pending.is_none() && available)
+        (self.active && self.pending.is_none() && available)
             .then(|| std::time::Duration::from_secs_f64((self.next_at - now).max(0.05)))
     }
 
     fn delay(&self) -> f64 {
-        (INTERVAL * 2_f64.powi(self.failures.min(3) as i32)).min(MAX_BACKOFF)
+        let interval = if self.focused {
+            INTERVAL
+        } else {
+            BACKGROUND_INTERVAL
+        };
+        (interval * 2_f64.powi(self.failures.min(3) as i32)).min(MAX_BACKOFF)
     }
 }
 
@@ -135,19 +160,44 @@ mod tests {
     }
 
     #[test]
-    fn background_mail_is_paused_and_failures_back_off() {
+    fn background_mail_runs_every_three_minutes_and_failures_back_off() {
         let mut refresh = active_refresh();
         assert!(!refresh.should_start(60.0, false, true, true));
         assert!(!refresh.should_start(120.0, false, true, true));
 
-        assert!(refresh.should_start(120.0, true, true, true));
+        assert!(refresh.repaint_after(120.0, true).is_some());
+        assert!(refresh.should_start(180.0, false, true, true));
         refresh.started(8);
-        refresh.page_finished(8, false, 121.0);
+        refresh.page_finished(8, false, 181.0);
 
-        assert!(!refresh.should_start(150.0, false, true, true));
-        assert!(!refresh.should_start(160.0, true, true, true));
-        assert!(!refresh.should_start(240.0, true, true, true));
+        assert!(!refresh.should_start(300.0, false, true, true));
+        assert!(!refresh.should_start(301.0, true, true, true));
+        assert!(!refresh.should_start(480.0, true, true, true));
+        assert!(refresh.should_start(481.0, true, true, true));
+    }
+
+    #[test]
+    fn recent_background_success_avoids_a_redundant_focus_refresh() {
+        let mut refresh = active_refresh();
+        assert!(!refresh.should_start(5.0, false, true, true));
+        assert!(refresh.should_start(180.0, false, true, true));
+        refresh.started(8);
+        assert!(!refresh.should_start(181.0, false, true, true));
+        refresh.page_finished(8, true, 181.0);
+        assert!(!refresh.should_start(185.0, true, true, true));
         assert!(refresh.should_start(241.0, true, true, true));
+    }
+
+    #[test]
+    fn signing_out_and_busy_operations_stop_background_polls() {
+        let mut refresh = active_refresh();
+        assert!(!refresh.should_start(180.0, false, true, false));
+        assert!(refresh.repaint_after(180.0, false).is_none());
+        assert!(!refresh.should_start(181.0, false, false, true));
+        assert!(refresh.repaint_after(181.0, true).is_none());
+        assert!(!refresh.should_start(182.0, false, true, true));
+        assert!(!refresh.should_start(361.0, false, true, true));
+        assert!(refresh.should_start(362.0, false, true, true));
     }
 
     #[test]

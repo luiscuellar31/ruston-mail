@@ -174,9 +174,41 @@ The reader shows verified, unsigned, unverified, or invalid status on each
 message card, including collapsed cards. An invalid body signature is shown in
 the danger color. This verdict applies to the body alone, not its attachments.
 
-Desktop new-mail notifications also return through the app state machine. Their
-conversation result carries the session epoch and is ignored after sign-out or
-when another account opens.
+Desktop new-mail detection is owned by
+[`app/notifications.rs`](../src/app/notifications.rs), independently of unread
+counts and the visible folder. A metadata-only adapter request reads the latest
+20 Inbox messages; it neither decrypts bodies nor starts thread inspection.
+The first successful snapshot after sign-in or enabling notifications is silent.
+Later unread message IDs at or beyond the observed timestamp watermark can
+produce one notification per check. A bounded set of IDs at that watermark
+handles equal timestamps; it is process-local and not a complete event log.
+Older/backdated or already-read mail and arrivals outside that recent page may
+be omitted. Detection admits one request at a time, checks session plus request
+ID on completion, and clears on disable/sign-out. Failed requests retain the
+previous reference and release their slot; session expiry closes the mailbox.
+
+[`ui/auto_refresh.rs`](../src/ui/auto_refresh.rs) schedules 60-second foreground
+and 180-second background polls with one pending page request and backoff up to
+300 seconds. egui requests timed repaints while unfocused/minimized. Busy mailbox
+or send operations defer polling. Returning after 30 seconds can refresh early
+if a recent success or failure backoff does not prevent it. Only accepted page
+responses update timing; stale successes cannot reset backoff. Navigation releases
+superseded scheduler requests even if their old response never arrives. No poller or
+service survives the open desktop process or authenticated session.
+
+[`ui/notifications.rs`](../src/ui/notifications.rs) owns native delivery and the
+permission/service status shown in Settings. Revocable activation flags and
+separate status allocations keep queued native work and callbacks from becoming
+valid again in a later activation. Linux sends bounded D-Bus Notify requests
+with the desktop identity and escaped body text. Windows uses WinRT toasts,
+literal XML text nodes, an AUMID-bearing per-user Start menu shortcut, and an
+in-memory activation callback to restore/focus the running mailbox. COM and file
+operations stay on a blocking worker. macOS uses UserNotifications authorization
+only with the matching `.app` bundle; it rereads authorization for each arrival
+and submits local notifications through completion blocks. Native errors update
+status without interrupting mail operations. Already delivered OS notifications
+are outside pending-work cancellation. Demo mode never requests OS authorization
+or delivers notifications.
 
 Sending follows the same return path: [`ui/compose.rs`](../src/ui/compose.rs)
 collects input; [`app/compose.rs`](../src/app/compose.rs) manages the draft in
@@ -330,6 +362,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 | CLI sync, watch, and local search | [`commands/sync.rs`](../crates/ruston-cli/src/commands/sync.rs), [`commands/watch.rs`](../crates/ruston-cli/src/commands/watch.rs), [`commands/search.rs`](../crates/ruston-cli/src/commands/search.rs) | Core [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs), [`cache.rs`](../crates/ruston-core/src/cache.rs), [privacy guide](PRIVACY.md) |
 | Offline demo data | [`src/mail/demo.rs`](../src/mail/demo.rs), [`crates/ruston-cli/src/demo.rs`](../crates/ruston-cli/src/demo.rs) | Each frontend's entry point |
 | Desktop identity and icons | [`src/ui/identity.rs`](../src/ui/identity.rs), [`build.rs`](../build.rs) | [`packaging/linux/`](../packaging/linux/), [`assets/icons/hicolor/`](../assets/icons/hicolor/), [`assets/windows/`](../assets/windows/), [`packaging/macos/`](../packaging/macos/) |
+| Desktop new-mail detection and notifications | [`src/app/notifications.rs`](../src/app/notifications.rs), [`src/ui/notifications.rs`](../src/ui/notifications.rs) | [`src/ui/auto_refresh.rs`](../src/ui/auto_refresh.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), native [`src/ui/notifications/`](../src/ui/notifications/) |
 | Build, packaging, and CI | [Workspace manifest](../Cargo.toml), [`packaging/`](../packaging/) | [CI workflows](../.github/workflows/), [development guide](DEVELOPMENT.md) |
 
 ## Local state and tests

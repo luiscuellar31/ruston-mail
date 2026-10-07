@@ -272,6 +272,7 @@ impl App {
 
     pub(super) fn open_mailbox(&mut self, backend: MailBackend, email: Option<String>) -> Effects {
         self.advance_session_epoch();
+        self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
         self.auth_error = None;
         let page_size = backend.page_size();
@@ -294,6 +295,11 @@ impl App {
             self.fetch_page(Some(page)),
             self.fetch_counts(Some(counts_request)),
             self.fetch_folders(),
+            if self.is_demo() {
+                Effects::none()
+            } else {
+                self.fetch_new_mail_notification()
+            },
         ])
     }
 
@@ -361,6 +367,7 @@ impl App {
         // A file one session saved is not news for the next one.
         self.saved_attachment = None;
         self.saving_attachment = None;
+        self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
         self.auth_error = error;
         self.auth_state = AuthState::SignedOut;

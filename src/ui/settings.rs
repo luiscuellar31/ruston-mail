@@ -10,6 +10,7 @@ pub(super) fn show(
     current: &Settings,
     draft: &mut Settings,
     messages: &mut Vec<Message>,
+    notification_status: super::notifications::Status,
 ) {
     egui::Panel::bottom("settings-actions")
         .frame(theme::panel_frame(theme::colors(root).panel))
@@ -38,7 +39,7 @@ pub(super) fn show(
         ui.spacing_mut().scroll = theme::panel_scroll_style();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| page(ui, draft, messages));
+            .show(ui, |ui| page(ui, draft, messages, notification_status));
     });
 }
 
@@ -92,7 +93,12 @@ pub(super) fn confirm_exit(context: &egui::Context) -> Option<ExitDecision> {
     decision
 }
 
-fn page(ui: &mut egui::Ui, settings: &mut Settings, messages: &mut Vec<Message>) {
+fn page(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    messages: &mut Vec<Message>,
+    notification_status: super::notifications::Status,
+) {
     ui.heading(egui::RichText::new("Settings").size(24.0));
     ui.add_space(18.0);
 
@@ -229,6 +235,9 @@ fn page(ui: &mut egui::Ui, settings: &mut Settings, messages: &mut Vec<Message>)
             ui,
             "Displays a system notification with the sender and subject when new mail arrives.",
         );
+        if settings.desktop_notifications {
+            description(ui, notification_status.description());
+        }
         ui.add_space(12.0);
         if ui.button("Reset window and pane sizes").clicked() {
             messages.push(Message::ResetLayout);
@@ -451,7 +460,14 @@ mod tests {
                 )),
                 ..Default::default()
             },
-            |ui| page(ui, &mut Settings::default(), &mut Vec::new()),
+            |ui| {
+                page(
+                    ui,
+                    &mut Settings::default(),
+                    &mut Vec::new(),
+                    super::super::notifications::Status::Off,
+                )
+            },
         );
         let find = |label| {
             output

@@ -151,6 +151,16 @@ pub enum SummaryKind {
     Message,
 }
 
+/// Inbox metadata used for notification detection without reading bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingMail {
+    pub id: String,
+    pub time: i64,
+    pub unread: bool,
+    pub sender: String,
+    pub subject: String,
+}
+
 /// The conversation metadata shown in the mailbox list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationSummary {

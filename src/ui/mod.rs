@@ -4,6 +4,7 @@ mod dialogs;
 mod identity;
 mod login;
 mod mailbox;
+mod notifications;
 mod reader;
 mod settings;
 mod theme;
@@ -31,6 +32,7 @@ pub(super) struct UiState {
     conversation_scroll: Option<mailbox::ConversationScroll>,
     compact_view: mailbox::CompactView,
     undo_notice: Option<UndoNotice>,
+    notification_status: notifications::Status,
 }
 
 struct UndoNotice {
@@ -92,6 +94,7 @@ struct DesktopApp {
     dialog_parent: Option<std::sync::Arc<winit::window::Window>>,
     /// Native dialog completion, including cancellation, releases this slot.
     file_dialog_open: bool,
+    notifications: notifications::Notifications,
 }
 
 impl DesktopApp {
@@ -123,6 +126,7 @@ impl DesktopApp {
             layout_reset_at: None,
             dialog_parent: None,
             file_dialog_open: false,
+            notifications: notifications::Notifications::default(),
         };
         desktop.execute(effects, context);
         desktop
@@ -187,7 +191,9 @@ impl DesktopApp {
             self.auto_refresh.postpone(now);
         }
         let page = match &message {
-            Message::ConversationsLoaded(request, result) => Some((*request, result.is_ok())),
+            Message::ConversationsLoaded(request, result) if self.app.accepts_page(*request) => {
+                Some((*request, result.is_ok()))
+            }
             _ => None,
         };
         let compact_destination = match &message {
@@ -223,10 +229,13 @@ impl DesktopApp {
         {
             self.ui.show_password = false;
         }
+        self.update_notifications(context);
         self.execute(effects, context);
         if let Some((request, succeeded)) = page {
             self.auto_refresh.page_finished(request, succeeded, now);
         }
+        self.auto_refresh
+            .cancel_superseded(|request| self.app.accepts_page(request), now);
     }
 
     fn resolve_settings_exit(&mut self, decision: settings::ExitDecision, context: &egui::Context) {
@@ -279,7 +288,8 @@ impl DesktopApp {
                     ));
                 }
                 UiEffect::NotifyNewMail { sender, subject } => {
-                    show_desktop_notification(&sender, &subject);
+                    self.notifications
+                        .show(&sender, &subject, &self.runtime, context);
                 }
                 UiEffect::PickComposeAttachments(id) => {
                     self.file_dialog_open = true;
@@ -510,6 +520,14 @@ impl DesktopApp {
             set_dock_badge(badge);
         }
     }
+
+    fn update_notifications(&mut self, context: &egui::Context) {
+        let enabled = matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+            && self.app.settings().desktop_notifications
+            && !self.app.is_demo();
+        self.notifications.set_enabled(enabled, context);
+        self.ui.notification_status = self.notifications.status();
+    }
 }
 
 impl eframe::App for DesktopApp {
@@ -518,6 +536,7 @@ impl eframe::App for DesktopApp {
         theme::apply(context, self.app.settings().appearance);
         self.apply_zoom(context);
         self.drain_runtime(context);
+        self.update_notifications(context);
         self.remember_window_size(context);
         self.keyboard_shortcuts(context);
         self.refresh_automatically(context);
@@ -529,6 +548,7 @@ impl eframe::App for DesktopApp {
     /// Closing is the one moment the settings must reach the file whether or
     /// not they have settled.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.notifications.stop();
         self.app.save_settings();
         set_dock_badge(None);
     }
@@ -675,37 +695,58 @@ fn set_dock_badge(count: Option<u32>) {
     }
 }
 
-#[cfg(target_os = "macos")]
-#[allow(deprecated)]
-fn show_desktop_notification(sender: &str, subject: &str) {
-    use objc2_foundation::{NSString, NSUserNotification, NSUserNotificationCenter};
-
-    let center: Option<objc2::rc::Retained<NSUserNotificationCenter>> = unsafe {
-        objc2::msg_send![
-            objc2::class!(NSUserNotificationCenter),
-            defaultUserNotificationCenter
-        ]
-    };
-    if let Some(center) = center {
-        let notification = NSUserNotification::new();
-        notification.setTitle(Some(&NSString::from_str(sender)));
-        notification.setInformativeText(Some(&NSString::from_str(subject)));
-        notification.setSoundName(Some(&NSString::from_str(
-            "NSUserNotificationDefaultSoundName",
-        )));
-        center.deliverNotification(&notification);
-    }
-}
-
 #[cfg(not(target_os = "macos"))]
 fn set_dock_badge(_count: Option<u32>) {}
-
-#[cfg(not(target_os = "macos"))]
-fn show_desktop_notification(_sender: &str, _subject: &str) {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_folders_releases_a_superseded_poll_even_without_its_response() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        let demo = crate::mail::demo::DemoMailbox::new();
+        desktop.dispatch(
+            Message::ConversationsLoaded(
+                1,
+                demo.list_conversations(&Folder::INBOX, 0, 50, crate::mail::demo::now()),
+            ),
+            &context,
+        );
+        assert!(!desktop.auto_refresh.should_start(0.0, true, true, true));
+        desktop.dispatch(Message::AutoRefreshMailbox, &context);
+        let crate::app::ListStatus::Refreshing(request) = desktop.app.mailbox().unwrap().status()
+        else {
+            panic!("expected refresh");
+        };
+        desktop.auto_refresh.started(request);
+
+        let sent = Folder::System(crate::mail::MailFolder::Sent);
+        desktop.dispatch(Message::SelectFolder(sent), &context);
+        // The old result need never arrive for the scheduler to recover.
+        assert!(desktop.auto_refresh.repaint_after(0.0, true).is_some());
+        assert!(desktop.auto_refresh.should_start(60.0, true, true, true));
+    }
+
+    #[test]
+    fn stale_pages_do_not_reset_polling_backoff() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        assert!(!desktop.auto_refresh.should_start(0.0, true, true, true));
+        assert!(desktop.auto_refresh.should_start(60.0, true, true, true));
+        desktop.auto_refresh.started(7);
+        desktop.auto_refresh.page_finished(7, false, 61.0);
+        let page = crate::mail::demo::DemoMailbox::new().list_conversations(
+            &Folder::INBOX,
+            0,
+            50,
+            crate::mail::demo::now(),
+        );
+        desktop.dispatch(Message::ConversationsLoaded(99, page), &context);
+        assert!(!desktop.auto_refresh.should_start(100.0, true, true, true));
+        assert!(desktop.auto_refresh.should_start(181.0, true, true, true));
+    }
 
     #[test]
     fn file_dialog_slot_blocks_duplicates_and_releases_after_a_stale_cancellation() {
@@ -943,11 +984,6 @@ mod tests {
         desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
         assert!(matches!(desktop.app.auth_state(), AuthState::SignedOut));
         assert!(desktop.app.settings().confirm_links);
-    }
-
-    #[test]
-    fn show_desktop_notification_does_not_panic() {
-        show_desktop_notification("Alice", "Hello World");
     }
 
     #[test]

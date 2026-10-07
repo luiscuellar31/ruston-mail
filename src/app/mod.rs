@@ -5,6 +5,7 @@ mod inspection;
 mod keys;
 mod layout;
 mod mailbox;
+mod notifications;
 mod reader;
 
 use std::path::{Path, PathBuf};
@@ -21,8 +22,8 @@ const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
-    MailAction, MailBackend, MailboxCounts, MailboxError, ProtonMailService, ResumeOutcome,
-    SendError, SignInOutcome, SignInPrompt, demo::DemoMailbox,
+    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, ProtonMailService,
+    ResumeOutcome, SendError, SignInOutcome, SignInPrompt, demo::DemoMailbox,
 };
 
 use auth::LoginForm;
@@ -106,7 +107,11 @@ pub enum Message {
     },
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
-    NewMailConversationLoaded(SessionEpoch, Result<ConversationPage, MailboxError>),
+    NewMailLoaded(
+        SessionEpoch,
+        RequestId,
+        Result<Vec<IncomingMail>, MailboxError>,
+    ),
     /// The folders the account made, fetched once when the mailbox opens.
     FoldersLoaded(SessionEpoch, Result<Vec<Folder>, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
@@ -220,8 +225,7 @@ pub struct App {
     saved_attachment: Option<Result<PathBuf, SaveError>>,
     /// The attachment in flight, preventing duplicate downloads.
     saving_attachment: Option<AttachmentSave>,
-    /// Whether the current refresh was started by background polling.
-    is_polling: bool,
+    new_mail: notifications::NewMail,
 }
 
 impl App {
@@ -260,7 +264,7 @@ impl App {
             last_compose_id: 0,
             saved_attachment: None,
             saving_attachment: None,
-            is_polling: false,
+            new_mail: notifications::NewMail::default(),
         }
     }
 
@@ -510,19 +514,12 @@ impl App {
                 }
             }
             Message::RefreshMailbox => {
-                self.is_polling = false;
                 return self.refresh_mailbox();
             }
             Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),
             Message::ConversationsLoaded(request, result) => {
-                if !matches!(self.auth_state, AuthState::Authenticated { .. })
-                    || !self.mailbox.as_ref().is_some_and(|mailbox| {
-                        matches!(mailbox.status(),
-                            ListStatus::Loading(id) | ListStatus::Refreshing(id) | ListStatus::LoadingMore(id)
-                            if id == request)
-                    })
-                {
+                if !self.accepts_page(request) {
                     return Effects::none();
                 }
                 let mut result = result;
@@ -606,62 +603,31 @@ impl App {
                 return Effects::batch([self.reconcile_open_folder(), self.reload_counts()]);
             }
             Message::CountsLoaded(request, result) => {
-                let old_inbox_unread = self
-                    .mailbox
-                    .as_ref()
-                    .and_then(|mailbox| mailbox.counts())
-                    .and_then(|counts| counts.unread(&Folder::INBOX));
-                let was_polling = self.is_polling;
-                self.is_polling = false;
-
                 let error = self
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_counts(request, result));
                 self.handle_mailbox_error(error);
-
-                let new_inbox_unread = self
-                    .mailbox
-                    .as_ref()
-                    .and_then(|mailbox| mailbox.counts())
-                    .and_then(|counts| counts.unread(&Folder::INBOX));
-
-                if was_polling
-                    && self.settings.desktop_notifications
-                    && let (Some(old), Some(new)) = (old_inbox_unread, new_inbox_unread)
-                    && new > old
-                {
-                    return self.fetch_new_mail_notification();
-                }
             }
-            Message::NewMailConversationLoaded(epoch, result) => {
+            Message::NewMailLoaded(epoch, request, result) => {
                 if !self.is_current_session(epoch)
                     || !matches!(self.auth_state, AuthState::Authenticated { .. })
+                    || !self.settings.desktop_notifications
+                    || self.new_mail.pending != Some(request)
                 {
                     return Effects::none();
                 }
-                if let Ok(page) = result
-                    && let Some(conversation) = page.conversations.first()
-                {
-                    let sender = conversation
-                        .correspondents
-                        .as_deref()
-                        .filter(|c| !c.is_empty())
-                        .or_else(|| {
-                            conversation
-                                .participants
-                                .first()
-                                .and_then(|addr| addr.display_name())
-                        })
-                        .unwrap_or("Proton Mail")
-                        .to_owned();
-                    let subject = conversation
-                        .subject
-                        .as_deref()
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or("(No subject)")
-                        .to_owned();
-                    return Effects::ui(UiEffect::NotifyNewMail { sender, subject });
+                self.new_mail.pending = None;
+                match result {
+                    Ok(messages) => {
+                        if let Some(mail) = self.new_mail.observe(&messages) {
+                            return Effects::ui(UiEffect::NotifyNewMail {
+                                sender: mail.sender.clone(),
+                                subject: mail.subject.clone(),
+                            });
+                        }
+                    }
+                    Err(error) => self.handle_mailbox_error(Some(error)),
                 }
             }
             Message::ActionFinished(request, result) => {
@@ -760,6 +726,10 @@ impl App {
             }
             Message::SetDesktopNotifications(on) => {
                 self.remember(|settings| settings.desktop_notifications = on);
+                self.new_mail = notifications::NewMail::default();
+                if on && !self.is_demo() {
+                    return self.fetch_new_mail_notification();
+                }
             }
             Message::SetStartFolder(start) => self.remember(|settings| settings.start = start),
             Message::SetComposeFormat(format) => {
@@ -794,6 +764,13 @@ impl App {
 
     pub fn mailbox(&self) -> Option<&Mailbox> {
         self.mailbox.as_ref()
+    }
+
+    pub(crate) fn accepts_page(&self, request: RequestId) -> bool {
+        matches!(self.auth_state, AuthState::Authenticated { .. })
+            && self.mailbox.as_ref().is_some_and(|mailbox| {
+                matches!(mailbox.status(), ListStatus::Loading(id) | ListStatus::Refreshing(id) | ListStatus::LoadingMore(id) if id == request)
+            })
     }
 
     pub fn is_demo(&self) -> bool {
@@ -1213,12 +1190,17 @@ impl App {
         if !self.auto_refresh_available() {
             return Effects::none();
         }
-        self.is_polling = true;
         if let Some(mailbox) = &mut self.mailbox {
             mailbox.invalidate_cached_listings();
         }
 
-        self.refresh_mailbox()
+        let refresh = self.refresh_mailbox();
+        let notifications = if self.is_demo() {
+            Effects::none()
+        } else {
+            self.fetch_new_mail_notification()
+        };
+        Effects::batch([refresh, notifications])
     }
 
     fn load_more_conversations(&mut self) -> Effects {
@@ -1338,18 +1320,23 @@ impl App {
         )
     }
 
-    fn fetch_new_mail_notification(&self) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+    fn fetch_new_mail_notification(&mut self) -> Effects {
+        if !matches!(self.auth_state, AuthState::Authenticated { .. })
+            || !self.settings.desktop_notifications
+            || self.new_mail.pending.is_some()
+        {
             return Effects::none();
         }
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
         };
         let epoch = self.session_epoch;
+        let request = self.next_request();
+        self.new_mail.pending = Some(request);
 
         Effects::perform(
-            async move { backend.list_conversations(&Folder::INBOX, 0, 1).await },
-            move |result| Message::NewMailConversationLoaded(epoch, result),
+            async move { backend.recent_inbox(notifications::RECENT_LIMIT).await },
+            move |result| Message::NewMailLoaded(epoch, request, result),
         )
     }
 

@@ -29,8 +29,31 @@ The sidebar contains Proton's standard folders, followed by your custom folders
 and labels. Unread counts update as mail changes.
 Folders and labels scroll independently when they do not fit. The account,
 Settings, and sign-out actions remain at the bottom of the sidebar.
-While the desktop has focus, it checks for new mail about once a minute. After
-being away for at least 30 seconds, it checks again when you return.
+While the desktop has focus, it checks for new mail about once a minute. While
+open without focus, it checks about every three minutes, including minimized
+windows. Returning after at least 30 seconds can trigger an earlier check,
+unless one just succeeded or a failure is still backing off. Busy operations
+delay automatic checks; failed folder refreshes increase the wait to at most five minutes.
+Closing the app or signing out stops these checks. The demo does not poll Proton.
+
+When **Show desktop notifications for new mail** is enabled, Ruston checks the
+20 latest Inbox message records separately from the folder on screen. The first
+successful check establishes a silent reference, so existing mail is not
+announced at sign-in or when enabling the option. Later checks announce at most
+one newly observed unread message, even if another message became read and the
+total unread count stayed unchanged. Replies have their own message IDs;
+marking existing mail unread does not create a new-mail notification. This is
+periodic, best-effort detection rather than push delivery; large bursts,
+backdated messages, or mail already read elsewhere can be omitted.
+
+Notifications use the Linux desktop notification service, Windows native
+toasts under Ruston's identity, and UserNotifications on macOS. Use the installed
+macOS `.app` bundle and allow the system permission prompt. Settings shows the
+permission/service status. System notification preferences and Do Not Disturb
+still determine presentation; macOS normally suppresses banners while Ruston
+is in the foreground. On Windows, Ruston creates a per-user Start menu shortcut
+if needed. Clicking a transient toast while Ruston is running restores and
+focuses the mailbox window.
 
 Typing in the search field narrows the conversations already loaded. Press
 `Enter` to ask Proton to search the whole mailbox. Clear the field to return to

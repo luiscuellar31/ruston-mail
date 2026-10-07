@@ -18,9 +18,9 @@ use secrecy::SecretString;
 use super::outgoing::{Kind, Outgoing, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
-    AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, LoginRequest,
-    MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
-    SummaryKind, html,
+    AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
+    LoginRequest, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
+    MailboxError, MessageBody, SummaryKind, html,
 };
 use super::{INSPECTION_CONCURRENCY, MailAction};
 
@@ -184,6 +184,30 @@ impl ProtonMailService {
 
     pub fn email(&self) -> Option<&str> {
         self.email.as_deref()
+    }
+
+    /// Reads metadata without downloading message bodies or resolving sender keys.
+    pub async fn recent_inbox(&self, limit: u32) -> Result<Vec<IncomingMail>, MailboxError> {
+        let (_, messages) =
+            timed(
+                self.client
+                    .list_messages(label_id(&Folder::INBOX), 0, limit, false),
+            )
+            .await?;
+        Ok(messages
+            .into_iter()
+            .map(|message| IncomingMail {
+                id: message.id,
+                time: message.time,
+                unread: message.unread != 0,
+                sender: if message.sender.name.trim().is_empty() {
+                    message.sender.address
+                } else {
+                    message.sender.name
+                },
+                subject: message.subject,
+            })
+            .collect())
     }
 
     /// Lists a zero-based page and identifies conversations qualifying for progressive thread inspection.

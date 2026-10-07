@@ -71,7 +71,13 @@ pub(super) fn show(
         egui::CentralPanel::default()
             .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
             .show(root, |ui| {
-                settings::show(ui, app.settings(), draft, messages)
+                settings::show(
+                    ui,
+                    app.settings(),
+                    draft,
+                    messages,
+                    state.notification_status,
+                )
             });
 
         let mut actual = app.panels();
@@ -170,7 +176,13 @@ fn show_compact(
         .frame(theme::panel_frame(fill))
         .show(root, |ui| {
             if let Some(draft) = settings_draft {
-                settings::show(ui, app.settings(), draft, messages);
+                settings::show(
+                    ui,
+                    app.settings(),
+                    draft,
+                    messages,
+                    state.notification_status,
+                );
             } else {
                 match state.compact_view {
                     CompactView::Folders => {

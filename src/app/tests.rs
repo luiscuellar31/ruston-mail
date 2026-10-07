@@ -1029,42 +1029,84 @@ fn automatic_refresh_waits_while_a_message_is_being_sent() {
 }
 
 #[test]
-fn automatic_refresh_notifies_when_inbox_unread_increases() {
+fn inbox_arrivals_notify_independently_of_unread_counts() {
     let mut app = loaded_demo_app();
-    let initial_unread = app
-        .mailbox()
-        .unwrap()
-        .counts()
-        .unwrap()
-        .unread(&Folder::INBOX)
-        .unwrap();
-
-    let _ = app.update(Message::AutoRefreshMailbox);
-    let counts_request = app.last_request;
-
-    let new_counts: crate::mail::MailboxCounts =
-        [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
-    let effects = app.update(Message::CountsLoaded(counts_request, Ok(new_counts)));
-    assert_eq!(effects.units(), 1);
-
-    let effect = effects
-        .into_iter()
-        .next()
-        .expect("fetch conversation effect");
-    let Effect::Future(future) = effect else {
-        panic!("expected future effect");
+    let old = IncomingMail {
+        id: "old".into(),
+        time: 100,
+        unread: true,
+        sender: "Old sender".into(),
+        subject: "Old mail".into(),
     };
-
-    let new_mail_message = futures::executor::block_on(future);
-    let ui_effects = app.update(new_mail_message);
-    assert_eq!(ui_effects.units(), 1);
-
-    let notify_effect = ui_effects.into_iter().next().expect("ui effect");
+    assert_eq!(deliver_new_mail(&mut app, Ok(vec![old.clone()])).units(), 0);
+    let current = IncomingMail {
+        id: "new".into(),
+        time: 101,
+        unread: true,
+        sender: "Alice".into(),
+        subject: "New mail".into(),
+    };
+    // Reading the previous mail leaves the unread count unchanged.
+    let read_old = IncomingMail {
+        unread: false,
+        ..old
+    };
+    let effects = deliver_new_mail(&mut app, Ok(vec![current.clone(), read_old.clone()]));
+    let notify_effect = effects.into_iter().next().expect("ui effect");
     assert!(matches!(
         notify_effect,
         Effect::Ui(UiEffect::NotifyNewMail { ref sender, ref subject })
-            if !sender.is_empty() && !subject.is_empty()
+            if sender == "Alice" && subject == "New mail"
     ));
+    assert_eq!(
+        deliver_new_mail(&mut app, Ok(vec![current, read_old])).units(),
+        0
+    );
+}
+
+fn deliver_new_mail(app: &mut App, result: Result<Vec<IncomingMail>, MailboxError>) -> Effects {
+    assert_eq!(app.fetch_new_mail_notification().units(), 1);
+    let request = app.new_mail.pending.unwrap();
+    app.update(Message::NewMailLoaded(app.session_epoch, request, result))
+}
+
+#[test]
+fn notification_polls_are_bounded_and_stale_or_disabled_results_are_ignored() {
+    let mut app = loaded_demo_app();
+    assert_eq!(app.fetch_new_mail_notification().units(), 1);
+    let first = app.new_mail.pending.unwrap();
+    assert_eq!(app.fetch_new_mail_notification().units(), 0);
+    let _ = app.update(Message::SetDesktopNotifications(false));
+    let _ = app.update(Message::SetDesktopNotifications(true));
+    assert_eq!(app.fetch_new_mail_notification().units(), 1);
+    let second = app.new_mail.pending.unwrap();
+    assert_ne!(first, second);
+    assert_eq!(
+        app.update(Message::NewMailLoaded(
+            app.session_epoch,
+            first,
+            Ok(Vec::new())
+        ))
+        .units(),
+        0
+    );
+    assert_eq!(app.new_mail.pending, Some(second));
+    assert_eq!(
+        app.update(Message::NewMailLoaded(
+            app.session_epoch,
+            second,
+            Err(MailboxError::Unavailable)
+        ))
+        .units(),
+        0
+    );
+    assert!(app.new_mail.pending.is_none());
+    assert_eq!(deliver_new_mail(&mut app, Ok(Vec::new())).units(), 0);
+    assert_eq!(
+        deliver_new_mail(&mut app, Err(MailboxError::SessionExpired)).units(),
+        0
+    );
+    assert!(app.mailbox().is_none());
 }
 
 #[test]

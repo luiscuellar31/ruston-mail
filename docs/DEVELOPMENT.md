@@ -192,8 +192,47 @@ spaces and non-ASCII characters.
 Record the commit, Windows version, Rust host/version, display scaling, and
 pass/fail result for each check in the PR or release notes. Mark unavailable
 checks as **not run**. Record failures with reproduction steps; do not include
-passwords, tokens, or personal message contents. Desktop notifications and
-unread icon badges are not implemented on Windows yet.
+passwords, tokens, or personal message contents. Unread icon badges are not
+implemented on Windows yet; notification checks are described below.
+
+## Native notifications and background refresh validation
+
+Automated tests cover scheduling, backoff, stale responses, silent baselines,
+unread-count-independent detection, bounded headers, activation cancellation,
+and the real freedesktop D-Bus signature against an in-memory service. They do
+not prove presentation, authorization, focus behavior, or Do Not Disturb on an
+interactive desktop. Native checks require an authorized test account and
+harmless messages; the demo deliberately sends no notifications.
+
+- On Linux, test a notification-capable desktop in Wayland and X11 where
+  available. Verify Ruston's name/icon, literal `<`, `>`, `&` in the subject,
+  and a graceful unavailable status when there is no notification service.
+- On Windows, verify the per-user `Ruston Mail.lnk` shortcut carries
+  `com.luiscuellar.ruston-mail` and toasts appear as Ruston. Minimize the mailbox
+  and verify clicking a transient toast restores/focuses it while running.
+  An existing foreign shortcut must be preserved. This implementation uses an
+  in-memory activation handler; reopening the app through notification history
+  after exit is not implemented. Test current Windows 10/11 and system blocking.
+- On macOS, build the `.app` bundle and verify allow/deny authorization, a later
+  change through System Settings, and delivery without focus. A bare `cargo run`
+  executable must report unavailable without invoking UserNotifications.
+- Establish a silent first snapshot; then receive a new message while reading
+  another elsewhere, leaving the unread count unchanged. It should still
+  notify. Mark an old message unread and verify it does not notify. Check a
+  reply to an existing conversation too, and test while viewing Sent/Settings.
+- Verify polling about every minute with focus and every three minutes without
+  it/minimized. Simulate network failures to check increasing waits, no overlap,
+  and recovery. Returning soon after a background success must not duplicate it.
+- Disable the option, sign out, and switch accounts while a request is pending.
+  Its later result must not notify. Closing the app stops polling. Test Do Not
+  Disturb and confirm delivered history follows system preferences.
+
+Record OS/build, desktop/compositor, session type, package/commit, permission
+state, and observations. Mark untested combinations as **not run**. Reference
+the [freedesktop protocol](https://specifications.freedesktop.org/notification/latest/protocol.html),
+[Windows desktop toast requirements](https://learn.microsoft.com/en-us/windows/win32/shell/quickstart-sending-desktop-toast),
+and [Apple authorization guidance](https://developer.apple.com/documentation/usernotifications/asking-permission-to-use-notifications)
+when changing adapters.
 
 ## Native file dialogs and file manager validation
 
