@@ -286,13 +286,23 @@ fn about(ui: &mut egui::Ui, messages: &mut Vec<Message>) -> egui::Response {
             ui,
             "Built with Rust, egui, and proton-crypto. Not affiliated with Proton.",
         );
-        description(
-            ui,
-            concat!(
-                "Made by Luis Cuellar. ",
-                env!("CARGO_PKG_LICENSE"),
-                " License."
-            ),
+        ui.add(
+            egui::AtomLayout::new((
+                egui::RichText::new("Made with").color(theme::colors(ui).muted),
+                egui::Image::new(egui::include_image!(
+                    "../../assets/icons/bootstrap/heart.svg"
+                ))
+                .fit_to_exact_size(egui::Vec2::splat(14.0))
+                .tint(theme::ACCENT)
+                .alt_text("heart"),
+                egui::RichText::new(concat!(
+                    "by Luis Cuellar. ",
+                    env!("CARGO_PKG_LICENSE"),
+                    " License."
+                ))
+                .color(theme::colors(ui).muted),
+            ))
+            .gap(ui.spacing().item_spacing.x),
         );
         ui.add_space(8.0);
         if ui.add(theme::compact_button("Source code")).clicked() {
