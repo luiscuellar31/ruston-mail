@@ -563,12 +563,27 @@ mod tests {
     use super::*;
     use crate::session::{MemoryStore, Paths, SecretStore, Session};
     use serde::Deserialize;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(base: &str) -> HttpClient {
         HttpClient::new(base, "Other")
+    }
+
+    async fn read_get_request(socket: &mut tokio::net::TcpStream) {
+        // Closing with unread headers can reset TCP and discard the response,
+        // making a body-limit test fail with an unrelated connection error.
+        let mut reader = tokio::io::BufReader::new(socket);
+        let mut headers = String::new();
+        while !headers.ends_with("\r\n\r\n") {
+            assert_ne!(
+                reader.read_line(&mut headers).await.unwrap(),
+                0,
+                "client closed before sending complete headers"
+            );
+        }
+        assert!(headers.starts_with("GET /x HTTP/1.1\r\n"));
     }
 
     #[tokio::test]
@@ -701,23 +716,31 @@ mod tests {
     async fn response_limit_rejects_chunked_body_without_content_length() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request_line = [0; 7];
-            socket.read_exact(&mut request_line).await.unwrap();
-            assert_eq!(&request_line, b"GET /x ");
+            read_get_request(&mut socket).await;
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n")
                 .await
                 .unwrap();
+            // Body limits must be enforced while the connection is still open.
+            let _ = held.await;
         });
 
         let c = client(&format!("http://{addr}"));
-        assert!(matches!(
-            c.do_raw(Request::get("/x").max_response_bytes(5)).await,
-            Err(Error::ResponseTooLarge { limit: 5 })
-        ));
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            c.do_raw(Request::get("/x").max_response_bytes(5)),
+        )
+        .await;
+        let _ = release.send(());
         server.await.unwrap();
+        let result = result.expect("body limit should be enforced before the connection closes");
+        assert!(
+            matches!(result, Err(Error::ResponseTooLarge { limit: 5 })),
+            "expected body limit error, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -728,9 +751,7 @@ mod tests {
         let (release, held) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request_line = [0; 7];
-            socket.read_exact(&mut request_line).await.unwrap();
-            assert_eq!(&request_line, b"GET /x ");
+            read_get_request(&mut socket).await;
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\na")
                 .await
