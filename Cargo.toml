@@ -88,7 +88,7 @@ zbus = "5"
 winresource = { version = "0.1.31", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse"] }
 windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "Foundation", "Win32_System_WinRT", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem"] }
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]

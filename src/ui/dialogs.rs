@@ -86,7 +86,7 @@ mod active {
         pub(super) fn new() -> Option<Self> {
             // SAFETY: this only queries the window active on the UI thread.
             NonZeroIsize::new(unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::GetActiveWindow()
+                windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow()
             } as isize)
             .map(Self)
         }

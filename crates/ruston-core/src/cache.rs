@@ -812,7 +812,9 @@ mod tests {
                 .as_nanos(),
             NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed)
         ));
-        let mut builder = std::fs::DirBuilder::new();
+        let builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        let mut builder = builder;
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
