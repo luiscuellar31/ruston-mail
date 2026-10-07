@@ -195,6 +195,14 @@ the body's `Verdict` through both conversation and individual message reads.
 The reader shows verified, unsigned, unverified, or invalid status on each
 message card, including collapsed cards. An invalid body signature is shown in
 the danger color. This verdict applies to the body alone, not its attachments.
+Loading and loaded readers share the scroll container, bounded column, heading,
+and toolbar layout. Loading uses the listing's subject and message count and
+disables actions; unknown message fields remain skeletons. The first skeleton
+card follows the initial expansion preference and reserves the real header,
+signature, and reply areas before its body markers. The scroll reset for a new
+selection is applied during loading rather than waiting for the response.
+The Labels button reserves room for its applied count to avoid reflow when
+detail arrives. Body lengths and attachment lists remain content-dependent.
 
 Desktop new-mail detection is owned by
 [`app/notifications.rs`](../src/app/notifications.rs), independently of unread

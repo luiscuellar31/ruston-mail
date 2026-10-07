@@ -10,9 +10,8 @@ use super::{UiState, theme};
 use crate::app::{ConversationReader, Mailbox, Message, PendingLink, ReaderState};
 use crate::downloads::SaveError;
 use crate::mail::{
-    BlockKind, ConversationDetail, ConversationSummary, CustomKind, Folder, MailAction,
-    MailAddress, MailAttachment, MailFolder, MailMessage, MessageBody, RichBlock, RichBody,
-    RichSpan, Verdict,
+    BlockKind, ConversationSummary, CustomKind, Folder, MailAction, MailAddress, MailAttachment,
+    MailFolder, MailMessage, MessageBody, RichBlock, RichBody, RichSpan, Verdict,
 };
 use crate::settings::Reading;
 
@@ -76,7 +75,9 @@ pub(super) fn show(
 
     match mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
-        ReaderState::Loading { .. } => conversation_skeleton(ui),
+        ReaderState::Loading { .. } => {
+            conversation_skeleton(ui, mailbox, places, actions_available, reading, state)
+        }
         ReaderState::Failed { error, .. } => {
             theme::centered_group(ui, |ui| {
                 ui.label(error.conversation_message());
@@ -138,6 +139,23 @@ fn conversation(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
+    reader_scroll(ui, state, |ui| {
+        reading_column(
+            ui,
+            reader,
+            places,
+            current_folder,
+            summary,
+            actions_enabled,
+            action_error,
+            saving_attachment,
+            reading,
+            messages,
+        );
+    });
+}
+
+fn reader_scroll(ui: &mut egui::Ui, state: &mut UiState, content: impl FnOnce(&mut egui::Ui)) {
     // Keep scrolling and message expansion attached to the reader when its
     // parent changes between a side-by-side layout and a compact central pane.
     ui.scope_builder(
@@ -156,18 +174,7 @@ fn conversation(
                     ui.add_space(gap);
                     ui.vertical(|ui| {
                         ui.set_width(width);
-                        reading_column(
-                            ui,
-                            reader,
-                            places,
-                            current_folder,
-                            summary,
-                            actions_enabled,
-                            action_error,
-                            saving_attachment,
-                            reading,
-                            messages,
-                        );
+                        content(ui);
                     });
                 });
             });
@@ -181,42 +188,53 @@ fn reading_column_place(available: f32) -> (f32, f32) {
     (((available - width) * 0.5).max(0.0), width)
 }
 
-fn conversation_skeleton(ui: &mut egui::Ui) {
+fn conversation_skeleton(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    places: &[Folder],
+    actions_available: bool,
+    reading: Reading,
+    state: &mut UiState,
+) {
     let fill = theme::skeleton_fill(ui);
     let response = ui
         .scope(|ui| {
-            let (gap, width) = reading_column_place(ui.available_width());
-            ui.horizontal_top(|ui| {
-                ui.add_space(gap);
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    skeleton_bar(ui, width * 0.72, 24.0, fill);
-                    skeleton_bar(ui, 52.0, 8.0, fill);
+            reader_scroll(ui, state, |ui| {
+                let summary = mailbox.selected_summary();
+                // The listing already supplies this text. Rendering it normally
+                // also reserves the correct height for wrapped subjects.
+                if let Some(summary) = summary {
+                    conversation_heading(
+                        ui,
+                        summary.subject.as_deref(),
+                        summary.message_count as usize,
+                    );
+                    if actions_available {
+                        action_toolbar(
+                            ui,
+                            summary,
+                            mailbox.folder(),
+                            &[],
+                            places,
+                            false,
+                            &mut Vec::new(),
+                        );
+                    }
+                } else {
+                    skeleton_label(
+                        ui,
+                        egui::RichText::new("Loading conversation")
+                            .size(SUBJECT_SIZE)
+                            .strong(),
+                        fill,
+                    );
+                    skeleton_label(ui, egui::RichText::new("1 message").small(), fill);
                     ui.add_space(8.0);
-                    ui.horizontal_wrapped(|ui| {
-                        for _ in 0..3 {
-                            skeleton_bar(
-                                ui,
-                                theme::ICON_BUTTON_MIN_SIZE.x,
-                                theme::ICON_BUTTON_MIN_SIZE.y,
-                                fill,
-                            );
-                        }
-                        ui.separator();
-                        for _ in 0..2 {
-                            skeleton_bar(
-                                ui,
-                                theme::ICON_BUTTON_MIN_SIZE.x,
-                                theme::ICON_BUTTON_MIN_SIZE.y,
-                                fill,
-                            );
-                        }
-                        ui.separator();
-                        skeleton_bar(ui, 60.0, theme::ICON_BUTTON_MIN_SIZE.y, fill);
-                    });
-                    ui.add_space(8.0);
-                    skeleton_message_card(ui, fill);
-                });
+                }
+                ui.add_space(8.0);
+                let expanded = reading.expand_all_messages
+                    || summary.is_none_or(|summary| summary.message_count <= 1);
+                skeleton_message_card(ui, fill, expanded);
             });
         })
         .response;
@@ -229,19 +247,76 @@ fn conversation_skeleton(ui: &mut egui::Ui) {
     });
 }
 
-fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32) -> egui::Response {
+fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> egui::Response {
     theme::card(ui)
         .show(ui, |ui| {
             let width = ui.available_width();
             ui.set_min_width(width);
-            skeleton_bar(ui, width * 0.38, 12.0, fill);
-            skeleton_bar(ui, width * 0.24, 8.0, fill);
-            ui.add_space(12.0);
-            for fraction in [0.92, 0.76, 0.84, 0.48] {
-                skeleton_bar(ui, width * fraction, 9.0, fill);
+            let (header, _) = ui.allocate_exact_size(
+                egui::vec2(width, message_header_height(expanded)),
+                Sense::hover(),
+            );
+            paint_message_chevron(ui, header, expanded, false);
+            let copy = header_copy_rect(header);
+            let sender_height = ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(14.0)));
+            let detail_height = ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(11.0)));
+            theme::paint_skeleton(
+                ui.painter(),
+                egui::Rect::from_min_size(
+                    copy.left_top(),
+                    egui::vec2(copy.width().max(0.0) * 0.55, sender_height),
+                ),
+                fill,
+            );
+            let expanded_lines = [(20.0, 0.85, detail_height), (39.0, 0.65, detail_height)];
+            let collapsed_lines = [(22.0, 0.85, sender_height)];
+            let lines = if expanded {
+                &expanded_lines[..]
+            } else {
+                &collapsed_lines[..]
+            };
+            for (offset, fraction, height) in lines {
+                theme::paint_skeleton(
+                    ui.painter(),
+                    egui::Rect::from_min_size(
+                        copy.left_top() + egui::vec2(0.0, *offset),
+                        egui::vec2(copy.width().max(0.0) * fraction, *height),
+                    ),
+                    fill,
+                );
+            }
+            let date_width = 122.0_f32.min(header.width() * 0.3);
+            theme::paint_skeleton(
+                ui.painter(),
+                egui::Rect::from_min_size(
+                    egui::pos2(header.right() - date_width, header.top() + 2.0),
+                    egui::vec2(date_width, detail_height),
+                ),
+                fill,
+            );
+            skeleton_label(
+                ui,
+                egui::RichText::new("Body signature not verified").small(),
+                fill,
+            );
+            if expanded {
+                reply_toolbar(ui, None, &mut Vec::new());
+                ui.separator();
+                let line_height =
+                    ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(BODY_SIZE)));
+                for fraction in [0.92, 0.76, 0.84, 0.48] {
+                    skeleton_bar(ui, width * fraction, line_height, fill);
+                }
             }
         })
         .response
+}
+
+fn skeleton_label(ui: &mut egui::Ui, text: egui::RichText, fill: Color32) {
+    let response = ui
+        .scope_builder(egui::UiBuilder::new().invisible(), |ui| ui.label(text))
+        .inner;
+    theme::paint_skeleton(ui.painter(), response.rect, fill);
 }
 
 fn skeleton_bar(ui: &mut egui::Ui, width: f32, height: f32, fill: Color32) -> egui::Response {
@@ -265,24 +340,18 @@ fn reading_column(
     messages: &mut Vec<Message>,
 ) {
     let detail_data = reader.detail();
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(detail_data.subject.as_deref().unwrap_or("(No subject)"))
-                .size(SUBJECT_SIZE)
-                .strong(),
-        )
-        .selectable(true)
-        .wrap(),
+    conversation_heading(
+        ui,
+        detail_data.subject.as_deref(),
+        detail_data.messages.len(),
     );
-    detail(ui, &message_count_label(detail_data.messages.len()));
-    ui.add_space(8.0);
 
     if let Some(summary) = summary {
         action_toolbar(
             ui,
             summary,
             current_folder,
-            detail_data,
+            &detail_data.labels,
             places,
             actions_enabled,
             messages,
@@ -314,11 +383,25 @@ fn reading_column(
     }
 }
 
+fn conversation_heading(ui: &mut egui::Ui, subject: Option<&str>, count: usize) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(subject.unwrap_or("(No subject)"))
+                .size(SUBJECT_SIZE)
+                .strong(),
+        )
+        .selectable(true)
+        .wrap(),
+    );
+    detail(ui, &message_count_label(count));
+    ui.add_space(8.0);
+}
+
 fn action_toolbar(
     ui: &mut egui::Ui,
     summary: &ConversationSummary,
     current_folder: &Folder,
-    conversation: &ConversationDetail,
+    carried_labels: &[String],
     places: &[Folder],
     enabled: bool,
     messages: &mut Vec<Message>,
@@ -382,13 +465,13 @@ fn action_toolbar(
             }
         }
 
-        label_menu(ui, conversation, places, enabled, messages);
+        label_menu(ui, carried_labels, places, enabled, messages);
     });
 }
 
 fn label_menu(
     ui: &mut egui::Ui,
-    conversation: &ConversationDetail,
+    carried_labels: &[String],
     places: &[Folder],
     enabled: bool,
     messages: &mut Vec<Message>,
@@ -400,7 +483,7 @@ fn label_menu(
     if labels.is_empty() {
         return;
     }
-    let carried_ids: HashSet<_> = conversation.labels.iter().map(String::as_str).collect();
+    let carried_ids: HashSet<_> = carried_labels.iter().map(String::as_str).collect();
     let applied = labels
         .iter()
         .filter(|label| label.custom_id().is_some_and(|id| carried_ids.contains(id)))
@@ -411,9 +494,24 @@ fn label_menu(
         format!("Labels ({applied})")
     };
 
+    // Counts arrive with the detail. Reserve their widest possible title now,
+    // so a newly displayed count cannot wrap or move the message card.
+    let max_title = egui::WidgetText::from(format!("Labels ({})", labels.len())).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let button = egui::Button::new(title)
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .min_size(egui::vec2(
+            max_title.size().x + 2.0 * ui.spacing().button_padding.x,
+            0.0,
+        ));
+
     ui.separator();
     ui.add_enabled_ui(enabled, |ui| {
-        ui.menu_button(title, |ui| {
+        egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
             ui.set_min_width(180.0);
             egui::ScrollArea::vertical()
                 .max_height(240.0)
@@ -462,32 +560,7 @@ fn message_card(
                 for attachment in &message.attachments {
                     attachment_row(ui, &message.id, attachment, saving_attachment, messages);
                 }
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), REPLY_TOOLBAR_HEIGHT),
-                    Layout::left_to_right(Align::Center).with_main_align(Align::Max),
-                    |ui| {
-                        // Proton determines reply recipients from the message.
-                        for (label, forward, everyone) in [
-                            ("Reply", false, false),
-                            ("Reply all", false, true),
-                            ("Forward", true, false),
-                        ] {
-                            let mut button = theme::compact_button(label);
-                            if label == "Reply" {
-                                button = button
-                                    .fill(theme::colors(ui).accent_soft)
-                                    .stroke(Stroke::new(1.0, theme::ACCENT));
-                            }
-                            if ui.add(button).clicked() {
-                                messages.push(Message::Answer {
-                                    message_id: message.id.clone(),
-                                    forward,
-                                    everyone,
-                                });
-                            }
-                        }
-                    },
-                );
+                reply_toolbar(ui, Some(&message.id), messages);
                 ui.separator();
                 theme::selectable_text(ui, |ui| {
                     message_body(ui, message, reader, reading, messages);
@@ -495,6 +568,37 @@ fn message_card(
             }
         });
     });
+}
+
+fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec<Message>) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), REPLY_TOOLBAR_HEIGHT),
+        Layout::left_to_right(Align::Center).with_main_align(Align::Max),
+        |ui| {
+            // Proton determines reply recipients from the message.
+            for (label, forward, everyone) in [
+                ("Reply", false, false),
+                ("Reply all", false, true),
+                ("Forward", true, false),
+            ] {
+                let mut button = theme::compact_button(label);
+                if label == "Reply" {
+                    button = button
+                        .fill(theme::colors(ui).accent_soft)
+                        .stroke(Stroke::new(1.0, theme::ACCENT));
+                }
+                if ui.add_enabled(message_id.is_some(), button).clicked()
+                    && let Some(message_id) = message_id
+                {
+                    messages.push(Message::Answer {
+                        message_id: message_id.to_owned(),
+                        forward,
+                        everyone,
+                    });
+                }
+            }
+        },
+    );
 }
 
 /// Kept outside the expandable body so a collapsed message cannot hide a
@@ -535,26 +639,13 @@ fn message_header(
     preview: &str,
     expanded: bool,
 ) -> egui::Response {
-    let height = if expanded { 66.0 } else { 44.0 };
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
-    let icon_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
-    let points = chevron_points(icon_center, expanded);
-    let color = if response.hovered() {
-        ui.visuals().strong_text_color()
-    } else {
-        theme::colors(ui).muted
-    };
-    ui.painter()
-        .line_segment([points[0], points[1]], Stroke::new(1.5, color));
-    ui.painter()
-        .line_segment([points[1], points[2]], Stroke::new(1.5, color));
-
-    let date_width = 122.0_f32.min(rect.width() * 0.3);
-    let copy_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 22.0, rect.top()),
-        egui::pos2(rect.right() - date_width - 8.0, rect.bottom()),
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), message_header_height(expanded)),
+        Sense::click(),
     );
+    paint_message_chevron(ui, rect, expanded, response.hovered());
+
+    let copy_rect = header_copy_rect(rect);
     let painter = ui.painter_at(rect);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
     theme::paint_truncated_text(
@@ -611,6 +702,32 @@ fn message_header(
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(if expanded { "Collapse" } else { "Expand" })
+}
+
+fn message_header_height(expanded: bool) -> f32 {
+    if expanded { 66.0 } else { 44.0 }
+}
+
+fn paint_message_chevron(ui: &egui::Ui, rect: egui::Rect, expanded: bool, hovered: bool) {
+    let icon_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
+    let points = chevron_points(icon_center, expanded);
+    let color = if hovered {
+        ui.visuals().strong_text_color()
+    } else {
+        theme::colors(ui).muted
+    };
+    ui.painter()
+        .line_segment([points[0], points[1]], Stroke::new(1.5, color));
+    ui.painter()
+        .line_segment([points[1], points[2]], Stroke::new(1.5, color));
+}
+
+fn header_copy_rect(rect: egui::Rect) -> egui::Rect {
+    let date_width = 122.0_f32.min(rect.width() * 0.3);
+    egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 22.0, rect.top()),
+        egui::pos2(rect.right() - date_width - 8.0, rect.bottom()),
+    )
 }
 
 fn header_detail(
@@ -987,6 +1104,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+    use crate::mail::ConversationDetail;
 
     #[test]
     fn the_reading_column_is_bounded_and_centred() {
@@ -1046,7 +1164,7 @@ mod tests {
                     ui,
                     &summary,
                     &Folder::INBOX,
-                    &conversation,
+                    &conversation.labels,
                     &places,
                     true,
                     &mut Vec::new(),
@@ -1140,7 +1258,7 @@ mod tests {
                 },
                 |ui| {
                     ui.set_width(READING_WIDTH);
-                    rect = skeleton_message_card(ui, Color32::GRAY).rect;
+                    rect = skeleton_message_card(ui, Color32::GRAY, true).rect;
                 },
             )
             .drop_without_applying_deltas();
@@ -1149,6 +1267,441 @@ mod tests {
         assert!(
             rect.height() > 100.0,
             "loading message card lost its expanded body: {rect:?}"
+        );
+    }
+
+    fn loading_reader(
+        subject: &str,
+        folder: Folder,
+        count: u32,
+    ) -> (Mailbox, crate::app::ReaderRequest, ConversationDetail) {
+        let summary = ConversationSummary {
+            id: "conversation".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: Some(subject.into()),
+            correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: None,
+            unread: false,
+            starred: false,
+            message_count: count,
+            has_attachments: false,
+        };
+        let (mut mailbox, page) = Mailbox::open(folder, 50, 1, 2);
+        mailbox.finish_page(
+            page.id,
+            Ok(crate::mail::ConversationPage {
+                conversations: vec![summary.clone()],
+                total: 1,
+                inspect_candidates: Vec::new(),
+            }),
+        );
+        let request = mailbox
+            .start_conversation_load(summary.id.clone(), 3)
+            .unwrap();
+        let detail = ConversationDetail {
+            id: summary.id,
+            subject: summary.subject,
+            labels: Vec::new(),
+            messages: (0..count)
+                .map(|index| MailMessage {
+                    id: format!("message-{index}"),
+                    verdict: Verdict::Unverified,
+                    sender: address(Some("Alex Rivera"), "alex@example.com"),
+                    recipients: vec![address(None, "team@example.org")],
+                    time: Some(1_791_327_600 + i64::from(index)),
+                    // The expanded body overflows the viewport, exercising the
+                    // floating scrollbar without predicting its eventual height.
+                    body: MessageBody::PlainText(if index == count - 1 {
+                        format!("Hello.\n{}", "More message content.\n".repeat(60))
+                    } else {
+                        "Hello.".into()
+                    }),
+                    attachments: Vec::new(),
+                })
+                .collect(),
+        };
+        (mailbox, request, detail)
+    }
+
+    fn reader_frame(
+        context: &egui::Context,
+        mailbox: &Mailbox,
+        places: &[Folder],
+        reading: Reading,
+        state: &mut UiState,
+        input: egui::RawInput,
+    ) -> (Vec<egui::epaint::ClippedShape>, Vec<Message>) {
+        let mut messages = Vec::new();
+        let output = context.run_ui(input, |ui| {
+            show(
+                ui,
+                mailbox,
+                places,
+                true,
+                None,
+                None,
+                None,
+                reading,
+                state,
+                &mut messages,
+            );
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    }
+
+    fn text_rect(shapes: &[egui::epaint::ClippedShape], label: &str) -> egui::Rect {
+        shapes
+            .iter()
+            .find_map(|shape| {
+                if let egui::epaint::Shape::Text(text) = &shape.shape
+                    && text.galley.text() == label
+                {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("missing text: {label}"))
+    }
+
+    fn rounded_rects(shapes: &[egui::epaint::ClippedShape], radius: u8) -> Vec<egui::Rect> {
+        shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::epaint::Shape::Rect(rect) = &shape.shape
+                    && rect.corner_radius == egui::CornerRadius::same(radius)
+                {
+                    Some(rect.rect)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn assert_same_pixel_position(label: &str, before: egui::Pos2, after: egui::Pos2, scale: f32) {
+        let delta = (after - before).abs() * scale;
+        assert!(
+            delta.x <= 0.5 && delta.y <= 0.5,
+            "{label} moved by {delta:?} pixels: {before:?} -> {after:?}, scale={scale}"
+        );
+    }
+
+    fn assert_reader_geometry(
+        loading: &[egui::epaint::ClippedShape],
+        loaded: &[egui::epaint::ClippedShape],
+        subject: &str,
+        count: u32,
+        expanded: bool,
+        scale: f32,
+    ) {
+        let before = rounded_rects(loading, 10)[0];
+        let after = rounded_rects(loaded, 10)[0];
+        assert_same_pixel_position("card top", before.left_top(), after.left_top(), scale);
+        assert_same_pixel_position("card right", before.right_top(), after.right_top(), scale);
+        for label in [subject, &message_count_label(count as usize), "Labels"] {
+            let before = text_rect(loading, label);
+            let after = text_rect(loaded, label);
+            assert_same_pixel_position(label, before.left_top(), after.left_top(), scale);
+            assert_same_pixel_position(label, before.right_bottom(), after.right_bottom(), scale);
+        }
+        let controls = |shapes: &[egui::epaint::ClippedShape], top: f32| {
+            rounded_rects(shapes, 7)
+                .into_iter()
+                .filter(|rect| rect.bottom() < top)
+                .collect::<Vec<_>>()
+        };
+        let before_controls = controls(loading, before.top());
+        let after_controls = controls(loaded, after.top());
+        assert_eq!(before_controls.len(), after_controls.len());
+        assert!(before_controls.len() >= 5);
+        for (before, after) in before_controls.iter().zip(after_controls) {
+            assert_same_pixel_position("toolbar", before.left_top(), after.left_top(), scale);
+            assert_same_pixel_position(
+                "toolbar",
+                before.right_bottom(),
+                after.right_bottom(),
+                scale,
+            );
+        }
+        let bars = rounded_rects(loading, 4);
+        let sender = text_rect(loaded, "Alex Rivera");
+        assert_same_pixel_position("sender", bars[0].left_top(), sender.left_top(), scale);
+        assert!((bars[0].height() - sender.height()).abs() * scale <= 0.5);
+        let date_index = if expanded { 3 } else { 2 };
+        let date = text_rect(loaded, &format_message_time(1_791_327_600, &Local));
+        assert_same_pixel_position(
+            "date",
+            bars[date_index].right_top(),
+            date.right_top(),
+            scale,
+        );
+        let signature = text_rect(loaded, "Body signature not verified");
+        assert_same_pixel_position(
+            "signature",
+            bars[date_index + 1].left_top(),
+            signature.left_top(),
+            scale,
+        );
+        if expanded {
+            for (index, label) in [(1, "alex@example.com"), (2, "To: team@example.org")] {
+                let text = text_rect(loaded, label);
+                assert_same_pixel_position(label, bars[index].left_top(), text.left_top(), scale);
+            }
+            for label in ["Reply", "Reply all", "Forward"] {
+                assert_same_pixel_position(
+                    label,
+                    text_rect(loading, label).left_top(),
+                    text_rect(loaded, label).left_top(),
+                    scale,
+                );
+            }
+            let body = loaded
+                .iter()
+                .find_map(|shape| {
+                    if let egui::epaint::Shape::Text(text) = &shape.shape
+                        && text.galley.text().starts_with("Hello.")
+                    {
+                        Some(text.pos)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            assert_same_pixel_position("body start", bars[5].left_top(), body, scale);
+        } else {
+            assert_same_pixel_position(
+                "preview",
+                bars[1].left_top(),
+                text_rect(loaded, "Hello.").left_top(),
+                scale,
+            );
+        }
+    }
+
+    #[test]
+    fn loading_and_loaded_readers_keep_the_same_positions_at_every_scale() {
+        for appearance in [
+            crate::settings::Appearance::Dark,
+            crate::settings::Appearance::Light,
+        ] {
+            for (width, zoom, native_scale) in [
+                (540.0, 1.0, 1.5),
+                (980.0, 1.0, 2.0),
+                (300.0, 1.0, 1.0),
+                (300.0, 1.75, 2.0),
+            ] {
+                for subject in [
+                    "Artículo faltante en pedido",
+                    "A long subject that wraps across several lines in a narrow reading column instead of shifting the toolbar after loading",
+                ] {
+                    for folder in [Folder::INBOX, Folder::System(MailFolder::Trash)] {
+                        for (count, expand_all_messages) in [(1, false), (3, false), (3, true)] {
+                            let (mut mailbox, request, detail) =
+                                loading_reader(subject, folder.clone(), count);
+                            let context = egui::Context::default();
+                            theme::install(&context);
+                            theme::apply(&context, appearance);
+                            context.set_zoom_factor(zoom);
+                            let reading = Reading {
+                                expand_all_messages,
+                                ..Default::default()
+                            };
+                            let mut state = UiState {
+                                scroll_reader_top: true,
+                                ..Default::default()
+                            };
+                            let mut input = egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(width, 950.0),
+                                )),
+                                ..Default::default()
+                            };
+                            input
+                                .viewports
+                                .get_mut(&egui::ViewportId::ROOT)
+                                .unwrap()
+                                .native_pixels_per_point = Some(native_scale);
+                            let places = [Folder::label("work", "Work")];
+                            let render = |mailbox: &Mailbox, state: &mut UiState| {
+                                let (shapes, messages) = reader_frame(
+                                    &context,
+                                    mailbox,
+                                    &places,
+                                    reading,
+                                    state,
+                                    input.clone(),
+                                );
+                                assert!(messages.is_empty());
+                                shapes
+                            };
+                            // Apply the pending zoom/native scale before measuring
+                            // the transition, as in an already-open desktop window.
+                            for _ in 0..2 {
+                                render(&mailbox, &mut state);
+                            }
+                            let loading = render(&mailbox, &mut state);
+                            assert!(
+                                !state.scroll_reader_top,
+                                "loading must consume the scroll reset"
+                            );
+                            mailbox.finish_conversation(&request, Ok(detail));
+                            // Check the very first loaded frame and settled frames.
+                            for _ in 0..3 {
+                                let loaded = render(&mailbox, &mut state);
+                                assert_reader_geometry(
+                                    &loading,
+                                    &loaded,
+                                    subject,
+                                    count,
+                                    expand_all_messages || count == 1,
+                                    context.pixels_per_point(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn applied_labels_do_not_push_the_card_down_after_loading() {
+        for width in (300..=500).step_by(10) {
+            let (mut mailbox, request, mut detail) = loading_reader("Message", Folder::INBOX, 1);
+            detail.labels = vec!["work".into()];
+            let context = egui::Context::default();
+            theme::install(&context);
+            let mut state = UiState::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width as f32, 950.0),
+                )),
+                ..Default::default()
+            };
+            let places = [Folder::label("work", "Work")];
+            let (loading, _) = reader_frame(
+                &context,
+                &mailbox,
+                &places,
+                Reading::default(),
+                &mut state,
+                input.clone(),
+            );
+            mailbox.finish_conversation(&request, Ok(detail));
+            let (loaded, _) = reader_frame(
+                &context,
+                &mailbox,
+                &places,
+                Reading::default(),
+                &mut state,
+                input,
+            );
+            assert_same_pixel_position(
+                "card with applied labels",
+                rounded_rects(&loading, 10)[0].left_top(),
+                rounded_rects(&loaded, 10)[0].left_top(),
+                context.pixels_per_point(),
+            );
+        }
+    }
+
+    #[test]
+    fn loading_controls_do_not_dispatch_actions_and_loaded_reply_still_works() {
+        let (mut mailbox, request, detail) = loading_reader("Message", Folder::INBOX, 1);
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(540.0, 950.0),
+            )),
+            ..Default::default()
+        };
+        let places = [Folder::label("work", "Work")];
+        let (shapes, _) = reader_frame(
+            &context,
+            &mailbox,
+            &places,
+            Reading::default(),
+            &mut state,
+            input.clone(),
+        );
+        let reply = text_rect(&shapes, "Reply").center();
+        let controls = rounded_rects(&shapes, 7);
+        for position in [
+            controls[0].center(),
+            text_rect(&shapes, "Labels").center(),
+            reply,
+        ] {
+            let mut click = input.clone();
+            click.events = vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ];
+            let (_, messages) = reader_frame(
+                &context,
+                &mailbox,
+                &places,
+                Reading::default(),
+                &mut state,
+                click,
+            );
+            assert!(messages.is_empty(), "loading control dispatched an action");
+        }
+        mailbox.finish_conversation(&request, Ok(detail));
+        reader_frame(
+            &context,
+            &mailbox,
+            &places,
+            Reading::default(),
+            &mut state,
+            input.clone(),
+        );
+        let mut click = input;
+        click.events = vec![
+            egui::Event::PointerMoved(reply),
+            egui::Event::PointerButton {
+                pos: reply,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: reply,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ];
+        let (_, messages) = reader_frame(
+            &context,
+            &mailbox,
+            &places,
+            Reading::default(),
+            &mut state,
+            click,
+        );
+        assert!(
+            matches!(messages.as_slice(), [Message::Answer { message_id, forward: false, everyone: false }] if message_id == "message-0")
         );
     }
 
