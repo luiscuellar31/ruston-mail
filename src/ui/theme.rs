@@ -390,7 +390,10 @@ pub fn paint_clip(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
 pub fn titlebar_inset(ctx: &egui::Context) -> f32 {
     if cfg!(target_os = "macos") && !ctx.input(|input| input.viewport().fullscreen.unwrap_or(false))
     {
-        28.0
+        // Native metrics are in macOS points, before egui's application zoom.
+        ctx.data(|data| data.get_temp::<f32>(egui::Id::new("native-titlebar-height")))
+            .unwrap_or(28.0)
+            / ctx.zoom_factor()
     } else {
         0.0
     }
@@ -401,7 +404,9 @@ pub fn panel_frame(fill: Color32) -> egui::Frame {
 }
 
 pub fn top_panel_frame(fill: Color32, top_inset: f32) -> egui::Frame {
-    let top = (PANEL_PADDING as f32 + top_inset.max(0.0)).min(i8::MAX as f32) as i8;
+    let top = (PANEL_PADDING as f32 + top_inset.max(0.0))
+        .ceil()
+        .min(i8::MAX as f32) as i8;
     egui::Frame::new().fill(fill).inner_margin(egui::Margin {
         left: PANEL_PADDING,
         right: PANEL_PADDING,
@@ -728,6 +733,15 @@ mod tests {
         let context = egui::Context::default();
         if cfg!(target_os = "macos") {
             assert_eq!(titlebar_inset(&context), 28.0);
+            context.data_mut(|data| {
+                data.insert_temp(egui::Id::new("native-titlebar-height"), 35.0_f32);
+            });
+            assert_eq!(titlebar_inset(&context), 35.0);
+            context.set_zoom_factor(1.75);
+            context
+                .run_ui(egui::RawInput::default(), |_| {})
+                .drop_without_applying_deltas();
+            assert_eq!(titlebar_inset(&context), 20.0);
             let mut raw = egui::RawInput::default();
             raw.viewports.insert(
                 egui::ViewportId::ROOT,
@@ -756,5 +770,9 @@ mod tests {
         assert_eq!(inset_frame.inner_margin.left, PANEL_PADDING);
         assert_eq!(inset_frame.inner_margin.right, PANEL_PADDING);
         assert_eq!(inset_frame.inner_margin.bottom, PANEL_PADDING);
+        assert_eq!(
+            top_panel_frame(DARK.sidebar, 20.1).inner_margin.top,
+            PANEL_PADDING + 21
+        );
     }
 }

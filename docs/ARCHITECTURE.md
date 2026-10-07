@@ -35,6 +35,25 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   before native windows are created. The ID matches the existing macOS bundle
   and the Linux desktop filename; session and preference paths keep their
   separate storage identifiers.
+- On macOS, [`ui/macos.rs`](../src/ui/macos.rs) measures the root window's
+  traffic lights with eframe's `WindowChromeMetrics` on each logic pass.
+  [`ui/theme.rs`](../src/ui/theme.rs) converts native points to egui points
+  using application zoom and removes the inset in fullscreen. The previous
+  28 native points remain a fallback when no handle/metrics are available.
+  The same module extends winit's existing menus with Settings and New Message,
+  queues actions for the desktop shell, and routes the existing menu Quit
+  command through the root close guard. It retains selector targets, validates
+  authentication/modal availability, and restores owned menu changes on drop;
+  it does not replace winit's application or window delegates.
+- [`ui/mod.rs`](../src/ui/mod.rs) handles root close requests in `logic`,
+  including minimized windows. An in-flight send or native file dialog blocks
+  closing. Unapplied preferences use the existing Settings exit decisions
+  before proceeding to the draft check. [`ui/close.rs`](../src/ui/close.rs)
+  requests explicit discard of a written message in either composer placement;
+  repeated close requests never approve it. Discard/cancel reuse App messages,
+  and closing rechecks current send/draft state. The separate composer is
+  disabled during a root confirmation. macOS menu Quit/Cmd+Q uses this same
+  path; direct OS termination (including Dock Quit) bypasses these guards.
 - [`ui/dialogs.rs`](../src/ui/dialogs.rs) associates rfd file dialogs with native
   windows. The shell retains the root winit window until a dialog finishes and
   admits only one file dialog at a time. macOS and Windows use the active native
@@ -362,6 +381,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 | CLI sync, watch, and local search | [`commands/sync.rs`](../crates/ruston-cli/src/commands/sync.rs), [`commands/watch.rs`](../crates/ruston-cli/src/commands/watch.rs), [`commands/search.rs`](../crates/ruston-cli/src/commands/search.rs) | Core [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs), [`cache.rs`](../crates/ruston-core/src/cache.rs), [privacy guide](PRIVACY.md) |
 | Offline demo data | [`src/mail/demo.rs`](../src/mail/demo.rs), [`crates/ruston-cli/src/demo.rs`](../crates/ruston-cli/src/demo.rs) | Each frontend's entry point |
 | Desktop identity and icons | [`src/ui/identity.rs`](../src/ui/identity.rs), [`build.rs`](../build.rs) | [`packaging/linux/`](../packaging/linux/), [`assets/icons/hicolor/`](../assets/icons/hicolor/), [`assets/windows/`](../assets/windows/), [`packaging/macos/`](../packaging/macos/) |
+| macOS menus, window chrome, and safe root closing | [`src/ui/macos.rs`](../src/ui/macos.rs), [`src/ui/close.rs`](../src/ui/close.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/ui/theme.rs`](../src/ui/theme.rs), [`src/ui/settings.rs`](../src/ui/settings.rs), [`src/app/compose.rs`](../src/app/compose.rs) |
 | Desktop new-mail detection and notifications | [`src/app/notifications.rs`](../src/app/notifications.rs), [`src/ui/notifications.rs`](../src/ui/notifications.rs) | [`src/ui/auto_refresh.rs`](../src/ui/auto_refresh.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), native [`src/ui/notifications/`](../src/ui/notifications/) |
 | Build, packaging, and CI | [Workspace manifest](../Cargo.toml), [`packaging/`](../packaging/) | [CI workflows](../.github/workflows/), [development guide](DEVELOPMENT.md) |
 

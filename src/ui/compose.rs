@@ -28,10 +28,22 @@ pub(super) fn window_viewport(compose: &Compose) -> egui::ViewportBuilder {
         .with_min_inner_size(MIN_WINDOW_SIZE)
 }
 
-pub(super) fn show_window(context: &egui::Context, compose: &Compose) -> Vec<Message> {
+pub(super) fn show_window(
+    context: &egui::Context,
+    compose: &Compose,
+    blocked: bool,
+) -> Vec<Message> {
     context.show_viewport_immediate(viewport_id(), window_viewport(compose), |root, _class| {
         let mut messages = Vec::new();
-        show(root, compose, &mut messages);
+        root.add_enabled_ui(!blocked, |root| show(root, compose, &mut messages));
+
+        if blocked {
+            if root.input(|input| input.viewport().close_requested()) {
+                root.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+            return Vec::new();
+        }
 
         if root.input(|input| input.viewport().close_requested()) {
             if compose.in_flight() {

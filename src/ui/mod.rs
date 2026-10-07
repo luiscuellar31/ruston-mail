@@ -1,8 +1,11 @@
 mod auto_refresh;
+mod close;
 mod compose;
 mod dialogs;
 mod identity;
 mod login;
+#[cfg(target_os = "macos")]
+mod macos;
 mod mailbox;
 mod notifications;
 mod reader;
@@ -82,7 +85,9 @@ struct DesktopApp {
     /// Preferences being edited in the settings pane until Apply is pressed.
     settings_draft: Option<Settings>,
     /// Where to go after the user decides what to do with unsaved preferences.
-    pending_settings_exit: Option<Message>,
+    pending_settings_exit: Option<SettingsExit>,
+    pending_window_close: bool,
+    window_close_approved: bool,
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
@@ -95,12 +100,23 @@ struct DesktopApp {
     /// Native dialog completion, including cancellation, releases this slot.
     file_dialog_open: bool,
     notifications: notifications::Notifications,
+    #[cfg(target_os = "macos")]
+    native_menu: Option<macos::Menu>,
+}
+
+enum SettingsExit {
+    Navigate(Box<Message>),
+    CloseWindow,
 }
 
 impl DesktopApp {
     fn new(creation: &eframe::CreationContext<'_>, demo: bool, settings: Settings) -> Self {
         let mut app = Self::with_context(&creation.egui_ctx, demo, settings);
         app.dialog_parent = creation.winit_window().cloned();
+        #[cfg(target_os = "macos")]
+        {
+            app.native_menu = macos::Menu::install(&creation.egui_ctx);
+        }
         app
     }
 
@@ -120,6 +136,8 @@ impl DesktopApp {
             auto_refresh: AutoRefresh::default(),
             settings_draft: None,
             pending_settings_exit: None,
+            pending_window_close: false,
+            window_close_approved: false,
             settings_seen: 0,
             settings_seen_at: 0.0,
             last_window_size: None,
@@ -127,6 +145,8 @@ impl DesktopApp {
             dialog_parent: None,
             file_dialog_open: false,
             notifications: notifications::Notifications::default(),
+            #[cfg(target_os = "macos")]
+            native_menu: None,
         };
         desktop.execute(effects, context);
         desktop
@@ -175,7 +195,7 @@ impl DesktopApp {
             if self.settings_draft.as_ref().is_some_and(|draft| {
                 !settings::preference_changes(self.app.settings(), draft).is_empty()
             }) {
-                self.pending_settings_exit = Some(message);
+                self.pending_settings_exit = Some(SettingsExit::Navigate(Box::new(message)));
                 context.request_repaint();
                 return;
             }
@@ -255,7 +275,112 @@ impl DesktopApp {
             }
         }
         self.settings_draft = None;
-        self.dispatch(destination, context);
+        match destination {
+            SettingsExit::Navigate(message) => self.dispatch(*message, context),
+            SettingsExit::CloseWindow => self.request_window_close(context),
+        }
+    }
+
+    fn request_window_close(&mut self, context: &egui::Context) {
+        if self.window_close_approved {
+            return;
+        }
+        let sending = self
+            .app
+            .compose()
+            .is_some_and(crate::app::Compose::in_flight);
+        let unsaved_message = self
+            .app
+            .compose()
+            .is_some_and(|draft| !draft.is_untouched());
+        let unsaved_settings = self.app.showing_settings()
+            && self.settings_draft.as_ref().is_some_and(|draft| {
+                !settings::preference_changes(self.app.settings(), draft).is_empty()
+            });
+        if sending
+            || self.file_dialog_open
+            || unsaved_message
+            || unsaved_settings
+            || self.pending_settings_exit.is_some()
+        {
+            context
+                .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
+            if sending || self.file_dialog_open {
+                return;
+            }
+            if self.pending_settings_exit.is_some() {
+                return;
+            }
+            if unsaved_settings {
+                self.pending_settings_exit = Some(SettingsExit::CloseWindow);
+            } else {
+                self.pending_window_close = true;
+            }
+            context.send_viewport_cmd_to(
+                egui::ViewportId::ROOT,
+                egui::ViewportCommand::Minimized(false),
+            );
+            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+            context.request_repaint();
+        } else {
+            self.window_close_approved = true;
+            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+        }
+    }
+
+    fn check_window_close(&mut self, context: &egui::Context) {
+        // eframe also calls logic while minimized, so cancellation belongs here.
+        if context.input(|input| input.viewport().close_requested()) {
+            self.request_window_close(context);
+        }
+    }
+
+    fn resolve_window_close(&mut self, decision: Message, context: &egui::Context) {
+        self.pending_window_close = false;
+        let discard = matches!(decision, Message::DiscardCompose);
+        self.dispatch(decision, context);
+        if discard {
+            // App refuses to discard an in-flight send; recheck before closing.
+            self.request_window_close(context);
+        }
+        context.request_repaint();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn native_action(&mut self, action: macos::Action, context: &egui::Context) {
+        match action {
+            macos::Action::Quit => self.request_window_close(context),
+            macos::Action::Settings | macos::Action::NewMessage
+                if matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+                    && !self.pending_window_close
+                    && self.pending_settings_exit.is_none()
+                    && !self.file_dialog_open =>
+            {
+                self.dispatch(
+                    match action {
+                        macos::Action::Settings => Message::ShowSettings(true),
+                        _ => Message::OpenCompose,
+                    },
+                    context,
+                );
+                context.send_viewport_cmd_to(
+                    egui::ViewportId::ROOT,
+                    egui::ViewportCommand::Minimized(false),
+                );
+                let destination = if matches!(action, macos::Action::NewMessage)
+                    && self.app.compose().is_some()
+                    && self.app.settings().compose_placement == ComposePlacement::Window
+                    && self.pending_settings_exit.is_none()
+                {
+                    compose::viewport_id()
+                } else {
+                    egui::ViewportId::ROOT
+                };
+                context.send_viewport_cmd_to(destination, egui::ViewportCommand::Minimized(false));
+                context.send_viewport_cmd_to(destination, egui::ViewportCommand::Focus);
+            }
+            _ => {}
+        }
     }
 
     fn execute(&mut self, effects: Effects, context: &egui::Context) {
@@ -376,7 +501,10 @@ impl DesktopApp {
     }
 
     fn keyboard_shortcuts(&mut self, context: &egui::Context) {
-        if !matches!(self.app.auth_state(), AuthState::Authenticated { .. }) {
+        if !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+            || self.pending_window_close
+            || self.pending_settings_exit.is_some()
+        {
             return;
         }
 
@@ -536,6 +664,27 @@ impl eframe::App for DesktopApp {
         theme::apply(context, self.app.settings().appearance);
         self.apply_zoom(context);
         self.drain_runtime(context);
+        #[cfg(target_os = "macos")]
+        {
+            macos::update_window_chrome(context, _frame);
+            let actions = self
+                .native_menu
+                .as_ref()
+                .map(macos::Menu::drain)
+                .unwrap_or_default();
+            for action in actions {
+                self.native_action(action, context);
+            }
+            if let Some(menu) = &self.native_menu {
+                menu.set_enabled(
+                    matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+                        && !self.pending_window_close
+                        && self.pending_settings_exit.is_none()
+                        && !self.file_dialog_open,
+                );
+            }
+        }
+        self.check_window_close(context);
         self.update_notifications(context);
         self.remember_window_size(context);
         self.keyboard_shortcuts(context);
@@ -554,6 +703,9 @@ impl eframe::App for DesktopApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.window_close_approved {
+            return;
+        }
         let context = ui.ctx().clone();
         let mut messages = Vec::new();
         if !self.app.showing_settings()
@@ -597,7 +749,11 @@ impl eframe::App for DesktopApp {
                 if self.app.settings().compose_placement == ComposePlacement::Window
                     && let Some(writing) = self.app.compose()
                 {
-                    messages.extend(compose::show_window(&context, writing));
+                    messages.extend(compose::show_window(
+                        &context,
+                        writing,
+                        self.pending_window_close || self.pending_settings_exit.is_some(),
+                    ));
                 }
             }
             AuthState::SigningOut => {
@@ -609,16 +765,28 @@ impl eframe::App for DesktopApp {
             }
         }
 
+        // Closing confirmation owns the decision even if input for the same
+        // frame was already queued in a pane or the child composer.
+        if self.pending_window_close {
+            messages.clear();
+        }
         let exit_decision = self
             .pending_settings_exit
             .as_ref()
             .and_then(|_| settings::confirm_exit(&context));
+        let close_decision = self
+            .pending_window_close
+            .then(|| close::confirm(&context))
+            .flatten();
         let has_messages = !messages.is_empty();
         for message in messages {
             self.dispatch(message, &context);
         }
         if let Some(decision) = exit_decision {
             self.resolve_settings_exit(decision, &context);
+        }
+        if let Some(decision) = close_decision {
+            self.resolve_window_close(decision, &context);
         }
         if has_messages {
             context.request_repaint();
@@ -701,6 +869,157 @@ fn set_dock_badge(_count: Option<u32>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_close(
+        desktop: &mut DesktopApp,
+        context: &egui::Context,
+    ) -> Vec<egui::ViewportCommand> {
+        let mut raw = egui::RawInput::default();
+        let viewport = raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+        viewport.minimized = Some(true);
+        viewport.events.push(egui::ViewportEvent::Close);
+        let mut output = context.run_logic(&raw, |context| desktop.check_window_close(context));
+        output
+            .viewport_commands
+            .remove(&egui::ViewportId::ROOT)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn main_window_close_requires_explicit_discard_in_both_composer_placements() {
+        for placement in [ComposePlacement::ReadingPane, ComposePlacement::Window] {
+            let context = egui::Context::default();
+            let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+            desktop.dispatch(Message::SetComposePlacement(placement), &context);
+            desktop.dispatch(Message::OpenCompose, &context);
+            desktop.dispatch(
+                Message::ComposeChanged(crate::app::ComposeField::Body, "Keep this draft".into()),
+                &context,
+            );
+            for _ in 0..2 {
+                assert!(
+                    native_close(&mut desktop, &context)
+                        .contains(&egui::ViewportCommand::CancelClose)
+                );
+                assert!(desktop.pending_window_close);
+                assert!(!desktop.window_close_approved);
+                assert_eq!(
+                    desktop
+                        .app
+                        .compose()
+                        .unwrap()
+                        .field(crate::app::ComposeField::Body),
+                    "Keep this draft"
+                );
+            }
+            desktop.resolve_window_close(Message::CancelDiscard, &context);
+            assert!(!desktop.pending_window_close);
+            assert!(desktop.app.compose().is_some());
+            native_close(&mut desktop, &context);
+            desktop.resolve_window_close(Message::DiscardCompose, &context);
+            assert!(desktop.app.compose().is_none());
+            assert!(desktop.window_close_approved);
+        }
+    }
+
+    #[test]
+    fn untouched_main_window_closes_but_native_dialogs_block_it() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        desktop.file_dialog_open = true;
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
+        assert!(!desktop.window_close_approved);
+        assert!(!desktop.pending_window_close);
+        desktop.file_dialog_open = false;
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::Close));
+        assert!(desktop.window_close_approved);
+    }
+
+    #[test]
+    fn pending_send_cannot_be_discarded_by_a_window_close_decision() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        desktop.dispatch(
+            Message::ComposeChanged(crate::app::ComposeField::To, "alex@example.com".into()),
+            &context,
+        );
+        native_close(&mut desktop, &context);
+        desktop.dispatch(Message::Send, &context);
+        assert!(desktop.app.compose().unwrap().in_flight());
+        desktop.resolve_window_close(Message::DiscardCompose, &context);
+        assert!(desktop.app.compose().unwrap().in_flight());
+        assert!(!desktop.window_close_approved);
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
+    }
+
+    #[test]
+    fn main_close_confirms_settings_then_preserves_or_discards_the_draft() {
+        let (mut desktop, context) = demo_with_settings();
+        desktop.dispatch(Message::OpenCompose, &context);
+        desktop.dispatch(
+            Message::ComposeChanged(crate::app::ComposeField::Body, "Draft".into()),
+            &context,
+        );
+        desktop.dispatch(Message::ShowSettings(true), &context);
+        desktop.settings_draft = Some(desktop.app.settings().clone());
+        desktop.settings_draft.as_mut().unwrap().confirm_links = false;
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
+        assert!(matches!(
+            desktop.pending_settings_exit,
+            Some(SettingsExit::CloseWindow)
+        ));
+        assert!(!desktop.pending_window_close);
+        desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
+        assert!(!desktop.window_close_approved);
+        assert!(desktop.settings_draft.is_some());
+        assert!(desktop.app.compose().is_some());
+        native_close(&mut desktop, &context);
+        desktop.resolve_settings_exit(settings::ExitDecision::Apply, &context);
+        assert!(!desktop.app.settings().confirm_links);
+        assert!(desktop.pending_window_close);
+        assert!(!desktop.window_close_approved);
+        desktop.resolve_window_close(Message::CancelDiscard, &context);
+        assert!(desktop.app.compose().is_some());
+        native_close(&mut desktop, &context);
+        desktop.resolve_window_close(Message::DiscardCompose, &context);
+        assert!(desktop.window_close_approved);
+    }
+
+    #[test]
+    fn main_close_can_discard_unapplied_settings_without_changing_preferences() {
+        let (mut desktop, context) = demo_with_settings();
+        desktop.settings_draft.as_mut().unwrap().confirm_links = false;
+        native_close(&mut desktop, &context);
+        desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
+        assert!(desktop.app.settings().confirm_links);
+        assert!(desktop.window_close_approved);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_commands_reuse_settings_guards_and_never_replace_an_existing_draft() {
+        let (mut desktop, context) = demo_with_settings();
+        desktop.settings_draft.as_mut().unwrap().confirm_links = false;
+        desktop.native_action(macos::Action::NewMessage, &context);
+        assert!(matches!(
+            desktop.pending_settings_exit,
+            Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::OpenCompose)
+        ));
+        assert!(desktop.app.compose().is_none());
+        desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
+        let draft = desktop.app.compose().unwrap().id();
+        desktop.native_action(macos::Action::NewMessage, &context);
+        assert_eq!(desktop.app.compose().unwrap().id(), draft);
+        desktop.native_action(macos::Action::Settings, &context);
+        assert!(desktop.app.showing_settings());
+        desktop.native_action(macos::Action::Settings, &context);
+        assert!(desktop.app.showing_settings());
+        desktop.dispatch(Message::Logout, &context);
+        desktop.native_action(macos::Action::NewMessage, &context);
+        assert!(desktop.app.compose().is_none());
+    }
 
     #[test]
     fn changing_folders_releases_a_superseded_poll_even_without_its_response() {
@@ -892,7 +1211,7 @@ mod tests {
         assert!(desktop.app.showing_settings());
         assert!(matches!(
             desktop.pending_settings_exit,
-            Some(Message::ShowSettings(false))
+            Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::ShowSettings(false))
         ));
         desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
 
@@ -902,7 +1221,7 @@ mod tests {
         );
         assert!(matches!(
             desktop.pending_settings_exit,
-            Some(Message::ShowSettings(false))
+            Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::ShowSettings(false))
         ));
         desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
         assert!(!desktop.app.showing_settings());
@@ -940,13 +1259,13 @@ mod tests {
         assert_eq!(desktop.app.mailbox().unwrap().folder(), &original);
         assert!(matches!(
             desktop.pending_settings_exit,
-            Some(Message::SelectFolder(_))
+            Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::SelectFolder(_))
         ));
 
         desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
         assert!(matches!(
             desktop.pending_settings_exit,
-            Some(Message::SelectFolder(_)),
+            Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::SelectFolder(_)),
         ));
         desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
         assert!(desktop.app.showing_settings());

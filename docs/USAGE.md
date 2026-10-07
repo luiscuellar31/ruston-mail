@@ -151,6 +151,20 @@ applies to new messages, replies, and forwards.
 The composer scrolls vertically when its fields or attachments exceed the
 available height, in either placement.
 
+Closing the main window asks before discarding a written message, whether the
+composer is in the reading pane or a separate window. Choose **Keep writing**
+to cancel or **Discard and close** to exit. Repeating the close request does not
+discard the draft. Closing is blocked while a message is being sent or a native
+file dialog is open. Unapplied Settings changes are resolved before the draft.
+On macOS, **Quit Ruston Mail** in the application menu and `Cmd+Q` use the same
+confirmation. Direct termination, including **Quit** from the Dock or system
+shutdown, can bypass it; drafts are not saved to disk.
+
+On macOS, **File > New Message** (`Cmd+N`) uses the same composer and preserves
+an existing draft. **Ruston Mail > Settings…** (`Cmd+,`) opens preferences;
+both commands are available while signed in. The main window reserves space
+for native window buttons according to their measured size and interface zoom.
+
 The reader also offers **Reply**, **Reply all**, and **Forward**. Proton
 derives reply recipients and subjects from the original message.
 
@@ -204,7 +218,7 @@ each password field to show or hide what you type.
 | `Esc` | Close the topmost view or prompt |
 | `Cmd`/`Ctrl` + `R` | Refresh the folder |
 | `Cmd`/`Ctrl` + `F` | Focus the search field |
-| `Cmd`/`Ctrl` + `,` | Open or close Settings |
+| `Cmd`/`Ctrl` + `,` | Open Settings on macOS; open or close Settings on Linux/Windows |
 | `Cmd`/`Ctrl` + `N` | Write a new message |
 | `Cmd`/`Ctrl` + `Enter` | Send the message being written |
 | `Cmd` + `Backspace` / `Delete` | Move the selected conversation to Trash |

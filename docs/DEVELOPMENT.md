@@ -195,6 +195,37 @@ checks as **not run**. Record failures with reproduction steps; do not include
 passwords, tokens, or personal message contents. Unread icon badges are not
 implemented on Windows yet; notification checks are described below.
 
+## macOS menus, window chrome, and safe closing
+
+Use the fictional desktop mailbox for these checks; no account or outgoing
+mail is needed. Record OS/build, display scaling, application zoom, and package.
+
+- At 100%, 125%, and 175% interface zoom, verify that sign-in, mailbox, and
+  Settings content stays below the traffic lights. Resize, enter/leave
+  fullscreen, and move between displays with different scaling. Native metrics
+  are sampled each logic pass and divided by application zoom; fullscreen
+  removes the inset. A missing handle retains the previous/fallback measurement.
+- Check **Settings…** in the application menu and **File > New Message** with
+  their keyboard equivalents, from both windows and with the mailbox minimized.
+  Preserve About, Services, Hide, and Quit. New Message must keep an existing
+  draft; dirty Settings must still ask before navigating. Mail commands must be
+  disabled while signed out or a confirmation/native file dialog is open.
+- In both composer placements, write a draft, close the main window, repeat the
+  close request, cancel, and confirm discard. Test menu Quit and Cmd+Q too.
+  Escape/backdrop dismissal must preserve the draft. Repeat with unapplied
+  Settings changes, choosing each Settings decision before resolving the draft.
+- While a demo send is pending, close requests must be cancelled; a failed send
+  must preserve its message. An untouched composer may close without a prompt.
+  Confirm file dialogs block closing until they complete. Repeat window close
+  checks on Linux/Windows; they share the same shell guard.
+
+Automated tests exercise zoom/fullscreen geometry, queued command routing,
+repeated close requests (including logic-only minimized input), preference
+decisions, and an in-flight send racing a discard. They do not prove AppKit menu
+presentation or real display geometry. Mark untested native cases as **not run**.
+Direct OS termination, including Dock Quit/system shutdown, is not intercepted:
+winit owns the application delegate. Draft persistence remains unimplemented.
+
 ## Native notifications and background refresh validation
 
 Automated tests cover scheduling, backoff, stale responses, silent baselines,
