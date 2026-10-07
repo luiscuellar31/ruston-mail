@@ -363,6 +363,59 @@ Record the desktop environment, session type, scale, commit, and results;
 mark unavailable sessions as **not run**. Automated entry and icon checks do
 not establish how a particular desktop shell displays them.
 
+## Email-link handlers and activation
+
+The desktop accepts `mailto:` URI arguments; it does not automatically become
+the default handler. Choose the handler explicitly using the platform's UI.
+For direct testing without a real account:
+
+```sh
+RUSTON_DEMO=1 cargo run -- 'mailto:team@example.org?subject=Hello&body=Hola%0D%0Amundo'
+```
+
+Keep that instance open and repeat with another link. Only one demo window
+should exist; the second link waits until the current draft is sent or closed.
+The demo and real desktop use separate activation channels. On PowerShell,
+set `$env:RUSTON_DEMO = '1'` before `cargo run -- 'mailto:...'`.
+
+- Linux: install the updated `.desktop` file and run
+  `update-desktop-database` for its installation directory. It declares
+  `x-scheme-handler/mailto` and passes the URL with `Exec=ruston %u`. Select
+  Ruston as the email app in desktop settings, or explicitly run
+  `xdg-mime default com.luiscuellar.ruston-mail.desktop x-scheme-handler/mailto`.
+- macOS: use the packaged `.app`, which already declares `mailto` in its
+  `Info.plist`. Select Ruston in Mail > Settings > General > Default email
+  reader. Test both cold and warm reception with
+  `open -a '/path/to/Ruston Mail.app' 'mailto:team@example.org?subject=Hello'`.
+- Windows: keep `ruston.exe` in its installed location, then run
+  `./packaging/windows/register-mailto.ps1 -ExecutablePath 'C:\path with spaces\ruston.exe'`
+  from PowerShell. The script registers current-user capabilities and a quoted
+  command; it neither changes the default app nor modifies `UserChoice`.
+  Select Ruston for `MAILTO` in Settings > Apps > Default apps. Test a link
+  using `Start-Process 'mailto:team@example.org?subject=Hello'`.
+
+To undo default selection, choose the previous email app in the same settings.
+For manual Windows uninstall, remove only Ruston's registered-application
+value, `HKCU\Software\Classes\com.luiscuellar.ruston-mail.mailto`, and
+`HKCU\Software\Ruston Mail\Capabilities`; do not edit `UserChoice`.
+
+Automated tests cover URI decoding/injection, login/draft/modal guards, real
+loopback forwarding, lock takeover, overflow, private Unix permissions, and
+slow peers. Windows CI additionally exercises the registration script with an
+executable path containing spaces and verifies that the default association
+is unchanged. Native desktop smoke checks still require each platform:
+
+1. Open a link with Ruston stopped, then with it running/minimized. Confirm one
+   instance and the correct recipients, Unicode subject, and multi-line body.
+2. Without signing in, open a link, sign in with an authorized test account,
+   and check that no mail is sent. Avoid a real account for other smoke checks.
+3. Receive a link while writing a draft, sending, editing Settings, choosing a
+   file, or deciding whether to close. Confirm the draft/dialog remains intact
+   and the request opens only after the owning UI is finished, or is dismissed.
+4. Test reading-pane and separate-window composition, at 100% and high zoom.
+   On Wayland, record whether the compositor permits foreground focus; Ruston
+   cannot override its focus policy.
+
 ## Packaging (macOS)
 
 Build a signed `Ruston Mail.app` bundle and draggable `.dmg` disk image:

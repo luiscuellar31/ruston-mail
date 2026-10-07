@@ -6,14 +6,28 @@ where their local data differs.
 
 ## Mail content
 
-Ruston Mail talks directly to Proton through `ruston-core`; it has no separate
-application server. `ruston-core` handles authentication, key unlocking, and
+Ruston Mail talks directly to Proton through `ruston-core`; it uses no remote
+relay server. `ruston-core` handles authentication, key unlocking, and
 mail cryptography.
 
 In the desktop client, mail and mailbox lists stay in memory while it runs.
 In addition to the conversation on screen, up to eight previously opened
 conversations can remain in memory for quick backtracking. The desktop client
 does not write a persistent mail cache to disk.
+
+Desktop activation listens only on IPv4 loopback, at a randomly assigned port,
+while Ruston is running. It accepts bounded email-link requests after a random
+256-bit token handshake; it exposes no account or mailbox data and cannot send
+mail. The private `activation` directory under Ruston's configuration directory
+contains an OS lock file and an endpoint record with the port, token, and process
+ID. Unix permissions are 0700 for the directory and 0600 for the files; Windows
+uses the current user's application-data directory and inherited access rules.
+The endpoint is removed on orderly exit and replaced after a crash. The lock
+file remains for safe coordination. `activation-demo` isolates the demo.
+Pending email links stay in memory through sign-in and are cleared when a
+session ends or the application exits. Ruston does not log their contents.
+URLs passed as arguments can appear in OS process listings, as with other
+applications launched as URL handlers.
 
 When desktop notifications are enabled, a new-mail notification can show the
 sender and subject. A pending notification result is discarded during sign-out

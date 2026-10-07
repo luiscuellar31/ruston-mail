@@ -83,6 +83,28 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo build --locked --bin ruston
 
+      - name: Validate Windows mailto registration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The runner is disposable. Test registration and quoted executable
+          # paths without changing the Windows default protocol association.
+          $folder = Join-Path $env:RUNNER_TEMP 'Ruston mailto test'
+          New-Item -ItemType Directory -Path $folder -Force | Out-Null
+          $executable = Join-Path $folder 'ruston.exe'
+          Copy-Item -LiteralPath 'target/debug/ruston.exe' -Destination $executable
+          $choice = 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\mailto\UserChoice'
+          $before = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
+          & ./packaging/windows/register-mailto.ps1 -ExecutablePath $executable
+          $command = (Get-Item 'HKCU:\Software\Classes\com.luiscuellar.ruston-mail.mailto\shell\open\command').GetValue('')
+          if ($command -ne ('"{0}" "%1"' -f $executable)) { throw 'Executable path was not quoted correctly.' }
+          $handler = Get-ItemPropertyValue 'HKCU:\Software\Ruston Mail\Capabilities\UrlAssociations' -Name mailto
+          if ($handler -ne 'com.luiscuellar.ruston-mail.mailto') { throw 'MAILTO capability was not registered.' }
+          $registered = Get-ItemPropertyValue 'HKCU:\Software\RegisteredApplications' -Name 'Ruston Mail'
+          if ($registered -ne 'Software\Ruston Mail\Capabilities') { throw 'Application registration is missing.' }
+          $after = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
+          if ($after -ne $before) { throw 'Registration changed the default MAILTO association.' }
+
       - name: Verify Windows executable metadata
         if: runner.os == 'Windows'
         shell: pwsh

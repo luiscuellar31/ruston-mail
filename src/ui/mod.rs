@@ -57,7 +57,7 @@ pub(crate) fn main_viewport(settings: &Settings) -> egui::ViewportBuilder {
     viewport
 }
 
-pub fn run(demo: bool) -> eframe::Result {
+pub fn run(demo: bool, activation: crate::launch::Instance) -> eframe::Result {
     #[cfg(target_os = "windows")]
     identity::set_process_app_id()?;
 
@@ -70,7 +70,12 @@ pub fn run(demo: bool) -> eframe::Result {
     eframe::run_native(
         "Ruston Mail",
         options,
-        Box::new(move |creation| Ok(Box::new(DesktopApp::new(creation, demo, settings)))),
+        Box::new(move |creation| {
+            let mut desktop = DesktopApp::new(creation, demo, settings);
+            activation.attach(&creation.egui_ctx);
+            desktop.activation = Some(activation);
+            Ok(Box::new(desktop))
+        }),
     )
 }
 
@@ -100,6 +105,8 @@ struct DesktopApp {
     /// Native dialog completion, including cancellation, releases this slot.
     file_dialog_open: bool,
     notifications: notifications::Notifications,
+    activation: Option<crate::launch::Instance>,
+    focus_after_activation: bool,
     #[cfg(target_os = "macos")]
     native_menu: Option<macos::Menu>,
 }
@@ -145,6 +152,8 @@ impl DesktopApp {
             dialog_parent: None,
             file_dialog_open: false,
             notifications: notifications::Notifications::default(),
+            activation: None,
+            focus_after_activation: false,
             #[cfg(target_os = "macos")]
             native_menu: None,
         };
@@ -656,6 +665,75 @@ impl DesktopApp {
         self.notifications.set_enabled(enabled, context);
         self.ui.notification_status = self.notifications.status();
     }
+
+    fn receive_activation(&mut self, context: &egui::Context) {
+        let events = self
+            .activation
+            .as_ref()
+            .map(crate::launch::Instance::drain)
+            .unwrap_or_default();
+        if !events.is_empty() {
+            self.focus_after_activation = true;
+            // OS focus policy may decline activation (especially on Wayland).
+            context.send_viewport_cmd_to(
+                egui::ViewportId::ROOT,
+                egui::ViewportCommand::Minimized(false),
+            );
+        }
+        for event in events {
+            match event {
+                crate::launch::Event::Activate => {}
+                crate::launch::Event::Mailto(request) => {
+                    self.dispatch(Message::ReceiveMailto(request), context)
+                }
+                crate::launch::Event::Rejected => self.dispatch(Message::MailtoRejected, context),
+            }
+        }
+        self.open_waiting_mailto(context);
+    }
+
+    fn open_waiting_mailto(&mut self, context: &egui::Context) {
+        if self.activation_blocked() || !self.app.can_open_pending_mailto() {
+            return;
+        }
+        self.dispatch(Message::OpenPendingMailto, context);
+        if self.app.compose().is_some() {
+            self.focus_after_activation = true;
+            context.request_repaint();
+        }
+    }
+
+    fn focus_activated_composer(&mut self, context: &egui::Context) {
+        if !self.focus_after_activation || self.activation_blocked() {
+            return;
+        }
+        let separate = self.app.compose().is_some()
+            && !self.app.showing_settings()
+            && self.app.settings().compose_placement == ComposePlacement::Window;
+        let target = if separate {
+            compose::viewport_id()
+        } else {
+            egui::ViewportId::ROOT
+        };
+        if separate && !context.input(|input| input.raw.viewports.contains_key(&target)) {
+            return;
+        }
+        context.send_viewport_cmd_to(target, egui::ViewportCommand::Minimized(false));
+        context.send_viewport_cmd_to(target, egui::ViewportCommand::Focus);
+        #[cfg(target_os = "linux")]
+        context.send_viewport_cmd_to(
+            target,
+            egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational),
+        );
+        self.focus_after_activation = false;
+    }
+
+    fn activation_blocked(&self) -> bool {
+        self.window_close_approved
+            || self.pending_window_close
+            || self.pending_settings_exit.is_some()
+            || self.file_dialog_open
+    }
 }
 
 impl eframe::App for DesktopApp {
@@ -685,6 +763,8 @@ impl eframe::App for DesktopApp {
             }
         }
         self.check_window_close(context);
+        self.receive_activation(context);
+        self.focus_activated_composer(context);
         self.update_notifications(context);
         self.remember_window_size(context);
         self.keyboard_shortcuts(context);
@@ -708,6 +788,7 @@ impl eframe::App for DesktopApp {
         }
         let context = ui.ctx().clone();
         let mut messages = Vec::new();
+        email_link_notice(ui, &self.app, &mut messages);
         if !self.app.showing_settings()
             || !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
         {
@@ -814,6 +895,48 @@ fn status_view(root: &mut egui::Ui, message: &str) {
     });
 }
 
+fn email_link_notice(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
+    let count = app.pending_mailto_count();
+    if count == 0 && app.mailto_error().is_none() {
+        return;
+    }
+    let reason = if !matches!(app.auth_state(), AuthState::Authenticated { .. }) {
+        "Sign in to write the message."
+    } else if app.compose().is_some() {
+        "Finish or close your current draft to open it."
+    } else {
+        "Close Settings or the open dialog to continue."
+    };
+    let notice = if count == 1 {
+        format!("An email link is waiting. {reason}")
+    } else {
+        format!("{count} email links are waiting. {reason}")
+    };
+    egui::Panel::top("pending-email-links")
+        .frame(theme::top_panel_frame(
+            theme::colors(root).panel,
+            theme::titlebar_inset(root.ctx()),
+        ))
+        .show(root, |ui| {
+            if let Some(error) = app.mailto_error() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(error);
+                    if ui.button("Dismiss").clicked() {
+                        messages.push(Message::DismissMailtoError);
+                    }
+                });
+            }
+            if count > 0 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(notice);
+                    if ui.button("Dismiss link").clicked() {
+                        messages.push(Message::DismissPendingMailto);
+                    }
+                });
+            }
+        });
+}
+
 fn version_label(ui: &mut egui::Ui) -> egui::Response {
     ui.label(
         egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
@@ -869,6 +992,50 @@ fn set_dock_badge(_count: Option<u32>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn email_link_waits_for_file_settings_and_close_guards_without_losing_the_request() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(
+            Message::ReceiveMailto(
+                crate::mailto::Request::parse("mailto:team@example.org?body=Hello").unwrap(),
+            ),
+            &context,
+        );
+        desktop.file_dialog_open = true;
+        desktop.focus_after_activation = true;
+        desktop.focus_activated_composer(&context);
+        assert!(desktop.focus_after_activation);
+        desktop.open_waiting_mailto(&context);
+        assert!(desktop.app.compose().is_none());
+        desktop.file_dialog_open = false;
+        desktop.pending_window_close = true;
+        desktop.open_waiting_mailto(&context);
+        assert!(desktop.app.compose().is_none());
+        desktop.pending_window_close = false;
+        desktop.pending_settings_exit = Some(SettingsExit::CloseWindow);
+        desktop.open_waiting_mailto(&context);
+        assert!(desktop.app.compose().is_none());
+        desktop.pending_settings_exit = None;
+        desktop.dispatch(Message::ShowSettings(true), &context);
+        desktop.open_waiting_mailto(&context);
+        assert!(desktop.app.compose().is_none());
+        desktop.dispatch(Message::ShowSettings(false), &context);
+        desktop.open_waiting_mailto(&context);
+        assert_eq!(
+            desktop
+                .app
+                .compose()
+                .unwrap()
+                .field(crate::app::ComposeField::To),
+            "team@example.org"
+        );
+        assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Reader);
+        assert_eq!(desktop.app.pending_mailto_count(), 0);
+        desktop.focus_activated_composer(&context);
+        assert!(!desktop.focus_after_activation);
+    }
 
     fn native_close(
         desktop: &mut DesktopApp,

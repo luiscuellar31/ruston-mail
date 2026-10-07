@@ -106,8 +106,30 @@ reports an error; it is not shown as a successful change.
 Ruston Mail does not permanently delete mail. It also cannot create, rename, or
 remove folders and labels yet.
 
-Links open in the system browser. A confirmation prompt shows the destination
-first by default.
+Web links open in the system browser. A confirmation prompt shows the
+destination first by default. Email (`mailto:`) links use Ruston's composer
+after the same confirmation.
+
+## Opening email links
+
+When Ruston is selected as your system's email-link handler, an external
+`mailto:` link opens a new message with its recipients, subject, and body.
+You review and send it yourself. Multiple recipients and UTF-8 text are
+supported; CC/BCC, attachments, and arbitrary mail headers in the link are
+ignored. Link bodies are treated as text, never interpreted as HTML.
+
+If needed, sign in first; the link waits in memory. An existing draft is never
+replaced, including a blank draft or a message being sent. A notice lets you
+dismiss the waiting link; otherwise, finish or close your draft normally to
+open it. Links also wait while Settings, link confirmation, a file dialog, or
+the main-window closing confirmation is open. Closing the app or ending a
+session clears pending links. At most 16 links can wait, with 16 KiB per URL.
+
+Launching Ruston again activates the existing instance for that user; the demo
+has its own instance. The system can restrict bringing a window to the front,
+especially on Wayland, where it can show an attention indicator instead.
+See the [setup instructions](DEVELOPMENT.md#email-link-handlers-and-activation)
+to enable email-link handling on your platform.
 
 ## Attachments
 

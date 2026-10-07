@@ -711,6 +711,143 @@ fn only_web_and_mail_links_are_offered() {
 }
 
 #[test]
+fn email_links_wait_through_login_and_open_only_an_editable_new_message() {
+    let mut app = App::new(Settings::default());
+    let url = "mailto:team@example.org?subject=Hello&body=Hola%0D%0Amundo";
+    assert_eq!(
+        app.update(Message::ReceiveMailto(
+            crate::mailto::Request::parse(url).unwrap()
+        ))
+        .units(),
+        0
+    );
+    for auth in [
+        AuthState::CheckingSession,
+        AuthState::SignedOut,
+        AuthState::NeedsTotp,
+    ] {
+        app.auth_state = auth;
+        assert_eq!(app.update(Message::OpenPendingMailto).units(), 0);
+        assert!(app.compose().is_none());
+        assert_eq!(app.pending_mailto_count(), 1);
+    }
+    app.open_mailbox(MailBackend::demo(), None);
+    assert_eq!(app.update(Message::OpenPendingMailto).units(), 0);
+    let compose = app.compose().unwrap();
+    assert_eq!(compose.field(ComposeField::To), "team@example.org");
+    assert_eq!(compose.field(ComposeField::Subject), "Hello");
+    assert_eq!(compose.field(ComposeField::Body), "Hola\nmundo");
+    assert_eq!(compose.sending(), Sending::Writing);
+    assert!(compose.attachments().is_empty());
+    assert_eq!(app.pending_mailto_count(), 0);
+}
+
+#[test]
+fn email_links_never_replace_a_blank_written_or_sending_draft() {
+    let mut app = loaded_demo_app();
+    app.update(Message::OpenCompose);
+    let id = app.compose().unwrap().id();
+    app.update(Message::ReceiveMailto(
+        crate::mailto::Request::parse("mailto:next@example.org?body=Next").unwrap(),
+    ));
+    app.update(Message::OpenPendingMailto);
+    assert_eq!(app.compose().unwrap().id(), id);
+    app.update(Message::ComposeChanged(
+        ComposeField::To,
+        "current@example.org".into(),
+    ));
+    app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "My draft".into(),
+    ));
+    app.update(Message::OpenPendingMailto);
+    assert_eq!(app.compose().unwrap().field(ComposeField::Body), "My draft");
+    let sending = app.update(Message::Send);
+    assert!(sending.units() > 0);
+    assert!(app.compose().unwrap().in_flight());
+    app.update(Message::DiscardCompose);
+    app.update(Message::OpenPendingMailto);
+    assert_eq!(app.compose().unwrap().id(), id);
+    assert_eq!(app.pending_mailto_count(), 1);
+    app.update(Message::Sent(
+        app.session_epoch,
+        Err(SendError::Unconfirmed),
+    ));
+    app.update(Message::DiscardCompose);
+    app.update(Message::OpenPendingMailto);
+    assert_ne!(app.compose().unwrap().id(), id);
+    assert_eq!(
+        app.compose().unwrap().field(ComposeField::To),
+        "next@example.org"
+    );
+}
+
+#[test]
+fn internal_email_links_use_confirmation_and_the_same_local_queue() {
+    let mut app = loaded_demo_app();
+    app.update(Message::LinkClicked(
+        "mailto:team@example.org?subject=Confirmed".into(),
+    ));
+    assert!(app.pending_link().is_some());
+    assert_eq!(app.pending_mailto_count(), 0);
+    assert_eq!(app.update(Message::OpenLink).units(), 0);
+    app.update(Message::OpenPendingMailto);
+    assert_eq!(
+        app.compose().unwrap().field(ComposeField::Subject),
+        "Confirmed"
+    );
+    app.update(Message::DiscardCompose);
+    app.update(Message::SetConfirmLinks(false));
+    assert_eq!(
+        app.update(Message::LinkClicked(
+            "mailto:team@example.org?subject=Direct".into()
+        ))
+        .units(),
+        0
+    );
+    app.update(Message::OpenPendingMailto);
+    assert_eq!(
+        app.compose().unwrap().field(ComposeField::Subject),
+        "Direct"
+    );
+    app.update(Message::DiscardCompose);
+    app.update(Message::LinkClicked(
+        "mailto:team@example.org?subject=%0AInjected".into(),
+    ));
+    assert!(app.compose().is_none());
+    assert_eq!(app.pending_mailto_count(), 0);
+    assert!(app.mailto_error().is_some());
+}
+
+#[test]
+fn email_links_are_bounded_dismissible_and_do_not_cross_a_closed_session() {
+    let mut app = loaded_demo_app();
+    app.update(Message::ShowSettings(true));
+    for index in 0..crate::mailto::MAX_PENDING {
+        app.update(Message::ReceiveMailto(
+            crate::mailto::Request::parse(&format!("mailto:team@example.org?subject={index}"))
+                .unwrap(),
+        ));
+    }
+    app.update(Message::ReceiveMailto(
+        crate::mailto::Request::parse("mailto:overflow@example.org").unwrap(),
+    ));
+    assert!(app.mailto_error().is_some());
+    assert_eq!(app.pending_mailto_count(), crate::mailto::MAX_PENDING);
+    app.update(Message::OpenPendingMailto);
+    assert!(app.compose().is_none());
+    app.update(Message::DismissPendingMailto);
+    app.update(Message::DismissMailtoError);
+    assert!(app.mailto_error().is_none());
+    app.update(Message::ShowSettings(false));
+    app.update(Message::OpenPendingMailto);
+    assert_eq!(app.compose().unwrap().field(ComposeField::Subject), "1");
+    app.close_mailbox(None);
+    assert_eq!(app.pending_mailto_count(), 0);
+    assert!(app.compose().is_none());
+}
+
+#[test]
 fn clicked_links_wait_for_confirmation_and_clear() {
     let mut app = loaded_demo_app();
 

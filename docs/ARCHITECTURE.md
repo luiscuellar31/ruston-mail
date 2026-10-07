@@ -28,6 +28,41 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 
 ## Desktop boundaries
 
+- [`src/main.rs`](../src/main.rs) validates desktop URI arguments before starting
+  the UI. [`src/launch.rs`](../src/launch.rs) holds a per-user OS file lock and
+  forwards bounded `mailto:` requests to the existing instance over an
+  authenticated IPv4 loopback connection. Its worker waits in `accept`, uses a
+  total connection deadline, and wakes egui through a bounded channel; shutdown
+  joins it before releasing the lock. The private activation directory contains
+  only the lock and a port/token/process-ID record, never email contents.
+  Demo activation uses a separate directory. Windows secondary launches grant
+  foreground rights to the primary when Windows permits it.
+  [`launch/macos.rs`](../src/launch/macos.rs) registers a retained `GURL` Apple
+  Event target before the event loop starts, without replacing winit's delegate.
+  Linux's `.desktop` file passes `%u`; Windows exposes a selectable per-user
+  handler through [`register-mailto.ps1`](../packaging/windows/register-mailto.ps1).
+- [`src/mailto.rs`](../src/mailto.rs) accepts only recipient, subject, and plain
+  text body defaults. It decodes UTF-8 escapes once, preserves literal `+`,
+  rejects control/header injection and ambiguous duplicate fields, and ignores
+  unsupported headers/attachments. URLs are limited to 16 KiB. Its request
+  fields are private, so requests are constructed only by this parser.
+  Each external ingress (arguments, TCP, or Apple Events) validates once;
+  process-local `Activate`, `Mailto(Request)`, and `Rejected` events carry the
+  outcome to the shell. Argument URIs are retained only until startup/forwarding;
+  the wire protocol still sends the original URI and validates it in the
+  receiving process. `App` queues the parsed request without decoding again.
+  [`app/mailto.rs`](../src/app/mailto.rs) owns up to 16 pending requests in memory,
+  retaining them during sign-in. A closed session clears them. Internal links
+  use this same queue after the existing link-confirmation policy.
+  The shell opens one request only when authenticated and no draft, Settings,
+  link confirmation, native file dialog, or closing decision owns the UI. It
+  shares its dialog/closing guard between opening and focusing; `App` owns
+  the common authentication, draft, Settings, link-prompt, and queue readiness
+  predicate, also checked when it consumes a request. Opening a request never
+  replaces even an untouched draft or sends automatically. The pending
+  banner offers dismissal; normal draft close/send completion allows the next
+  request to open. Linux also requests native user attention, since Wayland
+  ignores ordinary focus requests. Activation remains subject to compositor policy.
 - [`src/ui/`](../src/ui/) draws widgets with `eframe` and `egui`, gathers user
   actions, dispatches `Message`s, and applies effects that require the UI thread.
 - [`ui/identity.rs`](../src/ui/identity.rs) supplies the shared logo and app ID
@@ -385,6 +420,7 @@ unconfirmed because it may happen at any stage of the send pipeline.
 | CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
 | Mailbox lists, search, and thread grouping | [`src/app/mailbox.rs`](../src/app/mailbox.rs), [`src/mail/threading.rs`](../src/mail/threading.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`api/conversations.rs`](../crates/ruston-core/src/api/conversations.rs) |
 | Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | [`src/mail/html.rs`](../src/mail/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
+| Desktop email links and instance activation | [`src/mailto.rs`](../src/mailto.rs), [`src/launch.rs`](../src/launch.rs), [`src/app/mailto.rs`](../src/app/mailto.rs) | [`src/launch/macos.rs`](../src/launch/macos.rs), [`src/ui/mod.rs`](../src/ui/mod.rs), platform packaging |
 | CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |

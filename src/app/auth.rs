@@ -361,6 +361,9 @@ impl App {
         // into a later session.
         self.compose = None;
         self.pending_link = None;
+        // Pending email requests accepted in a session must not cross accounts.
+        self.pending_mailto.clear();
+        self.mailto_error = None;
         self.showing_settings = false;
         // Never show one account's folders in the next session.
         self.folders.clear();

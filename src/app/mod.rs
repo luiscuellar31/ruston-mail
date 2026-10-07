@@ -5,6 +5,7 @@ mod inspection;
 mod keys;
 mod layout;
 mod mailbox;
+mod mailto;
 mod notifications;
 mod reader;
 
@@ -160,6 +161,11 @@ pub enum Message {
     SetComposePlacement(ComposePlacement),
     /// Starts a new message.
     OpenCompose,
+    ReceiveMailto(crate::mailto::Request),
+    MailtoRejected,
+    OpenPendingMailto,
+    DismissPendingMailto,
+    DismissMailtoError,
     /// Answers the open message, or passes it on. `everyone` is only read by
     /// a reply.
     Answer {
@@ -198,6 +204,8 @@ pub struct App {
     pending_prompt: Option<SignInPrompt>,
     /// A link clicked in a message, waiting for the user to confirm it.
     pending_link: Option<PendingLink>,
+    pending_mailto: std::collections::VecDeque<crate::mailto::Request>,
+    mailto_error: Option<&'static str>,
     backend: Option<MailBackend>,
     mailbox: Option<Mailbox>,
     /// Changes whenever an account opens or closes so late async results can
@@ -250,6 +258,8 @@ impl App {
             auth_attempt: 0,
             pending_prompt: None,
             pending_link: None,
+            pending_mailto: std::collections::VecDeque::new(),
+            mailto_error: None,
             backend: None,
             mailbox: None,
             session_epoch: 0,
@@ -641,13 +651,13 @@ impl App {
                     return Effects::none();
                 };
                 if !self.settings.confirm_links {
-                    return open_in_browser(link.url);
+                    return self.open_link_target(link.url);
                 }
                 self.pending_link = Some(link);
             }
             Message::OpenLink => {
                 if let Some(link) = self.pending_link.take() {
-                    return open_in_browser(link.url);
+                    return self.open_link_target(link.url);
                 }
             }
             Message::CopyLink => {
@@ -656,6 +666,15 @@ impl App {
                 }
             }
             Message::DismissLink => self.pending_link = None,
+            Message::ReceiveMailto(request) => self.receive_mailto(request),
+            Message::MailtoRejected => {
+                self.mailto_error = Some("This email link could not be opened.")
+            }
+            Message::OpenPendingMailto => self.open_pending_mailto(),
+            Message::DismissPendingMailto => {
+                self.pending_mailto.pop_front();
+            }
+            Message::DismissMailtoError => self.mailto_error = None,
             Message::PanelsResized(panels) => {
                 self.remember(|settings| settings.panels = panels);
             }
@@ -799,6 +818,21 @@ impl App {
 
     pub fn pending_link(&self) -> Option<&PendingLink> {
         self.pending_link.as_ref()
+    }
+
+    fn open_link_target(&mut self, url: String) -> Effects {
+        if url
+            .get(..7)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("mailto:"))
+        {
+            self.update(
+                crate::mailto::Request::parse(&url)
+                    .map(Message::ReceiveMailto)
+                    .unwrap_or(Message::MailtoRejected),
+            )
+        } else {
+            open_in_browser(url)
+        }
     }
 
     fn next_request(&mut self) -> RequestId {

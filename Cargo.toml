@@ -63,6 +63,7 @@ path = "src/main.rs"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories = { workspace = true }
 futures = { workspace = true }
+getrandom = "0.4"
 html5ever = { workspace = true }
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.36", default-features = false, features = ["image", "svg"] }
@@ -73,6 +74,7 @@ serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 url = { workspace = true }
+urlencoding = { workspace = true }
 zeroize = { workspace = true }
 rfd = "0.17.2"
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
@@ -88,7 +90,7 @@ zbus = "5"
 winresource = { version = "0.1.31", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "Foundation", "Win32_System_WinRT", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem"] }
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
@@ -96,7 +98,7 @@ windows-sys = { version = "0.61", features = ["Win32_System_Com"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSBundle"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSBundle", "NSAppleEventManager", "NSAppleEventDescriptor", "objc2-core-services"] }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile", "NSWindow", "NSView"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNNotificationSound", "UNNotificationSettings"] }
 block2 = "0.6"

@@ -1,7 +1,9 @@
 mod app;
 mod downloads;
 mod file_manager;
+mod launch;
 mod mail;
+mod mailto;
 mod runtime;
 mod settings;
 mod ui;
@@ -29,7 +31,15 @@ fn main() -> eframe::Result {
             .try_init();
     }
 
-    ui::run(demo_requested(std::env::var_os(DEMO_ENV).as_deref()))
+    let demo = demo_requested(std::env::var_os(DEMO_ENV).as_deref());
+    let urls = launch::arguments(std::env::args_os().skip(1))
+        .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?;
+    match launch::Instance::start(demo, urls)
+        .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?
+    {
+        launch::Start::Forwarded => Ok(()),
+        launch::Start::Primary(instance) => ui::run(demo, instance),
+    }
 }
 
 fn demo_requested(value: Option<&OsStr>) -> bool {
