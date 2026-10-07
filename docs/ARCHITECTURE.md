@@ -156,6 +156,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   rendering never sends `PanelsResized`, so returning to columns preserves the
   saved ratios and egui's remembered divider widths. Explicit UI identities
   keep list and reader scroll/expansion state when their parent pane changes.
+  Search controls reserve one horizontal row in both layouts, leaving the
+  remaining height for visible, selectable conversations. Centered controls
+  must not allocate the list's full remaining height.
   The sidebar scrolls its folders and labels independently, reserving the
   account, Settings, and sign-out actions at the bottom;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.

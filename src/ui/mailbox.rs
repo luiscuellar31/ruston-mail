@@ -503,7 +503,9 @@ fn conversation_pane(
     ui.add_space(6.0);
 
     let mut query = mailbox.search_query().to_owned();
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    // Center controls within one row, leaving the remaining height for mail.
+    let search_size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(search_size, Layout::right_to_left(Align::Center), |ui| {
         // Reserve the clear action before the field consumes the remaining width.
         if !query.is_empty() && ui.button("Clear").clicked() {
             messages.push(Message::SearchChanged(String::new()));
@@ -1095,6 +1097,88 @@ mod tests {
             }
             None
         })
+    }
+
+    #[test]
+    fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
+        for (size, zoom) in [
+            (egui::vec2(1500.0, 950.0), 1.0),
+            (egui::vec2(469.0, 400.0), 1.75),
+        ] {
+            for query in ["", "p"] {
+                let context = egui::Context::default();
+                theme::install(&context);
+                context.set_zoom_factor(zoom);
+                let (mut app, _) = App::boot(true, Settings::default());
+                app.update(Message::ConversationsLoaded(
+                    1,
+                    Ok(pagination_page(0, 50, 120)),
+                ));
+                app.update(Message::SearchChanged(query.into()));
+                assert_eq!(app.mailbox().unwrap().visible_count(), 50);
+                let mut state = UiState::default();
+                let mut shapes = Vec::new();
+                for _ in 0..3 {
+                    (_, shapes) =
+                        mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+                }
+                let search = visible_text_rect(
+                    &shapes,
+                    if query.is_empty() {
+                        "Search mail…"
+                    } else {
+                        query
+                    },
+                )
+                .expect("search must be visible");
+                let refresh = visible_text_rect(&shapes, "Refresh").unwrap();
+                assert!(
+                    search.top() - refresh.bottom() < ROW_HEIGHT,
+                    "search consumed the pane height: {search:?} in {size:?}"
+                );
+                let first_row = visible_text_rect(&shapes, "p0")
+                    .expect("loaded mail must be visible below search");
+                assert!(first_row.top() > search.bottom());
+                assert!(first_row.bottom() <= size.y);
+                if !query.is_empty() {
+                    let clear =
+                        visible_text_rect(&shapes, "Clear").expect("Clear must remain visible");
+                    assert!(clear.center().y < first_row.top());
+                }
+                let position = first_row.center();
+                let (messages, _) = mailbox_frame(
+                    &context,
+                    &app,
+                    &mut state,
+                    size,
+                    None,
+                    egui::RawInput {
+                        events: vec![
+                            egui::Event::PointerMoved(position),
+                            egui::Event::PointerButton {
+                                pos: position,
+                                button: egui::PointerButton::Primary,
+                                pressed: true,
+                                modifiers: Default::default(),
+                            },
+                            egui::Event::PointerButton {
+                                pos: position,
+                                button: egui::PointerButton::Primary,
+                                pressed: false,
+                                modifiers: Default::default(),
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                );
+                assert!(
+                    messages.iter().any(|message| {
+                        matches!(message, Message::SelectConversation(id) if id == "p0")
+                    }),
+                    "visible mail must remain selectable"
+                );
+            }
+        }
     }
 
     #[test]
