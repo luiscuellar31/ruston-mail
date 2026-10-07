@@ -107,10 +107,12 @@ pub enum Icon {
     Folder,
     Label,
     Mail,
+    Lock,
+    Unlock,
 }
 
 impl Icon {
-    fn source(self) -> egui::ImageSource<'static> {
+    pub(super) fn source(self) -> egui::ImageSource<'static> {
         match self {
             Self::Inbox => egui::include_image!("../../assets/icons/bootstrap/inbox.svg"),
             Self::Drafts => {
@@ -126,6 +128,8 @@ impl Icon {
             Self::Folder => egui::include_image!("../../assets/icons/bootstrap/folder.svg"),
             Self::Label => egui::include_image!("../../assets/icons/bootstrap/tag.svg"),
             Self::Mail => egui::include_image!("../../assets/icons/bootstrap/envelope.svg"),
+            Self::Lock => egui::include_image!("../../assets/icons/bootstrap/lock-fill.svg"),
+            Self::Unlock => egui::include_image!("../../assets/icons/bootstrap/unlock.svg"),
         }
     }
 }
@@ -450,6 +454,8 @@ mod tests {
             Icon::Folder,
             Icon::Label,
             Icon::Mail,
+            Icon::Lock,
+            Icon::Unlock,
         ] {
             let egui::ImageSource::Bytes { bytes, .. } = icon.source() else {
                 panic!("{icon:?} must be bundled");

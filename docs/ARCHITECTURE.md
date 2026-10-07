@@ -192,15 +192,19 @@ creates an owned URL string when dispatching a link click.
 
 The adapter maps the entire core `FullMessage` into `MailMessage`, preserving
 the body's `Verdict` through both conversation and individual message reads.
-The reader shows verified, unsigned, unverified, or invalid status on each
-message card, including collapsed cards. An invalid body signature is shown in
-the danger color. This verdict applies to the body alone, not its attachments.
+The reader shows body signature status beside the sender's address, including
+collapsed cards: a closed lock only for verified signatures, an open lock for
+unsigned or unverified bodies, and a danger-colored warning for invalid
+signatures.
+Hover text and accessibility labels explain the verdict. The sender's domain
+does not determine the icon. This verdict applies to the body alone, not its
+attachments.
 Loading and loaded readers share the scroll container, bounded column, heading,
 and toolbar layout. Loading uses the listing's subject and message count and
 disables actions; unknown message fields remain skeletons. The first skeleton
 card follows the initial expansion preference and reserves the real header,
-signature, and reply areas before its body markers. The scroll reset for a new
-selection is applied during loading rather than waiting for the response.
+sender icon inset, and reply area before its body markers. The scroll reset for
+a new selection is applied during loading rather than waiting for the response.
 The Labels button reserves room for its applied count to avoid reflow when
 detail arrives. Body lengths and attachment lists remain content-dependent.
 

@@ -21,6 +21,8 @@ const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
 const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
 const MARKER_WIDTH: f32 = 12.0;
+const SIGNATURE_ICON_SIZE: f32 = 13.0;
+const SIGNATURE_ICON_INSET: f32 = SIGNATURE_ICON_SIZE + 4.0;
 /// Code background padding, kept clear of adjacent lines.
 const CODE_PADDING: f32 = 2.5;
 
@@ -263,8 +265,12 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             theme::paint_skeleton(
                 ui.painter(),
                 egui::Rect::from_min_size(
-                    copy.left_top(),
-                    egui::vec2(copy.width().max(0.0) * 0.55, sender_height),
+                    copy.left_top()
+                        + egui::vec2(if expanded { 0.0 } else { SIGNATURE_ICON_INSET }, 0.0),
+                    egui::vec2(
+                        (copy.width() - SIGNATURE_ICON_INSET).max(0.0) * 0.55,
+                        sender_height,
+                    ),
                 ),
                 fill,
             );
@@ -276,11 +282,16 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                 &collapsed_lines[..]
             };
             for (offset, fraction, height) in lines {
+                let inset = if expanded && *offset == 20.0 {
+                    SIGNATURE_ICON_INSET
+                } else {
+                    0.0
+                };
                 theme::paint_skeleton(
                     ui.painter(),
                     egui::Rect::from_min_size(
-                        copy.left_top() + egui::vec2(0.0, *offset),
-                        egui::vec2(copy.width().max(0.0) * fraction, *height),
+                        copy.left_top() + egui::vec2(inset, *offset),
+                        egui::vec2((copy.width() - inset).max(0.0) * fraction, *height),
                     ),
                     fill,
                 );
@@ -292,11 +303,6 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                     egui::pos2(header.right() - date_width, header.top() + 2.0),
                     egui::vec2(date_width, detail_height),
                 ),
-                fill,
-            );
-            skeleton_label(
-                ui,
-                egui::RichText::new("Body signature not verified").small(),
                 fill,
             );
             if expanded {
@@ -555,7 +561,6 @@ fn message_card(
             if message_header(ui, message, preview, expanded).clicked() {
                 messages.push(Message::ToggleMessageExpanded(message.id.clone()));
             }
-            signature_status(ui, message.verdict);
             if expanded {
                 for attachment in &message.attachments {
                     attachment_row(ui, &message.id, attachment, saving_attachment, messages);
@@ -601,34 +606,24 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
     );
 }
 
-/// Kept outside the expandable body so a collapsed message cannot hide a
-/// failed signature. The label describes only the body, never its attachments.
-fn signature_status(ui: &mut egui::Ui, verdict: Verdict) {
+/// Only a verified body signature earns a closed lock, regardless of the
+/// sender's email domain. Attachments have their own verification path.
+fn signature_status(ui: &egui::Ui, verdict: Verdict) -> (theme::Icon, &'static str, Color32) {
     let colors = theme::colors(ui);
-    let (label, color, explanation) = match verdict {
-        Verdict::Verified => (
-            "Body signature verified",
-            colors.success,
-            "The body signature matches an available sender key. This does not verify attachments.",
-        ),
-        Verdict::Unsigned => (
-            "Body is not signed",
-            colors.muted,
-            "This message body has no signature to verify.",
-        ),
+    match verdict {
+        Verdict::Verified => (theme::Icon::Lock, "Message text verified", colors.success),
+        Verdict::Unsigned => (theme::Icon::Unlock, "Message text not signed", colors.muted),
         Verdict::Unverified => (
-            "Body signature not verified",
+            theme::Icon::Unlock,
+            "Could not verify the message text",
             colors.muted,
-            "No usable verification key was available. The body has not been authenticated.",
         ),
         Verdict::Invalid => (
-            "Invalid body signature",
+            theme::Icon::Spam,
+            "Message verification failed. Use caution.",
             colors.danger,
-            "The body signature failed verification. Treat the message contents with caution.",
         ),
-    };
-    ui.label(egui::RichText::new(label).small().color(color))
-        .on_hover_text(explanation);
+    }
 }
 
 /// The whole header is one disclosure control. Copy selection is enabled only
@@ -648,22 +643,37 @@ fn message_header(
     let copy_rect = header_copy_rect(rect);
     let painter = ui.painter_at(rect);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
+    let separate_address =
+        expanded && message.sender.name.is_some() && !message.sender.address.is_empty();
+    let identity_top =
+        copy_rect.left_top() + egui::vec2(0.0, if separate_address { 20.0 } else { 0.0 });
+    let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
+    let (icon, status, color) = signature_status(ui, message.verdict);
+    egui::Image::new(icon.source())
+        .tint(color)
+        .paint_at(ui, icon_rect);
+    let hovering_icon = ui.rect_contains_pointer(icon_rect);
+    let sender_inset = if separate_address {
+        0.0
+    } else {
+        SIGNATURE_ICON_INSET
+    };
     theme::paint_truncated_text(
         &painter,
-        copy_rect.left_top(),
+        copy_rect.left_top() + egui::vec2(sender_inset, 0.0),
         sender,
         FontId::proportional(14.0),
         ui.visuals().strong_text_color(),
-        copy_rect.width(),
+        (copy_rect.width() - sender_inset).max(0.0),
     );
     if expanded {
-        if message.sender.name.is_some() && !message.sender.address.is_empty() {
+        if separate_address {
             header_detail(
                 &painter,
-                copy_rect.left_top() + egui::vec2(0.0, 20.0),
+                identity_top + egui::vec2(SIGNATURE_ICON_INSET, 0.0),
                 &message.sender.address,
                 theme::colors(ui).muted,
-                copy_rect.width(),
+                (copy_rect.width() - SIGNATURE_ICON_INSET).max(0.0),
             );
         }
         header_detail(
@@ -697,11 +707,18 @@ fn message_header(
     );
 
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::CollapsingHeader, true, sender)
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::CollapsingHeader,
+            true,
+            format!("{sender}, {status}"),
+        )
     });
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if expanded { "Collapse" } else { "Expand" })
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if hovering_icon {
+        response.on_hover_text(status)
+    } else {
+        response.on_hover_text(if expanded { "Collapse" } else { "Expand" })
+    }
 }
 
 fn message_header_height(expanded: bool) -> f32 {
@@ -1440,13 +1457,6 @@ mod tests {
             date.right_top(),
             scale,
         );
-        let signature = text_rect(loaded, "Body signature not verified");
-        assert_same_pixel_position(
-            "signature",
-            bars[date_index + 1].left_top(),
-            signature.left_top(),
-            scale,
-        );
         if expanded {
             for (index, label) in [(1, "alex@example.com"), (2, "To: team@example.org")] {
                 let text = text_rect(loaded, label);
@@ -1472,7 +1482,7 @@ mod tests {
                     }
                 })
                 .unwrap();
-            assert_same_pixel_position("body start", bars[5].left_top(), body, scale);
+            assert_same_pixel_position("body start", bars[4].left_top(), body, scale);
         } else {
             assert_same_pixel_position(
                 "preview",
@@ -1717,37 +1727,66 @@ mod tests {
             attachments: Vec::new(),
         };
         let context = egui::Context::default();
+        theme::install(&context);
+        context.style_mut_of(context.theme(), |style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
         let render = |input| {
             let mut result = (egui::Rect::NOTHING, false);
-            context
-                .run_ui(input, |ui| {
-                    ui.set_width(320.0);
-                    let response = message_header(ui, &message, "Preview", false);
-                    result = (response.rect, response.clicked());
-                })
-                .drop_without_applying_deltas();
-            result
+            let output = context.run_ui(input, |ui| {
+                ui.set_width(320.0);
+                let response = message_header(ui, &message, "Preview", false);
+                result = (response.rect, response.clicked());
+            });
+            let shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+            (result.0, result.1, shapes)
         };
 
-        let (rect, _) = render(egui::RawInput::default());
+        let (rect, _, _) = render(egui::RawInput::default());
         assert_eq!(rect.width(), 320.0);
-        let position = rect.center();
-        let pointer = |pressed| egui::Event::PointerButton {
-            pos: position,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        render(egui::RawInput {
-            events: vec![egui::Event::PointerMoved(position), pointer(true)],
-            ..Default::default()
-        });
-        let (_, clicked) = render(egui::RawInput {
-            events: vec![egui::Event::PointerMoved(position), pointer(false)],
-            ..Default::default()
-        });
+        let icon_center =
+            header_copy_rect(rect).left_top() + egui::Vec2::splat(SIGNATURE_ICON_SIZE / 2.0);
+        for position in [icon_center, rect.center()] {
+            render(egui::RawInput {
+                events: vec![egui::Event::PointerMoved(position)],
+                ..Default::default()
+            });
+            let (_, _, shapes) = render(egui::RawInput {
+                events: vec![egui::Event::PointerMoved(position)],
+                ..Default::default()
+            });
+            if position == icon_center {
+                let labels: Vec<_> = shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(
+                    labels.contains(&"Could not verify the message text"),
+                    "hovering the icon must explain the verdict: {labels:?}"
+                );
+            }
+            let pointer = |pressed| egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            render(egui::RawInput {
+                events: vec![egui::Event::PointerMoved(position), pointer(true)],
+                ..Default::default()
+            });
+            let (_, clicked, _) = render(egui::RawInput {
+                events: vec![egui::Event::PointerMoved(position), pointer(false)],
+                ..Default::default()
+            });
 
-        assert!(clicked);
+            assert!(clicked);
+        }
     }
 
     #[test]
@@ -1811,74 +1850,141 @@ mod tests {
 
     #[test]
     fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
-        fn has_label(shape: &egui::epaint::Shape, label: &str, color: Color32) -> bool {
-            match shape {
-                egui::epaint::Shape::Text(text) => {
-                    text.galley.text() == label
-                        && text
-                            .galley
-                            .job
-                            .sections
-                            .iter()
-                            .any(|section| section.format.color == color)
-                }
-                egui::epaint::Shape::Vec(shapes) => {
-                    shapes.iter().any(|shape| has_label(shape, label, color))
-                }
-                _ => false,
-            }
-        }
-        for (verdict, label) in [
-            (Verdict::Verified, "Body signature verified"),
-            (Verdict::Unsigned, "Body is not signed"),
-            (Verdict::Unverified, "Body signature not verified"),
-            (Verdict::Invalid, "Invalid body signature"),
+        for (verdict, expected_icon, label) in [
+            (
+                Verdict::Verified,
+                theme::Icon::Lock,
+                "Message text verified",
+            ),
+            (
+                Verdict::Unsigned,
+                theme::Icon::Unlock,
+                "Message text not signed",
+            ),
+            (
+                Verdict::Unverified,
+                theme::Icon::Unlock,
+                "Could not verify the message text",
+            ),
+            (
+                Verdict::Invalid,
+                theme::Icon::Spam,
+                "Message verification failed. Use caution.",
+            ),
         ] {
-            for expanded in [false, true] {
-                let message = MailMessage {
-                    id: "message".into(),
-                    sender: address(None, "sender@proton.me"),
-                    recipients: Vec::new(),
-                    time: None,
-                    body: MessageBody::PlainText("Body".into()),
-                    attachments: Vec::new(),
-                    verdict,
-                };
-                let mut reader = ConversationReader::new(ConversationDetail {
-                    id: "conversation".into(),
-                    subject: None,
-                    labels: Vec::new(),
-                    messages: vec![message],
-                });
-                if !expanded {
-                    reader.toggle("message");
+            for appearance in [
+                crate::settings::Appearance::Dark,
+                crate::settings::Appearance::Light,
+            ] {
+                for name in [None, Some("Sender")] {
+                    for expanded in [false, true] {
+                        let message = MailMessage {
+                            id: "message".into(),
+                            sender: address(
+                                name,
+                                if verdict == Verdict::Verified {
+                                    "sender@example.org"
+                                } else {
+                                    "sender@proton.me"
+                                },
+                            ),
+                            recipients: Vec::new(),
+                            time: None,
+                            body: MessageBody::PlainText("Body".into()),
+                            attachments: Vec::new(),
+                            verdict,
+                        };
+                        let mut reader = ConversationReader::new(ConversationDetail {
+                            id: "conversation".into(),
+                            subject: None,
+                            labels: Vec::new(),
+                            messages: vec![message],
+                        });
+                        if !expanded {
+                            reader.toggle("message");
+                        }
+                        assert_eq!(reader.is_expanded("message", Reading::default()), expanded);
+                        let context = egui::Context::default();
+                        theme::install(&context);
+                        theme::apply(&context, appearance);
+                        let mut color = Color32::TRANSPARENT;
+                        let mut draw = || {
+                            context.run_ui(egui::RawInput::default(), |ui| {
+                                let colors = theme::colors(ui);
+                                color = match verdict {
+                                    Verdict::Invalid => colors.danger,
+                                    Verdict::Verified => colors.success,
+                                    _ => colors.muted,
+                                };
+                                let (icon, status, actual_color) = signature_status(ui, verdict);
+                                assert_eq!(icon, expected_icon);
+                                assert_eq!(status, label);
+                                assert_eq!(actual_color, color);
+                                message_card(
+                                    ui,
+                                    &reader.detail().messages[0],
+                                    reader.preview_at(0),
+                                    &reader,
+                                    None,
+                                    Reading::default(),
+                                    &mut Vec::new(),
+                                );
+                            })
+                        };
+                        draw().drop_without_applying_deltas();
+                        let output = draw();
+                        let shapes = output.shapes.clone();
+                        output.drop_without_applying_deltas();
+                        let texture = egui::Image::new(expected_icon.source())
+                            .source(&context)
+                            .clone()
+                            .load(
+                                &context,
+                                egui::TextureOptions::LINEAR,
+                                egui::load::SizeHint::Size {
+                                    width: SIGNATURE_ICON_SIZE as u32,
+                                    height: SIGNATURE_ICON_SIZE as u32,
+                                    maintain_aspect_ratio: false,
+                                },
+                            )
+                            .expect("signature SVG must load")
+                            .texture_id()
+                            .expect("signature SVG must be ready");
+                        let image = shapes
+                            .iter()
+                            .find_map(|shape| match &shape.shape {
+                                egui::epaint::Shape::Rect(rect)
+                                    if rect
+                                        .brush
+                                        .as_ref()
+                                        .is_some_and(|brush| brush.fill_texture_id == texture) =>
+                                {
+                                    Some(rect)
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| panic!("missing {label}, expanded={expanded}"));
+                        assert_eq!(image.fill, color);
+                        let identity = text_rect(
+                            &shapes,
+                            if expanded && name.is_some() {
+                                &reader.detail().messages[0].sender.address
+                            } else {
+                                reader.detail().messages[0].sender.display_name().unwrap()
+                            },
+                        );
+                        let icon_rect = image.rect;
+                        assert!(icon_rect.right() < identity.left(), "icon overlaps address");
+                        assert!((icon_rect.top() - identity.top()).abs() <= 0.5);
+                        assert!((icon_rect.width() - SIGNATURE_ICON_SIZE).abs() <= 0.5);
+                        assert!(
+                            !shapes.iter().any(|shape| matches!(&shape.shape,
+                                egui::epaint::Shape::Text(text) if text.galley.text() == label
+                            )),
+                            "status should be in the tooltip, not a separate row"
+                        );
+                    }
                 }
-                assert_eq!(reader.is_expanded("message", Reading::default()), expanded);
-                let context = egui::Context::default();
-                let mut color = Color32::TRANSPARENT;
-                let output = context.run_ui(egui::RawInput::default(), |ui| {
-                    let colors = theme::colors(ui);
-                    color = match verdict {
-                        Verdict::Invalid => colors.danger,
-                        Verdict::Verified => colors.success,
-                        _ => colors.muted,
-                    };
-                    message_card(
-                        ui,
-                        &reader.detail().messages[0],
-                        reader.preview_at(0),
-                        &reader,
-                        None,
-                        Reading::default(),
-                        &mut Vec::new(),
-                    );
-                });
-                let found = output
-                    .shapes
-                    .iter()
-                    .any(|shape| has_label(&shape.shape, label, color));
-                output.drop_without_applying_deltas();
-                assert!(found, "missing {label}, expanded={expanded}");
             }
         }
     }

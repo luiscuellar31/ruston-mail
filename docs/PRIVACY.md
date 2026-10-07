@@ -186,8 +186,11 @@ malformed signatures, and signature mismatches fail the download; plaintext
 discarded on this path is zeroized. This check is shared by desktop and CLI
 downloads, including bulk downloads and EML export. Unsigned attachments remain
 downloadable without a signature-based authenticity guarantee. Body signature
-status is shown separately in the desktop reader, including invalid and
-unverified results; it does not authenticate the sender's identity independently
+status is shown beside the sender's address in the desktop reader: a closed lock
+means the body signature verified against an available sender key; an open lock
+means unsigned or unverified, and a red warning means invalid. Hover over the
+icon for the specific result. The sender's email domain does not determine this
+status; it does not authenticate the sender's identity independently
 or describe an attachment's verification status.
 The application's own HTTP safety limits are 32 MiB for ordinary responses and
 128 MiB for an encrypted attachment response; they are not Proton Mail's
