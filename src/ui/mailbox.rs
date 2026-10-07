@@ -229,7 +229,10 @@ fn sidebar(
         |ui| {
             let available = ui.available_rect_before_wrap();
             let account = egui::Panel::bottom("sidebar-account-actions")
-                .frame(egui::Frame::NONE)
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                    top: theme::PANEL_PADDING,
+                    ..Default::default()
+                }))
                 .show(ui, |ui| {
                     sidebar_account(ui, app, email, signing_out, messages)
                 });

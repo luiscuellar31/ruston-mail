@@ -13,7 +13,12 @@ pub(super) fn show(
     notification_status: super::notifications::Status,
 ) {
     egui::Panel::bottom("settings-actions")
-        .frame(theme::panel_frame(theme::colors(root).panel))
+        .frame(
+            theme::panel_frame(theme::colors(root).panel).outer_margin(egui::Margin {
+                top: theme::PANEL_PADDING,
+                ..Default::default()
+            }),
+        )
         .show(root, |ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Back to mail").clicked() {
