@@ -148,6 +148,10 @@ token, and key passphrase in the operating system's credential store:
 - Windows Credential Manager on Windows.
 
 Access and refresh tokens are saved together in one credential-store entry.
+The API address the session was created for is saved beside them. A session
+file that names a different address is not resumed; sign in again to replace
+it. Sessions saved before this record existed resume only on the default
+Proton API address.
 If the credential store rejects a token refresh, the request reports an error.
 The new tokens remain in memory, but reopening the app may require signing in
 again.
