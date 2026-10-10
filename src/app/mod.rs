@@ -23,8 +23,8 @@ const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
-    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, ProtonMailService,
-    ResumeOutcome, SendError, SignInOutcome, SignInPrompt, demo::DemoMailbox,
+    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, ProtectionCheck,
+    ProtonMailService, ResumeOutcome, SendError, SignInOutcome, SignInPrompt, demo::DemoMailbox,
 };
 
 use auth::LoginForm;
@@ -182,6 +182,10 @@ pub enum Message {
     /// Shows or hides the copy fields.
     ToggleComposeCopies,
     ComposeChanged(ComposeField, String),
+    /// A recipient field lost focus; its addresses are complete enough to look up.
+    ComposeRecipientsLeft,
+    /// How Proton will protect the message for the looked-up recipients.
+    ComposeProtectionChecked(SessionEpoch, ComposeId, Vec<ProtectionCheck>),
     /// Tells the desktop to open the native file dialog for selecting attachments.
     PickComposeAttachments,
     /// Adds picked local files as attachments to the active draft.
@@ -771,6 +775,10 @@ impl App {
             Message::CancelDiscard => self.cancel_discard(),
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
+            Message::ComposeRecipientsLeft => return self.check_compose_protection(),
+            Message::ComposeProtectionChecked(epoch, id, checks) => {
+                self.finish_protection_check(epoch, id, checks);
+            }
             Message::PickComposeAttachments => return self.pick_compose_attachments(),
             Message::AddComposeAttachments(id, paths) => self.add_compose_attachments(id, paths),
             Message::RemoveComposeAttachment(index) => self.remove_compose_attachment(index),

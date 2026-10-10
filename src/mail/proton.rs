@@ -11,11 +11,12 @@ use ruston_core::model::enums::{label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
     Client, Conversation, Error, FullMessage, HvChallenge, HvResolver, Label, LabelCount,
-    LoginOptions, MessageMetadata, Recipient, SearchOpts, SendOptions, TotpPrompt,
+    LoginOptions, MessageMetadata, Recipient, RecipientProtection, SearchOpts, SendOptions,
+    TotpPrompt,
 };
 use secrecy::SecretString;
 
-use super::outgoing::{Kind, Outgoing, SendError};
+use super::outgoing::{Kind, Outgoing, Protection, ProtectionCheck, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
@@ -320,6 +321,24 @@ impl ProtonMailService {
         )
         .await
         .map(|_| ())
+    }
+
+    /// Asks Proton for each address's keys, one request at a time. A failed
+    /// lookup is reported for its own address and does not stop the others.
+    pub async fn protection(&self, addresses: &[String]) -> Vec<ProtectionCheck> {
+        let mut checks = Vec::with_capacity(addresses.len());
+        for address in addresses {
+            let protection =
+                timed(self.client.recipient_protection(address))
+                    .await
+                    .map(|protection| match protection {
+                        RecipientProtection::EndToEnd => Protection::EndToEnd,
+                        RecipientProtection::Pgp => Protection::Pgp,
+                        RecipientProtection::Unencrypted => Protection::Unencrypted,
+                    });
+            checks.push((address.clone(), protection));
+        }
+        checks
     }
 
     pub async fn conversation_counts(

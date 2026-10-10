@@ -163,6 +163,31 @@ async fn prepare_attachment(
     })
 }
 
+/// How a message to one recipient is protected when it carries no message
+/// password.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecipientProtection {
+    /// A Proton address: end-to-end encrypted to a key Proton vouches for.
+    EndToEnd,
+    /// Another provider's address with a published PGP key: encrypted to it.
+    Pgp,
+    /// No usable key: Proton delivers the message unencrypted.
+    Unencrypted,
+}
+
+impl RecipientProtection {
+    /// Reads a key lookup the way sending picks a recipient's package.
+    fn of(keys: &api::keys::RecipientKeys) -> Self {
+        if api::keys::pick_encryption_key(&keys.keys).is_some() {
+            Self::EndToEnd
+        } else if api::keys::pick_encryption_key(&keys.unverified).is_some() {
+            Self::Pgp
+        } else {
+            Self::Unencrypted
+        }
+    }
+}
+
 /// Options for composing a message.
 #[derive(Debug, Default, Clone)]
 pub struct SendOptions {
@@ -266,6 +291,13 @@ async fn cleanup_failed_draft<D: Doer>(http: &D, message_id: &str, error: &Error
 }
 
 impl Client {
+    /// Look up how a message to `email` would be protected. This is the key
+    /// request sending makes for each recipient; it creates no draft.
+    pub async fn recipient_protection(&self, email: &str) -> Result<RecipientProtection> {
+        let keys = api::keys::get_all_public_keys(self.http(), email).await?;
+        Ok(RecipientProtection::of(&keys))
+    }
+
     /// Send a freshly-composed message.
     pub async fn send(&self, opts: &SendOptions) -> Result<String> {
         self.send_with_parent(opts, None, None, &(String::new(), Vec::new()), None)
@@ -706,6 +738,54 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn recipient_keys(keys: &[u32], unverified: &[u32]) -> api::keys::RecipientKeys {
+        let with_flags = |flags: &[u32]| {
+            flags
+                .iter()
+                .map(|flags| api::keys::ApiPublicKey {
+                    public_key: String::new(),
+                    flags: *flags,
+                    primary: 1,
+                    source: 0,
+                })
+                .collect()
+        };
+        api::keys::RecipientKeys {
+            recipient_type: 1,
+            keys: with_flags(keys),
+            unverified: with_flags(unverified),
+        }
+    }
+
+    #[test]
+    fn recipient_protection_follows_the_keys_sending_would_use() {
+        use crate::model::enums::key_flag::{NOT_COMPROMISED, NOT_OBSOLETE};
+
+        let usable = NOT_COMPROMISED | NOT_OBSOLETE;
+        assert_eq!(
+            RecipientProtection::of(&recipient_keys(&[usable], &[])),
+            RecipientProtection::EndToEnd
+        );
+        // A verified Proton key wins over a published one.
+        assert_eq!(
+            RecipientProtection::of(&recipient_keys(&[usable], &[usable])),
+            RecipientProtection::EndToEnd
+        );
+        assert_eq!(
+            RecipientProtection::of(&recipient_keys(&[], &[usable])),
+            RecipientProtection::Pgp
+        );
+        assert_eq!(
+            RecipientProtection::of(&recipient_keys(&[], &[])),
+            RecipientProtection::Unencrypted
+        );
+        // Obsolete keys may verify old mail but never encrypt new mail.
+        assert_eq!(
+            RecipientProtection::of(&recipient_keys(&[NOT_COMPROMISED], &[NOT_COMPROMISED])),
+            RecipientProtection::Unencrypted
+        );
+    }
 
     fn attachment_path() -> PathBuf {
         let unique = std::time::SystemTime::now()
