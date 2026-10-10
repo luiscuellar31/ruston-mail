@@ -87,6 +87,11 @@ impl App {
     }
 
     pub(super) fn sign_in(&mut self) -> Effects {
+        if self.demo_process {
+            // The window still says "demo"; it must not hold a real account.
+            self.auth_error = Some(AuthError::DemoSignInUnavailable);
+            return Effects::none();
+        }
         if let Some(prompt) = self.pending_prompt.take() {
             return self.answer_prompt(prompt);
         }
@@ -310,9 +315,10 @@ impl App {
         self.inspections.cancel();
         let service = match &self.backend {
             Some(MailBackend::Proton(service)) => service.clone(),
-            // Leaving demo mode has no Proton session to revoke.
+            // Leaving demo mode has no Proton session to revoke. The login
+            // screen says at once that this process cannot sign in.
             Some(MailBackend::Demo(_)) => {
-                self.close_mailbox(None);
+                self.close_mailbox(Some(AuthError::DemoSignInUnavailable));
                 return Effects::none();
             }
             None => {
