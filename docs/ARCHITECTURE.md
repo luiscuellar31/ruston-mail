@@ -449,7 +449,8 @@ directory and credentials in the OS keychain. The storage identifier is
 [`lib.rs`](../crates/ruston-core/src/lib.rs). Desktop preferences live
 separately in `Ruston Mail`'s config directory. Core
 [`session/`](../crates/ruston-core/src/session/) stores access and refresh
-tokens as one keychain entry. Session writes and token refresh use a per-profile
+tokens as one keychain entry and the session's API address as another; loading
+rejects metadata whose address differs from it. Session writes and token refresh use a per-profile
 file lock. On a 401, another process's rotated tokens are reloaded before
 refreshing again; persistence errors still reach the request. Signing out of a
 shared profile signs out both frontends. Core runs local session cleanup under
