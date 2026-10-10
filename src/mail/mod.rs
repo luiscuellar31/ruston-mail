@@ -17,7 +17,10 @@ pub use model::{
     IncomingMail, MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
     MailboxError, MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
 };
-pub use outgoing::{BodyFormat, Kind, Outgoing, SendError, recipients, validate_attachments};
+pub use outgoing::{
+    BodyFormat, Kind, Outgoing, Protection, ProtectionCheck, SendError, recipients,
+    validate_attachments,
+};
 #[cfg(test)]
 pub use proton::Reply;
 pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
@@ -97,6 +100,18 @@ impl MailBackend {
                 validate_attachments(&outgoing.attachments).await?;
                 service.send(outgoing, demo::now())
             }
+        }
+    }
+
+    /// Looks up how a new message would be protected for each address. The
+    /// demo answers from the address alone and contacts nobody.
+    pub async fn protection(&self, addresses: &[String]) -> Vec<ProtectionCheck> {
+        match self {
+            Self::Proton(service) => service.protection(addresses).await,
+            Self::Demo(_) => addresses
+                .iter()
+                .map(|address| (address.clone(), Ok(demo::protection(address))))
+                .collect(),
         }
     }
 

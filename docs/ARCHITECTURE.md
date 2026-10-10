@@ -286,6 +286,13 @@ memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
 result returns to the app as a message.
 
+The composer's protection notice takes the same path. When a recipient field
+loses focus, [`app/compose.rs`](../src/app/compose.rs) asks the backend about
+addresses it has not looked up for this draft;
+[`mail/proton.rs`](../src/mail/proton.rs) calls core's `recipient_protection`,
+which classifies the key lookup the way sending picks a package. Answers carry
+the session epoch and draft ID, and an address removed meanwhile is ignored.
+
 Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
 validation, shared by the desktop backend and all SDK/CLI send paths. New local
 attachments must be regular readable files, at most 32 MiB each and 128 MiB in

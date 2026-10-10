@@ -30,6 +30,20 @@ pub enum Kind {
     },
 }
 
+/// How Proton will protect a new message for one recipient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protection {
+    /// A Proton address: end-to-end encrypted.
+    EndToEnd,
+    /// Another provider's address with a published PGP key.
+    Pgp,
+    /// No key to encrypt to: delivered unencrypted.
+    Unencrypted,
+}
+
+/// One recipient's protection, or why it could not be looked up.
+pub type ProtectionCheck = (String, Result<Protection, MailboxError>);
+
 /// A message ready to leave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {

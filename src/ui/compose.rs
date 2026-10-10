@@ -162,10 +162,17 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     }
 
     if compose.asks_for_recipients() {
-        line(ui, "To", ComposeField::To, compose, leaving, messages);
+        let mut left = line(ui, "To", ComposeField::To, compose, leaving, messages).lost_focus();
         if compose.showing_more() {
-            line(ui, "Cc", ComposeField::Cc, compose, leaving, messages);
-            line(ui, "Bcc", ComposeField::Bcc, compose, leaving, messages);
+            left |= line(ui, "Cc", ComposeField::Cc, compose, leaving, messages).lost_focus();
+            left |= line(ui, "Bcc", ComposeField::Bcc, compose, leaving, messages).lost_focus();
+        }
+        // Addresses are looked up once typing has moved on, never per keystroke.
+        if left {
+            messages.push(Message::ComposeRecipientsLeft);
+        }
+        if let Some(notice) = compose.protection_notice() {
+            detail(ui, &notice.message());
         }
         let more = if compose.showing_more() {
             "Fewer options"
@@ -360,6 +367,86 @@ mod tests {
             message,
             Message::Send | Message::CloseCompose | Message::ComposeChanged(_, _)
         )));
+    }
+
+    #[test]
+    fn the_composer_names_recipients_whose_copy_is_not_encrypted() {
+        use crate::app::Effect;
+        use futures::executor::block_on;
+
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        app.update(Message::ComposeChanged(
+            ComposeField::To,
+            "ada@proton.me, plain@example.com".into(),
+        ));
+        let shown = |app: &crate::app::App| {
+            let mut messages = Vec::new();
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                show(ui, app.compose().unwrap(), &mut messages);
+            });
+            let found = output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::epaint::Shape::Text(text)
+                    if text.galley.text().contains("unencrypted to: plain@example.com"))
+            });
+            output.drop_without_applying_deltas();
+            found
+        };
+        assert!(!shown(&app));
+
+        let effect = app
+            .update(Message::ComposeRecipientsLeft)
+            .into_iter()
+            .next()
+            .unwrap();
+        let Effect::Future(lookup) = effect else {
+            panic!("the lookup runs off the UI thread");
+        };
+        app.update(block_on(lookup));
+
+        assert!(shown(&app));
+    }
+
+    #[test]
+    fn leaving_a_recipient_field_asks_how_the_message_will_be_protected() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        let frame = |events: Vec<egui::Event>| {
+            let mut messages = Vec::new();
+            context
+                .run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| show(ui, app.compose().unwrap(), &mut messages),
+                )
+                .drop_without_applying_deltas();
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::ComposeRecipientsLeft))
+        };
+
+        frame(Vec::new());
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new(("compose", "To"))));
+        assert!(!frame(Vec::new()), "entering the field looks nothing up");
+        assert!(!frame(Vec::new()), "staying in the field looks nothing up");
+
+        let tab = egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // Focus moves during the frame that sees the key; the field reports it by the next one.
+        let asked = [frame(vec![tab]), frame(Vec::new())];
+        assert!(asked.contains(&true));
+        assert!(!frame(Vec::new()), "the lookup is asked for once");
     }
 
     #[test]
