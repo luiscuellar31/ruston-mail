@@ -1882,10 +1882,45 @@ fn exiting_demo_clears_mailbox_and_opens_login() {
     let _ = app.update(Message::Logout);
 
     assert_eq!(app.auth_state, AuthState::SignedOut);
-    assert_eq!(app.auth_error, None);
+    assert_eq!(app.auth_error, Some(AuthError::DemoSignInUnavailable));
     assert!(app.backend.is_none());
     assert!(app.mailbox.is_none());
     assert!(!app.is_demo());
+}
+
+#[test]
+fn a_demo_process_never_starts_a_proton_sign_in() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    deliver_demo_page(&mut app, 1, 0);
+    let _ = app.update(Message::Logout);
+    app.login_form.username = "username sentinel".into();
+    app.login_form.password = "password sentinel".to_owned().into();
+    let attempt = app.auth_attempt;
+
+    let effects = app.update(Message::Submit);
+
+    assert_eq!(effects.units(), 0);
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::DemoSignInUnavailable));
+    assert_eq!(app.auth_attempt, attempt);
+    assert!(app.backend.is_none());
+}
+
+#[test]
+fn a_normal_process_still_starts_a_proton_sign_in() {
+    let (mut app, _) = App::boot(false, Settings::default());
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    app.login_form.username = "username sentinel".into();
+    app.login_form.password = "password sentinel".to_owned().into();
+
+    let effects = app.update(Message::Submit);
+
+    assert_eq!(effects.units(), 1);
+    assert_eq!(
+        app.auth_state,
+        AuthState::SigningIn(SignInStep::Credentials)
+    );
+    assert_eq!(app.auth_error, None);
 }
 
 #[test]

@@ -517,7 +517,9 @@ failed rebuild leaves the cached offline data and cursor intact. Sync catches up
 on events from the new cursor after the replacement. The full refresh clears
 the local body index; run CLI `index` again to rebuild search. See
 [Privacy and local data](PRIVACY.md) before changing storage or diagnostics.
-Demo modes use fictional data and do not contact Proton.
+Demo modes use fictional data and do not contact Proton. A desktop process
+started in demo mode keeps that promise after **Exit demo**: `App` remembers how
+it was booted and [`app/auth.rs`](../src/app/auth.rs) refuses to start a sign-in.
 
 CLI [`watch --folder`](../crates/ruston-cli/src/commands/watch.rs) backfills
 metadata and indexes the selected folder on its first tick. Later ticks use
