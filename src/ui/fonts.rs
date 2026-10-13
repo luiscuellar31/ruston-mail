@@ -135,6 +135,105 @@ fn fallback_candidates() -> Vec<Vec<PathBuf>> {
     ]
 }
 
+#[cfg(target_os = "windows")]
+fn windows_fonts(names: &[&str]) -> Vec<PathBuf> {
+    std::env::var_os("WINDIR")
+        .map(|root| {
+            let directory = PathBuf::from(root).join("Fonts");
+            names.iter().map(|name| directory.join(name)).collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+fn primary_candidates() -> Vec<PathBuf> {
+    windows_fonts(&["segoeui.ttf", "arial.ttf"])
+}
+
+#[cfg(target_os = "windows")]
+fn fallback_candidates() -> Vec<Vec<PathBuf>> {
+    vec![
+        windows_fonts(&["msyh.ttc", "meiryo.ttc", "msgothic.ttc"]),
+        windows_fonts(&["malgun.ttf"]),
+        windows_fonts(&["arial.ttf", "tahoma.ttf"]),
+    ]
+}
+
+#[cfg(target_os = "linux")]
+fn primary_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    // Fontconfig follows the user's configured sans-serif family. No shell is
+    // involved; a missing or stalled helper cannot prevent startup.
+    if let Some(path) = fontconfig_sans() {
+        paths.push(path);
+    }
+    paths.extend(
+        [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        ]
+        .map(PathBuf::from),
+    );
+    paths
+}
+
+#[cfg(target_os = "linux")]
+fn fontconfig_sans() -> Option<PathBuf> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut child = Command::new("fc-match")
+        .args(["-f", "%{file}", "sans-serif"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                let mut path = String::new();
+                child
+                    .stdout
+                    .take()?
+                    .take(4096)
+                    .read_to_string(&mut path)
+                    .ok()?;
+                return Some(PathBuf::from(path));
+            }
+            Ok(Some(_)) => return None,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fallback_candidates() -> Vec<Vec<PathBuf>> {
+    vec![
+        [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        ]
+        .map(PathBuf::from)
+        .to_vec(),
+        ["/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"]
+            .map(PathBuf::from)
+            .to_vec(),
+        ["/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf"]
+            .map(PathBuf::from)
+            .to_vec(),
+        ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+            .map(PathBuf::from)
+            .to_vec(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,103 +342,4 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         assert!(rejected);
     }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_fonts(names: &[&str]) -> Vec<PathBuf> {
-    std::env::var_os("WINDIR")
-        .map(|root| {
-            let directory = PathBuf::from(root).join("Fonts");
-            names.iter().map(|name| directory.join(name)).collect()
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(target_os = "windows")]
-fn primary_candidates() -> Vec<PathBuf> {
-    windows_fonts(&["segoeui.ttf", "arial.ttf"])
-}
-
-#[cfg(target_os = "windows")]
-fn fallback_candidates() -> Vec<Vec<PathBuf>> {
-    vec![
-        windows_fonts(&["msyh.ttc", "meiryo.ttc", "msgothic.ttc"]),
-        windows_fonts(&["malgun.ttf"]),
-        windows_fonts(&["arial.ttf", "tahoma.ttf"]),
-    ]
-}
-
-#[cfg(target_os = "linux")]
-fn primary_candidates() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    // Fontconfig follows the user's configured sans-serif family. No shell is
-    // involved; a missing or stalled helper cannot prevent startup.
-    if let Some(path) = fontconfig_sans() {
-        paths.push(path);
-    }
-    paths.extend(
-        [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        ]
-        .map(PathBuf::from),
-    );
-    paths
-}
-
-#[cfg(target_os = "linux")]
-fn fontconfig_sans() -> Option<PathBuf> {
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-    let mut child = Command::new("fc-match")
-        .args(["-f", "%{file}", "sans-serif"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                let mut path = String::new();
-                child
-                    .stdout
-                    .take()?
-                    .take(4096)
-                    .read_to_string(&mut path)
-                    .ok()?;
-                return Some(PathBuf::from(path));
-            }
-            Ok(Some(_)) => return None,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn fallback_candidates() -> Vec<Vec<PathBuf>> {
-    vec![
-        [
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        ]
-        .map(PathBuf::from)
-        .to_vec(),
-        ["/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"]
-            .map(PathBuf::from)
-            .to_vec(),
-        ["/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf"]
-            .map(PathBuf::from)
-            .to_vec(),
-        ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
-            .map(PathBuf::from)
-            .to_vec(),
-    ]
 }
