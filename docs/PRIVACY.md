@@ -6,6 +6,11 @@ where their local data differs.
 
 ## Mail content
 
+Typography reads a small set of installed local fonts, with bounded file sizes
+and a process-lifetime cache. It does not download fonts or use email contents
+to select filesystem paths. On Linux, the optional system interface font uses
+a bounded `fc-match` subprocess to discover the configured sans-serif family.
+
 Ruston Mail talks directly to Proton through `ruston-core`; it uses no remote
 relay server. `ruston-core` handles authentication, key unlocking, and
 mail cryptography.

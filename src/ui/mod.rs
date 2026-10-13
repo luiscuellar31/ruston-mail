@@ -2,6 +2,7 @@ mod auto_refresh;
 mod close;
 mod compose;
 mod dialogs;
+mod fonts;
 mod identity;
 mod login;
 #[cfg(target_os = "macos")]
@@ -130,6 +131,7 @@ impl DesktopApp {
     fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
         theme::install(context);
         theme::apply(context, settings.appearance);
+        fonts::apply(context, settings.system_font);
         let runtime = Runtime::new().expect("failed to start background runtime");
         runtime.attach(context);
         let (app, effects) = App::boot(demo, settings);
@@ -741,6 +743,7 @@ impl eframe::App for DesktopApp {
         self.runtime.attach(context);
         theme::apply(context, self.app.settings().appearance);
         self.apply_zoom(context);
+        fonts::apply(context, self.app.settings().system_font);
         self.drain_runtime(context);
         #[cfg(target_os = "macos")]
         {

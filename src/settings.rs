@@ -45,6 +45,9 @@ pub struct Settings {
     /// Color scheme of the desktop interface.
     #[serde(default)]
     pub appearance: Appearance,
+    /// Opt-in native UI face; bundled fonts remain the default and fallback.
+    #[serde(default)]
+    pub system_font: bool,
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
@@ -72,6 +75,7 @@ impl Default for Settings {
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
             appearance: Appearance::Dark,
+            system_font: false,
             zoom: 1.0,
             show_unread_badge: true,
             desktop_notifications: true,
@@ -298,6 +302,7 @@ mod tests {
             folder: Folder::System(crate::mail::MailFolder::Archive),
             mark_read_on_open: false,
             appearance: Appearance::Light,
+            system_font: true,
             ..Settings::default()
         };
 
@@ -310,8 +315,10 @@ mod tests {
     fn older_settings_keep_the_dark_appearance() {
         let mut old = serde_json::to_value(Settings::default()).unwrap();
         old.as_object_mut().unwrap().remove("appearance");
+        old.as_object_mut().unwrap().remove("system_font");
         let restored: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(restored.appearance, Appearance::Dark);
+        assert!(!restored.system_font);
     }
 
     #[test]

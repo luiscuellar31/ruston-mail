@@ -1495,9 +1495,11 @@ mod tests {
 
     #[test]
     fn loading_and_loaded_readers_keep_the_same_positions_at_every_scale() {
-        for appearance in [
-            crate::settings::Appearance::Dark,
-            crate::settings::Appearance::Light,
+        for (appearance, system_font) in [
+            (crate::settings::Appearance::Dark, false),
+            (crate::settings::Appearance::Light, false),
+            (crate::settings::Appearance::Dark, true),
+            (crate::settings::Appearance::Light, true),
         ] {
             for (width, zoom, native_scale) in [
                 (540.0, 1.0, 1.5),
@@ -1505,6 +1507,11 @@ mod tests {
                 (300.0, 1.0, 1.0),
                 (300.0, 1.75, 2.0),
             ] {
+                let context = egui::Context::default();
+                theme::install(&context);
+                super::super::fonts::apply(&context, system_font);
+                theme::apply(&context, appearance);
+                context.set_zoom_factor(zoom);
                 for subject in [
                     "Artículo faltante en pedido",
                     "A long subject that wraps across several lines in a narrow reading column instead of shifting the toolbar after loading",
@@ -1513,10 +1520,9 @@ mod tests {
                         for (count, expand_all_messages) in [(1, false), (3, false), (3, true)] {
                             let (mut mailbox, request, detail) =
                                 loading_reader(subject, folder.clone(), count);
-                            let context = egui::Context::default();
-                            theme::install(&context);
-                            theme::apply(&context, appearance);
-                            context.set_zoom_factor(zoom);
+                            // Isolate persisted layout/scroll state while
+                            // reusing expensive font resources at this scale.
+                            context.data_mut(|data| data.clear());
                             let reading = Reading {
                                 expand_all_messages,
                                 ..Default::default()

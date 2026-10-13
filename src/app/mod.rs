@@ -149,6 +149,7 @@ pub enum Message {
     SetZoom(f32),
     /// Chooses the desktop color scheme.
     SetAppearance(Appearance),
+    SetSystemFont(bool),
     /// Shows or hides the unread mail badge on the dock/app icon.
     SetShowUnreadBadge(bool),
     /// Shows or hides desktop notifications for incoming mail.
@@ -739,6 +740,9 @@ impl App {
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {
                 self.remember(|settings| settings.appearance = appearance);
+            }
+            Message::SetSystemFont(enabled) => {
+                self.remember(|settings| settings.system_font = enabled)
             }
             Message::SetShowUnreadBadge(on) => {
                 self.remember(|settings| settings.show_unread_badge = on);

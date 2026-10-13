@@ -226,6 +226,7 @@ pub const STAR: &str = "★";
 pub const DOT: &str = "·";
 
 pub fn install(context: &egui::Context) {
+    super::fonts::apply(context, false);
     egui_extras::install_image_loaders(context);
     for mode in [egui::Theme::Dark, egui::Theme::Light] {
         let colors = colors_for(mode);
@@ -538,7 +539,6 @@ mod tests {
 
     #[test]
     fn every_mark_the_interface_draws_has_a_glyph() {
-        // Missing glyphs have the replacement box's width.
         let context = egui::Context::default();
         install(&context);
         // Fonts are built on the first pass, not before it.
@@ -546,26 +546,13 @@ mod tests {
             .run_ui(egui::RawInput::default(), |_| {})
             .drop_without_applying_deltas();
         let font = egui::FontId::proportional(14.0);
-        let width = |text: &str| {
-            context.fonts_mut(|fonts| {
-                fonts
-                    .layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
-                    .size()
-                    .x
-            })
-        };
-        let missing = width("\u{fffd}");
-
         // The parser's list bullet must be available too.
         for mark in [STAR, DOT, "•"] {
-            let drawn = width(mark);
             assert!(
-                (drawn - missing).abs() > f32::EPSILON,
+                context.fonts_mut(|fonts| fonts.has_glyphs(&font, mark)),
                 "{mark:?} has no glyph and would be drawn as the replacement box"
             );
         }
-        // The comparison itself has to be able to fail, or it proves nothing.
-        assert_eq!(width("\u{1f4ce}"), missing, "the paperclip is still absent");
     }
 
     #[test]

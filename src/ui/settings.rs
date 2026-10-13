@@ -207,6 +207,9 @@ fn page(
             ui.selectable_value(&mut settings.appearance, Appearance::Light, "Light");
         });
         ui.add_space(8.0);
+        ui.checkbox(&mut settings.system_font, "Use system interface font");
+        description(ui, "Keeps text sizes. Uses Ruston's font if unavailable.");
+        ui.add_space(8.0);
         egui::ComboBox::from_id_salt("interface-scale")
             .selected_text(zoom_label(settings.zoom))
             .width(100.0)
@@ -339,6 +342,9 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     }
     if draft.appearance != current.appearance {
         messages.push(Message::SetAppearance(draft.appearance));
+    }
+    if draft.system_font != current.system_font {
+        messages.push(Message::SetSystemFont(draft.system_font));
     }
     if draft.show_unread_badge != current.show_unread_badge {
         messages.push(Message::SetShowUnreadBadge(draft.show_unread_badge));
@@ -653,8 +659,9 @@ mod tests {
         draft.show_unread_badge = false;
         draft.desktop_notifications = false;
         draft.appearance = Appearance::Light;
+        draft.system_font = true;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 5);
+        assert_eq!(changes.len(), 6);
         assert!(
             changes
                 .iter()
@@ -679,6 +686,11 @@ mod tests {
             changes
                 .iter()
                 .any(|message| matches!(message, Message::SetAppearance(Appearance::Light)))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetSystemFont(true)))
         );
     }
 

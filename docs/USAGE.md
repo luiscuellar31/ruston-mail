@@ -219,6 +219,7 @@ Settings control:
 - The folder shown at startup.
 - Dark or light appearance. Dark remains the default for existing settings.
 - Interface scale.
+- Optional system interface font, with Ruston's fonts retained as fallback.
 - A button to reset the window and pane sizes to their defaults immediately.
 - On macOS, whether the Dock icon shows the unread inbox count.
 
@@ -229,6 +230,14 @@ Choose Dark or Light under Settings → Interface and press Apply. The selection
 is saved for the next run; the app does not follow the system theme.
 The sign-in screen also has a theme button in its header and a control beside
 each password field to show or hide what you type.
+
+**Use system interface font** under Settings → Interface is optional and takes
+effect after Apply, without changing text sizes. The default keeps Ruston's
+existing look. macOS tries San Francisco, Windows Segoe UI, and Linux the
+configured Fontconfig sans-serif family; unavailable fonts fall back to Ruston's.
+Installed language fonts also provide missing characters in either mode.
+Coverage depends on local fonts; there are no font downloads. This expands
+glyph coverage but does not provide complete bidirectional/RTL text layout.
 
 ## Keyboard shortcuts
 

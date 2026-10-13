@@ -176,8 +176,20 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   with an encoded file URI on Linux. Linux bounds connection and reply to three
   seconds and falls back to opening the containing folder with `xdg-open`.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
-  to egui visuals and the colors of custom-painted widgets. The desktop shell
-  applies the choice to open windows and stores it for the next run.
+  to egui visuals and custom-painted widget colors. The shell stores it for
+  the next run and applies [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
+  Bundled typography stays primary by default. The optional system UI face is
+  San Francisco/Helvetica Neue on macOS, Segoe UI/Arial on Windows, or
+  Fontconfig's sans-serif family on Linux (with known local alternatives).
+  Installed language fonts are appended to both families; the monospace
+  primary and all existing sizes remain unchanged. Missing/invalid fonts are
+  skipped. Reads are capped at 32 MiB per file and 48 MiB total for fallbacks;
+  at most 32 collection faces are examined for a normal, regular-weight face.
+  Accepted bytes are cached for the process lifetime as borrowed font data,
+  avoiding egui 0.36's copies of owned data per context/scale. Linux Fontconfig
+  discovery has a one-second timeout and bounded output. Switching the optional
+  preference reinstalls fonts only when the mode changes, on the next egui pass.
+  No fonts are downloaded or included from the OS in the application bundle.
   The signed-out screen offers the same appearance choice directly through
   `App::update`; password visibility stays only in transient UI state. The
   desktop dispatch clears it on submit, cancellation, or a move away from a

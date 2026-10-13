@@ -363,6 +363,28 @@ Record the desktop environment, session type, scale, commit, and results;
 mark unavailable sessions as **not run**. Automated entry and icon checks do
 not establish how a particular desktop shell displays them.
 
+## Typography and local font coverage
+
+The existing bundled face remains the default. To compare, enable **Use system
+interface font** under Settings → Interface and Apply; disabling it restores
+the bundled typography. Sizes and monospace primary stay unchanged. System
+language fallbacks are active in both modes, depending on installed fonts.
+
+Automated checks preserve the bundled chain, verify rendered atlas glyphs for
+available language fonts, reject missing/malformed/oversized files, check
+legacy preference defaults, and exercise reader skeleton alignment with both
+font modes, themes, small windows, application zoom, and native scaling.
+The glyph test uses rendered allocations because egui 0.36's `has_glyph` can
+report a false negative when a real glyph uses the replacement glyph's face.
+
+Native visual checks should compare long Spanish subjects, accented names,
+Cyrillic and CJK names, email addresses, Reply controls, login, Settings, and
+monospace body passages. Check truncation, wrapping, and clipped ascenders at
+100% and 175% zoom. On Windows test Segoe UI and installed language packs;
+on Linux test Fontconfig, missing `fc-match`, and minimal/font-poor installs.
+Missing fonts must preserve usability through the bundled chain. Coverage does
+not establish complete RTL/bidirectional support in the current layout engine.
+
 ## Email-link handlers and activation
 
 The desktop accepts `mailto:` URI arguments; it does not automatically become
