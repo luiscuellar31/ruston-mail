@@ -39,7 +39,7 @@ chrono = "0.4"
 futures = "0.3"
 urlencoding = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
-ammonia = "4"
+ammonia = "4.1.7"
 html5ever = "0.39"
 url = "2"
 rpassword = "7"
