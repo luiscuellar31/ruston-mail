@@ -436,13 +436,18 @@ instead of an unknown outcome.
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
   authentication headers, token refresh, retries, bounded response bodies, and
   a total deadline per HTTP attempt. Ordinary requests have 60 seconds;
-  attachment transfers have 180 seconds. The desktop also applies deadlines to
+  attachment transfers have 180 seconds. Opening a connection has its own
+  10-second limit within that deadline. Responses are requested
+  gzip-compressed. The client follows the HTTP and HTTPS proxies configured
+  on macOS and Windows, and the proxy environment variables on every
+  platform. The desktop also applies deadlines to
   complete view operations, and those that move attachments (saving one,
   sending new ones) include the transfer deadline; the CLI uses the transport
   deadlines directly.
   The application's own safety limits are 32 MiB for ordinary responses and
   128 MiB for encrypted attachment responses. These are transport limits, not
-  Proton Mail attachment quotas. Complete attachment multipart uploads also
+  Proton Mail attachment quotas. They count decompressed bytes, so a
+  compressed response cannot exceed them. Complete attachment multipart uploads also
   have a 128 MiB safety cap and reserve their final size once. The HTTP transport
   moves raw buffers into a prepared reqwest request and shares its allocation
   between attempts, including authentication, rate-limit, and verification

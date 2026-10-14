@@ -21,6 +21,8 @@ use tokio::sync::RwLock;
 pub const MAX_API_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// Total deadline for an ordinary HTTP request, including its response body.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest wait to open a connection, within any request's own deadline.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Request body.
 #[derive(Debug, Clone)]
@@ -221,8 +223,12 @@ impl HttpClient {
 
     /// Create a client sharing the given auth state (so refresh updates propagate).
     pub fn with_state(base_url: impl Into<String>, auth: Arc<RwLock<AuthState>>) -> Self {
+        // Responses arrive gzip-compressed when Proton offers it, and the
+        // system's proxy settings apply. An unreachable host fails after
+        // CONNECT_TIMEOUT instead of using up the whole request deadline.
         let client = reqwest::Client::builder()
             .cookie_store(true)
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .expect("reqwest client");
         HttpClient {
@@ -650,6 +656,43 @@ mod tests {
             assert_eq!(data.len(), 64 * 1024);
             assert_eq!(data.as_ptr(), pointer);
         }
+    }
+
+    #[tokio::test]
+    async fn responses_are_requested_and_read_compressed() {
+        // `{"Code":1000,"Note":"zzz…"}` with 200 `z`s: 223 bytes, gzip-compressed to 45.
+        const GZIPPED: [u8; 45] = [
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 171, 86, 114, 206, 79, 73, 85, 178, 50, 52, 48, 48,
+            208, 81, 242, 203, 47, 1, 178, 149, 170, 134, 9, 80, 170, 5, 0, 159, 209, 189, 8, 223,
+            0, 0, 0,
+        ];
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/compressed"))
+            .and(header("accept-encoding", "gzip"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-encoding", "gzip")
+                    .set_body_raw(GZIPPED.to_vec(), "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        #[derive(Deserialize)]
+        struct Note {
+            #[serde(rename = "Note")]
+            note: String,
+        }
+        let http = HttpClient::new(server.uri(), "Other");
+        let body: Note = http.decode(Request::get("/compressed")).await.unwrap();
+        assert_eq!(body.note, "z".repeat(200));
+
+        // Limits count what the body expands to, not what crossed the wire.
+        assert!(matches!(
+            http.do_raw(Request::get("/compressed").max_response_bytes(100))
+                .await,
+            Err(Error::ResponseTooLarge { limit: 100 })
+        ));
     }
 
     #[tokio::test]

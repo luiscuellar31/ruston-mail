@@ -271,6 +271,16 @@ The command never replaces an existing file. In live export, if an attachment
 or write fails, it removes the current incomplete file and stops; files exported
 earlier remain. An interrupted process may leave an incomplete file.
 
+## Network connections
+
+Ruston Mail uses the system's proxy settings: the HTTP and HTTPS proxies
+configured in macOS network settings or Windows Internet Options, and on every
+platform the `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, and `NO_PROXY`
+environment variables, which take precedence. Automatic proxy configuration
+(PAC) is not read. A proxy sees which Proton servers Ruston Mail contacts and
+when; the HTTPS traffic itself stays encrypted end to end between Ruston Mail
+and Proton.
+
 ## HTTP diagnostics
 
 `RUSTON_DEBUG_HTTP=1` prints Proton request methods, paths, body kinds, status
