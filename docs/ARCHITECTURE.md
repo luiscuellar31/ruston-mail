@@ -386,9 +386,10 @@ instead of an unknown outcome.
   keep the primary-address default from core. It also detects likely HTML in
   an interactive send without `--html` and asks before changing the format;
   scripted sends keep the explicit flag behavior. Permanent deletes ask first:
-  `messages delete` lists the subject and sender each reference matched, and
-  `messages empty` accepts only Trash or Spam. Without a terminal to ask on,
-  both need `--yes`.
+  `messages delete` lists the subject and sender each reference matched,
+  `drafts delete` lists each draft, and `messages empty` accepts only Trash or
+  Spam. Without a terminal to ask on, all three need `--yes`. Core's
+  `delete_draft` refuses the whole request if any ID is not a draft.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
   commands and uses the shared attachment filename policy. The desktop has its
   own demo mailbox in `src/mail/demo.rs`.

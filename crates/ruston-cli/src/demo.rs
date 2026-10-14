@@ -1095,7 +1095,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 }
                 Ok(())
             }
-            DraftsCmd::Delete { ids } => {
+            DraftsCmd::Delete { ids, .. } => {
                 render::action_result(ctx.json, "delete-draft", &ids);
                 Ok(())
             }

@@ -640,10 +640,15 @@ pub enum DraftsCmd {
         #[command(flatten)]
         args: SendArgs,
     },
-    /// Delete drafts.
+    /// Permanently delete drafts. Lists them and asks first; outside a
+    /// terminal `--yes` is required. Other messages are refused.
     Delete {
         /// Draft message IDs.
+        #[arg(required = true)]
         ids: Vec<String>,
+        /// Delete without asking.
+        #[arg(long)]
+        yes: bool,
     },
 }
 

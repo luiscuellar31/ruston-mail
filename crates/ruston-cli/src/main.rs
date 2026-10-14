@@ -72,7 +72,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::cli::{
-        Cli, Command, ConversationsCmd, EmptyFolder, MessagesCmd, ReadFormat, ReadState,
+        Cli, Command, ConversationsCmd, DraftsCmd, EmptyFolder, MessagesCmd, ReadFormat, ReadState,
     };
     use clap::{CommandFactory, Parser};
 
@@ -274,6 +274,17 @@ mod tests {
                 cmd: MessagesCmd::Delete { references, yes },
             } => {
                 assert_eq!(references, vec!["id1"]);
+                assert!(!yes, "deleting asks unless told not to");
+            }
+            _ => panic!("wrong command"),
+        }
+        // Deleting drafts names them and asks the same way.
+        assert!(Cli::try_parse_from(["ruston-cli", "drafts", "delete"]).is_err());
+        match parse(&["ruston-cli", "drafts", "delete", "draft1"]).command {
+            Command::Drafts {
+                cmd: DraftsCmd::Delete { ids, yes },
+            } => {
+                assert_eq!(ids, vec!["draft1"]);
                 assert!(!yes, "deleting asks unless told not to");
             }
             _ => panic!("wrong command"),

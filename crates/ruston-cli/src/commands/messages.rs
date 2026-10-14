@@ -121,7 +121,7 @@ fn confirm_html(input: &mut impl BufRead, output: &mut impl Write) -> io::Result
 
 /// A permanent delete needs someone to agree to it: a terminal to ask on, or
 /// `--yes` given up front.
-fn require_consent(ctx: &Ctx, yes: bool) -> Result<()> {
+pub(crate) fn require_consent(ctx: &Ctx, yes: bool) -> Result<()> {
     if yes || can_prompt(ctx) {
         Ok(())
     } else {
@@ -132,7 +132,7 @@ fn require_consent(ctx: &Ctx, yes: bool) -> Result<()> {
 }
 
 /// Lists what is about to be deleted for good, then asks.
-fn confirm_deletion(
+pub(crate) fn confirm_deletion(
     doomed: &[String],
     question: &str,
     input: &mut impl BufRead,
