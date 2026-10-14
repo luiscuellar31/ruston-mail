@@ -196,7 +196,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   at most 32 collection faces are examined for a normal, regular-weight face.
   Accepted bytes are cached for the process lifetime as borrowed font data,
   avoiding egui 0.36's copies of owned data per context/scale. Linux Fontconfig
-  discovery has a one-second timeout and bounded output. Switching the optional
+  discovery has a one-second timeout and bounded output. Installed fonts load
+  on a background thread, once per process, so reading them (about 23 MB on
+  macOS) never delays the first window: the bundled fonts apply at once, and
+  the installed ones are applied on the frame after they finish loading. Tests
+  load them in place for a consistent font set. Switching the optional
   preference reinstalls fonts only when the mode changes, on the next egui pass.
   No fonts are downloaded or included from the OS in the application bundle.
   The signed-out screen offers the same appearance choice directly through

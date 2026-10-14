@@ -265,7 +265,9 @@ each password field to show or hide what you type.
 effect after Apply, without changing text sizes. The default keeps Ruston's
 existing look. macOS tries San Francisco, Windows Segoe UI, and Linux the
 configured Fontconfig sans-serif family; unavailable fonts fall back to Ruston's.
-Installed language fonts also provide missing characters in either mode.
+Installed language fonts also provide missing characters in either mode. They
+load in the background after the window opens, so text in other scripts can
+show placeholder boxes for a moment at startup.
 Coverage depends on local fonts; there are no font downloads. This expands
 glyph coverage but does not provide complete bidirectional/RTL text layout.
 
