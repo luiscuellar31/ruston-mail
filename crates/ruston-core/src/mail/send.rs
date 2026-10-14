@@ -5,6 +5,7 @@ use crate::api;
 use crate::crypto::{self, SessionKeyMaterial, keys::AddressKeys};
 use crate::error::{Error, Result};
 use crate::model::enums::package_type;
+use crate::model::message::Message;
 use crate::transport::{Doer, Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_srp::{SRPAuth, SRPVerifierB64};
@@ -462,7 +463,7 @@ impl Client {
 
         // Clean up only when the failure proves the message was not sent.
         match self
-            .finish_send(&provider, addr, &message_id, mime_type, opts, eo)
+            .finish_send(&provider, addr, &created, mime_type, opts, eo)
             .await
         {
             Ok(()) => {
@@ -485,13 +486,27 @@ impl Client {
         &self,
         provider: &P,
         addr: &AddressKeys,
-        message_id: &str,
+        draft: &Message,
         mime_type: &str,
         opts: &SendOptions,
         eo: Option<&(String, String)>,
     ) -> Result<()> {
-        // 2. upload attachments.
+        let message_id = draft.meta.id.as_str();
+        // 2. attachments: those the draft already carries (a forward's copies
+        // of the original's) are keyed for recipients like new uploads.
         let mut uploaded: Vec<Uploaded> = Vec::new();
+        for attachment in &draft.attachments {
+            let key_packets = attachment.key_packets.as_deref().ok_or_else(|| {
+                Error::Crypto(format!(
+                    "draft attachment {} has no key packet",
+                    attachment.id
+                ))
+            })?;
+            uploaded.push(Uploaded {
+                id: attachment.id.clone(),
+                material: crypto::decrypt_session_key(provider, addr, key_packets)?,
+            });
+        }
         let mut remaining = MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES;
         for path in &opts.attachments {
             let prepared =
@@ -1010,6 +1025,190 @@ mod tests {
         );
         drop(spare);
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// A fresh address key, returned with its armored public key.
+    fn test_address(email: &str, address_id: &str) -> (AddressKeys, String) {
+        use proton_crypto::crypto::{
+            DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
+        };
+        let provider = crypto::provider();
+        let key = provider
+            .new_key_generator()
+            .with_user_id("Test", email)
+            .with_algorithm(KeyGeneratorAlgorithm::ECC)
+            .generate()
+            .unwrap();
+        let armored = provider
+            .private_key_export(&key, "test-passphrase", DataEncoding::Armor)
+            .unwrap();
+        let public = provider.private_key_to_public_key(&key).unwrap();
+        let public = provider
+            .public_key_export(&public, DataEncoding::Armor)
+            .unwrap();
+        (
+            AddressKeys {
+                address_id: address_id.into(),
+                email: email.into(),
+                keys: vec![crypto::keys::StoredKey {
+                    armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+                    passphrase: secrecy::SecretString::from("test-passphrase"),
+                }],
+            },
+            String::from_utf8(public.as_ref().to_vec()).unwrap(),
+        )
+    }
+
+    fn test_client(server: &MockServer, addresses: Vec<AddressKeys>) -> Client {
+        Client {
+            http: HttpClient::new(server.uri(), "Other"),
+            keys: crypto::keys::KeyStore {
+                user_keys: vec![],
+                addresses,
+            },
+            paths: crate::session::Paths::with_base(std::env::temp_dir()),
+            profile: "test".into(),
+            session_uid: "test".into(),
+            cache_identity: crate::cache::CacheIdentity::new(&server.uri(), "send-test").unwrap(),
+            store: std::sync::Arc::new(crate::session::MemoryStore::new()),
+            sender_cache: tokio::sync::Mutex::new(Default::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_attachments_are_keyed_for_every_recipient() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let (me, _) = test_address("me@proton.me", "address-1");
+        let (friend, friend_public) = test_address("friend@proton.me", "friend-address");
+        let provider = crypto::provider();
+        let original = crypto::encrypt_attachment(&provider, &me, b"forwarded payload").unwrap();
+        let key_packets = STANDARD.encode(&original.key_packet);
+        let parent_id = format!("{}==", "p".repeat(60));
+
+        Mock::given(method("GET"))
+            .and(path(format!("/mail/v4/messages/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000,
+                "Message": {
+                    "ID": parent_id, "AddressID": "address-1", "Subject": "Report",
+                    "Sender": {"Name": "Boss", "Address": "boss@proton.me"},
+                    "Attachments": [{"ID": "parent-att", "Name": "report.pdf", "KeyPackets": key_packets}]
+                }
+            })))
+            .mount(&server)
+            .await;
+        // Proton copies the original's attachment into the draft under a new ID,
+        // keyed with the packet the draft request supplied for it.
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000,
+                "Message": {
+                    "ID": "draft-1",
+                    "Attachments": [{"ID": "draft-att", "Name": "report.pdf", "KeyPackets": key_packets}]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "friend@proton.me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000, "RecipientType": 1,
+                "Address": {"Keys": [{"PublicKey": friend_public, "Flags": 3, "Primary": 1}]}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "plain@example.com"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server, vec![me]);
+        let opts = SendOptions {
+            to: vec!["friend@proton.me".into(), "plain@example.com".into()],
+            body: "FYI".into(),
+            ..SendOptions::default()
+        };
+        client.forward(&parent_id, &opts).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let send = requests
+            .iter()
+            .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
+            .unwrap();
+        let body: Value = serde_json::from_slice(&send.body).unwrap();
+        let packages = body["Packages"].as_array().unwrap();
+        let package = |kind: i64| {
+            packages
+                .iter()
+                .find(|package| package["Type"] == kind)
+                .unwrap()
+        };
+
+        let internal = &package(package_type::PM)["Addresses"]["friend@proton.me"];
+        let wrapped = internal["AttachmentKeyPackets"]["draft-att"]
+            .as_str()
+            .expect("the Proton recipient gets the forwarded attachment's key");
+        let opened =
+            crypto::decrypt_attachment(&provider, &friend, wrapped, &original.data_packet).unwrap();
+        assert_eq!(opened, b"forwarded payload");
+
+        let clear = &package(package_type::CLEAR)["AttachmentKeys"]["draft-att"];
+        assert_eq!(
+            clear["Key"],
+            STANDARD.encode(original.material.key.as_slice())
+        );
+        assert_eq!(clear["Algorithm"], "aes256");
+    }
+
+    #[tokio::test]
+    async fn a_draft_attachment_without_a_key_stops_the_send() {
+        let server = MockServer::start().await;
+        let (me, _) = test_address("me@proton.me", "address-1");
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000,
+                "Message": {"ID": "draft-1", "Attachments": [{"ID": "draft-att"}]}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/mail/v4/messages/delete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server, vec![me]);
+        let opts = SendOptions {
+            to: vec!["friend@proton.me".into()],
+            ..SendOptions::default()
+        };
+        assert!(matches!(client.send(&opts).await, Err(Error::Crypto(_))));
+        server.verify().await;
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.url.path() != "/mail/v4/messages/draft-1"),
+            "an attachment nobody could open is never sent"
+        );
     }
 
     struct OversizedResponse;

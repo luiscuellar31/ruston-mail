@@ -339,6 +339,37 @@ pub fn rewrap_attachment_session_key<P: PGPProviderSync>(
         .map_err(|e| Error::Crypto(format!("rewrap att session key: {e}")))
 }
 
+/// Recover an attachment's session key from its key packet, so it can be
+/// wrapped for recipients without encrypting the attachment again.
+pub fn decrypt_session_key<P: PGPProviderSync>(
+    provider: &P,
+    addr: &AddressKeys,
+    key_packets_b64: &str,
+) -> Result<SessionKeyMaterial> {
+    let privs = import_privs(provider, addr)?;
+    let kp = STANDARD
+        .decode(key_packets_b64)
+        .map_err(|e| Error::Crypto(format!("bad attachment key packet: {e}")))?;
+    let sk = provider
+        .new_decryptor()
+        .with_decryption_keys(privs.iter())
+        .decrypt_session_key(&kp)
+        .map_err(|e| Error::Crypto(format!("attachment session key decrypt failed: {e}")))?;
+    let (bytes, algo) = provider
+        .session_key_export(&sk)
+        .map_err(|e| Error::Crypto(format!("sk export: {e}")))?;
+    // Packages name the algorithm, and an unknown one cannot be named.
+    if matches!(algo, SessionKeyAlgorithm::Unknown) {
+        return Err(Error::Crypto(
+            "attachment session key uses an unsupported algorithm".into(),
+        ));
+    }
+    Ok(SessionKeyMaterial {
+        key: Zeroizing::new(bytes.as_ref().to_vec()),
+        algo,
+    })
+}
+
 /// Generate a fresh AES-256 session key; return its material + base64 token.
 pub fn new_session_key<P: PGPProviderSync>(provider: &P) -> Result<(SessionKeyMaterial, String)> {
     let sk = provider
