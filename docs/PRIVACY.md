@@ -121,8 +121,13 @@ message bodies and other searchable fields in SQLite full-text search. This
 database is **not encrypted at rest by Ruston Mail**. The desktop client does
 not use this cache. Once `sync` applies a deletion, it removes the active search
 entry. A full message update removes its indexed body; run `index` again to
-make the updated body searchable. SQLite deletion does not guarantee secure
-erasure of bytes already written to disk or copied into backups.
+make the updated body searchable. Removed or replaced bodies and search
+entries are overwritten inside the database file, with SQLite's
+`secure_delete` and FTS5's `secure-delete`, instead of lingering in its free
+space. This does not erase copies left by SQLite's temporary journal, the file
+system, the storage device, or backups. Content removed by Ruston Mail 0.4.0 or
+earlier can remain in the file; to rebuild it without those remnants, delete the
+database and run `sync` with backfill and `index` again.
 Opening an existing cache upgrades its search lookup automatically in a
 transaction, preserving the stored bodies, metadata, account binding, and sync
 cursor. This upgrade does not require downloading or indexing mail again. If

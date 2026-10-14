@@ -197,6 +197,28 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
     tx.commit().map_err(map)
 }
 
+/// FTS5 keeps a deleted body's words in its index until segments merge;
+/// secure-delete removes them with the row. FTS5 keeps the setting, so its
+/// settings table is only read here, to write the setting once.
+fn ensure_fts_secure_delete(conn: &Connection) -> Result<()> {
+    let enabled: Option<i64> = conn
+        .query_row(
+            "SELECT v FROM msg_fts_index_config WHERE k='secure-delete'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map)?;
+    if enabled != Some(1) {
+        conn.execute(
+            "INSERT INTO msg_fts_index(msg_fts_index, rank) VALUES('secure-delete', 1)",
+            [],
+        )
+        .map_err(map)?;
+    }
+    Ok(())
+}
+
 fn ensure_fts_rowid_index(conn: &Connection) -> Result<()> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
     let kind: String = tx
@@ -390,6 +412,9 @@ impl Cache {
         let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(map)?;
         // Another CLI process may hold the write lock during sync or migration.
         conn.busy_timeout(Duration::from_secs(30)).map_err(map)?;
+        // Deleted and replaced rows, decrypted bodies among them, are
+        // overwritten instead of lingering in the file's free space.
+        conn.execute_batch("PRAGMA secure_delete=ON").map_err(map)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
              CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
@@ -400,6 +425,7 @@ impl Cache {
         .map_err(map)?;
         ensure_label_time_index(&conn)?;
         ensure_fts_rowid_index(&conn)?;
+        ensure_fts_secure_delete(&conn)?;
         Ok(Cache { conn })
     }
 
@@ -824,6 +850,64 @@ mod tests {
         #[cfg(unix)]
         secure_cache_dir(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn deleted_and_reindexed_bodies_leave_no_plaintext_in_the_file() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let cache = Cache::open(&path).unwrap();
+        // Enough mail that the removed bodies share pages with kept ones.
+        for index in 0..50 {
+            cache
+                .index_message(
+                    &meta(&format!("kept-{index}"), "0", 0, index),
+                    &"filler body ".repeat(20),
+                )
+                .unwrap();
+        }
+        cache
+            .index_message(&meta("deleted", "0", 0, 100), "zebracanary deleted body")
+            .unwrap();
+        cache
+            .index_message(&meta("edited", "0", 0, 101), "quokkacanary first draft")
+            .unwrap();
+        cache.delete_message("deleted").unwrap();
+        cache
+            .index_message(&meta("edited", "0", 0, 101), "replacement")
+            .unwrap();
+        drop(cache);
+
+        let file = std::fs::read(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        for word in ["zebracanary", "quokkacanary"] {
+            assert!(
+                !file
+                    .windows(word.len())
+                    .any(|window| window == word.as_bytes()),
+                "{word} is still in the cache file"
+            );
+        }
+    }
+
+    #[test]
+    fn reopening_keeps_search_secure_delete_without_rewriting_it() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        drop(Cache::open(&path).unwrap());
+        let cache = Cache::open(&path).unwrap();
+        let enabled: i64 = cache
+            .conn
+            .query_row(
+                "SELECT v FROM msg_fts_index_config WHERE k='secure-delete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled, 1);
+        assert_eq!(cache.conn.total_changes(), 0, "reopening wrote nothing");
+        drop(cache);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

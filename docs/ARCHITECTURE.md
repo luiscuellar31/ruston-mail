@@ -548,7 +548,11 @@ readers keep working. Bulk cache resets clear FTS and the map directly in the
 same transaction to avoid materializing bodies through the view.
 Duplicate IDs and orphaned bodies are included in the
 map, and deletion removes every matching row. A failed migration rolls back;
-reopening is idempotent. Shadow tables are not accessed or modified directly.
+reopening is idempotent. Shadow tables are never modified directly. Every
+connection turns on SQLite's `secure_delete`, and opening turns on FTS5's
+persistent `secure-delete` once, reading only FTS5's settings table to see
+whether it already is. Removed rows and index entries are then overwritten in
+the file instead of lingering in free pages or until segments merge.
 Cached folder listings use
 an index on label and message time. Opening an older cache backfills that time
 in one transaction; triggers keep the index current when an older process
