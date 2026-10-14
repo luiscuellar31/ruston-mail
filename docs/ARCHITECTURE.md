@@ -387,7 +387,10 @@ instead of an unknown outcome.
   values. Explicit `raw` and `html` bodies retain
   their contents when redirected, but are filtered on a terminal. File exports,
   attachment writes, and the CAPTCHA helper's HTTP responses bypass this display
-  layer. Core and the desktop retain their own logging setup.
+  layer. Core and the desktop retain their own logging setup. Standard output
+  goes through one writer: when its reader closes the pipe early, as `| head`
+  does, the command exits quietly with status 0, and any other write failure
+  ends it with status 1. Diagnostics on standard error are best effort.
 - [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs)
   offers a numbered sender choice when `messages send` runs in a terminal with
   multiple account addresses and no `--from`. Noninteractive and JSON sends

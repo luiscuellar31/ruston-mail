@@ -2,7 +2,7 @@
 
 use ruston_core::mail::attachments::is_invisible_mark;
 use std::fmt::{self, Write as _};
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write as _};
 use tracing::{Event, Subscriber};
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, format::Writer};
 use tracing_subscriber::registry::LookupSpan;
@@ -60,26 +60,38 @@ impl fmt::Write for ControlFilter<'_> {
 
 macro_rules! print {
     ($($arg:tt)*) => {
-        std::print!("{}", $crate::terminal::SafeArgs(format_args!($($arg)*)))
+        $crate::terminal::write_stdout(format_args!(
+            "{}",
+            $crate::terminal::SafeArgs(format_args!($($arg)*))
+        ))
     };
 }
 
 macro_rules! println {
-    () => { std::println!() };
+    () => { $crate::terminal::write_stdout(format_args!("\n")) };
     ($($arg:tt)*) => {
-        std::println!("{}", $crate::terminal::SafeArgs(format_args!($($arg)*)))
+        $crate::terminal::write_stdout(format_args!(
+            "{}\n",
+            $crate::terminal::SafeArgs(format_args!($($arg)*))
+        ))
     };
 }
 
 macro_rules! eprint {
     ($($arg:tt)*) => {
-        std::eprint!("{}", $crate::terminal::SafeArgs(format_args!($($arg)*)))
+        $crate::terminal::write_stderr(format_args!(
+            "{}",
+            $crate::terminal::SafeArgs(format_args!($($arg)*))
+        ))
     };
 }
 
 macro_rules! eprintln {
     ($($arg:tt)*) => {
-        std::eprintln!("{}", $crate::terminal::SafeArgs(format_args!($($arg)*)))
+        $crate::terminal::write_stderr(format_args!(
+            "{}\n",
+            $crate::terminal::SafeArgs(format_args!($($arg)*))
+        ))
     };
 }
 
@@ -97,12 +109,39 @@ macro_rules! writeln {
 
 pub(crate) use {eprint, eprintln, print, println, write, writeln};
 
+/// Writes command output. When the reader stops early, as `| head` does once
+/// it has its lines, the command ends quietly and successfully; any other
+/// failure to write ends it with an error.
+pub(crate) fn write_stdout(output: fmt::Arguments<'_>) {
+    if let Err(error) = io::stdout().lock().write_fmt(output) {
+        stdout_failed(error);
+    }
+}
+
+/// Diagnostics are best effort: with stderr gone, there is nowhere left to
+/// report that it is gone.
+pub(crate) fn write_stderr(output: fmt::Arguments<'_>) {
+    let _ = io::stderr().lock().write_fmt(output);
+}
+
+fn stdout_failed(error: io::Error) -> ! {
+    if error.kind() == io::ErrorKind::BrokenPipe {
+        std::process::exit(0);
+    }
+    write_stderr(format_args!(
+        "error: cannot write output: {}\n",
+        SafeArgs(format_args!("{error}"))
+    ));
+    std::process::exit(1);
+}
+
 /// Preserve explicit body formats only when stdout is not a terminal.
 pub(crate) fn print_body(body: &str, explicit_format: bool) {
     let stdout = io::stdout();
     let is_terminal = stdout.is_terminal();
-    write_body(&mut stdout.lock(), body, explicit_format, is_terminal)
-        .expect("failed printing message body to stdout");
+    if let Err(error) = write_body(&mut stdout.lock(), body, explicit_format, is_terminal) {
+        stdout_failed(error);
+    }
 }
 
 fn write_body(

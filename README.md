@@ -81,6 +81,9 @@ want a separate login; an existing CLI `default` session remains available with
 When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly.
 
+Output can be piped into tools that stop reading early, such as `head`: the
+CLI then ends quietly with exit status 0.
+
 Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
 seconds. Commands with multiple requests or a rate-limit retry can take longer.
 A timed-out final send is reported as unconfirmed with its draft ID. Check Sent

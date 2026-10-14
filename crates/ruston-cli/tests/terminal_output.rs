@@ -47,6 +47,35 @@ fn json_output_filters_controls_without_changing_label_data() {
 }
 
 #[test]
+fn a_reader_that_stops_early_ends_the_command_quietly() {
+    for args in [
+        &["--demo", "messages", "list"][..],
+        &["--demo", "--json", "messages", "list"],
+        &["--demo", "messages", "read", "1"],
+    ] {
+        // Like `| head` once it has its lines: nobody reads what follows.
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let output = Command::new(env!("CARGO_BIN_EXE_ruston-cli"))
+            .args(args)
+            .env_remove("RUST_LOG")
+            .stdout(writer)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?} ended with {}",
+            output.status
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "{args:?} wrote {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn runtime_and_argument_errors_filter_controls_on_stderr() {
     let attack = ATTACK.trim_end_matches('\0');
     for args in [vec!["--demo", "messages", "read", attack], vec![attack]] {

@@ -111,7 +111,7 @@ fn filter_json(f: &Filter) -> serde_json::Value {
 /// Serialize a value as pretty JSON to stdout.
 pub fn json_out<T: serde::Serialize + ?Sized>(value: &T) {
     match serde_json::to_string_pretty(value) {
-        Ok(s) => std::println!("{}", terminal::JsonText(&s)),
+        Ok(s) => terminal::write_stdout(format_args!("{}\n", terminal::JsonText(&s))),
         Err(_) => terminal::println!("null"),
     }
 }
