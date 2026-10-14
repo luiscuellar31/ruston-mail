@@ -264,8 +264,9 @@ impl Client {
     /// Clear the saved session, then attempt remote revocation for up to 30 seconds.
     /// Local cleanup runs on a blocking worker and continues if this future is
     /// cancelled after it starts. Remote failures do not undo cleanup; local
-    /// storage failures are returned to the caller.
-    pub async fn logout(&self) -> Result<()> {
+    /// storage failures are returned to the caller. Returns whether Proton
+    /// confirmed that the session ended.
+    pub async fn logout(&self) -> Result<bool> {
         let paths = self.paths.clone();
         let profile = self.profile.clone();
         let session_uid = self.session_uid.clone();
@@ -277,8 +278,11 @@ impl Client {
         .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?;
 
         // Only revocation has a deadline. A timeout must never cancel local cleanup.
-        let _ = tokio::time::timeout(LOGOUT_REVOCATION_TIMEOUT, auth::logout(&self.http)).await;
-        cleanup
+        let revoked = matches!(
+            tokio::time::timeout(LOGOUT_REVOCATION_TIMEOUT, auth::logout(&self.http)).await,
+            Ok(Ok(()))
+        );
+        cleanup.map(|()| revoked)
     }
 
     /// Remove a profile's saved session without resuming it, for when it can
@@ -449,7 +453,7 @@ mod tests {
         tokio::time::advance(LOGOUT_REVOCATION_TIMEOUT + Duration::from_millis(1)).await;
         assert!(matches!(
             futures::poll!(&mut logout),
-            std::task::Poll::Ready(Ok(()))
+            std::task::Poll::Ready(Ok(false))
         ));
         assert_session_cleared(&client, &base);
         server.verify().await;
@@ -471,11 +475,57 @@ mod tests {
                 .await;
             let (client, base) =
                 saved_logout_client(&server.uri(), Arc::new(MemoryStore::new())).await;
-            client.logout().await.unwrap();
+            assert!(
+                !client.logout().await.unwrap(),
+                "{status} was not a revocation"
+            );
             assert_session_cleared(&client, &base);
             server.verify().await;
             std::fs::remove_dir_all(base).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn logout_with_an_expired_token_still_revokes_and_saves_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/core/v4/auth"))
+            .and(header("authorization", "Bearer logout-access"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code": 401})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000,
+                "AccessToken": "fresh-access",
+                "RefreshToken": "fresh-refresh",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/core/v4/auth"))
+            .and(header("authorization", "Bearer fresh-access"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (client, base) = saved_logout_client(&server.uri(), Arc::new(MemoryStore::new())).await;
+
+        assert!(
+            client.logout().await.unwrap(),
+            "Proton confirmed the revocation"
+        );
+        // The tokens refreshed to revoke the session were never saved.
+        assert_session_cleared(&client, &base);
+        server.verify().await;
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[tokio::test]
@@ -511,7 +561,7 @@ mod tests {
         )
         .unwrap();
 
-        client.logout().await.unwrap();
+        assert!(client.logout().await.unwrap());
         let saved = Session::load(&client.paths, "test", client.store.as_ref())
             .unwrap()
             .unwrap();

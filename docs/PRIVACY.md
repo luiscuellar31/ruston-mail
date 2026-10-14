@@ -192,8 +192,10 @@ contain account passwords or session tokens. A missing, incomplete, or damaged
 settings file falls back to defaults.
 
 Signing out first removes local session metadata and credentials, then tries
-to revoke the server session for up to 30 seconds. Remote failures or timeouts
-do not prevent local cleanup. Cleanup runs outside the asynchronous workers
+to revoke the server session for up to 30 seconds. If the access token has
+expired, the revocation refreshes it in memory first; those tokens are never
+saved. `ruston-cli logout` reports the session as revoked only when Proton
+confirms it. Remote failures or timeouts do not prevent local cleanup. Cleanup runs outside the asynchronous workers
 under the profile lock, attempts every removal, and continues if its caller is
 cancelled after cleanup starts. If local storage rejects a removal, the CLI
 reports an error and the desktop warns that credentials may remain on the device;

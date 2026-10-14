@@ -182,10 +182,13 @@ impl ProtonMailService {
     }
 
     /// Waits for local cleanup; core bounds only the remote revocation.
+    /// Whether Proton confirmed it changes nothing here: either way this
+    /// device has forgotten the session.
     pub async fn logout(&self) -> Result<(), AuthError> {
         self.client
             .logout()
             .await
+            .map(|_revoked| ())
             .map_err(|_| AuthError::LogoutUnavailable)
     }
 

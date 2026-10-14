@@ -514,7 +514,10 @@ and keeps the session; only a refused refresh token is `Unauthorized`. Signing o
 shared profile signs out both frontends. Core runs local session cleanup under
 that lock on a blocking worker before trying remote revocation. The 30-second
 revocation deadline does not include or cancel cleanup, and a started cleanup
-worker continues if its caller is cancelled. Revocation never refreshes tokens.
+worker continues if its caller is cancelled. Revocation runs on a detached
+copy of the HTTP client: it may refresh an expired access token in memory, but
+never loads or saves the shared session, and `Client::logout` reports whether
+Proton confirmed the revocation.
 Cleanup checks the saved session UID under the profile lock so a pending logout
 cannot erase a replacement login in the same profile. When the CLI cannot resume
 a session to log out, `Client::forget_session` clears it under the same lock

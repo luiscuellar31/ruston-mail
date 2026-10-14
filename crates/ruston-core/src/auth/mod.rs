@@ -184,12 +184,11 @@ async fn second_factor(
     Ok(())
 }
 
-/// Revoke the current session server-side.
+/// Revoke the current session server-side. An expired access token is
+/// refreshed first, in memory only: revoking never saves tokens again.
 pub async fn logout(http: &HttpClient) -> Result<()> {
-    // The saved session is already cleared; do not refresh or persist new tokens.
-    let _: serde_json::Value = http
-        .decode(Request::delete("/core/v4/auth").no_refresh())
-        .await?;
+    let revoking = http.detached().await;
+    let _: serde_json::Value = revoking.decode(Request::delete("/core/v4/auth")).await?;
     Ok(())
 }
 
@@ -197,7 +196,7 @@ pub async fn logout(http: &HttpClient) -> Result<()> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use wiremock::matchers::{body_json, method, path};
+    use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -216,10 +215,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_does_not_refresh_expired_tokens() {
+    async fn logout_refreshes_an_expired_token_only_in_memory() {
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
             .and(path("/core/v4/auth"))
+            .and(header("authorization", "Bearer expired-access"))
             .respond_with(
                 ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code": 401})),
             )
@@ -228,11 +228,30 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/auth/v4/refresh"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000,
+                "AccessToken": "fresh-access",
+                "RefreshToken": "fresh-refresh",
+            })))
+            .expect(1)
             .mount(&server)
             .await;
-        let http = HttpClient::new(server.uri(), "Other");
+        Mock::given(method("DELETE"))
+            .and(path("/core/v4/auth"))
+            .and(header("authorization", "Bearer fresh-access"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut http = HttpClient::new(server.uri(), "Other");
+        let saved = Arc::new(AtomicUsize::new(0));
+        let saves = saved.clone();
+        http.set_refresh_persist_fallible(Arc::new(move |_, _, _| {
+            saves.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
         http.set_tokens(
             "uid".into(),
             SecretString::from("expired-access"),
@@ -240,8 +259,13 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(logout(&http).await, Err(Error::Unauthorized)));
+        logout(&http).await.unwrap();
         server.verify().await;
+        assert_eq!(
+            saved.load(Ordering::SeqCst),
+            0,
+            "the revoked tokens were saved"
+        );
     }
 
     /// A prompt returning `code` and counting its invocations.

@@ -89,8 +89,10 @@ fn totp_prompt() -> TotpPrompt {
 /// What logging out told Proton.
 #[derive(Debug)]
 enum Revocation {
-    /// Proton was asked to end the session.
-    Requested,
+    /// Proton confirmed that the session ended.
+    Confirmed,
+    /// Proton was asked, but did not confirm in time or refused.
+    Unconfirmed,
     /// The saved session could not be resumed, so only this device forgot it.
     Skipped(String),
 }
@@ -103,10 +105,11 @@ where
     Fut: std::future::Future<Output = Result<()>>,
 {
     match resumed {
-        Ok(client) => {
-            client.logout().await?;
-            Ok(Revocation::Requested)
-        }
+        Ok(client) => Ok(if client.logout().await? {
+            Revocation::Confirmed
+        } else {
+            Revocation::Unconfirmed
+        }),
         Err(error) => {
             forget().await?;
             Ok(Revocation::Skipped(error.to_string()))
@@ -119,16 +122,25 @@ pub async fn logout(ctx: &Ctx) -> Result<()> {
         Client::forget_session(&ctx.profile)
     })
     .await?;
-    let revoked = matches!(revocation, Revocation::Requested);
+    let revoked = matches!(revocation, Revocation::Confirmed);
     if ctx.json {
         render::json_out(&json!({ "status": "ok", "revoked": revoked }));
-    } else if let Revocation::Skipped(reason) = revocation {
-        terminal::println!("Logged out on this device");
-        terminal::eprintln!(
-            "Proton was not asked to end the session, which could not be resumed: {reason}"
-        );
     } else {
-        terminal::println!("Logged out");
+        match revocation {
+            Revocation::Confirmed => terminal::println!("Logged out"),
+            Revocation::Unconfirmed => {
+                terminal::println!("Logged out on this device");
+                terminal::eprintln!(
+                    "Proton did not confirm that the session ended; you can end it from your Proton account's security settings"
+                );
+            }
+            Revocation::Skipped(reason) => {
+                terminal::println!("Logged out on this device");
+                terminal::eprintln!(
+                    "Proton was not asked to end the session, which could not be resumed: {reason}"
+                );
+            }
+        }
     }
     Ok(())
 }

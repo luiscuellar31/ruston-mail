@@ -246,6 +246,22 @@ impl HttpClient {
     pub fn auth_state(&self) -> Arc<RwLock<AuthState>> {
         self.auth.clone()
     }
+    /// A client for requests made after the saved session is gone. It shares
+    /// connections and cookies and starts from a copy of the current tokens;
+    /// a 401 refreshes them in memory only, never loading or saving the
+    /// profile's session.
+    pub(crate) async fn detached(&self) -> HttpClient {
+        let auth = self.auth.read().await.clone();
+        HttpClient {
+            client: self.client.clone(),
+            base_url: self.base_url.clone(),
+            auth: Arc::new(RwLock::new(auth)),
+            on_refresh: None,
+            refresh_load: None,
+            refresh_unsaved: AtomicBool::new(false),
+            hv: None,
+        }
+    }
     /// Register a callback invoked with rotated tokens after each refresh.
     pub fn set_refresh_persist(&mut self, cb: RefreshPersist) {
         self.on_refresh = Some(Arc::new(move |uid, access, refresh| {
