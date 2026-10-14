@@ -681,6 +681,30 @@ fn a_renamed_folder_is_taken_up_and_a_removed_one_falls_back() {
 }
 
 #[test]
+fn a_folder_list_that_fails_to_load_keeps_the_open_folder_and_is_asked_again() {
+    let invoices = Folder::custom("kZ9", "Invoices");
+
+    // A list that never arrived says nothing about the folder being gone, so
+    // neither the open folder nor the remembered one changes.
+    let mut app = authenticated_app();
+    let _ = app.update(Message::SelectFolder(invoices.clone()));
+    deliver_folders(&mut app, Err(MailboxError::Connection));
+    assert_eq!(app.mailbox().unwrap().folder(), &invoices);
+    assert_eq!(app.settings.folder, invoices);
+
+    // The next refresh asks for the list again, besides the page and counts,
+    // and only until it arrives.
+    let mut app = loaded_demo_app();
+    deliver_folders(&mut app, Err(MailboxError::Connection));
+    assert_eq!(app.update(Message::RefreshMailbox).units(), 3);
+    let page_request = app.last_request - 1;
+    deliver_demo_page(&mut app, page_request, 0);
+    deliver_folders(&mut app, Ok(vec![invoices.clone()]));
+    assert_eq!(app.folders(), [invoices]);
+    assert_eq!(app.update(Message::RefreshMailbox).units(), 2);
+}
+
+#[test]
 fn only_web_and_mail_links_are_offered() {
     let web = PendingLink::parse(" https://Example.com/path?x=1 ").unwrap();
     assert_eq!(web.target, "example.com");

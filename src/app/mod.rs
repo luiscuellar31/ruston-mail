@@ -226,6 +226,8 @@ pub struct App {
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
     folders: Vec<Folder>,
+    /// The folder list failed to load, so the next refresh asks again.
+    refetch_folders: bool,
     /// What the app remembers between runs.
     settings: Settings,
     /// Settings changes and the last revision written to disk.
@@ -278,6 +280,7 @@ impl App {
             last_request: 0,
             inspections: Inspections::default(),
             folders: Vec::new(),
+            refetch_folders: false,
             settings,
             settings_revision: 0,
             settings_written: 0,
@@ -627,8 +630,14 @@ impl App {
                 }
                 match result {
                     Ok(folders) => self.folders = folders,
-                    // Without them the sidebar simply shows Proton's own.
-                    Err(error) => self.handle_mailbox_error(Some(error)),
+                    // Without them the sidebar shows Proton's own until the
+                    // next refresh asks again. A list that did not arrive says
+                    // nothing about the open folder, which stays open.
+                    Err(error) => {
+                        self.refetch_folders = true;
+                        self.handle_mailbox_error(Some(error));
+                        return Effects::none();
+                    }
                 }
                 // Counts were asked for before the folders were known, so ask
                 // again now that they are.
@@ -1246,8 +1255,13 @@ impl App {
         if page.is_some() {
             self.inspections.cancel();
         }
+        let folders = if self.refetch_folders {
+            self.fetch_folders()
+        } else {
+            Effects::none()
+        };
 
-        Effects::batch([self.fetch_page(page), self.fetch_counts(counts)])
+        Effects::batch([self.fetch_page(page), self.fetch_counts(counts), folders])
     }
 
     fn auto_refresh_mailbox(&mut self) -> Effects {
@@ -1358,9 +1372,10 @@ impl App {
         Effects::batch(effects)
     }
 
-    /// Asks once for the folders the account made. They change rarely, so
-    /// nothing re-fetches them until the mailbox is opened again.
-    fn fetch_folders(&self) -> Effects {
+    /// Asks for the folders the account made. They change rarely, so only a
+    /// list that failed to load is asked for again, by the next refresh.
+    fn fetch_folders(&mut self) -> Effects {
+        self.refetch_folders = false;
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
         };
