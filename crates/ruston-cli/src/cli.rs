@@ -366,6 +366,32 @@ pub enum LabelAction {
     Rm,
 }
 
+/// The folders `messages empty` clears. Emptying any other folder or a label
+/// would permanently delete mail nobody had thrown away.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum EmptyFolder {
+    Trash,
+    Spam,
+}
+
+impl EmptyFolder {
+    /// The folder name core resolves.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EmptyFolder::Trash => "trash",
+            EmptyFolder::Spam => "spam",
+        }
+    }
+
+    /// The folder as people see it.
+    pub fn name(self) -> &'static str {
+        match self {
+            EmptyFolder::Trash => "Trash",
+            EmptyFolder::Spam => "Spam",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum MessagesCmd {
     /// List messages in a folder.
@@ -435,8 +461,15 @@ pub enum MessagesCmd {
     Ham { references: Vec<String> },
     /// One-click unsubscribe from a mailing list.
     Unsubscribe { reference: String },
-    /// Permanently empty a folder (e.g. `trash`, `spam`).
-    Empty { folder: String },
+    /// Permanently delete every message in Trash or Spam. Asks first; outside
+    /// a terminal `--yes` is required.
+    Empty {
+        #[arg(value_enum)]
+        folder: EmptyFolder,
+        /// Empty without asking.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Apply or remove a label on messages.
     Label {
         #[arg(value_enum)]
@@ -462,10 +495,14 @@ pub enum MessagesCmd {
         #[arg(required = true)]
         references: Vec<String>,
     },
-    /// Permanently delete messages.
+    /// Permanently delete messages. Lists them and asks first; outside a
+    /// terminal `--yes` is required.
     Delete {
         #[arg(required = true)]
         references: Vec<String>,
+        /// Delete without asking.
+        #[arg(long)]
+        yes: bool,
     },
     /// Mark messages read or unread.
     Mark {

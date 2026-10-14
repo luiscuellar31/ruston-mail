@@ -826,7 +826,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 render::action_result(ctx.json, "trash", &references);
                 Ok(())
             }
-            MessagesCmd::Delete { references } => {
+            // The fictional mailbox loses nothing, so there is nothing to confirm.
+            MessagesCmd::Delete { references, .. } => {
                 render::action_result(ctx.json, "delete", &references);
                 Ok(())
             }
@@ -842,8 +843,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 render::action_result(ctx.json, "unsubscribe", &[reference]);
                 Ok(())
             }
-            MessagesCmd::Empty { folder } => {
-                render::action_result(ctx.json, &format!("empty-{folder}"), &[]);
+            MessagesCmd::Empty { folder, .. } => {
+                render::action_result(ctx.json, &format!("empty-{}", folder.as_str()), &[]);
                 Ok(())
             }
             MessagesCmd::Label {

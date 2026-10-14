@@ -211,6 +211,12 @@ impl Client {
         })
     }
 
+    /// Fetch one message's metadata (subject, sender, labels) without
+    /// decrypting its body, e.g. to show what an action is about to change.
+    pub async fn message_metadata(&self, id: &str) -> Result<MessageMetadata> {
+        Ok(api::messages::get_message(self.http(), id).await?.meta)
+    }
+
     /// Fetch and decrypt a single message for display.
     pub async fn read_message(&self, id: &str) -> Result<FullMessage> {
         tracing::debug!(target: "ruston_core::mail", message_id = %id, "read_message: fetching + decrypting");

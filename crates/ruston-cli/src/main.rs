@@ -71,7 +71,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::cli::{Cli, Command, ConversationsCmd, MessagesCmd, ReadFormat, ReadState};
+    use super::cli::{
+        Cli, Command, ConversationsCmd, EmptyFolder, MessagesCmd, ReadFormat, ReadState,
+    };
     use clap::{CommandFactory, Parser};
 
     fn parse(args: &[&str]) -> Cli {
@@ -232,6 +234,34 @@ mod tests {
         }
         // Missing --dest is a parse error.
         assert!(Cli::try_parse_from(["ruston-cli", "messages", "move", "REF"]).is_err());
+    }
+
+    #[test]
+    fn permanent_deletes_take_only_trash_or_spam_and_an_optional_yes() {
+        for folder in ["inbox", "all", "archive", "qBIcv1_Wv5X4hLpEo0Tz9A=="] {
+            assert!(
+                Cli::try_parse_from(["ruston-cli", "messages", "empty", folder]).is_err(),
+                "emptied {folder}"
+            );
+        }
+        match parse(&["ruston-cli", "messages", "empty", "spam", "--yes"]).command {
+            Command::Messages {
+                cmd: MessagesCmd::Empty { folder, yes },
+            } => {
+                assert!(matches!(folder, EmptyFolder::Spam));
+                assert!(yes);
+            }
+            _ => panic!("wrong command"),
+        }
+        match parse(&["ruston-cli", "messages", "delete", "id1"]).command {
+            Command::Messages {
+                cmd: MessagesCmd::Delete { references, yes },
+            } => {
+                assert_eq!(references, vec!["id1"]);
+                assert!(!yes, "deleting asks unless told not to");
+            }
+            _ => panic!("wrong command"),
+        }
     }
 
     #[test]

@@ -374,7 +374,10 @@ unconfirmed because it may happen at any stage of the send pipeline.
   multiple account addresses and no `--from`. Noninteractive and JSON sends
   keep the primary-address default from core. It also detects likely HTML in
   an interactive send without `--html` and asks before changing the format;
-  scripted sends keep the explicit flag behavior.
+  scripted sends keep the explicit flag behavior. Permanent deletes ask first:
+  `messages delete` lists the subject and sender each reference matched, and
+  `messages empty` accepts only Trash or Spam. Without a terminal to ask on,
+  both need `--yes`.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
   commands and uses the shared attachment filename policy. The desktop has its
   own demo mailbox in `src/mail/demo.rs`.
