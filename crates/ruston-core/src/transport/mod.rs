@@ -15,7 +15,7 @@ use std::fs::File;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 /// Maximum response body for ordinary API requests (32 MiB).
 pub const MAX_API_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -208,7 +208,7 @@ pub struct HttpClient {
     auth: Arc<RwLock<AuthState>>,
     on_refresh: Option<FallibleRefreshPersist>,
     refresh_load: Option<RefreshLoad>,
-    refresh_unsaved: AtomicBool,
+    refresh_unsaved: Arc<AtomicBool>,
     hv: Option<HvResolver>,
 }
 
@@ -237,7 +237,7 @@ impl HttpClient {
             auth,
             on_refresh: None,
             refresh_load: None,
-            refresh_unsaved: AtomicBool::new(false),
+            refresh_unsaved: Arc::new(AtomicBool::new(false)),
             hv: None,
         }
     }
@@ -258,7 +258,7 @@ impl HttpClient {
             auth: Arc::new(RwLock::new(auth)),
             on_refresh: None,
             refresh_load: None,
-            refresh_unsaved: AtomicBool::new(false),
+            refresh_unsaved: Arc::new(AtomicBool::new(false)),
             hv: None,
         }
     }
@@ -326,7 +326,7 @@ impl HttpClient {
     }
 
     async fn execute_once(
-        &self,
+        client: &reqwest::Client,
         req: &Request,
         prepared: &reqwest::Request,
         auth: &AuthState,
@@ -350,7 +350,7 @@ impl HttpClient {
             .ok_or_else(|| Error::Other("request body cannot be replayed".into()))?;
         *attempt.headers_mut() = hdrs;
         let started = std::time::Instant::now();
-        let resp = self.client.execute(attempt).await?;
+        let resp = client.execute(attempt).await?;
         let status = resp.status().as_u16();
         let retry_after = resp
             .headers()
@@ -370,7 +370,7 @@ impl HttpClient {
     async fn refresh_tokens(&self, sent_auth: &AuthState) -> Result<()> {
         // Keep the check, refresh request, and token replacement under the
         // shared state lock so concurrent 401s reuse a successful rotation.
-        let mut a = self.auth.write().await;
+        let mut a = self.auth.clone().write_owned().await;
         if a.uid != sent_auth.uid
             || a.access.as_ref().map(|t| t.expose_secret())
                 != sent_auth.access.as_ref().map(|t| t.expose_secret())
@@ -381,7 +381,7 @@ impl HttpClient {
         }
         // Hold the cross-process lock until the rotated pair is persisted.
         // Another process may have refreshed while this client was idle.
-        let _session_lock = if let Some(load) = &self.refresh_load {
+        let session_lock = if let Some(load) = &self.refresh_load {
             let load = load.clone();
             let (lock, saved) = tokio::task::spawn_blocking(move || load())
                 .await
@@ -423,7 +423,38 @@ impl HttpClient {
             .no_refresh()
             .omit_auth();
         let prepared = self.prepare_request(&mut req)?;
-        let resp = self.execute_once(&req, &prepared, &a).await?;
+        // Once sent, the old refresh token is spent. The rotation finishes on
+        // a task of its own, holding both locks, so cancelling the request
+        // that needed it cannot lose the new pair before it is stored and saved.
+        let rotation = Rotation {
+            client: self.client.clone(),
+            on_refresh: self.on_refresh.clone(),
+            refresh_unsaved: self.refresh_unsaved.clone(),
+        };
+        tokio::spawn(rotation.run(a, session_lock, req, prepared, uid))
+            .await
+            .map_err(|e| Error::Session(format!("token refresh task failed: {e}")))?
+    }
+}
+
+/// The part of a token refresh that must not be cancelled: sending it,
+/// storing the rotated pair and saving it.
+struct Rotation {
+    client: reqwest::Client,
+    on_refresh: Option<FallibleRefreshPersist>,
+    refresh_unsaved: Arc<AtomicBool>,
+}
+
+impl Rotation {
+    async fn run(
+        self,
+        mut a: OwnedRwLockWriteGuard<AuthState>,
+        _session_lock: Option<File>,
+        req: Request,
+        prepared: reqwest::Request,
+        uid: String,
+    ) -> Result<()> {
+        let resp = HttpClient::execute_once(&self.client, &req, &prepared, &a).await?;
         match detect(resp.status, &resp.body) {
             Detected::Ok => {}
             // An outage, a rate limit or a challenge leaves the saved session
@@ -547,7 +578,7 @@ impl Doer for HttpClient {
 
         loop {
             let sent_auth = self.auth.read().await.clone();
-            let resp = self.execute_once(&work, &prepared, &sent_auth).await?;
+            let resp = Self::execute_once(&self.client, &work, &prepared, &sent_auth).await?;
             match detect(resp.status, &resp.body) {
                 Detected::Ok => return Ok(resp),
                 Detected::Api(e) if e.http_status == 401 && !work.skip_refresh && !refreshed => {
@@ -1109,6 +1140,73 @@ mod tests {
             "second-ref"
         );
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_request_cancelled_mid_refresh_keeps_the_rotated_tokens() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer old-acc"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code": 401})),
+            )
+            .mount(&server)
+            .await;
+        let requested = Arc::new(tokio::sync::Notify::new());
+        let received = requested.clone();
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .respond_with(move |_: &wiremock::Request| {
+                received.notify_one();
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({
+                        "Code": 1000,
+                        "AccessToken": "new-acc",
+                        "RefreshToken": "new-ref",
+                    }))
+                    .set_delay(Duration::from_millis(200))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut http = HttpClient::new(server.uri(), "Other");
+        let saved = Arc::new(std::sync::Mutex::new(None));
+        let saves = saved.clone();
+        http.set_refresh_persist_fallible(Arc::new(move |_, access, refresh| {
+            *saves.lock().unwrap() = Some((access.to_owned(), refresh.to_owned()));
+            Ok(())
+        }));
+        http.set_tokens(
+            "uid".into(),
+            SecretString::from("old-acc"),
+            SecretString::from("old-ref"),
+        )
+        .await;
+
+        {
+            let request = http.do_raw(Request::get("/protected"));
+            tokio::pin!(request);
+            tokio::select! {
+                result = &mut request => panic!("the refresh should be in flight: {result:?}"),
+                _ = requested.notified() => {}
+            }
+            // The caller gives up after Proton has spent the old refresh token.
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while saved.lock().unwrap().is_none() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            saved.lock().unwrap().clone(),
+            Some(("new-acc".to_owned(), "new-ref".to_owned()))
+        );
+        let state = http.auth_state();
+        let state = state.read().await;
+        assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
+        assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
+        server.verify().await;
     }
 
     #[tokio::test]
