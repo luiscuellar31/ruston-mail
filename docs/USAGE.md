@@ -88,8 +88,10 @@ unsigned, not verified, or invalid. Folded messages keep the sender's address
 next to the name the sender chose, because a signature vouches for the address,
 not for the name. An invalid signature is highlighted in red;
 treat that message's contents with caution. The status applies to the body,
-not to its attachments. Verification uses available sender keys and does not
-establish the sender's identity independently.
+not to its attachments. Verification uses available sender keys, never one
+Proton marks as compromised, and does not establish the sender's identity
+independently. If the sender's keys cannot be fetched, the message shows as not
+verified.
 
 HTML mail is converted to native text and layout. Headings, lists, links, basic
 formatting, and quotes remain, but scripts and remote content do not run. Remote
@@ -156,9 +158,11 @@ if the desktop does not support selection, it opens the containing folder.
 When an incoming attachment carries a signature, Ruston verifies it before
 saving the file. An invalid or malformed signature, or missing verification
 keys, prevents the download and shows an error. You can retry if keys become
-available later. Attachments without a signature can still be saved; their
-contents have not been authenticated by a signature. These checks also apply
-to CLI downloads and EML exports.
+available later. If the sender's keys cannot be fetched, for example while
+offline, Ruston reports that problem instead, and you can retry. Attachments
+without a signature can still be saved; their contents have not been
+authenticated by a signature. These checks also apply to CLI downloads and EML
+exports.
 
 New local attachments are limited to 32 MiB per file and 128 MiB combined in
 both the desktop and CLI. These are Ruston's safety limits; Proton may impose

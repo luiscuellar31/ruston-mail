@@ -16,36 +16,47 @@ use crate::auth::{self, TotpPrompt};
 use crate::cache::CacheIdentity;
 use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
+use crate::model::enums::key_flag;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens, validate_profile_name};
 use crate::transport::HttpClient;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 const DEFAULT_APP_VERSION: &str = "Other";
 const SENDER_KEY_CACHE_CAPACITY: usize = 256;
+/// How long a sender's keys are reused before Proton is asked again, so a key
+/// marked compromised during a long session stops verifying.
+const SENDER_KEY_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 /// Bound the complete best-effort revocation, including retries and backoff.
 const LOGOUT_REVOCATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct SenderKeyCache {
-    entries: HashMap<String, Vec<String>>,
+    /// Each sender's keys and when they were fetched.
+    entries: HashMap<String, (Instant, Vec<String>)>,
     recency: VecDeque<String>,
 }
 
 impl SenderKeyCache {
-    fn get(&mut self, key: &str) -> Option<Vec<String>> {
-        let value = self.entries.get(key)?.clone();
+    fn get(&mut self, key: &str, now: Instant) -> Option<Vec<String>> {
+        let (fetched, keys) = self.entries.get(key)?;
+        let expired = now.saturating_duration_since(*fetched) >= SENDER_KEY_CACHE_TTL;
+        let value = (!expired).then(|| keys.clone());
         if let Some(index) = self.recency.iter().position(|cached| cached == key) {
             self.recency.remove(index);
         }
-        self.recency.push_back(key.to_owned());
-        Some(value)
+        if expired {
+            self.entries.remove(key);
+        } else {
+            self.recency.push_back(key.to_owned());
+        }
+        value
     }
 
-    fn insert(&mut self, key: String, value: Vec<String>) {
+    fn insert(&mut self, key: String, value: Vec<String>, now: Instant) {
         // A missing key may appear later; do not retain negative lookups.
         if value.is_empty() {
             return;
@@ -58,7 +69,7 @@ impl SenderKeyCache {
             self.entries.remove(&oldest);
         }
         self.recency.push_back(key.clone());
-        self.entries.insert(key, value);
+        self.entries.insert(key, (now, value));
     }
 }
 
@@ -290,18 +301,25 @@ impl Client {
         self.keys.primary_address().map(|a| a.email.as_str())
     }
 
-    /// Fetch (and cache) a sender's armored public keys for verification.
-    pub(crate) async fn sender_pubkeys(&self, email: &str) -> Vec<String> {
+    /// Fetch (and cache for a while) a sender's armored public keys for
+    /// verification, leaving out keys Proton marks as compromised.
+    pub(crate) async fn sender_pubkeys(&self, email: &str) -> Result<Vec<String>> {
         let key = email.to_ascii_lowercase();
-        if let Some(keys) = self.sender_cache.lock().await.get(&key) {
-            return keys;
+        if let Some(keys) = self.sender_cache.lock().await.get(&key, Instant::now()) {
+            return Ok(keys);
         }
-        let pubs = match api::keys::get_all_public_keys(&self.http, email).await {
-            Ok(r) => r.keys.into_iter().map(|k| k.public_key).collect(),
-            Err(_) => Vec::new(),
-        };
-        self.sender_cache.lock().await.insert(key, pubs.clone());
-        pubs
+        let pubs: Vec<String> = api::keys::get_all_public_keys(&self.http, email)
+            .await?
+            .keys
+            .into_iter()
+            .filter(|k| key_flag::can_verify(k.flags))
+            .map(|k| k.public_key)
+            .collect();
+        self.sender_cache
+            .lock()
+            .await
+            .insert(key, pubs.clone(), Instant::now());
+        Ok(pubs)
     }
 }
 
@@ -609,24 +627,41 @@ mod tests {
 
     #[test]
     fn sender_key_cache_is_lru_bounded_and_skips_negative_results() {
+        let now = Instant::now();
         let mut cache = SenderKeyCache::default();
-        cache.insert("missing@example.com".into(), Vec::new());
-        assert!(cache.get("missing@example.com").is_none());
+        cache.insert("missing@example.com".into(), Vec::new(), now);
+        assert!(cache.get("missing@example.com", now).is_none());
 
         for index in 0..SENDER_KEY_CACHE_CAPACITY {
             cache.insert(
                 format!("sender-{index}@example.com"),
                 vec![index.to_string()],
+                now,
             );
         }
         assert_eq!(cache.entries.len(), SENDER_KEY_CACHE_CAPACITY);
 
-        assert!(cache.get("sender-0@example.com").is_some());
-        cache.insert("new@example.com".into(), vec!["key".into()]);
+        assert!(cache.get("sender-0@example.com", now).is_some());
+        cache.insert("new@example.com".into(), vec!["key".into()], now);
 
         assert_eq!(cache.entries.len(), SENDER_KEY_CACHE_CAPACITY);
-        assert!(cache.get("sender-0@example.com").is_some());
-        assert!(cache.get("sender-1@example.com").is_none());
+        assert!(cache.get("sender-0@example.com", now).is_some());
+        assert!(cache.get("sender-1@example.com", now).is_none());
+    }
+
+    #[test]
+    fn cached_sender_keys_expire() {
+        let fetched = Instant::now();
+        let mut cache = SenderKeyCache::default();
+        cache.insert("sender@example.com".into(), vec!["key".into()], fetched);
+
+        let almost = fetched + SENDER_KEY_CACHE_TTL - Duration::from_secs(1);
+        assert!(cache.get("sender@example.com", almost).is_some());
+        // Later lookups ask Proton again, which may have marked the key
+        // compromised meanwhile.
+        let expired = fetched + SENDER_KEY_CACHE_TTL;
+        assert!(cache.get("sender@example.com", expired).is_none());
+        assert!(cache.entries.is_empty() && cache.recency.is_empty());
     }
 
     /// Both login entry points accept credentials wrapped as secrets.

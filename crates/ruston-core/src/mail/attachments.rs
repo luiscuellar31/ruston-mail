@@ -130,7 +130,8 @@ impl Client {
         // An absent or empty Signature denotes an unsigned attachment in Proton.
         let signature = att.signature.as_deref().filter(|sig| !sig.is_empty());
         let sender_pubs = if signature.is_some() {
-            let keys = self.sender_pubkeys(&msg.meta.sender.address).await;
+            // A failed lookup is reported as itself, so it can be retried.
+            let keys = self.sender_pubkeys(&msg.meta.sender.address).await?;
             if keys.is_empty() {
                 return Err(Error::AttachmentVerificationFailed);
             }
@@ -204,6 +205,7 @@ mod tests {
     use super::*;
     use crate::cache::CacheIdentity;
     use crate::crypto::{AddressKeys, KeyStore, StoredKey};
+    use crate::model::enums::key_flag;
     use crate::session::{MemoryStore, Paths};
     use crate::transport::HttpClient;
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -218,6 +220,16 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn attachment_client(server: &MockServer) -> (Client, Attachment) {
+        attachment_client_with_key_flags(server, key_flag::NOT_COMPROMISED | key_flag::NOT_OBSOLETE)
+            .await
+    }
+
+    /// A client for sender@proton.me, whose one key Proton reports with
+    /// `flags`, and a signed attachment from that sender.
+    async fn attachment_client_with_key_flags(
+        server: &MockServer,
+        flags: u32,
+    ) -> (Client, Attachment) {
         let provider = crypto::provider();
         let key = provider
             .new_key_generator()
@@ -268,7 +280,7 @@ mod tests {
             .and(path("/core/v4/keys/all"))
             .and(query_param("Email", "sender@proton.me"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "Code": 1000, "Address": { "Keys": [{ "PublicKey": public }] }
+                "Code": 1000, "Address": { "Keys": [{ "PublicKey": public, "Flags": flags }] }
             })))
             .mount(server)
             .await;
@@ -363,6 +375,15 @@ mod tests {
         let (client, attachment) = attachment_client(&server).await;
         let mut message = message_with_attachment(attachment);
         message.meta.sender.address = "unknown@example.com".into();
+        // Proton answers an address with no keys of its own.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "unknown@example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Address": { "Keys": [] }, "RecipientType": 2
+            })))
+            .mount(&server)
+            .await;
         assert!(matches!(
             client
                 .download_attachment_from_message(&message, &message.attachments[0])
@@ -377,6 +398,67 @@ mod tests {
                 .iter()
                 .any(|request| request.url.path().starts_with("/mail/v4/attachments/"))
         );
+    }
+
+    #[tokio::test]
+    async fn a_compromised_sender_key_never_verifies() {
+        let server = MockServer::start().await;
+        let (client, attachment) =
+            attachment_client_with_key_flags(&server, key_flag::NOT_OBSOLETE).await;
+        let mut message = message_with_attachment(attachment);
+        assert!(matches!(
+            client
+                .download_attachment_from_message(&message, &message.attachments[0])
+                .await,
+            Err(Error::AttachmentVerificationFailed)
+        ));
+
+        // Nor does it vouch for a body the key signed.
+        let provider = crypto::provider();
+        let address = client.keys().primary_address().unwrap();
+        message.body = crypto::encrypt_self_draft(&provider, address, "body").unwrap();
+        message.mime_type = "text/plain".into();
+        let read = client.decrypt_message(&message).await.unwrap();
+        assert_eq!(read.body, "body");
+        assert_eq!(read.verdict, crypto::Verdict::Unverified);
+    }
+
+    #[tokio::test]
+    async fn a_failed_sender_key_lookup_is_reported_as_itself() {
+        let server = MockServer::start().await;
+        let (client, attachment) = attachment_client(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .respond_with(ResponseTemplate::new(503))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let mut message = message_with_attachment(attachment);
+
+        // Not a verification failure: the lookup can be retried.
+        assert!(matches!(
+            client
+                .download_attachment_from_message(&message, &message.attachments[0])
+                .await,
+            Err(Error::Api(ref error)) if error.http_status == 503
+        ));
+        assert!(
+            !server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| request.url.path().starts_with("/mail/v4/attachments/"))
+        );
+
+        // A body still opens, without claiming a verified signature.
+        let provider = crypto::provider();
+        let address = client.keys().primary_address().unwrap();
+        message.body = crypto::encrypt_self_draft(&provider, address, "body").unwrap();
+        message.mime_type = "text/plain".into();
+        let read = client.decrypt_message(&message).await.unwrap();
+        assert_eq!(read.body, "body");
+        assert_eq!(read.verdict, crypto::Verdict::Unverified);
     }
 
     #[tokio::test]

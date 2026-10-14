@@ -408,7 +408,10 @@ instead of an unknown outcome.
   fetching message metadata once and saving each file before the next download.
   The convenience API that returns all attachment bytes has a total size limit.
   Before downloading a signed attachment, core resolves the sender's public
-  keys through its bounded key cache. After decryption it verifies the nonempty
+  keys through its bounded key cache, whose entries expire after ten minutes.
+  Keys Proton marks as compromised are left out, for attachments and message
+  bodies alike. A failed lookup returns its own error, and a body read during
+  one is shown unverified. After decryption it verifies the nonempty
   armored detached `Signature` against the plaintext. Missing usable keys,
   malformed signatures, and mismatches return `AttachmentVerificationFailed`
   before any bytes reach a caller or saving callback; discarded plaintext is

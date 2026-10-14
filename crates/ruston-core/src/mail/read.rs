@@ -184,7 +184,14 @@ impl Client {
             .address(&m.meta.address_id)
             .or_else(|| self.keys().primary_address())
             .ok_or_else(|| Error::Crypto("no address key for message".into()))?;
-        let sender_pubs = self.sender_pubkeys(&m.meta.sender.address).await;
+        let sender_pubs = match self.sender_pubkeys(&m.meta.sender.address).await {
+            Ok(keys) => keys,
+            // The body still opens, without claiming a verified signature.
+            Err(e) => {
+                tracing::warn!(target: "ruston_core::mail", error = %e, "sender key lookup failed — body left unverified");
+                Vec::new()
+            }
+        };
         let (body, verdict) = crypto::decrypt_body(&provider, addr, &sender_pubs, &m.body)?;
         let (body, mime_type) = if m.mime_type.starts_with("multipart/") {
             extract_mime(&body)

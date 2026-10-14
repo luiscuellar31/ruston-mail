@@ -85,6 +85,12 @@ pub mod key_flag {
     pub fn can_encrypt(flags: u32) -> bool {
         flags & NOT_OBSOLETE != 0
     }
+
+    /// True if signatures made with the key may be trusted: Proton has not
+    /// marked it as compromised.
+    pub fn can_verify(flags: u32) -> bool {
+        flags & NOT_COMPROMISED != 0
+    }
 }
 
 /// Message flags (bitmask; `u64` because high bits overflow 32-bit).
@@ -195,6 +201,8 @@ mod tests {
             key_flag::NOT_OBSOLETE | key_flag::NOT_COMPROMISED
         ));
         assert!(!key_flag::can_encrypt(key_flag::NOT_COMPROMISED));
+        assert!(key_flag::can_verify(key_flag::NOT_COMPROMISED));
+        assert!(!key_flag::can_verify(key_flag::NOT_OBSOLETE));
         assert_eq!(package_type::PM, 1);
         assert_eq!(package_type::CLEAR, 4);
         assert_eq!(message_flag::AUTO_FORWARDEE, 1 << 35);

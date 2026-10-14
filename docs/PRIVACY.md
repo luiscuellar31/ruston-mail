@@ -219,8 +219,11 @@ Sender-provided names are sanitized before suggesting a name in the save
 dialog too. Revealing a saved file sends its local path to the operating
 system's file manager (a file URI over the session bus on Linux).
 Attachments with a nonempty detached signature are verified against available
-sender keys before their plaintext reaches a file writer. Missing usable keys,
-malformed signatures, and signature mismatches fail the download; plaintext
+sender keys before their plaintext reaches a file writer. Keys Proton marks as
+compromised are never used to verify attachments or message bodies, and sender
+keys are fetched again after ten minutes, so a key marked compromised during a
+session stops verifying. Missing usable keys, malformed signatures, and
+signature mismatches fail the download; plaintext
 discarded on this path is zeroized. This check is shared by desktop and CLI
 downloads, including bulk downloads and EML export. Unsigned attachments remain
 downloadable without a signature-based authenticity guarantee. Body signature
