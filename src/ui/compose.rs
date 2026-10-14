@@ -1,7 +1,7 @@
 use eframe::egui::{self, Align, Layout};
 
 use super::{identity, mailbox::detail, reader, theme};
-use crate::app::{Answering, Compose, ComposeField, Message, Sending};
+use crate::app::{Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
 
 const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
@@ -270,7 +270,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     let response = ui.add_enabled(
         !leaving,
         egui::TextEdit::multiline(&mut body)
-            .id(egui::Id::new("compose-body"))
+            .id(body_id(compose.id()))
             .hint_text("Write your message…")
             .margin(egui::Margin::same(8))
             .desired_width(f32::INFINITY)
@@ -330,13 +330,54 @@ fn line(
     let response = ui.add_enabled(
         !leaving,
         theme::text_field(&mut value)
-            .id(egui::Id::new(("compose", label)))
+            .id(field_id(label, compose.id()))
             .desired_width(f32::INFINITY),
     );
     if response.changed() {
         messages.push(Message::ComposeChanged(field, value));
     }
     response
+}
+
+/// The labelled fields a draft can show.
+const FIELDS: [&str; 4] = ["To", "Cc", "Bcc", "Subject"];
+
+/// Every draft gets its own editors: their undo history holds what was typed,
+/// and must never reach into another draft or account.
+fn body_id(draft: ComposeId) -> egui::Id {
+    egui::Id::new(("compose-body", draft))
+}
+
+fn field_id(label: &str, draft: ComposeId) -> egui::Id {
+    egui::Id::new(("compose", label, draft))
+}
+
+/// Drops the editor memory of a draft that is gone, with the text its undo
+/// history kept.
+pub(super) fn forget_draft(context: &egui::Context, draft: ComposeId) {
+    context.data_mut(|data| {
+        for id in draft_editors(draft) {
+            data.remove::<egui::text_edit::TextEditState>(id);
+        }
+    });
+}
+
+fn draft_editors(draft: ComposeId) -> impl Iterator<Item = egui::Id> {
+    std::iter::once(body_id(draft)).chain(FIELDS.map(|label| field_id(label, draft)))
+}
+
+/// Gives every editor of `draft` some memory, as typing would.
+#[cfg(test)]
+pub(super) fn remember_draft(context: &egui::Context, draft: ComposeId) {
+    for id in draft_editors(draft) {
+        egui::text_edit::TextEditState::default().store(context, id);
+    }
+}
+
+/// Whether any editor of `draft` still has memory.
+#[cfg(test)]
+pub(super) fn remembers_draft(context: &egui::Context, draft: ComposeId) -> bool {
+    draft_editors(draft).any(|id| egui::text_edit::TextEditState::load(context, id).is_some())
 }
 
 #[cfg(test)]
@@ -387,6 +428,75 @@ mod tests {
             message,
             Message::Send | Message::CloseCompose | Message::ComposeChanged(_, _)
         )));
+    }
+
+    #[test]
+    fn undo_in_a_new_draft_never_brings_back_an_earlier_one() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        let mut time = 0.0;
+        let mut frame = |app: &crate::app::App, events: Vec<egui::Event>| {
+            time += 1.5;
+            let mut messages = Vec::new();
+            context
+                .run_ui(
+                    egui::RawInput {
+                        events,
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |ui| show(ui, app.compose().unwrap(), &mut messages),
+                )
+                .drop_without_applying_deltas();
+            messages
+        };
+        let body_id = |app: &crate::app::App| body_id(app.compose().unwrap().id());
+
+        app.update(Message::OpenCompose);
+        frame(&app, Vec::new());
+        context.memory_mut(|memory| memory.request_focus(body_id(&app)));
+        frame(&app, Vec::new());
+        for message in frame(&app, vec![egui::Event::Text("private draft".into())]) {
+            app.update(message);
+        }
+        // Pauses let the editor record what was typed as an undo step.
+        frame(&app, Vec::new());
+        frame(&app, Vec::new());
+        app.update(Message::CloseCompose);
+        app.update(Message::DiscardCompose);
+        assert!(app.compose().is_none());
+
+        app.update(Message::OpenCompose);
+        frame(&app, Vec::new());
+        context.memory_mut(|memory| memory.request_focus(body_id(&app)));
+        frame(&app, Vec::new());
+        let undo = egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let messages = frame(&app, vec![undo]);
+        assert!(
+            !messages
+                .iter()
+                .any(|message| matches!(message, Message::ComposeChanged(_, text) if text.contains("private draft"))),
+            "undo brought back another draft"
+        );
+    }
+
+    #[test]
+    fn forgetting_a_draft_drops_only_its_editor_memory() {
+        let context = egui::Context::default();
+        remember_draft(&context, 1);
+        remember_draft(&context, 2);
+
+        forget_draft(&context, 1);
+
+        assert!(!remembers_draft(&context, 1));
+        assert!(remembers_draft(&context, 2));
     }
 
     #[test]
@@ -497,7 +607,8 @@ mod tests {
         };
 
         frame(Vec::new());
-        context.memory_mut(|memory| memory.request_focus(egui::Id::new(("compose", "To"))));
+        let to = field_id("To", app.compose().unwrap().id());
+        context.memory_mut(|memory| memory.request_focus(to));
         assert!(!frame(Vec::new()), "entering the field looks nothing up");
         assert!(!frame(Vec::new()), "staying in the field looks nothing up");
 

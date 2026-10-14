@@ -194,7 +194,7 @@ fn sign_in(
 
     match step {
         SignInStep::Credentials => {
-            let changed = edit_field(
+            let field = edit_field(
                 ui,
                 "Username or email",
                 "name@proton.me",
@@ -202,10 +202,10 @@ fn sign_in(
                 busy,
                 messages,
             );
-            if changed {
+            if field.changed() {
                 app.login_edited();
             }
-            let changed = edit_secret_field(
+            let field = edit_secret_field(
                 ui,
                 "Password",
                 "Password",
@@ -214,13 +214,13 @@ fn sign_in(
                 busy,
                 messages,
             );
-            if changed {
+            if field.changed() {
                 app.login_edited();
             }
         }
         SignInStep::Totp => {
             ui.label("Enter the code from your authenticator app.");
-            let changed = edit_field(
+            let field = edit_field(
                 ui,
                 "Two-factor code",
                 "123456",
@@ -228,13 +228,13 @@ fn sign_in(
                 busy,
                 messages,
             );
-            if changed {
+            if field.changed() {
                 app.login_edited();
             }
         }
         SignInStep::MailboxPassword => {
             ui.label("This account uses a separate mailbox password.");
-            let changed = edit_secret_field(
+            let field = edit_secret_field(
                 ui,
                 "Mailbox password",
                 "Mailbox password",
@@ -243,7 +243,7 @@ fn sign_in(
                 busy,
                 messages,
             );
-            if changed {
+            if field.changed() {
                 app.login_edited();
             }
         }
@@ -346,7 +346,7 @@ fn edit_field(
     value: &mut String,
     busy: bool,
     messages: &mut Vec<Message>,
-) -> bool {
+) -> egui::Response {
     ui.label(egui::RichText::new(label).strong());
     let response = ui.add_enabled(
         !busy,
@@ -354,11 +354,12 @@ fn edit_field(
             .hint_text(hint)
             .desired_width(f32::INFINITY),
     );
+    keep_no_history(ui.ctx(), response.id);
     if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !busy {
         messages.push(Message::Submit);
     }
     ui.add_space(14.0);
-    response.changed()
+    response
 }
 
 fn edit_secret_field(
@@ -369,28 +370,42 @@ fn edit_secret_field(
     show_password: &mut bool,
     busy: bool,
     messages: &mut Vec<Message>,
-) -> bool {
+) -> egui::Response {
     ui.label(egui::RichText::new(label).strong());
     let width =
         (ui.available_width() - theme::ICON_BUTTON_MIN_SIZE.x - ui.spacing().item_spacing.x)
             .max(1.0);
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        let response = ui.add_enabled(
-            !busy,
-            theme::text_field(value)
-                .hint_text(hint)
-                .password(!*show_password)
-                .desired_width(width),
-        );
-        if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !busy {
-            messages.push(Message::Submit);
-        }
-        changed = response.changed();
-        password_toggle(ui, show_password, busy);
-    });
+    let response = ui
+        .horizontal(|ui| {
+            let response = ui.add_enabled(
+                !busy,
+                theme::text_field(value)
+                    .hint_text(hint)
+                    .password(!*show_password)
+                    .desired_width(width),
+            );
+            keep_no_history(ui.ctx(), response.id);
+            if response.lost_focus()
+                && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                && !busy
+            {
+                messages.push(Message::Submit);
+            }
+            password_toggle(ui, show_password, busy);
+            response
+        })
+        .inner;
     ui.add_space(14.0);
-    changed
+    response
+}
+
+/// Sign-in fields keep no undo history: it would hold what was typed,
+/// passwords included, for anyone at the window after signing out.
+fn keep_no_history(context: &egui::Context, field: egui::Id) {
+    if let Some(mut state) = egui::TextEdit::load_state(context, field) {
+        state.clear_undoer();
+        egui::TextEdit::store_state(context, field, state);
+    }
 }
 
 fn password_toggle(ui: &mut egui::Ui, show_password: &mut bool, busy: bool) -> egui::Response {
@@ -905,6 +920,65 @@ mod tests {
             true,
         );
         assert!(!show_password);
+    }
+
+    #[test]
+    fn a_cleared_password_cannot_be_brought_back_with_undo() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut password = String::new();
+        let mut show_password = false;
+        let mut time = 0.0;
+        let mut frame = |password: &mut String, events: Vec<egui::Event>| {
+            time += 1.5;
+            let mut field = egui::Id::NULL;
+            context
+                .run_ui(
+                    egui::RawInput {
+                        events,
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        field = edit_secret_field(
+                            ui,
+                            "Password",
+                            "Password",
+                            password,
+                            &mut show_password,
+                            false,
+                            &mut Vec::new(),
+                        )
+                        .id;
+                    },
+                )
+                .drop_without_applying_deltas();
+            field
+        };
+        let undo = || {
+            vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }]
+        };
+
+        let field = frame(&mut password, Vec::new());
+        context.memory_mut(|memory| memory.request_focus(field));
+        frame(&mut password, Vec::new());
+        frame(&mut password, vec![egui::Event::Text("hunter2".into())]);
+        assert_eq!(password, "hunter2");
+        // Pauses are when an editor records an undo step.
+        frame(&mut password, Vec::new());
+        frame(&mut password, Vec::new());
+
+        // Signing out clears the form; the field must not remember it.
+        password.clear();
+        frame(&mut password, Vec::new());
+        frame(&mut password, undo());
+        assert!(password.is_empty(), "undo brought back a typed password");
     }
 
     #[test]

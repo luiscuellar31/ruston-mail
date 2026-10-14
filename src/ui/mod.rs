@@ -108,6 +108,8 @@ struct DesktopApp {
     notifications: notifications::Notifications,
     activation: Option<crate::launch::Instance>,
     focus_after_activation: bool,
+    /// The draft the editors last showed, so their memory can go with it.
+    shown_draft: Option<crate::app::ComposeId>,
     #[cfg(target_os = "macos")]
     native_menu: Option<macos::Menu>,
 }
@@ -156,11 +158,24 @@ impl DesktopApp {
             notifications: notifications::Notifications::default(),
             activation: None,
             focus_after_activation: false,
+            shown_draft: None,
             #[cfg(target_os = "macos")]
             native_menu: None,
         };
         desktop.execute(effects, context);
         desktop
+    }
+
+    /// Once a draft is sent, discarded or left behind by signing out, drops
+    /// its editors' undo history, which still holds what was typed.
+    fn forget_finished_draft(&mut self, context: &egui::Context) {
+        let current = self.app.compose().map(crate::app::Compose::id);
+        if self.shown_draft != current {
+            if let Some(finished) = self.shown_draft {
+                compose::forget_draft(context, finished);
+            }
+            self.shown_draft = current;
+        }
     }
 
     fn dispatch(&mut self, message: Message, context: &egui::Context) {
@@ -771,6 +786,7 @@ impl eframe::App for DesktopApp {
         self.update_notifications(context);
         self.remember_window_size(context);
         self.keyboard_shortcuts(context);
+        self.forget_finished_draft(context);
         self.refresh_automatically(context);
         self.save_settled_settings(context);
         self.update_title(context);
@@ -1189,6 +1205,26 @@ mod tests {
         desktop.dispatch(Message::Logout, &context);
         desktop.native_action(macos::Action::NewMessage, &context);
         assert!(desktop.app.compose().is_none());
+    }
+
+    #[test]
+    fn a_finished_draft_leaves_no_editor_memory_behind() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        let draft = desktop.app.compose().unwrap().id();
+        desktop.forget_finished_draft(&context);
+        compose::remember_draft(&context, draft);
+
+        desktop.forget_finished_draft(&context);
+        assert!(
+            compose::remembers_draft(&context, draft),
+            "an open draft keeps its undo history"
+        );
+
+        desktop.dispatch(Message::CloseCompose, &context);
+        desktop.forget_finished_draft(&context);
+        assert!(!compose::remembers_draft(&context, draft));
     }
 
     #[test]

@@ -26,7 +26,10 @@ Settings → Writing to make the request only when sending.
 In the desktop client, mail and mailbox lists stay in memory while it runs.
 In addition to the conversation on screen, up to eight previously opened
 conversations can remain in memory for quick backtracking. The desktop client
-does not write a persistent mail cache to disk.
+does not write a persistent mail cache to disk. Sign-in fields keep no undo
+history, and a draft's undo history is dropped once the draft is sent,
+discarded, or left behind by signing out, so undo cannot bring back another
+draft or a typed password.
 
 Desktop activation listens only on IPv4 loopback, at a randomly assigned port,
 while Ruston is running. It accepts bounded email-link requests after a random

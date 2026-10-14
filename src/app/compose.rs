@@ -156,7 +156,7 @@ enum State {
 }
 
 impl Compose {
-    #[cfg(test)]
+    /// Which draft this is; the editors keep their memory per draft.
     pub fn id(&self) -> ComposeId {
         self.id
     }
