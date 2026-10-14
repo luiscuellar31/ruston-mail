@@ -1,8 +1,10 @@
 //! Exercise the actual CLI output boundary without contacting an account.
 
+use ruston_core::mail::attachments::is_invisible_mark;
 use std::process::{Command, Output};
 
-const ATTACK: &str = "mail\x1b]52;c;Y2xpcGJvYXJk\x07\u{9d}title\u{9c}\u{9b}2J\r\x08\0";
+const ATTACK: &str =
+    "mail\x1b]52;c;Y2xpcGJvYXJk\x07\u{9d}title\u{9c}\u{9b}2J\r\x08\u{202e}fdp.scr\u{2066}\0";
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ruston-cli"))
@@ -16,7 +18,7 @@ fn assert_safe(bytes: &[u8]) -> String {
     let text = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(
         text.chars()
-            .all(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .all(|c| (!c.is_control() || matches!(c, '\n' | '\t')) && !is_invisible_mark(c))
     );
     text
 }

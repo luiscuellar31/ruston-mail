@@ -44,12 +44,13 @@ pub fn safe_attachment_name(name: &str) -> String {
     }
 }
 
-/// Characters a file manager draws as nothing. Direction overrides and
-/// isolates can make `fdp.scr` read as `rcs.pdf`; the zero-width space, word
-/// joiner and byte-order mark only hide parts of a name. Joiners (U+200C,
+/// Characters a file manager, terminal or notification draws as nothing.
+/// Direction overrides and isolates can make `fdp.scr` read as `rcs.pdf`, or
+/// reverse the address after a sender's name; the zero-width space, word
+/// joiner and byte-order mark only hide parts of the text. Joiners (U+200C,
 /// U+200D) stay: words in several scripts and emoji need them, and they
-/// cannot reorder or hide an extension.
-fn is_invisible_mark(c: char) -> bool {
+/// cannot reorder or hide anything.
+pub fn is_invisible_mark(c: char) -> bool {
     matches!(
         c,
         '\u{061C}'

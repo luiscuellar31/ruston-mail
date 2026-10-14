@@ -51,8 +51,9 @@ or after the session changes. Disabling the option also invalidates pending
 detection and native delivery work. Once handed to the operating system,
 notifications can remain in its notification history; signing out does not
 remove notifications already delivered. No email content is logged by the
-notification integration. Headers are bounded and treated as literal text;
-notification delivery does not load links or remote images.
+notification integration. Headers are bounded and treated as literal text,
+without controls or invisible direction marks; notification delivery does not
+load links or remote images.
 
 The open desktop polls about once a minute with focus and every three minutes
 without it, with failure backoff up to five minutes. It stops on sign-out or
@@ -87,9 +88,10 @@ explicit HTML/raw formats, JSON, or exported files.
 The CLI filters terminal controls in displayed mail, metadata,
 prompts, status messages, errors, and diagnostics; line feeds and tabs remain.
 This includes escape sequences that could otherwise change the clipboard,
-terminal title, or cursor position. The default text output is filtered even
-when redirected. JSON escapes these controls while retaining the original
-decoded values. Explicit `--format html` and `--format raw` preserve body content
+terminal title, or cursor position, and invisible direction marks that could
+reorder what follows, such as an attachment's extension or a sender's address.
+The default text output is filtered even when redirected. JSON escapes these
+characters while retaining the original decoded values. Explicit `--format html` and `--format raw` preserve body content
 when redirected to a file or pipe; when displayed on a terminal, they also
 filter controls. `messages read --output` and EML exports preserve the body
 content supplied by core, including its HTML sanitization.

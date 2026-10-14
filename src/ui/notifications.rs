@@ -8,6 +8,7 @@ mod macos;
 mod windows;
 
 use eframe::egui;
+use ruston_core::mail::attachments::is_invisible_mark;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, Ordering},
@@ -150,11 +151,12 @@ impl Drop for Notifications {
     }
 }
 
-/// Notifications are plain text; bound untrusted headers and strip controls.
+/// Notifications are plain text; bound untrusted headers and strip controls
+/// and the invisible marks the system would use to reorder or hide them.
 fn display_text(text: &str, fallback: &str, limit: usize) -> String {
     let text: String = text
         .chars()
-        .filter(|ch| !ch.is_control())
+        .filter(|&ch| !ch.is_control() && !is_invisible_mark(ch))
         .take(limit)
         .collect();
     if text.trim().is_empty() {
@@ -186,6 +188,10 @@ mod tests {
     #[test]
     fn notification_headers_are_bounded_plain_text() {
         assert_eq!(display_text("Alice\0\r\n\u{1b}", "fallback", 160), "Alice");
+        assert_eq!(
+            display_text("Invoice \u{202e}fdp.exe\u{2066}", "fallback", 160),
+            "Invoice fdp.exe"
+        );
         assert_eq!(display_text("\0\n ", "fallback", 160), "fallback");
         assert_eq!(
             display_text(&"á".repeat(1_000), "fallback", 160)

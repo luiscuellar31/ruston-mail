@@ -1,5 +1,6 @@
 //! CLI output boundary: readable text is safe even when piped into a terminal.
 
+use ruston_core::mail::attachments::is_invisible_mark;
 use std::fmt::{self, Write as _};
 use std::io::{self, IsTerminal};
 use tracing::{Event, Subscriber};
@@ -35,11 +36,17 @@ struct ControlFilter<'a> {
     json: bool,
 }
 
+/// Terminal controls and the invisible marks that reorder or hide text, such
+/// as direction overrides; layout controls stay.
+fn is_filtered(c: char) -> bool {
+    (c.is_control() && !matches!(c, '\n' | '\t')) || is_invisible_mark(c)
+}
+
 impl fmt::Write for ControlFilter<'_> {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         let mut start = 0;
         for (index, c) in text.char_indices() {
-            if c.is_control() && !matches!(c, '\n' | '\t') {
+            if is_filtered(c) {
                 self.output.write_str(&text[start..index])?;
                 if self.json {
                     std::write!(self.output, "\\u{:04x}", u32::from(c))?;
@@ -165,13 +172,10 @@ pub(crate) fn init_tracing(verbose: u8) {
 mod tests {
     use super::*;
 
-    const ATTACK: &str = "before\x1b]52;c;Y2xpcGJvYXJk\x07\x1b[2J\x1b]0;title\x1b\\\u{9d}52;c;payload\u{9c}\u{9b}2J\rafter\x08\0\x7f";
+    const ATTACK: &str = "before\x1b]52;c;Y2xpcGJvYXJk\x07\x1b[2J\x1b]0;title\x1b\\\u{9d}52;c;payload\u{9c}\u{9b}2J\rafter\x08\0\x7f\u{202e}fdp.scr\u{2066}";
 
     fn assert_safe(text: &str) {
-        assert!(
-            text.chars()
-                .all(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-        );
+        assert!(text.chars().all(|c| !is_filtered(c)));
     }
 
     #[test]
@@ -186,6 +190,8 @@ mod tests {
         assert_safe(&output);
         assert!(output.contains("José <a@example.test>"));
         assert!(output.contains("\n\tFrom:"));
+        // A direction override would make the name read "Factura_rcs.pdf".
+        assert!(output.contains("fdp.scr"));
         for c in (0..=0x9f)
             .filter_map(char::from_u32)
             .filter(|c| c.is_control())
