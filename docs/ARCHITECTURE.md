@@ -86,8 +86,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   before proceeding to the draft check. [`ui/close.rs`](../src/ui/close.rs)
   requests explicit discard of a written message in either composer placement;
   repeated close requests never approve it. Discard/cancel reuse App messages,
-  and closing rechecks current send/draft state. The separate composer is
-  disabled during a root confirmation. macOS menu Quit/Cmd+Q uses this same
+  and closing rechecks current send/draft state. Signing out or leaving the
+  demo asks through the same confirmation, then signs out once the message is
+  discarded. `App` itself refuses to sign out over a written message or an
+  in-flight send; during a send the sidebar's sign-out button is disabled. The
+  separate composer is disabled during a root confirmation. macOS menu Quit/Cmd+Q uses this same
   path; direct OS termination (including Dock Quit) bypasses these guards.
 - [`ui/dialogs.rs`](../src/ui/dialogs.rs) associates rfd file dialogs with native
   windows. The shell retains the root winit window until a dialog finishes and

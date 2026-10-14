@@ -324,13 +324,16 @@ fn sidebar_account(
         } else {
             "Sign out"
         };
-        if ui
-            .add_enabled(
-                !signing_out,
-                egui::Button::new(logout_label).min_size(egui::vec2(ui.available_width(), 32.0)),
-            )
-            .clicked()
-        {
+        // Signing out would hide whether a message being sent has left.
+        let sending = app.compose().is_some_and(crate::app::Compose::in_flight);
+        let mut logout = ui.add_enabled(
+            !signing_out && !sending,
+            egui::Button::new(logout_label).min_size(egui::vec2(ui.available_width(), 32.0)),
+        );
+        if sending {
+            logout = logout.on_disabled_hover_text("Available once the message is sent");
+        }
+        if logout.clicked() {
             messages.push(Message::Logout);
         }
     });

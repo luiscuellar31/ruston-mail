@@ -315,6 +315,16 @@ impl App {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
             return Effects::none();
         }
+        // Signing out never takes a message with it: the outcome of a send
+        // would never arrive, and a written message is discarded only once
+        // the user has chosen to.
+        if self
+            .compose
+            .as_ref()
+            .is_some_and(|draft| draft.in_flight() || !draft.is_untouched())
+        {
+            return Effects::none();
+        }
         self.inspections.cancel();
         let service = match &self.backend {
             Some(MailBackend::Proton(service)) => service.clone(),

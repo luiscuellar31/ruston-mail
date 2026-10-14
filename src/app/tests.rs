@@ -2287,7 +2287,8 @@ fn send_result_from_a_previous_session_keeps_the_new_draft() {
     let previous_epoch = app.session_epoch;
     write(&mut app, "old@example.com");
     let _ = app.update(Message::Send);
-    let _ = app.update(Message::Logout);
+    // Signing out waits for the send; an expired session cannot.
+    app.close_mailbox(Some(AuthError::SessionExpired));
 
     let _ = app.open_mailbox(MailBackend::demo(), None);
     write(&mut app, "new@example.com");
@@ -2295,6 +2296,27 @@ fn send_result_from_a_previous_session_keeps_the_new_draft() {
 
     let compose = app.compose().expect("the new session keeps its draft");
     assert_eq!(compose.field(ComposeField::To), "new@example.com");
+}
+
+#[test]
+fn signing_out_never_takes_a_written_or_sending_message_with_it() {
+    let mut app = loaded_demo_app();
+    write(&mut app, "alex@example.com");
+
+    // The desktop asks first and discards the message itself.
+    assert_eq!(app.update(Message::Logout).units(), 0);
+    assert!(matches!(app.auth_state, AuthState::Authenticated { .. }));
+    assert!(app.compose().is_some());
+
+    // A send's outcome must reach this session.
+    let _ = app.update(Message::Send);
+    assert_eq!(app.update(Message::Logout).units(), 0);
+    assert!(matches!(app.auth_state, AuthState::Authenticated { .. }));
+    assert!(app.compose().unwrap().in_flight());
+
+    deliver_send(&mut app, Ok(()));
+    let _ = app.update(Message::Logout);
+    assert_eq!(app.auth_state, AuthState::SignedOut);
 }
 
 #[test]

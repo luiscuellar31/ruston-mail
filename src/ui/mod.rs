@@ -92,7 +92,9 @@ struct DesktopApp {
     settings_draft: Option<Settings>,
     /// Where to go after the user decides what to do with unsaved preferences.
     pending_settings_exit: Option<SettingsExit>,
-    pending_window_close: bool,
+    /// Set while the root window asks whether to discard a written message,
+    /// and what discarding it makes way for.
+    pending_discard: Option<close::Leaving>,
     window_close_approved: bool,
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
@@ -147,7 +149,7 @@ impl DesktopApp {
             auto_refresh: AutoRefresh::default(),
             settings_draft: None,
             pending_settings_exit: None,
-            pending_window_close: false,
+            pending_discard: None,
             window_close_approved: false,
             settings_seen: 0,
             settings_seen_at: 0.0,
@@ -225,6 +227,21 @@ impl DesktopApp {
                 context.request_repaint();
                 return;
             }
+        }
+        // Signing out discards a written message only once the user says so.
+        if matches!(message, Message::Logout)
+            && self
+                .app
+                .compose()
+                .is_some_and(|draft| !draft.in_flight() && !draft.is_untouched())
+        {
+            self.pending_discard = Some(if self.app.is_demo() {
+                close::Leaving::Demo
+            } else {
+                close::Leaving::SignOut
+            });
+            context.request_repaint();
+            return;
         }
         // The reset click was drawn with the previous pane widths.
         if self.layout_reset_at.is_some() && matches!(message, Message::PanelsResized(_)) {
@@ -340,7 +357,7 @@ impl DesktopApp {
             if unsaved_settings {
                 self.pending_settings_exit = Some(SettingsExit::CloseWindow);
             } else {
-                self.pending_window_close = true;
+                self.pending_discard = Some(close::Leaving::Window);
             }
             context.send_viewport_cmd_to(
                 egui::ViewportId::ROOT,
@@ -361,13 +378,19 @@ impl DesktopApp {
         }
     }
 
-    fn resolve_window_close(&mut self, decision: Message, context: &egui::Context) {
-        self.pending_window_close = false;
+    fn resolve_discard(&mut self, decision: Message, context: &egui::Context) {
+        let leaving = self.pending_discard.take();
         let discard = matches!(decision, Message::DiscardCompose);
         self.dispatch(decision, context);
         if discard {
-            // App refuses to discard an in-flight send; recheck before closing.
-            self.request_window_close(context);
+            // App refuses to discard an in-flight send; recheck before leaving.
+            match leaving {
+                Some(close::Leaving::Window) => self.request_window_close(context),
+                Some(close::Leaving::SignOut | close::Leaving::Demo) => {
+                    self.dispatch(Message::Logout, context);
+                }
+                None => {}
+            }
         }
         context.request_repaint();
     }
@@ -378,7 +401,7 @@ impl DesktopApp {
             macos::Action::Quit => self.request_window_close(context),
             macos::Action::Settings | macos::Action::NewMessage
                 if matches!(self.app.auth_state(), AuthState::Authenticated { .. })
-                    && !self.pending_window_close
+                    && self.pending_discard.is_none()
                     && self.pending_settings_exit.is_none()
                     && !self.file_dialog_open =>
             {
@@ -528,7 +551,7 @@ impl DesktopApp {
 
     fn keyboard_shortcuts(&mut self, context: &egui::Context) {
         if !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
-            || self.pending_window_close
+            || self.pending_discard.is_some()
             || self.pending_settings_exit.is_some()
         {
             return;
@@ -747,7 +770,7 @@ impl DesktopApp {
 
     fn activation_blocked(&self) -> bool {
         self.window_close_approved
-            || self.pending_window_close
+            || self.pending_discard.is_some()
             || self.pending_settings_exit.is_some()
             || self.file_dialog_open
     }
@@ -774,7 +797,7 @@ impl eframe::App for DesktopApp {
             if let Some(menu) = &self.native_menu {
                 menu.set_enabled(
                     matches!(self.app.auth_state(), AuthState::Authenticated { .. })
-                        && !self.pending_window_close
+                        && self.pending_discard.is_none()
                         && self.pending_settings_exit.is_none()
                         && !self.file_dialog_open,
                 );
@@ -852,7 +875,7 @@ impl eframe::App for DesktopApp {
                     messages.extend(compose::show_window(
                         &context,
                         writing,
-                        self.pending_window_close || self.pending_settings_exit.is_some(),
+                        self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
                     ));
                 }
             }
@@ -865,19 +888,18 @@ impl eframe::App for DesktopApp {
             }
         }
 
-        // Closing confirmation owns the decision even if input for the same
-        // frame was already queued in a pane or the child composer.
-        if self.pending_window_close {
+        // The discard confirmation owns the decision even if input for the
+        // same frame was already queued in a pane or the child composer.
+        if self.pending_discard.is_some() {
             messages.clear();
         }
         let exit_decision = self
             .pending_settings_exit
             .as_ref()
             .and_then(|_| settings::confirm_exit(&context));
-        let close_decision = self
-            .pending_window_close
-            .then(|| close::confirm(&context))
-            .flatten();
+        let discard_decision = self
+            .pending_discard
+            .and_then(|leaving| close::confirm(&context, leaving));
         let has_messages = !messages.is_empty();
         for message in messages {
             self.dispatch(message, &context);
@@ -885,8 +907,8 @@ impl eframe::App for DesktopApp {
         if let Some(decision) = exit_decision {
             self.resolve_settings_exit(decision, &context);
         }
-        if let Some(decision) = close_decision {
-            self.resolve_window_close(decision, &context);
+        if let Some(decision) = discard_decision {
+            self.resolve_discard(decision, &context);
         }
         if has_messages {
             context.request_repaint();
@@ -1029,10 +1051,10 @@ mod tests {
         desktop.open_waiting_mailto(&context);
         assert!(desktop.app.compose().is_none());
         desktop.file_dialog_open = false;
-        desktop.pending_window_close = true;
+        desktop.pending_discard = Some(close::Leaving::Window);
         desktop.open_waiting_mailto(&context);
         assert!(desktop.app.compose().is_none());
-        desktop.pending_window_close = false;
+        desktop.pending_discard = None;
         desktop.pending_settings_exit = Some(SettingsExit::CloseWindow);
         desktop.open_waiting_mailto(&context);
         assert!(desktop.app.compose().is_none());
@@ -1087,7 +1109,7 @@ mod tests {
                     native_close(&mut desktop, &context)
                         .contains(&egui::ViewportCommand::CancelClose)
                 );
-                assert!(desktop.pending_window_close);
+                assert_eq!(desktop.pending_discard, Some(close::Leaving::Window));
                 assert!(!desktop.window_close_approved);
                 assert_eq!(
                     desktop
@@ -1098,11 +1120,11 @@ mod tests {
                     "Keep this draft"
                 );
             }
-            desktop.resolve_window_close(Message::CancelDiscard, &context);
-            assert!(!desktop.pending_window_close);
+            desktop.resolve_discard(Message::CancelDiscard, &context);
+            assert_eq!(desktop.pending_discard, None);
             assert!(desktop.app.compose().is_some());
             native_close(&mut desktop, &context);
-            desktop.resolve_window_close(Message::DiscardCompose, &context);
+            desktop.resolve_discard(Message::DiscardCompose, &context);
             assert!(desktop.app.compose().is_none());
             assert!(desktop.window_close_approved);
         }
@@ -1116,7 +1138,7 @@ mod tests {
         desktop.file_dialog_open = true;
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
         assert!(!desktop.window_close_approved);
-        assert!(!desktop.pending_window_close);
+        assert_eq!(desktop.pending_discard, None);
         desktop.file_dialog_open = false;
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::Close));
         assert!(desktop.window_close_approved);
@@ -1134,10 +1156,55 @@ mod tests {
         native_close(&mut desktop, &context);
         desktop.dispatch(Message::Send, &context);
         assert!(desktop.app.compose().unwrap().in_flight());
-        desktop.resolve_window_close(Message::DiscardCompose, &context);
+        desktop.resolve_discard(Message::DiscardCompose, &context);
         assert!(desktop.app.compose().unwrap().in_flight());
         assert!(!desktop.window_close_approved);
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
+    }
+
+    #[test]
+    fn signing_out_asks_before_discarding_a_written_message() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        desktop.dispatch(
+            Message::ComposeChanged(crate::app::ComposeField::Body, "Keep this draft".into()),
+            &context,
+        );
+
+        desktop.dispatch(Message::Logout, &context);
+        assert_eq!(desktop.pending_discard, Some(close::Leaving::Demo));
+        desktop.resolve_discard(Message::CancelDiscard, &context);
+        assert!(desktop.app.compose().is_some());
+        assert!(matches!(
+            desktop.app.auth_state(),
+            AuthState::Authenticated { .. }
+        ));
+
+        desktop.dispatch(Message::Logout, &context);
+        desktop.resolve_discard(Message::DiscardCompose, &context);
+        assert!(desktop.app.compose().is_none());
+        assert!(matches!(desktop.app.auth_state(), AuthState::SignedOut));
+    }
+
+    #[test]
+    fn a_message_being_sent_keeps_the_session_open() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        desktop.dispatch(
+            Message::ComposeChanged(crate::app::ComposeField::To, "alex@example.com".into()),
+            &context,
+        );
+        desktop.dispatch(Message::Send, &context);
+
+        desktop.dispatch(Message::Logout, &context);
+        assert_eq!(desktop.pending_discard, None, "a send cannot be discarded");
+        assert!(desktop.app.compose().unwrap().in_flight());
+        assert!(matches!(
+            desktop.app.auth_state(),
+            AuthState::Authenticated { .. }
+        ));
     }
 
     #[test]
@@ -1156,7 +1223,7 @@ mod tests {
             desktop.pending_settings_exit,
             Some(SettingsExit::CloseWindow)
         ));
-        assert!(!desktop.pending_window_close);
+        assert_eq!(desktop.pending_discard, None);
         desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
         assert!(!desktop.window_close_approved);
         assert!(desktop.settings_draft.is_some());
@@ -1164,12 +1231,12 @@ mod tests {
         native_close(&mut desktop, &context);
         desktop.resolve_settings_exit(settings::ExitDecision::Apply, &context);
         assert!(!desktop.app.settings().confirm_links);
-        assert!(desktop.pending_window_close);
+        assert_eq!(desktop.pending_discard, Some(close::Leaving::Window));
         assert!(!desktop.window_close_approved);
-        desktop.resolve_window_close(Message::CancelDiscard, &context);
+        desktop.resolve_discard(Message::CancelDiscard, &context);
         assert!(desktop.app.compose().is_some());
         native_close(&mut desktop, &context);
-        desktop.resolve_window_close(Message::DiscardCompose, &context);
+        desktop.resolve_discard(Message::DiscardCompose, &context);
         assert!(desktop.window_close_approved);
     }
 
