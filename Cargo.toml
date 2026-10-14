@@ -45,6 +45,14 @@ url = "2"
 rpassword = "7"
 wiremock = "0.6"
 
+# Shipped binaries come out about a third smaller, at the cost of slower
+# release builds. Panics still name their source line; backtraces lose
+# function names. Unwinding stays on so a panicking task does not end the app.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
 [package]
 name = "ruston-mail"
 version.workspace = true

@@ -333,7 +333,10 @@ when changing that artwork.
 
 From the repository root, build and install the desktop client in the standard
 system locations. These commands require administrator access and replace a
-previous installation at the same paths:
+previous installation at the same paths. Release builds take a few minutes:
+the workspace enables link-time optimization, a single code generation unit,
+and symbol stripping, which make the binaries about a third smaller. Panic
+messages still name the source line, but backtraces lose function names.
 
 ```sh
 cargo build --locked --release --bin ruston
