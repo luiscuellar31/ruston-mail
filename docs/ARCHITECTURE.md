@@ -481,7 +481,9 @@ separately in `Ruston Mail`'s config directory. Core
 tokens as one keychain entry and the session's API address as another; loading
 rejects metadata whose address differs from it. Session writes and token refresh use a per-profile
 file lock. On a 401, another process's rotated tokens are reloaded before
-refreshing again; persistence errors still reach the request. Signing out of a
+refreshing again; persistence errors still reach the request. A refresh
+answered with 429, a 5xx status or a verification challenge reports that error
+and keeps the session; only a refused refresh token is `Unauthorized`. Signing out of a
 shared profile signs out both frontends. Core runs local session cleanup under
 that lock on a blocking worker before trying remote revocation. The 30-second
 revocation deadline does not include or cancel cleanup, and a started cleanup

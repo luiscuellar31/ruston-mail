@@ -402,8 +402,15 @@ impl HttpClient {
             .omit_auth();
         let prepared = self.prepare_request(&mut req)?;
         let resp = self.execute_once(&req, &prepared, &a).await?;
-        if !(200..300).contains(&resp.status) {
-            return Err(Error::Unauthorized);
+        match detect(resp.status, &resp.body) {
+            Detected::Ok => {}
+            // An outage, a rate limit or a challenge leaves the saved session
+            // valid; only Proton refusing the refresh token ends it.
+            Detected::Api(error) if error.http_status == 429 || error.http_status >= 500 => {
+                return Err(Error::Api(error));
+            }
+            Detected::Hv(challenge) => return Err(Error::HumanVerification(challenge)),
+            Detected::Api(_) => return Err(Error::Unauthorized),
         }
         #[derive(serde::Deserialize)]
         struct RefreshResp {
@@ -1241,6 +1248,57 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Unauthorized));
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_fails_for_a_passing_reason_keeps_the_session() {
+        let challenge = serde_json::json!({
+            "Code": 9001,
+            "Details": {
+                "HumanVerificationToken": "t",
+                "HumanVerificationMethods": ["captcha"],
+                "WebUrl": "https://verify.proton.me"
+            }
+        });
+        for (status, body) in [
+            (
+                503,
+                serde_json::json!({"Code": 503, "Error": "maintenance"}),
+            ),
+            (502, serde_json::json!({})),
+            (429, serde_json::json!({"Code": 2028})),
+            (422, challenge),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/protected"))
+                .respond_with(
+                    ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code":401})),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/auth/v4/refresh"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .mount(&server)
+                .await;
+            let c = client(&server.uri());
+            c.set_tokens(
+                "uid".into(),
+                SecretString::from("a"),
+                SecretString::from("r"),
+            )
+            .await;
+            let err = c
+                .decode::<ValueResp>(Request::get("/protected"))
+                .await
+                .unwrap_err();
+            match err {
+                Error::Api(api) => assert_eq!(api.http_status, status),
+                Error::HumanVerification(_) => assert_eq!(status, 422),
+                other => panic!("HTTP {status} on refresh ended the session: {other:?}"),
+            }
+        }
     }
 
     #[tokio::test]
