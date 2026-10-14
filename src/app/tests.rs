@@ -1462,6 +1462,50 @@ fn demo_star_actions_update_starred_folder_and_selection() {
 }
 
 #[test]
+fn a_search_submitted_while_the_folder_loads_starts_after_it() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::SearchChanged("Avery".into()));
+
+    // The first page is still on its way; a search now would drop it.
+    assert_eq!(app.update(Message::SearchSubmitted).units(), 0);
+
+    let folder = app.mailbox().unwrap().folder();
+    let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
+    let effects = app.update(Message::ConversationsLoaded(1, page));
+    assert_eq!(effects.units(), 1, "the waiting search starts");
+    assert!(app.mailbox().unwrap().loaded_count() > 0);
+
+    let request = SearchRequest {
+        id: app.last_request,
+        query: "Avery".into(),
+        page: 0,
+        page_size: demo::PAGE_SIZE,
+    };
+    let result = demo_service(&app).search("Avery", demo::PAGE_SIZE, NOW);
+    let _ = app.update(Message::SearchLoaded(request, result));
+    assert_eq!(app.mailbox().unwrap().search_results(), Some("Avery"));
+
+    // Leaving the results shows the folder that loaded meanwhile.
+    let _ = app.update(Message::SearchChanged(String::new()));
+    assert!(app.mailbox().unwrap().visible_conversations().len() > 0);
+}
+
+#[test]
+fn a_search_waiting_for_the_folder_is_dropped_when_the_query_changes() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::SearchChanged("Avery".into()));
+    let _ = app.update(Message::SearchSubmitted);
+    let _ = app.update(Message::SearchChanged("Avery Q".into()));
+
+    let folder = app.mailbox().unwrap().folder();
+    let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
+    let effects = app.update(Message::ConversationsLoaded(1, page));
+
+    assert_eq!(effects.units(), 0, "Enter was for another query");
+    assert_eq!(app.mailbox().unwrap().search_results(), None);
+}
+
+#[test]
 fn starred_search_reflects_unstar_immediately() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Starred)));

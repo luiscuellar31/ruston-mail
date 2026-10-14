@@ -309,6 +309,9 @@ pub struct Mailbox {
     search: Option<SearchState>,
     /// The search in flight, so a late answer to an abandoned one is ignored.
     search_request: Option<RequestId>,
+    /// Enter was pressed while a folder page was loading. Searching then
+    /// would make that page look stale, so the search waits for it.
+    search_deferred: bool,
     action_request: Option<ActionRequest>,
     action_error: Option<MailboxError>,
     /// The last move, while it can still be taken back.
@@ -349,6 +352,7 @@ impl Mailbox {
             search_query: String::new(),
             search: None,
             search_request: None,
+            search_deferred: false,
             action_request: None,
             action_error: None,
             undo: None,
@@ -466,7 +470,12 @@ impl Mailbox {
             self.clear_search();
             return None;
         }
+        if self.search_request.is_none() && self.is_busy() {
+            self.search_deferred = true;
+            return None;
+        }
 
+        self.search_deferred = false;
         self.search_request = Some(request);
         self.status = ListStatus::Loading(request);
 
@@ -476,6 +485,11 @@ impl Mailbox {
             page: 0,
             page_size: self.page_size,
         })
+    }
+
+    /// Whether a search waited for the folder page that has now settled.
+    pub fn take_deferred_search(&mut self) -> bool {
+        !self.is_busy() && std::mem::take(&mut self.search_deferred)
     }
 
     pub fn load_more_search(&mut self, request: RequestId) -> Option<SearchRequest> {
@@ -552,6 +566,7 @@ impl Mailbox {
     /// Goes back to the folder listing, leaving any results behind.
     pub fn clear_search(&mut self) {
         self.search = None;
+        self.search_deferred = false;
         if self.search_request.is_some() {
             self.status = ListStatus::Loaded;
         }
@@ -577,6 +592,8 @@ impl Mailbox {
 
     pub fn set_search_query(&mut self, query: String) {
         self.search_query = query;
+        // A waiting search was asked for the text before this change.
+        self.search_deferred = false;
         // Emptying the field is how someone leaves the results behind.
         if self.search_query.trim().is_empty() {
             self.clear_search();
@@ -1206,6 +1223,7 @@ impl Mailbox {
         // So do search results: a folder is a different question.
         self.search = None;
         self.search_request = None;
+        self.search_deferred = false;
 
         if let Some(cached) = self.cached_listings.remove(&FolderKey::of(&self.folder)) {
             self.conversations = cached.conversations;

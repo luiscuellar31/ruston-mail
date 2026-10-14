@@ -130,6 +130,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Ordinary appended pages do not rebuild or scan the grouping index; refresh
   uses an ID-to-row index to move existing metadata into the new listing.
   Page responses preserve the open reader, including expansion and quote state.
+  A server search submitted while a folder page loads waits for that page, so
+  the search does not turn the folder response into a stale one.
   A refreshed listing can regroup a message or omit its row without proving
   deletion; the reader remains visible and loses its cache stamp if its row is
   absent. Explicit filtering, folder changes, and organizing actions retain their

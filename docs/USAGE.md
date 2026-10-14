@@ -56,7 +56,8 @@ if needed. Clicking a transient toast while Ruston is running restores and
 focuses the mailbox window.
 
 Typing in the search field narrows the conversations already loaded. Press
-`Enter` to ask Proton to search the whole mailbox. Clear the field to return to
+`Enter` to ask Proton to search the whole mailbox; while the folder is still
+loading, the search starts once it has loaded. Clear the field to return to
 the open folder.
 
 Folder lists and server search load 50 conversations at a time. Use **Load more**

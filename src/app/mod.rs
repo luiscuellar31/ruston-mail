@@ -562,6 +562,16 @@ impl App {
                     if revalidating {
                         return self.refresh_mailbox();
                     }
+                }
+                // A search submitted while this page loaded has waited for it.
+                if self
+                    .mailbox
+                    .as_mut()
+                    .is_some_and(Mailbox::take_deferred_search)
+                {
+                    return self.start_search();
+                }
+                if error.is_none() {
                     let accepted = self
                         .mailbox
                         .as_ref()

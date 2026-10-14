@@ -527,7 +527,8 @@ fn conversation_pane(
         if response.changed() {
             messages.push(Message::SearchChanged(query.clone()));
         }
-        if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        // A single-line field gives up focus on the Enter that submits it.
+        if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             messages.push(Message::SearchSubmitted);
         }
     });
@@ -1432,6 +1433,47 @@ mod tests {
                 .outer_rect
                 .width();
         assert_eq!(sidebar_before, sidebar_after);
+    }
+
+    #[test]
+    fn enter_in_the_search_field_searches_all_mail() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::ConversationsLoaded(
+            1,
+            Ok(pagination_page(0, 5, 5)),
+        ));
+        app.update(Message::SearchChanged("invoice".into()));
+        let mut state = UiState::default();
+        let size = egui::vec2(1100.0, 700.0);
+        let enter = || egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let submitted = |messages: &[Message]| {
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::SearchSubmitted))
+        };
+
+        mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        let (messages, _) = mailbox_frame(&context, &app, &mut state, size, None, enter());
+        assert!(
+            !submitted(&messages),
+            "Enter outside the field is not a search"
+        );
+
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("mail-search")));
+        mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        let (messages, _) = mailbox_frame(&context, &app, &mut state, size, None, enter());
+        assert!(submitted(&messages), "Enter in the field searches all mail");
     }
 
     #[test]
