@@ -173,7 +173,7 @@ the new message: end-to-end encrypted for every recipient, or a warning that
 names the addresses that will not get an end-to-end encrypted copy. Addresses
 are looked up once per draft and only after the field loses focus. If a lookup
 fails, the warning names that address too and claims nothing about it. Replies
-show no notice, because Proton chooses their recipients. Turn off **Check
+show no notice; their recipients come from the original message. Turn off **Check
 recipient encryption while writing** under Settings → Writing to ask Proton
 nothing until you send; the notice is not shown then.
 
@@ -197,9 +197,13 @@ an existing draft. **Ruston Mail > Settings…** (`Cmd+,`) opens preferences;
 both commands are available while signed in. The main window reserves space
 for native window buttons according to their measured size and interface zoom.
 
-The reader also offers **Reply**, **Reply all**, and **Forward**. Proton
-derives reply recipients and subjects from the original message. Replies and
-forwards are sent from the address the original message reached.
+The reader also offers **Reply**, **Reply all**, and **Forward**. A reply goes
+to the addresses the original message asks replies to go to (its Reply-To), or
+to its sender; **Reply all** also copies in its other recipients, except your
+own addresses. The composer lists these recipients, and warns when the
+message's Reply-To sends the reply somewhere other than its sender. The subject
+is written for you. Replies and forwards are sent from the address the original
+message reached.
 
 Messages can be sent as plain text or HTML. The editor remains plain text in
 both modes: text that looks like an HTML tag is sent as text, not executed as

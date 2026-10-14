@@ -6,7 +6,7 @@ use crate::crypto::{self, Verdict};
 use crate::error::{Error, Result};
 use crate::model::Conversation;
 use crate::model::enums::resolve_folder;
-use crate::model::message::{Attachment, Message, MessageMetadata};
+use crate::model::message::{Attachment, Message, MessageMetadata, Recipient};
 use crate::transport::Doer;
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 
@@ -26,6 +26,8 @@ pub struct FullMessage {
     pub verdict: Verdict,
     /// The message's attachments.
     pub attachments: Vec<Attachment>,
+    /// The Reply-To addresses the message asks replies to go to, if any.
+    pub reply_tos: Vec<Recipient>,
 }
 
 /// Search options.
@@ -208,6 +210,7 @@ impl Client {
             mime_type,
             verdict,
             attachments: m.attachments.clone(),
+            reply_tos: m.reply_tos.clone(),
         })
     }
 

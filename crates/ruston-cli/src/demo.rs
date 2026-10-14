@@ -43,6 +43,7 @@ impl DemoMessage {
             mime_type: self.mime_type.clone(),
             verdict: Verdict::Verified,
             attachments: self.attachments.clone(),
+            reply_tos: Vec::new(),
         }
     }
 }

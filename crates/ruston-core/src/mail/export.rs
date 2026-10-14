@@ -383,6 +383,7 @@ mod tests {
             mime_type: "text/plain".into(),
             verdict: crate::crypto::Verdict::Verified,
             attachments: vec![],
+            reply_tos: vec![],
         }
     }
 

@@ -290,18 +290,28 @@ fn heading(compose: &Compose) -> &'static str {
     }
 }
 
-/// What is being answered.
-/// Proton determines reply recipients from the original message.
+/// What is being answered and, for a reply, exactly where it goes.
 fn answered(ui: &mut egui::Ui, answer: &Answering, addressed_here: bool) {
     detail(
         ui,
         &format!("Answering “{}” from {}.", answer.subject, answer.sender),
     );
     if !addressed_here {
-        detail(
-            ui,
-            "Proton addresses the reply from that message, and writes the subject.",
-        );
+        detail(ui, &format!("To: {}", answer.to.join(", ")));
+        if !answer.cc.is_empty() {
+            detail(ui, &format!("Cc: {}", answer.cc.join(", ")));
+        }
+        // A Reply-To header can send the answer somewhere the sender is not.
+        if let Some(sender) = &answer.redirected_from {
+            ui.label(
+                egui::RichText::new(format!(
+                    "The message asks for replies to go to {}, not to its sender, {sender}.",
+                    answer.to.join(", ")
+                ))
+                .small()
+                .color(theme::colors(ui).danger),
+            );
+        }
     }
     ui.add_space(8.0);
 }
@@ -377,6 +387,47 @@ mod tests {
             message,
             Message::Send | Message::CloseCompose | Message::ComposeChanged(_, _)
         )));
+    }
+
+    #[test]
+    fn a_reply_lists_its_recipients_and_warns_when_reply_to_redirects_it() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let answer = Answering {
+            sender: "Alex Rivera".into(),
+            subject: "Invoice".into(),
+            everyone: true,
+            to: vec!["attacker@evil.example".into()],
+            cc: vec!["bob@corp.example".into()],
+            redirected_from: Some("alex@corp.example".into()),
+        };
+        let mut danger = egui::Color32::PLACEHOLDER;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            danger = theme::colors(ui).danger;
+            answered(ui, &answer, false);
+        });
+        let texts: Vec<(String, bool)> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    text.galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|section| section.format.color == danger),
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+
+        let shown = |wanted: &str| texts.iter().find(|(text, _)| text.contains(wanted));
+        assert!(shown("To: attacker@evil.example").is_some());
+        assert!(shown("Cc: bob@corp.example").is_some());
+        let warning = shown("not to its sender, alex@corp.example").expect("redirect warning");
+        assert!(warning.1, "the redirect warning stands out");
     }
 
     #[test]

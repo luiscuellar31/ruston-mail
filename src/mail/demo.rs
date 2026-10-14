@@ -1058,9 +1058,18 @@ fn message(
             .collect();
     }
 
+    // The fictional mail sets no Reply-To; answers follow core's rule.
+    let demo_address = demo_user().address;
+    let reply_all_cc = recipients
+        .iter()
+        .map(|recipient| recipient.address.clone())
+        .filter(|address| !address.eq_ignore_ascii_case(&demo_address))
+        .collect();
     MailMessage {
         id: format!("demo-{index}-{position}"),
         verdict: super::Verdict::Unverified,
+        reply_to: vec![sender.address.clone()],
+        reply_all_cc,
         sender,
         recipients,
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),

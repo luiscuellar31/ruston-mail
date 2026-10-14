@@ -5,7 +5,7 @@ use crate::api;
 use crate::crypto::{self, SessionKeyMaterial, keys::AddressKeys};
 use crate::error::{Error, Result};
 use crate::model::enums::package_type;
-use crate::model::message::Message;
+use crate::model::message::{Message, MessageMetadata, Recipient};
 use crate::transport::{Doer, Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_srp::{SRPAuth, SRPVerifierB64};
@@ -189,6 +189,42 @@ impl RecipientProtection {
     }
 }
 
+/// Where [`Client::reply`] sends an answer to a message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplyRecipients {
+    /// The Reply-To addresses the message asks for, or its sender.
+    pub to: Vec<String>,
+    /// What Reply all adds: the message's To and Cc recipients, without the
+    /// account's own addresses.
+    pub cc: Vec<String>,
+}
+
+/// The recipients of a reply to the message described by `meta` and its
+/// `reply_tos`, leaving out `own` addresses (compared without case). Frontends
+/// can show these before sending; [`Client::reply`] uses the same answer.
+pub fn reply_recipients(
+    meta: &MessageMetadata,
+    reply_tos: &[Recipient],
+    own: &[String],
+) -> ReplyRecipients {
+    let to = if reply_tos.is_empty() {
+        vec![meta.sender.address.clone()]
+    } else {
+        reply_tos.iter().map(|r| r.address.clone()).collect()
+    };
+    let cc = meta
+        .to_list
+        .iter()
+        .chain(&meta.cc_list)
+        .map(|r| r.address.clone())
+        .filter(|address| {
+            !own.iter()
+                .any(|mine| mine.trim().eq_ignore_ascii_case(address.trim()))
+        })
+        .collect();
+    ReplyRecipients { to, cc }
+}
+
 /// Options for composing a message.
 #[derive(Debug, Default, Clone)]
 pub struct SendOptions {
@@ -327,29 +363,16 @@ impl Client {
 
         let mut o = opts.clone();
         o.from = o.from.or_else(|| self.receiving_address(&parent));
-        // Recipients: reply → ReplyTos (fallback sender); reply-all adds To+CC.
-        let reply_to: Vec<String> = if !parent.reply_tos.is_empty() {
-            parent.reply_tos.iter().map(|r| r.address.clone()).collect()
-        } else {
-            vec![parent.meta.sender.address.clone()]
-        };
-        o.to = reply_to;
+        let own: Vec<String> = self
+            .keys()
+            .addresses
+            .iter()
+            .map(|a| a.email.clone())
+            .collect();
+        let recipients = reply_recipients(&parent.meta, &parent.reply_tos, &own);
+        o.to = recipients.to;
         if all {
-            let mut cc: Vec<String> = parent
-                .meta
-                .to_list
-                .iter()
-                .chain(parent.meta.cc_list.iter())
-                .map(|r| r.address.clone())
-                .collect();
-            let own: std::collections::HashSet<String> = self
-                .keys()
-                .addresses
-                .iter()
-                .map(|a| a.email.to_ascii_lowercase())
-                .collect();
-            cc.retain(|e| !own.contains(&e.to_ascii_lowercase()));
-            o.cc = cc;
+            o.cc = recipients.cc;
         }
         o.subject = with_prefix(&parent.meta.subject, "Re: ");
         if let Some(q) = quoted {
@@ -1184,6 +1207,28 @@ mod tests {
             STANDARD.encode(original.material.key.as_slice())
         );
         assert_eq!(clear["Algorithm"], "aes256");
+    }
+
+    #[test]
+    fn replies_go_to_reply_to_or_the_sender_and_reply_all_skips_own_addresses() {
+        let meta = MessageMetadata {
+            sender: Recipient::new("alex@corp.example"),
+            to_list: vec![
+                Recipient::new("Work@Acme.com"),
+                Recipient::new("bob@corp.example"),
+            ],
+            cc_list: vec![Recipient::new("carol@corp.example")],
+            ..Default::default()
+        };
+        let own = vec!["work@acme.com".to_owned()];
+
+        let plain = reply_recipients(&meta, &[], &own);
+        assert_eq!(plain.to, ["alex@corp.example"]);
+        assert_eq!(plain.cc, ["bob@corp.example", "carol@corp.example"]);
+
+        let redirected = reply_recipients(&meta, &[Recipient::new("attacker@evil.example")], &own);
+        assert_eq!(redirected.to, ["attacker@evil.example"]);
+        assert_eq!(redirected.cc, plain.cc);
     }
 
     #[tokio::test]

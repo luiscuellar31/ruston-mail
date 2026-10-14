@@ -109,12 +109,20 @@ pub enum Sending {
     Failed(SendError),
 }
 
-/// The message being answered. Proton determines recipients and subject.
+/// The message being answered. Core writes the subject and, for a reply,
+/// sends to the recipients shown here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answering {
     pub sender: String,
     pub subject: String,
     pub everyone: bool,
+    /// Where a reply goes; empty for a forward, whose recipients are typed.
+    pub to: Vec<String>,
+    /// What Reply all copies in.
+    pub cc: Vec<String>,
+    /// The sender's address when the message's Reply-To sends the reply
+    /// somewhere else, so the composer can say so.
+    pub redirected_from: Option<String>,
 }
 
 /// A message being written.
@@ -400,13 +408,31 @@ impl App {
         self.open_answer(kind, &message, subject.as_deref());
     }
 
-    /// Answers or forwards a message. Proton addresses replies itself.
+    /// Answers or forwards a message. Core addresses replies itself; the
+    /// composer shows where they go.
     pub(super) fn open_answer(&mut self, kind: Kind, message: &MailMessage, subject: Option<&str>) {
         if self.compose.is_some() {
             return;
         }
         let id = self.next_compose_id();
         let everyone = matches!(kind, Kind::Reply { everyone: true, .. });
+        let (to, cc) = match kind {
+            Kind::Reply { everyone, .. } => (
+                message.reply_to.clone(),
+                if everyone {
+                    message.reply_all_cc.clone()
+                } else {
+                    Vec::new()
+                },
+            ),
+            _ => (Vec::new(), Vec::new()),
+        };
+        let sender = message.sender.address.trim();
+        let redirected_from = (!sender.is_empty()
+            && to
+                .iter()
+                .any(|address| !address.trim().eq_ignore_ascii_case(sender)))
+        .then(|| sender.to_owned());
         self.compose = Some(Compose {
             id,
             kind,
@@ -418,6 +444,9 @@ impl App {
                     .to_owned(),
                 subject: subject.unwrap_or("(No subject)").to_owned(),
                 everyone,
+                to,
+                cc,
+                redirected_from,
             }),
             ..Compose::default()
         });
@@ -793,6 +822,61 @@ mod tests {
             everyone: false,
         };
         assert_eq!(compose.protection_notice(), None);
+    }
+
+    fn answered_message(reply_to: &str) -> MailMessage {
+        MailMessage {
+            id: "message".into(),
+            sender: crate::mail::MailAddress {
+                name: Some("Alex Rivera".into()),
+                address: "alex@corp.example".into(),
+            },
+            recipients: Vec::new(),
+            reply_to: vec![reply_to.into()],
+            reply_all_cc: vec!["bob@corp.example".into()],
+            time: None,
+            body: crate::mail::MessageBody::PlainText("Invoice attached".into()),
+            verdict: crate::mail::Verdict::Unverified,
+            attachments: Vec::new(),
+        }
+    }
+
+    fn answering(kind: Kind, message: &MailMessage) -> Answering {
+        let (mut app, _) = App::boot(true, crate::settings::Settings::default());
+        app.open_answer(kind, message, Some("Invoice"));
+        app.compose().unwrap().answering().unwrap().clone()
+    }
+
+    #[test]
+    fn a_reply_shows_where_it_goes_and_flags_a_redirect() {
+        let reply = |everyone| Kind::Reply {
+            message_id: "message".into(),
+            everyone,
+        };
+
+        let honest = answering(reply(false), &answered_message("Alex@Corp.example"));
+        assert_eq!(honest.to, ["Alex@Corp.example"]);
+        assert!(honest.cc.is_empty());
+        assert_eq!(honest.redirected_from, None);
+
+        let redirected = answering(reply(false), &answered_message("attacker@evil.example"));
+        assert_eq!(redirected.to, ["attacker@evil.example"]);
+        assert_eq!(
+            redirected.redirected_from.as_deref(),
+            Some("alex@corp.example")
+        );
+
+        let everyone = answering(reply(true), &answered_message("alex@corp.example"));
+        assert_eq!(everyone.cc, ["bob@corp.example"]);
+
+        let forward = answering(
+            Kind::Forward {
+                message_id: "message".into(),
+            },
+            &answered_message("attacker@evil.example"),
+        );
+        assert!(forward.to.is_empty() && forward.cc.is_empty());
+        assert_eq!(forward.redirected_from, None, "a forward is addressed here");
     }
 
     #[test]

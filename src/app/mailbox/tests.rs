@@ -73,6 +73,8 @@ fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
                 verdict: crate::mail::Verdict::Unverified,
                 sender: MailAddress::default(),
                 recipients: Vec::new(),
+                reply_to: Vec::new(),
+                reply_all_cc: Vec::new(),
                 time: Some(time as i64),
                 body: MessageBody::PlainText(String::new()),
                 attachments: Vec::new(),

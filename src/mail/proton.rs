@@ -366,7 +366,10 @@ impl ProtonMailService {
             id: id.to_owned(),
             subject: (!subject.is_empty()).then(|| subject.to_owned()),
             labels,
-            messages: messages.into_iter().map(mail_message).collect(),
+            messages: messages
+                .into_iter()
+                .map(|message| mail_message(message, &self.own_addresses))
+                .collect(),
         })
     }
 
@@ -380,7 +383,7 @@ impl ProtonMailService {
             id: id.to_owned(),
             subject: (!subject.is_empty()).then_some(subject),
             labels,
-            messages: vec![mail_message(message)],
+            messages: vec![mail_message(message, &self.own_addresses)],
         })
     }
 
@@ -841,14 +844,17 @@ fn mail_address(person: &Recipient) -> MailAddress {
     }
 }
 
-fn mail_message(message: FullMessage) -> MailMessage {
+fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
     let FullMessage {
         meta,
         body,
         mime_type,
         verdict,
         attachments,
+        reply_tos,
     } = message;
+    let own: Vec<String> = own.iter().cloned().collect();
+    let reply = ruston_core::reply_recipients(&meta, &reply_tos, &own);
     let body = if ruston_core::html::is_html_mime(&mime_type) {
         MessageBody::Rich(html::parse(&body))
     } else {
@@ -871,6 +877,8 @@ fn mail_message(message: FullMessage) -> MailMessage {
             .chain(&meta.bcc_list)
             .map(mail_address)
             .collect(),
+        reply_to: reply.to,
+        reply_all_cc: reply.cc,
         time: (meta.time > 0).then_some(meta.time),
         body,
         verdict,
@@ -1086,19 +1094,27 @@ mod tests {
             ..Default::default()
         };
 
-        let message = mail_message(FullMessage {
-            meta,
-            body: "<p>Hello &amp; welcome</p>".into(),
-            mime_type: "text/html".into(),
-            attachments: Vec::new(),
-            verdict: ruston_core::Verdict::Invalid,
-        });
+        let own = OwnAddresses::from(["demo@example.com".to_owned()]);
+        let message = mail_message(
+            FullMessage {
+                meta,
+                body: "<p>Hello &amp; welcome</p>".into(),
+                mime_type: "text/html".into(),
+                attachments: Vec::new(),
+                verdict: ruston_core::Verdict::Invalid,
+                reply_tos: vec![person("", "replies@example.com")],
+            },
+            &own,
+        );
 
         assert_eq!(message.id, "message");
         assert_eq!(message.verdict, ruston_core::Verdict::Invalid);
         assert_eq!(message.sender.name, None);
         assert_eq!(message.sender.address, "alex@example.com");
         assert_eq!(message.recipients.len(), 3);
+        // The reader knows where core will send a reply before it is written.
+        assert_eq!(message.reply_to, ["replies@example.com"]);
+        assert_eq!(message.reply_all_cc, ["team@example.org"]);
         assert_eq!(message.time, Some(1_700_000_000));
         let MessageBody::Rich(body) = &message.body else {
             panic!("expected a rich body for HTML");
@@ -1110,13 +1126,17 @@ mod tests {
     fn plain_text_bodies_are_kept_verbatim() {
         let body = "Line <one>\n\n  indented & raw";
 
-        let message = mail_message(FullMessage {
-            meta: MessageMetadata::default(),
-            body: body.into(),
-            mime_type: "text/plain".into(),
-            attachments: Vec::new(),
-            verdict: ruston_core::Verdict::Unverified,
-        });
+        let message = mail_message(
+            FullMessage {
+                meta: MessageMetadata::default(),
+                body: body.into(),
+                mime_type: "text/plain".into(),
+                attachments: Vec::new(),
+                verdict: ruston_core::Verdict::Unverified,
+                reply_tos: Vec::new(),
+            },
+            &OwnAddresses::new(),
+        );
 
         assert_eq!(message.body, MessageBody::PlainText(body.into()));
         assert_eq!(message.time, None);
@@ -1133,13 +1153,17 @@ mod tests {
             Verdict::Invalid,
         ] {
             for mime_type in ["text/plain", "text/html"] {
-                let message = mail_message(FullMessage {
-                    meta: MessageMetadata::default(),
-                    body: "body".into(),
-                    mime_type: mime_type.into(),
-                    attachments: Vec::new(),
-                    verdict,
-                });
+                let message = mail_message(
+                    FullMessage {
+                        meta: MessageMetadata::default(),
+                        body: "body".into(),
+                        mime_type: mime_type.into(),
+                        attachments: Vec::new(),
+                        verdict,
+                        reply_tos: Vec::new(),
+                    },
+                    &OwnAddresses::new(),
+                );
                 assert_eq!(message.verdict, verdict);
             }
         }

@@ -351,6 +351,7 @@ mod tests {
             mime_type: "text/plain".into(),
             verdict: Verdict::Unsigned,
             attachments: Vec::new(),
+            reply_tos: Vec::new(),
         }
     }
 

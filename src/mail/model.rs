@@ -303,6 +303,12 @@ pub struct MailMessage {
     pub id: String,
     pub sender: MailAddress,
     pub recipients: Vec<MailAddress>,
+    /// Where a reply goes, as core sends it: the Reply-To addresses the
+    /// message asks for, or its sender.
+    pub reply_to: Vec<String>,
+    /// What Reply all adds as Cc: the other recipients, without the account's
+    /// own addresses.
+    pub reply_all_cc: Vec<String>,
     /// Unix timestamp in seconds.
     pub time: Option<i64>,
     pub body: MessageBody,

@@ -385,7 +385,10 @@ unconfirmed because it may happen at any stage of the send pipeline.
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
   HTML replies and forwards escape sender details and quoted plain text; quoted
-  HTML retains the sanitized markup produced by the read path.
+  HTML retains the sanitized markup produced by the read path. One function,
+  `reply_recipients`, decides where `Client::reply` sends an answer; read
+  messages carry their Reply-To addresses so the desktop composer can show the
+  same recipients, and flag a Reply-To that bypasses the sender, before sending.
   Conversation reads fetch missing bodies with at most three requests in flight,
   then decrypt them in oldest-first order before returning the complete thread
   to either frontend.
