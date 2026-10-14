@@ -6,8 +6,19 @@ use crate::terminal;
 use ruston_core::{Result, SyncReport};
 use std::time::Duration;
 
+/// The first tick caches the newest 200 messages of the folder.
+const CACHE_PAGES: u32 = 4;
+/// Indexing covers the newest 100 messages of the folder.
+const INDEX_PAGES: u32 = 2;
+const PAGE_SIZE: u32 = 50;
+
+/// Flag and label changes leave indexed bodies current, so only new or
+/// rewritten mail, or a rebuilt cache, is worth indexing again.
 fn needs_index(report: &SyncReport, first_tick: bool) -> bool {
-    first_tick || report.created > 0 || report.updated > 0 || report.rebuilt.is_some()
+    first_tick
+        || report.created > 0
+        || report.updated > report.flags_updated
+        || report.rebuilt.is_some()
 }
 
 pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()> {
@@ -18,10 +29,10 @@ pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()>
         let r = client.sync().await?;
         if let Some(f) = &folder {
             if first_tick {
-                client.cache_folder(f, 4, 50).await?;
+                client.cache_folder(f, CACHE_PAGES, PAGE_SIZE).await?;
             }
             if needs_index(&r, first_tick) {
-                client.index_folder(f, 2, 50).await?;
+                client.index_folder(f, INDEX_PAGES, PAGE_SIZE).await?;
             }
         }
         first_tick = false;
@@ -42,10 +53,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn idle_or_delete_only_ticks_skip_reindexing() {
+    fn idle_delete_or_flag_only_ticks_skip_reindexing() {
         let mut report = SyncReport {
             created: 0,
             updated: 0,
+            flags_updated: 0,
             deleted: 0,
             event_id: "cursor".into(),
             initialized: false,
@@ -60,7 +72,13 @@ mod tests {
         report.created = 0;
         report.updated = 1;
         assert!(needs_index(&report, false));
+        // Read, starred or moved elsewhere: the indexed bodies still match.
+        report.flags_updated = 1;
+        assert!(!needs_index(&report, false));
+        report.updated = 2;
+        assert!(needs_index(&report, false), "one message was rewritten");
         report.updated = 0;
+        report.flags_updated = 0;
         report.rebuilt = Some(0);
         assert!(needs_index(&report, false));
     }

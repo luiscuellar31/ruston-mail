@@ -305,6 +305,18 @@ impl CacheIdentity {
     }
 }
 
+/// What one event batch changed in the cache.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BatchCounts {
+    pub(crate) created: usize,
+    /// Every updated message, flag and label changes included.
+    pub(crate) updated: usize,
+    /// Of `updated`, messages whose flags or labels alone changed: their
+    /// indexed bodies are still current.
+    pub(crate) flags_updated: usize,
+    pub(crate) deleted: usize,
+}
+
 /// A local metadata cache. Client operations use an account-specific database.
 pub struct Cache {
     conn: Connection,
@@ -520,7 +532,7 @@ impl Cache {
         &self,
         previous_cursor: &str,
         batch: &EventBatch,
-    ) -> Result<(usize, usize, usize)> {
+    ) -> Result<BatchCounts> {
         let tx =
             Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(map)?;
         let current_cursor: Option<String> = tx
@@ -537,12 +549,12 @@ impl Cache {
             ));
         }
 
-        let (mut created, mut updated, mut deleted) = (0, 0, 0);
+        let mut counts = BatchCounts::default();
         for ev in &batch.messages {
             match ev.action {
                 action::DELETE => {
                     delete_message(&tx, &ev.id)?;
-                    deleted += 1;
+                    counts.deleted += 1;
                 }
                 action::CREATE | action::UPDATE => {
                     if ev.action == action::UPDATE {
@@ -552,16 +564,17 @@ impl Cache {
                     if let Some(m) = &ev.message {
                         upsert_message(&tx, m)?;
                         if ev.action == action::CREATE {
-                            created += 1;
+                            counts.created += 1;
                         } else {
-                            updated += 1;
+                            counts.updated += 1;
                         }
                     }
                 }
                 action::UPDATE_FLAGS => {
                     if let Some(m) = &ev.message {
                         upsert_metadata(&tx, m)?;
-                        updated += 1;
+                        counts.updated += 1;
+                        counts.flags_updated += 1;
                     }
                 }
                 _ => {}
@@ -573,7 +586,7 @@ impl Cache {
         )
         .map_err(map)?;
         tx.commit().map_err(map)?;
-        Ok((created, updated, deleted))
+        Ok(counts)
     }
 
     /// Insert or replace cached metadata and labels, keeping searchable headers
@@ -1235,7 +1248,15 @@ mod tests {
                 message: Some(meta("m1", "0", 1, 2)),
             }],
         );
-        assert_eq!(fast.apply_event_batch("old", &newer).unwrap(), (0, 1, 0));
+        // A flag change leaves the indexed body current.
+        assert_eq!(
+            fast.apply_event_batch("old", &newer).unwrap(),
+            BatchCounts {
+                updated: 1,
+                flags_updated: 1,
+                ..BatchCounts::default()
+            }
+        );
         let stale = event_batch(
             "older",
             vec![MessageEvent {
@@ -1257,7 +1278,13 @@ mod tests {
                 message: Some(meta("m1", "0", 1, 3)),
             }],
         );
-        assert_eq!(slow.apply_event_batch("new", &updated).unwrap(), (0, 1, 0));
+        assert_eq!(
+            slow.apply_event_batch("new", &updated).unwrap(),
+            BatchCounts {
+                updated: 1,
+                ..BatchCounts::default()
+            }
+        );
         assert!(slow.search("privatebody", 10).unwrap().is_empty());
 
         drop(slow);

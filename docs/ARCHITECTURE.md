@@ -582,8 +582,8 @@ it was booted and [`app/auth.rs`](../src/app/auth.rs) refuses to start a sign-in
 
 CLI [`watch --folder`](../crates/ruston-cli/src/commands/watch.rs) backfills
 metadata and indexes the selected folder on its first tick. Later ticks use
-sync events for metadata and reindex only after creates, updates, or a full
-refresh. `watch` polls the event API at the configured interval; it does not
+sync events for metadata and reindex only after creates, content updates, or a
+full refresh; flag and label changes keep the indexed bodies. `watch` polls the event API at the configured interval; it does not
 use Server-Sent Events. Backfill and indexing failures stop the command
 instead of producing a successful tick.
 

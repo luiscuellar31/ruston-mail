@@ -18,8 +18,11 @@ const RESYNC_PAGE_SIZE: u32 = 100;
 pub struct SyncReport {
     /// Number of messages created.
     pub created: usize,
-    /// Number of messages updated.
+    /// Number of messages updated, flag and label changes included.
     pub updated: usize,
+    /// Of `updated`, messages whose flags or labels alone changed, so their
+    /// indexed bodies are still current.
+    pub flags_updated: usize,
     /// Number of messages deleted.
     pub deleted: usize,
     /// The event cursor after applying this sync.
@@ -77,6 +80,7 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
                 return Ok(SyncReport {
                     created: 0,
                     updated: 0,
+                    flags_updated: 0,
                     deleted: 0,
                     event_id: latest,
                     initialized: true,
@@ -89,7 +93,7 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
         }
     };
 
-    let (mut created, mut updated, mut deleted) = (0, 0, 0);
+    let (mut created, mut updated, mut flags_updated, mut deleted) = (0, 0, 0, 0);
     let mut rebuilt = None;
     loop {
         let batch = api::events::get_events(http, &id).await?;
@@ -105,13 +109,15 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
             rebuilt = Some(count);
             created = 0;
             updated = 0;
+            flags_updated = 0;
             deleted = 0;
             continue;
         }
-        let (batch_created, batch_updated, batch_deleted) = cache.apply_event_batch(&id, &batch)?;
-        created += batch_created;
-        updated += batch_updated;
-        deleted += batch_deleted;
+        let counts = cache.apply_event_batch(&id, &batch)?;
+        created += counts.created;
+        updated += counts.updated;
+        flags_updated += counts.flags_updated;
+        deleted += counts.deleted;
         id = batch.event_id;
         if !batch.more {
             break;
@@ -121,6 +127,7 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
     Ok(SyncReport {
         created,
         updated,
+        flags_updated,
         deleted,
         event_id: id,
         initialized: false,
