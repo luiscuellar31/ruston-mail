@@ -405,6 +405,7 @@ pub enum MessagesCmd {
         /// Reply to all recipients.
         #[arg(long)]
         all: bool,
+        /// Sender address (defaults to the address the original message reached).
         #[arg(long)]
         from: Option<String>,
         /// Body text, or `-` for stdin.
@@ -418,6 +419,7 @@ pub enum MessagesCmd {
         reference: String,
         #[arg(long = "to", required = true)]
         to: Vec<String>,
+        /// Sender address (defaults to the address the original message reached).
         #[arg(long)]
         from: Option<String>,
         #[arg(long)]

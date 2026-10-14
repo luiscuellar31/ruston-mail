@@ -293,7 +293,8 @@ impl ProtonMailService {
             body: outgoing.wire_body(),
             html: outgoing.is_html(),
             attachments: outgoing.attachments.clone(),
-            // The account's own address, chosen by ruston-core.
+            // ruston-core picks the sender: the primary address, or for an
+            // answer the address the original reached.
             // Scheduling and self-destruct are not offered yet.
             ..SendOptions::default()
         };

@@ -198,7 +198,8 @@ both commands are available while signed in. The main window reserves space
 for native window buttons according to their measured size and interface zoom.
 
 The reader also offers **Reply**, **Reply all**, and **Forward**. Proton
-derives reply recipients and subjects from the original message.
+derives reply recipients and subjects from the original message. Replies and
+forwards are sent from the address the original message reached.
 
 Messages can be sent as plain text or HTML. The editor remains plain text in
 both modes: text that looks like an HTML tag is sent as text, not executed as

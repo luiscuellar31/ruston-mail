@@ -198,7 +198,8 @@ pub struct SendOptions {
     pub cc: Vec<String>,
     /// Blind carbon-copy (Bcc) recipient addresses.
     pub bcc: Vec<String>,
-    /// Sender address to send from (defaults to the primary address).
+    /// Sender address to send from. Defaults to the primary address, or for a
+    /// reply or forward to the address the original message reached.
     pub from: Option<String>,
     /// Message subject.
     pub subject: String,
@@ -325,6 +326,7 @@ impl Client {
         let quoted = self.read_message(&parent_id).await.ok();
 
         let mut o = opts.clone();
+        o.from = o.from.or_else(|| self.receiving_address(&parent));
         // Recipients: reply → ReplyTos (fallback sender); reply-all adds To+CC.
         let reply_to: Vec<String> = if !parent.reply_tos.is_empty() {
             parent.reply_tos.iter().map(|r| r.address.clone()).collect()
@@ -374,6 +376,7 @@ impl Client {
         let quoted = self.read_message(&parent_id).await.ok();
 
         let mut o = opts.clone();
+        o.from = o.from.or_else(|| self.receiving_address(&parent));
         o.subject = with_prefix(&parent.meta.subject, "Fw: ");
         if let Some(q) = quoted {
             o.body = format!(
@@ -396,6 +399,15 @@ impl Client {
             None,
         )
         .await
+    }
+
+    /// The address `parent` reached, so an answer without a chosen sender does
+    /// not reveal another of the account's addresses. `None` falls back to the
+    /// primary address, as for a new message.
+    fn receiving_address(&self, parent: &Message) -> Option<String> {
+        self.keys()
+            .address(&parent.meta.address_id)
+            .map(|address| address.email.clone())
     }
 
     /// Cancel a scheduled send.
@@ -1172,6 +1184,81 @@ mod tests {
             STANDARD.encode(original.material.key.as_slice())
         );
         assert_eq!(clear["Algorithm"], "aes256");
+    }
+
+    #[tokio::test]
+    async fn answers_leave_from_the_address_the_original_reached() {
+        let server = MockServer::start().await;
+        let (personal, _) = test_address("me@proton.me", "address-1");
+        let (work, _) = test_address("work@acme.com", "work-address");
+        let parent_id = format!("{}==", "p".repeat(60));
+        Mock::given(method("GET"))
+            .and(path(format!("/mail/v4/messages/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000,
+                "Message": {
+                    "ID": parent_id, "AddressID": "work-address", "Subject": "Invoice",
+                    "Sender": {"Name": "Boss", "Address": "boss@corp.example"},
+                    "ToList": [{"Name": "Work", "Address": "work@acme.com"}]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server, vec![personal, work]);
+        let reply = SendOptions {
+            body: "Thanks".into(),
+            ..SendOptions::default()
+        };
+        client.reply(&parent_id, false, &reply).await.unwrap();
+        let forward = SendOptions {
+            to: vec!["friend@example.com".into()],
+            body: "FYI".into(),
+            ..SendOptions::default()
+        };
+        client.forward(&parent_id, &forward).await.unwrap();
+        // A sender chosen explicitly still wins.
+        let chosen = SendOptions {
+            from: Some("me@proton.me".into()),
+            ..reply
+        };
+        client.reply(&parent_id, false, &chosen).await.unwrap();
+
+        let senders: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.url.path() == "/mail/v4/messages")
+            .map(|request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                body["Message"]["Sender"]["Address"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(senders, ["work@acme.com", "work@acme.com", "me@proton.me"]);
     }
 
     #[tokio::test]
