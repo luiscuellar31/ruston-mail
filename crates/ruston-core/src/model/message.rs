@@ -12,7 +12,7 @@ pub struct Recipient {
     /// Email address.
     pub address: String,
     /// Contact ID, if this recipient is a saved contact.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ContactID", skip_serializing_if = "Option::is_none")]
     pub contact_id: Option<String>,
     /// `1` if the recipient is a Proton address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,7 +37,7 @@ impl Recipient {
 #[serde(rename_all = "PascalCase")]
 pub struct Attachment {
     /// Attachment ID.
-    #[serde(default)]
+    #[serde(rename = "ID", default)]
     pub id: String,
     /// File name.
     #[serde(default)]
@@ -169,7 +169,7 @@ mod tests {
             "ConversationID": "conv1",
             "Subject": "hi",
             "Unread": 1,
-            "Sender": {"Name": "A", "Address": "a@proton.me"},
+            "Sender": {"Name": "A", "Address": "a@proton.me", "ContactID": "contact1"},
             "ToList": [{"Name":"B","Address":"b@x.com"}],
             "Time": 1700000000,
             "Flags": 34359738372i64, // 2^35 + 2^2
@@ -185,5 +185,8 @@ mod tests {
         assert_eq!(m.meta.to_list.len(), 1);
         assert_eq!(m.attachments.len(), 1);
         assert_eq!(m.attachments[0].key_packets.as_deref(), Some("KP"));
+        // Proton spells these "ID", which PascalCase alone would read as "Id".
+        assert_eq!(m.attachments[0].id, "att1");
+        assert_eq!(m.meta.sender.contact_id.as_deref(), Some("contact1"));
     }
 }

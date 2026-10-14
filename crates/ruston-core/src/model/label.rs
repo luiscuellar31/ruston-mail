@@ -22,7 +22,7 @@ pub struct Label {
     #[serde(rename = "Type", default)]
     pub label_type: i64,
     /// ID of the parent folder, for nested folders.
-    #[serde(default)]
+    #[serde(rename = "ParentID", default)]
     pub parent_id: Option<String>,
     /// Sort order.
     #[serde(default)]
@@ -38,11 +38,14 @@ mod tests {
 
     #[test]
     fn deserialize_label() {
-        let json =
-            serde_json::json!({"ID":"42","Name":"Work","Color":"#fff","Type":3,"Path":"Work"});
+        let json = serde_json::json!({
+            "ID": "42", "Name": "Work", "Color": "#fff", "Type": 3, "Path": "Work/2026",
+            "ParentID": "41"
+        });
         let l: Label = serde_json::from_value(json).unwrap();
         assert_eq!(l.id, "42");
         assert_eq!(l.label_type, 3);
         assert_eq!(l.name, "Work");
+        assert_eq!(l.parent_id.as_deref(), Some("41"));
     }
 }
