@@ -2,7 +2,6 @@
 //! It never touches Proton, the network, the keychain or disk.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::outgoing::{Kind, Outgoing, SendError};
 use super::{
@@ -971,12 +970,22 @@ pub fn protection(address: &str) -> super::Protection {
     }
 }
 
+#[cfg(not(test))]
 pub fn now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
         })
+}
+
+/// Tests read the fictional mailbox at one fixed instant, so every listing of
+/// a row, and the reader stamp taken from it, agrees however long they run.
+#[cfg(test)]
+pub fn now() -> i64 {
+    tests::NOW
 }
 
 fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
