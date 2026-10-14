@@ -1450,6 +1450,35 @@ fn demo_read_actions_update_row_and_count_idempotently() {
 }
 
 #[test]
+fn abandoned_conversation_loads_are_stopped_and_ignored() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    let first_request = pending_reader_request(&app);
+    let first = app.reader_load.clone().expect("a load is in flight");
+
+    // Moving on to the next row leaves the first load unwanted.
+    let _ = app.update(Message::SelectConversation("demo-1".into()));
+    assert!(first.is_aborted());
+    let second = app.reader_load.clone().unwrap();
+    assert!(!second.is_aborted());
+    // What an aborted load answers changes nothing on screen.
+    let _ = app.update(Message::ConversationLoaded(
+        first_request,
+        Err(MailboxError::Unavailable),
+    ));
+    assert_eq!(pending_reader_request(&app).conversation_id, "demo-1");
+
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
+    assert!(second.is_aborted(), "a folder change closes the reader");
+
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    let load = app.reader_load.clone().unwrap();
+    let _ = app.update(Message::Logout);
+    assert!(load.is_aborted(), "the session ended");
+}
+
+#[test]
 fn demo_star_actions_update_starred_folder_and_selection() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectConversation("demo-1".into()));

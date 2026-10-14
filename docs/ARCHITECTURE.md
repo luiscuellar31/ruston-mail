@@ -241,7 +241,9 @@ For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches
 [`App::update`](../src/app/mod.rs), which requests a load through `MailBackend`.
 The runtime executes it, `ruston-core` reads and decrypts the messages, and a
-result message updates [`app/reader.rs`](../src/app/reader.rs). The desktop
+result message updates [`app/reader.rs`](../src/app/reader.rs). Only the newest
+load is kept: opening another conversation, changing folders or ending the
+session aborts the one in flight, and the reader ignores its answer. The desktop
 adapter converts sanitized HTML into the native rich-body model in
 [`mail/html.rs`](../src/mail/html.rs). It appends visible text in runs instead
 of comparing styles and link targets for every character. Styled spans share

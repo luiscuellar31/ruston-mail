@@ -12,7 +12,7 @@ mod reader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use futures::future::Abortable;
+use futures::future::{AbortHandle, Abortable};
 use inspection::Inspections;
 
 use crate::downloads::{self, SaveError};
@@ -223,6 +223,9 @@ pub struct App {
     session_epoch: SessionEpoch,
     last_request: RequestId,
     inspections: Inspections,
+    /// The reader's conversation load in flight. A newer load, a folder
+    /// change or the end of the session abandons it.
+    reader_load: Option<AbortHandle>,
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
     folders: Vec<Folder>,
@@ -279,6 +282,7 @@ impl App {
             session_epoch: 0,
             last_request: 0,
             inspections: Inspections::default(),
+            reader_load: None,
             folders: Vec::new(),
             refetch_folders: false,
             settings,
@@ -303,6 +307,7 @@ impl App {
 
     fn advance_session_epoch(&mut self) {
         self.inspections.cancel();
+        self.abandon_reader_load();
         self.session_epoch = self
             .session_epoch
             .checked_add(1)
@@ -1202,6 +1207,7 @@ impl App {
                 .is_some_and(|mailbox| mailbox.folder() != &folder)
         {
             self.inspections.cancel();
+            self.abandon_reader_load();
         }
         self.showing_settings = false;
         self.pending_link = None;
@@ -1419,16 +1425,38 @@ impl App {
         )
     }
 
-    fn fetch_conversation(&self, request: Option<ReaderRequest>) -> Effects {
+    fn fetch_conversation(&mut self, request: Option<ReaderRequest>) -> Effects {
         let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
             return Effects::none();
         };
+        // Moving through rows with j/k starts a load per row; only the newest
+        // is still wanted, so the others stop downloading and decrypting.
+        self.abandon_reader_load();
+        let (handle, registration) = AbortHandle::new_pair();
+        self.reader_load = Some(handle);
         let (kind, id) = (request.kind, request.conversation_id.clone());
 
         Effects::perform(
-            async move { backend.conversation_detail(kind, &id).await },
-            move |result| Message::ConversationLoaded(request.clone(), result),
+            Abortable::new(
+                async move { backend.conversation_detail(kind, &id).await },
+                registration,
+            ),
+            // The reader no longer waits for an abandoned load and ignores
+            // its answer.
+            move |result| {
+                Message::ConversationLoaded(
+                    request.clone(),
+                    result.unwrap_or(Err(MailboxError::Unavailable)),
+                )
+            },
         )
+    }
+
+    /// Stops the conversation load in flight, if any: nobody will read it.
+    fn abandon_reader_load(&mut self) {
+        if let Some(load) = self.reader_load.take() {
+            load.abort();
+        }
     }
 
     fn handle_mailbox_error(&mut self, error: Option<MailboxError>) {
