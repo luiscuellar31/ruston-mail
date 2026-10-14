@@ -202,7 +202,8 @@ for native window buttons according to their measured size and interface zoom.
 The reader also offers **Reply**, **Reply all**, and **Forward**. A reply goes
 to the addresses the original message asks replies to go to (its Reply-To), or
 to its sender; **Reply all** also copies in its other recipients, except your
-own addresses. The composer lists these recipients, and warns when the
+own addresses. Replying to a message you sent continues with the people you sent
+it to. The composer lists these recipients, and warns when the
 message's Reply-To sends the reply somewhere other than its sender. The subject
 is written for you. Replies and forwards are sent from the address the original
 message reached.

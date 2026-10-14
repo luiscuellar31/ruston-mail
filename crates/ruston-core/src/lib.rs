@@ -87,7 +87,9 @@ pub use crypto::Verdict;
 pub use error::{ApiError, Error, HvChallenge, Result};
 pub use mail::contacts::AddressInfo;
 pub use mail::read::{FullMessage, SearchOpts};
-pub use mail::send::{RecipientProtection, ReplyRecipients, SendOptions, reply_recipients};
+pub use mail::send::{
+    RecipientProtection, ReplyRecipients, SendOptions, reply_recipients, reply_redirected,
+};
 pub use mail::sync::SyncReport;
 pub use mail::{Client, LoginOptions};
 pub use model::{Attachment, Conversation, Label, Message, MessageMetadata, Recipient};

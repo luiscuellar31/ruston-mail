@@ -309,6 +309,8 @@ pub struct MailMessage {
     /// What Reply all adds as Cc: the other recipients, without the account's
     /// own addresses.
     pub reply_all_cc: Vec<String>,
+    /// The message's Reply-To sends replies somewhere other than its sender.
+    pub reply_redirected: bool,
     /// Unix timestamp in seconds.
     pub time: Option<i64>,
     pub body: MessageBody,

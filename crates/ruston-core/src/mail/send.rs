@@ -4,7 +4,7 @@ use super::Client;
 use crate::api;
 use crate::crypto::{self, SessionKeyMaterial, keys::AddressKeys};
 use crate::error::{Error, Result};
-use crate::model::enums::package_type;
+use crate::model::enums::{message_flag, package_type};
 use crate::model::message::{Message, MessageMetadata, Recipient};
 use crate::transport::{Doer, Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -192,11 +192,20 @@ impl RecipientProtection {
 /// Where [`Client::reply`] sends an answer to a message.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReplyRecipients {
-    /// The Reply-To addresses the message asks for, or its sender.
+    /// The Reply-To addresses the message asks for, or its sender. For a
+    /// message the account sent, its To recipients.
     pub to: Vec<String>,
-    /// What Reply all adds: the message's To and Cc recipients, without the
+    /// What Reply all adds: the message's other recipients, without the
     /// account's own addresses.
     pub cc: Vec<String>,
+}
+
+/// Mail the account sent, and did not also receive: a note to self is
+/// answered like any other message.
+fn sent_by_account(meta: &MessageMetadata) -> bool {
+    message_flag::has(meta.flags, message_flag::SENT)
+        && !message_flag::has(meta.flags, message_flag::RECEIVED)
+        && !meta.to_list.is_empty()
 }
 
 /// The recipients of a reply to the message described by `meta` and its
@@ -207,6 +216,24 @@ pub fn reply_recipients(
     reply_tos: &[Recipient],
     own: &[String],
 ) -> ReplyRecipients {
+    let not_own = |address: &String| {
+        !own.iter()
+            .any(|mine| mine.trim().eq_ignore_ascii_case(address.trim()))
+    };
+    // Answering mail the account sent continues with the people it went to;
+    // its sender and Reply-To are the account itself.
+    if sent_by_account(meta) {
+        return ReplyRecipients {
+            to: meta.to_list.iter().map(|r| r.address.clone()).collect(),
+            cc: meta
+                .cc_list
+                .iter()
+                .map(|r| r.address.clone())
+                .filter(not_own)
+                .collect(),
+        };
+    }
+
     let to = if reply_tos.is_empty() {
         vec![meta.sender.address.clone()]
     } else {
@@ -217,12 +244,20 @@ pub fn reply_recipients(
         .iter()
         .chain(&meta.cc_list)
         .map(|r| r.address.clone())
-        .filter(|address| {
-            !own.iter()
-                .any(|mine| mine.trim().eq_ignore_ascii_case(address.trim()))
-        })
+        .filter(not_own)
         .collect();
     ReplyRecipients { to, cc }
+}
+
+/// Whether the message's Reply-To sends replies somewhere other than its
+/// sender, which a frontend should point out. Mail the account sent
+/// redirects nothing.
+pub fn reply_redirected(meta: &MessageMetadata, reply_tos: &[Recipient]) -> bool {
+    let sender = meta.sender.address.trim();
+    !sent_by_account(meta)
+        && reply_tos
+            .iter()
+            .any(|r| !r.address.trim().eq_ignore_ascii_case(sender))
 }
 
 /// Options for composing a message.
@@ -1229,6 +1264,54 @@ mod tests {
         let redirected = reply_recipients(&meta, &[Recipient::new("attacker@evil.example")], &own);
         assert_eq!(redirected.to, ["attacker@evil.example"]);
         assert_eq!(redirected.cc, plain.cc);
+        assert!(reply_redirected(
+            &meta,
+            &[Recipient::new("attacker@evil.example")]
+        ));
+        assert!(!reply_redirected(&meta, &[]));
+        assert!(!reply_redirected(
+            &meta,
+            &[Recipient::new("Alex@Corp.example")]
+        ));
+    }
+
+    #[test]
+    fn a_reply_to_your_own_sent_message_goes_to_its_recipients() {
+        use crate::model::enums::message_flag::{RECEIVED, SENT};
+
+        let sent = MessageMetadata {
+            sender: Recipient::new("me@proton.me"),
+            to_list: vec![Recipient::new("bob@corp.example")],
+            cc_list: vec![
+                Recipient::new("carol@corp.example"),
+                Recipient::new("Me@Proton.me"),
+            ],
+            flags: SENT,
+            ..Default::default()
+        };
+        let own = vec!["me@proton.me".to_owned()];
+        // Proton sets the sender as Reply-To on mail the account sent.
+        let reply_tos = [Recipient::new("me@proton.me")];
+
+        let answer = reply_recipients(&sent, &reply_tos, &own);
+        assert_eq!(answer.to, ["bob@corp.example"]);
+        assert_eq!(answer.cc, ["carol@corp.example"]);
+        assert!(
+            !reply_redirected(&sent, &reply_tos),
+            "your own message redirects nothing"
+        );
+
+        // A note to yourself, sent and received, still answers yourself.
+        let note = MessageMetadata {
+            to_list: vec![Recipient::new("me@proton.me")],
+            cc_list: Vec::new(),
+            flags: SENT | RECEIVED,
+            ..sent
+        };
+        assert_eq!(
+            reply_recipients(&note, &reply_tos, &own).to,
+            ["me@proton.me"]
+        );
     }
 
     #[tokio::test]

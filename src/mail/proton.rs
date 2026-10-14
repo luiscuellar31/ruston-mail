@@ -877,6 +877,7 @@ fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
     } = message;
     let own: Vec<String> = own.iter().cloned().collect();
     let reply = ruston_core::reply_recipients(&meta, &reply_tos, &own);
+    let reply_redirected = ruston_core::reply_redirected(&meta, &reply_tos);
     let body = if ruston_core::html::is_html_mime(&mime_type) {
         MessageBody::Rich(html::parse(&body))
     } else {
@@ -901,6 +902,7 @@ fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
             .collect(),
         reply_to: reply.to,
         reply_all_cc: reply.cc,
+        reply_redirected,
         time: (meta.time > 0).then_some(meta.time),
         body,
         verdict,
@@ -1137,6 +1139,7 @@ mod tests {
         // The reader knows where core will send a reply before it is written.
         assert_eq!(message.reply_to, ["replies@example.com"]);
         assert_eq!(message.reply_all_cc, ["team@example.org"]);
+        assert!(message.reply_redirected, "Reply-To differs from the sender");
         assert_eq!(message.time, Some(1_700_000_000));
         let MessageBody::Rich(body) = &message.body else {
             panic!("expected a rich body for HTML");
@@ -1200,6 +1203,30 @@ mod tests {
         let outcome = map_sign_in_error(cancelled(), false, false);
 
         assert!(matches!(outcome, SignInOutcome::Cancelled));
+    }
+
+    #[test]
+    fn answering_your_own_sent_message_addresses_its_recipients() {
+        let meta = MessageMetadata {
+            sender: person("Me", "me@proton.me"),
+            to_list: vec![person("", "bob@corp.example")],
+            flags: message_flag::SENT,
+            ..Default::default()
+        };
+        let message = mail_message(
+            FullMessage {
+                meta,
+                body: "Following up".into(),
+                mime_type: "text/plain".into(),
+                attachments: Vec::new(),
+                verdict: ruston_core::Verdict::Unsigned,
+                reply_tos: vec![person("Me", "me@proton.me")],
+            },
+            &OwnAddresses::from(["me@proton.me".to_owned()]),
+        );
+
+        assert_eq!(message.reply_to, ["bob@corp.example"]);
+        assert!(!message.reply_redirected, "nothing redirects your own mail");
     }
 
     #[test]

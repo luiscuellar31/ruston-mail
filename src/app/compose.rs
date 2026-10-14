@@ -427,12 +427,11 @@ impl App {
             ),
             _ => (Vec::new(), Vec::new()),
         };
+        // Core says when Reply-To moved the answer: a reply to mail you sent
+        // also goes to someone other than its sender, without any redirect.
         let sender = message.sender.address.trim();
-        let redirected_from = (!sender.is_empty()
-            && to
-                .iter()
-                .any(|address| !address.trim().eq_ignore_ascii_case(sender)))
-        .then(|| sender.to_owned());
+        let redirected_from = (!to.is_empty() && message.reply_redirected && !sender.is_empty())
+            .then(|| sender.to_owned());
         self.compose = Some(Compose {
             id,
             kind,
@@ -834,6 +833,7 @@ mod tests {
             recipients: Vec::new(),
             reply_to: vec![reply_to.into()],
             reply_all_cc: vec!["bob@corp.example".into()],
+            reply_redirected: !reply_to.eq_ignore_ascii_case("alex@corp.example"),
             time: None,
             body: crate::mail::MessageBody::PlainText("Invoice attached".into()),
             verdict: crate::mail::Verdict::Unverified,

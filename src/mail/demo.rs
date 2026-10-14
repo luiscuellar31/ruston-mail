@@ -228,19 +228,26 @@ impl DemoMailbox {
         // Mirror Proton's subject, quote and reply-recipient behavior.
         let answered = answered_message(&fixtures, &outgoing.kind, now);
         let (prefix, back_to) = match (&outgoing.kind, &answered) {
-            (Kind::Reply { .. }, Some(parent)) => ("Re: ", Some(parent.sender.clone())),
-            (Kind::Forward { .. }, _) => ("Fw: ", None),
-            (Kind::Reply { .. }, None) => ("Re: ", None),
-            (Kind::New, _) => ("", None),
+            (Kind::Reply { .. }, Some(parent)) => ("Re: ", parent.reply_to.clone()),
+            (Kind::Forward { .. }, _) => ("Fw: ", Vec::new()),
+            (Kind::Reply { .. }, None) => ("Re: ", Vec::new()),
+            (Kind::New, _) => ("", Vec::new()),
         };
 
-        let mut everyone: Vec<String> = back_to
+        let mut everyone: Vec<String> = Vec::new();
+        for address in back_to
             .into_iter()
             .chain(outgoing.to.iter().cloned())
             .chain(outgoing.cc.iter().cloned())
             .chain(outgoing.bcc.iter().cloned())
-            .collect();
-        everyone.dedup();
+        {
+            if !everyone
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(&address))
+            {
+                everyone.push(address);
+            }
+        }
         fixtures.push(Fixture {
             folder: MailFolder::Sent,
             outgoing: true,
@@ -900,7 +907,8 @@ fn detail_from(fixtures: &[Fixture], id: &str, now: i64) -> Option<ConversationD
 
 /// The message an answer is answering, as the fictional mailbox sees it.
 struct Answered {
-    sender: String,
+    /// Where core would send a reply.
+    reply_to: Vec<String>,
     subject: String,
     quoted: String,
 }
@@ -914,7 +922,6 @@ fn answered_message(fixtures: &[Fixture], kind: &Kind, now: i64) -> Option<Answe
     let (index, position) = message_place(message_id)?;
     let detail = detail_from(fixtures, &format!("demo-{index}"), now)?;
     let message = detail.messages.get(position)?;
-    let sender = message.sender.address.clone();
 
     Some(Answered {
         subject: detail.subject.clone().unwrap_or_default(),
@@ -925,7 +932,7 @@ fn answered_message(fixtures: &[Fixture], kind: &Kind, now: i64) -> Option<Answe
             .map(|line| format!("> {line}"))
             .collect::<Vec<_>>()
             .join("\n"),
-        sender,
+        reply_to: message.reply_to.clone(),
     })
 }
 
@@ -1058,18 +1065,29 @@ fn message(
             .collect();
     }
 
-    // The fictional mail sets no Reply-To; answers follow core's rule.
+    // The fictional mail sets no Reply-To; answers follow core's rule, which
+    // continues the demo user's own messages with the people they went to.
     let demo_address = demo_user().address;
-    let reply_all_cc = recipients
-        .iter()
-        .map(|recipient| recipient.address.clone())
-        .filter(|address| !address.eq_ignore_ascii_case(&demo_address))
-        .collect();
+    let (reply_to, reply_all_cc) = if from_demo_user && !recipients.is_empty() {
+        let to = recipients
+            .iter()
+            .map(|recipient| recipient.address.clone())
+            .collect();
+        (to, Vec::new())
+    } else {
+        let cc = recipients
+            .iter()
+            .map(|recipient| recipient.address.clone())
+            .filter(|address| !address.eq_ignore_ascii_case(&demo_address))
+            .collect();
+        (vec![sender.address.clone()], cc)
+    };
     MailMessage {
         id: format!("demo-{index}-{position}"),
         verdict: super::Verdict::Unverified,
-        reply_to: vec![sender.address.clone()],
+        reply_to,
         reply_all_cc,
+        reply_redirected: false,
         sender,
         recipients,
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),
@@ -1415,6 +1433,40 @@ mod tests {
             "the new text is missing"
         );
         assert!(body.contains("> "), "the message answered is not quoted");
+    }
+
+    #[test]
+    fn a_reply_to_the_demo_user_s_own_message_goes_to_its_recipients() {
+        let mailbox = DemoMailbox::new();
+        let answered = mailbox.conversation_detail("demo-37", NOW).unwrap();
+        assert_eq!(answered.subject.as_deref(), Some("Re: Offsite agenda"));
+        let own = &answered.messages[0];
+        assert_eq!(own.sender.address, DEMO_USER_ADDRESS);
+        let recipients: Vec<String> = own
+            .recipients
+            .iter()
+            .map(|recipient| recipient.address.clone())
+            .collect();
+        assert_eq!(own.reply_to, recipients);
+        assert!(own.reply_all_cc.is_empty());
+
+        mailbox
+            .send_now(&Outgoing {
+                kind: Kind::Reply {
+                    message_id: own.id.clone(),
+                    everyone: false,
+                },
+                to: own.reply_to.clone(),
+                ..outgoing("ignored")
+            })
+            .unwrap();
+
+        let row = state_page(&mailbox, MailFolder::Sent)
+            .conversations
+            .into_iter()
+            .max_by_key(|row| row.time)
+            .expect("the reply is in Sent");
+        assert_eq!(row.correspondents, Some(recipients.join(", ")));
     }
 
     #[test]
