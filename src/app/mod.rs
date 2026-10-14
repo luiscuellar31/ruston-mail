@@ -195,6 +195,9 @@ pub enum Message {
 }
 
 pub struct App {
+    /// Set for a process started for the fictional mailbox. Such a process
+    /// never signs in to Proton, even after its demo mailbox is closed.
+    demo_process: bool,
     auth_state: AuthState,
     login_form: LoginForm,
     auth_error: Option<AuthError>,
@@ -242,6 +245,7 @@ impl App {
     /// the Proton session resume.
     pub fn boot(demo: bool, settings: Settings) -> (Self, Effects) {
         let mut app = Self::new(settings);
+        app.demo_process = demo;
         let task = if demo {
             app.open_mailbox(MailBackend::demo(), None)
         } else {
@@ -253,6 +257,7 @@ impl App {
 
     fn new(settings: Settings) -> Self {
         Self {
+            demo_process: false,
             auth_state: AuthState::CheckingSession,
             login_form: LoginForm::default(),
             auth_error: None,

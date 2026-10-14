@@ -20,6 +20,7 @@ pub enum AuthError {
     SessionExpired,
     Service { http_status: u16, code: i64 },
     AuthenticationUnavailable,
+    DemoSignInUnavailable,
 }
 
 impl fmt::Display for AuthError {
@@ -57,6 +58,9 @@ impl fmt::Display for AuthError {
             }
             Self::AuthenticationUnavailable => {
                 "Ruston Mail could not complete authentication. Try again."
+            }
+            Self::DemoSignInUnavailable => {
+                "This window was started as a demo and cannot sign in. Close it and start Ruston Mail without RUSTON_DEMO."
             }
         };
 
