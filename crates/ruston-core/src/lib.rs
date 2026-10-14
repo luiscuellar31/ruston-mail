@@ -76,6 +76,9 @@ pub(crate) const STORAGE_NAME: &str = "ruston-mail";
 /// Session profile used by both frontends unless the CLI selects another.
 pub const DEFAULT_SESSION_PROFILE: &str = "ruston";
 
+/// Proton API address used unless a login selects another.
+pub(crate) const DEFAULT_BASE_URL: &str = "https://mail.proton.me/api";
+
 pub use api::contacts::{Contact, ContactEmail};
 pub use api::events::LabelCount;
 pub use api::filters::Filter;

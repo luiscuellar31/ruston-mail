@@ -10,6 +10,7 @@ pub mod read;
 pub mod send;
 pub mod sync;
 
+use crate::DEFAULT_BASE_URL;
 use crate::api;
 use crate::auth::{self, TotpPrompt};
 use crate::cache::CacheIdentity;
@@ -23,7 +24,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-const DEFAULT_BASE_URL: &str = "https://mail.proton.me/api";
 const DEFAULT_APP_VERSION: &str = "Other";
 const SENDER_KEY_CACHE_CAPACITY: usize = 256;
 /// Bound the complete best-effort revocation, including retries and backoff.

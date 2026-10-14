@@ -15,6 +15,7 @@ pub enum AuthError {
     HumanVerificationRequired,
     SecurityKeyUnsupported,
     SessionUnavailable,
+    SessionAddressMismatch,
     LogoutUnavailable,
     SessionExpired,
     Service { http_status: u16, code: i64 },
@@ -39,6 +40,9 @@ impl fmt::Display for AuthError {
                 "This account requires FIDO2/WebAuthn, which Ruston Mail does not support yet."
             }
             Self::SessionUnavailable => "Ruston Mail could not access the saved Proton session.",
+            Self::SessionAddressMismatch => {
+                "The saved Proton session does not match the server it was created for. Sign in again."
+            }
             Self::LogoutUnavailable => {
                 "Ruston Mail could not remove all saved Proton credentials. They may remain on this device."
             }

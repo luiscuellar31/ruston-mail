@@ -47,6 +47,7 @@ const VERIFY_ORIGIN: &str = "https://verify.proton.me";
 const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox password";
 const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
 const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
+const SESSION_ADDRESS_MISMATCH: &str = "does not match the API address it was created for";
 const MAX_LISTED_CORRESPONDENTS: usize = 3;
 /// Conservative relabel batch size; Proton publishes no endpoint limit.
 const LABEL_BATCH: usize = 50;
@@ -945,6 +946,9 @@ fn map_error(error: Error) -> AuthError {
     match error {
         Error::HumanVerification(_) => AuthError::HumanVerificationRequired,
         Error::Http(_) => AuthError::Connection,
+        Error::Session(message) if message.contains(SESSION_ADDRESS_MISMATCH) => {
+            AuthError::SessionAddressMismatch
+        }
         Error::Session(_) | Error::Io(_) => AuthError::SessionUnavailable,
         Error::Api(error) => AuthError::Service {
             http_status: error.http_status,
@@ -1207,6 +1211,48 @@ mod tests {
             outcome,
             SignInOutcome::Failed(AuthError::InvalidMailboxPassword)
         ));
+    }
+
+    #[test]
+    fn a_session_bound_to_another_address_asks_to_sign_in_again() {
+        use ruston_core::session::{MemoryStore, Paths, Session, Tokens};
+
+        let folder =
+            std::env::temp_dir().join(format!("ruston-session-address-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let paths = Paths::with_base(&folder);
+        let save = |base_url: &str, store: &MemoryStore| {
+            let session = Session {
+                uid: "UID1".into(),
+                app_version: "Other".into(),
+                base_url: base_url.into(),
+                password_mode: 1,
+                user_agent: None,
+            };
+            let tokens = Tokens {
+                uid: "UID1".into(),
+                access: SecretString::from("access"),
+                refresh: SecretString::from("refresh"),
+            };
+            session
+                .save(&paths, PROFILE, store, &tokens, &SecretString::from("skp"))
+                .unwrap();
+        };
+        // The secret store keeps the first address; the file now names another.
+        let bound = MemoryStore::new();
+        save("https://mail.proton.me/api", &bound);
+        save("https://example.test/api", &MemoryStore::new());
+
+        let Err(error) = Session::load(&paths, PROFILE, &bound) else {
+            panic!("a session bound to another address must not load");
+        };
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        assert_eq!(map_error(error), AuthError::SessionAddressMismatch);
+        assert_eq!(
+            map_error(Error::Session("keyring get: locked".into())),
+            AuthError::SessionUnavailable
+        );
     }
 
     const BANK: &str = "notifications@bank.example.com";

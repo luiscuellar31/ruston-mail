@@ -14,6 +14,7 @@ use zeroize::Zeroizing;
 
 const K_TOKENS: &str = "auth_tokens_v1";
 const K_SKP: &str = "skp";
+const K_BASE_URL: &str = "api_base_url_v1";
 
 /// Reject empty profile names, path syntax, and control characters.
 pub fn validate_profile_name(profile: &str) -> Result<()> {
@@ -163,6 +164,8 @@ impl Session {
         std::fs::write(&file, json)?;
         set_mode(&file, 0o600)?;
 
+        // Bound first: tokens never sit beside an address they were not issued for.
+        store.set(K_BASE_URL, &self.base_url)?;
         Self::save_tokens(
             store,
             tokens.access.expose_secret(),
@@ -214,6 +217,20 @@ impl Session {
             Some(skp) => skp,
             None => return Ok(None),
         };
+        // The metadata file is not secret, yet it names where the saved tokens
+        // are sent. Trust only an address the secret store vouches for.
+        match store.get(K_BASE_URL)? {
+            Some(bound) if bound == session.base_url => {}
+            // Sessions saved before the address was bound used the default API
+            // unless a login chose another one.
+            None if session.base_url == crate::DEFAULT_BASE_URL => {}
+            _ => {
+                return Err(Error::Session(
+                    "saved session does not match the API address it was created for; sign in again"
+                        .into(),
+                ));
+            }
+        }
         let tokens = Tokens {
             uid: session.uid.clone(),
             access: SecretString::from(pair.access),
@@ -266,7 +283,8 @@ impl Session {
         // Attempt every removal under the lock even if an earlier one fails.
         let tokens = store.delete(K_TOKENS);
         let skp = store.delete(K_SKP);
-        metadata.and(tokens).and(skp)
+        let base_url = store.delete(K_BASE_URL);
+        metadata.and(tokens).and(skp).and(base_url)
     }
 }
 
@@ -517,6 +535,103 @@ mod tests {
         assert!(Session::load(&paths, "default", &store).unwrap().is_none());
         Session::clear(&paths, "default", &store).unwrap();
         assert!(store.get(K_TOKENS).unwrap().is_none());
+    }
+
+    fn saved_session(base_url: &str, paths: &Paths, store: &MemoryStore) -> Session {
+        let session = Session {
+            uid: "UID1".into(),
+            app_version: "Other".into(),
+            base_url: base_url.into(),
+            password_mode: 1,
+            user_agent: None,
+        };
+        let tokens = Tokens {
+            uid: "UID1".into(),
+            access: SecretString::from("acc"),
+            refresh: SecretString::from("ref"),
+        };
+        session
+            .save(paths, "default", store, &tokens, &SecretString::from("skp"))
+            .unwrap();
+        session
+    }
+
+    fn rewrite_base_url(paths: &Paths, session: &Session, base_url: &str) {
+        let edited = Session {
+            base_url: base_url.into(),
+            ..session.clone()
+        };
+        std::fs::write(
+            paths.session_file("default"),
+            serde_json::to_vec(&edited).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn edited_api_address_does_not_resume_a_session() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let store = MemoryStore::new();
+        let session = saved_session("https://mail.proton.me/api", &paths, &store);
+
+        for edited in ["https://example.test/api", "http://mail.proton.me/api"] {
+            rewrite_base_url(&paths, &session, edited);
+            assert!(matches!(
+                Session::load(&paths, "default", &store),
+                Err(Error::Session(_))
+            ));
+        }
+
+        rewrite_base_url(&paths, &session, "https://mail.proton.me/api");
+        assert!(Session::load(&paths, "default", &store).unwrap().is_some());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn selected_api_address_resumes_only_while_bound() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let store = MemoryStore::new();
+        saved_session("http://127.0.0.1:8080", &paths, &store);
+        assert!(Session::load(&paths, "default", &store).unwrap().is_some());
+
+        store.delete(K_BASE_URL).unwrap();
+        assert!(matches!(
+            Session::load(&paths, "default", &store),
+            Err(Error::Session(_))
+        ));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn session_saved_before_the_binding_resumes_on_the_default_api_only() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let store = MemoryStore::new();
+        let session = saved_session("https://mail.proton.me/api", &paths, &store);
+        store.delete(K_BASE_URL).unwrap();
+        assert!(Session::load(&paths, "default", &store).unwrap().is_some());
+
+        rewrite_base_url(&paths, &session, "https://example.test/api");
+        assert!(matches!(
+            Session::load(&paths, "default", &store),
+            Err(Error::Session(_))
+        ));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn clear_removes_the_bound_api_address() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let store = MemoryStore::new();
+        saved_session("https://mail.proton.me/api", &paths, &store);
+        assert!(store.get(K_BASE_URL).unwrap().is_some());
+
+        Session::clear(&paths, "default", &store).unwrap();
+        assert!(store.get(K_BASE_URL).unwrap().is_none());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
