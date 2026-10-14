@@ -58,7 +58,9 @@ cargo test --locked --workspace --all-features
 ```
 
 CI uses Bash on all runners, including Git Bash on Windows, and sets
-`RUSTDOCFLAGS` through the workflow's `env` field. The Windows job uses the
+`RUSTDOCFLAGS` through the workflow's `env` field. Linux jobs run on
+`ubuntu-24.04` and `ubuntu-24.04-arm`, named rather than `ubuntu-latest` so a
+new Ubuntu reaches CI only through a workflow change. The Windows job uses the
 `windows-2025` x86_64 runner and the native MSVC toolchain. Its cache is separate
 from the Linux and macOS caches. All platforms run the same checks; a failure
 on one platform does not cancel the other jobs.

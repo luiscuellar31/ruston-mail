@@ -32,8 +32,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux images are named rather than -latest, so a new Ubuntu
+          # reaches CI only when this file says so.
           - name: Ubuntu (x86_64)
-            os: ubuntu-latest
+            os: ubuntu-24.04
             cache-key: ubuntu-x86_64
           - name: Ubuntu (arm64)
             os: ubuntu-24.04-arm
@@ -50,7 +52,7 @@ jobs:
 
     steps:
       # Actions are pinned to a commit SHA so CI builds remain deterministic.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -132,9 +134,9 @@ jobs:
 
   deny:
     name: Dependency & license integrity
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
@@ -143,9 +145,9 @@ jobs:
 
   unused-deps:
     name: Unused dependencies
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Untagged upstream: main as of 2026-09-07.
