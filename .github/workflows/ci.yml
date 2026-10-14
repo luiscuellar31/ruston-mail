@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Checks only read the repository; a compromised step gets no write access.
+permissions:
+  contents: read
+
 # A newer push makes the run before it irrelevant.
 concurrency:
   group: ci-${{ github.ref }}
@@ -47,6 +51,8 @@ jobs:
     steps:
       # Actions are pinned to a commit SHA so CI builds remain deterministic.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Toolchain
         run: |
@@ -129,7 +135,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
 
@@ -138,4 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: bnjbvr/cargo-machete@main
+        with:
+          persist-credentials: false
+      # Untagged upstream: main as of 2026-09-07.
+      - uses: bnjbvr/cargo-machete@135555c9cd9f3b4723dee2766f0cacb99aac092b
