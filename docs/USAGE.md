@@ -123,8 +123,9 @@ after the same confirmation.
 When Ruston is selected as your system's email-link handler, an external
 `mailto:` link opens a new message with its recipients, subject, and body.
 You review and send it yourself. Multiple recipients and UTF-8 text are
-supported; CC/BCC, attachments, and arbitrary mail headers in the link are
-ignored. Link bodies are treated as text, never interpreted as HTML.
+supported, but a link whose recipient domain is not written in ASCII is
+rejected, as in the composer; CC/BCC, attachments, and arbitrary mail headers
+in the link are ignored. Link bodies are treated as text, never interpreted as HTML.
 
 If needed, sign in first; the link waits in memory. An existing draft is never
 replaced, including a blank draft or a message being sent. A notice lets you
@@ -175,7 +176,10 @@ attachments already stored on Proton do not count toward this local file limit.
 
 Select **Write** for a new message. Recipient fields accept multiple addresses
 separated by commas or semicolons. Invalid addresses stop the whole send instead
-of being silently skipped.
+of being silently skipped. Domains are written in ASCII: unaccented letters,
+digits, and hyphens. Type an international domain, including one with accents,
+in its `xn--` form. Letters from another script that only look Latin, as in a
+fake `paypal.com`, are refused.
 
 After you leave a recipient field, the composer shows how Proton will protect
 the new message: end-to-end encrypted for every recipient, or a warning that

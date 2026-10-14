@@ -122,6 +122,8 @@ mod tests {
             "mailto:a@example.org#fragment",
             "mailto:a@example.org?subject=%0ABcc:b@example.org",
             "mailto:a%0D@example.org",
+            // A Cyrillic "а" makes this look like paypal.com.
+            "mailto:ceo@p%D0%B0ypal.com",
             "mailto:a@example.org?body=%00",
             "mailto:a@example.org?body=%FF",
             "mailto:a@example.org?body=%0",

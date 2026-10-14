@@ -122,6 +122,10 @@ fn is_address(piece: &str) -> bool {
 
     !local.is_empty()
         && !domain.contains('@')
+        // A domain spelled with letters from another script can pass for a
+        // familiar one, as `pаypal.com` with a Cyrillic "а" does. International
+        // domains are typed in their `xn--` form, which shows the difference.
+        && domain.is_ascii()
         && domain.starts_with(|c: char| c.is_ascii_alphanumeric())
         && domain.ends_with(|c: char| c.is_ascii_alphanumeric())
         && domain.contains('.')
@@ -288,6 +292,22 @@ mod tests {
 
         assert_eq!(read.accepted, ["alex@example.com"]);
         assert_eq!(read.rejected, ["not-an-address", "@nowhere", "a@b"]);
+    }
+
+    #[test]
+    fn look_alike_domains_from_other_scripts_are_refused() {
+        // The "а" in "pаypal" is Cyrillic: the address looks like PayPal's.
+        let read = recipients(
+            "ceo@p\u{430}ypal.com, ivan@\u{43f}\u{43e}\u{447}\u{442}\u{430}.\u{440}\u{444}",
+        );
+        assert!(read.accepted.is_empty());
+        assert_eq!(read.rejected.len(), 2);
+
+        // The same international domain typed in its xn-- form is accepted,
+        // and so is a local part with accents.
+        let read = recipients("ivan@xn--80a1acny.xn--p1ai, jos\u{e9}@example.com");
+        assert!(read.rejected.is_empty());
+        assert_eq!(read.accepted.len(), 2);
     }
 
     #[test]
