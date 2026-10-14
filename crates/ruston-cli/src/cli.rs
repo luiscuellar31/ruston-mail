@@ -33,16 +33,22 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub app_version: Option<String>,
 
+    // Secrets read from the environment: help names the variable, never its value.
     /// TOTP two-factor code (prompted for when required if omitted).
-    #[arg(long, global = true, env = "PROTON_TOTP")]
+    #[arg(long, global = true, env = "PROTON_TOTP", hide_env_values = true)]
     pub totp: Option<String>,
 
     /// Separate mailbox password (two-password accounts).
-    #[arg(long, global = true, env = "PROTON_MAILBOX_PASSWORD")]
+    #[arg(
+        long,
+        global = true,
+        env = "PROTON_MAILBOX_PASSWORD",
+        hide_env_values = true
+    )]
     pub mailbox_password: Option<String>,
 
     /// Pre-solved human-verification (CAPTCHA) token, skips the interactive flow.
-    #[arg(long, global = true, env = "PROTON_HV_TOKEN")]
+    #[arg(long, global = true, env = "PROTON_HV_TOKEN", hide_env_values = true)]
     pub captcha_token: Option<String>,
 
     /// Present as an official client (sets app-version + User-Agent unless overridden).

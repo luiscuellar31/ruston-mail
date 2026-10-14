@@ -87,6 +87,22 @@ mod tests {
     }
 
     #[test]
+    fn help_never_shows_secrets_read_from_the_environment() {
+        let command = Cli::command();
+        for id in ["totp", "mailbox_password", "captcha_token"] {
+            let arg = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .unwrap();
+            assert!(arg.get_env().is_some(), "{id} is read from the environment");
+            assert!(
+                arg.is_hide_env_values_set(),
+                "help would print the value of {id}"
+            );
+        }
+    }
+
+    #[test]
     fn shared_session_profile_is_default_but_can_be_overridden() {
         assert_eq!(
             parse(&["ruston-cli", "whoami"]).profile,
