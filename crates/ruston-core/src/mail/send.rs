@@ -1023,6 +1023,7 @@ mod tests {
                 keys: vec![crypto::keys::StoredKey {
                     armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
                     passphrase: secrecy::SecretString::from("test-passphrase"),
+                    unlocked: None,
                 }],
             }
         })
@@ -1123,6 +1124,7 @@ mod tests {
                 keys: vec![crypto::keys::StoredKey {
                     armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
                     passphrase: secrecy::SecretString::from("test-passphrase"),
+                    unlocked: None,
                 }],
             },
             String::from_utf8(public.as_ref().to_vec()).unwrap(),

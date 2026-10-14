@@ -261,6 +261,7 @@ mod tests {
             keys: vec![StoredKey {
                 armored,
                 passphrase: SecretString::from("pass"),
+                unlocked: None,
             }],
         };
         let upload =

@@ -53,11 +53,17 @@ fn import_privs<P: PGPProviderSync>(
     let mut out = Vec::new();
     for k in &addr.keys {
         use secrecy::ExposeSecret;
-        if let Ok(pk) = provider.private_key_import(
-            k.armored.as_bytes(),
-            k.passphrase.expose_secret().as_bytes(),
-            DataEncoding::Armor,
-        ) {
+        let imported = match &k.unlocked {
+            Some(unlocked) => {
+                provider.private_key_import_unlocked(unlocked.as_slice(), DataEncoding::Bytes)
+            }
+            None => provider.private_key_import(
+                k.armored.as_bytes(),
+                k.passphrase.expose_secret().as_bytes(),
+                DataEncoding::Armor,
+            ),
+        };
+        if let Ok(pk) = imported {
             out.push(pk);
         }
     }
@@ -473,6 +479,7 @@ mod tests {
             keys: vec![StoredKey {
                 armored,
                 passphrase: SecretString::from(pass.to_string()),
+                unlocked: None,
             }],
         };
         (ak, pub_armored)

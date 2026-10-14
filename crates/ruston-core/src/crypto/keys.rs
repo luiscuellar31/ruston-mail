@@ -1,8 +1,9 @@
 //! Key hierarchy: wire types + unlock into an in-memory `KeyStore`.
 //!
 //! Because `proton-crypto`'s key/provider types are unnameable (private
-//! associated types), the `KeyStore` holds *armored key material + the
-//! passphrase that unlocks it*, and each crypto op re-imports as needed.
+//! associated types), the `KeyStore` holds key material that each crypto op
+//! re-imports: an address key's unlocked export, which skips the passphrase
+//! derivation, with the armored key and its passphrase as the fallback.
 
 use super::kdf;
 use crate::error::{Error, Result};
@@ -11,6 +12,7 @@ use proton_crypto::crypto::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
+use zeroize::Zeroizing;
 
 /// A raw API key (user or address).
 #[derive(Debug, Clone, Deserialize)]
@@ -93,6 +95,10 @@ pub struct StoredKey {
     pub armored: String,
     /// Passphrase that unlocks the armored key on re-import.
     pub passphrase: SecretString,
+    /// The same key exported without passphrase protection when it was first
+    /// unlocked. Re-importing it skips the passphrase derivation, which can
+    /// take tens of milliseconds per key; `None` falls back to `armored`.
+    pub unlocked: Option<Zeroizing<Vec<u8>>>,
 }
 
 /// Unlocked keys for one address.
@@ -204,6 +210,8 @@ fn unlock_inner<P: PGPProviderSync>(
             user_stored.push(StoredKey {
                 armored: k.private_key.clone(),
                 passphrase: pass,
+                // Only address keys encrypt, sign and decrypt mail.
+                unlocked: None,
             });
         }
     }
@@ -249,17 +257,18 @@ fn unlock_inner<P: PGPProviderSync>(
                     fallback_pass.clone()
                 }
             };
-            if provider
-                .private_key_import(
-                    k.private_key.as_bytes(),
-                    pass.expose_secret().as_bytes(),
-                    DataEncoding::Armor,
-                )
-                .is_ok()
-            {
+            if let Ok(key) = provider.private_key_import(
+                k.private_key.as_bytes(),
+                pass.expose_secret().as_bytes(),
+                DataEncoding::Armor,
+            ) {
                 keys.push(StoredKey {
                     armored: k.private_key.clone(),
                     passphrase: pass,
+                    unlocked: provider
+                        .private_key_export_unlocked(&key, DataEncoding::Bytes)
+                        .ok()
+                        .map(|bytes| Zeroizing::new(bytes.as_ref().to_vec())),
                 });
             }
         }
@@ -320,6 +329,60 @@ fn decrypt_token<P: PGPProviderSync>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unlocked_address_keys_work_without_their_passphrase() {
+        use proton_crypto::crypto::{KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync};
+
+        let provider = crate::crypto::provider();
+        let api_key = |id: &str, email: &str| {
+            let generated = provider
+                .new_key_generator()
+                .with_user_id("Test", email)
+                .with_algorithm(KeyGeneratorAlgorithm::ECC)
+                .generate()
+                .unwrap();
+            let armored = provider
+                .private_key_export(&generated, "skp", DataEncoding::Armor)
+                .unwrap();
+            ApiKey {
+                id: id.into(),
+                private_key: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+                token: None,
+                signature: None,
+                activation: None,
+                primary: 1,
+                active: 1,
+                flags: None,
+            }
+        };
+        let user = User {
+            id: "user".into(),
+            keys: vec![api_key("user-key", "user@proton.me")],
+        };
+        // Without a token, the address key opens with the user key's passphrase.
+        let address = Address {
+            id: "address".into(),
+            email: "me@proton.me".into(),
+            order: 1,
+            keys: vec![api_key("address-key", "me@proton.me")],
+        };
+        let mut store =
+            unlock_with_skp(&provider, &user, &[address], &SecretString::from("skp")).unwrap();
+
+        let stored = &mut store.addresses[0].keys[0];
+        assert!(
+            stored.unlocked.is_some(),
+            "unlocking keeps an unlocked copy"
+        );
+        // Every later operation uses that copy, not the passphrase.
+        stored.passphrase = SecretString::from("wrong");
+        stored.armored.clear();
+        let address = &store.addresses[0];
+        let draft = crate::crypto::encrypt_self_draft(&provider, address, "hello").unwrap();
+        let (body, _) = crate::crypto::decrypt_body(&provider, address, &[], &draft).unwrap();
+        assert_eq!(body, "hello");
+    }
 
     #[test]
     fn primary_address_is_first() {

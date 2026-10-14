@@ -465,7 +465,9 @@ instead of an unknown outcome.
   targets and server-provided errors keep their existing behavior.
 - [`auth/`](../crates/ruston-core/src/auth/) handles sign-in;
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
-  message cryptography. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
+  message cryptography. Each address key is unlocked once per session and kept
+  as an unlocked export in zeroized memory, so later operations skip its
+  passphrase derivation; the armored key and passphrase stay as a fallback. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
   HTML before either frontend renders it.
 
 ## Where to start
