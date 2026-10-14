@@ -86,11 +86,47 @@ fn totp_prompt() -> TotpPrompt {
     })
 }
 
+/// What logging out told Proton.
+#[derive(Debug)]
+enum Revocation {
+    /// Proton was asked to end the session.
+    Requested,
+    /// The saved session could not be resumed, so only this device forgot it.
+    Skipped(String),
+}
+
+/// Signs out with the resumed session, or, when it cannot be resumed, still
+/// removes it from this device: local cleanup never depends on Proton.
+async fn log_out<F, Fut>(resumed: Result<Client>, forget: F) -> Result<Revocation>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    match resumed {
+        Ok(client) => {
+            client.logout().await?;
+            Ok(Revocation::Requested)
+        }
+        Err(error) => {
+            forget().await?;
+            Ok(Revocation::Skipped(error.to_string()))
+        }
+    }
+}
+
 pub async fn logout(ctx: &Ctx) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
-    client.logout().await?;
+    let revocation = log_out(resume(&ctx.profile).await, || {
+        Client::forget_session(&ctx.profile)
+    })
+    .await?;
+    let revoked = matches!(revocation, Revocation::Requested);
     if ctx.json {
-        render::json_out(&json!({ "status": "ok" }));
+        render::json_out(&json!({ "status": "ok", "revoked": revoked }));
+    } else if let Revocation::Skipped(reason) = revocation {
+        terminal::println!("Logged out on this device");
+        terminal::eprintln!(
+            "Proton was not asked to end the session, which could not be resumed: {reason}"
+        );
     } else {
         terminal::println!("Logged out");
     }
@@ -111,6 +147,28 @@ pub async fn whoami(ctx: &Ctx) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_session_that_cannot_resume_is_still_removed_from_this_device() {
+        let forgot = std::cell::Cell::new(false);
+        let outcome = log_out(Err(Error::Unauthorized), || async {
+            forgot.set(true);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(forgot.get(), "local credentials must go even offline");
+        assert!(matches!(outcome, Revocation::Skipped(reason) if reason.contains("unauthorized")));
+
+        let failed = log_out(Err(Error::Unauthorized), || async {
+            Err(Error::Session("keyring delete: locked".into()))
+        })
+        .await;
+        assert!(
+            matches!(failed, Err(Error::Session(_))),
+            "a failed local cleanup is reported"
+        );
+    }
 
     #[test]
     fn user_agent_defaults_to_honest_cli_identity() {

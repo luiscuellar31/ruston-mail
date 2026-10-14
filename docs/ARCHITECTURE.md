@@ -492,7 +492,9 @@ that lock on a blocking worker before trying remote revocation. The 30-second
 revocation deadline does not include or cancel cleanup, and a started cleanup
 worker continues if its caller is cancelled. Revocation never refreshes tokens.
 Cleanup checks the saved session UID under the profile lock so a pending logout
-cannot erase a replacement login in the same profile.
+cannot erase a replacement login in the same profile. When the CLI cannot resume
+a session to log out, `Client::forget_session` clears it under the same lock
+without contacting Proton.
 Local storage failures reach the CLI and are shown on the desktop sign-in screen;
 the desktop still discards its in-memory mailbox and draft.
 

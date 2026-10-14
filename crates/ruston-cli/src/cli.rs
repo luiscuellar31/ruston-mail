@@ -152,7 +152,8 @@ impl From<&Cli> for Ctx {
 pub enum Command {
     /// Log in to Proton Mail (prompts for credentials unless given via env).
     Login,
-    /// Revoke the server session and clear local state.
+    /// Revoke the server session and clear local state. A session that can no
+    /// longer be resumed is still cleared from this device.
     Logout,
     /// Print the primary email address of the active session.
     Whoami,

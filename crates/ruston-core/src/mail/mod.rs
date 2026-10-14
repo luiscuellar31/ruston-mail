@@ -270,6 +270,21 @@ impl Client {
         cleanup
     }
 
+    /// Remove a profile's saved session without resuming it, for when it can
+    /// no longer be resumed: offline, revoked, after a password change, or
+    /// bound to another API address. Proton is not contacted, so a server
+    /// session that still exists is not revoked.
+    pub async fn forget_session(profile: &str) -> Result<()> {
+        validate_profile_name(profile)?;
+        let profile = profile.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let store = KeyringStore::new(profile.clone());
+            Session::clear(&Paths::system()?, &profile, &store)
+        })
+        .await
+        .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?
+    }
+
     /// The primary sending address email.
     pub fn primary_email(&self) -> Option<&str> {
         self.keys.primary_address().map(|a| a.email.as_str())

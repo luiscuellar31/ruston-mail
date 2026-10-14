@@ -194,7 +194,10 @@ cancelled after cleanup starts. If local storage rejects a removal, the CLI
 reports an error and the desktop warns that credentials may remain on the device;
 the desktop still clears its in-memory mailbox and draft.
 A pending logout checks the saved session identity before deleting it, protecting
-a later login in the same profile.
+a later login in the same profile. When the CLI cannot resume the saved session
+(offline, revoked, after a password change, or bound to another API address),
+`logout` still removes it from the device and says that Proton was not asked to
+end it.
 
 Self-built macOS binaries may ask for Keychain access again after a rebuild.
 Without a stable code signature, macOS can treat each build as a different app.
