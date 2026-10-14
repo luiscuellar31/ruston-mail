@@ -31,6 +31,10 @@ pub const PAGE_SIZE: u32 = 50;
 /// Longest wait for any Proton request a view is waiting on. Without it a
 /// stuck call leaves the view loading forever, with no way back.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Saving an attachment fetches its message and the sender's keys, then the
+/// file itself, which may take core's whole transfer deadline.
+const ATTACHMENT_SAVE_TIMEOUT: Duration = ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT
+    .saturating_add(REQUEST_TIMEOUT.saturating_mul(2));
 /// A complete authentication attempt, including interactive challenges, must
 /// eventually release its credentials even when the server stops responding.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -426,7 +430,13 @@ impl ProtonMailService {
         message_id: &str,
         attachment_id: &str,
     ) -> Result<(String, Vec<u8>), MailboxError> {
-        timed(self.client.download_attachment(message_id, attachment_id)).await
+        timed_with(
+            self.client.download_attachment(message_id, attachment_id),
+            ATTACHMENT_SAVE_TIMEOUT,
+            MailboxError::Connection,
+            map_mailbox_error,
+        )
+        .await
     }
 
     /// Applies a user action to one row: its whole conversation, or the single
@@ -1190,6 +1200,15 @@ mod tests {
         let outcome = map_sign_in_error(cancelled(), false, false);
 
         assert!(matches!(outcome, SignInOutcome::Cancelled));
+    }
+
+    #[test]
+    fn saving_an_attachment_outlasts_core_s_transfer_deadline() {
+        use ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT;
+
+        // The file itself may take core's whole transfer deadline; the
+        // message and the sender's keys come on top of it.
+        assert!(ATTACHMENT_SAVE_TIMEOUT >= ATTACHMENT_REQUEST_TIMEOUT + REQUEST_TIMEOUT * 2);
     }
 
     #[test]

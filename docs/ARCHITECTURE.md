@@ -423,7 +423,9 @@ instead of an unknown outcome.
   authentication headers, token refresh, retries, bounded response bodies, and
   a total deadline per HTTP attempt. Ordinary requests have 60 seconds;
   attachment transfers have 180 seconds. The desktop also applies deadlines to
-  complete view operations; the CLI uses the transport deadlines directly.
+  complete view operations, and those that move attachments (saving one,
+  sending new ones) include the transfer deadline; the CLI uses the transport
+  deadlines directly.
   The application's own safety limits are 32 MiB for ordinary responses and
   128 MiB for encrypted attachment responses. These are transport limits, not
   Proton Mail attachment quotas. Complete attachment multipart uploads also
