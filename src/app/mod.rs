@@ -160,6 +160,8 @@ pub enum Message {
     SetComposeFormat(BodyFormat),
     /// Opens the composer in the reading pane or in its own window.
     SetComposePlacement(ComposePlacement),
+    /// Looks up recipients' encryption while writing, or leaves it to sending.
+    SetCheckRecipientProtection(bool),
     /// Starts a new message.
     OpenCompose,
     ReceiveMailto(crate::mailto::Request),
@@ -770,6 +772,7 @@ impl App {
             Message::SetComposePlacement(placement) => {
                 self.remember(|settings| settings.compose_placement = placement);
             }
+            Message::SetCheckRecipientProtection(on) => self.set_check_recipient_protection(on),
             Message::OpenCompose => {
                 self.showing_settings = false;
                 self.open_compose();

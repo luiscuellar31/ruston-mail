@@ -489,10 +489,23 @@ impl App {
         }
     }
 
+    /// Turns lookups while writing on or off. Turning them off also forgets
+    /// what the open draft looked up, so its notice goes with them and a
+    /// late answer finds nothing waiting for it.
+    pub(super) fn set_check_recipient_protection(&mut self, on: bool) {
+        self.remember(|settings| settings.check_recipient_protection = on);
+        if !on && let Some(compose) = self.compose.as_mut() {
+            compose.protection.clear();
+        }
+    }
+
     /// Looks up protection for typed recipients that were not looked up yet.
     /// Runs when a recipient field loses focus, not on every keystroke, so a
-    /// half-typed address is never sent to Proton.
+    /// half-typed address is never sent to Proton. Settings can turn it off.
     pub(super) fn check_compose_protection(&mut self) -> Effects {
+        if !self.settings.check_recipient_protection {
+            return Effects::none();
+        }
         let epoch = self.session_epoch;
         let Some(compose) = self
             .compose
@@ -780,6 +793,32 @@ mod tests {
             everyone: false,
         };
         assert_eq!(compose.protection_notice(), None);
+    }
+
+    #[test]
+    fn with_the_check_off_nothing_is_asked_and_no_notice_is_shown() {
+        let mut app = composing("plain@example.com");
+        let _ = app.update(Message::ComposeRecipientsLeft);
+        checked(
+            &mut app,
+            vec![("plain@example.com".into(), Ok(Protection::Unencrypted))],
+        );
+        assert!(notice(&app).is_some());
+
+        let _ = app.update(Message::SetCheckRecipientProtection(false));
+        assert!(!app.settings().check_recipient_protection);
+        assert_eq!(notice(&app), None);
+        let _ = app.update(Message::ComposeChanged(
+            ComposeField::To,
+            "plain@example.com, ada@proton.me".into(),
+        ));
+        assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 0);
+        assert_eq!(notice(&app), None);
+
+        // Turned back on, the next field left looks every address up again.
+        let _ = app.update(Message::SetCheckRecipientProtection(true));
+        assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 1);
+        assert_eq!(notice(&app), Some(ProtectionNotice::Checking));
     }
 
     #[test]

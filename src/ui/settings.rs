@@ -174,6 +174,16 @@ fn page(
             ui,
             "How a message you write is sent. Either way you write text: a tag you type is shown as you typed it, never obeyed.",
         );
+        ui.add_space(10.0);
+
+        ui.checkbox(
+            &mut settings.check_recipient_protection,
+            "Check recipient encryption while writing",
+        );
+        description(
+            ui,
+            "When you leave a recipient field, Proton is asked for that address's keys to show whether the message will be end-to-end encrypted. With this off, nothing is asked until you send.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Starting up", |ui| {
@@ -333,6 +343,11 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     }
     if draft.compose_format != current.compose_format {
         messages.push(Message::SetComposeFormat(draft.compose_format));
+    }
+    if draft.check_recipient_protection != current.check_recipient_protection {
+        messages.push(Message::SetCheckRecipientProtection(
+            draft.check_recipient_protection,
+        ));
     }
     if draft.start != current.start {
         messages.push(Message::SetStartFolder(draft.start));
@@ -660,8 +675,14 @@ mod tests {
         draft.desktop_notifications = false;
         draft.appearance = Appearance::Light;
         draft.system_font = true;
+        draft.check_recipient_protection = false;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 6);
+        assert_eq!(changes.len(), 7);
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetCheckRecipientProtection(false)))
+        );
         assert!(
             changes
                 .iter()

@@ -304,6 +304,9 @@ addresses it has not looked up for this draft;
 [`mail/proton.rs`](../src/mail/proton.rs) calls core's `recipient_protection`,
 which classifies the key lookup the way sending picks a package. Answers carry
 the session epoch and draft ID, and an address removed meanwhile is ignored.
+The `check_recipient_protection` preference in
+[`settings.rs`](../src/settings.rs) turns the lookup off; turning it off also
+forgets the open draft's answers, so no notice remains.
 
 Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
 validation, shared by the desktop backend and all SDK/CLI send paths. New local

@@ -172,7 +172,9 @@ the new message: end-to-end encrypted for every recipient, or a warning that
 names the addresses that will not get an end-to-end encrypted copy. Addresses
 are looked up once per draft and only after the field loses focus. If a lookup
 fails, the warning names that address too and claims nothing about it. Replies
-show no notice, because Proton chooses their recipients.
+show no notice, because Proton chooses their recipients. Turn off **Check
+recipient encryption while writing** under Settings → Writing to ask Proton
+nothing until you send; the notice is not shown then.
 
 The composer opens in the reading pane by default, so folders and conversations
 stay visible. Settings can open it in a separate window instead. The same choice
@@ -223,6 +225,7 @@ Settings control:
 - Whether links require confirmation.
 - Whether the composer opens in the reading pane or a new window.
 - Plain-text or HTML sending.
+- Whether the composer checks recipient encryption while you write.
 - The folder shown at startup.
 - Dark or light appearance. Dark remains the default for existing settings.
 - Interface scale.

@@ -20,7 +20,8 @@ keys of each well-formed recipient address after its field loses focus, to show
 whether that copy will be end-to-end encrypted. This is the request sending
 makes for the same address; it happens earlier, and also for a message that is
 never sent. Addresses are not looked up while you type. The demo answers
-locally.
+locally. Turn off **Check recipient encryption while writing** under
+Settings → Writing to make the request only when sending.
 
 In the desktop client, mail and mailbox lists stay in memory while it runs.
 In addition to the conversation on screen, up to eight previously opened

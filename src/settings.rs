@@ -42,6 +42,11 @@ pub struct Settings {
     pub compose_format: BodyFormat,
     /// Where new messages, replies and forwards open.
     pub compose_placement: ComposePlacement,
+    /// Ask Proton for recipients' keys while writing, to show whether a new
+    /// message will be end-to-end encrypted. Off, nothing is asked before
+    /// sending. Settings saved before this choice existed keep it on.
+    #[serde(default = "enabled")]
+    pub check_recipient_protection: bool,
     /// Color scheme of the desktop interface.
     #[serde(default)]
     pub appearance: Appearance,
@@ -74,6 +79,7 @@ impl Default for Settings {
             show_quoted_text: false,
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
+            check_recipient_protection: true,
             appearance: Appearance::Dark,
             system_font: false,
             zoom: 1.0,
@@ -231,6 +237,10 @@ impl Settings {
     }
 }
 
+fn enabled() -> bool {
+    true
+}
+
 fn clamp_ratio(value: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value.clamp(MIN_RATIO, MAX_RATIO)
@@ -301,6 +311,7 @@ mod tests {
         let settings = Settings {
             folder: Folder::System(crate::mail::MailFolder::Archive),
             mark_read_on_open: false,
+            check_recipient_protection: false,
             appearance: Appearance::Light,
             system_font: true,
             ..Settings::default()
@@ -319,6 +330,16 @@ mod tests {
         let restored: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(restored.appearance, Appearance::Dark);
         assert!(!restored.system_font);
+    }
+
+    #[test]
+    fn older_settings_keep_checking_recipient_protection() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("check_recipient_protection");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert!(restored.check_recipient_protection);
     }
 
     #[test]
