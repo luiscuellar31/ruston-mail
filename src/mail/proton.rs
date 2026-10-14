@@ -35,7 +35,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// eventually release its credentials even when the server stops responding.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(120);
 /// Sending is several requests: a draft, a key for every recipient, then the
-/// message. It is given longer than a request that only reads.
+/// message. It is given longer than a request that only reads; uploads add
+/// their own time (see `send_deadline`).
 const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Per-inspection deadline, including semaphore wait; timeouts keep Proton grouping.
@@ -313,7 +314,7 @@ impl ProtonMailService {
 
         timed_with(
             call,
-            SEND_TIMEOUT,
+            send_deadline(outgoing.attachments.len()),
             SendError::Unconfirmed,
             |error| match error {
                 Error::SendUnconfirmed { .. } => SendError::Unconfirmed,
@@ -514,6 +515,17 @@ async fn limited_inspection<T>(
     })
     .await
     .map_err(|_| MailboxError::Unavailable)?
+}
+
+/// How long a send with `attachments` new files may take. Each upload gets
+/// core's own transfer deadline on top of the other steps, so a stalled upload
+/// ends with core's error, which removes the draft and says nothing was sent.
+/// Cutting it off here instead could only report an unknown outcome.
+fn send_deadline(attachments: usize) -> Duration {
+    let uploads = u32::try_from(attachments).unwrap_or(u32::MAX);
+    SEND_TIMEOUT.saturating_add(
+        ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT.saturating_mul(uploads),
+    )
 }
 
 /// Runs one Proton request under `REQUEST_TIMEOUT`. A call that outlives it
@@ -1178,6 +1190,22 @@ mod tests {
         let outcome = map_sign_in_error(cancelled(), false, false);
 
         assert!(matches!(outcome, SignInOutcome::Cancelled));
+    }
+
+    #[test]
+    fn a_send_outlasts_core_s_own_upload_deadlines() {
+        use ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT;
+
+        // Core ends a stalled upload with an error that removes the draft; the
+        // desktop deadline must not cut in first and report an unknown outcome.
+        for attachments in 0..4 {
+            let uploads = ATTACHMENT_REQUEST_TIMEOUT * attachments;
+            assert!(
+                send_deadline(attachments as usize) > uploads + SEND_TIMEOUT / 2,
+                "{attachments} attachment(s) leave too little time"
+            );
+        }
+        assert_eq!(send_deadline(0), SEND_TIMEOUT);
     }
 
     #[test]

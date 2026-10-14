@@ -336,7 +336,10 @@ If the final send request has no reliable success or explicit rejection, core
 outcome and does not try to delete the draft. The desktop leaves the
 composer open and asks the sender to check Sent before trying again; the CLI
 reports the draft ID with the error. A desktop send timeout is also shown as
-unconfirmed because it may happen at any stage of the send pipeline.
+unconfirmed because it may happen at any stage of the send pipeline. That
+deadline adds core's 180-second transfer deadline for every new attachment, so
+a stalled upload ends with core's definite error, which removes the draft,
+instead of an unknown outcome.
 
 ## CLI and core boundaries
 

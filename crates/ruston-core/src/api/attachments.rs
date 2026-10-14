@@ -10,8 +10,9 @@ const BOUNDARY: &str = "----protoncliBOUNDARYx7MA4YWxkTrZu0gW";
 pub const MAX_ATTACHMENT_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
 /// Maximum complete multipart upload (128 MiB), a local transport safety limit.
 pub const MAX_ATTACHMENT_UPLOAD_BYTES: usize = 128 * 1024 * 1024;
-/// Larger transfers have a longer deadline than small JSON requests.
-const ATTACHMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+/// Larger transfers have a longer deadline than small JSON requests. Each
+/// attachment upload or download gets this long.
+pub const ATTACHMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Deserialize)]
 struct UploadResp {
