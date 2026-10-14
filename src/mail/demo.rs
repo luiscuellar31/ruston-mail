@@ -950,6 +950,20 @@ fn fixture_index(id: &str) -> Option<usize> {
     id.strip_prefix("demo-")?.parse().ok()
 }
 
+/// Fictional protection: the demo treats Proton's own domains as encrypted
+/// and every other address as unencrypted, so both states can be seen.
+pub fn protection(address: &str) -> super::Protection {
+    let domain = address.rsplit('@').next().unwrap_or_default();
+    let proton = ["proton.me", "protonmail.com", "pm.me"]
+        .iter()
+        .any(|known| domain.eq_ignore_ascii_case(known));
+    if proton {
+        super::Protection::EndToEnd
+    } else {
+        super::Protection::Unencrypted
+    }
+}
+
 pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1101,6 +1115,18 @@ fn non_empty(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demo_protection_depends_only_on_the_address() {
+        use crate::mail::Protection;
+
+        for address in ["ada@proton.me", "ada@PM.ME", "ada@protonmail.com"] {
+            assert_eq!(protection(address), Protection::EndToEnd, "{address}");
+        }
+        for address in ["plain@example.com", "ada@proton.me.example.com"] {
+            assert_eq!(protection(address), Protection::Unencrypted, "{address}");
+        }
+    }
 
     pub(super) const NOW: i64 = 1_789_000_000;
 

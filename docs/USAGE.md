@@ -167,6 +167,13 @@ Select **Write** for a new message. Recipient fields accept multiple addresses
 separated by commas or semicolons. Invalid addresses stop the whole send instead
 of being silently skipped.
 
+After you leave a recipient field, the composer shows how Proton will protect
+the new message: end-to-end encrypted for every recipient, or a warning that
+names the addresses that will not get an end-to-end encrypted copy. Addresses
+are looked up once per draft and only after the field loses focus. If a lookup
+fails, the warning names that address too and claims nothing about it. Replies
+show no notice, because Proton chooses their recipients.
+
 The composer opens in the reading pane by default, so folders and conversations
 stay visible. Settings can open it in a separate window instead. The same choice
 applies to new messages, replies, and forwards.

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use crate::mail::{BodyFormat, Kind, MailMessage, Outgoing, SendError, recipients};
+use crate::mail::{
+    BodyFormat, Kind, MailMessage, Outgoing, Protection, ProtectionCheck, SendError, recipients,
+};
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
 
@@ -37,6 +39,65 @@ impl NotReady {
     }
 }
 
+/// What is known about how one recipient's copy will be protected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Checked {
+    /// Asked, no answer yet.
+    Checking,
+    Known(Protection),
+    /// The lookup failed; nothing is claimed either way.
+    Unknown,
+}
+
+/// What the composer says about protection before a new message is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProtectionNotice {
+    Checking,
+    /// Every recipient has a key the message will be encrypted to.
+    Encrypted,
+    /// Some recipients will not get an end-to-end encrypted copy, or could
+    /// not be checked. Both are named, so an unchecked address never reads
+    /// as encrypted.
+    Warning {
+        unencrypted: Vec<String>,
+        unknown: Vec<String>,
+    },
+}
+
+impl ProtectionNotice {
+    pub fn is_warning(&self) -> bool {
+        matches!(self, Self::Warning { .. })
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::Checking => "Checking how this message will be protected…".to_owned(),
+            Self::Encrypted => {
+                "Proton will end-to-end encrypt this message for every recipient.".to_owned()
+            }
+            Self::Warning {
+                unencrypted,
+                unknown,
+            } => {
+                let mut lines = Vec::new();
+                if !unencrypted.is_empty() {
+                    lines.push(format!(
+                        "Proton will not end-to-end encrypt this message for: {}",
+                        unencrypted.join(", ")
+                    ));
+                }
+                if !unknown.is_empty() {
+                    lines.push(format!(
+                        "Could not check how this message will be protected for: {}",
+                        unknown.join(", ")
+                    ));
+                }
+                lines.join("\n")
+            }
+        }
+    }
+}
+
 /// How far along a message is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sending {
@@ -68,6 +129,9 @@ pub struct Compose {
     subject: String,
     body: String,
     attachments: Vec<PathBuf>,
+    /// Protection looked up for typed recipients, by address as typed. An
+    /// address leaves this list as soon as it leaves every recipient field.
+    protection: Vec<(String, Checked)>,
     /// Whether the copy fields are on show. They start hidden: most mail goes
     /// to one person.
     more: bool,
@@ -108,6 +172,14 @@ impl Compose {
             ComposeField::Body => &mut self.body,
         };
         *slot = value;
+        if matches!(
+            field,
+            ComposeField::To | ComposeField::Cc | ComposeField::Bcc
+        ) {
+            let typed = self.typed_recipients();
+            self.protection
+                .retain(|(address, _)| typed.iter().any(|other| other == address));
+        }
         self.confirming_discard = false;
         // Keep an unconfirmed-send warning visible even if the draft changes.
         if matches!(self.state, State::Failed(ref error) if *error != SendError::Unconfirmed) {
@@ -121,6 +193,59 @@ impl Compose {
 
     pub fn confirming_discard(&self) -> bool {
         self.confirming_discard
+    }
+
+    /// Every well-formed address in the recipient fields, once each.
+    fn typed_recipients(&self) -> Vec<String> {
+        let mut typed: Vec<String> = Vec::new();
+        for field in [&self.to, &self.cc, &self.bcc] {
+            for address in recipients(field).accepted {
+                if !typed
+                    .iter()
+                    .any(|other| other.eq_ignore_ascii_case(&address))
+                {
+                    typed.push(address);
+                }
+            }
+        }
+        typed
+    }
+
+    /// What to say about protection, once every typed recipient was looked
+    /// up. Silent while an address is still unchecked, so a partial answer
+    /// never reads as the whole one. Replies stay silent: Proton chooses
+    /// their recipients when it sends them.
+    pub fn protection_notice(&self) -> Option<ProtectionNotice> {
+        if !self.asks_for_recipients() {
+            return None;
+        }
+        let typed = self.typed_recipients();
+        let mut checked = Vec::with_capacity(typed.len());
+        for address in &typed {
+            let (_, state) = self.protection.iter().find(|(other, _)| other == address)?;
+            checked.push((address, *state));
+        }
+        let with = |wanted: fn(Checked) -> bool| -> Vec<String> {
+            checked
+                .iter()
+                .filter(|(_, state)| wanted(*state))
+                .map(|(address, _)| (*address).clone())
+                .collect()
+        };
+        let unencrypted = with(|state| state == Checked::Known(Protection::Unencrypted));
+        let unknown = with(|state| state == Checked::Unknown);
+        if checked.is_empty() {
+            None
+        } else if !unencrypted.is_empty() || !unknown.is_empty() {
+            Some(ProtectionNotice::Warning {
+                unencrypted,
+                unknown,
+            })
+        } else if checked.iter().any(|(_, state)| *state == Checked::Checking) {
+            Some(ProtectionNotice::Checking)
+        } else {
+            Some(ProtectionNotice::Encrypted)
+        }
     }
 
     pub fn attachments(&self) -> &[PathBuf] {
@@ -364,6 +489,65 @@ impl App {
         }
     }
 
+    /// Looks up protection for typed recipients that were not looked up yet.
+    /// Runs when a recipient field loses focus, not on every keystroke, so a
+    /// half-typed address is never sent to Proton.
+    pub(super) fn check_compose_protection(&mut self) -> Effects {
+        let epoch = self.session_epoch;
+        let Some(compose) = self
+            .compose
+            .as_mut()
+            .filter(|c| !c.in_flight() && c.asks_for_recipients())
+        else {
+            return Effects::none();
+        };
+        let unchecked: Vec<String> = compose
+            .typed_recipients()
+            .into_iter()
+            .filter(|address| !compose.protection.iter().any(|(other, _)| other == address))
+            .collect();
+        if unchecked.is_empty() {
+            return Effects::none();
+        }
+        let Some(backend) = self.backend.clone() else {
+            return Effects::none();
+        };
+        for address in &unchecked {
+            compose
+                .protection
+                .push((address.clone(), Checked::Checking));
+        }
+        let id = compose.id;
+        Effects::perform(
+            async move { backend.protection(&unchecked).await },
+            move |checks| Message::ComposeProtectionChecked(epoch, id, checks),
+        )
+    }
+
+    /// Records answers for addresses that are still typed and still waiting.
+    pub(super) fn finish_protection_check(
+        &mut self,
+        epoch: super::SessionEpoch,
+        id: ComposeId,
+        checks: Vec<ProtectionCheck>,
+    ) {
+        if !self.is_current_session(epoch) {
+            return;
+        }
+        let Some(compose) = self.compose.as_mut().filter(|c| c.id == id) else {
+            return;
+        };
+        for (address, result) in checks {
+            if let Some((_, state)) = compose
+                .protection
+                .iter_mut()
+                .find(|(other, state)| *other == address && *state == Checked::Checking)
+            {
+                *state = result.map_or(Checked::Unknown, Checked::Known);
+            }
+        }
+    }
+
     /// Hands the message over, if it is ready and no other is already gone.
     pub(super) fn send_compose(&mut self) -> Effects {
         let epoch = self.session_epoch;
@@ -418,6 +602,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail::MailboxError;
 
     fn written(to: &str) -> Compose {
         let mut compose = Compose::default();
@@ -425,6 +610,176 @@ mod tests {
         compose.set(ComposeField::Subject, "  Thursday  ".to_owned());
         compose.set(ComposeField::Body, "See you then.".to_owned());
         compose
+    }
+
+    fn composing(to: &str) -> App {
+        let (mut app, _) = App::boot(true, crate::settings::Settings::default());
+        let _ = app.update(Message::OpenCompose);
+        let _ = app.update(Message::ComposeChanged(ComposeField::To, to.to_owned()));
+        app
+    }
+
+    fn checked(app: &mut App, checks: Vec<ProtectionCheck>) {
+        let epoch = app.session_epoch;
+        let id = app.compose().unwrap().id();
+        let _ = app.update(Message::ComposeProtectionChecked(epoch, id, checks));
+    }
+
+    fn notice(app: &App) -> Option<ProtectionNotice> {
+        app.compose().unwrap().protection_notice()
+    }
+
+    #[test]
+    fn protection_is_looked_up_when_a_recipient_field_is_left() {
+        let mut app = composing("ada@proton.me, half-typed");
+        assert_eq!(notice(&app), None);
+
+        let effects = app.update(Message::ComposeRecipientsLeft);
+        assert_eq!(effects.units(), 1);
+        assert_eq!(notice(&app), Some(ProtectionNotice::Checking));
+
+        // Nothing new to ask about: the same address is not looked up twice.
+        assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 0);
+
+        checked(
+            &mut app,
+            vec![("ada@proton.me".into(), Ok(Protection::EndToEnd))],
+        );
+        assert_eq!(notice(&app), Some(ProtectionNotice::Encrypted));
+    }
+
+    #[test]
+    fn an_unencrypted_recipient_is_named() {
+        let mut app = composing("ada@proton.me; key@example.org, plain@example.com");
+        let _ = app.update(Message::ComposeRecipientsLeft);
+        checked(
+            &mut app,
+            vec![
+                ("ada@proton.me".into(), Ok(Protection::EndToEnd)),
+                ("key@example.org".into(), Ok(Protection::Pgp)),
+                ("plain@example.com".into(), Ok(Protection::Unencrypted)),
+            ],
+        );
+
+        assert_eq!(
+            notice(&app),
+            Some(ProtectionNotice::Warning {
+                unencrypted: vec!["plain@example.com".into()],
+                unknown: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_lookup_claims_nothing() {
+        let mut app = composing("ada@proton.me");
+        let _ = app.update(Message::ComposeRecipientsLeft);
+        checked(
+            &mut app,
+            vec![("ada@proton.me".into(), Err(MailboxError::Connection))],
+        );
+
+        assert_eq!(
+            notice(&app),
+            Some(ProtectionNotice::Warning {
+                unencrypted: Vec::new(),
+                unknown: vec!["ada@proton.me".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn an_unchecked_recipient_is_named_beside_an_unencrypted_one() {
+        let mut app = composing("plain@example.com, ada@proton.me");
+        let _ = app.update(Message::ComposeRecipientsLeft);
+        checked(
+            &mut app,
+            vec![
+                ("plain@example.com".into(), Ok(Protection::Unencrypted)),
+                ("ada@proton.me".into(), Err(MailboxError::Connection)),
+            ],
+        );
+
+        let notice = notice(&app).unwrap();
+        assert_eq!(
+            notice,
+            ProtectionNotice::Warning {
+                unencrypted: vec!["plain@example.com".into()],
+                unknown: vec!["ada@proton.me".into()],
+            }
+        );
+        let message = notice.message();
+        assert!(message.contains("plain@example.com"), "{message}");
+        assert!(message.contains("ada@proton.me"), "{message}");
+    }
+
+    #[test]
+    fn a_new_address_silences_the_notice_until_it_is_checked() {
+        let mut app = composing("ada@proton.me");
+        let _ = app.update(Message::ComposeRecipientsLeft);
+        checked(
+            &mut app,
+            vec![("ada@proton.me".into(), Ok(Protection::EndToEnd))],
+        );
+
+        let _ = app.update(Message::ComposeChanged(
+            ComposeField::To,
+            "ada@proton.me, plain@example.com".into(),
+        ));
+        assert_eq!(notice(&app), None);
+
+        // Only the new address is asked about.
+        assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 1);
+        assert_eq!(notice(&app), Some(ProtectionNotice::Checking));
+    }
+
+    #[test]
+    fn an_answer_for_a_removed_address_is_dropped() {
+        let mut app = composing("plain@example.com");
+        let _ = app.update(Message::ComposeRecipientsLeft);
+        let _ = app.update(Message::ComposeChanged(
+            ComposeField::To,
+            "ada@proton.me".into(),
+        ));
+        checked(
+            &mut app,
+            vec![("plain@example.com".into(), Ok(Protection::Unencrypted))],
+        );
+
+        assert_eq!(notice(&app), None);
+    }
+
+    #[test]
+    fn an_answer_for_another_draft_is_dropped() {
+        let mut app = composing("plain@example.com");
+        let _ = app.update(Message::ComposeRecipientsLeft);
+        let epoch = app.session_epoch;
+        let stale = app.compose().unwrap().id() + 1;
+        let _ = app.update(Message::ComposeProtectionChecked(
+            epoch,
+            stale,
+            vec![("plain@example.com".into(), Ok(Protection::Unencrypted))],
+        ));
+
+        assert_eq!(notice(&app), Some(ProtectionNotice::Checking));
+    }
+
+    #[test]
+    fn a_reply_says_nothing_about_protection() {
+        let mut compose = written("ada@proton.me");
+        compose
+            .protection
+            .push(("ada@proton.me".into(), Checked::Known(Protection::EndToEnd)));
+        assert_eq!(
+            compose.protection_notice(),
+            Some(ProtectionNotice::Encrypted)
+        );
+
+        compose.kind = Kind::Reply {
+            message_id: "message".into(),
+            everyone: false,
+        };
+        assert_eq!(compose.protection_notice(), None);
     }
 
     #[test]
