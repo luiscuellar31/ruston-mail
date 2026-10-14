@@ -643,8 +643,8 @@ fn message_header(
     let copy_rect = header_copy_rect(rect);
     let painter = ui.painter_at(rect);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
-    let separate_address =
-        expanded && message.sender.name.is_some() && !message.sender.address.is_empty();
+    let named = message.sender.name.is_some() && !message.sender.address.is_empty();
+    let separate_address = expanded && named;
     let identity_top =
         copy_rect.left_top() + egui::vec2(0.0, if separate_address { 20.0 } else { 0.0 });
     let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
@@ -658,14 +658,29 @@ fn message_header(
     } else {
         SIGNATURE_ICON_INSET
     };
-    theme::paint_truncated_text(
-        &painter,
-        copy_rect.left_top() + egui::vec2(sender_inset, 0.0),
-        sender,
-        FontId::proportional(14.0),
-        ui.visuals().strong_text_color(),
-        (copy_rect.width() - sender_inset).max(0.0),
-    );
+    let sender_origin = copy_rect.left_top() + egui::vec2(sender_inset, 0.0);
+    let sender_width = (copy_rect.width() - sender_inset).max(0.0);
+    if named && !expanded {
+        // The lock vouches for the address, never for the name the sender
+        // chose, so a collapsed card keeps the address beside that name.
+        paint_name_and_address(
+            ui,
+            &painter,
+            sender_origin,
+            sender,
+            &message.sender.address,
+            sender_width,
+        );
+    } else {
+        theme::paint_truncated_text(
+            &painter,
+            sender_origin,
+            sender,
+            FontId::proportional(14.0),
+            ui.visuals().strong_text_color(),
+            sender_width,
+        );
+    }
     if expanded {
         if separate_address {
             header_detail(
@@ -706,11 +721,16 @@ fn message_header(
         theme::colors(ui).muted,
     );
 
+    let identity = if named {
+        format!("{sender} <{}>", message.sender.address)
+    } else {
+        sender.to_owned()
+    };
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::CollapsingHeader,
             true,
-            format!("{sender}, {status}"),
+            format!("{identity}, {status}"),
         )
     });
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -719,6 +739,43 @@ fn message_header(
     } else {
         response.on_hover_text(if expanded { "Collapse" } else { "Expand" })
     }
+}
+
+/// Paints `name <address>` on one line. The address keeps up to two thirds of
+/// the width, so the name is cut first.
+fn paint_name_and_address(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    name: &str,
+    address: &str,
+    width: f32,
+) {
+    const GAP: f32 = 6.0;
+    let muted = theme::colors(ui).muted;
+    let strong = ui.visuals().strong_text_color();
+    let address = theme::truncated_galley(
+        painter,
+        &format!("<{address}>"),
+        FontId::proportional(12.0),
+        muted,
+        width * 2.0 / 3.0,
+    );
+    let name = theme::truncated_galley(
+        painter,
+        name,
+        FontId::proportional(14.0),
+        strong,
+        (width - address.size().x - GAP).max(0.0),
+    );
+    // Share the name's baseline rather than its top edge.
+    let address_origin = origin
+        + egui::vec2(
+            name.size().x + GAP,
+            (name.size().y - address.size().y).max(0.0),
+        );
+    painter.galley(origin, name, strong);
+    painter.galley(address_origin, address, muted);
 }
 
 fn message_header_height(expanded: bool) -> f32 {
@@ -1720,6 +1777,54 @@ mod tests {
         );
         assert!(
             matches!(messages.as_slice(), [Message::Answer { message_id, forward: false, everyone: false }] if message_id == "message-0")
+        );
+    }
+
+    #[test]
+    fn a_collapsed_card_shows_the_real_address_beside_the_lock() {
+        let message = MailMessage {
+            id: "message".into(),
+            verdict: Verdict::Verified,
+            sender: address(Some("PayPal <service@paypal.com>"), "phish@proton.me"),
+            recipients: Vec::new(),
+            reply_to: Vec::new(),
+            reply_all_cc: Vec::new(),
+            time: None,
+            body: MessageBody::PlainText("Preview".into()),
+            attachments: Vec::new(),
+        };
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(420.0);
+            message_header(ui, &message, "Preview", false);
+        });
+        let texts: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        let labels: Vec<String> = output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| &update.nodes)
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        output.drop_without_applying_deltas();
+
+        // A signature vouches for the address, never for the name it chose.
+        assert!(
+            texts.iter().any(|text| text.contains("phish@proton.me")),
+            "collapsed card hides the address: {texts:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label.contains("phish@proton.me")),
+            "screen readers hear only the name: {labels:?}"
         );
     }
 

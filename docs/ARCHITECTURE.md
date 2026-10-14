@@ -242,7 +242,8 @@ creates an owned URL string when dispatching a link click.
 The adapter maps the entire core `FullMessage` into `MailMessage`, preserving
 the body's `Verdict` through both conversation and individual message reads.
 The reader shows body signature status beside the sender's address, including
-collapsed cards: a closed lock only for verified signatures, an open lock for
+collapsed cards, where the address follows the sender's display name and the
+name is truncated first: a closed lock only for verified signatures, an open lock for
 unsigned or unverified bodies, and a danger-colored warning for invalid
 signatures.
 Hover text and accessibility labels explain the verdict. The sender's domain

@@ -357,12 +357,24 @@ pub fn paint_truncated_text_aligned(
     color: Color32,
     max_width: f32,
 ) {
+    let galley = truncated_galley(painter, text, font_id, color, max_width);
+    let position = align.anchor_size(anchor, galley.size()).min;
+    painter.galley(position, galley, color);
+}
+
+/// Lays out one line cut to `max_width`, for callers that need its size
+/// before placing it.
+pub fn truncated_galley(
+    painter: &egui::Painter,
+    text: &str,
+    font_id: egui::FontId,
+    color: Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
     let width = max_width.max(0.0);
     let mut job = egui::text::LayoutJob::simple(text.to_owned(), font_id, color, width);
     job.wrap = egui::text::TextWrapping::truncate_at_width(width);
-    let galley = painter.layout_job(job);
-    let position = align.anchor_size(anchor, galley.size()).min;
-    painter.galley(position, galley, color);
+    painter.layout_job(job)
 }
 
 /// Paints the paperclip missing from egui's bundled fonts.

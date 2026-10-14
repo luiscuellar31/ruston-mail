@@ -82,7 +82,9 @@ folders, submit a search, refresh, or sign out. Conversations keep Proton's
 grouping when a check cannot run or finish.
 
 Each message shows its body signature status, even when folded: verified,
-unsigned, not verified, or invalid. An invalid signature is highlighted in red;
+unsigned, not verified, or invalid. Folded messages keep the sender's address
+next to the name the sender chose, because a signature vouches for the address,
+not for the name. An invalid signature is highlighted in red;
 treat that message's contents with caution. The status applies to the body,
 not to its attachments. Verification uses available sender keys and does not
 establish the sender's identity independently.
