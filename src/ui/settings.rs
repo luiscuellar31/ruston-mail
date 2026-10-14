@@ -174,16 +174,6 @@ fn page(
             ui,
             "How a message you write is sent. Either way you write text: a tag you type is shown as you typed it, never obeyed.",
         );
-        ui.add_space(10.0);
-
-        ui.checkbox(
-            &mut settings.check_recipient_protection,
-            "Check recipient encryption while writing",
-        );
-        description(
-            ui,
-            "When you leave a recipient field, Proton is asked for that address's keys to show whether the message will be end-to-end encrypted. With this off, nothing is asked until you send.",
-        );
     });
     ui.add_space(14.0);
     section(ui, "Starting up", |ui| {
@@ -261,6 +251,27 @@ fn page(
             messages.push(Message::ResetLayout);
         }
         description(ui, "Restores the default layout immediately.");
+    });
+    ui.add_space(14.0);
+    section(ui, "Advanced", |ui| {
+        ui.checkbox(
+            &mut settings.check_recipient_protection,
+            "Check recipient encryption while writing",
+        );
+        description(
+            ui,
+            "When you leave a recipient field, Proton is asked for that address's keys to show whether the message will be end-to-end encrypted. With this off, nothing is asked until you send.",
+        );
+        ui.add_space(6.0);
+
+        ui.checkbox(
+            &mut settings.accept_international_domains,
+            "Accept international domain names",
+        );
+        description(
+            ui,
+            "Lets you write to a domain such as münchen.de. It is sent in its ASCII form, xn--mnchen-3ya.de, which the composer shows beside it: letters from another script can imitate a familiar domain. Email links still refuse such domains.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Keyboard", |ui| {
@@ -347,6 +358,11 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     if draft.check_recipient_protection != current.check_recipient_protection {
         messages.push(Message::SetCheckRecipientProtection(
             draft.check_recipient_protection,
+        ));
+    }
+    if draft.accept_international_domains != current.accept_international_domains {
+        messages.push(Message::SetAcceptInternationalDomains(
+            draft.accept_international_domains,
         ));
     }
     if draft.start != current.start {
@@ -521,6 +537,47 @@ mod tests {
     }
 
     #[test]
+    fn advanced_choices_share_a_card_after_the_everyday_ones() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 4000.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                page(
+                    ui,
+                    &mut Settings::default(),
+                    &mut Vec::new(),
+                    super::super::notifications::Status::Off,
+                )
+            },
+        );
+        let find = |label| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| text_rect(&shape.shape, label))
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        let advanced = find("Advanced");
+        assert!(advanced.top() > find("Interface").top());
+        for choice in [
+            "Check recipient encryption while writing",
+            "Accept international domain names",
+        ] {
+            let choice = find(choice);
+            assert!(choice.top() > advanced.top());
+            assert!(choice.bottom() < find("Keyboard").top());
+        }
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
     fn about_fits_both_themes_and_source_button_requests_the_repository() {
         for appearance in [Appearance::Dark, Appearance::Light] {
             for width in [240.0, 720.0] {
@@ -676,12 +733,18 @@ mod tests {
         draft.appearance = Appearance::Light;
         draft.system_font = true;
         draft.check_recipient_protection = false;
+        draft.accept_international_domains = true;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 7);
+        assert_eq!(changes.len(), 8);
         assert!(
             changes
                 .iter()
                 .any(|message| matches!(message, Message::SetCheckRecipientProtection(false)))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetAcceptInternationalDomains(true)))
         );
         assert!(
             changes

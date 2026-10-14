@@ -44,8 +44,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`src/mailto.rs`](../src/mailto.rs) accepts only recipient, subject, and plain
   text body defaults. It decodes UTF-8 escapes once, preserves literal `+`,
   rejects control/header injection and ambiguous duplicate fields, and ignores
-  unsupported headers/attachments. URLs are limited to 16 KiB. Its request
-  fields are private, so requests are constructed only by this parser.
+  unsupported headers/attachments. Recipients pass the composer's address
+  check with ASCII domains only, whatever Settings allow for typed ones.
+  URLs are limited to 16 KiB. Its request fields are private, so requests are
+  constructed only by this parser.
   Each external ingress (arguments, TCP, or Apple Events) validates once;
   process-local `Activate`, `Mailto(Request)`, and `Rejected` events carry the
   outcome to the shell. Argument URIs are retained only until startup/forwarding;
@@ -232,6 +234,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   them before leaving for a folder, composer, or sign-out. Resetting the layout
   immediately restores the default window and pane sizes in `App`; the UI
   requests the window resize and clears egui's cached pane widths once it settles.
+  Choices most people can leave alone, recipient encryption lookups and
+  international domain names, share an Advanced card before Keyboard.
   Settings ends with an About card containing the existing logo, package version,
   technology and author credits, license, and a Source code button. The button
   dispatches `OpenSourceCode` through `App`, which opens the package repository
@@ -323,6 +327,16 @@ the session epoch and draft ID, and an address removed meanwhile is ignored.
 The `check_recipient_protection` preference in
 [`settings.rs`](../src/settings.rs) turns the lookup off; turning it off also
 forgets the open draft's answers, so no notice remains.
+
+[`mail/outgoing.rs`](../src/mail/outgoing.rs) reads recipient fields under a
+`Domains` rule that takes ASCII domains only, unless the
+`accept_international_domains` preference is on. Then a domain in another
+script is converted to its IDNA `xn--` form with `url::Host::parse`, after
+refusing percent escapes and results that are not domain names. The address is
+looked up and sent in that form, and each typed domain is kept beside it for
+the composer's warning. The draft holds the rule from Settings when it opens
+and follows a change at once, forgetting lookups for addresses that change
+form. Email links always use the ASCII rule.
 
 Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
 validation, shared by the desktop backend and all SDK/CLI send paths. New local

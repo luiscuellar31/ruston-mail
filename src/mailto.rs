@@ -60,7 +60,9 @@ impl Request {
         {
             return None;
         }
-        let recipients = crate::mail::recipients(&to);
+        // Links come from elsewhere, so a domain in another script is refused
+        // whatever Settings let the composer take from the keyboard.
+        let recipients = crate::mail::recipients(&to, crate::mail::Domains::Ascii);
         if !recipients.rejected.is_empty() {
             return None;
         }

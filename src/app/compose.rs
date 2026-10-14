@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use crate::mail::{
-    BodyFormat, Kind, MailMessage, Outgoing, Protection, ProtectionCheck, SendError, recipients,
+    BodyFormat, Domains, InternationalDomain, Kind, MailMessage, Outgoing, Protection,
+    ProtectionCheck, SendError, recipients,
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
@@ -137,7 +138,9 @@ pub struct Compose {
     subject: String,
     body: String,
     attachments: Vec<PathBuf>,
-    /// Protection looked up for typed recipients, by address as typed. An
+    /// Which domains the recipient fields take, from Settings.
+    domains: Domains,
+    /// Protection looked up for typed recipients, by address as sent. An
     /// address leaves this list as soon as it leaves every recipient field.
     protection: Vec<(String, Checked)>,
     /// Whether the copy fields are on show. They start hidden: most mail goes
@@ -184,15 +187,26 @@ impl Compose {
             field,
             ComposeField::To | ComposeField::Cc | ComposeField::Bcc
         ) {
-            let typed = self.typed_recipients();
-            self.protection
-                .retain(|(address, _)| typed.iter().any(|other| other == address));
+            self.forget_removed_recipients();
         }
         self.confirming_discard = false;
         // Keep an unconfirmed-send warning visible even if the draft changes.
         if matches!(self.state, State::Failed(ref error) if *error != SendError::Unconfirmed) {
             self.state = State::Writing;
         }
+    }
+
+    /// Reads the recipient fields under another rule for domains. An address
+    /// that changes form or stops being taken loses what was looked up.
+    fn set_domains(&mut self, domains: Domains) {
+        self.domains = domains;
+        self.forget_removed_recipients();
+    }
+
+    fn forget_removed_recipients(&mut self) {
+        let typed = self.typed_recipients();
+        self.protection
+            .retain(|(address, _)| typed.iter().any(|other| other == address));
     }
 
     pub fn showing_more(&self) -> bool {
@@ -207,7 +221,7 @@ impl Compose {
     fn typed_recipients(&self) -> Vec<String> {
         let mut typed: Vec<String> = Vec::new();
         for field in [&self.to, &self.cc, &self.bcc] {
-            for address in recipients(field).accepted {
+            for address in recipients(field, self.domains).accepted {
                 if !typed
                     .iter()
                     .any(|other| other.eq_ignore_ascii_case(&address))
@@ -254,6 +268,32 @@ impl Compose {
         } else {
             Some(ProtectionNotice::Encrypted)
         }
+    }
+
+    /// Each domain typed in another script beside the ASCII form the message
+    /// goes to, so a look-alike of a familiar domain shows for what it is.
+    pub fn international_notice(&self) -> Option<String> {
+        let mut domains: Vec<InternationalDomain> = Vec::new();
+        for field in [&self.to, &self.cc, &self.bcc] {
+            for domain in recipients(field, self.domains).international {
+                if !domains.contains(&domain) {
+                    domains.push(domain);
+                }
+            }
+        }
+        if domains.is_empty() {
+            return None;
+        }
+        let mut lines = vec![
+            "Check that each domain is the one you mean: letters from another script can imitate a familiar one."
+                .to_owned(),
+        ];
+        lines.extend(
+            domains
+                .iter()
+                .map(|domain| format!("{} is sent as {}", domain.typed, domain.ascii)),
+        );
+        Some(lines.join("\n"))
     }
 
     pub fn attachments(&self) -> &[PathBuf] {
@@ -328,9 +368,9 @@ impl Compose {
     /// The message to send, or its validation error. Subjects are optional.
     fn ready(&self, format: BodyFormat) -> Result<Outgoing, NotReady> {
         let (to, cc, bcc) = (
-            recipients(&self.to),
-            recipients(&self.cc),
-            recipients(&self.bcc),
+            recipients(&self.to, self.domains),
+            recipients(&self.cc, self.domains),
+            recipients(&self.bcc, self.domains),
         );
 
         let rejected: Vec<String> = to
@@ -374,6 +414,7 @@ impl App {
             let id = self.next_compose_id();
             self.compose = Some(Compose {
                 id,
+                domains: self.settings.recipient_domains(),
                 ..Compose::default()
             });
         }
@@ -447,6 +488,7 @@ impl App {
                 cc,
                 redirected_from,
             }),
+            domains: self.settings.recipient_domains(),
             ..Compose::default()
         });
     }
@@ -524,6 +566,16 @@ impl App {
         self.remember(|settings| settings.check_recipient_protection = on);
         if !on && let Some(compose) = self.compose.as_mut() {
             compose.protection.clear();
+        }
+    }
+
+    /// Takes domains in other scripts, or stops taking them. The open draft
+    /// follows at once, so what Send would do matches what Settings say.
+    pub(super) fn set_accept_international_domains(&mut self, on: bool) {
+        self.remember(|settings| settings.accept_international_domains = on);
+        let domains = self.settings.recipient_domains();
+        if let Some(compose) = self.compose.as_mut() {
+            compose.set_domains(domains);
         }
     }
 
@@ -903,6 +955,80 @@ mod tests {
         let _ = app.update(Message::SetCheckRecipientProtection(true));
         assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 1);
         assert_eq!(notice(&app), Some(ProtectionNotice::Checking));
+    }
+
+    #[test]
+    fn international_domains_are_taken_only_when_settings_allow_them() {
+        let mut app = composing("ana@m\u{fc}nchen.de");
+        let compose = app.compose().unwrap();
+        assert_eq!(
+            compose.not_ready(),
+            Some(NotReady::BadAddresses(vec!["ana@m\u{fc}nchen.de".into()]))
+        );
+        assert_eq!(compose.international_notice(), None);
+
+        // The open draft follows the setting at once.
+        let _ = app.update(Message::SetAcceptInternationalDomains(true));
+        assert!(app.settings().accept_international_domains);
+        let compose = app.compose().unwrap();
+        assert_eq!(compose.not_ready(), None);
+        assert_eq!(
+            compose.ready(BodyFormat::PlainText).unwrap().to,
+            ["ana@xn--mnchen-3ya.de"]
+        );
+        let notice = compose.international_notice().unwrap();
+        assert!(
+            notice.contains("m\u{fc}nchen.de is sent as xn--mnchen-3ya.de"),
+            "{notice}"
+        );
+
+        let _ = app.update(Message::SetAcceptInternationalDomains(false));
+        let compose = app.compose().unwrap();
+        assert!(compose.not_ready().is_some());
+        assert_eq!(compose.international_notice(), None);
+    }
+
+    #[test]
+    fn a_new_draft_takes_the_domains_settings_allow() {
+        let mut settings = crate::settings::Settings::default();
+        settings.accept_international_domains = true;
+        let (mut app, _) = App::boot(true, settings);
+        let _ = app.update(Message::OpenCompose);
+        let _ = app.update(Message::ComposeChanged(
+            ComposeField::Cc,
+            "ana@m\u{fc}nchen.de, sam@m\u{fc}nchen.de".into(),
+        ));
+
+        let compose = app.compose().unwrap();
+        assert_eq!(compose.not_ready(), None);
+        // One line for the domain, however many addresses use it.
+        let notice = compose.international_notice().unwrap();
+        assert_eq!(notice.matches("xn--mnchen-3ya.de").count(), 1, "{notice}");
+    }
+
+    #[test]
+    fn protection_is_looked_up_for_the_address_that_is_sent() {
+        let mut app = composing("ana@m\u{fc}nchen.de");
+        let _ = app.update(Message::SetAcceptInternationalDomains(true));
+        assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 1);
+        checked(
+            &mut app,
+            vec![("ana@xn--mnchen-3ya.de".into(), Ok(Protection::Unencrypted))],
+        );
+        assert_eq!(
+            notice(&app),
+            Some(ProtectionNotice::Warning {
+                unencrypted: vec!["ana@xn--mnchen-3ya.de".into()],
+                unknown: Vec::new(),
+            })
+        );
+
+        // Refused again, the address and what was looked up for it are gone.
+        let _ = app.update(Message::SetAcceptInternationalDomains(false));
+        assert_eq!(notice(&app), None);
+        let _ = app.update(Message::SetAcceptInternationalDomains(true));
+        assert_eq!(notice(&app), None);
+        assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 1);
     }
 
     #[test]

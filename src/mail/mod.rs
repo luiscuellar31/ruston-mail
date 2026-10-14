@@ -18,8 +18,8 @@ pub use model::{
     MailboxError, MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
 };
 pub use outgoing::{
-    BodyFormat, Kind, Outgoing, Protection, ProtectionCheck, SendError, recipients,
-    validate_attachments,
+    BodyFormat, Domains, InternationalDomain, Kind, Outgoing, Protection, ProtectionCheck,
+    SendError, recipients, validate_attachments,
 };
 #[cfg(test)]
 pub use proton::Reply;

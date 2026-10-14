@@ -171,6 +171,13 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         if left {
             messages.push(Message::ComposeRecipientsLeft);
         }
+        if let Some(notice) = compose.international_notice() {
+            ui.label(
+                egui::RichText::new(notice)
+                    .small()
+                    .color(theme::colors(ui).danger),
+            );
+        }
         if let Some(notice) = compose.protection_notice() {
             if notice.is_warning() {
                 // A copy that may leave without end-to-end encryption must
@@ -582,6 +589,39 @@ mod tests {
         app.update(block_on(lookup));
 
         assert!(shown(&app));
+    }
+
+    #[test]
+    fn the_composer_shows_the_ascii_form_of_an_international_domain() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let shown = |accept_international_domains| {
+            let mut settings = crate::settings::Settings::default();
+            settings.accept_international_domains = accept_international_domains;
+            let (mut app, _) = crate::app::App::boot(true, settings);
+            app.update(Message::OpenCompose);
+            app.update(Message::ComposeChanged(
+                ComposeField::To,
+                "ceo@p\u{430}ypal.com".into(),
+            ));
+            let mut messages = Vec::new();
+            let mut danger = egui::Color32::PLACEHOLDER;
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                danger = theme::colors(ui).danger;
+                show(ui, app.compose().unwrap(), &mut messages);
+            });
+            // The look-alike is named beside a form that is plainly not paypal.com.
+            let found = output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::epaint::Shape::Text(text)
+                    if text.galley.text().contains("p\u{430}ypal.com is sent as xn--pypal-4ve.com")
+                        && text.galley.job.sections.iter().all(|section| section.format.color == danger))
+            });
+            output.drop_without_applying_deltas();
+            found
+        };
+
+        assert!(!shown(false));
+        assert!(shown(true));
     }
 
     #[test]

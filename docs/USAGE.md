@@ -182,13 +182,20 @@ digits, and hyphens. Type an international domain, including one with accents,
 in its `xn--` form. Letters from another script that only look Latin, as in a
 fake `paypal.com`, are refused.
 
+To type international domains as they are written, turn on **Accept
+international domain names** under Settings → Advanced. The composer then
+sends each such domain in its ASCII `xn--` form and names both forms in a
+warning, such as `münchen.de is sent as xn--mnchen-3ya.de`; a fake
+`paypal.com` shows up there as `xn--pypal-4ve.com`. Email links that open the
+composer still refuse these domains, whatever the setting says.
+
 After you leave a recipient field, the composer shows how Proton will protect
 the new message: end-to-end encrypted for every recipient, or a warning that
 names the addresses that will not get an end-to-end encrypted copy. Addresses
 are looked up once per draft and only after the field loses focus. If a lookup
 fails, the warning names that address too and claims nothing about it. Replies
 show no notice; their recipients come from the original message. Turn off **Check
-recipient encryption while writing** under Settings → Writing to ask Proton
+recipient encryption while writing** under Settings → Advanced to ask Proton
 nothing until you send; the notice is not shown then.
 
 The composer opens in the reading pane by default, so folders and conversations
@@ -238,6 +245,8 @@ out from Settings.
 
 The **About** section at the bottom shows the app version, credits, and license.
 Choose **Source code** to open the project's repository in your browser.
+**Advanced**, above the keyboard shortcuts, holds choices most people can leave
+alone.
 
 Settings control:
 
@@ -246,7 +255,8 @@ Settings control:
 - Whether links require confirmation.
 - Whether the composer opens in the reading pane or a new window.
 - Plain-text or HTML sending.
-- Whether the composer checks recipient encryption while you write.
+- Whether the composer checks recipient encryption while you write (Advanced).
+- Whether recipient fields accept international domain names (Advanced).
 - The folder shown at startup.
 - Dark or light appearance. Dark remains the default for existing settings.
 - Interface scale.

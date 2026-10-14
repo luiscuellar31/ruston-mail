@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::mail::{BodyFormat, Folder, MailFolder};
+use crate::mail::{BodyFormat, Domains, Folder, MailFolder};
 
 const FILE: &str = "settings.json";
 const TEMP_ATTEMPTS: u32 = 100;
@@ -47,6 +47,10 @@ pub struct Settings {
     /// sending. Settings saved before this choice existed keep it on.
     #[serde(default = "enabled")]
     pub check_recipient_protection: bool,
+    /// Take recipient domains written in another script, sent in their ASCII
+    /// `xn--` form. Off, only ASCII domains are taken, as before this choice.
+    #[serde(default)]
+    pub accept_international_domains: bool,
     /// Color scheme of the desktop interface.
     #[serde(default)]
     pub appearance: Appearance,
@@ -80,6 +84,7 @@ impl Default for Settings {
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
             check_recipient_protection: true,
+            accept_international_domains: false,
             appearance: Appearance::Dark,
             system_font: false,
             zoom: 1.0,
@@ -169,6 +174,15 @@ impl Settings {
         Reading {
             expand_all_messages: self.expand_all_messages,
             show_quoted_text: self.show_quoted_text,
+        }
+    }
+
+    /// Which recipient domains the composer takes.
+    pub fn recipient_domains(&self) -> Domains {
+        if self.accept_international_domains {
+            Domains::International
+        } else {
+            Domains::Ascii
         }
     }
 
@@ -340,6 +354,28 @@ mod tests {
             .remove("check_recipient_protection");
         let restored: Settings = serde_json::from_value(old).unwrap();
         assert!(restored.check_recipient_protection);
+    }
+
+    #[test]
+    fn only_ascii_domains_are_taken_until_asked_otherwise() {
+        assert!(!Settings::default().accept_international_domains);
+        assert_eq!(Settings::default().recipient_domains(), Domains::Ascii);
+
+        // Settings saved before this choice existed keep refusing them.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("accept_international_domains");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert!(!restored.accept_international_domains);
+
+        let chosen = Settings {
+            accept_international_domains: true,
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&chosen).unwrap();
+        let restored: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(restored.recipient_domains(), Domains::International);
     }
 
     #[test]

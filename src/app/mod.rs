@@ -162,6 +162,9 @@ pub enum Message {
     SetComposePlacement(ComposePlacement),
     /// Looks up recipients' encryption while writing, or leaves it to sending.
     SetCheckRecipientProtection(bool),
+    /// Takes recipient domains written in another script, sent in their
+    /// ASCII form, or refuses them.
+    SetAcceptInternationalDomains(bool),
     /// Starts a new message.
     OpenCompose,
     ReceiveMailto(crate::mailto::Request),
@@ -797,6 +800,9 @@ impl App {
                 self.remember(|settings| settings.compose_placement = placement);
             }
             Message::SetCheckRecipientProtection(on) => self.set_check_recipient_protection(on),
+            Message::SetAcceptInternationalDomains(on) => {
+                self.set_accept_international_domains(on);
+            }
             Message::OpenCompose => {
                 self.showing_settings = false;
                 self.open_compose();
