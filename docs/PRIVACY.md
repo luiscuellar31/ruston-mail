@@ -205,9 +205,10 @@ Desktop attachments are downloaded only after **Save** or a confirmed **Save asâ
 destination. **Save** uses the system Downloads folder; **Save asâ€¦** uses the
 exact path chosen by the user, and cancelling its dialog starts no download.
 The CLI saves them in `--output-dir`, or the current directory
-by default. Both reduce sender-provided paths to a plain file name. Names with
-invalid characters become `attachment`, Windows device names receive an
-underscore prefix, and existing files are never overwritten.
+by default. Both reduce sender-provided paths to a plain file name. Invisible
+direction marks are removed, so a name cannot disguise its real extension.
+Names with invalid characters become `attachment`, Windows device names receive
+an underscore prefix, and existing files are never overwritten.
 Sender-provided names are sanitized before suggesting a name in the save
 dialog too. Revealing a saved file sends its local path to the operating
 system's file manager (a file URI over the session bus on Linux).

@@ -12,9 +12,11 @@ use zeroize::Zeroizing;
 pub const MAX_BULK_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
 
 /// Return a portable plain filename for an untrusted attachment name.
-/// Path components are removed; invalid characters and empty names become
-/// `attachment`, and Windows device names are prefixed with an underscore.
+/// Invisible direction marks are dropped; path components are removed;
+/// invalid characters and empty names become `attachment`, and Windows device
+/// names are prefixed with an underscore.
 pub fn safe_attachment_name(name: &str) -> String {
+    let name: String = name.chars().filter(|&c| !is_invisible_mark(c)).collect();
     let name = name
         .rsplit(['/', '\\'])
         .next()
@@ -40,6 +42,25 @@ pub fn safe_attachment_name(name: &str) -> String {
     } else {
         name.to_owned()
     }
+}
+
+/// Characters a file manager draws as nothing. Direction overrides and
+/// isolates can make `fdp.scr` read as `rcs.pdf`; the zero-width space, word
+/// joiner and byte-order mark only hide parts of a name. Joiners (U+200C,
+/// U+200D) stay: words in several scripts and emoji need them, and they
+/// cannot reorder or hide an extension.
+fn is_invisible_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 fn is_windows_reserved(name: &str) -> bool {
@@ -444,6 +465,25 @@ mod tests {
             ("Q3 report.pdf", "Q3 report.pdf"),
         ] {
             assert_eq!(safe_attachment_name(input), expected);
+        }
+    }
+
+    #[test]
+    fn invisible_direction_marks_cannot_disguise_an_extension() {
+        for (input, expected) in [
+            // Shown as "Invoice_rcs.pdf" by Finder and Explorer.
+            ("Invoice_\u{202E}fdp.scr", "Invoice_fdp.scr"),
+            ("report\u{2066}.pdf\u{2069}.exe", "report.pdf.exe"),
+            ("\u{200F}\u{200E}\u{061C}photo.jpg", "photo.jpg"),
+            ("\u{202A}\u{202B}\u{202C}\u{202D}notes.txt", "notes.txt"),
+            ("\u{2067}\u{2068}minutes.txt", "minutes.txt"),
+            ("a\u{200B}b\u{2060}c\u{FEFF}.txt", "abc.txt"),
+            ("\u{202E}\u{200B}", "attachment"),
+            // Joiners are part of correctly written words and emoji.
+            ("می\u{200C}خواهم.txt", "می\u{200C}خواهم.txt"),
+            ("👩\u{200D}💻.png", "👩\u{200D}💻.png"),
+        ] {
+            assert_eq!(safe_attachment_name(input), expected, "{input:?}");
         }
     }
 
