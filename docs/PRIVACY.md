@@ -189,7 +189,9 @@ and names with path separators are rejected.
 Signing out of the shared profile affects both frontends.
 
 Ruston Mail keeps `settings.json` in its own platform config directory. It
-contains preferences, the last folder, window size, and pane widths. It does not
+contains preferences, the last folder, window size, and pane widths. When a
+session ends, a remembered folder or label you created is replaced by the
+Inbox, so its name never reaches the next account to sign in. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged
 settings file falls back to defaults.
 

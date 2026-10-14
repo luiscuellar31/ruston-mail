@@ -681,6 +681,29 @@ fn a_renamed_folder_is_taken_up_and_a_removed_one_falls_back() {
 }
 
 #[test]
+fn a_remembered_custom_folder_does_not_outlive_the_session() {
+    let invoices = Folder::custom("kZ9", "Invoices");
+    let mut app = authenticated_app();
+    let _ = app.update(Message::SelectFolder(invoices.clone()));
+    assert_eq!(app.settings.folder, invoices);
+    app.close_mailbox(None);
+    // The next account starts in its own Inbox.
+    assert_eq!(app.settings.start_folder(), Folder::INBOX);
+    assert!(app.settings_unsaved(), "settings.json forgets it too");
+
+    // Proton's own folders are the same for every account.
+    let mut app = authenticated_app();
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
+    app.close_mailbox(None);
+    assert_eq!(app.settings.folder, sys(MailFolder::Archive));
+
+    // Leaving the demo keeps the real account's remembered folder.
+    let (mut app, _) = App::boot(true, Settings::opening(invoices.clone()));
+    app.close_mailbox(None);
+    assert_eq!(app.settings.folder, invoices);
+}
+
+#[test]
 fn a_folder_list_that_fails_to_load_keeps_the_open_folder_and_is_asked_again() {
     let invoices = Folder::custom("kZ9", "Invoices");
 

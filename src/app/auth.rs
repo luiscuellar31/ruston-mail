@@ -373,6 +373,12 @@ impl App {
 
     /// Drops all session state and returns to the login screen.
     pub(super) fn close_mailbox(&mut self, error: Option<AuthError>) {
+        // A folder the account made belongs to it: the next account must not
+        // see its name or have its ID asked for. Proton's own folders stay
+        // remembered, and the demo never changes what is remembered.
+        if self.settings.folder.custom_id().is_some() {
+            self.remember_folder(&Folder::INBOX);
+        }
         self.advance_session_epoch();
         self.backend = None;
         self.mailbox = None;

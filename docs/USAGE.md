@@ -19,7 +19,8 @@ code, a separate mailbox password, or Proton's browser-based human verification
 when the account needs one.
 
 A saved session opens automatically on later runs. Signing out asks Proton to
-revoke that session and removes its local copy. If you are writing a message,
+revoke that session and removes its local copy. If you were reading one of your
+own folders or labels, the next sign-in opens the Inbox instead. If you are writing a message,
 Ruston asks before discarding it. While a message is being sent, **Sign out**
 is unavailable until the send finishes.
 
