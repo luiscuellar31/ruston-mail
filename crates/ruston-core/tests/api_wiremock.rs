@@ -95,6 +95,30 @@ async fn trash_posts_label_3() {
 }
 
 #[tokio::test]
+async fn a_conversation_is_labelled_and_unlabelled_as_a_whole() {
+    let server = MockServer::start().await;
+    for op in ["label", "unlabel"] {
+        Mock::given(method("PUT"))
+            .and(path(format!("/mail/v4/conversations/{op}")))
+            .and(body_json(
+                serde_json::json!({ "LabelID": "wN2", "IDs": ["c1"] }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let http = client(&server.uri());
+    let ids = ["c1".to_string()];
+    api::conversations::label(&http, "wN2", &ids).await.unwrap();
+    api::conversations::unlabel(&http, "wN2", &ids)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn labels_list_builds_type_param() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

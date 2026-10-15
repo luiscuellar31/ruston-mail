@@ -55,8 +55,6 @@ const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
 const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
 const SESSION_ADDRESS_MISMATCH: &str = "does not match the API address it was created for";
 const MAX_LISTED_CORRESPONDENTS: usize = 3;
-/// Conservative relabel batch size; Proton publishes no endpoint limit.
-const LABEL_BATCH: usize = 50;
 
 #[derive(Clone)]
 pub enum ResumeOutcome {
@@ -495,19 +493,18 @@ impl ProtonMailService {
                 (SummaryKind::Message, ActionCall::Star(starred)) => {
                     client.star_messages(&ids, starred).await
                 }
-                (SummaryKind::Conversation, ActionCall::Label(label, on)) => {
-                    // Proton relabels messages, so first list the thread's ids.
-                    let thread: Vec<String> = client
-                        .conversation_messages(id)
-                        .await?
-                        .into_iter()
-                        .map(|message| message.id)
-                        .collect();
-
-                    set_label(client, &thread, label, on).await
+                // Proton puts a conversation's label on every message in it.
+                (SummaryKind::Conversation, ActionCall::Label(label, true)) => {
+                    client.label_conversations(&ids, label).await
                 }
-                (SummaryKind::Message, ActionCall::Label(label, on)) => {
-                    set_label(client, &ids, label, on).await
+                (SummaryKind::Conversation, ActionCall::Label(label, false)) => {
+                    client.unlabel_conversations(&ids, label).await
+                }
+                (SummaryKind::Message, ActionCall::Label(label, true)) => {
+                    client.apply_label(&ids, label).await
+                }
+                (SummaryKind::Message, ActionCall::Label(label, false)) => {
+                    client.remove_label(&ids, label).await
                 }
             }
         };
@@ -694,24 +691,6 @@ enum ActionCall<'a> {
     Star(bool),
     /// Add or remove a label the account made, leaving the folder alone.
     Label(&'a str, bool),
-}
-
-/// Adds or removes a label in batches. Earlier successful batches stay applied.
-async fn set_label(
-    client: &Client,
-    ids: &[String],
-    label: &str,
-    on: bool,
-) -> Result<(), ruston_core::Error> {
-    for batch in ids.chunks(LABEL_BATCH) {
-        if on {
-            client.apply_label(batch, label).await?;
-        } else {
-            client.remove_label(batch, label).await?;
-        }
-    }
-
-    Ok(())
 }
 
 fn action_call(action: &MailAction) -> ActionCall<'_> {

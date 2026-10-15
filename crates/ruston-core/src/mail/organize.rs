@@ -49,6 +49,14 @@ impl Client {
     pub async fn move_conversations(&self, ids: &[String], folder: &str) -> Result<()> {
         api::conversations::label(self.http(), &resolve_folder(folder), ids).await
     }
+    /// Apply a label to conversations; Proton puts it on every message in them.
+    pub async fn label_conversations(&self, ids: &[String], label_id: &str) -> Result<()> {
+        api::conversations::label(self.http(), label_id, ids).await
+    }
+    /// Remove a label from conversations, and so from every message in them.
+    pub async fn unlabel_conversations(&self, ids: &[String], label_id: &str) -> Result<()> {
+        api::conversations::unlabel(self.http(), label_id, ids).await
+    }
     /// Move conversations to Trash.
     pub async fn trash_conversations(&self, ids: &[String]) -> Result<()> {
         api::conversations::label(self.http(), label_ids::TRASH, ids).await
