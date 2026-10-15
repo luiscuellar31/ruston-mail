@@ -5268,7 +5268,7 @@ dependencies = [
 
 [[package]]
 name = "ruston-cli"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "clap",
  "getrandom 0.4.3",
@@ -5286,7 +5286,7 @@ dependencies = [
 
 [[package]]
 name = "ruston-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ammonia",
  "async-trait",
@@ -5316,7 +5316,7 @@ dependencies = [
 
 [[package]]
 name = "ruston-mail"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "block2 0.6.2",
  "chrono",
