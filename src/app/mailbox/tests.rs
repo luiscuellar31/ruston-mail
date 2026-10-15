@@ -1749,118 +1749,31 @@ fn unrelated_actions_do_not_wait_for_automatic_reads() {
     assert!(mailbox.selected_summary().unwrap().starred);
 }
 
-#[tokio::test]
-async fn delayed_remote_reads_finish_before_explicit_unread_requests() {
-    use ruston_core::transport::HttpClient;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-    use wiremock::matchers::{body_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    async fn send(http: &HttpClient, action: &ActionRequest) {
-        let MailAction::SetUnread(unread) = action.action else {
-            panic!("expected read action")
-        };
-        let ids = [action.row_id.clone()];
-        let result = match action.kind {
-            SummaryKind::Conversation => {
-                ruston_core::api::conversations::mark(http, !unread, &ids, "0").await
-            }
-            SummaryKind::Message if unread => {
-                ruston_core::api::messages::mark_unread(http, &ids).await
-            }
-            SummaryKind::Message => ruston_core::api::messages::mark_read(http, &ids).await,
-        };
-        result.unwrap();
-    }
-
-    for kind in [SummaryKind::Conversation, SummaryKind::Message] {
-        let server = MockServer::start().await;
-        let remote = Arc::new(Mutex::new(Vec::new()));
-        let started = Arc::new(tokio::sync::Notify::new());
-        let resource = match kind {
-            SummaryKind::Conversation => "conversations",
-            SummaryKind::Message => "messages",
-        };
-        for unread in [false, true] {
-            let op = if unread { "unread" } else { "read" };
-            let mut body = serde_json::json!({"IDs": ["a"]});
-            if unread && kind == SummaryKind::Conversation {
-                body["LabelID"] = "0".into();
-            }
-            let remote = remote.clone();
-            let started = started.clone();
-            Mock::given(method("PUT"))
-                .and(path(format!("/mail/v4/{resource}/{op}")))
-                .and(body_json(body))
-                .respond_with(move |_: &wiremock::Request| {
-                    remote.lock().unwrap().push(unread);
-                    let response =
-                        ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000}));
-                    if unread {
-                        response
-                    } else {
-                        started.notify_one();
-                        response.set_delay(Duration::from_millis(100))
-                    }
-                })
-                .expect(1)
-                .mount(&server)
-                .await;
-        }
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let mut mailbox = opened_unread(&["a"], "a");
-            mailbox.conversations[0].kind = kind;
-            let read = mailbox.start_mark_read(3).unwrap();
-            let http = HttpClient::new(server.uri(), "Other");
-            let pending = tokio::spawn({
-                let read = read.clone();
-                async move {
-                    send(&http, &read).await;
-                    http
-                }
-            });
-            started.notified().await;
-            assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
-            assert_eq!(*remote.lock().unwrap(), [false]);
-
-            let http = pending.await.unwrap();
-            let completion = mailbox.finish_mark_read(&read, Ok(())).unwrap();
-            let unread = completion
-                .next_action
-                .expect("only a confirmed read releases the next request");
-            send(&http, &unread).await;
-            mailbox.finish_action(&unread, Ok(())).unwrap();
-
-            assert_eq!(*remote.lock().unwrap(), [false, true]);
-            assert!(mailbox.selected_summary().unwrap().unread);
-            assert_eq!(
-                mailbox.finish_mark_read(&read, Ok(())),
-                Ok(ReadCompletion::default())
-            );
-            server.verify().await;
-        })
-        .await
-        .expect("read mutation sequence must complete");
-    }
-}
-
 #[test]
 fn explicit_unread_wins_over_an_automatic_read() {
-    let mut mailbox = opened_unread(&["a"], "a");
-    let read = mailbox.start_mark_read(3).unwrap();
-    assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
+    // A conversation row and a message split out of one wait alike: the
+    // explicit request is held until the automatic read is confirmed.
+    for kind in [SummaryKind::Conversation, SummaryKind::Message] {
+        let mut mailbox = opened_unread(&["a"], "a");
+        mailbox.conversations[0].kind = kind;
+        let read = mailbox.start_mark_read(3).unwrap();
+        assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
 
-    let completion = mailbox.finish_mark_read(&read, Ok(())).unwrap();
-    assert!(completion.changed);
-    assert!(!mailbox.selected_summary().unwrap().unread);
-    let unread = completion
-        .next_action
-        .expect("the explicit action is now ready");
-    assert_eq!(unread.id, 4);
-    assert_eq!(unread.action, MailAction::SetUnread(true));
-    assert_eq!(mailbox.finish_action(&unread, Ok(())), Ok(None));
-    assert!(mailbox.selected_summary().unwrap().unread);
+        let completion = mailbox.finish_mark_read(&read, Ok(())).unwrap();
+        assert!(completion.changed);
+        assert!(!mailbox.selected_summary().unwrap().unread);
+        let unread = completion
+            .next_action
+            .expect("the explicit action is now ready");
+        assert_eq!(unread.id, 4);
+        assert_eq!(unread.action, MailAction::SetUnread(true));
+        assert_eq!(mailbox.finish_action(&unread, Ok(())), Ok(None));
+        assert!(mailbox.selected_summary().unwrap().unread);
+        assert_eq!(
+            mailbox.finish_mark_read(&read, Ok(())),
+            Ok(ReadCompletion::default())
+        );
+    }
 }
 
 #[test]

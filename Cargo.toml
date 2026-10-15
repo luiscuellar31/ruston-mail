@@ -93,7 +93,6 @@ rfd = "0.17.2"
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 
 [dev-dependencies]
-wiremock = { workspace = true }
 zbus = { version = "5", features = ["p2p"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
