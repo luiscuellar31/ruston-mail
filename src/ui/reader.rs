@@ -17,6 +17,9 @@ use crate::settings::Reading;
 
 const SUBJECT_SIZE: f32 = 22.0;
 const MAX_QUOTE_DEPTH: u8 = 4;
+/// Deeper list items keep this level's indent, as in the CLI, so a deeply
+/// nested list cannot push its text out of the column.
+const MAX_LIST_DEPTH: u8 = 8;
 const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
 const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
@@ -978,7 +981,8 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
             spans,
         } => {
             ui.horizontal_top(|ui| {
-                ui.add_space(18.0 * f32::from(depth.saturating_sub(1)));
+                let indent = (*depth).min(MAX_LIST_DEPTH).saturating_sub(1);
+                ui.add_space(18.0 * f32::from(indent));
                 // A selectable marker column keeps wrapped text aligned.
                 ui.allocate_ui_with_layout(
                     egui::vec2(MARKER_WIDTH, 0.0),
@@ -1957,6 +1961,47 @@ mod tests {
             .drop_without_applying_deltas();
 
         assert!(height < 250.0, "message card stretched to {height} points");
+    }
+
+    #[test]
+    fn a_deeply_nested_list_item_stays_in_its_column() {
+        let height = |depth: u8| {
+            let item = RichBlock {
+                kind: BlockKind::ListItem {
+                    marker: "•".into(),
+                    depth,
+                    spans: vec![RichSpan {
+                        text: "Nested item".into(),
+                        ..RichSpan::default()
+                    }],
+                },
+                quote_depth: 0,
+            };
+            let context = egui::Context::default();
+            let mut height = 0.0;
+            context
+                .run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(480.0, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        ui.set_width(480.0);
+                        let top = ui.cursor().top();
+                        block(ui, &item, &mut Vec::new());
+                        height = ui.cursor().top() - top;
+                    },
+                )
+                .drop_without_applying_deltas();
+            height
+        };
+
+        // Past the indent's limit the text still has the column's width,
+        // instead of one glyph per line.
+        assert_eq!(height(200), height(1));
     }
 
     #[test]

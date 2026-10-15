@@ -261,7 +261,9 @@ of comparing styles and link targets for every character. Styled spans share
 each normalized target as `Arc<str>`, keeping the body safe to send between
 workers and the UI. When equal adjacent anchors merge, the stored span adopts
 the current shared target so later runs compare the same allocation. The reader
-creates an owned URL string when dispatching a link click.
+creates an owned URL string when dispatching a link click. It draws at most four
+levels of quotes and indents lists at most eight levels deep, as the CLI does;
+deeper content keeps the last indent, so text never leaves the column.
 
 The adapter maps the entire core `FullMessage` into `MailMessage`, preserving
 the body's `Verdict` through both conversation and individual message reads.
