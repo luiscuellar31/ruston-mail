@@ -1,0 +1,381 @@
+name: Release Artifacts (Main Preflight + Tag Publish)
+
+# Every push to main builds and checks the release artifacts without
+# publishing them, so packaging breaks show up early. A vX.Y.Z tag on a commit
+# of main builds them again and publishes a draft release to review.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+# Builds only read the repository; the publishing job asks for more.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify-source:
+    name: Verify release source
+    runs-on: ubuntu-24.04
+    outputs:
+      tag_name: ${{ steps.meta.outputs.tag_name }}
+      tag_commit: ${{ steps.meta.outputs.tag_commit }}
+      version: ${{ steps.meta.outputs.version }}
+
+    steps:
+      # Actions are pinned to a commit SHA so release builds remain deterministic.
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Validate version and tag when present
+        id: meta
+        run: |
+          set -euo pipefail
+
+          version="$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version = "\([0-9][0-9.]*\)"$/\1/p' Cargo.toml | head -n1)"
+          if [[ -z "$version" ]]; then
+            echo "Could not detect the workspace version in Cargo.toml"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+          case "$GITHUB_REF" in
+            refs/heads/main)
+              ;;
+            refs/tags/v*)
+              tag="$GITHUB_REF_NAME"
+              if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
+                echo "Invalid tag format: '$tag' (expected: vX.Y.Z)"
+                exit 1
+              fi
+
+              git fetch --no-tags origin main
+              commit="$(git rev-list -n1 "$tag")"
+              if ! git merge-base --is-ancestor "$commit" origin/main; then
+                echo "Tag commit is not contained in origin/main: $commit"
+                exit 1
+              fi
+              if [[ "v${version}" != "$tag" ]]; then
+                echo "Tag/version mismatch: tag=${tag}, Cargo.toml=v${version}"
+                exit 1
+              fi
+
+              echo "tag_name=${tag}" >> "$GITHUB_OUTPUT"
+              echo "tag_commit=${commit}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported release source: $GITHUB_REF"
+              exit 1
+              ;;
+          esac
+
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    needs:
+      - verify-source
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.verify-source.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No build cache: a release is built from scratch from the lockfile.
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Build the app and its disk image
+        run: ./packaging/macos/package.sh --dist dist
+
+      - name: Verify the app bundle
+        run: ./packaging/macos/verify-bundle.sh "dist/Ruston Mail.app" "$ARCH"
+
+      - name: Start the app
+        run: ./packaging/smoke-test.sh "dist/Ruston Mail.app/Contents/MacOS/ruston"
+
+      - name: Collect macOS artifacts
+        run: |
+          set -euo pipefail
+          dmg="dist/ruston-mail-${VERSION}-${ARCH}-UNSIGNED.dmg"
+          [[ -s "$dmg" && -s "${dmg}.sha256" ]] || {
+            echo "Missing disk image for ${ARCH}"
+            ls -la dist || true
+            exit 1
+          }
+          mkdir -p out
+          cp "$dmg" "${dmg}.sha256" out/
+          ls -lah out
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux (${{ matrix.arch }})
+    needs:
+      - verify-source
+    # Ubuntu 22.04 is the oldest LTS in standard support, the one the AppImage
+    # catalog tests on, so the AppImage needs no newer glibc than 2.35.
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.verify-source.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+      # The AppImage tools are AppImages themselves; extracting avoids FUSE.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+      APPIMAGE_UPDATE_INFORMATION: gh-releases-zsync|luiscuellar31|ruston-mail|latest|ruston-mail-*-${{ matrix.arch }}.AppImage.zsync
+      RUSTON_MAX_GLIBC_VERSION: "2.35"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install packaging and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            appstream desktop-file-utils file libfile-mimeinfo-perl \
+            libxkbcommon0 libxkbcommon-x11-0 zsync \
+            xvfb xauth libegl1 libgl1 libgl1-mesa-dri
+
+      - name: Install pinned AppImage tools
+        run: |
+          set -euo pipefail
+          # Pin immutable releases and check their digests, so the tools that
+          # build the AppImage cannot change under us.
+          linuxdeploy_version="1-alpha-20251107-1"
+          appimagetool_version="1.9.1"
+          runtime_version="20251108"
+          appimages_commit="19e30b276ffedf4d3b4b56bc6320f463625a74f8"
+          case "$ARCH" in
+            x86_64)
+              linuxdeploy_sha="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+              appimagetool_sha="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+              runtime_sha="2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
+              ;;
+            aarch64)
+              linuxdeploy_sha="620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
+              appimagetool_sha="f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158"
+              runtime_sha="00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444"
+              ;;
+            *)
+              echo "Unsupported Linux arch for AppImage tools: $ARCH"
+              exit 1
+              ;;
+          esac
+          appdir_lint_sha="408c60f34269b74ace4a87f074e9f215e9009772af57af4afc6be95de6790091"
+          excludelist_sha="50db0f894f34b169c47a5cbc0c17dbab61e9edebca5bc8269a1e6ac1bf4bdad9"
+
+          tools="$RUNNER_TEMP/appimage-tools"
+          mkdir -p "$tools"
+          curl -fsSL "https://github.com/linuxdeploy/linuxdeploy/releases/download/${linuxdeploy_version}/linuxdeploy-${ARCH}.AppImage" \
+            -o "$tools/linuxdeploy"
+          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/${appimagetool_version}/appimagetool-${ARCH}.AppImage" \
+            -o "$tools/appimagetool"
+          curl -fsSL "https://github.com/AppImage/type2-runtime/releases/download/${runtime_version}/runtime-${ARCH}" \
+            -o "$tools/runtime"
+          # The checks the AppImage catalog runs on every submission.
+          curl -fsSL "https://raw.githubusercontent.com/AppImage/AppImages/${appimages_commit}/appdir-lint.sh" \
+            -o "$tools/appdir-lint.sh"
+          curl -fsSL "https://raw.githubusercontent.com/AppImage/AppImages/${appimages_commit}/excludelist" \
+            -o "$tools/excludelist"
+          sha256sum --check --strict <<EOF
+          ${linuxdeploy_sha}  $tools/linuxdeploy
+          ${appimagetool_sha}  $tools/appimagetool
+          ${runtime_sha}  $tools/runtime
+          ${appdir_lint_sha}  $tools/appdir-lint.sh
+          ${excludelist_sha}  $tools/excludelist
+          EOF
+          chmod +x "$tools/linuxdeploy" "$tools/appimagetool"
+          {
+            echo "LINUXDEPLOY=$tools/linuxdeploy"
+            echo "APPIMAGETOOL=$tools/appimagetool"
+            echo "APPIMAGE_RUNTIME=$tools/runtime"
+            echo "APPDIR_LINT=$tools/appdir-lint.sh"
+          } >> "$GITHUB_ENV"
+
+      # No build cache: a release is built from scratch from the lockfile.
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Build the AppImage
+        run: ./packaging/linux/appimage.sh
+
+      - name: Start the AppImage
+        run: |
+          set -euo pipefail
+          appimage="dist/ruston-mail-${VERSION}-${ARCH}.AppImage"
+          # The catalog's test: an X11 session and no saved session.
+          xvfb-run -a ./packaging/smoke-test.sh "$appimage"
+          cli_version="$("$appimage" --cli --version)"
+          if [[ "$cli_version" != "ruston-cli ${VERSION}" ]]; then
+            echo "The AppImage's CLI reports '${cli_version}'"
+            exit 1
+          fi
+
+      - name: Collect Linux artifacts
+        run: |
+          set -euo pipefail
+          appimage="dist/ruston-mail-${VERSION}-${ARCH}.AppImage"
+          mkdir -p out
+          cp "$appimage" "${appimage}.zsync" "${appimage}.sha256" out/
+          ls -lah out
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  publish-assets:
+    name: Upload assets to release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - verify-source
+      - build-macos
+      - build-linux
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.verify-source.outputs.tag_name }}
+      TAG_COMMIT: ${{ needs.verify-source.outputs.tag_commit }}
+      VERSION: ${{ needs.verify-source.outputs.version }}
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.verify-source.outputs.tag_name }}
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release-assets
+
+      - name: Show artifact tree
+        run: |
+          find release-assets -type f | sort
+
+      - name: Select release files and build SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+          for arch in arm64 x86_64; do
+            dmg="release-assets/macos-${arch}/ruston-mail-${VERSION}-${arch}-UNSIGNED.dmg"
+            [[ -s "$dmg" ]] || { echo "Missing disk image for ${arch}"; exit 1; }
+          done
+          for arch in x86_64 aarch64; do
+            appimage="release-assets/linux-${arch}/ruston-mail-${VERSION}-${arch}.AppImage"
+            [[ -s "$appimage" && -s "${appimage}.zsync" ]] || {
+              echo "Missing AppImage or zsync file for ${arch}"
+              exit 1
+            }
+          done
+          # Per-file .sha256 sidecars are replaced by one combined list.
+          find release-assets -type f ! -name '*.sha256' | sort > publish-files.txt
+          : > SHA256SUMS.txt
+          while IFS= read -r file; do
+            printf '%s  %s\n' \
+              "$(sha256sum "$file" | awk '{print $1}')" \
+              "$(basename "$file")" >> SHA256SUMS.txt
+          done < publish-files.txt
+          sort -k2 -o SHA256SUMS.txt SHA256SUMS.txt
+          echo SHA256SUMS.txt >> publish-files.txt
+          cat SHA256SUMS.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release-assets/**/*.dmg
+            release-assets/**/*.AppImage
+            release-assets/**/*.zsync
+
+      - name: Generate draft release notes
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ./packaging/release-notes.sh \
+            --tag "$TAG" \
+            --version "$VERSION" \
+            --repo "$REPOSITORY" \
+            --output "$PWD/release-notes.md"
+          sed -n '1,120p' "$PWD/release-notes.md"
+
+      - name: Upload artifacts to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          notes_file="$PWD/release-notes.md"
+          mapfile -t files < publish-files.txt
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No files found to upload."
+            exit 1
+          fi
+
+          if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$TAG" --repo "$REPOSITORY" \
+              --json isDraft --jq '.isDraft')"
+            if [[ "$is_draft" == "true" ]]; then
+              gh release edit "$TAG" --repo "$REPOSITORY" \
+                --title "$TAG" --notes-file "$notes_file"
+            else
+              echo "Release for ${TAG} already exists and is not a draft."
+              exit 1
+            fi
+          else
+            gh release create "$TAG" --repo "$REPOSITORY" \
+              --target "$TAG_COMMIT" --title "$TAG" \
+              --draft --notes-file "$notes_file"
+          fi
+
+          gh release upload "$TAG" "${files[@]}" --clobber --repo "$REPOSITORY"

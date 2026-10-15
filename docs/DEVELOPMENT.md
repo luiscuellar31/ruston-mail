@@ -520,6 +520,44 @@ AppImage runs through a link named `ruston-cli`. Release builds run on Ubuntu
 22.04, the oldest LTS in standard support and the system the AppImage catalog
 tests on, so the AppImage needs glibc 2.35 or newer.
 
+## Releases
+
+The [release workflow](../.github/workflows/release-artifacts.yml) builds every
+release artifact on each push to `main`, without publishing anything, so a
+packaging break shows up before a release:
+
+| Artifact | Built on | Checks |
+|---|---|---|
+| `ruston-mail-<version>-arm64-UNSIGNED.dmg` | macOS 15 runner | `verify-bundle.sh`, then started once |
+| `ruston-mail-<version>-x86_64-UNSIGNED.dmg` | macOS 15 Intel runner | `verify-bundle.sh`, then started once |
+| `ruston-mail-<version>-x86_64.AppImage` and its `.zsync` | Ubuntu 22.04 runner | `appdir-lint.sh`, glibc 2.35 floor, started once under Xvfb |
+| `ruston-mail-<version>-aarch64.AppImage` and its `.zsync` | Ubuntu 22.04 ARM runner | as for x86_64 |
+
+The builds use pinned, digest-checked tools and no cache, so each release comes
+from the lockfile alone.
+
+To publish a release:
+
+1. Set the version in `[workspace.package]` of `Cargo.toml`, run
+   `cargo update --workspace` for `Cargo.lock`, commit, and push to `main`.
+2. Tag that commit and push the tag:
+
+   ```sh
+   git tag -a v<version> -m "Ruston Mail <version>"
+   git push origin v<version>
+   ```
+
+3. The workflow checks that the tag names the workspace version and is on
+   `main`, builds everything again, and creates a draft release with the files,
+   `SHA256SUMS.txt`, build provenance attestations, and notes written by
+   [`release-notes.sh`](../packaging/release-notes.sh) from the commits since the
+   previous tag. Re-running the workflow for the tag updates the draft.
+4. Edit the introduction at the top of the draft, check the files, and publish
+   it. Once a release is published, the workflow refuses to replace its files.
+
+`./packaging/release-notes.sh --tag <tag> --version <version>` prints the same
+notes locally.
+
 ## HTTP diagnostics
 
 To inspect Proton request results without logging message bodies or secrets:

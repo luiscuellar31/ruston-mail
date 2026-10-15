@@ -722,6 +722,27 @@ Native Windows Credential Manager, file dialogs, and window behavior need an
 interactive session; the [development guide](DEVELOPMENT.md#windows-native-validation)
 defines those manual smoke checks separately from automated test coverage.
 
+The [release workflow](../.github/workflows/release-artifacts.yml) builds the
+release artifacts on every push to `main` without publishing them. For a
+`vX.Y.Z` tag on a commit of `main` that matches the workspace version, it builds
+them again and publishes a draft release. Each artifact is built for one
+architecture on a native runner:
+- macOS runners run [`package.sh`](../packaging/macos/package.sh), which puts
+  `ruston-cli` inside the signed app, then
+  [`verify-bundle.sh`](../packaging/macos/verify-bundle.sh).
+- Ubuntu 22.04 runners run [`appimage.sh`](../packaging/linux/appimage.sh) with
+  pinned, digest-checked AppImage tools. The AppImage's
+  [`AppRun`](../packaging/linux/AppRun) starts the app or the CLI, and
+  [`check-glibc.sh`](../packaging/linux/check-glibc.sh) holds the glibc floor at
+  2.35.
+- Every app is started once with [`smoke-test.sh`](../packaging/smoke-test.sh).
+
+Only the publishing job may write to the repository. It adds `SHA256SUMS.txt`,
+build provenance attestations, and notes that
+[`release-notes.sh`](../packaging/release-notes.sh) writes from the Conventional
+Commits since the previous tag. It never replaces the files of a release that is
+already published.
+
 ## Keeping this map current
 
 Review this page with every change. Update the affected section in the same

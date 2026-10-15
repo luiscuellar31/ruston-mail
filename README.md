@@ -27,6 +27,24 @@ supported yet in the desktop client. It can move a message to Trash, but it
 never permanently deletes mail. See the
 [user guide](docs/USAGE.md) for more detail.
 
+## Install
+
+Download a release from the
+[releases page](https://github.com/luiscuellar31/ruston-mail/releases) and check
+it against the `SHA256SUMS.txt` published with it. The command-line client,
+`ruston-cli`, ships inside the app on every platform.
+
+- **macOS 11 or later:** `ruston-mail-<version>-arm64-UNSIGNED.dmg` for Apple
+  Silicon, or `ruston-mail-<version>-x86_64-UNSIGNED.dmg` for Intel. The app is not
+  notarized, so approve it once under System Settings → Privacy & Security →
+  Open Anyway. `ruston-cli` is at `Ruston Mail.app/Contents/MacOS/ruston-cli`.
+- **Linux with glibc 2.35 or newer** (Ubuntu 22.04, Debian 12, Fedora 36 and
+  later): `ruston-mail-<version>-x86_64.AppImage` or
+  `ruston-mail-<version>-aarch64.AppImage`. Make the AppImage executable and run
+  it; with `--cli` as its first argument it runs `ruston-cli` instead.
+
+Windows builds are not published yet; build them from source.
+
 ## Run from source
 
 You need Rust 1.96 or newer. To run the desktop client:
