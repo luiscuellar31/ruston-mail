@@ -127,6 +127,9 @@ done
 install -Dm644 "$REPO_ROOT/packaging/linux/$APP_ID.appdata.xml" \
     "$APPDIR/usr/share/metainfo/$APP_ID.appdata.xml"
 install -Dm644 "$REPO_ROOT/LICENSE" "$APPDIR/usr/share/doc/ruston-mail/LICENSE"
+# The AppImage's thumbnail. appimagetool would only add it while packing,
+# after the checks below, and from the smaller icon linuxdeploy put at the root.
+ln -sf "usr/share/icons/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/.DirIcon"
 
 # 3. Check the AppDir before it becomes read-only
 for library in libxkbcommon.so.0 libxkbcommon-x11.so.0; do

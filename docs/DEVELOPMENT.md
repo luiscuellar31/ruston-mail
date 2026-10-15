@@ -504,9 +504,10 @@ linuxdeploy assembles an AppDir with both binaries, the desktop entry, the
 hicolor icons, and two libraries winit loads at run time that not every system
 installs: `libxkbcommon` and `libxkbcommon-x11`, without which the app stops on
 X11. GL, X11, and Wayland libraries stay the system's, as AppImage's excludelist
-requires. The AppStream metadata goes to `usr/share/metainfo`. Before packing,
-the script checks that the binaries find the bundled libraries and validates the
-desktop entry. On request it also runs:
+requires. The AppStream metadata goes to `usr/share/metainfo`, and the 256 px
+icon becomes `.DirIcon`, the AppImage's thumbnail. Before packing, the script
+checks that the binaries find the bundled libraries and validates the desktop
+entry. On request it also runs:
 - [`check-glibc.sh`](../packaging/linux/check-glibc.sh), with
   `RUSTON_MAX_GLIBC_VERSION`: no ELF file may need a newer glibc;
 - the AppImage catalog's `appdir-lint.sh`, with `APPDIR_LINT`.
