@@ -455,6 +455,10 @@ Build a signed `Ruston Mail.app` bundle and draggable `.dmg` disk image:
 ./packaging/macos/package.sh
 ```
 
+The script builds with `--locked`, so the release uses the dependency versions
+in `Cargo.lock`. Both ad-hoc and Developer ID signatures turn on the hardened
+runtime (`--options runtime`), so the app does not load injected libraries.
+
 Options:
 - `--skip-build`: Package the existing `target/release/ruston` binary without rebuilding.
 - `CODESIGN_IDENTITY="Developer ID Application: ..."`: Sign with a commercial certificate; defaults to ad-hoc signing (`-s -`).

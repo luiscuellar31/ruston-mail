@@ -97,7 +97,8 @@ if [[ -z "$BINARY_PATH" ]]; then
 
     if [[ "$SKIP_BUILD" -eq 0 ]]; then
         log "Building release binary ($EXECUTABLE)..."
-        BUILD_ARGS=(--release --bin "$EXECUTABLE")
+        # --locked builds the audited dependency versions from Cargo.lock.
+        BUILD_ARGS=(--locked --release --bin "$EXECUTABLE")
         if [[ -n "$TARGET_TRIPLE" ]]; then
             BUILD_ARGS+=(--target "$TARGET_TRIPLE")
         fi
@@ -157,11 +158,14 @@ sed \
 
 # 4. Code signing (Ad-hoc by default, or with Developer ID if configured)
 ENTITLEMENTS="$ASSETS_DIR/entitlements.plist"
-SIGN_ARGS=(--force)
+# The hardened runtime refuses injected libraries (DYLD_INSERT_LIBRARIES) in a
+# process that can read the session from the keychain. The binary links only
+# system frameworks, so library validation has nothing else to refuse.
+SIGN_ARGS=(--force --options runtime)
 
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
     log "Signing bundle with Developer ID: $CODESIGN_IDENTITY"
-    SIGN_ARGS+=(--timestamp --options runtime --sign "$CODESIGN_IDENTITY")
+    SIGN_ARGS+=(--timestamp --sign "$CODESIGN_IDENTITY")
 else
     log "Signing bundle with ad-hoc identity (resolves Keychain re-prompting)"
     SIGN_ARGS+=(-s - --timestamp=none)

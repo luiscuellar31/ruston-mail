@@ -244,6 +244,9 @@ Without a stable code signature, macOS can treat each build as a different app.
 Packaging the application into `Ruston Mail.app` via `./packaging/macos/package.sh`
 applies an ad-hoc code signature (`codesign -s -`) with bundle identifier
 `com.luiscuellar.ruston-mail`, providing a stable identity that retains Keychain authorization.
+The signature turns on the hardened runtime, so macOS does not load libraries
+injected with `DYLD_INSERT_LIBRARIES` into the process that reads the saved
+session from the Keychain.
 
 ## Attachments
 
