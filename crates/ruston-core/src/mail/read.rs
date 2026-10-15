@@ -162,7 +162,22 @@ impl Client {
         if looks_like_id(r) {
             return Ok(r.to_string());
         }
-        let hits = self
+        Ok(self.search_ref(r).await?.id)
+    }
+
+    /// Resolve a reference as [`resolve_ref`](Self::resolve_ref) does, to the
+    /// message's metadata. A search hit already carries it, so only an exact
+    /// ID is fetched.
+    pub async fn resolve_ref_metadata(&self, r: &str) -> Result<MessageMetadata> {
+        if looks_like_id(r) {
+            return self.message_metadata(r).await;
+        }
+        self.search_ref(r).await
+    }
+
+    /// The one message a search of all mail for `r` finds.
+    async fn search_ref(&self, r: &str) -> Result<MessageMetadata> {
+        let mut hits = self
             .search_messages(&SearchOpts {
                 keyword: Some(r.to_string()),
                 folder: Some("all".into()),
@@ -174,7 +189,7 @@ impl Client {
             0 => Err(Error::NotFound {
                 kind: "message".into(),
             }),
-            1 => Ok(hits[0].id.clone()),
+            1 => Ok(hits.remove(0)),
             n => Err(Error::Ambiguous(n)),
         }
     }
@@ -606,6 +621,53 @@ mod tests {
             "took {:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn a_search_reference_brings_its_metadata_without_a_second_request() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let (client, _, _) = conversation_client(&server);
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Keyword", "quarterly"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 1,
+                "Messages": [{
+                    "ID": "hit", "Subject": "Quarterly numbers",
+                    "Sender": {"Address": "boss@example.org"}
+                }]
+            })))
+            .mount(&server)
+            .await;
+        // The search answer already says what the hit is.
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages/hit"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let id = format!("{}==", "i".repeat(60));
+        Mock::given(method("GET"))
+            .and(path(format!("/mail/v4/messages/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Message": {"ID": id, "Subject": "Named by its ID"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let hit = client.resolve_ref_metadata("quarterly").await.unwrap();
+        assert_eq!(
+            (hit.id.as_str(), hit.subject.as_str()),
+            ("hit", "Quarterly numbers")
+        );
+        assert_eq!(hit.sender.address, "boss@example.org");
+        let named = client.resolve_ref_metadata(&id).await.unwrap();
+        assert_eq!((named.id, named.subject), (id, "Named by its ID".into()));
+        assert_eq!(client.resolve_ref("quarterly").await.unwrap(), "hit");
     }
 
     #[test]

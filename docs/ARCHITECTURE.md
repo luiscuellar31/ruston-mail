@@ -421,6 +421,7 @@ instead of an unknown outcome.
   an interactive send without `--html` and asks before changing the format;
   scripted sends keep the explicit flag behavior. Permanent deletes ask first:
   `messages delete` lists the subject and sender each reference matched,
+  taken from the search for search text and fetched only for an exact ID,
   `drafts delete` lists each draft, and `messages empty` accepts only Trash or
   Spam. Without a terminal to ask on, all three need `--yes`. Core's
   `delete_draft` refuses the whole request if any ID is not a draft.

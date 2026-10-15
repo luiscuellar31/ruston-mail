@@ -321,27 +321,35 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         MessagesCmd::Delete { references, yes } => {
             require_consent(ctx, yes)?;
             let client = resume(&ctx.profile).await?;
-            let ids = resolve_all(&client, &references).await?;
-            if !yes {
-                // A reference can be search text, so show what it matched.
-                let mut doomed = Vec::with_capacity(ids.len());
-                for id in &ids {
-                    let meta = client.message_metadata(id).await?;
-                    doomed.push(format!(
-                        "\"{}\" from {} (id {id})",
-                        meta.subject, meta.sender.address
-                    ));
+            let ids = if yes {
+                resolve_all(&client, &references).await?
+            } else {
+                // A reference can be search text, so show what it matched. A
+                // search hit carries what the list shows; only an ID is fetched.
+                let mut matched = Vec::with_capacity(references.len());
+                for reference in &references {
+                    matched.push(client.resolve_ref_metadata(reference).await?);
                 }
+                let doomed: Vec<String> = matched
+                    .iter()
+                    .map(|meta| {
+                        format!(
+                            "\"{}\" from {} (id {})",
+                            meta.subject, meta.sender.address, meta.id
+                        )
+                    })
+                    .collect();
                 let question = format!(
                     "Permanently delete {} message(s)? This cannot be undone.",
-                    ids.len()
+                    matched.len()
                 );
                 let mut output = io::stderr().lock();
                 if !confirm_deletion(&doomed, &question, &mut io::stdin().lock(), &mut output)? {
                     terminal::writeln!(output, "Nothing was deleted.")?;
                     return Ok(());
                 }
-            }
+                matched.into_iter().map(|meta| meta.id).collect()
+            };
             client.delete_messages(&ids).await?;
             render::action_result(ctx.json, "delete", &ids);
             Ok(())
