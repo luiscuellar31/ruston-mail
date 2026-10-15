@@ -1357,13 +1357,8 @@ mod tests {
                 SecretString::from("old-ref"),
             )
             .await;
-        let load_paths = paths.clone();
-        let load_store = store.clone();
-        client.set_refresh_load(Arc::new(move || {
-            let (lock, loaded) =
-                Session::lock_and_load(&load_paths, "ruston", load_store.as_ref())?;
-            Ok((lock, loaded.map(|session| session.tokens)))
-        }));
+        crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
+        // Only saving is made to fail; loading stays the client's own.
         client.set_refresh_persist_fallible(Arc::new(|_, _, _| {
             Err(Error::Session("keyring unavailable".into()))
         }));
@@ -1371,10 +1366,7 @@ mod tests {
             client.decode::<ValueResp>(Request::get("/protected")).await,
             Err(Error::Session(_))
         ));
-        let save_store = store.clone();
-        client.set_refresh_persist_fallible(Arc::new(move |_, access, refresh| {
-            Session::save_tokens(save_store.as_ref(), access, refresh)
-        }));
+        crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
 
         let result: ValueResp = client.decode(Request::get("/protected")).await.unwrap();
         assert_eq!(result.value, 99);
@@ -1595,17 +1587,7 @@ mod tests {
                     SecretString::from("old-ref"),
                 )
                 .await;
-            let load_paths = paths.clone();
-            let load_store = store.clone();
-            client.set_refresh_load(Arc::new(move || {
-                let (lock, loaded) =
-                    Session::lock_and_load(&load_paths, "ruston", load_store.as_ref())?;
-                Ok((lock, loaded.map(|session| session.tokens)))
-            }));
-            let save_store = store.clone();
-            client.set_refresh_persist_fallible(Arc::new(move |_, access, refresh| {
-                Session::save_tokens(save_store.as_ref(), access, refresh)
-            }));
+            crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
             clients.push(client);
         }
 

@@ -115,7 +115,9 @@ impl Client {
         &self.keys
     }
 
-    fn wire_refresh(
+    /// Shares the saved session with other processes: a refresh starts from
+    /// the tokens saved last, under the profile lock, and saves the new ones.
+    pub(crate) fn wire_refresh(
         http: &mut HttpClient,
         store: Arc<dyn SecretStore>,
         paths: Paths,
