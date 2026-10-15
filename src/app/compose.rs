@@ -294,7 +294,7 @@ impl Compose {
 
     /// What to say about protection, once every typed recipient was looked
     /// up. Silent while an address is still unchecked, so a partial answer
-    /// never reads as the whole one. Replies stay silent: Proton chooses
+    /// never reads as the whole one. Replies stay silent: core chooses
     /// their recipients when it sends them.
     pub fn protection_notice(&self) -> Option<ProtectionNotice> {
         if !self.asks_for_recipients() {
@@ -384,7 +384,7 @@ impl Compose {
         Outgoing::needs_recipients(&self.kind)
     }
 
-    /// Whether the window asks for a subject. Proton writes one for an answer.
+    /// Whether the window asks for a subject. Core writes one for an answer.
     pub fn asks_for_subject(&self) -> bool {
         matches!(self.kind, Kind::New)
     }

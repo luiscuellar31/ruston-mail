@@ -423,7 +423,8 @@ impl Cache {
             path.to_path_buf()
         } else {
             secure_cache_file(path)?;
-            // NOFOLLOW also rejects symlinks in ancestor paths on macOS.
+            // SQLite's NOFOLLOW refuses a symlink anywhere in the path, so it
+            // is given the path with every link resolved.
             std::fs::canonicalize(path).map_err(map)?
         };
         #[cfg(not(unix))]

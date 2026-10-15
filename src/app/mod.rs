@@ -93,8 +93,9 @@ pub enum Message {
     /// Lets this temporary undo offer expire if it is still current.
     DismissUndo(UndoMove),
     RefreshMailbox,
-    /// Periodic foreground refresh. Unlike a manual refresh, this also marks
-    /// the other folder caches stale so they catch up when opened.
+    /// Periodic refresh, every minute in the foreground and less often in the
+    /// background. Unlike a manual refresh, this also marks the other folder
+    /// caches stale so they catch up when opened.
     AutoRefreshMailbox,
     LoadMoreConversations,
     ConversationsLoaded(RequestId, Result<ConversationPage, MailboxError>),
@@ -113,7 +114,8 @@ pub enum Message {
         RequestId,
         Result<Vec<IncomingMail>, MailboxError>,
     ),
-    /// The folders the account made, fetched once when the mailbox opens.
+    /// The folders the account made, fetched when the mailbox opens and, if
+    /// that fails, again with the next refresh.
     FoldersLoaded(SessionEpoch, Result<Vec<Folder>, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
@@ -338,7 +340,6 @@ impl App {
         app
     }
 
-    /// Where the last saved attachment landed, or why it did not.
     /// The attachment now being fetched, so its row can say so.
     pub fn saving_attachment(&self) -> Option<&str> {
         self.saving_attachment
@@ -346,6 +347,7 @@ impl App {
             .map(|save| save.request.attachment_id.as_str())
     }
 
+    /// Where the last saved attachment landed, or why it did not.
     pub fn saved_attachment(&self) -> Option<Result<&Path, SaveError>> {
         self.saved_attachment
             .as_ref()

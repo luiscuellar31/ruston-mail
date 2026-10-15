@@ -172,6 +172,8 @@ impl App {
             }
             SignInPrompt::HumanVerification { url, .. } => {
                 self.auth_state = AuthState::NeedsHumanVerification { url: url.clone() };
+                // A browser that fails to start goes unreported: the prompt
+                // also offers "Copy link".
                 open_in_browser(url.clone())
             }
         };
@@ -431,5 +433,3 @@ fn optional_trimmed_secret(value: &str) -> Option<SecretString> {
 fn non_empty_secret(value: &str) -> Option<SecretString> {
     (!value.is_empty()).then(|| SecretString::from(value))
 }
-
-// ponytail: launch failures are ignored; the page offers "Copy link" instead.

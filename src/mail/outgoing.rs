@@ -16,7 +16,7 @@ pub enum BodyFormat {
 }
 
 /// Whether mail is new or answers an existing message.
-/// Proton supplies reply recipients, subjects and forwarded attachments.
+/// Core supplies reply recipients, subjects and forwarded attachments.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Kind {
     #[default]

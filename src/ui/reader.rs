@@ -583,7 +583,7 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
         egui::vec2(ui.available_width(), REPLY_TOOLBAR_HEIGHT),
         Layout::left_to_right(Align::Center).with_main_align(Align::Max),
         |ui| {
-            // Proton determines reply recipients from the message.
+            // Core addresses replies from the message being answered.
             for (label, forward, everyone) in [
                 ("Reply", false, false),
                 ("Reply all", false, true),

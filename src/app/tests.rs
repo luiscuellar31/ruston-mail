@@ -2494,7 +2494,7 @@ fn escape_puts_an_unsent_message_away() {
 
 #[test]
 fn a_reply_needs_nobody_named_because_proton_knows() {
-    // Proton addresses a reply from the message being answered, so the window
+    // Core addresses a reply from the message being answered, so the window
     // must not refuse to send for want of a recipient.
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectConversation("demo-0".into()));
@@ -2526,7 +2526,7 @@ fn a_forward_still_has_to_be_addressed() {
 
     let writing = app.compose().expect("a forward is open");
     assert!(writing.asks_for_recipients());
-    // Proton writes the subject, so the window does not ask for one.
+    // Core writes the subject, so the window does not ask for one.
     assert!(!writing.asks_for_subject());
     assert_eq!(app.update(Message::Send).units(), 0, "it left unaddressed");
 

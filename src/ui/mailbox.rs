@@ -623,8 +623,8 @@ fn sync_undo_notice(
     (remaining > 0.0).then(|| std::time::Duration::from_secs_f64(remaining))
 }
 
-/// Virtualized rows must draw at [`ROW_HEIGHT`] to stay aligned with scrolling.
 const FOLDER_HEIGHT: f32 = 31.0;
+/// Virtualized rows must draw at this height to stay aligned with scrolling.
 const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;
 const ROW_HORIZONTAL_PADDING: f32 = 18.0;

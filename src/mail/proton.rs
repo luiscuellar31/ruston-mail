@@ -310,7 +310,8 @@ impl ProtonMailService {
             ..SendOptions::default()
         };
 
-        // Proton owns reply recipients, threading and forwarded attachments.
+        // Core addresses answers, writes their subjects and keys forwarded
+        // attachments for the draft; Proton threads them.
         let call = async {
             match &outgoing.kind {
                 Kind::New => self.client.send(&options).await,

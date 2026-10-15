@@ -224,7 +224,7 @@ impl DemoMailbox {
             return Err(SendError::DemoLimitReached);
         }
 
-        // Mirror Proton's subject, quote and reply-recipient behavior.
+        // Mirror core's subject, quote and reply-recipient behavior.
         let answered = answered_message(&fixtures, &outgoing.kind, now);
         let (prefix, back_to) = match (&outgoing.kind, &answered) {
             (Kind::Reply { .. }, Some(parent)) => ("Re: ", parent.reply_to.clone()),
@@ -1425,7 +1425,7 @@ mod tests {
             .into_iter()
             .max_by_key(|row| row.time)
             .expect("the reply is in Sent");
-        // Proton writes the subject and addresses it; neither was typed here.
+        // Core writes the subject and addresses it; neither was typed here.
         assert_eq!(
             row.subject.as_deref(),
             Some(format!("Re: {}", answered.subject.unwrap()).as_str())
