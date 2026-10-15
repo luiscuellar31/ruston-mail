@@ -105,7 +105,9 @@ The default text output is filtered even when redirected. JSON escapes these
 characters while retaining the original decoded values. Explicit `--format html` and `--format raw` preserve body content
 when redirected to a file or pipe; when displayed on a terminal, they also
 filter controls. `messages read --output` and EML exports preserve the body
-content supplied by core, including its HTML sanitization.
+content supplied by core, including its HTML sanitization. `--output` writes a
+file only you can read and replaces whatever is at that path, a symbolic link
+included, instead of writing through it.
 When replying or forwarding as HTML, sender details and quoted plain text are
 escaped before insertion; quoted HTML keeps the markup sanitized during reading.
 

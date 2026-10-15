@@ -11,7 +11,9 @@ use html5ever::tokenizer::{
 };
 use ruston_core::{AddressInfo, Client, Error, LocalCache, Result, SendOptions};
 use std::cell::Cell;
+use std::fs::OpenOptions;
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::path::Path;
 
 pub(crate) fn send_options(a: SendArgs, body: String) -> SendOptions {
     SendOptions {
@@ -144,6 +146,47 @@ pub(crate) fn confirm_deletion(
     confirm(question, input, output)
 }
 
+/// Writes a decrypted body to `path` as a file only its owner can read. What
+/// is already there, a symbolic link included, is replaced rather than
+/// written through: the file is created beside it and renamed over it.
+fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "the output path names no file")
+    })?;
+    let folder = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    for attempt in 0..100 {
+        let temporary = folder.join(format!(
+            ".{}.{}.{attempt}.tmp",
+            name.to_string_lossy(),
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = match options.open(&temporary) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let written = file
+            .write_all(contents)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| std::fs::rename(&temporary, path));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        return written;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no temporary file name is available",
+    ))
+}
+
 pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
     match cmd {
         MessagesCmd::List {
@@ -183,7 +226,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             let id = client.resolve_ref(&reference).await?;
             let msg = client.read_message(&id).await?;
             if let Some(path) = output {
-                std::fs::write(&path, &msg.body)?;
+                write_private(&path, msg.body.as_bytes())?;
                 if !ctx.json {
                     terminal::println!("Wrote {} bytes to {}", msg.body.len(), path.display());
                 }
@@ -407,7 +450,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{confirm_deletion, confirm_html, looks_like_html, prompt_sender, require_consent};
+    use super::{
+        confirm_deletion, confirm_html, looks_like_html, prompt_sender, require_consent,
+        write_private,
+    };
     use crate::cli::Ctx;
     use ruston_core::AddressInfo;
     use std::io::{self, Cursor};
@@ -531,5 +577,43 @@ mod tests {
         }
         let error = confirm_html(&mut Cursor::new(""), &mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn a_body_written_to_a_file_is_private_and_never_written_through_a_link() {
+        let dir = std::env::temp_dir().join(format!("ruston-output-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("message.txt");
+
+        // A file already there is replaced, as before.
+        std::fs::write(&output, b"older").unwrap();
+        write_private(&output, b"decrypted body").unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"decrypted body");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&output).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+
+            // A link at the path is replaced; what it points to is untouched.
+            let elsewhere = dir.join("elsewhere.txt");
+            std::fs::write(&elsewhere, b"keep").unwrap();
+            std::fs::remove_file(&output).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, &output).unwrap();
+            write_private(&output, b"decrypted body").unwrap();
+            assert_eq!(std::fs::read(&elsewhere).unwrap(), b"keep");
+            assert!(!std::fs::symlink_metadata(&output).unwrap().is_symlink());
+            assert_eq!(std::fs::read(&output).unwrap(), b"decrypted body");
+        }
+        // No temporary file is left behind.
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        }));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
