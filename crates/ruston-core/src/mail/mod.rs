@@ -18,7 +18,7 @@ use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
 use crate::model::enums::key_flag;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens, validate_profile_name};
-use crate::transport::HttpClient;
+use crate::transport::{Doer, HttpClient};
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -178,10 +178,9 @@ impl Client {
         .await?;
 
         let provider = crypto::provider();
-        let salts = api::keys::get_key_salts(&http).await?;
-        let user = api::keys::get_user(&http).await?;
+        let (salts, (user, addresses)) =
+            tokio::try_join!(api::keys::get_key_salts(&http), account(&http))?;
         let cache_identity = CacheIdentity::new(&base_url, &user.id)?;
-        let addresses = api::keys::get_addresses(&http).await?;
 
         let mailbox_pw = if login.password_mode == 2 {
             opts.mailbox_password.as_ref().ok_or_else(|| {
@@ -244,9 +243,8 @@ impl Client {
         Self::wire_refresh(&mut http, store.clone(), paths.clone(), profile);
 
         let provider = crypto::provider();
-        let user = api::keys::get_user(&http).await?;
+        let (user, addresses) = account(&http).await?;
         let cache_identity = CacheIdentity::new(&loaded.session.base_url, &user.id)?;
-        let addresses = api::keys::get_addresses(&http).await?;
         let keys = crypto::keys::unlock_with_skp(&provider, &user, &addresses, &loaded.skp)?;
 
         Ok(Client {
@@ -327,6 +325,12 @@ impl Client {
     }
 }
 
+/// The account and its addresses, asked for together: neither request needs
+/// the other, and every command that resumes a session waits for both.
+async fn account<D: Doer>(http: &D) -> Result<(crypto::keys::User, Vec<crypto::keys::Address>)> {
+    tokio::try_join!(api::keys::get_user(http), api::keys::get_addresses(http))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +340,43 @@ mod tests {
     use tokio::sync::Notify;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Answers only once both account requests are waiting for an answer.
+    struct BothAtOnce(tokio::sync::Barrier);
+
+    #[async_trait::async_trait]
+    impl Doer for BothAtOnce {
+        async fn do_raw(
+            &self,
+            _req: crate::transport::Request,
+        ) -> Result<crate::transport::Response> {
+            unreachable!("the account requests decode JSON")
+        }
+
+        async fn decode<T: serde::de::DeserializeOwned>(
+            &self,
+            req: crate::transport::Request,
+        ) -> Result<T> {
+            self.0.wait().await;
+            Ok(serde_json::from_value(match req.path.as_str() {
+                "/core/v4/users" => serde_json::json!({"User": {"ID": "user-1", "Keys": []}}),
+                "/core/v4/addresses" => serde_json::json!({"Addresses": []}),
+                other => panic!("unexpected request to {other}"),
+            })?)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_account_and_its_addresses_are_asked_for_at_once() {
+        let http = BothAtOnce(tokio::sync::Barrier::new(2));
+        // Asked one after the other, the first request would wait forever.
+        let (user, addresses) = tokio::time::timeout(Duration::from_secs(10), account(&http))
+            .await
+            .expect("the requests did not overlap")
+            .unwrap();
+        assert_eq!(user.id, "user-1");
+        assert!(addresses.is_empty());
+    }
 
     async fn saved_logout_client(base_url: &str, store: Arc<dyn SecretStore>) -> (Client, PathBuf) {
         let unique = std::time::SystemTime::now()

@@ -567,8 +567,9 @@ Local storage failures reach the CLI and are shown on the desktop sign-in screen
 the desktop still discards its in-memory mailbox and draft.
 
 The desktop keeps mailbox data in memory. The core also offers a SQLite cache
-used by CLI sync and local search. Login and resume retain the authenticated
-`User.ID` alongside the API base URL in `Client`; session UIDs and email addresses
+used by CLI sync and local search. Login and resume ask for the user and its
+addresses at once, and login asks for the key salts alongside them. They retain
+the authenticated `User.ID` alongside the API base URL in `Client`; session UIDs and email addresses
 are not cache identities. All client cache operations go through `open_cache`
 in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs). It selects
 `accounts/<profile>/<sha256-of-identity>.db` under the cache directory and checks
