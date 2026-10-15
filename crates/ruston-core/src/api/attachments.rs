@@ -6,8 +6,13 @@ use serde::Deserialize;
 use std::time::Duration;
 
 const BOUNDARY: &str = "----protoncliBOUNDARYx7MA4YWxkTrZu0gW";
-/// Maximum encrypted attachment response (128 MiB).
-pub const MAX_ATTACHMENT_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+/// Maximum encrypted attachment response (64 MiB). Decryption accepts at most
+/// [`MAX_ATTACHMENT_PLAINTEXT_BYTES`]; the rest leaves room for OpenPGP's
+/// overhead, under 1% with usual encodings and about a quarter with the
+/// smallest AEAD chunks.
+///
+/// [`MAX_ATTACHMENT_PLAINTEXT_BYTES`]: crate::mail::attachments::MAX_ATTACHMENT_PLAINTEXT_BYTES
+pub const MAX_ATTACHMENT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum complete multipart upload (128 MiB), a local transport safety limit.
 pub const MAX_ATTACHMENT_UPLOAD_BYTES: usize = 128 * 1024 * 1024;
 /// Larger transfers have a longer deadline than small JSON requests. Each

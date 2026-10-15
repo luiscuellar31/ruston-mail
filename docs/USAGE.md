@@ -158,6 +158,8 @@ in the composer to add local files to an outgoing message.
 On Linux, **Show in folder** asks the file manager to select the saved file;
 if the desktop does not support selection, it opens the containing folder.
 
+Received attachments larger than 50 MiB cannot be opened.
+
 When an incoming attachment carries a signature, Ruston verifies it before
 saving the file. An invalid or malformed signature, or missing verification
 keys, prevents the download and shows an error. You can retry if keys become

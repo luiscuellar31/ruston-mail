@@ -248,8 +248,10 @@ icon for the specific result. The sender's email domain does not determine this
 status; it does not authenticate the sender's identity independently
 or describe an attachment's verification status.
 The application's own HTTP safety limits are 32 MiB for ordinary responses and
-128 MiB for an encrypted attachment response; they are not Proton Mail's
-attachment quotas.
+64 MiB for an encrypted attachment response; they are not Proton Mail's
+attachment quotas. A received attachment can be opened up to 50 MiB, the most
+decryption accepts; one Proton reports as larger than the response limit is
+refused without being downloaded.
 The CLI downloads and saves `--all` attachments one at a time. If a later
 attachment fails, files saved earlier in that command remain in the destination.
 The core API that returns all attachment bytes has a 128 MiB total limit.

@@ -470,8 +470,11 @@ instead of an unknown outcome.
   sending new ones) include the transfer deadline; the CLI uses the transport
   deadlines directly.
   The application's own safety limits are 32 MiB for ordinary responses and
-  128 MiB for encrypted attachment responses. These are transport limits, not
-  Proton Mail attachment quotas. They count decompressed bytes, so a
+  64 MiB for encrypted attachment responses. These are transport limits, not
+  Proton Mail attachment quotas. The attachment limit leaves room for OpenPGP
+  overhead above the 50 MiB plaintext that decryption accepts (proton-rpgp's
+  reading limit); core refuses an attachment Proton reports above it before
+  downloading, and reports both cases as `AttachmentTooLarge`. They count decompressed bytes, so a
   compressed response cannot exceed them. Complete attachment multipart uploads also
   have a 128 MiB safety cap and reserve their final size once. The HTTP transport
   moves raw buffers into a prepared reqwest request and shares its allocation

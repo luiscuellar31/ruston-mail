@@ -11,6 +11,10 @@ use zeroize::Zeroizing;
 /// Maximum combined plaintext returned by `download_all_attachments` (128 MiB).
 pub const MAX_BULK_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
 
+/// The largest attachment that can be opened (50 MiB): proton-rpgp's default
+/// reading limit, which proton-crypto applies to every decrypted plaintext.
+pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: usize = 50 * 1024 * 1024;
+
 /// Return a portable plain filename for an untrusted attachment name.
 /// Invisible direction marks are dropped; path components are removed;
 /// invalid characters and empty names become `attachment`, and Windows device
@@ -117,6 +121,13 @@ impl Client {
         msg: &Message,
         att: &Attachment,
     ) -> Result<(String, Vec<u8>)> {
+        let too_large = || Error::AttachmentTooLarge {
+            limit: MAX_ATTACHMENT_PLAINTEXT_BYTES,
+        };
+        // Decryption would refuse it, so it is not worth downloading.
+        if att.size > api::attachments::MAX_ATTACHMENT_RESPONSE_BYTES as u64 {
+            return Err(too_large());
+        }
         let key_packets = att
             .key_packets
             .as_deref()
@@ -140,7 +151,10 @@ impl Client {
         } else {
             Vec::new()
         };
-        let data_packet = api::attachments::get_attachment(self.http(), &att.id).await?;
+        let data_packet = match api::attachments::get_attachment(self.http(), &att.id).await {
+            Err(Error::ResponseTooLarge { .. }) => return Err(too_large()),
+            result => result?,
+        };
         let provider = crypto::provider();
         let mut plain = Zeroizing::new(crypto::decrypt_attachment(
             &provider,
@@ -309,6 +323,40 @@ mod tests {
                 ..Default::default()
             },
         )
+    }
+
+    #[tokio::test]
+    async fn an_attachment_too_large_to_open_is_not_downloaded() {
+        let server = MockServer::start().await;
+        let (client, mut attachment) = attachment_client(&server).await;
+        let message = Message {
+            meta: crate::model::message::MessageMetadata {
+                sender: crate::model::message::Recipient::new("sender@proton.me"),
+                address_id: "address".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        attachment.size = api::attachments::MAX_ATTACHMENT_RESPONSE_BYTES as u64 + 1;
+
+        let error = client
+            .download_attachment_from_message(&message, &attachment)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::AttachmentTooLarge { limit } if limit == MAX_ATTACHMENT_PLAINTEXT_BYTES),
+            "{error}"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+
+        // Up to the response limit it is fetched as before.
+        attachment.size = api::attachments::MAX_ATTACHMENT_RESPONSE_BYTES as u64;
+        assert!(
+            client
+                .download_attachment_from_message(&message, &attachment)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

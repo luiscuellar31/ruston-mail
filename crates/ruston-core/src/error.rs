@@ -85,7 +85,8 @@ pub enum Error {
         limit: usize,
     },
 
-    /// An outgoing attachment exceeded the local plaintext size limit.
+    /// An attachment exceeded a plaintext size limit: the local one for an
+    /// outgoing file, or what decryption accepts for an incoming one.
     #[error("attachment exceeds the {limit} byte limit")]
     AttachmentTooLarge {
         /// Maximum accepted plaintext size of one file.
