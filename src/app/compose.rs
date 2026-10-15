@@ -459,6 +459,39 @@ impl Compose {
     }
 }
 
+/// What the composer says about the message `kind` answers.
+fn answering_for(kind: &Kind, message: &MailMessage, subject: Option<&str>) -> Answering {
+    let everyone = matches!(kind, Kind::Reply { everyone: true, .. });
+    let (to, cc) = match kind {
+        Kind::Reply { everyone, .. } => (
+            message.reply_to.clone(),
+            if *everyone {
+                message.reply_all_cc.clone()
+            } else {
+                Vec::new()
+            },
+        ),
+        _ => (Vec::new(), Vec::new()),
+    };
+    // Core says when Reply-To moved the answer: a reply to mail you sent
+    // also goes to someone other than its sender, without any redirect.
+    let sender = message.sender.address.trim();
+    let redirected_from = (!to.is_empty() && message.reply_redirected && !sender.is_empty())
+        .then(|| sender.to_owned());
+    Answering {
+        sender: message
+            .sender
+            .display_name()
+            .unwrap_or("(unknown sender)")
+            .to_owned(),
+        subject: subject.unwrap_or("(No subject)").to_owned(),
+        everyone,
+        to,
+        cc,
+        redirected_from,
+    }
+}
+
 impl App {
     pub fn compose(&self) -> Option<&Compose> {
         self.compose.as_ref()
@@ -499,50 +532,23 @@ impl App {
                 everyone,
             }
         };
-        let subject = reader.detail().subject.clone();
-        let message = message.clone();
-        self.open_answer(kind, &message, subject.as_deref());
+        // Read what the composer shows while the reader still holds the
+        // message, rather than copying its decrypted body and attachments.
+        let answering = answering_for(&kind, message, reader.detail().subject.as_deref());
+        self.open_answer(kind, answering);
     }
 
     /// Answers or forwards a message. Core addresses replies itself; the
     /// composer shows where they go.
-    pub(super) fn open_answer(&mut self, kind: Kind, message: &MailMessage, subject: Option<&str>) {
+    fn open_answer(&mut self, kind: Kind, answering: Answering) {
         if self.compose.is_some() {
             return;
         }
         let id = self.next_compose_id();
-        let everyone = matches!(kind, Kind::Reply { everyone: true, .. });
-        let (to, cc) = match kind {
-            Kind::Reply { everyone, .. } => (
-                message.reply_to.clone(),
-                if everyone {
-                    message.reply_all_cc.clone()
-                } else {
-                    Vec::new()
-                },
-            ),
-            _ => (Vec::new(), Vec::new()),
-        };
-        // Core says when Reply-To moved the answer: a reply to mail you sent
-        // also goes to someone other than its sender, without any redirect.
-        let sender = message.sender.address.trim();
-        let redirected_from = (!to.is_empty() && message.reply_redirected && !sender.is_empty())
-            .then(|| sender.to_owned());
         self.compose = Some(Compose {
             id,
             kind,
-            answering: Some(Answering {
-                sender: message
-                    .sender
-                    .display_name()
-                    .unwrap_or("(unknown sender)")
-                    .to_owned(),
-                subject: subject.unwrap_or("(No subject)").to_owned(),
-                everyone,
-                to,
-                cc,
-                redirected_from,
-            }),
+            answering: Some(answering),
             domains: self.settings.recipient_domains(),
             ..Compose::default()
         });
@@ -980,9 +986,7 @@ mod tests {
     }
 
     fn answering(kind: Kind, message: &MailMessage) -> Answering {
-        let (mut app, _) = App::boot(true, crate::settings::Settings::default());
-        app.open_answer(kind, message, Some("Invoice"));
-        app.compose().unwrap().answering().unwrap().clone()
+        answering_for(&kind, message, Some("Invoice"))
     }
 
     #[test]
