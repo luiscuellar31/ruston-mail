@@ -281,8 +281,11 @@ impl ProtonMailService {
 
     /// Lists account-owned folders and labels for the sidebar.
     pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
-        let folders = timed(self.client.list_folders()).await?;
-        let labels = timed(self.client.list_labels()).await?;
+        // Neither request needs the other, so both are in flight at once.
+        let (folders, labels) = futures::try_join!(
+            timed(self.client.list_folders()),
+            timed(self.client.list_labels())
+        )?;
 
         Ok(custom_places(folders, Folder::custom)
             .into_iter()

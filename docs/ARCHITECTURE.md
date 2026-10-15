@@ -166,7 +166,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Stale or duplicate completions never release a queued request. Successful
   automatic reads still update local state, so a later explicit failure does
   not hide an already confirmed read.
-- `App` asks for the account's folders and labels when a mailbox opens. A list
+- `App` asks for the account's folders and labels when a mailbox opens; the
+  Proton adapter requests the two lists at the same time. A list
   that arrives renames the open custom folder or, once it is gone, falls back
   to Inbox. A failed request changes neither the open nor the remembered
   folder, and the next refresh asks for the list again.
