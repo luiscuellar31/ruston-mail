@@ -30,29 +30,59 @@ pub mod label_ids {
     pub const ALMOST_ALL_MAIL: &str = "15";
     /// Snoozed.
     pub const SNOOZED: &str = "16";
+
+    /// Every system label with the name the CLI shows for it and takes in
+    /// its folder options.
+    const NAMES: [(&str, &str); 14] = [
+        (INBOX, "inbox"),
+        (ALL_DRAFTS, "all-drafts"),
+        (ALL_SENT, "all-sent"),
+        (TRASH, "trash"),
+        (SPAM, "spam"),
+        (ALL_MAIL, "all-mail"),
+        (ARCHIVE, "archive"),
+        (SENT, "sent"),
+        (DRAFTS, "drafts"),
+        (OUTBOX, "outbox"),
+        (STARRED, "starred"),
+        (SCHEDULED, "scheduled"),
+        (ALMOST_ALL_MAIL, "almost-all"),
+        (SNOOZED, "snoozed"),
+    ];
+
+    /// The name of a system label, or `None` for any other label ID.
+    pub fn name(id: &str) -> Option<&'static str> {
+        NAMES
+            .iter()
+            .find(|(label, _)| *label == id)
+            .map(|(_, name)| *name)
+    }
+
+    /// The system label with this lowercase name.
+    pub(super) fn by_name(name: &str) -> Option<&'static str> {
+        NAMES
+            .iter()
+            .find(|(_, label_name)| *label_name == name)
+            .map(|(label, _)| *label)
+    }
 }
 
 /// Resolve a human folder name to its label ID. Unknown names pass through
 /// unchanged (so raw label IDs work anywhere).
 pub fn resolve_folder(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "inbox" => label_ids::INBOX,
-        "drafts" => label_ids::DRAFTS,
-        "sent" => label_ids::SENT,
-        "trash" => label_ids::TRASH,
-        "spam" => label_ids::SPAM,
-        "archive" => label_ids::ARCHIVE,
-        "starred" => label_ids::STARRED,
-        "all" | "all-mail" | "allmail" => label_ids::ALL_MAIL,
-        "almost-all" | "almost-all-mail" => label_ids::ALMOST_ALL_MAIL,
-        "scheduled" => label_ids::SCHEDULED,
-        "snoozed" => label_ids::SNOOZED,
+    let folded = name.trim().to_ascii_lowercase();
+    let canonical = match folded.as_str() {
+        "all" | "allmail" => "all-mail",
+        "almost-all-mail" => "almost-all",
+        other => other,
+    };
+    match label_ids::by_name(canonical) {
+        Some(id) => id.to_string(),
         // The name is matched folded, but an unknown one is returned as it
         // was given: Proton's IDs are case-sensitive, so folding one names a
         // label that does not exist.
-        _ => return name.trim().to_string(),
+        None => name.trim().to_string(),
     }
-    .to_string()
 }
 
 /// Send package types (bitmask).
@@ -194,6 +224,35 @@ mod tests {
 
         // A name is still recognised however it is typed or spaced.
         assert_eq!(resolve_folder("  Archive  "), label_ids::ARCHIVE);
+    }
+
+    #[test]
+    fn every_system_label_has_a_name_that_resolves_back_to_it() {
+        use label_ids::*;
+        for id in [
+            INBOX,
+            ALL_DRAFTS,
+            ALL_SENT,
+            TRASH,
+            SPAM,
+            ALL_MAIL,
+            ARCHIVE,
+            SENT,
+            DRAFTS,
+            OUTBOX,
+            STARRED,
+            SCHEDULED,
+            ALMOST_ALL_MAIL,
+            SNOOZED,
+        ] {
+            let name = label_ids::name(id).unwrap_or_else(|| panic!("label {id} has no name"));
+            assert_eq!(resolve_folder(name), id, "{name}");
+            assert_eq!(resolve_folder(&name.to_uppercase()), id, "{name}");
+        }
+        assert_eq!(label_ids::name("qBIcv1_Wv5X4hLpEo0Tz9A=="), None);
+        // The older spellings still resolve.
+        assert_eq!(resolve_folder("allmail"), ALL_MAIL);
+        assert_eq!(resolve_folder("almost-all-mail"), ALMOST_ALL_MAIL);
     }
 
     #[test]

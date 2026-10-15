@@ -6,6 +6,7 @@ use crate::terminal;
 use std::borrow::Cow;
 
 use crate::cli::ReadFormat;
+use ruston_core::model::enums::label_ids;
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, Filter, FullMessage, Label,
     LabelCount, MessageMetadata, Recipient,
@@ -28,21 +29,8 @@ pub fn counts(json_mode: bool, counts: &[LabelCount]) {
     }
 }
 
-fn label_name(id: &str) -> String {
-    match id {
-        "0" => "inbox",
-        "1" => "all-drafts",
-        "2" => "all-sent",
-        "3" => "trash",
-        "4" => "spam",
-        "5" => "all-mail",
-        "6" => "archive",
-        "7" => "sent",
-        "8" => "drafts",
-        "10" => "starred",
-        other => other,
-    }
-    .to_string()
+fn label_name(id: &str) -> &str {
+    label_ids::name(id).unwrap_or(id)
 }
 
 /// Render a contacts list.
@@ -401,6 +389,10 @@ mod tests {
         assert_eq!(label_name("0"), "inbox");
         assert_eq!(label_name("3"), "trash");
         assert_eq!(label_name("10"), "starred");
+        assert_eq!(label_name("9"), "outbox");
+        assert_eq!(label_name("12"), "scheduled");
+        assert_eq!(label_name("15"), "almost-all");
+        assert_eq!(label_name("16"), "snoozed");
         // Unknown / custom label ids pass through unchanged.
         assert_eq!(label_name("custom-xyz"), "custom-xyz");
     }
