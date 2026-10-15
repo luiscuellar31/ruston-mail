@@ -31,6 +31,113 @@ impl fmt::Display for JsonText<'_> {
     }
 }
 
+/// Writes `value` to standard output as pretty JSON while it serializes, so a
+/// large thread is not held a second time as text. Strings get the escaping
+/// `JsonText` gives serialized text.
+pub(crate) fn write_json<T: serde::Serialize + ?Sized>(value: &T) {
+    let mut output = Stdout(io::stdout().lock());
+    if let Err(error) = serialize_json(&mut output, value) {
+        // A failed write has already ended the command; only a value JSON
+        // cannot represent gets here, possibly after part of it went out.
+        write_stderr(format_args!(
+            "error: cannot write output: {}\n",
+            SafeArgs(format_args!("{error}"))
+        ));
+        std::process::exit(1);
+    }
+    let _ = output.write_all(b"\n");
+}
+
+fn serialize_json<T: serde::Serialize + ?Sized>(
+    output: impl io::Write,
+    value: &T,
+) -> serde_json::Result<()> {
+    value.serialize(&mut serde_json::Serializer::with_formatter(
+        output,
+        SafeJson::default(),
+    ))
+}
+
+/// serde_json's pretty layout, with string contents written through
+/// `JsonText`: serialization escapes C0 controls but leaves DEL, C1 controls
+/// and the invisible marks literal.
+#[derive(Default)]
+struct SafeJson(serde_json::ser::PrettyFormatter<'static>);
+
+impl serde_json::ser::Formatter for SafeJson {
+    fn write_string_fragment<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        fragment: &str,
+    ) -> io::Result<()> {
+        std::write!(writer, "{}", JsonText(fragment))
+    }
+
+    fn begin_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.begin_array(writer)
+    }
+
+    fn end_array<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.end_array(writer)
+    }
+
+    fn begin_array_value<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.0.begin_array_value(writer, first)
+    }
+
+    fn end_array_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.end_array_value(writer)
+    }
+
+    fn begin_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.begin_object(writer)
+    }
+
+    fn end_object<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.end_object(writer)
+    }
+
+    fn begin_object_key<W: ?Sized + io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> io::Result<()> {
+        self.0.begin_object_key(writer, first)
+    }
+
+    fn begin_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.begin_object_value(writer)
+    }
+
+    fn end_object_value<W: ?Sized + io::Write>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.0.end_object_value(writer)
+    }
+}
+
+/// Standard output for serializers: like `write_stdout`, a failed write ends
+/// the command.
+struct Stdout(io::StdoutLock<'static>);
+
+impl io::Write for Stdout {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Err(error) = self.0.write_all(bytes) {
+            stdout_failed(error);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if let Err(error) = self.0.flush() {
+            stdout_failed(error);
+        }
+        Ok(())
+    }
+}
+
 struct ControlFilter<'a> {
     output: &'a mut dyn fmt::Write,
     json: bool,
@@ -292,6 +399,28 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&displayed).unwrap(),
             value
+        );
+    }
+
+    #[test]
+    fn streamed_json_matches_the_escaped_serialized_text() {
+        let value = serde_json::json!({
+            "body": ATTACK,
+            "subject": "Olá\u{85}\x7f\n\t",
+            "empty": { "list": [], "map": {} },
+            "numbers": [0, -1, 2.5, null, true],
+            "nested": [{ "key\u{202e}": ATTACK }],
+        });
+        let mut streamed = Vec::new();
+        serialize_json(&mut streamed, &value).unwrap();
+        let streamed = String::from_utf8(streamed).unwrap();
+        assert_safe(&streamed);
+        assert_eq!(
+            streamed,
+            format!(
+                "{}",
+                JsonText(&serde_json::to_string_pretty(&value).unwrap())
+            )
         );
     }
 

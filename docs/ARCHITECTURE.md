@@ -422,7 +422,8 @@ instead of an unknown outcome.
   and the invisible direction and zero-width marks that core's
   `is_invisible_mark` names. Human-readable output is filtered even when
   redirected. JSON escapes these characters without changing the decoded
-  values. Explicit `raw` and `html` bodies retain
+  values, and goes out while it serializes, so a large thread is not held a
+  second time as text. Explicit `raw` and `html` bodies retain
   their contents when redirected, but are filtered on a terminal. File exports,
   attachment writes, and the CAPTCHA helper's HTTP responses bypass this display
   layer. Core and the desktop retain their own logging setup. Standard output

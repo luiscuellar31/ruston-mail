@@ -110,10 +110,7 @@ fn filter_json(f: &Filter) -> serde_json::Value {
 
 /// Serialize a value as pretty JSON to stdout.
 pub fn json_out<T: serde::Serialize + ?Sized>(value: &T) {
-    match serde_json::to_string_pretty(value) {
-        Ok(s) => terminal::write_stdout(format_args!("{}\n", terminal::JsonText(&s))),
-        Err(_) => terminal::println!("null"),
-    }
+    terminal::write_json(value);
 }
 
 fn fmt_addr(r: &Recipient) -> String {
@@ -217,7 +214,12 @@ fn print_message_header(m: &MessageMetadata, verdict: &str, mime_type: &str) {
 pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only: bool) {
     if json {
         if body_only {
-            json_out(&json!({ "body": msg.body }));
+            // Borrowed, not copied into a `json!` value: bodies can be large.
+            #[derive(serde::Serialize)]
+            struct Body<'a> {
+                body: &'a str,
+            }
+            json_out(&Body { body: &msg.body });
         } else {
             json_out(msg);
         }
@@ -254,7 +256,17 @@ fn displayed_body<'a>(body: &'a str, mime_type: &str, format: ReadFormat) -> Cow
 
 pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[FullMessage]) {
     if json {
-        json_out(&json!({ "conversation": conv, "messages": msgs }));
+        // Borrowed, not copied into a `json!` value: a thread holds every
+        // message's body.
+        #[derive(serde::Serialize)]
+        struct Thread<'a> {
+            conversation: &'a Conversation,
+            messages: &'a [FullMessage],
+        }
+        json_out(&Thread {
+            conversation: conv,
+            messages: msgs,
+        });
         return;
     }
     terminal::println!("Conversation: {}", subject_or_empty(&conv.subject));
