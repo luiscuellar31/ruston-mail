@@ -331,9 +331,62 @@ fn guess_mime(path: &std::path::Path) -> String {
 }
 
 /// Carried between draft-creation and packaging.
+#[derive(Clone)]
 struct Uploaded {
     id: String,
     material: SessionKeyMaterial,
+}
+
+/// One password-protected (encrypted-outside) recipient's entry: an SRP
+/// verifier, a token, and the body and attachment keys wrapped with the
+/// password. The verifier and every password-wrapped key take a costly key
+/// derivation, so callers run this on the blocking pool; the provider is
+/// created there.
+fn password_entry(
+    password: &str,
+    hint: &str,
+    (modulus, modulus_id): &(String, String),
+    body: &SessionKeyMaterial,
+    attachments: &[Uploaded],
+) -> Result<Value> {
+    let provider = crypto::provider();
+    let verifier = SRPAuth::generate_verifier_with_pgp(password, None, modulus)
+        .map_err(|e| Error::Srp(format!("EO verifier: {e}")))?;
+    let v: SRPVerifierB64 = verifier.into();
+    let (_fresh, token) = crypto::new_session_key(&provider)?;
+    let enc_token = crypto::encrypt_text_with_password(&provider, password, &token)?;
+    let body_kp = crypto::wrap_session_key_with_password(&provider, password, body)?;
+    let mut entry = json!({
+        "Type": package_type::EO,
+        "Signature": 0,
+        "Token": token,
+        "EncToken": enc_token,
+        "BodyKeyPacket": STANDARD.encode(&body_kp),
+        "Auth": {
+            "Version": u8::from(v.version),
+            "ModulusID": modulus_id,
+            "Salt": v.salt,
+            "Verifier": v.verifier,
+        },
+    });
+    if !hint.is_empty() {
+        entry["PasswordHint"] = json!(hint);
+    }
+    if !attachments.is_empty() {
+        let mut akp = Map::new();
+        for u in attachments {
+            akp.insert(
+                u.id.clone(),
+                json!(STANDARD.encode(crypto::wrap_session_key_with_password(
+                    &provider,
+                    password,
+                    &u.material
+                )?)),
+            );
+        }
+        entry["AttachmentKeyPackets"] = Value::Object(akp);
+    }
+    Ok(entry)
 }
 
 async fn submit_send<D: Doer>(http: &D, message_id: &str, body: Value) -> Result<()> {
@@ -658,7 +711,7 @@ impl Client {
                 );
             } else if let Some((password, hint)) = eo {
                 // Encrypted-outside (password-protected) recipient — Type 2.
-                let (modulus, modulus_id) = match &modulus_cache {
+                let modulus = match &modulus_cache {
                     Some(m) => m.clone(),
                     None => {
                         let m = api::keys::get_modulus(self.http()).await?;
@@ -666,43 +719,17 @@ impl Client {
                         m
                     }
                 };
-                let verifier = SRPAuth::generate_verifier_with_pgp(password, None, &modulus)
-                    .map_err(|e| Error::Srp(format!("EO verifier: {e}")))?;
-                let v: SRPVerifierB64 = verifier.into();
-                let (_fresh, token) = crypto::new_session_key(provider)?;
-                let enc_token = crypto::encrypt_text_with_password(provider, password, &token)?;
-                let body_kp =
-                    crypto::wrap_session_key_with_password(provider, password, &material)?;
-                let mut entry = json!({
-                    "Type": package_type::EO,
-                    "Signature": 0,
-                    "Token": token,
-                    "EncToken": enc_token,
-                    "BodyKeyPacket": STANDARD.encode(&body_kp),
-                    "Auth": {
-                        "Version": u8::from(v.version),
-                        "ModulusID": modulus_id,
-                        "Salt": v.salt,
-                        "Verifier": v.verifier,
-                    },
-                });
-                if !hint.is_empty() {
-                    entry["PasswordHint"] = json!(hint);
-                }
-                if !uploaded.is_empty() {
-                    let mut akp = Map::new();
-                    for u in &uploaded {
-                        akp.insert(
-                            u.id.clone(),
-                            json!(STANDARD.encode(crypto::wrap_session_key_with_password(
-                                provider,
-                                password,
-                                &u.material
-                            )?)),
-                        );
-                    }
-                    entry["AttachmentKeyPackets"] = Value::Object(akp);
-                }
+                // Up to seconds of key derivation per recipient: keep it off
+                // the async workers.
+                let password = Zeroizing::new(password.clone());
+                let hint = hint.clone();
+                let body = material.clone();
+                let attachments = uploaded.clone();
+                let entry = tokio::task::spawn_blocking(move || {
+                    password_entry(&password, &hint, &modulus, &body, &attachments)
+                })
+                .await
+                .map_err(|error| Error::Other(format!("password protection failed: {error}")))??;
                 tracing::debug!(target: "ruston_core::send", recipient = %email, "external recipient — encrypted-outside (Type 2)");
                 eo_addrs.insert(email.clone(), entry);
             } else {
@@ -1253,6 +1280,113 @@ mod tests {
             STANDARD.encode(original.material.key.as_slice())
         );
         assert_eq!(clear["Algorithm"], "aes256");
+    }
+
+    #[tokio::test]
+    async fn password_protected_recipients_get_keys_that_open_with_the_password() {
+        use proton_crypto::crypto::{
+            DataEncoding, Decryptor, DecryptorSync, PGPProviderSync, VerifiedData,
+        };
+        use wiremock::matchers::query_param;
+
+        // A modulus signed with Proton's key, from proton-srp's own tests.
+        const MODULUS: &str = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nW2z5HBi8RvsfYzZTS7qBaUxxPhsfHJFZpu3Kd6s1JafNrCCH9rfvPLrfuqocxWPgWDH2R8neK7PkNvjxto9TStuY5z7jAzWRvFWN9cQhAKkdWgy0JY6ywVn22+HFpF4cYesHrqFIKUPDMSSIlWjBVmEJZ/MusD44ZT29xcPrOqeZvwtCffKtGAIjLYPZIEbZKnDM1Dm3q2K/xS5h+xdhjnndhsrkwm9U9oyA2wxzSXFL+pdfj2fOdRwuR5nW0J2NFrq3kJjkRmpO/Genq1UW+TEknIWAb6VzJJJA244K/H8cnSx2+nSNZO3bbo6Ys228ruV9A8m6DhxmS+bihN3ttQ==\n-----BEGIN PGP SIGNATURE-----\nVersion: ProtonMail\nComment: https://protonmail.com\n\nwl4EARYIABAFAlwB1j0JEDUFhcTpUY8mAAD8CgEAnsFnF4cF0uSHKkXa1GIa\nGO86yMV4zDZEZcDSJo0fgr8A/AlupGN9EdHlsrZLmTA1vhIx+rOgxdEff28N\nkvNM7qIK\n=q6vu\n-----END PGP SIGNATURE-----";
+        let server = MockServer::start().await;
+        let (me, _) = test_address("me@proton.me", "address-1");
+        let provider = crypto::provider();
+        let attachment = crypto::encrypt_attachment(&provider, &me, b"attached").unwrap();
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000,
+                "Message": {
+                    "ID": "draft-1",
+                    "Attachments": [{
+                        "ID": "draft-att",
+                        "Name": "notes.txt",
+                        "KeyPackets": STANDARD.encode(&attachment.key_packet),
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "ana@example.com"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/auth/modulus"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000, "Modulus": MODULUS, "ModulusID": "modulus-1"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server, vec![me]);
+        let opts = SendOptions {
+            to: vec!["ana@example.com".into()],
+            body: "the plan".into(),
+            ..SendOptions::default()
+        };
+        client
+            .send_eo(&opts, "correct horse", Some("our film"))
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let send = requests
+            .iter()
+            .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
+            .unwrap();
+        let body: Value = serde_json::from_slice(&send.body).unwrap();
+        let package = body["Packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|package| package["Type"] == package_type::EO)
+            .unwrap();
+        let data_packet = STANDARD.decode(package["Body"].as_str().unwrap()).unwrap();
+        let open_key = |packet: &Value| {
+            let packet = STANDARD.decode(packet.as_str().unwrap()).unwrap();
+            provider
+                .new_decryptor()
+                .with_passphrase("correct horse")
+                .decrypt_session_key(packet)
+                .unwrap()
+        };
+        let entry = &package["Addresses"]["ana@example.com"];
+        assert_eq!(entry["Type"], package_type::EO);
+        assert_eq!(entry["PasswordHint"], "our film");
+        assert_eq!(entry["Auth"]["ModulusID"], "modulus-1");
+        let token = provider
+            .new_decryptor()
+            .with_passphrase("correct horse")
+            .decrypt(entry["EncToken"].as_str().unwrap(), DataEncoding::Armor)
+            .unwrap();
+        assert_eq!(
+            token.as_bytes(),
+            entry["Token"].as_str().unwrap().as_bytes()
+        );
+        let opened = provider
+            .new_decryptor()
+            .with_session_key(open_key(&entry["BodyKeyPacket"]))
+            .decrypt(&data_packet, DataEncoding::Bytes)
+            .unwrap();
+        assert_eq!(opened.as_bytes(), b"the plan");
+        let attachment_key = open_key(&entry["AttachmentKeyPackets"]["draft-att"]);
+        let (key, _) = provider.session_key_export(&attachment_key).unwrap();
+        assert_eq!(key.as_ref(), attachment.material.key.as_slice());
     }
 
     #[test]

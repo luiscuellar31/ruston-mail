@@ -383,6 +383,11 @@ Desktop Proton sends rely on that core preflight inside the existing send
 deadline, rather than checking files outside the timeout. The local demo backend
 uses the same validator before accepting a fictional send.
 
+Each password-protected (encrypted-outside) recipient gets its own SRP verifier,
+token, and body and attachment keys wrapped with the message password. Each of
+those takes a costly key derivation, so a recipient's entry is built on the
+blocking pool, one recipient at a time.
+
 If the final send request has no reliable success or explicit rejection, core
 [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) returns an unconfirmed
 outcome and does not try to delete the draft. The desktop leaves the
