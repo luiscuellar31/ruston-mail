@@ -124,9 +124,7 @@ impl Client {
         let load_store = store.clone();
         let load_profile = profile.to_owned();
         http.set_refresh_load(Arc::new(move || {
-            let (lock, loaded) =
-                Session::lock_and_load(&paths, &load_profile, load_store.as_ref())?;
-            Ok((lock, loaded.map(|session| session.tokens)))
+            Session::lock_and_load_tokens(&paths, &load_profile, load_store.as_ref())
         }));
         http.set_refresh_persist_fallible(Arc::new(move |_uid, access, refresh| {
             Session::save_tokens(store.as_ref(), access, refresh)

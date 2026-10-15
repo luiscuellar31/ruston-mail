@@ -234,11 +234,43 @@ impl Session {
         Ok(loaded)
     }
 
+    /// The saved tokens under the profile lock, for a token refresh: it needs
+    /// neither the key passphrase nor anything else from the store.
+    pub(crate) fn lock_and_load_tokens(
+        paths: &Paths,
+        profile: &str,
+        store: &dyn SecretStore,
+    ) -> Result<(File, Option<Tokens>)> {
+        let lock = Self::lock(paths, profile)?;
+        let tokens = Self::load_tokens_unlocked(paths, profile, store)?.map(|(_, tokens)| tokens);
+        Ok((lock, tokens))
+    }
+
     fn load_unlocked(
         paths: &Paths,
         profile: &str,
         store: &dyn SecretStore,
     ) -> Result<Option<LoadedSession>> {
+        let Some((session, tokens)) = Self::load_tokens_unlocked(paths, profile, store)? else {
+            return Ok(None);
+        };
+        let Some(skp) = store.get(K_SKP)? else {
+            return Ok(None);
+        };
+        Ok(Some(LoadedSession {
+            session,
+            tokens,
+            skp: SecretString::from(skp),
+        }))
+    }
+
+    /// The saved metadata and tokens, when both are present and the tokens'
+    /// API address is the one the metadata names.
+    fn load_tokens_unlocked(
+        paths: &Paths,
+        profile: &str,
+        store: &dyn SecretStore,
+    ) -> Result<Option<(Session, Tokens)>> {
         let file = paths.session_file(profile);
         let bytes = match std::fs::read(&file) {
             Ok(b) => b,
@@ -255,10 +287,6 @@ impl Session {
         let pair = Zeroizing::new(pair);
         let pair: LoadedTokens = serde_json::from_str(&pair)
             .map_err(|e| Error::Session(format!("invalid stored auth tokens: {e}")))?;
-        let skp = match store.get(K_SKP)? {
-            Some(skp) => skp,
-            None => return Ok(None),
-        };
         // The metadata file is not secret, yet it names where the saved tokens
         // are sent. Trust only an address the secret store vouches for.
         match store.get(K_BASE_URL)? {
@@ -278,11 +306,7 @@ impl Session {
             access: SecretString::from(pair.access),
             refresh: SecretString::from(pair.refresh),
         };
-        Ok(Some(LoadedSession {
-            session,
-            tokens,
-            skp: SecretString::from(skp),
-        }))
+        Ok(Some((session, tokens)))
     }
 
     /// Remove the on-disk file and stored secrets.
@@ -770,6 +794,77 @@ mod tests {
         Session::clear(&paths, "default", &store).unwrap();
         Session::record_user_id(&paths, "default", "UID1", "user-1").unwrap();
         assert!(!paths.session_file("default").exists());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// Counts reads of the key passphrase.
+    #[derive(Default)]
+    struct CountingPassphraseReads {
+        inner: MemoryStore,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SecretStore for CountingPassphraseReads {
+        fn set(&self, key: &str, value: &str) -> Result<()> {
+            self.inner.set(key, value)
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>> {
+            if key == K_SKP {
+                self.reads.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.get(key)
+        }
+
+        fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key)
+        }
+    }
+
+    #[test]
+    fn a_token_refresh_needs_only_the_tokens() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let store = CountingPassphraseReads::default();
+        let session = Session {
+            uid: "UID1".into(),
+            app_version: "Other".into(),
+            base_url: "https://mail.proton.me/api".into(),
+            password_mode: 1,
+            user_agent: None,
+            user_id: None,
+        };
+        let tokens = Tokens {
+            uid: "UID1".into(),
+            access: SecretString::from("acc"),
+            refresh: SecretString::from("ref"),
+        };
+        session
+            .save(
+                &paths,
+                "default",
+                &store,
+                &tokens,
+                &SecretString::from("skp"),
+            )
+            .unwrap();
+        let refresh_tokens = || {
+            let (_lock, tokens) = Session::lock_and_load_tokens(&paths, "default", &store)?;
+            Ok::<_, Error>(tokens.map(|tokens| tokens.refresh.expose_secret().to_owned()))
+        };
+
+        assert_eq!(refresh_tokens().unwrap().as_deref(), Some("ref"));
+        assert_eq!(store.reads.load(Ordering::Relaxed), 0);
+
+        // Without the passphrase the session cannot be resumed, but a client
+        // already running can still renew its tokens.
+        store.inner.delete(K_SKP).unwrap();
+        assert!(Session::load(&paths, "default", &store).unwrap().is_none());
+        assert_eq!(refresh_tokens().unwrap().as_deref(), Some("ref"));
+
+        // An address the store does not vouch for is still refused.
+        rewrite_base_url(&paths, &session, "https://elsewhere.example/api");
+        assert!(matches!(refresh_tokens(), Err(Error::Session(_))));
         std::fs::remove_dir_all(base).unwrap();
     }
 }
