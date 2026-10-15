@@ -625,12 +625,21 @@ impl App {
                 return self.start_inspections();
             }
             Message::ConversationLoaded(request, result) => {
+                // Only the load the reader waits for opens anything. A late
+                // answer for a conversation left behind must not mark the one
+                // on screen read: it may have been marked unread meanwhile.
+                let awaited = self
+                    .mailbox
+                    .as_ref()
+                    .is_some_and(|mailbox| mailbox.awaits(&request));
                 let error = self
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_conversation(&request, result));
                 self.handle_mailbox_error(error);
-                return self.mark_opened_read();
+                if awaited {
+                    return self.mark_opened_read();
+                }
             }
             Message::FoldersLoaded(epoch, result) => {
                 if !self.is_current_session(epoch) {

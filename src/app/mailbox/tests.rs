@@ -1365,6 +1365,26 @@ fn newer_selection_ignores_stale_detail_response() {
 }
 
 #[test]
+fn a_late_answer_for_a_conversation_left_behind_is_not_awaited() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+    let slow = mailbox.start_conversation_load("b".into(), 4).unwrap();
+    assert!(mailbox.awaits(&slow));
+
+    // Back to A, which opens from the cache while B is still loading.
+    assert_eq!(mailbox.start_conversation_load("a".into(), 5), None);
+    assert_eq!(mailbox.reader().unwrap().detail().id, "a");
+
+    // B's answer opens nothing, so nothing may be marked read for it.
+    assert!(!mailbox.awaits(&slow));
+    assert_eq!(
+        mailbox.finish_conversation(&slow, Ok(detail("b", &["b1"]))),
+        None
+    );
+    assert_eq!(mailbox.reader().unwrap().detail().id, "a");
+}
+
+#[test]
 fn folder_switch_invalidates_outstanding_detail_request() {
     let mut mailbox = loaded_inbox(&["a"], 1);
     let detail_request = mailbox.start_conversation_load("a".into(), 3).unwrap();

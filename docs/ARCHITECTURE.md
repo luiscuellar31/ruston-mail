@@ -247,7 +247,9 @@ For example, opening a conversation starts in
 The runtime executes it, `ruston-core` reads and decrypts the messages, and a
 result message updates [`app/reader.rs`](../src/app/reader.rs). Only the newest
 load is kept: opening another conversation, changing folders or ending the
-session aborts the one in flight, and the reader ignores its answer. The desktop
+session aborts the one in flight, and the reader ignores its answer. Only the
+answer the reader waits for marks a conversation read, so a late one cannot
+mark the conversation on screen. The desktop
 adapter converts sanitized HTML into the native rich-body model in
 [`mail/html.rs`](../src/mail/html.rs). It appends visible text in runs instead
 of comparing styles and link targets for every character. Styled spans share

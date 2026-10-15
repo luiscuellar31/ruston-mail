@@ -848,14 +848,7 @@ impl Mailbox {
         request: &ReaderRequest,
         result: Result<ConversationDetail, MailboxError>,
     ) -> Option<MailboxError> {
-        let accepted = matches!(
-            &self.reader,
-            ReaderState::Loading {
-                conversation_id,
-                request: current,
-            } if conversation_id == &request.conversation_id && current == &request.id
-        );
-        if !accepted {
+        if !self.awaits(request) {
             return None;
         }
 
@@ -885,6 +878,17 @@ impl Mailbox {
                 Some(error)
             }
         }
+    }
+
+    /// Whether the reader is still waiting for `request`'s answer.
+    pub fn awaits(&self, request: &ReaderRequest) -> bool {
+        matches!(
+            &self.reader,
+            ReaderState::Loading {
+                conversation_id,
+                request: current,
+            } if conversation_id == &request.conversation_id && current == &request.id
+        )
     }
 
     fn set_reader(&mut self, reader: ReaderState) {
