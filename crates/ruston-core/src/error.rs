@@ -22,7 +22,7 @@ pub struct ApiError {
     pub code: i64,
     /// Human-readable error message from the API.
     pub message: String,
-    /// Raw response body, retained for diagnostics.
+    /// The start of the raw response body, up to 4 KiB, kept for diagnostics.
     pub raw_body: String,
 }
 

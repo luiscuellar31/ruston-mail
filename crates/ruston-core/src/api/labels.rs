@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::model::label::Label;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 #[derive(Deserialize)]
 struct ListResp {
@@ -45,7 +46,7 @@ pub async fn create<D: Doer>(
 
 /// Update a label/folder. `body` carries the changed fields (Name/Color/ParentID).
 pub async fn update<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::put(format!("/core/v4/labels/{id}")).json(body))
         .await?;
     Ok(())
@@ -54,7 +55,7 @@ pub async fn update<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> Result
 /// Delete labels/folders by ID.
 pub async fn delete<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "LabelIDs": ids });
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::delete("/core/v4/labels").json(body))
         .await?;
     Ok(())

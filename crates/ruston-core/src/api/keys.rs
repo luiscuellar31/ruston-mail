@@ -4,6 +4,7 @@ use crate::crypto::keys::{Address, KeySalt, User};
 use crate::error::Result;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 #[derive(Deserialize)]
 struct SaltsResp {
@@ -121,7 +122,7 @@ pub async fn update_address<D: Doer>(
     if let Some(s) = signature {
         body.insert("Signature".into(), serde_json::json!(s));
     }
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(
             Request::put(format!("/core/v4/addresses/{id}")).json(serde_json::Value::Object(body)),
         )

@@ -25,6 +25,16 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Redirects one request may follow, as many as reqwest allows by default.
 const MAX_REDIRECTS: usize = 10;
+/// Proton's `Code` for a request that succeeded.
+const CODE_SUCCESS: i64 = 1000;
+/// Proton's `Code` for a request on several items that succeeded for each.
+const CODE_MULTI_SUCCESS: i64 = 1001;
+/// The `Code` some endpoints send with a successful HTTP status.
+const CODE_NONE: i64 = 0;
+/// Proton's `Code` asking for human verification.
+const CODE_HUMAN_VERIFICATION: i64 = 9001;
+/// How much of an error body `ApiError::raw_body` keeps.
+const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 
 /// Request body.
 #[derive(Debug, Clone)]
@@ -517,16 +527,31 @@ enum Detected {
     Hv(HvChallenge),
 }
 
+/// The envelope fields of a Proton response. The rest of the body is skipped
+/// without being built, so a large response is not copied into a tree only
+/// to read its code; the caller decodes what it needs once.
+#[derive(serde::Deserialize)]
+struct Envelope {
+    #[serde(rename = "Code")]
+    code: Option<serde_json::Value>,
+    #[serde(rename = "Error")]
+    error: Option<serde_json::Value>,
+    #[serde(rename = "Details")]
+    details: Option<serde_json::Value>,
+}
+
 fn detect(status: u16, body: &[u8]) -> Detected {
-    let json: Option<serde_json::Value> = serde_json::from_slice(body).ok();
-    let code = json
+    let envelope: Option<Envelope> = serde_json::from_slice(body).ok();
+    let code = envelope
         .as_ref()
-        .and_then(|j| j.get("Code"))
-        .and_then(|c| c.as_i64());
+        .and_then(|envelope| envelope.code.as_ref())
+        .and_then(serde_json::Value::as_i64);
 
     // Human verification (may arrive on HTTP 200 in the auth flow, or 422).
-    if code == Some(9001)
-        && let Some(details) = json.as_ref().and_then(|j| j.get("Details"))
+    if code == Some(CODE_HUMAN_VERIFICATION)
+        && let Some(details) = envelope
+            .as_ref()
+            .and_then(|envelope| envelope.details.as_ref())
     {
         let methods = details
             .get("HumanVerificationMethods")
@@ -552,27 +577,28 @@ fn detect(status: u16, body: &[u8]) -> Detected {
         });
     }
 
-    let success = matches!(code, Some(1000) | Some(1001));
+    let success = matches!(code, Some(CODE_SUCCESS | CODE_MULTI_SUCCESS));
     let http_ok = (200..300).contains(&status);
 
     if http_ok && (success || code.is_none()) {
         return Detected::Ok;
     }
-    if http_ok && code == Some(0) {
+    if http_ok && code == Some(CODE_NONE) {
         return Detected::Ok;
     }
 
-    let message = json
+    let message = envelope
         .as_ref()
-        .and_then(|j| j.get("Error"))
-        .and_then(|v| v.as_str())
+        .and_then(|envelope| envelope.error.as_ref())
+        .and_then(serde_json::Value::as_str)
         .unwrap_or("request failed")
         .to_string();
     Detected::Api(ApiError {
         http_status: status,
-        code: code.unwrap_or(0),
+        code: code.unwrap_or(CODE_NONE),
         message,
-        raw_body: String::from_utf8_lossy(body).into_owned(),
+        raw_body: String::from_utf8_lossy(&body[..body.len().min(MAX_ERROR_BODY_BYTES)])
+            .into_owned(),
     })
 }
 
@@ -896,6 +922,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_response_is_judged_by_its_envelope_alone() {
+        for success in [
+            &b"not json"[..],
+            br#"[1, 2]"#,
+            br#"{"Code": 1000, "Message": {"Body": "-----BEGIN PGP MESSAGE-----"}}"#,
+            br#"{"Code": 1001, "Responses": [{"Code": 1000}]}"#,
+            br#"{"Code": 0}"#,
+        ] {
+            assert!(matches!(detect(200, success), Detected::Ok));
+        }
+        let Detected::Api(error) = detect(
+            422,
+            br#"{"Code": 2001, "Error": "Invalid input", "Details": {"Field": "Email"}}"#,
+        ) else {
+            panic!("expected an API error");
+        };
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            (2001, "Invalid input")
+        );
+
+        // An error page keeps only its start for diagnostics.
+        let page = vec![b'x'; 1024 * 1024];
+        let Detected::Api(error) = detect(502, &page) else {
+            panic!("expected an API error");
+        };
+        assert_eq!(error.raw_body.len(), MAX_ERROR_BODY_BYTES);
+        assert_eq!(error.message, "request failed");
     }
 
     #[tokio::test]

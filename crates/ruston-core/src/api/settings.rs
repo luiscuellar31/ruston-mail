@@ -3,6 +3,7 @@
 use crate::error::Result;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 #[derive(Deserialize)]
 struct Resp {
@@ -19,7 +20,7 @@ pub async fn get_mail_settings<D: Doer>(d: &D) -> Result<serde_json::Value> {
 async fn put_setting<D: Doer>(d: &D, path: &str, field: &str, value: i64) -> Result<()> {
     let mut body = serde_json::Map::new();
     body.insert(field.to_string(), serde_json::json!(value));
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(
             Request::put(format!("/mail/v4/settings/{path}")).json(serde_json::Value::Object(body)),
         )

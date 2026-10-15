@@ -464,7 +464,10 @@ instead of an unknown outcome.
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
   authentication headers, token refresh, retries, bounded response bodies, and
-  a total deadline per HTTP attempt. Ordinary requests have 60 seconds;
+  a total deadline per HTTP attempt. A response is judged by its envelope
+  (`Code`, `Error`, `Details`) without building the rest of the body, which the
+  caller then decodes once; bodies a caller does not need are skipped, and an
+  API error keeps the first 4 KiB of its body. Ordinary requests have 60 seconds;
   attachment transfers have 180 seconds. Opening a connection has its own
   10-second limit within that deadline. Responses are requested
   gzip-compressed. TLS prefers the X25519MLKEM768 post-quantum hybrid key

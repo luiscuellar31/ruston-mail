@@ -3,6 +3,7 @@
 use crate::error::Result;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 /// A server-side (Sieve) filter.
 #[derive(Debug, Clone, Deserialize)]
@@ -52,7 +53,7 @@ pub async fn create<D: Doer>(d: &D, name: &str, sieve: &str) -> Result<Filter> {
 /// Validate a Sieve script (does not create a filter).
 pub async fn check<D: Doer>(d: &D, sieve: &str) -> Result<()> {
     let body = serde_json::json!({ "Sieve": sieve, "Version": 2 });
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::put("/mail/v4/filters/check").json(body))
         .await?;
     Ok(())
@@ -60,7 +61,7 @@ pub async fn check<D: Doer>(d: &D, sieve: &str) -> Result<()> {
 
 /// Delete a filter by ID.
 pub async fn delete<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::delete(format!("/mail/v4/filters/{id}")))
         .await?;
     Ok(())
@@ -68,7 +69,7 @@ pub async fn delete<D: Doer>(d: &D, id: &str) -> Result<()> {
 
 /// Enable a filter by ID.
 pub async fn enable<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::put(format!("/mail/v4/filters/{id}/enable")))
         .await?;
     Ok(())
@@ -76,7 +77,7 @@ pub async fn enable<D: Doer>(d: &D, id: &str) -> Result<()> {
 
 /// Disable a filter by ID.
 pub async fn disable<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::put(format!("/mail/v4/filters/{id}/disable")))
         .await?;
     Ok(())

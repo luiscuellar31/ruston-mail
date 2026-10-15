@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::model::message::{Message, MessageMetadata};
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 /// Query parameters for listing/searching messages.
 #[derive(Debug, Default, Clone)]
@@ -127,7 +128,7 @@ pub async fn update_draft<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> 
 
 /// Send a draft. `body` is `{ExpirationTime, AutoSaveContacts, Packages, ...}`.
 pub async fn send_message<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::post(format!("/mail/v4/messages/{id}")).json(body))
         .await?;
     Ok(())
@@ -135,7 +136,7 @@ pub async fn send_message<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> 
 
 async fn label_op<D: Doer>(d: &D, op: &str, label_id: &str, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "LabelID": label_id, "IDs": ids });
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::put(format!("/mail/v4/messages/{op}")).json(body))
         .await?;
     Ok(())
@@ -152,7 +153,7 @@ pub async fn unlabel<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<(
 
 async fn ids_op<D: Doer>(d: &D, op: &str, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "IDs": ids });
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::put(format!("/mail/v4/messages/{op}")).json(body))
         .await?;
     Ok(())
@@ -177,7 +178,7 @@ pub async fn undelete<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
 
 /// Send a read receipt for a message.
 pub async fn send_receipt<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::post(format!("/mail/v4/messages/{id}/receipt")))
         .await?;
     Ok(())
@@ -198,7 +199,7 @@ pub async fn delete<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
 
 /// Cancel a scheduled send for a message.
 pub async fn cancel_send<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::post(format!("/mail/v4/messages/{id}/cancel_send")))
         .await?;
     Ok(())
@@ -206,7 +207,7 @@ pub async fn cancel_send<D: Doer>(d: &D, id: &str) -> Result<()> {
 
 /// Report a message as not-spam (trains the filter; server moves it to Inbox).
 pub async fn mark_ham<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::put(format!("/mail/v4/messages/{id}/mark/ham")))
         .await?;
     Ok(())
@@ -214,7 +215,7 @@ pub async fn mark_ham<D: Doer>(d: &D, id: &str) -> Result<()> {
 
 /// One-click unsubscribe (RFC 8058) from a mailing list.
 pub async fn unsubscribe<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::post(format!("/mail/v4/messages/{id}/unsubscribe")))
         .await?;
     Ok(())
@@ -222,7 +223,7 @@ pub async fn unsubscribe<D: Doer>(d: &D, id: &str) -> Result<()> {
 
 /// Permanently empty a folder/label (e.g. Trash or Spam).
 pub async fn empty<D: Doer>(d: &D, label_id: &str) -> Result<()> {
-    let _: serde_json::Value = d
+    let _: IgnoredAny = d
         .decode(Request::delete("/mail/v4/messages/empty").query("LabelID", label_id))
         .await?;
     Ok(())

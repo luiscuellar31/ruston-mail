@@ -8,6 +8,7 @@ use crate::transport::{Doer, HttpClient, Request};
 use futures::future::BoxFuture;
 use proton_srp::{RPGPVerifier, SRPAuth, SRPProofB64, SrpHashVersion};
 use secrecy::{ExposeSecret, SecretString};
+use serde::de::IgnoredAny;
 use std::sync::Arc;
 use types::{AuthInfo, AuthResponse, SessionResp};
 
@@ -173,7 +174,7 @@ async fn second_factor(
         }
     };
     tracing::debug!(target: "ruston_core::auth", "login: 2FA required — submitting TOTP (POST /core/v4/auth/2fa)");
-    let _: serde_json::Value = http
+    let _: IgnoredAny = http
         .decode(
             Request::post("/core/v4/auth/2fa")
                 .json(serde_json::json!({ "TwoFactorCode": code }))
@@ -188,7 +189,7 @@ async fn second_factor(
 /// refreshed first, in memory only: revoking never saves tokens again.
 pub async fn logout(http: &HttpClient) -> Result<()> {
     let revoking = http.detached().await;
-    let _: serde_json::Value = revoking.decode(Request::delete("/core/v4/auth")).await?;
+    let _: IgnoredAny = revoking.decode(Request::delete("/core/v4/auth")).await?;
     Ok(())
 }
 
