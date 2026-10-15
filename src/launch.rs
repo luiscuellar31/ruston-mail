@@ -114,38 +114,11 @@ impl Instance {
             ));
         }
         private_directory(folder)?;
-        let lock = private_file(&folder.join("instance.lock"), false)?;
         let endpoint = folder.join("endpoint");
-        match lock.try_lock() {
-            Err(TryLockError::WouldBlock) => {
-                // The primary may still be publishing its endpoint. Retry only
-                // discovery/connect, never a request after bytes have been sent.
-                let deadline = Instant::now() + TIMEOUT * 3;
-                let mut stream = loop {
-                    match connect(&endpoint) {
-                        Ok(stream) => break stream,
-                        Err(error) if Instant::now() >= deadline => return Err(error),
-                        Err(_) => thread::sleep(Duration::from_millis(25)),
-                    }
-                };
-                if urls.is_empty() {
-                    forward(&mut stream, "")?;
-                } else {
-                    for argument in urls {
-                        forward(&mut stream, &argument.url)?;
-                    }
-                }
-                return Ok(Start::Forwarded);
-            }
-            Err(TryLockError::Error(error)) => return Err(error),
-            Ok(()) => {}
-        }
-        // A stale record must not route a URL to a port reused after a crash.
-        match fs::remove_file(&endpoint) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+        let Some(lock) = claim(folder, &endpoint)? else {
+            forward_to_primary(&endpoint, urls)?;
+            return Ok(Start::Forwarded);
+        };
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
         let mut token = [0_u8; 32];
@@ -186,10 +159,15 @@ impl Instance {
         for argument in urls {
             instance.sender.send(Event::Mailto(argument.request));
         }
+        let record = EndpointRecord {
+            port: address.port(),
+            token,
+            process: std::process::id(),
+        };
         // The window opens without a record too; later launches just cannot
         // hand it their links. Desktop logging is off by default, so say so on
         // standard error.
-        if let Err(error) = publish(&instance.endpoint, address.port(), &token) {
+        if let Err(error) = record.publish(&instance.endpoint) {
             eprintln!("Ruston Mail: later launches cannot pass links to this window: {error}");
         }
         Ok(Start::Primary(instance))
@@ -270,31 +248,107 @@ fn private_file(path: &Path, truncate: bool) -> io::Result<File> {
     Ok(file)
 }
 
-/// Writes the record later launches read to reach this process. It lives only
-/// as long as the process and other processes read it from the page cache, so
-/// it is not flushed to disk: on macOS that would be a full device flush.
-fn publish(endpoint: &Path, port: u16, token: &[u8; 32]) -> io::Result<()> {
-    let mut file = private_file(endpoint, true)?;
-    file.write_all(&port.to_be_bytes())?;
-    file.write_all(token)?;
-    file.write_all(&std::process::id().to_be_bytes())
+/// What a later launch reads to reach the running instance. Launches of other
+/// versions read it too, so its layout stays fixed: the port, the token and
+/// the process ID, big-endian.
+struct EndpointRecord {
+    port: u16,
+    token: [u8; 32],
+    /// Lets a later launch hand this process the foreground on Windows.
+    process: u32,
+}
+
+impl EndpointRecord {
+    const LEN: usize = 2 + 32 + 4;
+
+    fn encode(&self) -> [u8; Self::LEN] {
+        let mut bytes = [0_u8; Self::LEN];
+        let (port, rest) = bytes.split_at_mut(size_of::<u16>());
+        let (token, process) = rest.split_at_mut(self.token.len());
+        port.copy_from_slice(&self.port.to_be_bytes());
+        token.copy_from_slice(&self.token);
+        process.copy_from_slice(&self.process.to_be_bytes());
+        bytes
+    }
+
+    fn decode(bytes: [u8; Self::LEN]) -> Self {
+        let [port_high, port_low, token @ .., p0, p1, p2, p3] = bytes;
+        Self {
+            port: u16::from_be_bytes([port_high, port_low]),
+            token,
+            process: u32::from_be_bytes([p0, p1, p2, p3]),
+        }
+    }
+
+    /// Writes the record later launches read to reach this process. It lives
+    /// only as long as the process and other processes read it from the page
+    /// cache, so it is not flushed to disk: on macOS that would be a full
+    /// device flush.
+    fn publish(&self, endpoint: &Path) -> io::Result<()> {
+        private_file(endpoint, true)?.write_all(&self.encode())
+    }
+
+    fn read(endpoint: &Path) -> io::Result<Self> {
+        if !fs::symlink_metadata(endpoint)?.is_file() {
+            return Err(io::Error::other(
+                "activation endpoint is not a regular file",
+            ));
+        }
+        let mut bytes = [0_u8; Self::LEN];
+        File::open(endpoint)?.read_exact(&mut bytes)?;
+        Ok(Self::decode(bytes))
+    }
+}
+
+/// Takes the per-user instance lock, or returns `None` while another process
+/// holds it.
+fn claim(folder: &Path, endpoint: &Path) -> io::Result<Option<File>> {
+    let lock = private_file(&folder.join("instance.lock"), false)?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Error(error)) => return Err(error),
+    }
+    // A stale record must not route a URL to a port reused after a crash.
+    match fs::remove_file(endpoint) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    Ok(Some(lock))
+}
+
+/// Hands this launch's links, or a plain activation, to the running instance.
+fn forward_to_primary(endpoint: &Path, urls: Vec<Argument>) -> io::Result<()> {
+    // The primary may still be publishing its endpoint. Retry only
+    // discovery/connect, never a request after bytes have been sent.
+    let deadline = Instant::now() + TIMEOUT * 3;
+    let mut stream = loop {
+        match connect(endpoint) {
+            Ok(stream) => break stream,
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => thread::sleep(Duration::from_millis(25)),
+        }
+    };
+    if urls.is_empty() {
+        return forward(&mut stream, "");
+    }
+    for argument in urls {
+        forward(&mut stream, &argument.url)?;
+    }
+    Ok(())
 }
 
 fn connect(endpoint: &Path) -> io::Result<TcpStream> {
-    if !fs::symlink_metadata(endpoint)?.is_file() {
-        return Err(io::Error::other(
-            "activation endpoint is not a regular file",
-        ));
-    }
-    let mut record = [0_u8; 38];
-    File::open(endpoint)?.read_exact(&mut record)?;
-    let port = u16::from_be_bytes([record[0], record[1]]);
-    let mut stream =
-        TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), TIMEOUT)?;
+    let record = EndpointRecord::read(endpoint)?;
+    let mut stream = TcpStream::connect_timeout(
+        &SocketAddr::from((Ipv4Addr::LOCALHOST, record.port)),
+        TIMEOUT,
+    )?;
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
     stream.write_all(MAGIC)?;
-    stream.write_all(&record[2..34])?;
+    stream.write_all(&record.token)?;
     let mut acknowledgement = [0];
     stream.read_exact(&mut acknowledgement)?;
     if acknowledgement != [1] {
@@ -302,12 +356,11 @@ fn connect(endpoint: &Path) -> io::Result<TcpStream> {
     }
     #[cfg(target_os = "windows")]
     {
-        let process = u32::from_be_bytes(record[34..38].try_into().expect("fixed endpoint record"));
         // SAFETY: this API accepts a process ID by value. The launching process
         // can grant its foreground rights to the authenticated existing instance;
         // Windows may still decline if it has no foreground rights itself.
         unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(process);
+            windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(record.process);
         }
     }
     Ok(stream)

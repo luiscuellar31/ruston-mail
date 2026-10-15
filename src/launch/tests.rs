@@ -60,20 +60,67 @@ fn a_second_launch_forwards_urls_and_activation_then_a_new_primary_can_take_over
     assert!(replacement.drain().is_empty());
 }
 
+/// A crashed primary's record, whose port now belongs to another program.
+fn stale_record(folder: &Path) -> TcpListener {
+    private_directory(folder).unwrap();
+    let foreign = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    foreign.set_nonblocking(true).unwrap();
+    EndpointRecord {
+        port: foreign.local_addr().unwrap().port(),
+        token: [9; 32],
+        process: 1,
+    }
+    .publish(&folder.join("endpoint"))
+    .unwrap();
+    foreign
+}
+
 #[test]
-fn stale_endpoint_data_cannot_forward_to_an_unrelated_process() {
+fn a_crashed_primarys_record_cannot_send_links_to_another_program() {
     let directory = Directory::new();
-    private_directory(&directory.0).unwrap();
-    private_file(&directory.0.join("endpoint"), true)
-        .unwrap()
-        .write_all(&[255; 34])
-        .unwrap();
+    let foreign = stale_record(&directory.0);
     let instance = primary(&directory.0, Vec::new());
     assert!(matches!(
         launch(&directory.0, vec!["mailto:team@example.org".into()]).unwrap(),
         Start::Forwarded
     ));
     assert!(instance.drain() == vec![mailto_event("mailto:team@example.org")]);
+    assert_eq!(
+        foreign.accept().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock,
+        "a launch connected to the old port"
+    );
+}
+
+#[test]
+fn taking_the_lock_removes_the_previous_record_before_publishing_a_new_one() {
+    let directory = Directory::new();
+    let _foreign = stale_record(&directory.0);
+    let endpoint = directory.0.join("endpoint");
+    let lock = claim(&directory.0, &endpoint).unwrap();
+    assert!(lock.is_some());
+    // Until this process publishes its own record, a later launch finds none
+    // and retries, rather than reaching the old port.
+    assert!(!endpoint.exists());
+    assert!(claim(&directory.0, &endpoint).unwrap().is_none());
+}
+
+#[test]
+fn the_endpoint_record_keeps_the_layout_other_versions_read() {
+    let record = EndpointRecord {
+        port: 0x1234,
+        token: [7; 32],
+        process: 0xA1B2_C3D4,
+    };
+    let bytes = record.encode();
+    assert_eq!(bytes[..2], [0x12, 0x34]);
+    assert_eq!(bytes[2..34], [7; 32]);
+    assert_eq!(bytes[34..], [0xA1, 0xB2, 0xC3, 0xD4]);
+    let decoded = EndpointRecord::decode(bytes);
+    assert_eq!(
+        (decoded.port, decoded.token, decoded.process),
+        (record.port, record.token, record.process)
+    );
 }
 
 #[test]
