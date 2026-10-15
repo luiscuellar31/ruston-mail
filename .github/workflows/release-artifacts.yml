@@ -173,7 +173,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             appstream desktop-file-utils file libfile-mimeinfo-perl \
-            libxkbcommon0 libxkbcommon-x11-0 zsync \
+            libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 zsync \
             xvfb xauth libegl1 libgl1 libgl1-mesa-dri
 
       - name: Install pinned AppImage tools

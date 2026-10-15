@@ -111,10 +111,11 @@ for size in 16 24 32 48 64 128 256 512; do
     icon_args+=(--icon-file "$REPO_ROOT/assets/icons/hicolor/${size}x${size}/apps/$APP_ID.png")
 done
 
-# winit loads libxkbcommon at run time and stops on X11 without
-# libxkbcommon-x11, which not every system installs; AppImages bundle what is
-# not on the excludelist. The executables get an $ORIGIN-relative RUNPATH, so
-# those loads find the bundled copies. GL, X11 and Wayland stay the system's.
+# winit loads libxkbcommon and, on X11, libxkbcommon-x11, libXcursor and libXi
+# at run time, and stops without them; not every system installs them, and
+# AppImages bundle what is not on the excludelist. The executables get an
+# $ORIGIN-relative RUNPATH, so those loads find the bundled copies. GL, libX11,
+# libxcb and Wayland stay the system's.
 "$LINUXDEPLOY" --appdir "$APPDIR" \
     --executable "$TARGET_DIR/ruston" \
     --executable "$TARGET_DIR/ruston-cli" \
@@ -122,6 +123,8 @@ done
     "${icon_args[@]}" \
     --library "$(library_path libxkbcommon.so.0)" \
     --library "$(library_path libxkbcommon-x11.so.0)" \
+    --library "$(library_path libXcursor.so.1)" \
+    --library "$(library_path libXi.so.6)" \
     --custom-apprun "$SCRIPT_DIR/AppRun"
 
 install -Dm644 "$REPO_ROOT/packaging/linux/$APP_ID.appdata.xml" \
@@ -132,7 +135,7 @@ install -Dm644 "$REPO_ROOT/LICENSE" "$APPDIR/usr/share/doc/ruston-mail/LICENSE"
 ln -sf "usr/share/icons/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/.DirIcon"
 
 # 3. Check the AppDir before it becomes read-only
-for library in libxkbcommon.so.0 libxkbcommon-x11.so.0; do
+for library in libxkbcommon.so.0 libxkbcommon-x11.so.0 libXcursor.so.1 libXi.so.6; do
     [[ -f "$APPDIR/usr/lib/$library" ]] || die "$library was not bundled"
 done
 search_path="$(readelf -d "$APPDIR/usr/bin/ruston" | grep -E '\((RUNPATH|RPATH)\)' || true)"
