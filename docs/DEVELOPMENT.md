@@ -320,18 +320,20 @@ window's class is the same ID: egui-winit names windows after the app ID, and
 winit uses that name for `WM_CLASS`, so `StartupWMClass` names it too. The
 desktop identity does not change session profiles or preference storage paths.
 
-Generated PNGs and the Windows ICO are committed, so ordinary builds do not
-need image tools. To regenerate them from the existing 1024-pixel logo on
-macOS, use Python 3 and the system `sips` tool:
+The artwork is drawn by
+[`packaging/macos/generate-icon.swift`](../packaging/macos/generate-icon.swift),
+which writes the source logo,
+[`assets/macos/ruston-mail-1024.png`](../assets/macos/ruston-mail-1024.png), in
+sRGB. The PNGs, ICNS, and ICO derived from it are committed, so ordinary builds
+do not need image tools. After changing the artwork, regenerate them on macOS
+with Swift, Python 3, and the system `sips` tool:
 
 ```sh
+swift packaging/macos/generate-icon.swift
 python3 packaging/generate-desktop-icons.py
+cp assets/icons/hicolor/128x128/apps/com.luiscuellar.ruston-mail.png assets/ui/ruston-mail-128.png
+rm assets/macos/ruston-mail.icns   # the next package.sh run rebuilds it
 ```
-
-The source logo is [`assets/macos/ruston-mail-1024.png`](../assets/macos/ruston-mail-1024.png).
-Regenerating these assets does not regenerate the existing macOS ICNS; use
-[`packaging/macos/generate-icon.swift`](../packaging/macos/generate-icon.swift)
-when changing that artwork.
 
 ## Desktop installation (Linux)
 
