@@ -434,8 +434,8 @@ value, `HKCU\Software\Classes\com.luiscuellar.ruston-mail.mailto`, and
 `HKCU\Software\Ruston Mail\Capabilities`; do not edit `UserChoice`.
 
 Automated tests cover URI decoding/injection, login/draft/modal guards, real
-loopback forwarding, lock takeover, overflow, private Unix permissions, and
-slow peers. Windows CI additionally exercises the registration script with an
+loopback forwarding, lock takeover, overflow, private Unix permissions, idle
+and slow peers. Windows CI additionally exercises the registration script with an
 executable path containing spaces and verifies that the default association
 is unchanged. Native desktop smoke checks still require each platform:
 

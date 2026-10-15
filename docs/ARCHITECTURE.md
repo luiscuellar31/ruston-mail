@@ -31,14 +31,17 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`src/main.rs`](../src/main.rs) validates desktop URI arguments before starting
   the UI. [`src/launch.rs`](../src/launch.rs) holds a per-user OS file lock and
   forwards bounded `mailto:` requests to the existing instance over an
-  authenticated IPv4 loopback connection. Its worker waits in `accept`, uses a
-  total connection deadline, and wakes egui through a bounded channel; shutdown
-  joins it before releasing the lock. The private activation directory contains
-  only the lock and a port/token/process-ID record, never email contents. The
-  record lives only as long as the process, so it is not flushed to disk; if it
-  cannot be written, the window still opens, a warning goes to standard error,
-  and later launches cannot hand it their links. A stale record that cannot be
-  removed still stops startup, so no link reaches a reused port.
+  authenticated IPv4 loopback connection. Its worker waits in `accept` and
+  serves one connection at a time, which has 200 ms to present the token,
+  compared in constant time, and a total deadline, so idle connections from
+  other local users cannot use up a later launch's retries. It wakes egui
+  through a bounded channel; shutdown joins it before releasing the lock. The
+  private activation directory contains only the lock and a
+  port/token/process-ID record, never email contents. The record lives only as
+  long as the process, so it is not flushed to disk; if it cannot be written,
+  the window still opens, a warning goes to standard error, and later launches
+  cannot hand it their links. A stale record that cannot be removed still stops
+  startup, so no link reaches a reused port.
   Demo activation uses a separate directory. Windows secondary launches grant
   foreground rights to the primary when Windows permits it.
   [`launch/macos.rs`](../src/launch/macos.rs) registers a retained `GURL` Apple

@@ -159,6 +159,34 @@ fn a_slow_peer_cannot_keep_the_activation_worker_or_shutdown_busy_indefinitely()
     assert!(instance.drain().is_empty());
 }
 
+#[test]
+fn idle_connections_from_another_local_user_cannot_block_a_later_launch() {
+    let directory = Directory::new();
+    let instance = primary(&directory.0, Vec::new());
+    // Anyone on the machine can connect to the loopback port. The worker
+    // serves one connection at a time, and these never send a header.
+    let idle: Vec<_> = (0..4)
+        .map(|_| TcpStream::connect(instance.address).unwrap())
+        .collect();
+    assert!(matches!(
+        launch(&directory.0, vec!["mailto:team@example.org".into()]).unwrap(),
+        Start::Forwarded
+    ));
+    assert!(instance.drain() == vec![mailto_event("mailto:team@example.org")]);
+    drop(idle);
+}
+
+#[test]
+fn the_token_comparison_checks_every_byte() {
+    let token = [7_u8; 32];
+    assert!(same_token(&token, &token));
+    for position in [0, 15, 31] {
+        let mut guess = token;
+        guess[position] ^= 1;
+        assert!(!same_token(&guess, &token));
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn activation_files_are_private_and_symlink_targets_are_never_modified() {

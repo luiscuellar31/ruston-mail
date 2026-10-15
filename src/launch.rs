@@ -23,6 +23,10 @@ use eframe::egui;
 use crate::mailto::{MAX_PENDING, MAX_URL_BYTES, Request};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a connection may take to authenticate. Any local user can connect
+/// to the loopback port and the worker serves one connection at a time, so
+/// idle connections must not use up a later launch's retries.
+const HEADER_TIMEOUT: Duration = Duration::from_millis(200);
 const MAGIC: &[u8; 4] = b"RM01";
 
 pub enum Start {
@@ -326,9 +330,12 @@ fn forward(stream: &mut TcpStream, url: &str) -> io::Result<()> {
 fn receive(stream: &mut TcpStream, token: &[u8; 32], sender: &Sender) -> io::Result<()> {
     let deadline = Instant::now() + TIMEOUT;
     stream.set_write_timeout(Some(TIMEOUT))?;
-    let mut header = [0_u8; 36];
-    read_until(stream, &mut header, deadline)?;
-    if &header[..4] != MAGIC || &header[4..] != token {
+    let header_deadline = Instant::now() + HEADER_TIMEOUT;
+    let mut magic = [0_u8; 4];
+    let mut received = [0_u8; 32];
+    read_until(stream, &mut magic, header_deadline)?;
+    read_until(stream, &mut received, header_deadline)?;
+    if &magic != MAGIC || !same_token(&received, token) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "invalid activation token",
@@ -360,6 +367,16 @@ fn receive(stream: &mut TcpStream, token: &[u8; 32], sender: &Sender) -> io::Res
         }
     }
     Ok(())
+}
+
+/// Compares every byte whatever the first difference, so the time a guess
+/// takes to be rejected does not say how much of it was right.
+fn same_token(received: &[u8; 32], token: &[u8; 32]) -> bool {
+    let mut difference = 0_u8;
+    for (a, b) in received.iter().zip(token) {
+        difference |= std::hint::black_box(a ^ b);
+    }
+    difference == 0
 }
 
 /// A total deadline prevents a slow peer from extending read_exact indefinitely
