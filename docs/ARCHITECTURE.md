@@ -439,7 +439,11 @@ instead of an unknown outcome.
   sending, and `reply_redirected` flags a Reply-To that bypasses the sender.
   Conversation reads fetch missing bodies with at most three requests in flight,
   then decrypt them in oldest-first order before returning the complete thread
-  to either frontend.
+  to either frontend. The keys of every distinct sender are asked for together
+  first, so each sender is looked up once and no body waits for another's
+  lookup. Decrypting, MIME parsing and sanitizing run on the blocking pool, up
+  to three bodies at a time while the next ones download; attachment
+  decryption and signature checks run there too.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
   owns the filename policy shared by both frontends. Each frontend chooses its
   destination and creates the file exclusively. Core can pass decrypted

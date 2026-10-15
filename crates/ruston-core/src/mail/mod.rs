@@ -333,6 +333,20 @@ impl Client {
     }
 }
 
+/// Runs CPU work, such as decrypting, on Tokio's blocking pool so it holds
+/// no async worker; without a runtime it runs where it is.
+pub(crate) async fn off_thread<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::spawn_blocking(work)
+            .await
+            .map_err(|error| Error::Other(format!("decryption worker failed: {error}")))?
+    } else {
+        work()
+    }
+}
+
 /// The account and its addresses, asked for together: neither request needs
 /// the other, and every command that resumes a session waits for both.
 async fn account<D: Doer>(http: &D) -> Result<(crypto::keys::User, Vec<crypto::keys::Address>)> {

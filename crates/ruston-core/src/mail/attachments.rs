@@ -155,19 +155,26 @@ impl Client {
             Err(Error::ResponseTooLarge { .. }) => return Err(too_large()),
             result => result?,
         };
-        let provider = crypto::provider();
-        let mut plain = Zeroizing::new(crypto::decrypt_attachment(
-            &provider,
-            addr,
-            key_packets,
-            &data_packet,
-        )?);
-        drop(data_packet);
-        // Never substitute the recipient's keys for the sender's verifier.
-        if let Some(signature) = signature {
-            crypto::verify_attachment_signature(&provider, &sender_pubs, &plain, signature)?;
-        }
-        Ok((att.name.clone(), std::mem::take(&mut *plain)))
+        // Decrypting and verifying up to 50 MiB is CPU work for the blocking pool.
+        let (addr, key_packets) = (addr.clone(), key_packets.to_owned());
+        let signature = signature.map(str::to_owned);
+        let plain = super::off_thread(move || {
+            let provider = crypto::provider();
+            let mut plain = Zeroizing::new(crypto::decrypt_attachment(
+                &provider,
+                &addr,
+                &key_packets,
+                &data_packet,
+            )?);
+            drop(data_packet);
+            // Never substitute the recipient's keys for the sender's verifier.
+            if let Some(signature) = signature {
+                crypto::verify_attachment_signature(&provider, &sender_pubs, &plain, &signature)?;
+            }
+            Ok(std::mem::take(&mut *plain))
+        })
+        .await?;
+        Ok((att.name.clone(), plain))
     }
 
     /// Download attachments sequentially, handing each plaintext to `receive`.

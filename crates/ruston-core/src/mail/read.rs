@@ -12,6 +12,8 @@ use futures::{Stream, StreamExt, TryStreamExt, stream};
 
 /// Keep conversation reads responsive without flooding Proton or buffering many bodies.
 const CONVERSATION_BODY_FETCH_CONCURRENCY: usize = 3;
+/// How many sender key lookups run at once when a conversation opens.
+const SENDER_KEY_CONCURRENCY: usize = 3;
 
 /// A decrypted message ready for display.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -178,6 +180,12 @@ impl Client {
     }
 
     pub(super) async fn decrypt_message(&self, m: &Message) -> Result<FullMessage> {
+        self.open_message(m.clone()).await
+    }
+
+    /// Decrypts `m`, checking its signature against its sender's keys. A
+    /// failed lookup leaves the body unverified.
+    async fn open_message(&self, m: Message) -> Result<FullMessage> {
         let sender_pubs = match self.sender_pubkeys(&m.meta.sender.address).await {
             Ok(keys) => keys,
             // The body still opens, without claiming a verified signature.
@@ -186,45 +194,42 @@ impl Client {
                 Vec::new()
             }
         };
-        self.decrypt_message_with(m, &sender_pubs)
+        self.open_message_with(m, sender_pubs).await
     }
 
-    /// Decrypts `m`, checking its signature against `sender_pubs`. With none,
-    /// the body opens as unverified.
-    fn decrypt_message_with(&self, m: &Message, sender_pubs: &[String]) -> Result<FullMessage> {
-        let provider = crypto::provider();
+    /// Decrypts `m`, checking its signature against `sender_pubs`; with none,
+    /// the body opens as unverified. Decrypting, parsing and sanitizing run
+    /// off the async workers.
+    async fn open_message_with(&self, m: Message, sender_pubs: Vec<String>) -> Result<FullMessage> {
         let addr = self
             .keys()
             .address(&m.meta.address_id)
             .or_else(|| self.keys().primary_address())
-            .ok_or_else(|| Error::Crypto("no address key for message".into()))?;
-        let (body, verdict) = crypto::decrypt_body(&provider, addr, sender_pubs, &m.body)?;
-        let (body, mime_type) = if m.mime_type.starts_with("multipart/") {
-            extract_mime(&body)
-        } else {
-            (
-                body,
-                if m.mime_type.is_empty() {
-                    "text/plain".into()
-                } else {
-                    m.mime_type.clone()
-                },
-            )
-        };
-        // Sanitize HTML bodies (strip scripts / active content) for safe rendering.
-        let body = if crate::html::is_html_mime(&mime_type) {
-            crate::html::sanitize(&body)
-        } else {
-            body
-        };
-        Ok(FullMessage {
-            meta: m.meta.clone(),
-            body,
-            mime_type,
-            verdict,
-            attachments: m.attachments.clone(),
-            reply_tos: m.reply_tos.clone(),
-        })
+            .ok_or_else(|| Error::Crypto("no address key for message".into()))?
+            .clone();
+        super::off_thread(move || open_body(&addr, m, &sender_pubs)).await
+    }
+
+    /// Asks for the keys of every distinct sender at once, a few at a time,
+    /// so no body waits for another sender's lookup. A lookup that fails is
+    /// tried again, and reported, by the body that needs it.
+    async fn prefetch_sender_keys(&self, messages: &[Message]) {
+        let mut senders: Vec<&str> = Vec::new();
+        for message in messages {
+            let sender = message.meta.sender.address.as_str();
+            if !sender.is_empty()
+                && !senders
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(sender))
+            {
+                senders.push(sender);
+            }
+        }
+        stream::iter(senders)
+            .for_each_concurrent(SENDER_KEY_CONCURRENCY, |sender| async move {
+                let _ = self.sender_pubkeys(sender).await;
+            })
+            .await;
     }
 
     /// Fetch one message's metadata (subject, sender, labels) without
@@ -237,26 +242,29 @@ impl Client {
     pub async fn read_message(&self, id: &str) -> Result<FullMessage> {
         tracing::debug!(target: "ruston_core::mail", message_id = %id, "read_message: fetching + decrypting");
         let msg = api::messages::get_message(self.http(), id).await?;
-        self.decrypt_message(&msg).await
+        self.open_message(msg).await
     }
 
     /// Fetch and decrypt a message for a caller that keeps only its text: the
     /// sender's keys are not looked up, and the verdict is always unverified.
     pub(super) async fn read_message_unverified(&self, id: &str) -> Result<FullMessage> {
         let msg = api::messages::get_message(self.http(), id).await?;
-        self.decrypt_message_with(&msg, &[])
+        self.open_message_with(msg, Vec::new()).await
     }
 
     /// Fetch a conversation and decrypt all of its messages (oldest first).
     pub async fn read_conversation(&self, id: &str) -> Result<(Conversation, Vec<FullMessage>)> {
         let (conv, mut msgs) = api::conversations::get_conversation(self.http(), id).await?;
         msgs.sort_by_key(|m| m.meta.time);
-        let mut out = Vec::with_capacity(msgs.len());
-        let fetched = fetch_conversation_bodies(self.http(), msgs);
-        futures::pin_mut!(fetched);
-        while let Some(full) = fetched.try_next().await? {
-            out.push(self.decrypt_message(&full).await?);
-        }
+        // The senders are known now: fetch their keys together up front.
+        self.prefetch_sender_keys(&msgs).await;
+        // Bodies download and decrypt at the same time, three of each at
+        // most, and still come out in conversation order.
+        let out = fetch_conversation_bodies(self.http(), msgs)
+            .map_ok(|message| self.open_message(message))
+            .try_buffered(CONVERSATION_BODY_FETCH_CONCURRENCY)
+            .try_collect()
+            .await?;
         Ok((conv, out))
     }
 
@@ -266,6 +274,41 @@ impl Client {
         let (_, messages) = api::conversations::get_conversation(self.http(), id).await?;
         Ok(metadata_oldest_first(messages))
     }
+}
+
+/// Decrypts, parses and sanitizes one message: CPU work, kept off the async
+/// workers by the callers.
+fn open_body(
+    addr: &crypto::keys::AddressKeys,
+    m: Message,
+    sender_pubs: &[String],
+) -> Result<FullMessage> {
+    let provider = crypto::provider();
+    let (body, verdict) = crypto::decrypt_body(&provider, addr, sender_pubs, &m.body)?;
+    let (body, mime_type) = if m.mime_type.starts_with("multipart/") {
+        extract_mime(&body)
+    } else {
+        let mime_type = if m.mime_type.is_empty() {
+            "text/plain".into()
+        } else {
+            m.mime_type
+        };
+        (body, mime_type)
+    };
+    // Sanitize HTML bodies (strip scripts / active content) for safe rendering.
+    let body = if crate::html::is_html_mime(&mime_type) {
+        crate::html::sanitize(&body)
+    } else {
+        body
+    };
+    Ok(FullMessage {
+        meta: m.meta,
+        body,
+        mime_type,
+        verdict,
+        attachments: m.attachments,
+        reply_tos: m.reply_tos,
+    })
 }
 
 fn fetch_conversation_bodies<D: Doer>(
@@ -376,6 +419,189 @@ mod tests {
                 ..Default::default()
             })
             .collect()
+    }
+
+    /// A client for me@proton.me against `server`, and the armored public key
+    /// its messages are signed with.
+    fn conversation_client(
+        server: &wiremock::MockServer,
+    ) -> (Client, crypto::keys::AddressKeys, String) {
+        use crate::cache::CacheIdentity;
+        use crate::crypto::{KeyStore, StoredKey};
+        use crate::session::{MemoryStore, Paths};
+        use crate::transport::HttpClient;
+        use proton_crypto::crypto::{
+            DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
+        };
+        use secrecy::SecretString;
+
+        let provider = crypto::provider();
+        let key = provider
+            .new_key_generator()
+            .with_user_id("Me", "me@proton.me")
+            .with_algorithm(KeyGeneratorAlgorithm::ECC)
+            .generate()
+            .unwrap();
+        let armored = String::from_utf8(
+            provider
+                .private_key_export(&key, "pass", DataEncoding::Armor)
+                .unwrap()
+                .as_ref()
+                .to_vec(),
+        )
+        .unwrap();
+        let public = provider.private_key_to_public_key(&key).unwrap();
+        let public = String::from_utf8(
+            provider
+                .public_key_export(&public, DataEncoding::Armor)
+                .unwrap()
+                .as_ref()
+                .to_vec(),
+        )
+        .unwrap();
+        let address = crypto::keys::AddressKeys {
+            address_id: "address".into(),
+            email: "me@proton.me".into(),
+            keys: vec![StoredKey {
+                armored,
+                passphrase: SecretString::from("pass"),
+                unlocked: None,
+            }],
+        };
+        let client = Client {
+            http: HttpClient::new(server.uri(), "Other"),
+            keys: KeyStore {
+                user_keys: Vec::new(),
+                addresses: vec![address.clone()],
+            },
+            paths: Paths::with_base(std::env::temp_dir()),
+            profile: "test".into(),
+            session_uid: "test".into(),
+            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
+            store: std::sync::Arc::new(MemoryStore::default()),
+            sender_cache: tokio::sync::Mutex::new(super::super::SenderKeyCache::default()),
+        };
+        (client, address, public)
+    }
+
+    /// Serves conversation `c1` with one message per `(sender, time)`, each
+    /// body signed by `address`, and answers every sender's key lookup with
+    /// `public` after `delay`, expecting exactly one lookup per sender.
+    async fn serve_conversation(
+        server: &wiremock::MockServer,
+        address: &crypto::keys::AddressKeys,
+        public: &str,
+        messages: &[(&str, i64)],
+        delay: Duration,
+    ) {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let provider = crypto::provider();
+        let meta = |index: usize, (sender, time): (&str, i64)| {
+            serde_json::json!({
+                "ID": format!("m{index}"), "Time": time, "AddressID": "address",
+                "Sender": {"Address": sender}, "LabelIDs": ["0"]
+            })
+        };
+        // Listed out of order: the conversation is read oldest first.
+        let listed: Vec<_> = messages
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(index, message)| meta(index, *message))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/conversations/c1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Conversation": {"ID": "c1", "Subject": "Plans"}, "Messages": listed
+            })))
+            .mount(server)
+            .await;
+        for (index, message) in messages.iter().enumerate() {
+            let mut full = meta(index, *message);
+            full["Body"] = crypto::encrypt_self_draft(&provider, address, &format!("body {index}"))
+                .unwrap()
+                .into();
+            full["MIMEType"] = "text/plain".into();
+            Mock::given(method("GET"))
+                .and(path(format!("/mail/v4/messages/m{index}")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"Code": 1000, "Message": full})),
+                )
+                .mount(server)
+                .await;
+        }
+        let mut senders: Vec<&str> = messages.iter().map(|(sender, _)| *sender).collect();
+        senders.sort_unstable();
+        senders.dedup();
+        for sender in senders {
+            Mock::given(method("GET"))
+                .and(path("/core/v4/keys/all"))
+                .and(query_param("Email", sender))
+                .respond_with(ResponseTemplate::new(200).set_delay(delay).set_body_json(
+                    serde_json::json!({
+                        "Code": 1000, "Address": {"Keys": [{"PublicKey": public, "Flags": 3}]}
+                    }),
+                ))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conversation_opens_in_order_with_one_key_lookup_per_sender() {
+        let server = wiremock::MockServer::start().await;
+        let (client, address, public) = conversation_client(&server);
+        let messages = [
+            ("alice@example.org", 10),
+            ("bob@example.org", 20),
+            ("alice@example.org", 30),
+        ];
+        serve_conversation(&server, &address, &public, &messages, Duration::ZERO).await;
+
+        let (conversation, read) = client.read_conversation("c1").await.unwrap();
+
+        assert_eq!(conversation.subject, "Plans");
+        let bodies: Vec<&str> = read.iter().map(|message| message.body.as_str()).collect();
+        assert_eq!(bodies, ["body 0", "body 1", "body 2"]);
+        assert!(
+            read.iter()
+                .all(|message| message.verdict == Verdict::Verified)
+        );
+        // Each sender's keys were asked for once, as the mocks expect.
+    }
+
+    #[tokio::test]
+    async fn the_senders_keys_are_asked_for_together() {
+        let server = wiremock::MockServer::start().await;
+        let (client, address, public) = conversation_client(&server);
+        let messages = [
+            ("alice@example.org", 10),
+            ("bob@example.org", 20),
+            ("carol@example.org", 30),
+        ];
+        // Each lookup takes a second: one after the other, three seconds.
+        serve_conversation(
+            &server,
+            &address,
+            &public,
+            &messages,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let started = std::time::Instant::now();
+        let (_, read) = client.read_conversation("c1").await.unwrap();
+
+        assert_eq!(read.len(), 3);
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
