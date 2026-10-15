@@ -509,7 +509,9 @@ instead of an unknown outcome.
   message cryptography. Each address key is unlocked once per session and kept
   as an unlocked export in zeroized memory, so later operations skip its
   passphrase derivation; the armored key and passphrase stay as a fallback. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
-  HTML before either frontend renders it.
+  HTML before either frontend renders it. Links keep only `http`, `https` and
+  `mailto` URLs and relative ones are dropped, for exports and quoted replies
+  as much as for the readers; the sanitizer is built once.
 
 ## Where to start
 

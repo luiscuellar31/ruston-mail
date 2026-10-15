@@ -1,5 +1,8 @@
 //! HTML sanitization for message bodies.
 
+use std::collections::HashSet;
+use std::sync::LazyLock;
+
 /// Whether a MIME type describes HTML, including optional charset parameters.
 pub fn is_html_mime(mime_type: &str) -> bool {
     mime_type
@@ -24,15 +27,26 @@ pub fn escape_text(text: &str) -> String {
     out
 }
 
-/// Remove active and hidden content while retaining safe HTML formatting.
-/// Image tags may remain; renderers decide whether to display or fetch them.
-pub fn sanitize(html: &str) -> String {
-    ammonia::Builder::new()
+/// The same sanitizer serves every body, so it is built once.
+static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
+    let mut builder = ammonia::Builder::new();
+    builder
         .add_clean_content_tags(&[
             "head", "title", "noscript", "template", "textarea", "iframe", "svg",
         ])
-        .clean(html)
-        .to_string()
+        // A link may lead to the web or to an address, and nowhere else. Every
+        // output keeps this, EML exports and quoted replies included, not only
+        // the readers that filter links themselves.
+        .url_schemes(HashSet::from(["http", "https", "mailto"]))
+        .url_relative(ammonia::UrlRelative::Deny);
+    builder
+});
+
+/// Remove active and hidden content while retaining safe HTML formatting.
+/// Image tags may remain; renderers decide whether to display or fetch them.
+/// Links keep only http, https and mailto URLs.
+pub fn sanitize(html: &str) -> String {
+    SANITIZER.clean(html).to_string()
 }
 
 #[cfg(test)]
@@ -54,6 +68,36 @@ mod tests {
     fn keeps_safe_links() {
         let clean = sanitize(r#"<a href="https://proton.me">link</a>"#);
         assert!(clean.contains("https://proton.me"));
+    }
+
+    #[test]
+    fn links_lead_only_to_the_web_or_an_address() {
+        let clean = sanitize(concat!(
+            r#"<a href="https://proton.me">web</a><a href="mailto:ana@example.org">mail</a>"#,
+            r#"<a href="ssh://host">shell</a><a href="magnet:?xt=urn:btih:x">torrent</a>"#,
+            r#"<a href="webcal://cal.example/x">calendar</a><a href="sms:+123">text</a>"#,
+            r#"<a href="/account/reset">relative</a><a href="ftp://files.example">files</a>"#,
+        ));
+
+        assert!(clean.contains(r#"href="https://proton.me""#), "{clean}");
+        assert!(
+            clean.contains(r#"href="mailto:ana@example.org""#),
+            "{clean}"
+        );
+        for gone in [
+            "ssh:",
+            "magnet:",
+            "webcal:",
+            "sms:",
+            "/account/reset",
+            "ftp:",
+        ] {
+            assert!(!clean.contains(gone), "{gone} survived: {clean}");
+        }
+        // Only the destination goes; the words stay readable.
+        for text in ["shell", "torrent", "calendar", "relative"] {
+            assert!(clean.contains(text), "{text} was lost: {clean}");
+        }
     }
 
     #[test]

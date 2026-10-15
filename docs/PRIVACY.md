@@ -84,7 +84,9 @@ for system authorization when notifications become active for a signed-in
 account; a bare development executable does not request permission or notify.
 
 HTML messages do not run in a browser view. They are sanitized, parsed, and
-drawn with native UI elements. Scripts do not run, and remote images are never
+drawn with native UI elements. Sanitizing keeps only `http`, `https` and
+`mailto` links and drops relative ones, so EML exports and quoted replies
+carry no other kind. Scripts do not run, and remote images are never
 requested. This also blocks tracking pixels.
 
 The CLI's default text view converts HTML to readable Markdown-style text.
