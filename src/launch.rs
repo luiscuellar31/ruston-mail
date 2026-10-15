@@ -182,11 +182,12 @@ impl Instance {
         for argument in urls {
             instance.sender.send(Event::Mailto(argument.request));
         }
-        let mut file = private_file(&instance.endpoint, true)?;
-        file.write_all(&address.port().to_be_bytes())?;
-        file.write_all(&token)?;
-        file.write_all(&std::process::id().to_be_bytes())?;
-        file.sync_all()?;
+        // The window opens without a record too; later launches just cannot
+        // hand it their links. Desktop logging is off by default, so say so on
+        // standard error.
+        if let Err(error) = publish(&instance.endpoint, address.port(), &token) {
+            eprintln!("Ruston Mail: later launches cannot pass links to this window: {error}");
+        }
         Ok(Start::Primary(instance))
     }
 
@@ -263,6 +264,16 @@ fn private_file(path: &Path, truncate: bool) -> io::Result<File> {
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
     Ok(file)
+}
+
+/// Writes the record later launches read to reach this process. It lives only
+/// as long as the process and other processes read it from the page cache, so
+/// it is not flushed to disk: on macOS that would be a full device flush.
+fn publish(endpoint: &Path, port: u16, token: &[u8; 32]) -> io::Result<()> {
+    let mut file = private_file(endpoint, true)?;
+    file.write_all(&port.to_be_bytes())?;
+    file.write_all(token)?;
+    file.write_all(&std::process::id().to_be_bytes())
 }
 
 fn connect(endpoint: &Path) -> io::Result<TcpStream> {

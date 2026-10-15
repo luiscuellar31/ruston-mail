@@ -34,7 +34,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   authenticated IPv4 loopback connection. Its worker waits in `accept`, uses a
   total connection deadline, and wakes egui through a bounded channel; shutdown
   joins it before releasing the lock. The private activation directory contains
-  only the lock and a port/token/process-ID record, never email contents.
+  only the lock and a port/token/process-ID record, never email contents. The
+  record lives only as long as the process, so it is not flushed to disk; if it
+  cannot be written, the window still opens, a warning goes to standard error,
+  and later launches cannot hand it their links. A stale record that cannot be
+  removed still stops startup, so no link reaches a reused port.
   Demo activation uses a separate directory. Windows secondary launches grant
   foreground rights to the primary when Windows permits it.
   [`launch/macos.rs`](../src/launch/macos.rs) registers a retained `GURL` Apple
