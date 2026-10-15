@@ -224,6 +224,21 @@ where
     Ok(n)
 }
 
+fn cached_page(
+    cache: &Cache,
+    folder: &str,
+    unread: bool,
+    page: u32,
+    page_size: u32,
+) -> Result<(u32, Vec<MessageMetadata>)> {
+    let label = resolve_folder(folder);
+    let (all, unread_only) = cache.count(&label)?;
+    let total = if unread { unread_only } else { all };
+    // A page past the end of what a u32 can address is past the cache too.
+    let messages = cache.list(&label, unread, page_size, page.saturating_mul(page_size))?;
+    Ok((u32::try_from(total).unwrap_or(u32::MAX), messages))
+}
+
 impl Client {
     pub(crate) fn open_cache(&self) -> Result<Cache> {
         let path = Cache::default_account_path(&self.profile, &self.cache_identity)?;
@@ -258,6 +273,18 @@ impl Client {
     ) -> Result<Vec<MessageMetadata>> {
         self.open_cache()?
             .list(&resolve_folder(folder), unread, limit, 0)
+    }
+
+    /// One page of a folder from the local cache (offline), with how many
+    /// cached messages it holds: unread ones only when `unread` is set.
+    pub fn cached_messages_page(
+        &self,
+        folder: &str,
+        unread: bool,
+        page: u32,
+        page_size: u32,
+    ) -> Result<(u32, Vec<MessageMetadata>)> {
+        cached_page(&self.open_cache()?, folder, unread, page, page_size)
     }
 
     /// Cached (total, unread) counts for a folder.
@@ -455,6 +482,33 @@ mod tests {
 
         assert_eq!(client.index_into(&cache, "inbox", 1, 10).await.unwrap(), 1);
         assert_eq!(cache.search("indexedbody", 10).unwrap()[0].id, "m1");
+    }
+
+    #[test]
+    fn a_cached_folder_is_read_page_by_page_with_its_real_total() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        for index in 0..5_i64 {
+            cache
+                .upsert_message(&MessageMetadata {
+                    unread: i64::from(index < 2),
+                    time: index,
+                    ..cached_message(&format!("m{index}"))
+                })
+                .unwrap();
+        }
+        let ids = |messages: Vec<MessageMetadata>| -> Vec<String> {
+            messages.into_iter().map(|message| message.id).collect()
+        };
+
+        // Newest first; the total is the folder's, not the page's.
+        let (total, first) = cached_page(&cache, "inbox", false, 0, 2).unwrap();
+        assert_eq!((total, ids(first)), (5, vec!["m4".into(), "m3".into()]));
+        let (total, second) = cached_page(&cache, "inbox", false, 1, 2).unwrap();
+        assert_eq!((total, ids(second)), (5, vec!["m2".into(), "m1".into()]));
+        let (total, unread) = cached_page(&cache, "inbox", true, 0, 25).unwrap();
+        assert_eq!((total, ids(unread)), (2, vec!["m1".into(), "m0".into()]));
+        let (total, beyond) = cached_page(&cache, "inbox", false, u32::MAX, 25).unwrap();
+        assert_eq!((total, beyond.len()), (5, 0));
     }
 
     #[test]

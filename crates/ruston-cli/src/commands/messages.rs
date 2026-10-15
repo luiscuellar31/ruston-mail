@@ -155,8 +155,9 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         } => {
             let client = resume(&ctx.profile).await?;
             if cached {
-                let msgs = client.cached_messages(&folder, unread, page_size)?;
-                render::messages_list(ctx.json, msgs.len() as u32, &msgs);
+                let (total, msgs) =
+                    client.cached_messages_page(&folder, unread, page, page_size)?;
+                render::messages_list(ctx.json, total, &msgs);
             } else {
                 let (total, msgs) = client
                     .list_messages(&folder, page, page_size, unread)
