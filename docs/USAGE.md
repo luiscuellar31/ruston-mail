@@ -182,7 +182,8 @@ separated by commas or semicolons. Invalid addresses stop the whole send instead
 of being silently skipped. Domains are written in ASCII: unaccented letters,
 digits, and hyphens. Type an international domain, including one with accents,
 in its `xn--` form. Letters from another script that only look Latin, as in a
-fake `paypal.com`, are refused.
+fake `paypal.com`, are refused. When a domain's script is the only problem, the
+composer says how to send it anyway.
 
 To type international domains as they are written, turn on **Accept
 international domain names** under Settings → Advanced. The composer then

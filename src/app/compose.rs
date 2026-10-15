@@ -27,6 +27,9 @@ pub enum NotReady {
     /// Pieces of a recipient field that do not look like an address. Sending
     /// anyway would reach fewer people than the sender believes.
     BadAddresses(Vec<String>),
+    /// Addresses refused only for a domain written in another script, which
+    /// Settings do not accept.
+    InternationalDomains(Vec<String>),
 }
 
 impl NotReady {
@@ -36,6 +39,10 @@ impl NotReady {
             Self::BadAddresses(pieces) => {
                 format!("This does not look like an address: {}", pieces.join(", "))
             }
+            Self::InternationalDomains(addresses) => format!(
+                "Domains in another script are not accepted: {}. Type the domain in its xn-- form, or turn on Accept international domain names in the Advanced section of Settings.",
+                addresses.join(", ")
+            ),
         }
     }
 }
@@ -380,6 +387,17 @@ impl Compose {
             .chain(&bcc.rejected)
             .cloned()
             .collect();
+        // When the only trouble is a domain's script, say how to allow it.
+        if !rejected.is_empty()
+            && self.domains == Domains::Ascii
+            && rejected.iter().all(|piece| {
+                recipients(piece, Domains::International)
+                    .rejected
+                    .is_empty()
+            })
+        {
+            return Err(NotReady::InternationalDomains(rejected));
+        }
         if !rejected.is_empty() {
             return Err(NotReady::BadAddresses(rejected));
         }
@@ -961,9 +979,17 @@ mod tests {
     fn international_domains_are_taken_only_when_settings_allow_them() {
         let mut app = composing("ana@m\u{fc}nchen.de");
         let compose = app.compose().unwrap();
+        let refusal = compose.not_ready().unwrap();
         assert_eq!(
-            compose.not_ready(),
-            Some(NotReady::BadAddresses(vec!["ana@m\u{fc}nchen.de".into()]))
+            refusal,
+            NotReady::InternationalDomains(vec!["ana@m\u{fc}nchen.de".into()])
+        );
+        // The refusal says how to send it after all.
+        let message = refusal.message();
+        assert!(message.contains("xn--"), "{message}");
+        assert!(
+            message.contains("Advanced section of Settings"),
+            "{message}"
         );
         assert_eq!(compose.international_notice(), None);
 
@@ -1029,6 +1055,27 @@ mod tests {
         let _ = app.update(Message::SetAcceptInternationalDomains(true));
         assert_eq!(notice(&app), None);
         assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 1);
+    }
+
+    #[test]
+    fn only_a_script_refusal_points_at_the_setting() {
+        // A real mistake beside it gets the plain refusal, which names both.
+        let mut compose = written("ana@m\u{fc}nchen.de, not-an-address");
+        assert_eq!(
+            compose.not_ready(),
+            Some(NotReady::BadAddresses(vec![
+                "ana@m\u{fc}nchen.de".into(),
+                "not-an-address".into()
+            ]))
+        );
+        // With international domains on, one that cannot be converted is
+        // simply not an address.
+        compose.set_domains(Domains::International);
+        compose.set(ComposeField::To, "ana@m\u{fc}nchen".to_owned());
+        assert_eq!(
+            compose.not_ready(),
+            Some(NotReady::BadAddresses(vec!["ana@m\u{fc}nchen".into()]))
+        );
     }
 
     #[test]
