@@ -333,6 +333,19 @@ pub struct Cache {
     conn: Connection,
 }
 
+/// A label's cached messages, newest first, as `Cache::list` reads them.
+fn list_sql(unread_only: bool) -> String {
+    format!(
+        "SELECT m.json FROM messages m JOIN message_labels l ON m.id=l.message_id \
+         WHERE l.label_id=?1 {} ORDER BY l.time DESC LIMIT ?2 OFFSET ?3",
+        if unread_only { "AND m.unread=1" } else { "" }
+    )
+}
+
+/// A label's cached total and unread count, as `Cache::count` reads them.
+const COUNT_SQL: &str = "SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM messages m \
+     JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1";
+
 impl Cache {
     /// Legacy cache path: `<cache_dir>/ruston-mail/<profile>.db`.
     /// Client operations no longer use this path because its owner is unknown.
@@ -639,12 +652,7 @@ impl Cache {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<MessageMetadata>> {
-        let sql = format!(
-            "SELECT m.json FROM messages m JOIN message_labels l ON m.id=l.message_id \
-             WHERE l.label_id=?1 {} ORDER BY l.time DESC LIMIT ?2 OFFSET ?3",
-            if unread_only { "AND m.unread=1" } else { "" }
-        );
-        let mut stmt = self.conn.prepare(&sql).map_err(map)?;
+        let mut stmt = self.conn.prepare(&list_sql(unread_only)).map_err(map)?;
         let rows = stmt
             .query_map(rusqlite::params![label_id, limit, offset], |row| {
                 row.get::<_, String>(0)
@@ -663,12 +671,9 @@ impl Cache {
     /// (total, unread) cached for a label.
     pub fn count(&self, label_id: &str) -> Result<(i64, i64)> {
         self.conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM messages m \
-                 JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1",
-                [label_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-            )
+            .query_row(COUNT_SQL, [label_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
             .map_err(map)
     }
 
@@ -1423,20 +1428,18 @@ mod tests {
             .collect();
         assert_eq!(times, [20, 10]);
 
-        let plan: Vec<String> = cache
-            .conn
-            .prepare(
-                "EXPLAIN QUERY PLAN SELECT m.json FROM messages m
-                 JOIN message_labels l ON m.id=l.message_id
-                 WHERE l.label_id=?1 ORDER BY l.time DESC LIMIT ?2 OFFSET ?3",
-            )
-            .unwrap()
-            .query_map(rusqlite::params!["0", 10, 0], |row| row.get(3))
-            .unwrap()
-            .map(|row| row.unwrap())
-            .collect();
-        assert!(plan.iter().any(|step| step.contains("idx_ml_label_time")));
-        assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")));
+        for unread_only in [false, true] {
+            let plan: Vec<String> = cache
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(unread_only)))
+                .unwrap()
+                .query_map(rusqlite::params!["0", 10, 0], |row| row.get(3))
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect();
+            assert!(plan.iter().any(|step| step.contains("idx_ml_label_time")));
+            assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")));
+        }
 
         let old_reader_ids: Vec<String> = cache
             .conn
@@ -1488,10 +1491,7 @@ mod tests {
         assert_eq!(indexes(&reopened), ["idx_ml_label_time"]);
         let plan: Vec<String> = reopened
             .conn
-            .prepare(
-                "EXPLAIN QUERY PLAN SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM messages m
-                 JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1",
-            )
+            .prepare(&format!("EXPLAIN QUERY PLAN {COUNT_SQL}"))
             .unwrap()
             .query_map(["0"], |row| row.get(3))
             .unwrap()
