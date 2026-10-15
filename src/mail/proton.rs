@@ -47,7 +47,6 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
 const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
-const SIGN_IN_CANCELLED: &str = "sign-in cancelled";
 /// Proton's standalone human-verification page.
 const VERIFY_ORIGIN: &str = "https://verify.proton.me";
 const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox password";
@@ -147,6 +146,7 @@ impl ProtonMailService {
         let has_totp = request.totp.is_some();
         let has_mailbox_password = request.mailbox_password.is_some();
         let prompted_totp = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(false));
         let options = LoginOptions {
             username: request.username,
             password: request.password,
@@ -156,9 +156,9 @@ impl ProtonMailService {
             base_url: None,
             app_version: None,
             user_agent: Some(user_agent()),
-            hv: Some(human_verification(events.clone())),
+            hv: Some(human_verification(events.clone(), cancelled.clone())),
         };
-        let totp_prompt = totp_prompt(events.clone(), prompted_totp.clone());
+        let totp_prompt = totp_prompt(events.clone(), prompted_totp.clone(), cancelled.clone());
 
         let outcome = match tokio::time::timeout(
             SIGN_IN_TIMEOUT,
@@ -167,6 +167,7 @@ impl ProtonMailService {
         .await
         {
             Ok(Ok(client)) => SignInOutcome::Authenticated(Arc::new(Self::from_client(client))),
+            Ok(Err(_)) if cancelled.load(Ordering::Relaxed) => SignInOutcome::Cancelled,
             Ok(Err(error)) => {
                 let has_totp = has_totp || prompted_totp.load(Ordering::Relaxed);
                 map_sign_in_error(error, has_totp, has_mailbox_password)
@@ -175,7 +176,8 @@ impl ProtonMailService {
         };
         let _ = events.send(SignInEvent::Finished(outcome)).await;
         // The client keeps the verification resolver; closing the channel ends
-        // the sign-in stream and makes any later prompt fail as cancelled.
+        // the sign-in stream, and a later challenge is reported as Proton's
+        // requirement, as it is for a resumed session.
         events.close_channel();
     }
 
@@ -602,12 +604,21 @@ fn user_agent() -> String {
 
 /// Asks for the TOTP code only when Proton requires it, after any human
 /// verification, so the code is still fresh.
-fn totp_prompt(events: mpsc::Sender<SignInEvent>, prompted: Arc<AtomicBool>) -> TotpPrompt {
+fn totp_prompt(
+    events: mpsc::Sender<SignInEvent>,
+    prompted: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+) -> TotpPrompt {
     Arc::new(move || {
         let events = events.clone();
         let prompted = prompted.clone();
+        let cancelled = cancelled.clone();
         Box::pin(async move {
-            let code = ask(events, SignInPrompt::Totp).await?;
+            // Only a sign-in asks for a code, so a code nobody gives ends it.
+            let code = ask(events, SignInPrompt::Totp).await.map_err(|_| {
+                cancelled.store(true, Ordering::Relaxed);
+                Error::Other("no TOTP code was given".to_owned())
+            })?;
             prompted.store(true, Ordering::Relaxed);
             Ok(code)
         })
@@ -616,9 +627,10 @@ fn totp_prompt(events: mpsc::Sender<SignInEvent>, prompted: Arc<AtomicBool>) -> 
 
 /// Proton Bridge's external-browser flow: the verification page attaches the
 /// solved captcha to the challenge, so the retry echoes the challenge token.
-fn human_verification(events: mpsc::Sender<SignInEvent>) -> HvResolver {
+fn human_verification(events: mpsc::Sender<SignInEvent>, cancelled: Arc<AtomicBool>) -> HvResolver {
     Arc::new(move |challenge: HvChallenge| {
         let events = events.clone();
+        let cancelled = cancelled.clone();
         Box::pin(async move {
             let captcha = challenge.methods.is_empty()
                 || challenge.methods.iter().any(|method| method == "captcha");
@@ -626,27 +638,39 @@ fn human_verification(events: mpsc::Sender<SignInEvent>) -> HvResolver {
                 return Err(Error::HumanVerification(challenge));
             }
             let url = verification_url(&challenge.web_url, &challenge.token);
-            ask(events, |done| SignInPrompt::HumanVerification { url, done }).await?;
-            Ok((challenge.token, "captcha".to_owned()))
+            match ask(events, |done| SignInPrompt::HumanVerification { url, done }).await {
+                Ok(()) => Ok((challenge.token, "captcha".to_owned())),
+                // The client keeps this resolver after its sign-in. A challenge
+                // then is Proton's requirement, as for a resumed session.
+                Err(Unanswered::Closed) => Err(Error::HumanVerification(challenge)),
+                Err(Unanswered::Dismissed) => {
+                    cancelled.store(true, Ordering::Relaxed);
+                    Err(Error::HumanVerification(challenge))
+                }
+            }
         })
     })
+}
+
+/// Why a prompt got no answer.
+enum Unanswered {
+    /// The sign-in is over, so nothing shows prompts any more.
+    Closed,
+    /// The prompt was abandoned.
+    Dismissed,
 }
 
 /// Sends a prompt to the UI and waits for the answer.
 async fn ask<T: Send + 'static>(
     mut events: mpsc::Sender<SignInEvent>,
     prompt: impl FnOnce(Reply<T>) -> SignInPrompt,
-) -> ruston_core::Result<T> {
+) -> Result<T, Unanswered> {
     let (reply, answer) = Reply::channel();
     events
         .send(SignInEvent::Prompt(prompt(reply)))
         .await
-        .map_err(|_| cancelled())?;
-    answer.await.map_err(|_| cancelled())
-}
-
-fn cancelled() -> Error {
-    Error::Other(SIGN_IN_CANCELLED.to_owned())
+        .map_err(|_| Unanswered::Closed)?;
+    answer.await.map_err(|_| Unanswered::Dismissed)
 }
 
 /// The verification page for a challenge. The server's `WebUrl` host is kept
@@ -977,7 +1001,6 @@ fn map_mailbox_error(error: Error) -> MailboxError {
 
 fn map_sign_in_error(error: Error, has_totp: bool, has_mailbox_password: bool) -> SignInOutcome {
     match error {
-        Error::Other(message) if message == SIGN_IN_CANCELLED => SignInOutcome::Cancelled,
         Error::Other(message) if message.contains(MAILBOX_PASSWORD_REQUIRED) => {
             SignInOutcome::NeedsMailboxPassword
         }
@@ -1208,11 +1231,55 @@ mod tests {
         );
     }
 
-    #[test]
-    fn abandoned_prompt_is_a_cancelled_outcome() {
-        let outcome = map_sign_in_error(cancelled(), false, false);
+    fn captcha_challenge() -> HvChallenge {
+        HvChallenge {
+            token: "token".into(),
+            methods: vec!["captcha".into()],
+            web_url: String::new(),
+        }
+    }
 
-        assert!(matches!(outcome, SignInOutcome::Cancelled));
+    #[tokio::test]
+    async fn a_challenge_after_sign_in_is_reported_as_for_a_resumed_session() {
+        // The client keeps the sign-in's resolver for the whole session, but
+        // once the sign-in is over nothing shows its prompt.
+        let (events, receiver) = mpsc::channel(1);
+        drop(receiver);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let error = human_verification(events, cancelled.clone())(captcha_challenge())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::HumanVerification(_)), "{error}");
+        assert_eq!(map_mailbox_error(error), MailboxError::Service);
+        assert!(!cancelled.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_prompt_cancels_the_sign_in() {
+        use futures::StreamExt;
+
+        let (events, mut shown) = mpsc::channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let verification = tokio::spawn(human_verification(events.clone(), cancelled.clone())(
+            captcha_challenge(),
+        ));
+        let Some(SignInEvent::Prompt(prompt)) = shown.next().await else {
+            panic!("no verification prompt");
+        };
+        prompt.cancel();
+        assert!(verification.await.unwrap().is_err());
+        assert!(cancelled.load(Ordering::Relaxed));
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let prompted = Arc::new(AtomicBool::new(false));
+        let code = tokio::spawn(totp_prompt(events, prompted.clone(), cancelled.clone())());
+        let Some(SignInEvent::Prompt(prompt)) = shown.next().await else {
+            panic!("no TOTP prompt");
+        };
+        prompt.cancel();
+        assert!(code.await.unwrap().is_err());
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(!prompted.load(Ordering::Relaxed));
     }
 
     #[test]
