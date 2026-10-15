@@ -275,7 +275,10 @@ does not determine the icon. This verdict applies to the body alone, not its
 attachments.
 Loading and loaded readers share the scroll container, bounded column, heading,
 and toolbar layout. Loading uses the listing's subject and message count and
-disables actions; unknown message fields remain skeletons. The first skeleton
+disables actions; unknown message fields remain skeletons. Skeletons and the
+spinner of the waiting screens (opening, signing out) share one clock in
+[`ui/theme.rs`](../src/ui/theme.rs): with focus they ask for a frame every
+50 ms, and without focus they hold still and ask for none. The first skeleton
 card follows the initial expansion preference and reserves the real header,
 sender icon inset, and reply area before its body markers. The scroll reset for
 a new selection is applied during loading rather than waiting for the response.

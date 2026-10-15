@@ -931,7 +931,7 @@ fn status_view(root: &mut egui::Ui, message: &str) {
             ui.add_space(16.0);
             ui.label(message);
             ui.add_space(12.0);
-            ui.spinner();
+            theme::spinner(ui);
         });
     });
 }
@@ -1660,6 +1660,37 @@ mod tests {
         desktop.ui.show_password = true;
         desktop.dispatch(Message::CancelChallenge, &context);
         assert!(!desktop.ui.show_password);
+    }
+
+    #[test]
+    fn a_waiting_screen_repaints_on_a_delay_and_holds_still_without_focus() {
+        use std::time::Duration;
+
+        let repaint_delay = |focused: bool| {
+            let context = egui::Context::default();
+            let mut delay = Duration::ZERO;
+            // The first frames settle fonts and layout; the last one shows
+            // what the screen asks for while it only waits.
+            for _ in 0..3 {
+                let output = context.run_ui(
+                    egui::RawInput {
+                        focused,
+                        ..Default::default()
+                    },
+                    |ui| status_view(ui, "Opening Ruston Mail…"),
+                );
+                delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+                output.drop_without_applying_deltas();
+            }
+            delay
+        };
+
+        let focused = repaint_delay(true);
+        assert!(
+            focused > Duration::ZERO && focused <= Duration::from_millis(100),
+            "{focused:?}"
+        );
+        assert_eq!(repaint_delay(false), Duration::MAX);
     }
 
     #[test]

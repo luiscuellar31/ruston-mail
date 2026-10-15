@@ -13,7 +13,10 @@ pub const PANEL_PADDING: i8 = 16;
 pub const FOOTNOTE_SIZE: f32 = 11.0;
 pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
-const SKELETON_FRAME: Duration = Duration::from_millis(50);
+/// How long a looping animation waits before asking for its next frame.
+const ANIMATION_FRAME: Duration = Duration::from_millis(50);
+/// How much of its circle the loading spinner's arc covers.
+const SPINNER_SWEEP_DEGREES: f64 = 240.0;
 const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
@@ -277,19 +280,47 @@ pub fn selectable_text<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)
     .inner
 }
 
+/// The clock for a looping animation. The next frame is asked for after a
+/// short delay, never at once; an unfocused window, or a style without
+/// animations, gets a still picture at time zero and asks for nothing.
+fn animation_time(ui: &egui::Ui) -> f64 {
+    let animated = ui.style().animation_time > 0.0 && ui.input(|input| input.focused);
+    if !animated {
+        return 0.0;
+    }
+    ui.ctx().request_repaint_after(ANIMATION_FRAME);
+    ui.input(|input| input.time)
+}
+
 /// A quiet loading pulse shared by skeleton layouts. Delayed repaints keep it
 /// inexpensive, and an unfocused window falls back to a static placeholder.
 pub fn skeleton_fill(ui: &egui::Ui) -> Color32 {
-    let animated = ui.style().animation_time > 0.0 && ui.input(|input| input.focused);
-    if animated {
-        ui.ctx().request_repaint_after(SKELETON_FRAME);
+    skeleton_fill_at(animation_time(ui), colors(ui))
+}
+
+/// A loading spinner drawn like egui's, which asks for a new frame on every
+/// frame. This one keeps to the skeletons' clock, so a screen that only waits
+/// stays cheap and holds still in the background.
+pub fn spinner(ui: &mut egui::Ui) -> Response {
+    let size = ui.style().spacing.interact_size.y;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    response.widget_info(|| WidgetInfo::new(WidgetType::ProgressIndicator));
+    if ui.is_rect_visible(rect) {
+        let start = animation_time(ui) * std::f64::consts::TAU;
+        let sweep = SPINNER_SWEEP_DEGREES.to_radians();
+        let radius = rect.height().min(rect.width()) / 2.0 - 2.0;
+        let segments = (radius.round() as u32).clamp(8, 128);
+        let points: Vec<egui::Pos2> = (0..=segments)
+            .map(|index| {
+                let angle = start + sweep * f64::from(index) / f64::from(segments);
+                let (sin, cos) = angle.sin_cos();
+                rect.center() + radius * egui::vec2(cos as f32, sin as f32)
+            })
+            .collect();
+        let stroke = Stroke::new(3.0, ui.visuals().strong_text_color());
+        ui.painter().add(egui::Shape::line(points, stroke));
     }
-    let time = if animated {
-        ui.input(|input| input.time)
-    } else {
-        0.0
-    };
-    skeleton_fill_at(time, colors(ui))
+    response
 }
 
 pub fn paint_skeleton(painter: &egui::Painter, rect: egui::Rect, fill: Color32) {
