@@ -708,7 +708,9 @@ Run and check commands are in [Development](DEVELOPMENT.md).
 The shared [CI workflow](../.github/workflows/ci.yml) checks Linux and macOS on
 x86_64 and arm64, and Windows on x86_64 using the native MSVC toolchain. All
 platforms run the same formatting, Clippy, documentation, and test gates.
-Linux validates the desktop entry. Windows additionally builds the desktop
+Linux validates the desktop entry and the AppStream metadata in
+[`packaging/linux/`](../packaging/linux/), which describe the application to
+software centers and AppImage catalogs. Windows additionally builds the desktop
 executable and checks its embedded version information. Root [`build.rs`](../build.rs)
 uses `winresource` only for Windows targets to embed the ICO and Cargo version;
 it leaves the CLI and core packages' binaries untouched. Committed Linux PNGs

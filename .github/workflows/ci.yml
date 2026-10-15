@@ -80,12 +80,14 @@ jobs:
       - name: Tests
         run: cargo test --locked --workspace --all-features
 
-      - name: Validate Linux desktop entry
+      - name: Validate Linux desktop entry and AppStream metadata
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y desktop-file-utils
+          sudo apt-get install --no-install-recommends -y desktop-file-utils appstream
           desktop-file-validate packaging/linux/com.luiscuellar.ruston-mail.desktop
+          # Warnings fail validation too; --no-net keeps CI off the network.
+          appstreamcli validate --no-net packaging/linux/com.luiscuellar.ruston-mail.appdata.xml
 
       - name: Build Windows desktop executable
         if: runner.os == 'Windows'

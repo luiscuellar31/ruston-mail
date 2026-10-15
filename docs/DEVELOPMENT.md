@@ -66,7 +66,8 @@ new Ubuntu reaches CI only through a workflow change. The Windows job uses the
 from the Linux and macOS caches. All platforms run the same checks; a failure
 on one platform does not cancel the other jobs.
 
-Linux also validates the desktop entry with `desktop-file-validate`. Windows
+Linux also validates the desktop entry with `desktop-file-validate` and its
+AppStream metadata with `appstreamcli validate`. Windows
 builds `ruston.exe` and checks its version information against the desktop
 package; this catches missing resources without requiring a graphical session.
 A Windows-only test also sets and reads back the process AppUserModelID through
@@ -346,6 +347,8 @@ cargo build --locked --release --bin ruston
 sudo install -Dm755 target/release/ruston /usr/local/bin/ruston
 sudo install -Dm644 packaging/linux/com.luiscuellar.ruston-mail.desktop \
   /usr/local/share/applications/com.luiscuellar.ruston-mail.desktop
+sudo install -Dm644 packaging/linux/com.luiscuellar.ruston-mail.appdata.xml \
+  /usr/local/share/metainfo/com.luiscuellar.ruston-mail.appdata.xml
 for size in 16 24 32 48 64 128 256 512; do
   sudo install -Dm644 \
     "assets/icons/hicolor/${size}x${size}/apps/com.luiscuellar.ruston-mail.png" \
