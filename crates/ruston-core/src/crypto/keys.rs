@@ -7,6 +7,7 @@
 
 use super::kdf;
 use crate::error::{Error, Result};
+use crate::model::enums::key_flag;
 use proton_crypto::crypto::{
     DataEncoding, Decryptor, DecryptorSync, PGPProviderSync, VerifiedData, Verifier, VerifierSync,
 };
@@ -108,7 +109,8 @@ pub struct AddressKeys {
     pub address_id: String,
     /// The email address.
     pub email: String,
-    /// The address's unlocked keys.
+    /// The address's unlocked keys, the primary first: messages are signed
+    /// and drafts encrypted with the first one.
     pub keys: Vec<StoredKey>,
 }
 
@@ -150,6 +152,21 @@ impl KeyStore {
 fn addresses_by_order(addresses: &[Address]) -> Vec<&Address> {
     let mut ordered: Vec<&Address> = addresses.iter().collect();
     ordered.sort_by_key(|a| a.order);
+    ordered
+}
+
+/// Order an address's keys so the one to sign and encrypt with comes first:
+/// the primary key, then keys Proton has not marked compromised or obsolete.
+/// Keys without flags count as sound, and the sort is stable, so keys that
+/// rank the same keep the API's order.
+fn keys_by_preference(keys: &[ApiKey]) -> Vec<&ApiKey> {
+    let mut ordered: Vec<&ApiKey> = keys.iter().collect();
+    ordered.sort_by_key(|key| {
+        let sound = key
+            .flags
+            .is_none_or(|flags| key_flag::can_verify(flags) && key_flag::can_encrypt(flags));
+        (key.primary != 1, !sound)
+    });
     ordered
 }
 
@@ -237,7 +254,9 @@ fn unlock_inner<P: PGPProviderSync>(
     let mut addr_out: Vec<AddressKeys> = Vec::new();
     for a in addresses_by_order(addresses) {
         let mut keys: Vec<StoredKey> = Vec::new();
-        for k in &a.keys {
+        // The first key that unlocks signs and encrypts drafts, so the
+        // primary is tried first, whatever order the API lists keys in.
+        for k in keys_by_preference(&a.keys) {
             if k.active == 0 {
                 continue;
             }
@@ -382,6 +401,107 @@ mod tests {
         let draft = crate::crypto::encrypt_self_draft(&provider, address, "hello").unwrap();
         let (body, _) = crate::crypto::decrypt_body(&provider, address, &[], &draft).unwrap();
         assert_eq!(body, "hello");
+    }
+
+    /// A fresh key for `email` as the API lists it, locked with `passphrase`,
+    /// and its armored public half.
+    fn listed_key(
+        id: &str,
+        email: &str,
+        passphrase: &str,
+        primary: u8,
+        flags: Option<u32>,
+    ) -> (ApiKey, String) {
+        use proton_crypto::crypto::{KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync};
+
+        let provider = crate::crypto::provider();
+        let generated = provider
+            .new_key_generator()
+            .with_user_id("Test", email)
+            .with_algorithm(KeyGeneratorAlgorithm::ECC)
+            .generate()
+            .unwrap();
+        let armored = provider
+            .private_key_export(&generated, passphrase, DataEncoding::Armor)
+            .unwrap();
+        let public = provider.private_key_to_public_key(&generated).unwrap();
+        let public = provider
+            .public_key_export(&public, DataEncoding::Armor)
+            .unwrap();
+        (
+            ApiKey {
+                id: id.into(),
+                private_key: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+                token: None,
+                signature: None,
+                activation: None,
+                primary,
+                active: 1,
+                flags,
+            },
+            String::from_utf8(public.as_ref().to_vec()).unwrap(),
+        )
+    }
+
+    /// Unlocks one address holding `keys`, all opened with the user key's
+    /// passphrase as legacy keys are.
+    fn unlock_address(keys: Vec<ApiKey>) -> KeyStore {
+        let (user_key, _) = listed_key("user-key", "user@proton.me", "skp", 1, None);
+        let user = User {
+            id: "user".into(),
+            keys: vec![user_key],
+        };
+        let address = Address {
+            id: "address".into(),
+            email: "me@proton.me".into(),
+            order: 1,
+            keys,
+        };
+        unlock_with_skp(
+            &crate::crypto::provider(),
+            &user,
+            &[address],
+            &SecretString::from("skp"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_primary_address_key_comes_first_and_signs() {
+        let (other, _) = listed_key("other", "me@proton.me", "skp", 0, Some(3));
+        let (primary, primary_public) = listed_key("primary", "me@proton.me", "skp", 1, Some(3));
+
+        // The API happens to list the primary key second.
+        let store = unlock_address(vec![other, primary.clone()]);
+
+        let address = &store.addresses[0];
+        assert_eq!(address.keys[0].armored, primary.private_key);
+        let provider = crate::crypto::provider();
+        let draft = crate::crypto::encrypt_self_draft(&provider, address, "hello").unwrap();
+        let (_, verdict) =
+            crate::crypto::decrypt_body(&provider, address, &[primary_public], &draft).unwrap();
+        assert_eq!(verdict, crate::crypto::Verdict::Verified);
+    }
+
+    #[test]
+    fn a_sound_key_signs_before_a_compromised_one_when_the_primary_stays_locked() {
+        // Flags 2: it may still encrypt, but Proton marked it compromised.
+        let (compromised, _) = listed_key("compromised", "me@proton.me", "skp", 0, Some(2));
+        let (sound, _) = listed_key("sound", "me@proton.me", "skp", 0, Some(3));
+        // Locked with another passphrase, so it does not open.
+        let (primary, _) = listed_key("primary", "me@proton.me", "other", 1, Some(3));
+
+        let store = unlock_address(vec![compromised.clone(), sound.clone(), primary]);
+
+        let unlocked: Vec<&str> = store.addresses[0]
+            .keys
+            .iter()
+            .map(|key| key.armored.as_str())
+            .collect();
+        assert_eq!(
+            unlocked,
+            [sound.private_key.as_str(), compromised.private_key.as_str()]
+        );
     }
 
     #[test]

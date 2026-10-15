@@ -533,7 +533,10 @@ instead of an unknown outcome.
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
   message cryptography. Each address key is unlocked once per session and kept
   as an unlocked export in zeroized memory, so later operations skip its
-  passphrase derivation; the armored key and passphrase stay as a fallback. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
+  passphrase derivation; the armored key and passphrase stay as a fallback.
+  An address's keys are kept primary first, then those Proton has not marked
+  compromised or obsolete, whatever order the API lists them in; messages are
+  signed and drafts encrypted with the first. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
   HTML before either frontend renders it. Links keep only `http`, `https` and
   `mailto` URLs and relative ones are dropped, for exports and quoted replies
   as much as for the readers; the sanitizer is built once.
