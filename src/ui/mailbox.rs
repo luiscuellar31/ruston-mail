@@ -8,7 +8,7 @@ use crate::app::{
     panel_widths,
 };
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
-use crate::settings::{ComposePlacement, Settings};
+use crate::settings::{ComposePlacement, Panels, Settings};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
 const CONVERSATION_PANEL_ID: &str = "conversation-list";
@@ -67,47 +67,51 @@ pub(super) fn show(
             sidebar(ui, app, mailbox, email, signing_out, messages);
         });
 
-    if let Some(draft) = settings_draft {
-        egui::CentralPanel::default()
-            .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-            .show(root, |ui| {
-                settings::show(
-                    ui,
-                    app.settings(),
-                    draft,
-                    messages,
-                    state.notification_status,
-                )
-            });
-
-        let mut actual = app.panels();
-        actual.sidebar = sidebar.response.rect.width() / window_width;
-        if (actual.sidebar - app.panels().sidebar).abs() > 0.002 {
-            messages.push(Message::PanelsResized(actual));
+    let conversations = match settings_draft {
+        Some(draft) => {
+            egui::CentralPanel::default()
+                .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
+                .show(root, |ui| {
+                    settings::show(
+                        ui,
+                        app.settings(),
+                        draft,
+                        messages,
+                        state.notification_status,
+                    )
+                });
+            None
         }
-        return;
-    }
+        None => {
+            let remaining =
+                (window_width - sidebar.response.rect.width()).max(2.0 * MIN_PANEL_WIDTH);
+            let conversations = egui::Panel::left(CONVERSATION_PANEL_ID)
+                .default_size(widths.conversations)
+                .size_range(MIN_PANEL_WIDTH..=(remaining - MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH))
+                .resizable(true)
+                .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
+                .show(root, |ui| conversation_pane(ui, mailbox, state, messages));
 
-    let remaining = (window_width - sidebar.response.rect.width()).max(2.0 * MIN_PANEL_WIDTH);
-    let conversations = egui::Panel::left(CONVERSATION_PANEL_ID)
-        .default_size(widths.conversations)
-        .size_range(MIN_PANEL_WIDTH..=(remaining - MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH))
-        .resizable(true)
-        .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-        .show(root, |ui| conversation_pane(ui, mailbox, state, messages));
-
-    egui::CentralPanel::default()
-        .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-        .show(root, |ui| reading_pane(ui, app, state, messages));
+            egui::CentralPanel::default()
+                .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
+                .show(root, |ui| reading_pane(ui, app, state, messages));
+            Some(conversations.response.rect.width())
+        }
+    };
 
     undo_notice(&context, mailbox, state, messages);
 
-    let actual = panel_ratios(
-        sidebar.response.rect.width(),
-        conversations.response.rect.width(),
-        window_width,
-    );
     let stored = app.panels();
+    let sidebar = sidebar.response.rect.width();
+    let actual = match conversations {
+        Some(conversations) => panel_ratios(sidebar, conversations, window_width),
+        // Settings covers the conversation list, so only the sidebar can
+        // have been dragged.
+        None => Panels {
+            sidebar: panel_ratios(sidebar, widths.conversations, window_width).sidebar,
+            ..stored
+        },
+    };
     if (actual.sidebar - stored.sidebar).abs() > 0.002
         || (actual.conversations - stored.conversations).abs() > 0.002
     {
@@ -2009,6 +2013,48 @@ mod tests {
             !matches!(message, Message::PanelsResized(panels) if panels.conversations != original_split)
         }));
         output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn an_offer_to_undo_stays_on_screen_while_settings_is_open() {
+        let (mut app, _) = App::boot(true, Settings::default());
+        // A row the demo account has, so the demo can move it.
+        app.update(Message::ConversationsLoaded(
+            1,
+            Ok(ConversationPage {
+                conversations: vec![pagination_row("demo-3", 1000)],
+                total: 1,
+                inspect_candidates: Vec::new(),
+            }),
+        ));
+        app.update(Message::SelectConversation("demo-3".into()));
+        app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+            Folder::System(MailFolder::Archive),
+        )));
+        assert!(app.mailbox().unwrap().undo().is_some());
+        let mut draft = app.settings().clone();
+
+        // Wide and compact windows. A new area shows from its second frame.
+        for size in [egui::vec2(1100.0, 700.0), egui::vec2(469.0, 700.0)] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            let mut state = UiState::default();
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                (_, shapes) = mailbox_frame(
+                    &context,
+                    &app,
+                    &mut state,
+                    size,
+                    Some(&mut draft),
+                    Default::default(),
+                );
+            }
+            assert!(
+                visible_text_rect(&shapes, "Moved to Archive.").is_some(),
+                "no offer to undo at {size:?}"
+            );
+        }
     }
 
     #[test]
