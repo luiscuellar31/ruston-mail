@@ -593,7 +593,9 @@ resumed once instead, which records it. Metadata writes replace the file with
 one rename under the profile lock, and a resume records the ID only for the
 session it loaded. It selects
 `accounts/<profile>/<sha256-of-identity>.db` under the cache directory and checks
-the complete account identity stored in SQLite before using the database.
+the complete account identity stored in SQLite before using the database. A
+test pins the identity's JSON and the file name it yields: changing either
+would leave every existing cache, and its decrypted bodies, orphaned.
 An empty database is bound under an immediate transaction; an unexpected owner
 or unbound data causes an error. Account bindings are never reassigned, so a
 pending index or sync for one account cannot write into another account's cache.

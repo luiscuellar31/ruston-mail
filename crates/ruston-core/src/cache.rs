@@ -284,6 +284,11 @@ fn ensure_fts_rowid_index(conn: &Connection) -> Result<()> {
 }
 
 /// Authenticated account identity, independent of session tokens and addresses.
+///
+/// A persisted format: its JSON is hashed into the database's file name and
+/// stored inside it as `account_identity_v1`. Renaming, reordering or adding a
+/// field starts every account on an empty cache and leaves the old one, with
+/// its decrypted bodies, orphaned on disk.
 #[derive(Serialize)]
 pub(crate) struct CacheIdentity {
     base_url: String,
@@ -815,6 +820,24 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn the_cache_identity_format_never_changes() {
+        let identity = CacheIdentity::new("https://mail.proton.me/api", "user-1").unwrap();
+        assert_eq!(
+            identity.serialized().unwrap(),
+            r#"{"base_url":"https://mail.proton.me/api","user_id":"user-1"}"#
+        );
+
+        let root = temp_cache_dir();
+        let path = Cache::account_path(&root, "ruston", &identity).unwrap();
+        assert_eq!(
+            path.strip_prefix(&root).unwrap(),
+            Path::new("accounts/ruston")
+                .join("2919895bff4c1e5d64a2863dde2837a36bb1d2bcf370d93e16e7f79fd6c08f37.db")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn cache_path_rejects_profile_with_parent_component() {
