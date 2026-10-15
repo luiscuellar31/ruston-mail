@@ -181,7 +181,10 @@ cache; run `sync` to receive remote changes.
 
 ## Saved session and settings
 
-The Proton password is not saved. `ruston-core` stores the access token, refresh
+The Proton password is not saved. The CLI can read sign-in secrets from
+`PROTON_PASSWORD`, `PROTON_MAILBOX_PASSWORD`, `PROTON_TOTP` and
+`PROTON_HV_TOKEN`; a browser it opens for human verification does not inherit
+them. `ruston-core` stores the access token, refresh
 token, and key passphrase in the operating system's credential store:
 
 - Keychain on macOS.

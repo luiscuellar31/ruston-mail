@@ -4,6 +4,15 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use ruston_core::SearchOpts;
 use std::path::PathBuf;
 
+/// Environment variables that may carry sign-in secrets. Programs the CLI
+/// starts, such as a browser for human verification, never inherit them.
+pub(crate) const SECRET_ENV_VARS: [&str; 4] = [
+    "PROTON_PASSWORD",
+    "PROTON_MAILBOX_PASSWORD",
+    "PROTON_TOTP",
+    "PROTON_HV_TOKEN",
+];
+
 /// Ruston Mail command-line client.
 #[derive(Debug, Parser)]
 #[command(

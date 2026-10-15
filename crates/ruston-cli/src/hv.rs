@@ -400,6 +400,11 @@ fn urldecode(s: &str) -> String {
 }
 
 fn open_browser(url: &str) -> std::io::Result<()> {
+    browser_command(url).spawn().map(|_| ())
+}
+
+/// The system's way to open `url` in the default browser.
+fn browser_command(url: &str) -> std::process::Command {
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
     #[cfg(target_os = "linux")]
@@ -413,7 +418,16 @@ fn open_browser(url: &str) -> std::io::Result<()> {
     cmd.arg(url);
     cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    cmd.spawn().map(|_| ())
+    without_secrets(&mut cmd);
+    cmd
+}
+
+/// A browser started now may outlive the CLI, so it gets none of the
+/// sign-in secrets the CLI's environment may hold.
+fn without_secrets(command: &mut std::process::Command) {
+    for name in crate::cli::SECRET_ENV_VARS {
+        command.env_remove(name);
+    }
 }
 
 /// Throwaway Chrome profile used only by ruston-cli (never a user profile).
@@ -430,16 +444,23 @@ fn launch_chrome(
 ) -> std::result::Result<(std::process::Child, PathBuf), String> {
     let chrome = find_chrome().ok_or_else(|| "no Chrome/Chromium binary found".to_string())?;
     let profile = chrome_profile_dir(tag);
-    std::process::Command::new(&chrome)
+    chrome_command(&chrome, &profile, url)
+        .spawn()
+        .map(|child| (child, profile))
+        .map_err(|e| format!("spawn {chrome}: {e}"))
+}
+
+fn chrome_command(chrome: &str, profile: &std::path::Path, url: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(chrome);
+    command
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
         .arg(format!("--app={url}"))
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|child| (child, profile))
-        .map_err(|e| format!("spawn {chrome}: {e}"))
+        .stderr(std::process::Stdio::null());
+    without_secrets(&mut command);
+    command
 }
 
 fn find_chrome() -> Option<String> {
@@ -499,6 +520,47 @@ fn which(bin: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browsers_never_inherit_sign_in_secrets() {
+        let url = "https://verify.proton.me/?methods=captcha";
+        for command in [
+            browser_command(url),
+            chrome_command("chrome", std::path::Path::new("profile"), url),
+        ] {
+            let removed: Vec<_> = command
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(name, _)| name.to_os_string())
+                .collect();
+            for secret in crate::cli::SECRET_ENV_VARS {
+                assert!(
+                    removed.iter().any(|name| name == secret),
+                    "{secret} reaches {command:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_secret_the_cli_reads_from_the_environment_is_listed() {
+        use clap::CommandFactory;
+
+        let cli = crate::cli::Cli::command();
+        for arg in cli.get_arguments() {
+            if let Some(name) = arg.get_env()
+                && arg.is_hide_env_values_set()
+            {
+                let name = name.to_str().unwrap();
+                assert!(
+                    crate::cli::SECRET_ENV_VARS.contains(&name),
+                    "{name} is not in SECRET_ENV_VARS"
+                );
+            }
+        }
+        // The password is read straight from the environment by `login`.
+        assert!(crate::cli::SECRET_ENV_VARS.contains(&"PROTON_PASSWORD"));
+    }
 
     #[test]
     fn captcha_endpoint_uses_api_subdomain() {
