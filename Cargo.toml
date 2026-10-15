@@ -38,6 +38,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 secrecy = "0.10"
 zeroize = "1"
+getrandom = "0.4"
 chrono = "0.4"
 futures = "0.3"
 urlencoding = "2"
@@ -74,7 +75,7 @@ path = "src/main.rs"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories = { workspace = true }
 futures = { workspace = true }
-getrandom = "0.4"
+getrandom = { workspace = true }
 html5ever = { workspace = true }
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.36", default-features = false, features = ["image", "svg"] }

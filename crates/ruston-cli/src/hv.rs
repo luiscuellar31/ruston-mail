@@ -6,8 +6,14 @@
 //! capture the token with a one-line console snippet the user pastes: when the
 //! widget solves, it `postMessage`s `{type:'pm_captcha', token}` to
 //! `window.parent` which — for a top-level page — is the page itself, so a
-//! `message` listener on `window` receives it and `fetch()`es it back to our
-//! local listener. No copy-paste, no extra deps.
+//! `message` listener on `window` receives it and navigates the tab to our
+//! local listener with it. No copy-paste.
+//!
+//! The page opens with `#ruston=<port>.<nonce>` at the end of its address; the
+//! fragment never reaches Proton. The console snippet carries the port and
+//! nonce itself, and the bookmarklet reads them from that address, so one saved
+//! bookmarklet serves every sign-in. The listener takes a token only with this
+//! sign-in's nonce, so no other page can hand one in.
 //!
 //! Resolution order:
 //!   1. pre-supplied `--captcha-token` (sent verbatim),
@@ -35,8 +41,19 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 const HV_TIMEOUT: Duration = Duration::from_secs(300);
-/// Preferred local port (keeps a saved bookmarklet reusable across runs).
+/// Preferred local port. The bookmarklet reads the port from the page's
+/// address; one saved by an earlier version still calls this port, where it
+/// is told to be replaced.
 const PREFERRED_PORT: u16 = 47821;
+/// Names the port and nonce in the captcha page's address fragment.
+const FRAGMENT_KEY: &str = "ruston";
+const VERIFIED_PAGE: &str =
+    "<h2>✓ Verified</h2><p>You can close this tab and return to your terminal.</p>";
+const NOT_THIS_SIGN_IN_PAGE: &str = "<h2>Not from this sign-in</h2><p>This request did not \
+    come from the captcha page your terminal opened. If you clicked a bookmarklet saved by an \
+    earlier version, save the one your terminal shows now and click it on that page.</p>";
+const NO_TOKEN_PAGE: &str =
+    "<h2>No token received</h2><p>Your terminal is still waiting: solve the captcha again.</p>";
 /// Verification page used when the challenge carries no usable `WebUrl`.
 const DEFAULT_VERIFY_ORIGIN: &str = "https://verify.proton.me";
 
@@ -80,12 +97,12 @@ async fn solve(
     }
 
     let (endpoint, _origin) = captcha_endpoint(&api_base);
-    let captcha_url = format!(
+    let page = format!(
         "{endpoint}?Token={}&ForceWebMessaging=1",
         urlencode(&chal.token)
     );
 
-    tokio::task::spawn_blocking(move || run_manual_flow(&captcha_url))
+    tokio::task::spawn_blocking(move || run_manual_flow(&page))
         .await
         .map_err(|e| Error::Other(format!("hv task: {e}")))?
 }
@@ -208,9 +225,9 @@ fn wait_for_confirmation(
     }
 }
 
-/// Open the captcha top-level, print the capture snippet, wait for the token.
-fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
-    // Prefer a fixed port so a saved bookmarklet keeps working across runs.
+/// Open the captcha top-level, print the capture snippets, wait for the token.
+/// `page` is the captcha page's address, without this sign-in's fragment.
+fn run_manual_flow(page: &str) -> Result<(String, String)> {
     let listener = TcpListener::bind(("127.0.0.1", PREFERRED_PORT))
         .or_else(|_| TcpListener::bind("127.0.0.1:0"))
         .map_err(|e| Error::Other(format!("cannot start HV helper server: {e}")))?;
@@ -221,8 +238,11 @@ fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
     listener
         .set_nonblocking(true)
         .map_err(|e| Error::Other(format!("hv nonblocking: {e}")))?;
+    let nonce = new_nonce()?;
+    let captcha_url = captcha_page_url(page, port, &nonce);
 
-    let snippet = capture_snippet(port);
+    let console = capture_snippet(Some((port, &nonce)));
+    let bookmarklet = capture_snippet(None);
     let err = std::io::stderr();
     let mut e = err.lock();
     let _ = terminal::writeln!(e, "\n── Human verification (CAPTCHA) ──");
@@ -234,16 +254,20 @@ fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
         e,
         "\n  [A] Console: open DevTools → Console (F12) and paste once:"
     );
-    let _ = terminal::writeln!(e, "      {snippet}");
+    let _ = terminal::writeln!(e, "      {console}");
     let _ = terminal::writeln!(
         e,
-        "\n  [B] Bookmarklet (one-time): save this as a bookmark, then click it"
+        "\n  [B] Bookmarklet (save it once): save this as a bookmark, then click it"
     );
     let _ = terminal::writeln!(
         e,
-        "      on the captcha page (no console, no \"allow pasting\"):"
+        "      on the captcha page opened from here (no console, no \"allow pasting\")."
     );
-    let _ = terminal::writeln!(e, "      javascript:{snippet}");
+    let _ = terminal::writeln!(
+        e,
+        "      One saved by an earlier version is refused; save this one instead:"
+    );
+    let _ = terminal::writeln!(e, "      javascript:{bookmarklet}");
     let _ = terminal::writeln!(
         e,
         "\nSolve the CAPTCHA — the token returns here automatically."
@@ -252,10 +276,13 @@ fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
         e,
         "(Fallback: copy the token, re-run login with --captcha-token <token>.)"
     );
-    let _ = terminal::writeln!(e, "\nCaptcha URL: {captcha_url}");
+    let _ = terminal::writeln!(
+        e,
+        "\nCaptcha URL (open it whole; the bookmarklet reads its end): {captcha_url}"
+    );
     let _ = e.flush();
 
-    let _ = open_browser(captcha_url);
+    let _ = open_browser(&captcha_url);
 
     let deadline = Instant::now() + HV_TIMEOUT;
     loop {
@@ -264,9 +291,7 @@ fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if let Some(token) = handle_conn(&mut stream)
-                    && !token.is_empty()
-                {
+                if let Some(token) = handle_conn(&mut stream, &nonce) {
                     let _ = terminal::writeln!(e, "Token received — continuing login.");
                     break Ok((token, "captcha".to_string()));
                 }
@@ -279,19 +304,43 @@ fn run_manual_flow(captcha_url: &str) -> Result<(String, String)> {
     }
 }
 
-/// The console one-liner the user pastes. On the `pm_captcha` message it
-/// NAVIGATES the tab to our local listener (the page's CSP `connect-src https:
-/// wss:` blocks `fetch` to http://localhost, but top-level navigation is not
-/// governed by connect-src). Shows a small status banner until then.
-fn capture_snippet(port: u16) -> String {
+/// 128 random bits, in hex, that only this sign-in's captcha page carries.
+fn new_nonce() -> Result<String> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| Error::Other(format!("hv nonce: {e}")))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// The captcha page's address with this sign-in's port and nonce after `#`.
+/// Browsers keep the fragment to themselves, so it never reaches Proton.
+fn captcha_page_url(page: &str, port: u16, nonce: &str) -> String {
+    format!("{page}#{FRAGMENT_KEY}={port}.{nonce}")
+}
+
+/// The capture snippet. On the `pm_captcha` message it NAVIGATES the tab to
+/// our local listener (the page's CSP `connect-src https: wss:` blocks `fetch`
+/// to http://localhost, but top-level navigation is not governed by
+/// connect-src). Shows a small status banner until then.
+///
+/// With `target`, the snippet carries the port and nonce itself, for pasting
+/// into the console. Without, it reads them from the page's address, so one
+/// bookmarklet serves every sign-in; on a page the terminal did not open it
+/// says so and sends nothing. It holds no `%`, because a `javascript:` URL is
+/// percent-decoded before it runs.
+fn capture_snippet(target: Option<(u16, &str)>) -> String {
+    let target = match target {
+        Some((port, nonce)) => format!("'{port}.{nonce}'"),
+        None => format!("(location.hash.match(/{FRAGMENT_KEY}=(\\d+\\.[0-9a-f]+)/)||[])[1]"),
+    };
     format!(
-        "(function(){{var b=document.createElement('div');b.style='position:fixed;left:0;right:0;bottom:0;background:#111;color:#0f0;font:13px monospace;z-index:2147483647;padding:8px';b.textContent='ruston-cli: solve the captcha — token returns automatically';document.body.appendChild(b);addEventListener('message',function(e){{var d=e.data;if(typeof d==='string'){{try{{d=JSON.parse(d)}}catch(x){{return}}}}if(d&&d.type==='pm_captcha'&&d.token){{b.style.background='#030';b.textContent='ruston-cli: token captured — returning…';location.href='http://127.0.0.1:{port}/token?value='+encodeURIComponent(d.token)}}}});console.log('ruston-cli: ready (pm_captcha listener installed)')}})()"
+        "(function(){{var t={target},b=document.createElement('div');b.style='position:fixed;left:0;right:0;bottom:0;background:#111;color:#0f0;font:13px monospace;z-index:2147483647;padding:8px';document.body.appendChild(b);if(!t){{b.style.background='#300';b.textContent='ruston-cli: open the captcha from the link in your terminal, then try again';return}}var p=t.split('.');b.textContent='ruston-cli: solve the captcha — token returns automatically';addEventListener('message',function(e){{var d=e.data;if(typeof d==='string'){{try{{d=JSON.parse(d)}}catch(x){{return}}}}if(d&&d.type==='pm_captcha'&&d.token){{b.style.background='#030';b.textContent='ruston-cli: token captured — returning…';location.href='http://127.0.0.1:'+p[0]+'/token?nonce='+p[1]+'&value='+encodeURIComponent(d.token)}}}});console.log('ruston-cli: ready (pm_captcha listener installed)')}})()"
     )
 }
 
-/// Capture the token from `GET /token?value=...`; CORS hides our response from
-/// the page, but the request still reaches us.
-fn handle_conn(stream: &mut std::net::TcpStream) -> Option<String> {
+/// Takes the token from `GET /token?nonce=…&value=…`. A request without this
+/// sign-in's nonce, or without a token, is answered as such and the wait goes
+/// on. CORS hides the answer from the page, but the request still arrives.
+fn handle_conn(stream: &mut std::net::TcpStream, nonce: &str) -> Option<String> {
     // On macOS/BSD the accepted socket inherits the listener's non-blocking
     // mode; without this a request that arrives after `accept` is dropped.
     stream.set_nonblocking(false).ok();
@@ -299,28 +348,58 @@ fn handle_conn(stream: &mut std::net::TcpStream) -> Option<String> {
     let mut buf = [0u8; 8192];
     let n = stream.read(&mut buf).ok()?;
     let req = String::from_utf8_lossy(&buf[..n]);
-    let path = req.lines().next()?.split_whitespace().nth(1)?;
-
-    if let Some(q) = path.strip_prefix("/token") {
-        let token = q
-            .split_once("value=")
-            .map(|(_, v)| urldecode(v.split('&').next().unwrap_or("")))
-            .unwrap_or_default();
-        let body = "<!doctype html><meta charset=utf-8><body style=\"font:16px sans-serif;padding:40px\">\
-                    <h2>✓ Verified</h2><p>You can close this tab and return to your terminal.</p>";
-        let _ = write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        return Some(token);
+    let mut request_line = req.lines().next()?.split_whitespace();
+    let (method, target) = (request_line.next()?, request_line.next()?);
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if method != "GET" || path != "/token" {
+        respond(stream, "404 Not Found", "<h2>Not found</h2>");
+        return None;
     }
+
+    let (mut sent_nonce, mut token) = (None, None);
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match &*key {
+            "nonce" => sent_nonce = Some(value),
+            "value" => token = Some(value),
+            _ => {}
+        }
+    }
+    if !sent_nonce.is_some_and(|sent| same_nonce(&sent, nonce)) {
+        respond(stream, "403 Forbidden", NOT_THIS_SIGN_IN_PAGE);
+        return None;
+    }
+    match token.filter(|token| !token.is_empty()) {
+        Some(token) => {
+            respond(stream, "200 OK", VERIFIED_PAGE);
+            Some(token.into_owned())
+        }
+        None => {
+            respond(stream, "400 Bad Request", NO_TOKEN_PAGE);
+            None
+        }
+    }
+}
+
+/// Compares without stopping at the first difference, so the time taken does
+/// not tell how much of a guess was right.
+fn same_nonce(sent: &str, expected: &str) -> bool {
+    sent.len() == expected.len()
+        && sent
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0, |difference, (a, b)| difference | (a ^ b))
+            == 0
+}
+
+fn respond(stream: &mut std::net::TcpStream, status: &str, message: &str) {
+    let body = format!(
+        "<!doctype html><meta charset=utf-8><body style=\"font:16px sans-serif;padding:40px\">{message}"
+    );
     let _ = write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     );
-    None
 }
 
 /// Derive the captcha widget endpoint + origin from the API base.
@@ -369,34 +448,6 @@ fn urlencode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
-}
-
-fn urldecode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'%' if i + 2 < b.len() => {
-                if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    out.push(v);
-                    i += 3;
-                    continue;
-                }
-                out.push(b[i]);
-                i += 1;
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn open_browser(url: &str) -> std::io::Result<()> {
@@ -575,17 +626,110 @@ mod tests {
         assert_eq!(url, "http://127.0.0.1:8080/api/core/v4/captcha");
     }
 
+    const NONCE: &str = "0123456789abcdef0123456789abcdef";
+
     #[test]
     fn url_codec() {
         assert_eq!(urlencode("a b/c"), "a%20b%2Fc");
-        assert_eq!(urldecode("a%20b%2Fc"), "a b/c");
-        assert_eq!(urldecode("x+y"), "x y");
     }
 
     #[test]
-    fn snippet_has_port() {
-        assert!(capture_snippet(54321).contains("127.0.0.1:54321/token"));
-        assert!(capture_snippet(1).contains("pm_captcha"));
+    fn each_sign_in_has_its_own_nonce_in_the_page_address() {
+        let (first, second) = (new_nonce().unwrap(), new_nonce().unwrap());
+        assert_ne!(first, second);
+        for nonce in [&first, &second] {
+            assert_eq!(nonce.len(), 32);
+            assert!(
+                nonce
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            );
+        }
+
+        let url = captcha_page_url(
+            "https://mail-api.proton.me/core/v4/captcha?Token=t&ForceWebMessaging=1",
+            47821,
+            &first,
+        );
+        // What the bookmarklet's pattern picks out of the address.
+        let (page, fragment) = url.split_once('#').unwrap();
+        assert!(page.ends_with("&ForceWebMessaging=1"));
+        assert_eq!(fragment, format!("ruston=47821.{first}"));
+    }
+
+    #[test]
+    fn the_console_snippet_carries_the_nonce_and_the_bookmarklet_reads_it() {
+        let console = capture_snippet(Some((54321, NONCE)));
+        assert!(console.contains(&format!("var t='54321.{NONCE}'")));
+        assert!(console.contains("/token?nonce='+p[1]+'&value='"));
+        assert!(console.contains("pm_captcha"));
+
+        let bookmarklet = capture_snippet(None);
+        assert!(bookmarklet.contains("location.hash.match(/ruston=(\\d+\\.[0-9a-f]+)/)"));
+        assert!(!bookmarklet.contains(&PREFERRED_PORT.to_string()));
+        // A javascript: URL is percent-decoded before it runs.
+        assert!(!bookmarklet.contains('%'));
+    }
+
+    /// Sends `request` to a helper expecting [`NONCE`], and returns the token
+    /// it took, if any, and the status line it answered with.
+    fn exchange(request: &str) -> (Option<String>, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let request = request.to_owned();
+        let client = std::thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            response
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        let token = handle_conn(&mut stream, NONCE);
+        drop(stream); // EOF for the client's read_to_string
+        let response = client.join().unwrap();
+        (
+            token,
+            response.lines().next().unwrap_or_default().to_owned(),
+        )
+    }
+
+    fn get(target: &str) -> String {
+        format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n")
+    }
+
+    #[test]
+    fn only_this_sign_ins_page_can_hand_in_a_token() {
+        let (token, status) =
+            exchange(&get(&format!("/token?nonce={NONCE}&value=raw%3Atoken+abc")));
+        assert_eq!(token.as_deref(), Some("raw:token abc"));
+        assert_eq!(status, "HTTP/1.1 200 OK");
+
+        // Any other page, and a bookmarklet saved by an earlier version.
+        let forged = format!("/token?nonce={}&value=forged", "f".repeat(32));
+        for target in ["/token?value=forged", forged.as_str()] {
+            assert_eq!(
+                exchange(&get(target)),
+                (None, "HTTP/1.1 403 Forbidden".to_owned()),
+                "{target}"
+            );
+        }
+        assert_eq!(
+            exchange(&get(&format!("/token?nonce={NONCE}&value="))),
+            (None, "HTTP/1.1 400 Bad Request".to_owned())
+        );
+        assert_eq!(
+            exchange(&get(&format!("/tokens?nonce={NONCE}&value=x"))),
+            (None, "HTTP/1.1 404 Not Found".to_owned())
+        );
+    }
+
+    #[test]
+    fn broken_escapes_in_a_request_do_not_end_the_sign_in() {
+        // A hand-written decoder used to slice these through a character.
+        let (token, status) = exchange(&get(&format!("/token?nonce={NONCE}&value=%€x%aé")));
+        assert_eq!(token.as_deref(), Some("%€x%aé"));
+        assert_eq!(status, "HTTP/1.1 200 OK");
     }
 
     #[test]
@@ -602,7 +746,7 @@ mod tests {
                 }
                 match listener.accept() {
                     Ok((mut s, _)) => {
-                        if let Some(t) = handle_conn(&mut s) {
+                        if let Some(t) = handle_conn(&mut s, NONCE) {
                             return Some(t);
                         }
                     }
@@ -616,7 +760,7 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(100));
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        c.write_all(b"GET /token?value=raw%3Atoken+abc HTTP/1.1\r\nHost: x\r\n\r\n")
+        c.write_all(get(&format!("/token?nonce={NONCE}&value=raw%3Atoken+abc")).as_bytes())
             .unwrap();
         let mut resp = String::new();
         let _ = c.read_to_string(&mut resp);
@@ -636,7 +780,7 @@ mod tests {
         let client = std::thread::spawn(move || {
             let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
             std::thread::sleep(Duration::from_millis(300));
-            let _ = c.write_all(b"GET /token?value=synthetic HTTP/1.1\r\nHost: x\r\n\r\n");
+            let _ = c.write_all(get(&format!("/token?nonce={NONCE}&value=synthetic")).as_bytes());
             let mut resp = String::new();
             let _ = c.read_to_string(&mut resp);
         });
@@ -650,7 +794,10 @@ mod tests {
                 Err(e) => panic!("accept: {e}"),
             }
         };
-        assert_eq!(handle_conn(&mut stream).as_deref(), Some("synthetic"));
+        assert_eq!(
+            handle_conn(&mut stream, NONCE).as_deref(),
+            Some("synthetic")
+        );
         drop(stream); // EOF for the client's read_to_string
         client.join().unwrap();
     }
