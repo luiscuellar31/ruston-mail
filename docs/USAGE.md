@@ -302,3 +302,46 @@ glyph coverage but does not provide complete bidirectional/RTL text layout.
 | `Cmd` + `Backspace` / `Delete` | Move the selected conversation to Trash |
 
 Shortcuts do not run while a text field is using the same key.
+
+## Command line
+
+`ruston-cli` works with the same account from a terminal. Releases carry it
+inside the app:
+
+- **macOS:** at `Ruston Mail.app/Contents/MacOS/ruston-cli`. To run it as
+  `ruston-cli`, link it into a folder on your `PATH`:
+
+  ```sh
+  sudo ln -sf "/Applications/Ruston Mail.app/Contents/MacOS/ruston-cli" /usr/local/bin/ruston-cli
+  ```
+
+- **Linux:** pass `--cli` as the AppImage's first argument, or start the
+  AppImage through a link named `ruston-cli`.
+
+From source, run `cargo run -p ruston-cli -- --help`. `ruston-cli --help` lists
+every command, and `ruston-cli <command> --help` its options.
+
+The CLI shares the desktop session by default. Use `--profile NAME` when you
+want a separate login; an existing CLI `default` session remains available with
+`--profile default`. `NAME` must be a single path component without separators.
+
+When sending from a terminal, the CLI asks before treating a body that looks
+like HTML as HTML. For scripts, pass `--html` explicitly.
+
+Output can be piped into tools that stop reading early, such as `head`: the
+CLI then ends quietly with exit status 0.
+
+Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
+seconds. Commands with multiple requests or a rate-limit retry can take longer.
+A timed-out final send is reported as unconfirmed with its draft ID. Check Sent
+before retrying, since Proton may have accepted the message.
+
+The CLI's `export --out DIRECTORY` saves reconstructed `.eml` messages with
+their decrypted attachments. These files are plaintext on disk. Existing files
+are not replaced, so use an empty output directory for another export. The
+export does not preserve the original wire message or every original header;
+see [Privacy and local data](PRIVACY.md) for details.
+
+`index` builds an optional local search index for `search`. It stores
+decrypted message bodies in a SQLite database that Ruston Mail does not
+encrypt.

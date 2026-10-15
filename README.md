@@ -1,124 +1,102 @@
-# Ruston Mail
+<div align="center">
+  <img src="assets/icons/hicolor/256x256/apps/com.luiscuellar.ruston-mail.png" alt="Ruston Mail icon" width="128">
+  <h1>Ruston Mail</h1>
 
-Ruston Mail is an unofficial desktop client for Proton Mail, written in Rust.
-Its three-pane interface lets you read, organize, and send mail without an
-embedded browser. The project is still in early development.
+  <p><strong>An unofficial desktop client for Proton Mail, written in Rust.</strong></p>
+</div>
+
+Ruston Mail reads, organizes, and sends your Proton Mail in a native
+three-pane window, without an embedded browser. It comes with `ruston-cli`, a
+command-line client for the same account. The project is in early development.
 
 > Ruston Mail is not affiliated with or endorsed by Proton AG.
 
-## What works
+## Features
 
-- Sign in to Proton, including prompts for TOTP, a mailbox password, or human
+- Sign in with TOTP, a separate mailbox password, or Proton's human
   verification.
-- Browse system folders, custom folders, and labels with unread counts.
-- Filter loaded conversations as you type, or search the whole mailbox through
-  Proton.
-- Read plain-text and HTML mail, including threads and quoted replies.
-- Write new messages, reply, reply to everyone, and forward.
-- Attach local files to outgoing messages.
-- Archive, star, mark read or unread, move to spam or trash, undo moves, and
-  apply custom labels.
-- Download received attachments.
+- Browse folders and labels with unread counts; filter what is loaded as you
+  type, or search the whole mailbox.
+- Read plain-text and HTML mail, threads, and quoted replies, and save
+  attachments.
+- Write, reply, reply to all, and forward, with attachments.
+- Archive, star, mark read or unread, label, and move to Spam or Trash; a move
+  can be undone.
+- Private by default: the desktop keeps mail in memory, blocks remote images,
+  and asks before opening a link.
 
-## Desktop limitations
+## Limitations
 
 Saved drafts, security-key sign-in, and folder or label management are not
 supported yet in the desktop client. It can move a message to Trash, but it
-never permanently deletes mail. See the
-[user guide](docs/USAGE.md) for more detail.
+never permanently deletes mail. See the [user guide](docs/USAGE.md) for more
+detail.
 
-## Install
+## Download
 
-Download a release from the
-[releases page](https://github.com/luiscuellar31/ruston-mail/releases) and check
-it against the `SHA256SUMS.txt` published with it. The command-line client,
-`ruston-cli`, ships inside the app on every platform.
+Get a release from the
+[releases page](https://github.com/luiscuellar31/ruston-mail/releases).
 
-- **macOS 11 or later:** `ruston-mail-<version>-arm64-UNSIGNED.dmg` for Apple
-  Silicon, or `ruston-mail-<version>-x86_64-UNSIGNED.dmg` for Intel. The app is not
-  notarized, so approve it once under System Settings → Privacy & Security →
-  Open Anyway. `ruston-cli` is at `Ruston Mail.app/Contents/MacOS/ruston-cli`.
-- **Linux with glibc 2.35 or newer** (Ubuntu 22.04, Debian 12, Fedora 36 and
-  later): `ruston-mail-<version>-x86_64.AppImage` or
-  `ruston-mail-<version>-aarch64.AppImage`. Make the AppImage executable and run
-  it; with `--cli` as its first argument it runs `ruston-cli` instead.
+| Platform | File |
+| --- | --- |
+| macOS 11 or later, Apple Silicon | `ruston-mail-<version>-arm64-UNSIGNED.dmg` |
+| macOS 11 or later, Intel | `ruston-mail-<version>-x86_64-UNSIGNED.dmg` |
+| Linux x86_64, glibc 2.35 or later | `ruston-mail-<version>-x86_64.AppImage` |
+| Linux ARM64, glibc 2.35 or later | `ruston-mail-<version>-aarch64.AppImage` |
 
-Windows builds are not published yet; build them from source.
+Every release publishes `SHA256SUMS.txt`. Check your download against it from
+the folder that holds both:
 
-## Run from source
+```sh
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # macOS
+sha256sum -c SHA256SUMS.txt --ignore-missing       # Linux
+```
 
-You need Rust 1.96 or newer. To run the desktop client:
+**macOS:** open the DMG and drag Ruston Mail to Applications. The app is not
+notarized, so macOS blocks its first launch: allow it once under **System
+Settings → Privacy & Security → Open Anyway**.
+
+**Linux:** the AppImage runs on Ubuntu 22.04, Debian 12, Fedora 36, and later.
+Make it executable and start it:
+
+```sh
+chmod +x ruston-mail-<version>-x86_64.AppImage
+./ruston-mail-<version>-x86_64.AppImage
+```
+
+Windows builds are not published yet; [build from source](#build-from-source).
+
+## Command line
+
+`ruston-cli` ships inside the app and shares its session. On macOS it is
+`Ruston Mail.app/Contents/MacOS/ruston-cli`; on Linux, pass `--cli` as the
+AppImage's first argument.
+
+```sh
+ruston-cli messages list --folder inbox
+ruston-cli messages read <id>
+ruston-cli --help
+```
+
+Its optional local search index keeps decrypted message bodies on disk,
+unencrypted. The [user guide](docs/USAGE.md#command-line) covers that, putting
+the CLI on your `PATH`, separate profiles, and exports.
+
+## Build from source
+
+You need Rust 1.96 or newer.
 
 ```sh
 git clone https://github.com/luiscuellar31/ruston-mail.git
 cd ruston-mail
-cargo run
+cargo run                          # the desktop app
+RUSTON_DEMO=1 cargo run            # a fictional mailbox, no account needed
+cargo run -p ruston-cli -- --help  # the command-line client
 ```
 
-To explore a fictional mailbox without signing in, run:
-
-```sh
-RUSTON_DEMO=1 cargo run
-```
-
-On PowerShell:
-
-```powershell
-$env:RUSTON_DEMO = "1"
-cargo run
-Remove-Item Env:RUSTON_DEMO
-```
-
-The demo does not contact Proton. A first build may still need to download Rust
-dependencies.
-
-For a Linux application-menu launcher and icons, follow the
-[desktop installation instructions](docs/DEVELOPMENT.md#desktop-installation-linux).
-Windows builds embed the same logo and executable version information;
-building requires the MSVC toolchain and Windows SDK described in the
-[development guide](docs/DEVELOPMENT.md#windows-native-validation).
-
-## In this repository
-
-- [`ruston-mail`](src/) is the desktop client.
-- [`ruston-cli`](crates/ruston-cli/) provides terminal commands.
-- [`ruston-core`](crates/ruston-core/) handles shared Proton authentication and
-  mail operations for both clients.
-
-See the [architecture map](docs/ARCHITECTURE.md) to find the code for a feature.
-To inspect the CLI commands, run:
-
-```sh
-cargo run -p ruston-cli -- --help
-```
-
-The CLI shares the desktop session by default. Use `--profile NAME` when you
-want a separate login; an existing CLI `default` session remains available with
-`--profile default`. `NAME` must be a single path component without separators.
-
-When sending from a terminal, the CLI asks before treating a body that looks
-like HTML as HTML. For scripts, pass `--html` explicitly.
-
-Output can be piped into tools that stop reading early, such as `head`: the
-CLI then ends quietly with exit status 0.
-
-Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
-seconds. Commands with multiple requests or a rate-limit retry can take longer.
-A timed-out final send is reported as unconfirmed with its draft ID. Check Sent
-before retrying, since Proton may have accepted the message.
-
-The CLI's `export --out DIRECTORY` saves reconstructed `.eml` messages with
-their decrypted attachments. These files are plaintext on disk. Existing files
-are not replaced, so use an empty output directory for another export. The
-export does not preserve the original wire message or every original header;
-see [Privacy and local data](docs/PRIVACY.md) for details.
-
-## Privacy
-
-The desktop keeps mailbox content in memory, blocks remote images, and asks
-before opening links by default. The CLI's optional local search index stores
-decrypted message bodies in a SQLite database that Ruston Mail does not
-encrypt.
+The demo never contacts Proton. The
+[development guide](docs/DEVELOPMENT.md) covers PowerShell, Linux launchers,
+Windows builds, packaging, and releases.
 
 ## Documentation
 
@@ -130,7 +108,6 @@ encrypt.
 
 ## License
 
-`ruston-core` and `ruston-cli` are adapted from Filippo Finke's
+Ruston Mail is available under the [MIT License](LICENSE). `ruston-core` and
+`ruston-cli` are adapted from Filippo Finke's
 [`protonmail-rs`](https://github.com/filippofinke/protonmail-rs).
-
-Ruston Mail is available under the [MIT License](LICENSE).
