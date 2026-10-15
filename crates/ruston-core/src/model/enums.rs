@@ -44,6 +44,7 @@ pub fn resolve_folder(name: &str) -> String {
         "archive" => label_ids::ARCHIVE,
         "starred" => label_ids::STARRED,
         "all" | "all-mail" | "allmail" => label_ids::ALL_MAIL,
+        "almost-all" | "almost-all-mail" => label_ids::ALMOST_ALL_MAIL,
         "scheduled" => label_ids::SCHEDULED,
         "snoozed" => label_ids::SNOOZED,
         // The name is matched folded, but an unknown one is returned as it
@@ -178,6 +179,7 @@ mod tests {
         assert_eq!(resolve_folder("sent"), "7");
         assert_eq!(resolve_folder("starred"), "10");
         assert_eq!(resolve_folder("all"), "5");
+        assert_eq!(resolve_folder("almost-all"), "15");
         assert_eq!(resolve_folder("xyz123"), "xyz123");
     }
 

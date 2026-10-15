@@ -357,6 +357,22 @@ mod tests {
     }
 
     #[test]
+    fn index_leaves_trash_and_spam_out_unless_asked() {
+        use ruston_core::model::enums::{label_ids, resolve_folder};
+
+        let folder = |args: &[&str]| match parse(args).command {
+            Command::Index { folder, .. } => resolve_folder(&folder),
+            _ => panic!("wrong command"),
+        };
+        // Mail moved to Trash or Spam is not decrypted onto disk by default.
+        assert_eq!(folder(&["ruston-cli", "index"]), label_ids::ALMOST_ALL_MAIL);
+        assert_eq!(
+            folder(&["ruston-cli", "index", "--folder", "all"]),
+            label_ids::ALL_MAIL
+        );
+    }
+
+    #[test]
     fn labels_create_defaults() {
         let cli = parse(&["ruston-cli", "labels", "create", "--name", "Work"]);
         match cli.command {

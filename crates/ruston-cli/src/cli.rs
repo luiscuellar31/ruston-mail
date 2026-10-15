@@ -218,12 +218,15 @@ pub enum Command {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         interval: u64,
         /// Backfill this folder once, then update its local search index when mail changes.
+        /// `all` includes Trash and Spam; `almost-all` leaves them out.
         #[arg(long)]
         folder: Option<String>,
     },
     /// Build the local full-text index (stores decrypted message bodies in SQLite).
     Index {
-        #[arg(long, default_value = "all")]
+        /// Folder to index. The default, `almost-all`, is every folder except
+        /// Trash and Spam; `all` includes them.
+        #[arg(long, default_value = "almost-all")]
         folder: String,
         #[arg(long = "max-pages", default_value_t = 3)]
         max_pages: u32,

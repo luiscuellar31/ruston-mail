@@ -121,7 +121,10 @@ until you index again. Remove old databases yourself if you no longer need them.
 Sync and backfill store message metadata. Running `index` also stores decrypted
 message bodies and other searchable fields in SQLite full-text search. This
 database is **not encrypted at rest by Ruston Mail**. The desktop client does
-not use this cache. Once `sync` applies a deletion, it removes the active search
+not use this cache. By default `index` reads every folder except Trash and Spam
+(`--folder almost-all`); `--folder all` includes them. A message moved to Trash
+or Spam after it was indexed keeps its indexed body until `sync` applies its
+deletion or the cache is rebuilt. Once `sync` applies a deletion, it removes the active search
 entry. A full message update removes its indexed body; run `index` again to
 make the updated body searchable. Removed or replaced bodies and search
 entries are overwritten inside the database file, with SQLite's
