@@ -194,8 +194,10 @@ The new tokens remain in memory, but reopening the app may require signing in
 again.
 
 Non-secret session metadata is stored in `ruston-core`'s platform config
-directory under the `ruston-mail` storage name. On Unix, its session
-directory and file use modes `0700` and `0600`. The desktop and CLI share the
+directory under the `ruston-mail` storage name. Besides the session's UID and
+API address, it records the account's Proton user ID, which names the local
+cache, so cached listings and local search open that cache without contacting
+Proton. On Unix, its session directory and file use modes `0700` and `0600`. The desktop and CLI share the
 `ruston` profile by default. Use CLI `--profile` for a separate session; an
 earlier CLI `default` session is still accessible with
 `--profile default`. Profile names must be a single path component; empty names

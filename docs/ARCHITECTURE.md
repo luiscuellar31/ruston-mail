@@ -571,7 +571,13 @@ used by CLI sync and local search. Login and resume ask for the user and its
 addresses at once, and login asks for the key salts alongside them. They retain
 the authenticated `User.ID` alongside the API base URL in `Client`; session UIDs and email addresses
 are not cache identities. All client cache operations go through `open_cache`
-in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs). It selects
+in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs). The session
+metadata also records the `User.ID`, so `LocalCache` opens the same database
+from the saved session without a request; the CLI's `messages list --cached`
+and `search` use it and work offline. A session saved before the ID was kept is
+resumed once instead, which records it. Metadata writes replace the file with
+one rename under the profile lock, and a resume records the ID only for the
+session it loaded. It selects
 `accounts/<profile>/<sha256-of-identity>.db` under the cache directory and checks
 the complete account identity stored in SQLite before using the database.
 An empty database is bound under an immediate transaction; an unexpected owner

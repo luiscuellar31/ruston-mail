@@ -9,7 +9,7 @@ use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::{
     BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
-use ruston_core::{AddressInfo, Client, Error, Result, SendOptions};
+use ruston_core::{AddressInfo, Client, Error, LocalCache, Result, SendOptions};
 use std::cell::Cell;
 use std::io::{self, BufRead, IsTerminal, Write};
 
@@ -153,17 +153,17 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             unread,
             cached,
         } => {
-            let client = resume(&ctx.profile).await?;
-            if cached {
-                let (total, msgs) =
-                    client.cached_messages_page(&folder, unread, page, page_size)?;
-                render::messages_list(ctx.json, total, &msgs);
+            let (total, msgs) = if cached {
+                LocalCache::open(&ctx.profile)
+                    .await?
+                    .messages_page(&folder, unread, page, page_size)?
             } else {
-                let (total, msgs) = client
+                resume(&ctx.profile)
+                    .await?
                     .list_messages(&folder, page, page_size, unread)
-                    .await?;
-                render::messages_list(ctx.json, total, &msgs);
-            }
+                    .await?
+            };
+            render::messages_list(ctx.json, total, &msgs);
             Ok(())
         }
         MessagesCmd::Search(args) => {

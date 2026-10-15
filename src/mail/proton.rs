@@ -1388,6 +1388,7 @@ mod tests {
                 base_url: base_url.into(),
                 password_mode: 1,
                 user_agent: None,
+                user_id: None,
             };
             let tokens = Tokens {
                 uid: "UID1".into(),

@@ -4,7 +4,7 @@ use crate::cli::Ctx;
 use crate::commands::resume;
 use crate::render;
 use crate::terminal;
-use ruston_core::Result;
+use ruston_core::{LocalCache, Result};
 use serde_json::json;
 
 pub async fn index(ctx: &Ctx, folder: String, max_pages: u32, page_size: u32) -> Result<()> {
@@ -19,8 +19,9 @@ pub async fn index(ctx: &Ctx, folder: String, max_pages: u32, page_size: u32) ->
 }
 
 pub async fn search(ctx: &Ctx, query: String, limit: u32) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
-    let msgs = client.search_local(&query, limit)?;
+    let msgs = LocalCache::open(&ctx.profile)
+        .await?
+        .search(&query, limit)?;
     render::messages_list(ctx.json, msgs.len() as u32, &msgs);
     Ok(())
 }

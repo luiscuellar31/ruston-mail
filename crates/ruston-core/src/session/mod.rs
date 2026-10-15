@@ -68,6 +68,11 @@ pub struct Session {
     pub password_mode: u8,
     /// Optional `User-Agent` recorded for this session.
     pub user_agent: Option<String>,
+    /// The account's user ID, which names its local cache, so the cache can
+    /// be opened without asking Proton. Sessions saved before it was recorded
+    /// have none until they are next resumed.
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 /// A fully-loaded session (metadata + secrets).
@@ -156,13 +161,7 @@ impl Session {
         skp: &SecretString,
     ) -> Result<()> {
         let _lock = Self::lock(paths, profile)?;
-        let dir = paths.sessions_dir();
-        std::fs::create_dir_all(&dir)?;
-        set_mode(&dir, 0o700)?;
-        let file = paths.session_file(profile);
-        let json = serde_json::to_vec_pretty(self)?;
-        std::fs::write(&file, json)?;
-        set_mode(&file, 0o600)?;
+        self.write_metadata(paths, profile)?;
 
         // Bound first: tokens never sit beside an address they were not issued for.
         store.set(K_BASE_URL, &self.base_url)?;
@@ -173,6 +172,49 @@ impl Session {
         )?;
         store.set(K_SKP, skp.expose_secret())?;
         Ok(())
+    }
+
+    /// Replaces the metadata file in one rename, so a write that fails part
+    /// way leaves the previous file whole. The caller holds the profile lock.
+    fn write_metadata(&self, paths: &Paths, profile: &str) -> Result<()> {
+        let dir = paths.sessions_dir();
+        std::fs::create_dir_all(&dir)?;
+        set_mode(&dir, 0o700)?;
+        let file = paths.session_file(profile);
+        let temporary = file.with_extension("json.tmp");
+        let json = serde_json::to_vec_pretty(self)?;
+        let written = std::fs::write(&temporary, json)
+            .map_err(Error::from)
+            .and_then(|()| set_mode(&temporary, 0o600))
+            .and_then(|()| std::fs::rename(&temporary, &file).map_err(Error::from));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        written
+    }
+
+    /// Records the account's user ID in the saved metadata of session `uid`,
+    /// once it is known. Leaves a later login in the same profile alone.
+    pub(crate) fn record_user_id(
+        paths: &Paths,
+        profile: &str,
+        uid: &str,
+        user_id: &str,
+    ) -> Result<()> {
+        let _lock = Self::lock(paths, profile)?;
+        let bytes = match std::fs::read(paths.session_file(profile)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let Ok(mut session) = serde_json::from_slice::<Session>(&bytes) else {
+            return Ok(());
+        };
+        if session.uid != uid || session.user_id.as_deref() == Some(user_id) {
+            return Ok(());
+        }
+        session.user_id = Some(user_id.to_owned());
+        session.write_metadata(paths, profile)
     }
 
     /// Persist only the rotated tokens (after a refresh).
@@ -275,6 +317,8 @@ impl Session {
 
     fn clear_unlocked(paths: &Paths, profile: &str, store: &dyn SecretStore) -> Result<()> {
         let file = paths.session_file(profile);
+        // What an interrupted metadata write left behind goes too.
+        let _ = std::fs::remove_file(file.with_extension("json.tmp"));
         let metadata = match std::fs::remove_file(&file) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -317,14 +361,18 @@ mod tests {
     }
 
     fn unique_base() -> PathBuf {
+        // Tests run in parallel and the clock can read the same for two of
+        // them, so a counter keeps each directory to itself.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "ruston-session-test-{}-{}",
+            "ruston-session-test-{}-{}-{}",
             std::process::id(),
-            nanos
+            nanos,
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
@@ -361,6 +409,7 @@ mod tests {
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
             user_agent: None,
+            user_id: None,
         };
         let tokens = Tokens {
             uid: "UID1".into(),
@@ -392,6 +441,7 @@ mod tests {
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
             user_agent: Some("ruston-cli/0.2.0 (macos)".into()),
+            user_id: None,
         };
         let tokens = Tokens {
             uid: "UID1".into(),
@@ -443,6 +493,7 @@ mod tests {
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
             user_agent: None,
+            user_id: None,
         };
         let tokens = Tokens {
             uid: "UID2".into(),
@@ -480,6 +531,7 @@ mod tests {
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
             user_agent: None,
+            user_id: None,
         };
         let tokens = Tokens {
             uid: "UID1".into(),
@@ -513,6 +565,7 @@ mod tests {
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
             user_agent: None,
+            user_id: None,
         };
         let tokens = Tokens {
             uid: "UID1".into(),
@@ -544,6 +597,7 @@ mod tests {
             base_url: base_url.into(),
             password_mode: 1,
             user_agent: None,
+            user_id: None,
         };
         let tokens = Tokens {
             uid: "UID1".into(),
@@ -642,10 +696,80 @@ mod tests {
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
             user_agent: None,
+            user_id: None,
         };
         let current = serde_json::to_value(session).unwrap();
         let mut incomplete = current;
         incomplete.as_object_mut().unwrap().remove("password_mode");
         assert!(serde_json::from_value::<Session>(incomplete).is_err());
+    }
+
+    #[test]
+    fn sessions_saved_by_other_versions_still_load() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let store = MemoryStore::new();
+        let session = saved_session("https://mail.proton.me/api", &paths, &store);
+
+        // Written before the account ID was recorded.
+        let mut older = serde_json::to_value(&session).unwrap();
+        older.as_object_mut().unwrap().remove("user_id");
+        std::fs::write(paths.session_file("default"), older.to_string()).unwrap();
+        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
+        assert_eq!(loaded.session.uid, "UID1");
+        assert_eq!(loaded.session.user_id, None);
+
+        // Written by a later version, with a field this one does not know.
+        let mut newer = serde_json::to_value(&session).unwrap();
+        newer["user_id"] = "user-1".into();
+        newer["recorded_by_a_later_version"] = true.into();
+        std::fs::write(paths.session_file("default"), newer.to_string()).unwrap();
+        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
+        assert_eq!(loaded.session.user_id.as_deref(), Some("user-1"));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn the_account_id_is_recorded_only_for_the_session_it_belongs_to() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let store = MemoryStore::new();
+        saved_session("https://mail.proton.me/api", &paths, &store);
+
+        // A later login replaced the session: its file is left alone.
+        Session::record_user_id(&paths, "default", "OTHER-UID", "user-2").unwrap();
+        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
+        assert_eq!(loaded.session.user_id, None);
+
+        Session::record_user_id(&paths, "default", "UID1", "user-1").unwrap();
+        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
+        assert_eq!(loaded.session.user_id.as_deref(), Some("user-1"));
+        // Everything else, and the secrets, are as they were.
+        assert_eq!(loaded.session.uid, "UID1");
+        assert_eq!(loaded.tokens.access.expose_secret(), "acc");
+        assert_eq!(loaded.skp.expose_secret(), "skp");
+
+        // The file is replaced whole, with its permissions kept.
+        assert!(
+            !paths
+                .session_file("default")
+                .with_extension("json.tmp")
+                .exists()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(paths.session_file("default"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        // Nothing to record without a saved session.
+        Session::clear(&paths, "default", &store).unwrap();
+        Session::record_user_id(&paths, "default", "UID1", "user-1").unwrap();
+        assert!(!paths.session_file("default").exists());
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

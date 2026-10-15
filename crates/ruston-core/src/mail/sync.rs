@@ -3,13 +3,15 @@
 use super::{Client, read::FullMessage};
 use crate::api;
 use crate::api::messages::ListQuery;
-use crate::cache::Cache;
+use crate::cache::{Cache, CacheIdentity};
 use crate::error::{Error, Result};
 use crate::model::enums::resolve_folder;
 use crate::model::message::MessageMetadata;
+use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
 use crate::transport::Doer;
 use std::borrow::Borrow;
 use std::future::Future;
+use std::path::PathBuf;
 
 const RESYNC_PAGE_SIZE: u32 = 100;
 
@@ -239,6 +241,64 @@ fn cached_page(
     Ok((u32::try_from(total).unwrap_or(u32::MAX), messages))
 }
 
+/// The local cache of the account signed in under a profile, opened without
+/// signing in again, so reading cached mail and searching it work offline.
+pub struct LocalCache {
+    cache: Cache,
+}
+
+impl LocalCache {
+    /// Opens the cache of the account saved under `profile`. Only a session
+    /// saved before its account ID was recorded needs Proton: it is resumed
+    /// once, which records the ID for next time.
+    pub async fn open(profile: &str) -> Result<Self> {
+        validate_profile_name(profile)?;
+        let store = KeyringStore::new(profile.to_owned());
+        let saved = Self::open_saved(&Paths::system()?, &store, profile, |identity| {
+            Cache::default_account_path(profile, identity)
+        })?;
+        match saved {
+            Some(cache) => Ok(cache),
+            None => Ok(Self {
+                cache: Client::resume(profile).await?.open_cache()?,
+            }),
+        }
+    }
+
+    /// `None` when the saved session does not name its account.
+    fn open_saved(
+        paths: &Paths,
+        store: &dyn SecretStore,
+        profile: &str,
+        path: impl FnOnce(&CacheIdentity) -> Result<PathBuf>,
+    ) -> Result<Option<Self>> {
+        let loaded = Session::load(paths, profile, store)?.ok_or(Error::Unauthorized)?;
+        let Some(user_id) = loaded.session.user_id.as_deref() else {
+            return Ok(None);
+        };
+        let identity = CacheIdentity::new(&loaded.session.base_url, user_id)?;
+        let cache = Cache::open_for_account(&path(&identity)?, &identity)?;
+        Ok(Some(Self { cache }))
+    }
+
+    /// One page of a folder, with how many cached messages it holds: unread
+    /// ones only when `unread` is set.
+    pub fn messages_page(
+        &self,
+        folder: &str,
+        unread: bool,
+        page: u32,
+        page_size: u32,
+    ) -> Result<(u32, Vec<MessageMetadata>)> {
+        cached_page(&self.cache, folder, unread, page, page_size)
+    }
+
+    /// Full-text search of the indexed bodies. Words are matched together.
+    pub fn search(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
+        self.cache.search(query, limit)
+    }
+}
+
 impl Client {
     pub(crate) fn open_cache(&self) -> Result<Cache> {
         let path = Cache::default_account_path(&self.profile, &self.cache_identity)?;
@@ -273,18 +333,6 @@ impl Client {
     ) -> Result<Vec<MessageMetadata>> {
         self.open_cache()?
             .list(&resolve_folder(folder), unread, limit, 0)
-    }
-
-    /// One page of a folder from the local cache (offline), with how many
-    /// cached messages it holds: unread ones only when `unread` is set.
-    pub fn cached_messages_page(
-        &self,
-        folder: &str,
-        unread: bool,
-        page: u32,
-        page_size: u32,
-    ) -> Result<(u32, Vec<MessageMetadata>)> {
-        cached_page(&self.open_cache()?, folder, unread, page, page_size)
     }
 
     /// Cached (total, unread) counts for a folder.
@@ -482,6 +530,79 @@ mod tests {
 
         assert_eq!(client.index_into(&cache, "inbox", 1, 10).await.unwrap(), 1);
         assert_eq!(cache.search("indexedbody", 10).unwrap()[0].id, "m1");
+    }
+
+    #[test]
+    fn a_saved_account_s_cache_opens_without_contacting_proton() {
+        use crate::session::{MemoryStore, Tokens};
+        use secrecy::SecretString;
+
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let base = std::env::temp_dir().join(format!(
+            "ruston-local-cache-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let cache_dir = base.join("cache");
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        // The cache refuses a database in a directory others can read.
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&cache_dir).unwrap();
+        let paths = Paths::with_base(base.join("config"));
+        let store = MemoryStore::new();
+        let save = |user_id: Option<&str>| {
+            let session = Session {
+                uid: "UID1".into(),
+                app_version: "Other".into(),
+                base_url: "https://mail.proton.me/api".into(),
+                password_mode: 1,
+                user_agent: None,
+                user_id: user_id.map(str::to_owned),
+            };
+            let tokens = Tokens {
+                uid: "UID1".into(),
+                access: SecretString::from("acc"),
+                refresh: SecretString::from("ref"),
+            };
+            session
+                .save(
+                    &paths,
+                    "default",
+                    &store,
+                    &tokens,
+                    &SecretString::from("skp"),
+                )
+                .unwrap();
+        };
+        let open = || {
+            LocalCache::open_saved(
+                &paths,
+                &store,
+                "default",
+                |_| Ok(cache_dir.join("cache.db")),
+            )
+        };
+
+        // Signed out, there is no account to read.
+        assert!(matches!(open(), Err(Error::Unauthorized)));
+        // A session saved before its account ID was kept is resumed once.
+        save(None);
+        assert!(open().unwrap().is_none());
+        // With the ID, the cache opens and reads without a single request.
+        save(Some("user-1"));
+        let cache = open().unwrap().unwrap();
+        let (total, messages) = cache.messages_page("inbox", false, 0, 25).unwrap();
+        assert_eq!((total, messages.len()), (0, 0));
+        assert!(cache.search("anything", 10).unwrap().is_empty());
+        drop(cache);
+        // The database stays bound to the account that first opened it.
+        save(Some("user-2"));
+        assert!(matches!(open(), Err(Error::Cache(_))));
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

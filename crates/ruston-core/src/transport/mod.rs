@@ -1213,6 +1213,7 @@ mod tests {
             base_url: server.uri(),
             password_mode: 1,
             user_agent: None,
+            user_id: None,
         }
         .save(
             &paths,
@@ -1448,6 +1449,7 @@ mod tests {
             base_url: server.uri(),
             password_mode: 1,
             user_agent: None,
+            user_id: None,
         }
         .save(
             &paths,
