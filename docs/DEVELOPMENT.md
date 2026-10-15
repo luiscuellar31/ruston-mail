@@ -452,24 +452,38 @@ is unchanged. Native desktop smoke checks still require each platform:
 
 ## Packaging (macOS)
 
-Build a signed `Ruston Mail.app` bundle and draggable `.dmg` disk image:
+Build a signed `Ruston Mail.app` bundle and draggable `.dmg` disk image for the
+machine's architecture:
 
 ```sh
 ./packaging/macos/package.sh
+./packaging/macos/verify-bundle.sh "dist/Ruston Mail.app" "$(uname -m)"
 ```
 
-The script builds with `--locked`, so the release uses the dependency versions
-in `Cargo.lock`. Both ad-hoc and Developer ID signatures turn on the hardened
-runtime (`--options runtime`), so the app does not load injected libraries.
+The script builds `ruston` and `ruston-cli` with `--locked`, so the release uses
+the dependency versions in `Cargo.lock`, and for the oldest macOS that
+`assets/macos/Info.plist` declares (`LSMinimumSystemVersion`). `ruston-cli` goes
+in `Contents/MacOS` beside the app and is signed before the bundle. Both ad-hoc
+and Developer ID signatures turn on the hardened runtime (`--options runtime`),
+so neither executable loads injected libraries. `verify-bundle.sh` checks the
+signature, each executable's architecture, minimum macOS and linked libraries,
+and the version both report.
 
 Options:
-- `--skip-build`: Package the existing `target/release/ruston` binary without rebuilding.
+- `--skip-build`: Package the existing `target/release` binaries without rebuilding.
+- `--target <TRIPLE>`: Build for another architecture, such as `x86_64-apple-darwin`
+  on Apple Silicon, after `rustup target add <TRIPLE>`.
 - `CODESIGN_IDENTITY="Developer ID Application: ..."`: Sign with a commercial certificate; defaults to ad-hoc signing (`-s -`).
 
 Artifacts are written to `dist/`:
 - `dist/Ruston Mail.app`
-- `dist/ruston-mail-<version>-<arch>.dmg`
-- `dist/ruston-mail-<version>-<arch>.dmg.sha256`
+- `dist/ruston-mail-<version>-<arch>-UNSIGNED.dmg` (`<arch>` is `arm64` or
+  `x86_64`; the `-UNSIGNED` suffix marks an ad-hoc signature)
+- `dist/ruston-mail-<version>-<arch>-UNSIGNED.dmg.sha256`
+
+`./packaging/smoke-test.sh "dist/Ruston Mail.app/Contents/MacOS/ruston"` starts
+the app with an empty home directory and checks that it is still running after
+10 seconds.
 
 ## HTTP diagnostics
 

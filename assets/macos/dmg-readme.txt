@@ -18,21 +18,34 @@ Opening Ruston Mail for the first time
        xattr -dr com.apple.quarantine "/Applications/Ruston Mail.app"
 
 
+Using ruston-cli
+----------------
+
+The command-line client ships inside the app. To run it as "ruston-cli", link it
+into a folder on your PATH, for example:
+
+    sudo ln -sf "/Applications/Ruston Mail.app/Contents/MacOS/ruston-cli" /usr/local/bin/ruston-cli
+
+macOS checks ruston-cli the first time it runs, as it does the app. The xattr
+command above approves both.
+
+
 About Keychain and Saved Passwords
 ----------------------------------
 
-Ruston Mail stores session tokens and mailbox passwords in the native macOS Keychain.
-With the ad-hoc code signature applied to this application bundle, macOS associates
-your keychain authorization with Ruston Mail's bundle identifier (com.luiscuellar.ruston-mail).
-When prompted by macOS to allow access to the keychain, select "Always Allow".
+Ruston Mail stores its session tokens and key passphrase in the macOS Keychain.
+An ad-hoc signature identifies one build only, so macOS treats every new version
+as a different app and asks again before it can read the saved session. When
+prompted, select "Always Allow" to answer once for that version.
 
 
 Checksums
 ---------
 
-Every build publishes a SHA-256 checksum so you can verify the integrity of the disk image:
+Every release publishes SHA256SUMS.txt beside the disk images. To check a
+download, run this in the folder that holds both files:
 
-    shasum -a 256 ~/Downloads/ruston-mail-*.dmg
+    shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 
 
 Ruston Mail is free and open-source software (MIT License).

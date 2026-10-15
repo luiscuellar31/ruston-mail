@@ -239,11 +239,12 @@ a later login in the same profile. When the CLI cannot resume the saved session
 `logout` still removes it from the device and says that Proton was not asked to
 end it.
 
-Self-built macOS binaries may ask for Keychain access again after a rebuild.
-Without a stable code signature, macOS can treat each build as a different app.
+macOS may ask for Keychain access again after Ruston Mail is rebuilt or updated.
 Packaging the application into `Ruston Mail.app` via `./packaging/macos/package.sh`
 applies an ad-hoc code signature (`codesign -s -`) with bundle identifier
-`com.luiscuellar.ruston-mail`, providing a stable identity that retains Keychain authorization.
+`com.luiscuellar.ruston-mail`. An ad-hoc signature identifies one build only:
+the same build keeps its Keychain authorization, but a new build or release asks
+again. Only a Developer ID signature keeps one identity across versions.
 The signature turns on the hardened runtime, so macOS does not load libraries
 injected with `DYLD_INSERT_LIBRARIES` into the process that reads the saved
 session from the Keychain.

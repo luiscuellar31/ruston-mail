@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Ruston Mail - macOS Application & DMG Packaging Script
-# Builds Ruston Mail.app, signs it ad-hoc (or with Developer ID), and creates a
-# drag-and-drop installer disk image (.dmg).
+# Builds Ruston Mail.app with ruston-cli inside it, signs both ad-hoc (or with
+# Developer ID), and creates a drag-and-drop installer disk image (.dmg).
 # ==============================================================================
 
 set -euo pipefail
@@ -20,6 +20,7 @@ DIST_DIR="$REPO_ROOT/dist"
 
 APP_NAME="Ruston Mail"
 EXECUTABLE="ruston"
+CLI_EXECUTABLE="ruston-cli"
 IDENTIFIER="com.luiscuellar.ruston-mail"
 
 # Usage instructions
@@ -28,16 +29,22 @@ usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Packages Ruston Mail as a native macOS application bundle and draggable DMG.
+The bundle carries ruston-cli in Contents/MacOS next to the app.
 
 Options:
-  --skip-build          Skip cargo build --release and package existing binary
+  --skip-build          Skip cargo build --release and package existing binaries
   --target <TRIPLE>     Specify target architecture triple (e.g. aarch64-apple-darwin)
-  --binary <PATH>       Path to custom pre-built executable
+  --binary <PATH>       Path to a pre-built ruston executable; ruston-cli is
+                        taken from the same directory
   --dist <PATH>         Custom output directory (default: dist/)
   -h, --help            Show this help message
 
 Environment variables:
-  CODESIGN_IDENTITY     Signing identity (default: "-" for ad-hoc signing)
+  CODESIGN_IDENTITY     Signing identity (default: "-" for ad-hoc signing; the
+                        DMG name then ends in -UNSIGNED)
+  MACOSX_DEPLOYMENT_TARGET
+                        Oldest macOS the build supports (default: the
+                        LSMinimumSystemVersion in assets/macos/Info.plist)
 EOF
     exit 0
 }
@@ -83,10 +90,16 @@ VERSION="$(grep -m 1 '^version = ' "$REPO_ROOT/Cargo.toml" | cut -d '"' -f 2)"
 BUILD="${VERSION%%-*}"
 ARCH="$(uname -m)"
 [[ -n "$TARGET_TRIPLE" ]] && ARCH="${TARGET_TRIPLE%%-*}"
+# macOS names the Apple Silicon architecture arm64.
+[[ "$ARCH" == "aarch64" ]] && ARCH="arm64"
 
-log "Packaging $APP_NAME v$VERSION ($ARCH)"
+# Build for the oldest macOS the bundle declares, so every binary agrees with it.
+MINIMUM_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$ASSETS_DIR/Info.plist")"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-$MINIMUM_MACOS}"
 
-# 1. Build release binary if requested
+log "Packaging $APP_NAME v$VERSION ($ARCH, macOS $MACOSX_DEPLOYMENT_TARGET or later)"
+
+# 1. Build release binaries if requested
 BINARY_PATH="$CUSTOM_BINARY"
 if [[ -z "$BINARY_PATH" ]]; then
     if [[ -n "$TARGET_TRIPLE" ]]; then
@@ -96,17 +109,19 @@ if [[ -z "$BINARY_PATH" ]]; then
     fi
 
     if [[ "$SKIP_BUILD" -eq 0 ]]; then
-        log "Building release binary ($EXECUTABLE)..."
+        log "Building release binaries ($EXECUTABLE, $CLI_EXECUTABLE)..."
         # --locked builds the audited dependency versions from Cargo.lock.
-        BUILD_ARGS=(--locked --release --bin "$EXECUTABLE")
+        BUILD_ARGS=(--locked --release -p ruston-mail -p ruston-cli --bins)
         if [[ -n "$TARGET_TRIPLE" ]]; then
             BUILD_ARGS+=(--target "$TARGET_TRIPLE")
         fi
         (cd "$REPO_ROOT" && cargo build "${BUILD_ARGS[@]}")
     fi
 fi
+CLI_PATH="$(dirname "$BINARY_PATH")/$CLI_EXECUTABLE"
 
 [[ -f "$BINARY_PATH" ]] || die "Binary not found at: $BINARY_PATH"
+[[ -f "$CLI_PATH" ]] || die "CLI binary not found at: $CLI_PATH"
 
 mkdir -p "$DIST_DIR"
 
@@ -139,9 +154,10 @@ log "Assembling bundle at: $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-# Copy binary
+# Copy binaries
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/$EXECUTABLE"
-chmod 755 "$APP_DIR/Contents/MacOS/$EXECUTABLE"
+cp "$CLI_PATH" "$APP_DIR/Contents/MacOS/$CLI_EXECUTABLE"
+chmod 755 "$APP_DIR/Contents/MacOS/$EXECUTABLE" "$APP_DIR/Contents/MacOS/$CLI_EXECUTABLE"
 
 # Copy icon
 cp "$ICNS_PATH" "$APP_DIR/Contents/Resources/ruston-mail.icns"
@@ -166,21 +182,27 @@ SIGN_ARGS=(--force --options runtime)
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
     log "Signing bundle with Developer ID: $CODESIGN_IDENTITY"
     SIGN_ARGS+=(--timestamp --sign "$CODESIGN_IDENTITY")
+    DMG_SUFFIX=""
 else
-    log "Signing bundle with ad-hoc identity (resolves Keychain re-prompting)"
+    # Each ad-hoc build is a different app to Gatekeeper and the keychain.
+    log "Signing bundle with an ad-hoc identity (not notarized)"
     SIGN_ARGS+=(-s - --timestamp=none)
+    DMG_SUFFIX="-UNSIGNED"
 fi
 
 if [[ -f "$ENTITLEMENTS" ]]; then
     SIGN_ARGS+=(--entitlements "$ENTITLEMENTS")
 fi
 
+# Nested code is signed before the bundle that seals it.
+codesign "${SIGN_ARGS[@]}" --identifier "$IDENTIFIER.cli" \
+    "$APP_DIR/Contents/MacOS/$CLI_EXECUTABLE"
 codesign "${SIGN_ARGS[@]}" "$APP_DIR"
 log "Verifying code signature..."
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
 # 5. Create drag-and-drop DMG
-DMG_NAME="ruston-mail-${VERSION}-${ARCH}.dmg"
+DMG_NAME="ruston-mail-${VERSION}-${ARCH}${DMG_SUFFIX}.dmg"
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 log "Creating disk image ($DMG_NAME)..."
 
