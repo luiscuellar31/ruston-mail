@@ -158,15 +158,17 @@ impl MailBackend {
         }
     }
 
-    /// Loads what a mailbox row opens in the reader.
+    /// Loads what a mailbox row opens in the reader. `messages` is how many
+    /// the row says it holds.
     pub async fn conversation_detail(
         &self,
         kind: SummaryKind,
         id: &str,
+        messages: u32,
     ) -> Result<ConversationDetail, MailboxError> {
         match self {
             Self::Proton(service) => match kind {
-                SummaryKind::Conversation => service.conversation_detail(id).await,
+                SummaryKind::Conversation => service.conversation_detail(id, messages).await,
                 SummaryKind::Message => service.message_detail(id).await,
             },
             // Demo rows are always whole conversations.

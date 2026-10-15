@@ -360,9 +360,20 @@ impl ProtonMailService {
         Ok(map_counts(&counts, folders))
     }
 
-    /// Decrypts a conversation oldest-first; ruston-core sanitizes its HTML.
-    pub async fn conversation_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
-        let (conversation, messages) = timed(self.client.read_conversation(id)).await?;
+    /// Decrypts a conversation of about `message_count` messages oldest-first;
+    /// ruston-core sanitizes its HTML.
+    pub async fn conversation_detail(
+        &self,
+        id: &str,
+        message_count: u32,
+    ) -> Result<ConversationDetail, MailboxError> {
+        let (conversation, messages) = timed_with(
+            self.client.read_conversation(id),
+            conversation_deadline(message_count),
+            MailboxError::Connection,
+            map_mailbox_error,
+        )
+        .await?;
         let subject = conversation.subject.trim();
         let labels = conversation
             .labels
@@ -383,7 +394,13 @@ impl ProtonMailService {
 
     /// Fetches and decrypts one message that the list shows on its own.
     pub async fn message_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
-        let message = timed(self.client.read_message(id)).await?;
+        let message = timed_with(
+            self.client.read_message(id),
+            conversation_deadline(1),
+            MailboxError::Connection,
+            map_mailbox_error,
+        )
+        .await?;
         let subject = message.meta.subject.trim().to_owned();
         let labels = message.meta.label_ids.clone();
 
@@ -539,6 +556,14 @@ fn send_deadline(attachments: usize) -> Duration {
     SEND_TIMEOUT.saturating_add(
         ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT.saturating_mul(uploads),
     )
+}
+
+/// How long opening a conversation of `messages` may take: a request's time
+/// for the conversation, and one for each message, whose body and sender keys
+/// may each need one. A fixed budget would never open a long thread on a slow
+/// connection, and retrying starts over.
+fn conversation_deadline(messages: u32) -> Duration {
+    REQUEST_TIMEOUT.saturating_mul(messages.max(1).saturating_add(1))
 }
 
 /// Runs one Proton request under `REQUEST_TIMEOUT`. A call that outlives it
@@ -1239,6 +1264,20 @@ mod tests {
         // The file itself may take core's whole transfer deadline; the
         // message and the sender's keys come on top of it.
         assert!(ATTACHMENT_SAVE_TIMEOUT >= ATTACHMENT_REQUEST_TIMEOUT + REQUEST_TIMEOUT * 2);
+    }
+
+    #[test]
+    fn a_long_conversation_gets_time_for_every_message() {
+        // One message still fits a request for it and one for its sender's keys.
+        assert_eq!(conversation_deadline(0), REQUEST_TIMEOUT * 2);
+        assert_eq!(conversation_deadline(1), REQUEST_TIMEOUT * 2);
+        for messages in [2, 10, 50] {
+            assert!(
+                conversation_deadline(messages) > REQUEST_TIMEOUT * messages,
+                "{messages} messages share too little time"
+            );
+        }
+        assert!(conversation_deadline(u32::MAX) >= conversation_deadline(50));
     }
 
     #[test]

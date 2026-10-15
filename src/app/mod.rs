@@ -1440,11 +1440,15 @@ impl App {
         self.abandon_reader_load();
         let (handle, registration) = AbortHandle::new_pair();
         self.reader_load = Some(handle);
-        let (kind, id) = (request.kind, request.conversation_id.clone());
+        let (kind, id, messages) = (
+            request.kind,
+            request.conversation_id.clone(),
+            request.messages,
+        );
 
         Effects::perform(
             Abortable::new(
-                async move { backend.conversation_detail(kind, &id).await },
+                async move { backend.conversation_detail(kind, &id, messages).await },
                 registration,
             ),
             // The reader no longer waits for an abandoned load and ignores

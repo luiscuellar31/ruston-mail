@@ -1302,6 +1302,7 @@ fn selecting_conversation_starts_detail_loading() {
             id: 3,
             conversation_id: "a".into(),
             kind: SummaryKind::Conversation,
+            messages: 1,
         }
     );
     assert_eq!(
@@ -1399,6 +1400,28 @@ fn failed_detail_can_retry_with_new_request() {
             request: 4,
         }
     );
+}
+
+#[test]
+fn a_load_knows_how_long_its_conversation_is() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(
+        request.id,
+        Ok(ConversationPage {
+            conversations: vec![ConversationSummary {
+                message_count: 12,
+                ..summary("long")
+            }],
+            total: 1,
+            inspect_candidates: Vec::new(),
+        }),
+    );
+
+    // The desktop gives the load time for every message the row lists.
+    let first = mailbox.start_conversation_load("long".into(), 3).unwrap();
+    assert_eq!(first.messages, 12);
+    mailbox.finish_conversation(&first, Err(MailboxError::Connection));
+    assert_eq!(mailbox.retry_conversation(4).unwrap().messages, 12);
 }
 
 fn message_row(id: &str) -> ConversationSummary {

@@ -51,6 +51,7 @@ fn pending_reader_request(app: &App) -> ReaderRequest {
             id: *request,
             conversation_id: conversation_id.clone(),
             kind: crate::mail::SummaryKind::Conversation,
+            messages: 1,
         },
         _ => panic!("expected pending reader request"),
     }

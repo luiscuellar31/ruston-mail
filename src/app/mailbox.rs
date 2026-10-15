@@ -27,6 +27,8 @@ pub struct ReaderRequest {
     pub id: RequestId,
     pub conversation_id: String,
     pub kind: SummaryKind,
+    /// How many messages the row says it holds; a longer one may take longer.
+    pub messages: u32,
 }
 
 /// An action sent to the backend for one row, remembered so only its own
@@ -798,7 +800,7 @@ impl Mailbox {
             return None;
         }
 
-        Some(self.open_conversation(conversation_id, stamp.kind, request))
+        Some(self.open_conversation(conversation_id, stamp.kind, stamp.message_count, request))
     }
 
     pub fn retry_conversation(&mut self, request: RequestId) -> Option<ReaderRequest> {
@@ -811,9 +813,10 @@ impl Mailbox {
         let conversation_id = conversation_id.clone();
         // A retry reaches the row even when typing is hiding it, which is why
         // it looks through every loaded row rather than the visible ones.
-        let kind = self.row(&conversation_id)?.kind;
+        let row = self.row(&conversation_id)?;
+        let (kind, messages) = (row.kind, row.message_count);
 
-        Some(self.open_conversation(conversation_id, kind, request))
+        Some(self.open_conversation(conversation_id, kind, messages, request))
     }
 
     /// Sets the reader's conversation and active request.
@@ -821,12 +824,14 @@ impl Mailbox {
         &mut self,
         conversation_id: String,
         kind: SummaryKind,
+        messages: u32,
         request: RequestId,
     ) -> ReaderRequest {
         let request = ReaderRequest {
             id: request,
             conversation_id,
             kind,
+            messages,
         };
         self.set_reader(ReaderState::Loading {
             conversation_id: request.conversation_id.clone(),

@@ -467,8 +467,9 @@ instead of an unknown outcome.
   on macOS and Windows, and the proxy environment variables on every
   platform. The desktop also applies deadlines to
   complete view operations, and those that move attachments (saving one,
-  sending new ones) include the transfer deadline; the CLI uses the transport
-  deadlines directly.
+  sending new ones) include the transfer deadline; opening a conversation
+  allows a request's time for it and one for each message its row lists. The
+  CLI uses the transport deadlines directly.
   The application's own safety limits are 32 MiB for ordinary responses and
   64 MiB for encrypted attachment responses. These are transport limits, not
   Proton Mail attachment quotas. The attachment limit leaves room for OpenPGP
