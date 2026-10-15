@@ -13,7 +13,9 @@ a bounded `fc-match` subprocess to discover the configured sans-serif family.
 
 Ruston Mail talks directly to Proton through `ruston-core`; it uses no remote
 relay server. `ruston-core` handles authentication, key unlocking, and
-mail cryptography.
+mail cryptography. Its TLS connections offer the X25519MLKEM768 post-quantum
+hybrid key exchange first, which Proton accepts, so traffic recorded today
+stays protected as long as either half of that exchange holds.
 
 While a new message is being written, the desktop asks Proton for the public
 keys of each well-formed recipient address after its field loses focus, to show

@@ -5299,6 +5299,7 @@ dependencies = [
  "proton-srp",
  "reqwest",
  "rusqlite",
+ "rustls",
  "secrecy",
  "serde",
  "serde_json",

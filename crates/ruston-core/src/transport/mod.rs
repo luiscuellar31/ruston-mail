@@ -646,6 +646,16 @@ mod tests {
         assert!(headers.starts_with("GET /x HTTP/1.1\r\n"));
     }
 
+    #[test]
+    fn tls_offers_the_post_quantum_hybrid_key_exchange_first() {
+        // reqwest builds its TLS configuration from this provider.
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        assert_eq!(
+            provider.kx_groups[0].name(),
+            rustls::NamedGroup::X25519MLKEM768
+        );
+    }
+
     #[tokio::test]
     async fn http_timeouts_omit_request_url_in_error_and_source() {
         let server = MockServer::start().await;

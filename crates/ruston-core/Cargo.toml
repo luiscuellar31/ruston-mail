@@ -14,6 +14,7 @@ categories = ["email", "api-bindings", "authentication"]
 proton-crypto = { workspace = true }
 proton-srp = { workspace = true }
 reqwest = { workspace = true }
+rustls = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

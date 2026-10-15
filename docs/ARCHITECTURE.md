@@ -465,7 +465,9 @@ instead of an unknown outcome.
   a total deadline per HTTP attempt. Ordinary requests have 60 seconds;
   attachment transfers have 180 seconds. Opening a connection has its own
   10-second limit within that deadline. Responses are requested
-  gzip-compressed. The client follows the HTTP and HTTPS proxies configured
+  gzip-compressed. TLS prefers the X25519MLKEM768 post-quantum hybrid key
+  exchange: core declares reqwest's rustls only to turn on its
+  `prefer-post-quantum` feature. The client follows the HTTP and HTTPS proxies configured
   on macOS and Windows, and the proxy environment variables on every
   platform. The desktop also applies deadlines to
   complete view operations, and those that move attachments (saving one,
