@@ -119,7 +119,6 @@ pub(super) fn show(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn show_compact(
     root: &mut egui::Ui,
     app: &App,
@@ -205,18 +204,16 @@ fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mu
     {
         compose::show_in_pane(ui, writing, messages);
     } else {
-        reader::show(
-            ui,
-            app.mailbox().expect("authenticated mailbox"),
-            app.folders(),
-            app.mailbox_actions_available(),
-            app.pending_link(),
-            app.saving_attachment(),
-            app.saved_attachment(),
-            app.settings().reading(),
-            state,
-            messages,
-        );
+        let view = reader::ReaderView {
+            mailbox: app.mailbox().expect("authenticated mailbox"),
+            places: app.folders(),
+            actions_available: app.mailbox_actions_available(),
+            pending_link: app.pending_link(),
+            saving_attachment: app.saving_attachment(),
+            saved_attachment: app.saved_attachment(),
+            reading: app.settings().reading(),
+        };
+        reader::show(ui, &view, state, messages);
     }
 }
 

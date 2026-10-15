@@ -36,20 +36,26 @@ const REVEAL_LABEL: &str = "Show in Explorer";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const REVEAL_LABEL: &str = "Show in folder";
 
-#[allow(clippy::too_many_arguments)]
+/// What the reader draws around the open conversation, borrowed from the app
+/// for one frame.
+pub(super) struct ReaderView<'a> {
+    pub(super) mailbox: &'a Mailbox,
+    /// The folders and labels a conversation can be moved to or given.
+    pub(super) places: &'a [Folder],
+    pub(super) actions_available: bool,
+    pub(super) pending_link: Option<&'a PendingLink>,
+    pub(super) saving_attachment: Option<&'a str>,
+    pub(super) saved_attachment: Option<Result<&'a Path, SaveError>>,
+    pub(super) reading: Reading,
+}
+
 pub(super) fn show(
     ui: &mut egui::Ui,
-    mailbox: &Mailbox,
-    places: &[Folder],
-    actions_available: bool,
-    pending_link: Option<&PendingLink>,
-    saving_attachment: Option<&str>,
-    saved_attachment: Option<Result<&Path, SaveError>>,
-    reading: Reading,
+    view: &ReaderView<'_>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    if let Some(outcome) = saved_attachment {
+    if let Some(outcome) = &view.saved_attachment {
         match outcome {
             Ok(path) => {
                 ui.horizontal_wrapped(|ui| {
@@ -73,16 +79,14 @@ pub(super) fn show(
         }
         ui.separator();
     }
-    if let Some(link) = pending_link {
+    if let Some(link) = view.pending_link {
         link_prompt(ui, link, messages);
         ui.add_space(8.0);
     }
 
-    match mailbox.reader_state() {
+    match view.mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
-        ReaderState::Loading { .. } => {
-            conversation_skeleton(ui, mailbox, places, actions_available, reading, state)
-        }
+        ReaderState::Loading { .. } => conversation_skeleton(ui, view, state),
         ReaderState::Failed { error, .. } => {
             theme::centered_group(ui, |ui| {
                 ui.label(error.conversation_message());
@@ -91,21 +95,7 @@ pub(super) fn show(
                 }
             });
         }
-        ReaderState::Loaded(reader) => {
-            conversation(
-                ui,
-                reader,
-                places,
-                mailbox.folder(),
-                mailbox.selected_summary().filter(|_| actions_available),
-                !mailbox.is_busy() && !mailbox.action_pending(),
-                mailbox.action_error(),
-                saving_attachment,
-                reading,
-                state,
-                messages,
-            );
-        }
+        ReaderState::Loaded(reader) => conversation(ui, reader, view, state, messages),
     }
 }
 
@@ -130,34 +120,14 @@ fn link_prompt(ui: &mut egui::Ui, link: &PendingLink, messages: &mut Vec<Message
         });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn conversation(
     ui: &mut egui::Ui,
     reader: &ConversationReader,
-    places: &[Folder],
-    current_folder: &Folder,
-    summary: Option<&ConversationSummary>,
-    actions_enabled: bool,
-    action_error: Option<crate::mail::MailboxError>,
-    saving_attachment: Option<&str>,
-    reading: Reading,
+    view: &ReaderView<'_>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    reader_scroll(ui, state, |ui| {
-        reading_column(
-            ui,
-            reader,
-            places,
-            current_folder,
-            summary,
-            actions_enabled,
-            action_error,
-            saving_attachment,
-            reading,
-            messages,
-        );
-    });
+    reader_scroll(ui, state, |ui| reading_column(ui, reader, view, messages));
 }
 
 fn reader_scroll(ui: &mut egui::Ui, state: &mut UiState, content: impl FnOnce(&mut egui::Ui)) {
@@ -193,19 +163,12 @@ fn reading_column_place(available: f32) -> (f32, f32) {
     (((available - width) * 0.5).max(0.0), width)
 }
 
-fn conversation_skeleton(
-    ui: &mut egui::Ui,
-    mailbox: &Mailbox,
-    places: &[Folder],
-    actions_available: bool,
-    reading: Reading,
-    state: &mut UiState,
-) {
+fn conversation_skeleton(ui: &mut egui::Ui, view: &ReaderView<'_>, state: &mut UiState) {
     let fill = theme::skeleton_fill(ui);
     let response = ui
         .scope(|ui| {
             reader_scroll(ui, state, |ui| {
-                let summary = mailbox.selected_summary();
+                let summary = view.mailbox.selected_summary();
                 // The listing already supplies this text. Rendering it normally
                 // also reserves the correct height for wrapped subjects.
                 if let Some(summary) = summary {
@@ -214,13 +177,13 @@ fn conversation_skeleton(
                         summary.subject.as_deref(),
                         summary.message_count as usize,
                     );
-                    if actions_available {
+                    if view.actions_available {
                         action_toolbar(
                             ui,
                             summary,
-                            mailbox.folder(),
+                            view.mailbox.folder(),
                             &[],
-                            places,
+                            view.places,
                             false,
                             &mut Vec::new(),
                         );
@@ -237,7 +200,7 @@ fn conversation_skeleton(
                     ui.add_space(8.0);
                 }
                 ui.add_space(8.0);
-                let expanded = reading.expand_all_messages
+                let expanded = view.reading.expand_all_messages
                     || summary.is_none_or(|summary| summary.message_count <= 1);
                 skeleton_message_card(ui, fill, expanded);
             });
@@ -335,19 +298,13 @@ fn skeleton_bar(ui: &mut egui::Ui, width: f32, height: f32, fill: Color32) -> eg
     response
 }
 
-#[allow(clippy::too_many_arguments)]
 fn reading_column(
     ui: &mut egui::Ui,
     reader: &ConversationReader,
-    places: &[Folder],
-    current_folder: &Folder,
-    summary: Option<&ConversationSummary>,
-    actions_enabled: bool,
-    action_error: Option<crate::mail::MailboxError>,
-    saving_attachment: Option<&str>,
-    reading: Reading,
+    view: &ReaderView<'_>,
     messages: &mut Vec<Message>,
 ) {
+    let mailbox = view.mailbox;
     let detail_data = reader.detail();
     conversation_heading(
         ui,
@@ -355,17 +312,20 @@ fn reading_column(
         detail_data.messages.len(),
     );
 
+    let summary = mailbox
+        .selected_summary()
+        .filter(|_| view.actions_available);
     if let Some(summary) = summary {
         action_toolbar(
             ui,
             summary,
-            current_folder,
+            mailbox.folder(),
             &detail_data.labels,
-            places,
-            actions_enabled,
+            view.places,
+            !mailbox.is_busy() && !mailbox.action_pending(),
             messages,
         );
-        if let Some(error) = action_error {
+        if let Some(error) = mailbox.action_error() {
             ui.label(
                 egui::RichText::new(error.action_message())
                     .small()
@@ -384,8 +344,8 @@ fn reading_column(
             message,
             reader.preview_at(index),
             reader,
-            saving_attachment,
-            reading,
+            view.saving_attachment,
+            view.reading,
             messages,
         );
         ui.add_space(12.0);
@@ -1416,18 +1376,16 @@ mod tests {
     ) -> (Vec<egui::epaint::ClippedShape>, Vec<Message>) {
         let mut messages = Vec::new();
         let output = context.run_ui(input, |ui| {
-            show(
-                ui,
+            let view = ReaderView {
                 mailbox,
                 places,
-                true,
-                None,
-                None,
-                None,
+                actions_available: true,
+                pending_link: None,
+                saving_attachment: None,
+                saved_attachment: None,
                 reading,
-                state,
-                &mut messages,
-            );
+            };
+            show(ui, &view, state, &mut messages);
         });
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -2168,18 +2126,16 @@ mod tests {
         context
             .run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(680.0);
-                show(
-                    ui,
-                    &mailbox,
-                    &[],
-                    true,
-                    None,
-                    None,
-                    Some(Ok(&path)),
-                    Reading::default(),
-                    &mut UiState::default(),
-                    &mut messages,
-                );
+                let view = ReaderView {
+                    mailbox: &mailbox,
+                    places: &[],
+                    actions_available: true,
+                    pending_link: None,
+                    saving_attachment: None,
+                    saved_attachment: Some(Ok(&path)),
+                    reading: Reading::default(),
+                };
+                show(ui, &view, &mut UiState::default(), &mut messages);
             })
             .drop_without_applying_deltas();
 
