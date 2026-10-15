@@ -502,7 +502,9 @@ instead of an unknown outcome.
   overhead above the 50 MiB plaintext that decryption accepts (proton-rpgp's
   reading limit); core refuses an attachment Proton reports above it before
   downloading, and reports both cases as `AttachmentTooLarge`. They count decompressed bytes, so a
-  compressed response cannot exceed them. Complete attachment multipart uploads also
+  compressed response cannot exceed them. A response that states its length
+  within the limit has that length reserved before it is read; a compressed one
+  states none and grows as it arrives. Complete attachment multipart uploads also
   have a 128 MiB safety cap and reserve their final size once. The HTTP transport
   moves raw buffers into a prepared reqwest request and shares its allocation
   between attempts, including authentication, rate-limit, and verification

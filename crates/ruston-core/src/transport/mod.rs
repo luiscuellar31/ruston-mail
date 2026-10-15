@@ -530,10 +530,14 @@ impl Rotation {
 }
 
 async fn read_bounded_body(mut resp: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
-    if resp.content_length().is_some_and(|len| len > limit as u64) {
+    let stated = resp.content_length();
+    if stated.is_some_and(|len| len > limit as u64) {
         return Err(Error::ResponseTooLarge { limit });
     }
-    let mut body = Vec::new();
+    // A stated length is within the limit here, so it bounds the reservation.
+    // A compressed body states none and grows as it arrives.
+    let capacity = stated.and_then(|len| usize::try_from(len).ok());
+    let mut body = Vec::with_capacity(capacity.unwrap_or(0));
     while let Some(chunk) = resp.chunk().await? {
         if chunk.len() > limit.saturating_sub(body.len()) {
             return Err(Error::ResponseTooLarge { limit });
@@ -1032,6 +1036,25 @@ mod tests {
             c.do_raw(Request::get("/x").max_response_bytes(3)).await,
             Err(Error::ResponseTooLarge { limit: 3 })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_stated_body_length_is_reserved_before_reading() {
+        let server = MockServer::start().await;
+        // Not a power of two, so a buffer grown by doubling cannot end at it.
+        let bytes = vec![b'x'; 100_003];
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
+            .mount(&server)
+            .await;
+        let body = client(&server.uri())
+            .do_raw(Request::get("/x"))
+            .await
+            .unwrap()
+            .body;
+        assert_eq!(body, bytes);
+        assert_eq!(body.capacity(), body.len());
     }
 
     #[tokio::test]
