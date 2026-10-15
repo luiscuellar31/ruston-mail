@@ -160,7 +160,7 @@ impl Client {
             .clone()
             .unwrap_or_else(|| DEFAULT_APP_VERSION.to_string());
         let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(opts.profile.clone()));
-        let mut http = HttpClient::new(base_url.clone(), app_version.clone());
+        let mut http = HttpClient::try_new(base_url.clone(), app_version.clone())?;
         if let Some(ua) = &opts.user_agent {
             http.set_user_agent(ua.clone()).await;
         }
@@ -228,10 +228,10 @@ impl Client {
         let loaded = Session::load(&paths, profile, store.as_ref())?.ok_or(Error::Unauthorized)?;
         tracing::debug!(target: "ruston_core::mail", uid = %loaded.session.uid, "resume: session found; fetching user + addresses, unlocking keys");
 
-        let mut http = HttpClient::new(
+        let mut http = HttpClient::try_new(
             loaded.session.base_url.clone(),
             loaded.session.app_version.clone(),
-        );
+        )?;
         if let Some(ua) = &loaded.session.user_agent {
             http.set_user_agent(ua.clone()).await;
         }

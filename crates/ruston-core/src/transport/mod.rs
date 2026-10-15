@@ -226,15 +226,39 @@ pub struct HttpClient {
 
 impl HttpClient {
     /// Create a client with a fresh unauthenticated state for `base_url`.
+    ///
+    /// # Panics
+    ///
+    /// When the HTTP client cannot be built, as on a system without root
+    /// certificates. [`HttpClient::try_new`] returns that as an error.
     pub fn new(base_url: impl Into<String>, app_version: impl Into<String>) -> Self {
-        Self::with_state(
+        Self::try_new(base_url, app_version).expect("reqwest client")
+    }
+
+    /// Like [`HttpClient::new`], but a client that cannot be built, as on a
+    /// system without root certificates, is an [`Error::Http`].
+    pub fn try_new(base_url: impl Into<String>, app_version: impl Into<String>) -> Result<Self> {
+        Self::try_with_state(
             base_url,
             Arc::new(RwLock::new(AuthState::unauthenticated(app_version))),
         )
     }
 
     /// Create a client sharing the given auth state (so refresh updates propagate).
+    ///
+    /// # Panics
+    ///
+    /// When the HTTP client cannot be built; see [`HttpClient::try_with_state`].
     pub fn with_state(base_url: impl Into<String>, auth: Arc<RwLock<AuthState>>) -> Self {
+        Self::try_with_state(base_url, auth).expect("reqwest client")
+    }
+
+    /// Like [`HttpClient::with_state`], but a client that cannot be built is
+    /// an [`Error::Http`].
+    pub fn try_with_state(
+        base_url: impl Into<String>,
+        auth: Arc<RwLock<AuthState>>,
+    ) -> Result<Self> {
         let base_url = base_url.into();
         // Responses arrive gzip-compressed when Proton offers it, and the
         // system's proxy settings apply. An unreachable host fails after
@@ -248,9 +272,8 @@ impl HttpClient {
             .redirect(same_origin_redirects())
             .referer(false)
             .https_only(!is_loopback(&base_url))
-            .build()
-            .expect("reqwest client");
-        HttpClient {
+            .build()?;
+        Ok(HttpClient {
             client,
             base_url,
             auth,
@@ -258,7 +281,7 @@ impl HttpClient {
             refresh_load: None,
             refresh_unsaved: Arc::new(AtomicBool::new(false)),
             hv: None,
-        }
+        })
     }
 
     /// The shared auth-state handle (clone to observe token rotation).
@@ -953,6 +976,24 @@ mod tests {
         };
         assert_eq!(error.raw_body.len(), MAX_ERROR_BODY_BYTES);
         assert_eq!(error.message, "request failed");
+    }
+
+    #[tokio::test]
+    async fn a_client_built_without_panicking_works_like_any_other() {
+        // A system without root certificates fails to build one; that is an
+        // error for sign-in and resume to report, never a panic.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code": 1000, "Value": 7})),
+            )
+            .mount(&server)
+            .await;
+        let client = HttpClient::try_new(server.uri(), "Other").unwrap();
+        let value: ValueResp = client.decode(Request::get("/x")).await.unwrap();
+        assert_eq!(value.value, 7);
     }
 
     #[tokio::test]

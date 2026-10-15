@@ -475,7 +475,9 @@ instead of an unknown outcome.
   `prefer-post-quantum` feature. Requests stay at the API's origin: a redirect
   to another scheme, host or port fails, at most ten are followed, and no
   `Referer` is sent. Plain HTTP is refused unless the API address is
-  `localhost` or a loopback address. The client follows the HTTP and HTTPS proxies configured
+  `localhost` or a loopback address. Sign-in and resume build the client with
+  `HttpClient::try_new`, so a system without root certificates gets an error
+  instead of a panic; `HttpClient::new` keeps its panicking signature. The client follows the HTTP and HTTPS proxies configured
   on macOS and Windows, and the proxy environment variables on every
   platform. The desktop also applies deadlines to
   complete view operations, and those that move attachments (saving one,
