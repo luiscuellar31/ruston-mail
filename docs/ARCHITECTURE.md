@@ -577,7 +577,9 @@ explicit cache paths require a private parent directory. Cache writes and index
 maintenance live in [`cache.rs`](../crates/ruston-core/src/cache.rs), which
 removes indexed bodies when messages are deleted. FTS maintenance resolves
 message IDs through the indexed `msg_fts_rows` table and targets FTS `rowid`s,
-avoiding a full scan for each deletion, invalidation, or header update. Opening
+avoiding a full scan for each deletion, invalidation, or header update. A
+header update skips rows whose subject and participants did not change, since
+FTS5 rewrites a whole document, body included, for any change. Opening
 an older cache migrates this relation in an immediate transaction: it renames
 the existing FTS table to `msg_fts_index`, preserves its contents and rowids,
 and backfills only the ID/rowid map. `msg_fts` remains a compatibility view;

@@ -91,8 +91,11 @@ fn participants(m: &MessageMetadata) -> String {
 
 const DELETE_INDEX_SQL: &str = "DELETE FROM msg_fts WHERE rowid IN (
     SELECT fts_rowid FROM msg_fts_rows WHERE message_id=?1)";
+/// FTS5 rewrites a whole document, body included, for any change to it, so a
+/// row whose headers are unchanged is left alone.
 const UPDATE_INDEX_SQL: &str = "UPDATE msg_fts SET subject=?2, participants=?3 WHERE rowid IN (
-    SELECT fts_rowid FROM msg_fts_rows WHERE message_id=?1)";
+    SELECT fts_rowid FROM msg_fts_rows WHERE message_id=?1)
+    AND (subject IS NOT ?2 OR participants IS NOT ?3)";
 
 fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
     let json = serde_json::to_string(m)?;
@@ -1542,6 +1545,42 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_headers_leave_the_indexed_body_alone() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        let mut message = meta("m1", "0", 1, 10);
+        message.subject = "Invoice".into();
+        cache.index_message(&message, "privatebody").unwrap();
+        // Every rewrite of a full-text row also updates its row map.
+        cache
+            .conn
+            .execute_batch(
+                "CREATE TEMP TABLE rewrites(message_id TEXT);
+                 CREATE TEMP TRIGGER count_rewrites AFTER UPDATE ON msg_fts_rows
+                 BEGIN INSERT INTO rewrites VALUES(NEW.message_id); END;",
+            )
+            .unwrap();
+        let rewrites = || -> i64 {
+            cache
+                .conn
+                .query_row("SELECT count(*) FROM rewrites", [], |row| row.get(0))
+                .unwrap()
+        };
+
+        // Marking it read changes no header, so the body is not rewritten.
+        message.unread = 0;
+        cache.upsert_message(&message).unwrap();
+        assert_eq!(rewrites(), 0);
+
+        // A new subject still reaches the index, with the body kept.
+        message.subject = "Receipt".into();
+        cache.upsert_message(&message).unwrap();
+        assert_eq!(rewrites(), 1);
+        assert_eq!(cache.search("receipt", 10).unwrap()[0].id, "m1");
+        assert_eq!(cache.search("privatebody", 10).unwrap()[0].id, "m1");
+        assert!(cache.search("invoice", 10).unwrap().is_empty());
+    }
+
+    #[test]
     fn fts_id_maintenance_does_not_scan_unrelated_rows() {
         use rusqlite::StatementStatus;
 
@@ -1568,14 +1607,14 @@ mod tests {
                 update.get_status(StatementStatus::VmStep),
             ));
             for sql in [DELETE_INDEX_SQL, UPDATE_INDEX_SQL] {
-                let plan: Vec<String> = cache
+                let mut explain = cache
                     .conn
                     .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-                    .unwrap()
+                    .unwrap();
+                let parameters = explain.parameter_count();
+                let plan: Vec<String> = explain
                     .query_map(
-                        rusqlite::params_from_iter(
-                            (0..sql.matches('?').count()).map(|_| "missing"),
-                        ),
+                        rusqlite::params_from_iter((0..parameters).map(|_| "missing")),
                         |row| row.get(3),
                     )
                     .unwrap()
