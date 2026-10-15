@@ -485,6 +485,41 @@ Artifacts are written to `dist/`:
 the app with an empty home directory and checks that it is still running after
 10 seconds.
 
+## Packaging (Linux AppImage)
+
+On Linux, build `dist/ruston-mail-<version>-<arch>.AppImage` (`<arch>` is
+`x86_64` or `aarch64`) with `ruston-cli` inside it:
+
+```sh
+APPIMAGE_RUNTIME=/path/to/runtime-x86_64 ./packaging/linux/appimage.sh
+```
+
+The script needs `linuxdeploy` and `appimagetool` on the `PATH` (or in
+`LINUXDEPLOY` and `APPIMAGETOOL`) and an AppImage runtime file from
+[type2-runtime](https://github.com/AppImage/type2-runtime/releases); without one,
+`appimagetool` would download whichever runtime is newest. The release workflow
+downloads pinned versions of all three and checks their digests.
+
+linuxdeploy assembles an AppDir with both binaries, the desktop entry, the
+hicolor icons, and two libraries winit loads at run time that not every system
+installs: `libxkbcommon` and `libxkbcommon-x11`, without which the app stops on
+X11. GL, X11, and Wayland libraries stay the system's, as AppImage's excludelist
+requires. The AppStream metadata goes to `usr/share/metainfo`. Before packing,
+the script checks that the binaries find the bundled libraries and validates the
+desktop entry. On request it also runs:
+- [`check-glibc.sh`](../packaging/linux/check-glibc.sh), with
+  `RUSTON_MAX_GLIBC_VERSION`: no ELF file may need a newer glibc;
+- the AppImage catalog's `appdir-lint.sh`, with `APPDIR_LINT`.
+
+With `APPIMAGE_UPDATE_INFORMATION`, the AppImage carries update information and
+a `.zsync` file is written beside it.
+
+The AppImage starts the desktop app. Its [`AppRun`](../packaging/linux/AppRun)
+starts `ruston-cli` instead when the first argument is `--cli` or when the
+AppImage runs through a link named `ruston-cli`. Release builds run on Ubuntu
+22.04, the oldest LTS in standard support and the system the AppImage catalog
+tests on, so the AppImage needs glibc 2.35 or newer.
+
 ## HTTP diagnostics
 
 To inspect Proton request results without logging message bodies or secrets:

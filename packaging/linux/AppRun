@@ -1,0 +1,18 @@
+#!/bin/sh
+# Ruston Mail AppImage entry point. Runs the desktop app, or ruston-cli when
+# the first argument is --cli or the AppImage is started through a link named
+# ruston-cli; the AppImage runtime passes that name in ARGV0. The app itself
+# never takes an argument that starts with "-", so --cli cannot shadow one.
+
+HERE="$(dirname "$(readlink -f "$0")")"
+
+if [ "${1:-}" = "--cli" ]; then
+    shift
+    exec "$HERE/usr/bin/ruston-cli" "$@"
+fi
+
+case "$(basename "${ARGV0:-$0}")" in
+    ruston-cli) exec "$HERE/usr/bin/ruston-cli" "$@" ;;
+esac
+
+exec "$HERE/usr/bin/ruston" "$@"
