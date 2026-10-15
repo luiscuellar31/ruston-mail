@@ -108,9 +108,10 @@ impl ProtectionNotice {
 }
 
 /// How far along a message is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Sending {
     /// Still being written.
+    #[default]
     Writing,
     /// Handed over, waiting to hear back.
     InFlight,
@@ -156,16 +157,8 @@ pub struct Compose {
     /// Whether the copy fields are on show. They start hidden: most mail goes
     /// to one person.
     more: bool,
-    state: State,
+    state: Sending,
     confirming_discard: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-enum State {
-    #[default]
-    Writing,
-    InFlight,
-    Failed(SendError),
 }
 
 /// What the recipient fields came to. They are read again only when a field
@@ -262,10 +255,16 @@ impl Compose {
         ) {
             self.reread_recipients();
         }
+        self.edited();
+    }
+
+    /// The draft changed: a pending discard question goes, and so does a
+    /// failed send, but not a send whose outcome is unconfirmed. That warning
+    /// stays until the user knows whether the message went.
+    fn edited(&mut self) {
         self.confirming_discard = false;
-        // Keep an unconfirmed-send warning visible even if the draft changes.
-        if matches!(self.state, State::Failed(ref error) if *error != SendError::Unconfirmed) {
-            self.state = State::Writing;
+        if matches!(&self.state, Sending::Failed(error) if *error != SendError::Unconfirmed) {
+            self.state = Sending::Writing;
         }
     }
 
@@ -365,19 +364,13 @@ impl Compose {
                 self.attachments.push(path);
             }
         }
-        self.confirming_discard = false;
-        if matches!(self.state, State::Failed(ref error) if *error != SendError::Unconfirmed) {
-            self.state = State::Writing;
-        }
+        self.edited();
     }
 
     pub fn remove_attachment(&mut self, index: usize) {
         if index < self.attachments.len() {
             self.attachments.remove(index);
-            self.confirming_discard = false;
-            if matches!(self.state, State::Failed(ref error) if *error != SendError::Unconfirmed) {
-                self.state = State::Writing;
-            }
+            self.edited();
         }
     }
 
@@ -397,15 +390,11 @@ impl Compose {
     }
 
     pub fn sending(&self) -> Sending {
-        match &self.state {
-            State::Writing => Sending::Writing,
-            State::InFlight => Sending::InFlight,
-            State::Failed(error) => Sending::Failed(error.clone()),
-        }
+        self.state.clone()
     }
 
     pub fn in_flight(&self) -> bool {
-        matches!(self.state, State::InFlight)
+        matches!(self.state, Sending::InFlight)
     }
 
     /// Whether anything has been typed. Closing an untouched message needs no
@@ -713,7 +702,7 @@ impl App {
             // Keep the existing validation error visible.
             return Effects::none();
         };
-        compose.state = State::InFlight;
+        compose.state = Sending::InFlight;
 
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
@@ -746,7 +735,7 @@ impl App {
                 self.reload_counts()
             }
             Err(error) => {
-                compose.state = State::Failed(error);
+                compose.state = Sending::Failed(error);
                 Effects::none()
             }
         }
@@ -1216,7 +1205,7 @@ mod tests {
     #[test]
     fn typing_after_a_refusal_clears_it() {
         let mut compose = written("alex@example.com");
-        compose.state = State::Failed(SendError::DemoLimitReached);
+        compose.state = Sending::Failed(SendError::DemoLimitReached);
 
         compose.set(ComposeField::Body, "Actually, Friday.".to_owned());
 
@@ -1226,7 +1215,7 @@ mod tests {
     #[test]
     fn editing_does_not_hide_an_unconfirmed_send_warning() {
         let mut compose = written("alex@example.com");
-        compose.state = State::Failed(SendError::Unconfirmed);
+        compose.state = Sending::Failed(SendError::Unconfirmed);
 
         compose.set(ComposeField::Body, "A revised body.".to_owned());
         compose.add_attachments([PathBuf::from("note.txt")]);
