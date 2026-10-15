@@ -180,6 +180,8 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
         )
         .map_err(map)?;
     }
+    // The time index starts with label_id, so it serves every lookup the old
+    // label-only index did, which only cost writes and secure deletes.
     tx.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS message_labels_insert_time
          AFTER INSERT ON message_labels WHEN NEW.time IS NULL
@@ -194,7 +196,8 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
              UPDATE message_labels SET time=NEW.time WHERE message_id=NEW.id;
          END;
          CREATE INDEX IF NOT EXISTS idx_ml_label_time
-         ON message_labels(label_id, time DESC, message_id);",
+         ON message_labels(label_id, time DESC, message_id);
+         DROP INDEX IF EXISTS idx_ml_label;",
     )
     .map_err(map)?;
     tx.commit().map_err(map)
@@ -439,7 +442,6 @@ impl Cache {
             "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
              CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
              CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
-             CREATE INDEX IF NOT EXISTS idx_ml_label ON message_labels(label_id);
              CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(id UNINDEXED, subject, body, participants);",
         )
         .map_err(map)?;
@@ -1450,6 +1452,54 @@ mod tests {
         drop(cache);
         let reopened = Cache::open(&path).unwrap();
         assert_eq!(reopened.list("0", false, 1, 0).unwrap()[0].id, "newer");
+        drop(reopened);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn labels_are_indexed_once_in_time_order() {
+        let indexes = |cache: &Cache| -> Vec<String> {
+            cache
+                .conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='index'
+                     AND tbl_name='message_labels' AND sql IS NOT NULL ORDER BY name",
+                )
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .map(|row| row.unwrap())
+                .collect()
+        };
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+
+        let cache = Cache::open(&path).unwrap();
+        assert_eq!(indexes(&cache), ["idx_ml_label_time"]);
+        // Earlier versions kept a label-only index beside it.
+        cache
+            .conn
+            .execute_batch("CREATE INDEX idx_ml_label ON message_labels(label_id)")
+            .unwrap();
+        drop(cache);
+
+        let reopened = Cache::open(&path).unwrap();
+        assert_eq!(indexes(&reopened), ["idx_ml_label_time"]);
+        let plan: Vec<String> = reopened
+            .conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM messages m
+                 JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1",
+            )
+            .unwrap()
+            .query_map(["0"], |row| row.get(3))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(
+            plan.iter().any(|step| step.contains("idx_ml_label_time")),
+            "{plan:?}"
+        );
         drop(reopened);
         std::fs::remove_dir_all(dir).unwrap();
     }

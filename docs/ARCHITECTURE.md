@@ -642,7 +642,9 @@ the file instead of lingering in free pages or until segments merge.
 Cached folder listings use
 an index on label and message time. Opening an older cache backfills that time
 in one transaction; triggers keep the index current when an older process
-writes without the new column. The event stream in
+writes without the new column. That index also serves lookups by label alone,
+so opening drops the label-only index earlier versions kept; an older process
+recreates it, and the next newer open drops it again. The event stream in
 [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs)
 invalidates an indexed body on a full message update. Each incremental event
 batch and its cursor commit together only if the stored cursor still matches
