@@ -72,7 +72,13 @@ mod tests {
     fn linux_launcher_and_macos_bundle_match_the_window_identity() {
         let desktop = include_str!("../../packaging/linux/com.luiscuellar.ruston-mail.desktop");
         assert!(desktop.lines().any(|line| line == format!("Icon={APP_ID}")));
-        assert!(desktop.lines().any(|line| line == "StartupWMClass=ruston"));
+        // With the Wayland backend built in, egui-winit names every window
+        // after the app ID, which winit uses as the X11 class too.
+        assert!(
+            desktop
+                .lines()
+                .any(|line| line == format!("StartupWMClass={APP_ID}"))
+        );
         let macos = include_str!("../../packaging/macos/package.sh");
         assert!(macos.contains(&format!("IDENTIFIER=\"{APP_ID}\"")));
     }

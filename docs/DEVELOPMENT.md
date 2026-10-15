@@ -315,10 +315,10 @@ windows, and the build embeds a multi-resolution icon and version metadata in
 alongside the MSVC toolchain described above; failure to embed resources fails
 the build. The version comes from Cargo rather than a second version setting.
 
-Linux's launcher filename and icon name match the Wayland app ID. On X11,
-`StartupWMClass=ruston` matches the native window class supplied by winit for
-the `ruston` executable. The desktop identity does not change session profiles
-or preference storage paths.
+Linux's launcher filename and icon name match the Wayland app ID. On X11, the
+window's class is the same ID: egui-winit names windows after the app ID, and
+winit uses that name for `WM_CLASS`, so `StartupWMClass` names it too. The
+desktop identity does not change session profiles or preference storage paths.
 
 Generated PNGs and the Windows ICO are committed, so ordinary builds do not
 need image tools. To regenerate them from the existing 1024-pixel logo on

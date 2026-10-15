@@ -9,4 +9,4 @@ Icon=com.luiscuellar.ruston-mail
 Terminal=false
 Categories=Network;Email;
 MimeType=x-scheme-handler/mailto;
-StartupWMClass=ruston
+StartupWMClass=com.luiscuellar.ruston-mail
