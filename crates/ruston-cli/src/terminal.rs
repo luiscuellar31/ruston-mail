@@ -185,19 +185,26 @@ where
     }
 }
 
+/// What each `-v` count shows when `RUST_LOG` is not set.
+fn default_filter(verbose: u8) -> &'static str {
+    match verbose {
+        // rpgp warns whenever it writes a key it read in another form, as
+        // unlocking address keys does on every resume. Nothing is wrong, so
+        // only `-v` shows it.
+        0 => "warn,pgp=error",
+        1 => "info,ruston_core=debug,ruston_cli=debug",
+        2 => "info,ruston_core=trace,ruston_cli=debug",
+        _ => "trace",
+    }
+}
+
 pub(crate) fn init_tracing(verbose: u8) {
     use tracing_subscriber::EnvFilter;
 
     let filter = if std::env::var("RUST_LOG").is_ok() {
         EnvFilter::from_default_env()
     } else {
-        let levels = match verbose {
-            0 => "warn",
-            1 => "info,ruston_core=debug,ruston_cli=debug",
-            2 => "info,ruston_core=trace,ruston_cli=debug",
-            _ => "trace",
-        };
-        EnvFilter::new(levels)
+        EnvFilter::new(default_filter(verbose))
     };
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -215,6 +222,19 @@ mod tests {
 
     fn assert_safe(text: &str) {
         assert!(text.chars().all(|c| !is_filtered(c)));
+    }
+
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -279,18 +299,6 @@ mod tests {
     fn diagnostics_filter_message_display_fields_and_span_fields() {
         use std::sync::{Arc, Mutex};
 
-        struct Capture(Arc<Mutex<Vec<u8>>>);
-        impl io::Write for Capture {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
         let captured = Arc::new(Mutex::new(Vec::new()));
         let writer = captured.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -307,5 +315,35 @@ mod tests {
         assert!(text.contains("remote_id"));
         assert!(text.contains("address"));
         assert_safe(&text);
+    }
+
+    #[test]
+    fn library_warnings_from_rpgp_wait_for_verbose_output() {
+        use std::sync::{Arc, Mutex};
+
+        let shown = |verbose| {
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let writer = captured.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::new(default_filter(verbose)))
+                .with_ansi(false)
+                .event_format(SafeEvents)
+                .with_writer(move || Capture(writer.clone()))
+                .finish();
+            tracing::subscriber::with_default(subscriber, || {
+                // The target rpgp's `log` records carry once bridged.
+                tracing::warn!(
+                    target: "pgp::packet::packet_sum",
+                    "packet header mismatch between reading and writing"
+                );
+                tracing::warn!(target: "ruston_core::crypto", "address key token invalid");
+            });
+            String::from_utf8(captured.lock().unwrap().clone()).unwrap()
+        };
+
+        let quiet = shown(0);
+        assert!(!quiet.contains("packet header mismatch"), "{quiet}");
+        assert!(quiet.contains("address key token invalid"), "{quiet}");
+        assert!(shown(1).contains("packet header mismatch"));
     }
 }
