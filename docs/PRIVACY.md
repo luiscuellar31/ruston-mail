@@ -308,7 +308,9 @@ entirely, including parameter names and values, as well as its origin, URL
 credentials, and fragment. Search terms and filters are still sent to Proton
 but do not appear in these events, including retry attempts. Core also removes
 the attached URL when converting a `reqwest` error, so displayed HTTP errors
-retain their failure kind and cause without that URL.
+retain their failure kind and cause without that URL. The CLI also prints the
+causes beneath an error, such as `tcp connect error: Connection refused`; they
+come from the network stack and do not include the request's path or query.
 
 Paths may contain resource IDs. This policy covers core's HTTP request events
 and its conversion of HTTP errors; it does not anonymize other core targets,

@@ -29,9 +29,26 @@ async fn main() {
     terminal::init_tracing(cli.verbose);
 
     if let Err(e) = dispatch(cli).await {
-        terminal::eprintln!("error: {e}");
+        terminal::eprintln!("error: {}", with_causes(&e));
         std::process::exit(e.exit_code());
     }
+}
+
+/// The error and each cause beneath it, so a failed request says whether DNS,
+/// the connection, TLS or a timeout failed instead of only "error sending
+/// request". A cause the text already includes is not repeated.
+fn with_causes(error: &ruston_core::Error) -> String {
+    let mut text = error.to_string();
+    let mut cause = std::error::Error::source(error);
+    while let Some(next) = cause {
+        let message = next.to_string();
+        if !text.contains(&message) {
+            text.push_str(": ");
+            text.push_str(&message);
+        }
+        cause = next.source();
+    }
+    text
 }
 
 async fn dispatch(cli: Cli) -> Result<()> {
@@ -353,6 +370,39 @@ mod tests {
                 assert_eq!(ids, vec!["conv1"]);
             }
             _ => panic!("wrong command"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_says_why_without_saying_where() {
+        use ruston_core::{Doer, HttpClient, Request};
+
+        // A port nothing listens on: the connection is refused at once.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let error = HttpClient::new(format!("http://127.0.0.1:{port}"), "test")
+            .do_raw(Request::get("/core/v4/keys/all").query("Email", "private@example.test"))
+            .await
+            .unwrap_err();
+        let text = super::with_causes(&error);
+
+        assert!(
+            text.starts_with("http error: error sending request: "),
+            "{text}"
+        );
+        assert_eq!(text.matches("error sending request").count(), 1, "{text}");
+        assert!(text.contains("tcp connect error"), "{text}");
+        for private in [
+            "127.0.0.1",
+            &port.to_string(),
+            "keys/all",
+            "private@",
+            "Email",
+        ] {
+            assert!(!text.contains(private), "{text}");
         }
     }
 
