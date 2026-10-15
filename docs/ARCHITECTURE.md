@@ -409,6 +409,10 @@ instead of an unknown outcome.
   ends it with status 1. Diagnostics on standard error are best effort. A
   failed command prints its error followed by each underlying cause, so a
   failed request says whether DNS, the connection, TLS or a timeout failed.
+  `--help` ends with the exit statuses; 2 covers both usage errors and a
+  missing, expired or refused session. Arguments that can only fail, such as
+  `attachments download` without an ID or `--all`, are refused while parsing,
+  before a session is resumed.
 - [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs)
   offers a numbered sender choice when `messages send` runs in a terminal with
   multiple account addresses and no `--from`. Noninteractive and JSON sends

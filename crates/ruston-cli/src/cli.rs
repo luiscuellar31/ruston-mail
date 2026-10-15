@@ -4,6 +4,15 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use ruston_core::SearchOpts;
 use std::path::PathBuf;
 
+/// What each exit status means, shown at the end of `--help`.
+const EXIT_STATUS: &str = "Exit status:
+  0  Success, also when the reader of the output stops early (as `| head` does)
+  1  Any other error
+  2  A usage error, or a session that is missing, expired or refused
+  3  Not found
+  4  An ambiguous reference, or a conflict Proton reports (409, 422)
+  5  A Proton server error";
+
 /// Environment variables that may carry sign-in secrets. Programs the CLI
 /// starts, such as a browser for human verification, never inherit them.
 pub(crate) const SECRET_ENV_VARS: [&str; 4] = [
@@ -18,7 +27,8 @@ pub(crate) const SECRET_ENV_VARS: [&str; 4] = [
 #[command(
     name = "ruston-cli",
     version,
-    about = "Ruston Mail command-line client"
+    about = "Ruston Mail command-line client",
+    after_help = EXIT_STATUS
 )]
 pub struct Cli {
     /// Session profile to use (one name, no path separators; shared with desktop by default).
@@ -623,6 +633,7 @@ pub enum AttachmentsCmd {
         /// Message reference (ID or free-text).
         message: String,
         /// Specific attachment ID (omit with --all).
+        #[arg(required_unless_present = "all")]
         attachment: Option<String>,
         #[arg(long = "output-dir")]
         output_dir: Option<PathBuf>,

@@ -407,6 +407,31 @@ mod tests {
     }
 
     #[test]
+    fn an_attachment_download_names_what_to_fetch_before_anything_runs() {
+        // Found while parsing: no session is resumed and no folder is made.
+        let error =
+            Cli::try_parse_from(["ruston-cli", "attachments", "download", "msg"]).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        for args in [
+            &["ruston-cli", "attachments", "download", "msg", "att"][..],
+            &["ruston-cli", "attachments", "download", "msg", "--all"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");
+        }
+    }
+
+    #[test]
+    fn help_explains_every_exit_status() {
+        let help = Cli::command().render_help().to_string();
+        for status in ["0  ", "1  ", "2  ", "3  ", "4  ", "5  "] {
+            assert!(help.contains(status), "status {status}is not explained");
+        }
+    }
+
+    #[test]
     fn index_leaves_trash_and_spam_out_unless_asked() {
         use ruston_core::model::enums::{label_ids, resolve_folder};
 
