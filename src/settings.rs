@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::mail::{BodyFormat, Domains, Folder, MailFolder};
 
 const FILE: &str = "settings.json";
+/// The fictional mailbox keeps preferences of its own, so nothing changed
+/// while trying it, such as a link prompt turned off, reaches a real account.
+const DEMO_FILE: &str = "settings-demo.json";
 const TEMP_ATTEMPTS: u32 = 100;
 
 /// Ratios are clamped on load: a damaged file must not produce a layout with
@@ -67,6 +70,9 @@ pub struct Settings {
     /// Whether `load` read these settings, allowing them to be written back.
     #[serde(skip)]
     stored: bool,
+    /// Whether these are the demo's settings, kept in a file of their own.
+    #[serde(skip)]
+    demo: bool,
 }
 
 impl Default for Settings {
@@ -91,6 +97,7 @@ impl Default for Settings {
             show_unread_badge: true,
             desktop_notifications: true,
             stored: false,
+            demo: false,
         }
     }
 }
@@ -187,8 +194,9 @@ impl Settings {
     }
 
     /// Reads the settings, using defaults if the file is absent or invalid.
-    pub fn load() -> Self {
-        let mut settings = path()
+    /// The demo reads, and later writes, a file of its own.
+    pub fn load(demo: bool) -> Self {
+        let mut settings = path(demo)
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| serde_json::from_str::<Self>(&text).ok())
             .unwrap_or_default()
@@ -196,6 +204,7 @@ impl Settings {
         // Even defaults are worth storing once the app is running: it is the
         // first run that has nothing on disk yet.
         settings.stored = true;
+        settings.demo = demo;
 
         settings
     }
@@ -206,7 +215,7 @@ impl Settings {
         if !self.stored {
             return;
         }
-        let Some(path) = path() else {
+        let Some(path) = path(self.demo) else {
             return;
         };
         let Ok(text) = serde_json::to_string_pretty(self) else {
@@ -271,10 +280,10 @@ fn clamp_size(value: f32, minimum: f32, fallback: f32) -> f32 {
     }
 }
 
-fn path() -> Option<PathBuf> {
+fn path(demo: bool) -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "Ruston Mail")?;
 
-    Some(dirs.config_dir().join(FILE))
+    Some(dirs.config_dir().join(if demo { DEMO_FILE } else { FILE }))
 }
 
 /// Replaces complete settings in one rename, leaving the previous file intact
@@ -286,7 +295,8 @@ fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     fs::create_dir_all(parent)?;
 
     for attempt in 0..TEMP_ATTEMPTS {
-        let temporary = parent.join(format!(".{FILE}.{}.{}.tmp", std::process::id(), attempt));
+        let name = path.file_name().unwrap_or(FILE.as_ref()).to_string_lossy();
+        let temporary = parent.join(format!(".{name}.{}.{}.tmp", std::process::id(), attempt));
         let mut file = match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -436,6 +446,23 @@ mod tests {
             .unwrap()
             .remove("width");
         assert!(serde_json::from_value::<Settings>(incomplete).is_err());
+    }
+
+    #[test]
+    fn the_demo_keeps_settings_of_its_own() {
+        let file = |demo| path(demo).unwrap().file_name().unwrap().to_owned();
+        assert_eq!(file(false), FILE);
+        assert_eq!(file(true), DEMO_FILE);
+        assert_eq!(path(true).unwrap().parent(), path(false).unwrap().parent());
+
+        // Loading only reads; what was loaded is written back to its own file.
+        let demo = Settings::load(true);
+        assert!(demo.stored && demo.demo);
+        assert_eq!(file(demo.demo), DEMO_FILE);
+        assert!(!Settings::load(false).demo);
+        // Neither bookkeeping flag reaches the file.
+        let text = serde_json::to_string(&demo).unwrap();
+        assert!(!text.contains("demo") && !text.contains("stored"));
     }
 
     #[test]

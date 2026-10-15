@@ -62,7 +62,7 @@ pub fn run(demo: bool, activation: crate::launch::Instance) -> eframe::Result {
     #[cfg(target_os = "windows")]
     identity::set_process_app_id()?;
 
-    let settings = Settings::load();
+    let settings = Settings::load(demo);
     let options = eframe::NativeOptions {
         viewport: main_viewport(&settings),
         ..Default::default()

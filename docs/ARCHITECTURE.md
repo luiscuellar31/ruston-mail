@@ -173,7 +173,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   either [`ProtonMailService`](../src/mail/proton.rs), backed by `ruston-core`, or
   the local [`DemoMailbox`](../src/mail/demo.rs). Its
   [`model.rs`](../src/mail/model.rs) defines the types the desktop uses.
-- [`src/settings.rs`](../src/settings.rs) stores desktop preferences;
+- [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
+  process in a file of its own;
   [`src/downloads.rs`](../src/downloads.rs) writes downloaded attachments.
   Incoming attachment saves have a session and unique request ID. **Save as**
   chooses a destination before downloading; cancellation starts no download,

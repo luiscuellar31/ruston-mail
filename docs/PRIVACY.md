@@ -211,7 +211,9 @@ earlier CLI `default` session is still accessible with
 and names with path separators are rejected.
 Signing out of the shared profile affects both frontends.
 
-Ruston Mail keeps `settings.json` in its own platform config directory. It
+Ruston Mail keeps `settings.json` in its own platform config directory; a demo
+process keeps `settings-demo.json` beside it instead, so nothing changed while
+trying the demo reaches a real account. It
 contains preferences, the last folder, window size, and pane widths. When a
 session ends, a remembered folder or label you created is replaced by the
 Inbox, so its name never reaches the next account to sign in. It does not
