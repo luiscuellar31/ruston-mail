@@ -271,12 +271,7 @@ impl ProtonMailService {
             self.client.conversation_messages(conversation_id),
         )
         .await;
-
-        match inspection {
-            Ok(messages) => Ok(inspect_messages(messages, folder, &self.own_addresses)),
-            Err(MailboxError::SessionExpired) => Err(MailboxError::SessionExpired),
-            Err(_) => Ok(None),
-        }
+        inspection_outcome(inspection, folder, &self.own_addresses)
     }
 
     /// Lists account-owned folders and labels for the sidebar.
@@ -796,21 +791,20 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
     }
 }
 
-/// Rows for a conversation whose messages were inspected. `None` means the
-/// inspection ran out of time.
-#[cfg(test)]
-fn inspected_rows(
-    conversation: Conversation,
-    inspection: Option<ruston_core::Result<Vec<MessageMetadata>>>,
+/// What a conversation's inspection means for the list: the rows to split it
+/// into, `None` to keep Proton's grouping, or the error that ends the page
+/// load.
+fn inspection_outcome(
+    inspection: Result<Vec<MessageMetadata>, MailboxError>,
     folder: &Folder,
     own: &OwnAddresses,
-) -> Result<Vec<ConversationSummary>, MailboxError> {
-    match inspection.map(|result| result.map_err(map_mailbox_error)) {
-        Some(Ok(messages)) => Ok(split_rows(conversation, messages, folder, own)),
+) -> Result<Option<Vec<ConversationSummary>>, MailboxError> {
+    match inspection {
+        Ok(messages) => Ok(inspect_messages(messages, folder, own)),
         // An expired session ends the page load like any other request.
-        Some(Err(MailboxError::SessionExpired)) => Err(MailboxError::SessionExpired),
+        Err(MailboxError::SessionExpired) => Err(MailboxError::SessionExpired),
         // Any other failure, or no answer in time, keeps Proton's grouping.
-        Some(Err(_)) | None => Ok(vec![summarize(conversation, folder)]),
+        Err(_) => Ok(None),
     }
 }
 
@@ -847,17 +841,6 @@ fn inspect_messages(
     }
     rows.sort_by_key(|row| std::cmp::Reverse(row.time));
     Some(rows)
-}
-
-/// Splits proven independent inbound messages; otherwise keeps the conversation.
-#[cfg(test)]
-fn split_rows(
-    conversation: Conversation,
-    messages: Vec<MessageMetadata>,
-    folder: &Folder,
-    own: &OwnAddresses,
-) -> Vec<ConversationSummary> {
-    inspect_messages(messages, folder, own).unwrap_or_else(|| vec![summarize(conversation, folder)])
 }
 
 /// A row for one message split out of a conversation. Only inbound mail is
@@ -1485,17 +1468,6 @@ mod tests {
         }
     }
 
-    fn bank_conversation() -> Conversation {
-        Conversation {
-            id: "conversation".into(),
-            subject: "Account statement".into(),
-            num_messages: 3,
-            senders: vec![person("", BANK)],
-            labels: vec![label(label_ids::INBOX)],
-            ..Default::default()
-        }
-    }
-
     fn ids(rows: &[ConversationSummary]) -> Vec<&str> {
         rows.iter().map(|row| row.id.as_str()).collect()
     }
@@ -1566,28 +1538,31 @@ mod tests {
 
     #[test]
     fn inspection_failures_keep_grouping_but_expired_sessions_fail() {
-        let grouped = |inspection| {
-            inspected_rows(bank_conversation(), inspection, &Folder::INBOX, &own())
-                .map(|rows| ids(&rows).join(","))
-        };
+        let outcome = |inspection| inspection_outcome(inspection, &Folder::INBOX, &own());
 
-        assert_eq!(grouped(None), Ok("conversation".into()));
-        assert_eq!(
-            grouped(Some(Err(Error::Other("unexpected".into())))),
-            Ok("conversation".into())
-        );
-        assert_eq!(
-            grouped(Some(Err(api_error(500)))),
-            Ok("conversation".into())
-        );
-        assert_eq!(
-            grouped(Some(Err(Error::Unauthorized))),
-            Err(MailboxError::SessionExpired)
-        );
-        assert_eq!(
-            grouped(Some(Err(api_error(401)))),
-            Err(MailboxError::SessionExpired)
-        );
+        let repeated = vec![
+            metadata("m1", BANK, 10, &[label_ids::INBOX]),
+            metadata("m2", BANK, 20, &[label_ids::INBOX]),
+        ];
+        let split = outcome(Ok(repeated))
+            .unwrap()
+            .expect("repeated mail splits");
+        assert_eq!(ids(&split), ["m2", "m1"]);
+        // What `limited_inspection` hands over: core's errors as the mailbox
+        // maps them, and Unavailable for an inspection that ran out of time.
+        for kept in [
+            MailboxError::Unavailable,
+            map_mailbox_error(Error::Other("unexpected".into())),
+            map_mailbox_error(api_error(500)),
+        ] {
+            assert_eq!(outcome(Err(kept)), Ok(None));
+        }
+        for expired in [Error::Unauthorized, api_error(401)] {
+            assert_eq!(
+                outcome(Err(map_mailbox_error(expired))),
+                Err(MailboxError::SessionExpired)
+            );
+        }
     }
 
     #[test]
@@ -1598,7 +1573,7 @@ mod tests {
             metadata("m3", BANK, 20, &[label_ids::INBOX]),
         ];
 
-        let rows = split_rows(bank_conversation(), messages, &Folder::INBOX, &own());
+        let rows = inspect_messages(messages, &Folder::INBOX, &own()).expect("split");
 
         assert_eq!(ids(&rows), ["m2", "m3", "m1"]);
         assert!(rows.iter().all(|row| row.kind == SummaryKind::Message));
@@ -1615,7 +1590,7 @@ mod tests {
             metadata("m2", BANK, 20, &[label_ids::TRASH]),
         ];
 
-        let rows = split_rows(bank_conversation(), messages, &Folder::INBOX, &own());
+        let rows = inspect_messages(messages, &Folder::INBOX, &own()).expect("split");
 
         assert_eq!(ids(&rows), ["m1"]);
     }
@@ -1631,10 +1606,7 @@ mod tests {
         let flagged = vec![metadata("m1", BANK, 10, &[label_ids::INBOX]), answered];
 
         for messages in [reply, flagged] {
-            let rows = split_rows(bank_conversation(), messages, &Folder::INBOX, &own());
-
-            assert_eq!(ids(&rows), ["conversation"]);
-            assert_eq!(rows[0].kind, SummaryKind::Conversation);
+            assert_eq!(inspect_messages(messages, &Folder::INBOX, &own()), None);
         }
     }
 
@@ -1652,16 +1624,11 @@ mod tests {
             metadata("m2", BANK, 20, &[label_ids::INBOX]),
         ];
 
-        let grouped = split_rows(bank_conversation(), same_subject, &Folder::INBOX, &own());
-        let split = split_rows(
-            bank_conversation(),
-            different_subjects,
-            &Folder::INBOX,
-            &own(),
-        );
+        let grouped = inspect_messages(same_subject, &Folder::INBOX, &own());
+        let split = inspect_messages(different_subjects, &Folder::INBOX, &own());
 
-        assert_eq!(grouped.len(), 1);
-        assert_eq!(split.len(), 2);
+        assert_eq!(grouped, None);
+        assert_eq!(split.map(|rows| rows.len()), Some(2));
     }
 
     #[test]
@@ -1671,9 +1638,7 @@ mod tests {
             metadata("m2", BANK, 20, &[label_ids::ARCHIVE]),
         ];
 
-        let rows = split_rows(bank_conversation(), messages, &Folder::INBOX, &own());
-
-        assert_eq!(ids(&rows), ["conversation"]);
+        assert_eq!(inspect_messages(messages, &Folder::INBOX, &own()), None);
     }
 
     #[test]
