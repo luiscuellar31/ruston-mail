@@ -467,7 +467,10 @@ instead of an unknown outcome.
   10-second limit within that deadline. Responses are requested
   gzip-compressed. TLS prefers the X25519MLKEM768 post-quantum hybrid key
   exchange: core declares reqwest's rustls only to turn on its
-  `prefer-post-quantum` feature. The client follows the HTTP and HTTPS proxies configured
+  `prefer-post-quantum` feature. Requests stay at the API's origin: a redirect
+  to another scheme, host or port fails, at most ten are followed, and no
+  `Referer` is sent. Plain HTTP is refused unless the API address is
+  `localhost` or a loopback address. The client follows the HTTP and HTTPS proxies configured
   on macOS and Windows, and the proxy environment variables on every
   platform. The desktop also applies deadlines to
   complete view operations, and those that move attachments (saving one,

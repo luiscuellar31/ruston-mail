@@ -15,7 +15,10 @@ Ruston Mail talks directly to Proton through `ruston-core`; it uses no remote
 relay server. `ruston-core` handles authentication, key unlocking, and
 mail cryptography. Its TLS connections offer the X25519MLKEM768 post-quantum
 hybrid key exchange first, which Proton accepts, so traffic recorded today
-stays protected as long as either half of that exchange holds.
+stays protected as long as either half of that exchange holds. Requests never
+follow a redirect to another host, so a request body, refresh token or
+two-factor code cannot be forwarded off the API, and plain HTTP is refused
+except for a server on the same machine.
 
 While a new message is being written, the desktop asks Proton for the public
 keys of each well-formed recipient address after its field loses focus, to show

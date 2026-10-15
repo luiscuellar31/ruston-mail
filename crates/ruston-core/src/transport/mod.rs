@@ -23,6 +23,8 @@ pub const MAX_API_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest wait to open a connection, within any request's own deadline.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Redirects one request may follow, as many as reqwest allows by default.
+const MAX_REDIRECTS: usize = 10;
 
 /// Request body.
 #[derive(Debug, Clone)]
@@ -223,17 +225,24 @@ impl HttpClient {
 
     /// Create a client sharing the given auth state (so refresh updates propagate).
     pub fn with_state(base_url: impl Into<String>, auth: Arc<RwLock<AuthState>>) -> Self {
+        let base_url = base_url.into();
         // Responses arrive gzip-compressed when Proton offers it, and the
         // system's proxy settings apply. An unreachable host fails after
         // CONNECT_TIMEOUT instead of using up the whole request deadline.
+        // Requests stay with the API: a redirect elsewhere would carry their
+        // body, refresh token or two-factor code along, and plain HTTP is
+        // accepted only for a server on this machine.
         let client = reqwest::Client::builder()
             .cookie_store(true)
             .connect_timeout(CONNECT_TIMEOUT)
+            .redirect(same_origin_redirects())
+            .referer(false)
+            .https_only(!is_loopback(&base_url))
             .build()
             .expect("reqwest client");
         HttpClient {
             client,
-            base_url: base_url.into(),
+            base_url,
             auth,
             on_refresh: None,
             refresh_load: None,
@@ -618,6 +627,34 @@ impl Doer for HttpClient {
     }
 }
 
+/// Follows a redirect only within the origin its request started at.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let start = attempt.previous().first();
+        if start.is_some_and(|start| start.origin() != attempt.url().origin()) {
+            attempt.error("redirect away from the API")
+        } else if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
+/// Whether `base_url` names this machine, where plain HTTP crosses no network.
+fn is_loopback(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,6 +681,86 @@ mod tests {
             );
         }
         assert!(headers.starts_with("GET /x HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn a_redirect_away_from_the_api_is_refused() {
+        let api = MockServer::start().await;
+        // Another port is another origin, as another host would be.
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/users"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("Location", format!("{}/collect", elsewhere.uri())),
+            )
+            .mount(&api)
+            .await;
+
+        let error = client(&api.uri())
+            .do_raw(Request::get("/core/v4/users"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, Error::Http(http) if http.is_redirect()),
+            "{error}"
+        );
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_redirect_within_the_api_is_followed_without_a_referer() {
+        let api = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/old"))
+            .respond_with(ResponseTemplate::new(307).insert_header("Location", "/new"))
+            .mount(&api)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/new"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .mount(&api)
+            .await;
+
+        client(&api.uri())
+            .do_raw(Request::get("/old").query("Keyword", "private-search"))
+            .await
+            .unwrap();
+
+        let requests = api.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].headers.get("referer").is_none());
+    }
+
+    #[tokio::test]
+    async fn plain_http_is_refused_unless_the_api_is_on_this_machine() {
+        // Refused before any connection or name lookup is attempted.
+        let error = client("http://api.example.test")
+            .do_raw(Request::get("/core/v4/users"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, Error::Http(http) if http.is_builder()),
+            "{error}"
+        );
+
+        for local in [
+            "http://127.0.0.1:8080",
+            "http://[::1]:80",
+            "http://localhost",
+        ] {
+            assert!(is_loopback(local), "{local}");
+        }
+        for remote in [
+            "http://api.example.test",
+            "https://mail.proton.me/api",
+            "nonsense",
+        ] {
+            assert!(!is_loopback(remote), "{remote}");
+        }
     }
 
     #[test]
