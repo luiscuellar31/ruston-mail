@@ -394,7 +394,12 @@ impl Client {
     pub async fn reply(&self, reference: &str, all: bool, opts: &SendOptions) -> Result<String> {
         let parent_id = self.resolve_ref(reference).await?;
         let parent = api::messages::get_message(self.http(), &parent_id).await?;
-        let quoted = self.read_message(&parent_id).await.ok();
+        // Only the text is quoted, so the original is opened as it was
+        // fetched, without asking for its sender's keys.
+        let quoted = self
+            .open_message_with(parent.clone(), Vec::new())
+            .await
+            .ok();
 
         let mut o = opts.clone();
         o.from = o.from.or_else(|| self.receiving_address(&parent));
@@ -431,7 +436,11 @@ impl Client {
     pub async fn forward(&self, reference: &str, opts: &SendOptions) -> Result<String> {
         let parent_id = self.resolve_ref(reference).await?;
         let parent = api::messages::get_message(self.http(), &parent_id).await?;
-        let quoted = self.read_message(&parent_id).await.ok();
+        // As for a reply, the quote needs the text alone.
+        let quoted = self
+            .open_message_with(parent.clone(), Vec::new())
+            .await
+            .ok();
 
         let mut o = opts.clone();
         o.from = o.from.or_else(|| self.receiving_address(&parent));
@@ -1389,6 +1398,87 @@ mod tests {
             })
             .collect();
         assert_eq!(senders, ["work@acme.com", "work@acme.com", "me@proton.me"]);
+    }
+
+    #[tokio::test]
+    async fn an_answer_quotes_the_original_it_already_fetched() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let (me, _) = test_address("me@proton.me", "address-1");
+        let provider = crypto::provider();
+        let parent_id = format!("{}==", "p".repeat(60));
+        let body = crypto::encrypt_self_draft(&provider, &me, "Numbers attached").unwrap();
+        Mock::given(method("GET"))
+            .and(path(format!("/mail/v4/messages/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000,
+                "Message": {
+                    "ID": parent_id, "AddressID": "address-1", "Subject": "Report",
+                    "Sender": {"Name": "Boss", "Address": "boss@proton.me"},
+                    "Body": body, "MIMEType": "text/plain"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Quoting needs no verdict, so the original's sender is never asked for.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "boss@proton.me"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+            )
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "friend@example.com"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server, vec![me.clone()]);
+        let forward = SendOptions {
+            to: vec!["friend@example.com".into()],
+            body: "FYI".into(),
+            ..SendOptions::default()
+        };
+        client.forward(&parent_id, &forward).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let draft = requests
+            .iter()
+            .find(|request| request.url.path() == "/mail/v4/messages")
+            .unwrap();
+        let draft: Value = serde_json::from_slice(&draft.body).unwrap();
+        let (text, _) = crypto::decrypt_body(
+            &provider,
+            &me,
+            &[],
+            draft["Message"]["Body"].as_str().unwrap(),
+        )
+        .unwrap();
+        // The draft is signed as text, which canonicalizes line ends.
+        let text = text.replace("\r\n", "\n");
+        assert!(text.starts_with("FYI\n\n"), "{text}");
+        assert!(text.contains("> Numbers attached"), "{text}");
     }
 
     #[tokio::test]

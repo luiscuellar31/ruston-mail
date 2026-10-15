@@ -431,7 +431,9 @@ instead of an unknown outcome.
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
   HTML replies and forwards escape sender details and quoted plain text; quoted
-  HTML retains the sanitized markup produced by the read path. One function,
+  HTML retains the sanitized markup produced by the read path. The original is
+  fetched once and decrypted for its text alone, so quoting looks up no sender
+  keys. One function,
   `reply_recipients`, decides where `Client::reply` sends an answer; mail the
   account sent, without also receiving it, is answered to its recipients
   rather than to the account itself. Read messages carry their Reply-To

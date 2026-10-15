@@ -200,7 +200,11 @@ impl Client {
     /// Decrypts `m`, checking its signature against `sender_pubs`; with none,
     /// the body opens as unverified. Decrypting, parsing and sanitizing run
     /// off the async workers.
-    async fn open_message_with(&self, m: Message, sender_pubs: Vec<String>) -> Result<FullMessage> {
+    pub(super) async fn open_message_with(
+        &self,
+        m: Message,
+        sender_pubs: Vec<String>,
+    ) -> Result<FullMessage> {
         let addr = self
             .keys()
             .address(&m.meta.address_id)
