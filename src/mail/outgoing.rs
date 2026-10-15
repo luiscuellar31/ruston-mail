@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use super::MailboxError;
@@ -111,13 +112,16 @@ pub struct Recipients {
 /// Reads comma- or semicolon-separated recipients and removes duplicates.
 pub fn recipients(field: &str, domains: Domains) -> Recipients {
     let mut result = Recipients::default();
+    // What was already seen, so a long field is read in one pass.
+    let mut refused = HashSet::new();
+    let mut accepted = HashSet::new();
     for piece in field
         .split([',', ';'])
         .map(str::trim)
         .filter(|piece| !piece.is_empty())
     {
         let Some(address) = address(piece, domains) else {
-            if !result.rejected.iter().any(|other| other == piece) {
+            if refused.insert(piece) {
                 result.rejected.push(piece.to_owned());
             }
             continue;
@@ -127,11 +131,8 @@ pub fn recipients(field: &str, domains: Domains) -> Recipients {
         {
             result.international.push(domain);
         }
-        let already = result
-            .accepted
-            .iter()
-            .any(|other| other.eq_ignore_ascii_case(&address.sent));
-        if !already {
+        // The same address in another case is the same person.
+        if accepted.insert(address.sent.to_ascii_lowercase()) {
             result.accepted.push(address.sent);
         }
     }

@@ -352,7 +352,11 @@ refusing percent escapes and results that are not domain names. The address is
 looked up and sent in that form, and each typed domain is kept beside it for
 the composer's warning. The draft holds the rule from Settings when it opens
 and follows a change at once, forgetting lookups for addresses that change
-form. Email links always use the ASCII rule.
+form. Email links always use the ASCII rule. The draft reads its recipient
+fields when one of them or the rule changes and keeps the result, so the checks
+the window repeats on every frame neither parse addresses nor copy the body or
+attachments; only Send builds the outgoing message. Duplicates are found with
+hash sets, so a long recipient list reads in one pass.
 
 Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
 validation, shared by the desktop backend and all SDK/CLI send paths. New local

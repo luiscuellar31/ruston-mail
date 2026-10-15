@@ -1,8 +1,9 @@
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::mail::{
     BodyFormat, Domains, InternationalDomain, Kind, MailMessage, Outgoing, Protection,
-    ProtectionCheck, SendError, recipients,
+    ProtectionCheck, Recipients, SendError, recipients,
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
@@ -147,9 +148,11 @@ pub struct Compose {
     attachments: Vec<PathBuf>,
     /// Which domains the recipient fields take, from Settings.
     domains: Domains,
+    /// The recipient fields as last read under `domains`.
+    typed: Typed,
     /// Protection looked up for typed recipients, by address as sent. An
-    /// address leaves this list as soon as it leaves every recipient field.
-    protection: Vec<(String, Checked)>,
+    /// address leaves this map as soon as it leaves every recipient field.
+    protection: HashMap<String, Checked>,
     /// Whether the copy fields are on show. They start hidden: most mail goes
     /// to one person.
     more: bool,
@@ -163,6 +166,69 @@ enum State {
     Writing,
     InFlight,
     Failed(SendError),
+}
+
+/// What the recipient fields came to. They are read again only when a field
+/// or the rule for domains changes, so drawing a frame reads and copies
+/// nothing. Empty fields read as the default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Typed {
+    to: Recipients,
+    cc: Recipients,
+    bcc: Recipients,
+    /// Every accepted address once, in field order, as first written.
+    addresses: Vec<String>,
+    /// Whether every refused piece would be taken if Settings accepted domains
+    /// in other scripts, so the refusal can say how to allow them.
+    script_only: bool,
+}
+
+impl Typed {
+    fn read(to: &str, cc: &str, bcc: &str, domains: Domains) -> Self {
+        let (to, cc, bcc) = (
+            recipients(to, domains),
+            recipients(cc, domains),
+            recipients(bcc, domains),
+        );
+        let mut seen = HashSet::new();
+        let addresses = [&to, &cc, &bcc]
+            .into_iter()
+            .flat_map(|field| &field.accepted)
+            .filter(|address| seen.insert(address.to_ascii_lowercase()))
+            .cloned()
+            .collect();
+        let mut refused = to
+            .rejected
+            .iter()
+            .chain(&cc.rejected)
+            .chain(&bcc.rejected)
+            .peekable();
+        let script_only = domains == Domains::Ascii
+            && refused.peek().is_some()
+            && refused.all(|piece| {
+                recipients(piece, Domains::International)
+                    .rejected
+                    .is_empty()
+            });
+        Self {
+            to,
+            cc,
+            bcc,
+            addresses,
+            script_only,
+        }
+    }
+
+    /// The pieces that do not look like an address, To before Cc before Bcc.
+    fn rejected(&self) -> Vec<String> {
+        self.to
+            .rejected
+            .iter()
+            .chain(&self.cc.rejected)
+            .chain(&self.bcc.rejected)
+            .cloned()
+            .collect()
+    }
 }
 
 impl Compose {
@@ -194,7 +260,7 @@ impl Compose {
             field,
             ComposeField::To | ComposeField::Cc | ComposeField::Bcc
         ) {
-            self.forget_removed_recipients();
+            self.reread_recipients();
         }
         self.confirming_discard = false;
         // Keep an unconfirmed-send warning visible even if the draft changes.
@@ -207,13 +273,16 @@ impl Compose {
     /// that changes form or stops being taken loses what was looked up.
     fn set_domains(&mut self, domains: Domains) {
         self.domains = domains;
-        self.forget_removed_recipients();
+        self.reread_recipients();
     }
 
-    fn forget_removed_recipients(&mut self) {
-        let typed = self.typed_recipients();
+    /// Reads the recipient fields again, after one of them or the rule for
+    /// domains changed. What was looked up for an address that left them goes.
+    fn reread_recipients(&mut self) {
+        self.typed = Typed::read(&self.to, &self.cc, &self.bcc, self.domains);
+        let typed: HashSet<&str> = self.typed.addresses.iter().map(String::as_str).collect();
         self.protection
-            .retain(|(address, _)| typed.iter().any(|other| other == address));
+            .retain(|address, _| typed.contains(address.as_str()));
     }
 
     pub fn showing_more(&self) -> bool {
@@ -224,22 +293,6 @@ impl Compose {
         self.confirming_discard
     }
 
-    /// Every well-formed address in the recipient fields, once each.
-    fn typed_recipients(&self) -> Vec<String> {
-        let mut typed: Vec<String> = Vec::new();
-        for field in [&self.to, &self.cc, &self.bcc] {
-            for address in recipients(field, self.domains).accepted {
-                if !typed
-                    .iter()
-                    .any(|other| other.eq_ignore_ascii_case(&address))
-                {
-                    typed.push(address);
-                }
-            }
-        }
-        typed
-    }
-
     /// What to say about protection, once every typed recipient was looked
     /// up. Silent while an address is still unchecked, so a partial answer
     /// never reads as the whole one. Replies stay silent: Proton chooses
@@ -248,11 +301,10 @@ impl Compose {
         if !self.asks_for_recipients() {
             return None;
         }
-        let typed = self.typed_recipients();
+        let typed = &self.typed.addresses;
         let mut checked = Vec::with_capacity(typed.len());
-        for address in &typed {
-            let (_, state) = self.protection.iter().find(|(other, _)| other == address)?;
-            checked.push((address, *state));
+        for address in typed {
+            checked.push((address, *self.protection.get(address)?));
         }
         let with = |wanted: fn(Checked) -> bool| -> Vec<String> {
             checked
@@ -280,9 +332,9 @@ impl Compose {
     /// Each domain typed in another script beside the ASCII form the message
     /// goes to, so a look-alike of a familiar domain shows for what it is.
     pub fn international_notice(&self) -> Option<String> {
-        let mut domains: Vec<InternationalDomain> = Vec::new();
-        for field in [&self.to, &self.cc, &self.bcc] {
-            for domain in recipients(field, self.domains).international {
+        let mut domains: Vec<&InternationalDomain> = Vec::new();
+        for field in [&self.typed.to, &self.typed.cc, &self.typed.bcc] {
+            for domain in &field.international {
                 if !domains.contains(&domain) {
                     domains.push(domain);
                 }
@@ -367,53 +419,38 @@ impl Compose {
             && self.attachments.is_empty()
     }
 
-    /// Why the message cannot be sent, if it cannot.
+    /// Why the message cannot be sent, if it cannot. The window asks on every
+    /// frame, so this only looks at the fields as they were last read.
     pub fn not_ready(&self) -> Option<NotReady> {
-        self.ready(BodyFormat::PlainText).err()
+        self.check().err()
     }
 
-    /// The message to send, or its validation error. Subjects are optional.
-    fn ready(&self, format: BodyFormat) -> Result<Outgoing, NotReady> {
-        let (to, cc, bcc) = (
-            recipients(&self.to, self.domains),
-            recipients(&self.cc, self.domains),
-            recipients(&self.bcc, self.domains),
-        );
-
-        let rejected: Vec<String> = to
-            .rejected
-            .iter()
-            .chain(&cc.rejected)
-            .chain(&bcc.rejected)
-            .cloned()
-            .collect();
-        // When the only trouble is a domain's script, say how to allow it.
-        if !rejected.is_empty()
-            && self.domains == Domains::Ascii
-            && rejected.iter().all(|piece| {
-                recipients(piece, Domains::International)
-                    .rejected
-                    .is_empty()
-            })
-        {
-            return Err(NotReady::InternationalDomains(rejected));
-        }
+    /// Whether the message may leave, without building it: nothing is copied
+    /// unless something is wrong. Subjects are optional.
+    fn check(&self) -> Result<(), NotReady> {
+        let rejected = self.typed.rejected();
         if !rejected.is_empty() {
-            return Err(NotReady::BadAddresses(rejected));
+            // When the only trouble is a domain's script, say how to allow it.
+            return Err(if self.typed.script_only {
+                NotReady::InternationalDomains(rejected)
+            } else {
+                NotReady::BadAddresses(rejected)
+            });
         }
-        if Outgoing::needs_recipients(&self.kind)
-            && to.accepted.is_empty()
-            && cc.accepted.is_empty()
-            && bcc.accepted.is_empty()
-        {
+        if Outgoing::needs_recipients(&self.kind) && self.typed.addresses.is_empty() {
             return Err(NotReady::NoRecipients);
         }
+        Ok(())
+    }
 
+    /// The message to send, or why it cannot be sent.
+    fn ready(&self, format: BodyFormat) -> Result<Outgoing, NotReady> {
+        self.check()?;
         Ok(Outgoing {
             kind: self.kind.clone(),
-            to: to.accepted,
-            cc: cc.accepted,
-            bcc: bcc.accepted,
+            to: self.typed.to.accepted.clone(),
+            cc: self.typed.cc.accepted.clone(),
+            bcc: self.typed.bcc.accepted.clone(),
             subject: self.subject.trim().to_owned(),
             body: self.body.clone(),
             format,
@@ -613,9 +650,11 @@ impl App {
             return Effects::none();
         };
         let unchecked: Vec<String> = compose
-            .typed_recipients()
-            .into_iter()
-            .filter(|address| !compose.protection.iter().any(|(other, _)| other == address))
+            .typed
+            .addresses
+            .iter()
+            .filter(|address| !compose.protection.contains_key(address.as_str()))
+            .cloned()
             .collect();
         if unchecked.is_empty() {
             return Effects::none();
@@ -626,7 +665,7 @@ impl App {
         for address in &unchecked {
             compose
                 .protection
-                .push((address.clone(), Checked::Checking));
+                .insert(address.clone(), Checked::Checking);
         }
         let id = compose.id;
         Effects::perform(
@@ -649,10 +688,8 @@ impl App {
             return;
         };
         for (address, result) in checks {
-            if let Some((_, state)) = compose
-                .protection
-                .iter_mut()
-                .find(|(other, state)| *other == address && *state == Checked::Checking)
+            if let Some(state) = compose.protection.get_mut(&address)
+                && *state == Checked::Checking
             {
                 *state = result.map_or(Checked::Unknown, Checked::Known);
             }
@@ -880,7 +917,7 @@ mod tests {
         let mut compose = written("ada@proton.me");
         compose
             .protection
-            .push(("ada@proton.me".into(), Checked::Known(Protection::EndToEnd)));
+            .insert("ada@proton.me".into(), Checked::Known(Protection::EndToEnd));
         assert_eq!(
             compose.protection_notice(),
             Some(ProtectionNotice::Encrypted)
@@ -891,6 +928,37 @@ mod tests {
             everyone: false,
         };
         assert_eq!(compose.protection_notice(), None);
+    }
+
+    #[test]
+    fn every_change_to_a_recipient_field_is_read_again() {
+        let mut compose = written("Ana@Example.org; oops");
+        assert_eq!(
+            compose.not_ready(),
+            Some(NotReady::BadAddresses(vec!["oops".into()]))
+        );
+
+        compose.set(ComposeField::To, "Ana@Example.org".into());
+        compose.set(ComposeField::Cc, "ana@example.org, bob@example.org".into());
+        assert_eq!(compose.not_ready(), None);
+        // Lookups name each person once, as first written.
+        assert_eq!(
+            compose.typed.addresses,
+            ["Ana@Example.org", "bob@example.org"]
+        );
+        let outgoing = compose.ready(BodyFormat::PlainText).unwrap();
+        assert_eq!(outgoing.to, ["Ana@Example.org"]);
+        assert_eq!(outgoing.cc, ["ana@example.org", "bob@example.org"]);
+
+        // An address that leaves the fields takes its lookup with it.
+        compose
+            .protection
+            .insert("bob@example.org".into(), Checked::Checking);
+        compose.set(ComposeField::Cc, String::new());
+        assert!(compose.protection.is_empty());
+        compose.set(ComposeField::To, String::new());
+        assert_eq!(compose.not_ready(), Some(NotReady::NoRecipients));
+        assert!(compose.typed.addresses.is_empty());
     }
 
     fn answered_message(reply_to: &str) -> MailMessage {

@@ -19,7 +19,7 @@ pub use model::{
 };
 pub use outgoing::{
     BodyFormat, Domains, InternationalDomain, Kind, Outgoing, Protection, ProtectionCheck,
-    SendError, recipients, validate_attachments,
+    Recipients, SendError, recipients, validate_attachments,
 };
 #[cfg(test)]
 pub use proton::Reply;
