@@ -275,14 +275,26 @@ impl Client {
         max_pages: u32,
         page_size: u32,
     ) -> Result<usize> {
-        let cache = self.open_cache()?;
+        self.index_into(self.open_cache()?, folder, max_pages, page_size)
+            .await
+    }
+
+    /// The index keeps bodies, not verdicts, so it reads them without looking
+    /// up sender keys to check a signature nobody would see.
+    async fn index_into(
+        &self,
+        cache: impl Borrow<Cache>,
+        folder: &str,
+        max_pages: u32,
+        page_size: u32,
+    ) -> Result<usize> {
         index_cache(
             self.http(),
             cache,
             folder,
             max_pages,
             page_size,
-            |id| async move { self.read_message(&id).await },
+            |id| async move { self.read_message_unverified(&id).await },
         )
         .await
     }
@@ -360,6 +372,89 @@ mod tests {
             attachments: Vec::new(),
             reply_tos: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn indexing_reads_bodies_without_looking_up_sender_keys() {
+        use crate::cache::CacheIdentity;
+        use crate::crypto::{AddressKeys, KeyStore, StoredKey};
+        use crate::session::{MemoryStore, Paths};
+        use proton_crypto::crypto::{
+            DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
+        };
+        use secrecy::SecretString;
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        let provider = crate::crypto::provider();
+        let key = provider
+            .new_key_generator()
+            .with_user_id("Test", "me@proton.me")
+            .with_algorithm(KeyGeneratorAlgorithm::ECC)
+            .generate()
+            .unwrap();
+        let armored = String::from_utf8(
+            provider
+                .private_key_export(&key, "pass", DataEncoding::Armor)
+                .unwrap()
+                .as_ref()
+                .to_vec(),
+        )
+        .unwrap();
+        let address = AddressKeys {
+            address_id: "address".into(),
+            email: "me@proton.me".into(),
+            keys: vec![StoredKey {
+                armored,
+                passphrase: SecretString::from("pass"),
+                unlocked: None,
+            }],
+        };
+        let body = crate::crypto::encrypt_self_draft(&provider, &address, "indexedbody").unwrap();
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 1, "Messages": [message("m1")]
+            })))
+            .mount(&server)
+            .await;
+        let mut full = message("m1");
+        full["AddressID"] = "address".into();
+        full["Body"] = body.into();
+        full["MIMEType"] = "text/plain".into();
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages/m1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code": 1000, "Message": full})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Address": { "Keys": [] }
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = Client {
+            http: HttpClient::new(server.uri(), "Other"),
+            keys: KeyStore {
+                user_keys: Vec::new(),
+                addresses: vec![address],
+            },
+            paths: Paths::with_base(std::env::temp_dir()),
+            profile: "test".into(),
+            session_uid: "test".into(),
+            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
+            store: Arc::new(MemoryStore::default()),
+            sender_cache: tokio::sync::Mutex::new(super::super::SenderKeyCache::default()),
+        };
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+
+        assert_eq!(client.index_into(&cache, "inbox", 1, 10).await.unwrap(), 1);
+        assert_eq!(cache.search("indexedbody", 10).unwrap()[0].id, "m1");
     }
 
     #[test]

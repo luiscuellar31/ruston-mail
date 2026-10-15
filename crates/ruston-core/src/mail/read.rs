@@ -178,12 +178,6 @@ impl Client {
     }
 
     pub(super) async fn decrypt_message(&self, m: &Message) -> Result<FullMessage> {
-        let provider = crypto::provider();
-        let addr = self
-            .keys()
-            .address(&m.meta.address_id)
-            .or_else(|| self.keys().primary_address())
-            .ok_or_else(|| Error::Crypto("no address key for message".into()))?;
         let sender_pubs = match self.sender_pubkeys(&m.meta.sender.address).await {
             Ok(keys) => keys,
             // The body still opens, without claiming a verified signature.
@@ -192,7 +186,19 @@ impl Client {
                 Vec::new()
             }
         };
-        let (body, verdict) = crypto::decrypt_body(&provider, addr, &sender_pubs, &m.body)?;
+        self.decrypt_message_with(m, &sender_pubs)
+    }
+
+    /// Decrypts `m`, checking its signature against `sender_pubs`. With none,
+    /// the body opens as unverified.
+    fn decrypt_message_with(&self, m: &Message, sender_pubs: &[String]) -> Result<FullMessage> {
+        let provider = crypto::provider();
+        let addr = self
+            .keys()
+            .address(&m.meta.address_id)
+            .or_else(|| self.keys().primary_address())
+            .ok_or_else(|| Error::Crypto("no address key for message".into()))?;
+        let (body, verdict) = crypto::decrypt_body(&provider, addr, sender_pubs, &m.body)?;
         let (body, mime_type) = if m.mime_type.starts_with("multipart/") {
             extract_mime(&body)
         } else {
@@ -232,6 +238,13 @@ impl Client {
         tracing::debug!(target: "ruston_core::mail", message_id = %id, "read_message: fetching + decrypting");
         let msg = api::messages::get_message(self.http(), id).await?;
         self.decrypt_message(&msg).await
+    }
+
+    /// Fetch and decrypt a message for a caller that keeps only its text: the
+    /// sender's keys are not looked up, and the verdict is always unverified.
+    pub(super) async fn read_message_unverified(&self, id: &str) -> Result<FullMessage> {
+        let msg = api::messages::get_message(self.http(), id).await?;
+        self.decrypt_message_with(&msg, &[])
     }
 
     /// Fetch a conversation and decrypt all of its messages (oldest first).
