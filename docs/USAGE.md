@@ -123,9 +123,10 @@ after the same confirmation.
 
 When Ruston is selected as your system's email-link handler, an external
 `mailto:` link opens a new message with its recipients, subject, and body.
-You review and send it yourself. Multiple recipients and UTF-8 text are
-supported, but a link whose recipient domain is not written in ASCII is
-rejected, as in the composer; CC/BCC, attachments, and arbitrary mail headers
+You review and send it yourself. UTF-8 text and up to 100 different recipients
+are supported. A link with more recipients is rejected, and so is one whose
+recipient domain is not written in ASCII, as in the composer. CC/BCC,
+attachments, and arbitrary mail headers
 in the link are ignored. Link bodies are treated as text, never interpreted as HTML.
 
 If needed, sign in first; the link waits in memory. An existing draft is never

@@ -50,7 +50,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   rejects control/header injection and ambiguous duplicate fields, and ignores
   unsupported headers/attachments. Recipients pass the composer's address
   check with ASCII domains only, whatever Settings allow for typed ones.
-  URLs are limited to 16 KiB. Its request fields are private, so requests are
+  URLs are limited to 16 KiB and 100 distinct recipients, since each address a
+  link fills in is looked up while the draft is written. Its request fields are private, so requests are
   constructed only by this parser.
   Each external ingress (arguments, TCP, or Apple Events) validates once;
   process-local `Activate`, `Mailto(Request)`, and `Rejected` events carry the

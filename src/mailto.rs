@@ -2,6 +2,9 @@
 
 pub const MAX_URL_BYTES: usize = 16 * 1024;
 pub const MAX_PENDING: usize = 16;
+/// Distinct recipients one link may name. A link comes from elsewhere, and
+/// each address it fills in is looked up as the draft is written.
+const MAX_RECIPIENTS: usize = 100;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Request {
@@ -63,7 +66,7 @@ impl Request {
         // Links come from elsewhere, so a domain in another script is refused
         // whatever Settings let the composer take from the keyboard.
         let recipients = crate::mail::recipients(&to, crate::mail::Domains::Ascii);
-        if !recipients.rejected.is_empty() {
+        if !recipients.rejected.is_empty() || recipients.accepted.len() > MAX_RECIPIENTS {
             return None;
         }
         Some(Self {
@@ -138,6 +141,22 @@ mod tests {
             assert!(Request::parse(input).is_none(), "accepted {input:?}");
         }
         assert!(Request::parse(&format!("mailto:?body={}", "x".repeat(MAX_URL_BYTES))).is_none());
+    }
+
+    #[test]
+    fn a_link_names_at_most_a_hundred_recipients() {
+        let link = |count: usize| {
+            let to: Vec<String> = (0..count)
+                .map(|index| format!("person{index}@example.org"))
+                .collect();
+            format!("mailto:{}", to.join(","))
+        };
+        let request = Request::parse(&link(MAX_RECIPIENTS)).unwrap();
+        assert_eq!(request.to.matches('@').count(), MAX_RECIPIENTS);
+        assert!(Request::parse(&link(MAX_RECIPIENTS + 1)).is_none());
+        // The same address twice is one recipient.
+        let repeated = format!("{}?to=PERSON0@example.org", link(MAX_RECIPIENTS));
+        assert!(Request::parse(&repeated).is_some());
     }
 
     #[test]
