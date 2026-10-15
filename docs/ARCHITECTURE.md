@@ -690,7 +690,9 @@ instead of producing a successful tick.
 Most unit tests live beside the code they cover. Core HTTP contract tests are
 in [`tests/api_wiremock.rs`](../crates/ruston-core/tests/api_wiremock.rs).
 [`tests/live.rs`](../crates/ruston-core/tests/live.rs) requires explicit Proton
-test credentials and otherwise skips its live cases. CLI parser and demo tests
+test credentials and otherwise skips its live cases. Each case signs in under
+a profile of its own and signs out before its checks, so a failure leaves no
+session or keychain entry behind. CLI parser and demo tests
 are in [`crates/ruston-cli/src/main.rs`](../crates/ruston-cli/src/main.rs).
 Run and check commands are in [Development](DEVELOPMENT.md).
 
