@@ -31,6 +31,12 @@ history, and a draft's undo history is dropped once the draft is sent,
 discarded, or left behind by signing out, so undo cannot bring back another
 draft or a typed password.
 
+Passwords and codes typed at sign-in are kept in buffers with room reserved
+for them, so typing does not move them and leave earlier copies behind, and
+they are erased when the form is cleared. The sign-in screen measures its
+layout without them. The interface library still makes short-lived copies of a
+field's text while drawing it, which are freed without being erased.
+
 Desktop activation listens only on IPv4 loopback, at a randomly assigned port,
 while Ruston is running. It accepts bounded email-link requests after a random
 256-bit token handshake; it exposes no account or mailbox data and cannot send

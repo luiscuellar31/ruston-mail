@@ -348,9 +348,10 @@ fn edit_field(
     messages: &mut Vec<Message>,
 ) -> egui::Response {
     ui.label(egui::RichText::new(label).strong());
+    let mut unseen = String::new();
     let response = ui.add_enabled(
         !busy,
-        theme::text_field(value)
+        theme::text_field(measured(ui, value, &mut unseen))
             .hint_text(hint)
             .desired_width(f32::INFINITY),
     );
@@ -375,11 +376,12 @@ fn edit_secret_field(
     let width =
         (ui.available_width() - theme::ICON_BUTTON_MIN_SIZE.x - ui.spacing().item_spacing.x)
             .max(1.0);
+    let mut unseen = String::new();
     let response = ui
         .horizontal(|ui| {
             let response = ui.add_enabled(
                 !busy,
-                theme::text_field(value)
+                theme::text_field(measured(ui, value, &mut unseen))
                     .hint_text(hint)
                     .password(!*show_password)
                     .desired_width(width),
@@ -397,6 +399,13 @@ fn edit_secret_field(
         .inner;
     ui.add_space(14.0);
     response
+}
+
+/// What a field shows. The invisible measuring pass only needs its size, and
+/// egui copies a field's text each time it lays it out, so that pass gets an
+/// empty field instead of what was typed.
+fn measured<'a>(ui: &egui::Ui, value: &'a mut String, unseen: &'a mut String) -> &'a mut String {
+    if ui.is_sizing_pass() { unseen } else { value }
 }
 
 /// Sign-in fields keep no undo history: it would hold what was typed,
@@ -979,6 +988,100 @@ mod tests {
         frame(&mut password, Vec::new());
         frame(&mut password, undo());
         assert!(password.is_empty(), "undo brought back a typed password");
+    }
+
+    #[test]
+    fn typing_a_password_never_moves_it_to_a_new_buffer() {
+        let mut app = App::signed_out();
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut time = 0.0;
+        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+            time += 1.0;
+            let mut field = egui::Id::NULL;
+            context
+                .run_ui(
+                    egui::RawInput {
+                        events,
+                        time: Some(time),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        field = edit_secret_field(
+                            ui,
+                            "Password",
+                            "Password",
+                            app.password_mut(),
+                            &mut false,
+                            false,
+                            &mut Vec::new(),
+                        )
+                        .id;
+                    },
+                )
+                .drop_without_applying_deltas();
+            field
+        };
+        let field = frame(&mut app, Vec::new());
+        context.memory_mut(|memory| memory.request_focus(field));
+        frame(&mut app, Vec::new());
+
+        // A buffer that grows moves, and the old one is freed unerased.
+        let buffer = app.password_mut().as_ptr();
+        let typed = "correct horse battery staple, typed one key at a time";
+        for key in typed.chars() {
+            frame(&mut app, vec![egui::Event::Text(key.to_string())]);
+        }
+        assert_eq!(app.password_mut().as_str(), typed);
+        assert_eq!(app.password_mut().as_ptr(), buffer);
+    }
+
+    #[test]
+    fn the_measuring_pass_never_lays_out_what_was_typed() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut password = String::from("hunter2");
+        let mut username = String::from("ada@proton.me");
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            // Visible here, unlike the real pass, so its text can be read.
+            let mut measure = ui.new_child(egui::UiBuilder::new().sizing_pass());
+            edit_field(
+                &mut measure,
+                "Username",
+                "name@proton.me",
+                &mut username,
+                false,
+                &mut Vec::new(),
+            );
+            edit_secret_field(
+                &mut measure,
+                "Password",
+                "Password",
+                &mut password,
+                &mut true,
+                false,
+                &mut Vec::new(),
+            );
+        });
+        let texts: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+
+        assert!(texts.iter().any(|text| text == "Password"), "{texts:?}");
+        assert!(
+            !texts.iter().any(|text| text.contains("hunter2")),
+            "{texts:?}"
+        );
+        assert!(!texts.iter().any(|text| text.contains("ada@")), "{texts:?}");
+        // The fields themselves are untouched.
+        assert_eq!(password, "hunter2");
+        assert_eq!(username, "ada@proton.me");
     }
 
     #[test]

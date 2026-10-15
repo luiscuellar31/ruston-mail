@@ -36,12 +36,27 @@ pub enum AuthState {
     SigningOut,
 }
 
-#[derive(Default)]
 pub(super) struct LoginForm {
     pub(super) username: String,
     pub(super) password: Zeroizing<String>,
     pub(super) totp: Zeroizing<String>,
     pub(super) mailbox_password: Zeroizing<String>,
+}
+
+/// Room for a secret typed a key at a time. A string that outgrows its buffer
+/// moves to a bigger one and leaves what was typed so far behind, unerased.
+const SECRET_CAPACITY: usize = 256;
+
+impl Default for LoginForm {
+    fn default() -> Self {
+        let secret = || Zeroizing::new(String::with_capacity(SECRET_CAPACITY));
+        Self {
+            username: String::new(),
+            password: secret(),
+            totp: secret(),
+            mailbox_password: secret(),
+        }
+    }
 }
 
 impl LoginForm {
