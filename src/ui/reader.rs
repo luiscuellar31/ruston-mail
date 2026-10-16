@@ -624,13 +624,9 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
                 ("Reply all", false, true),
                 ("Forward", true, false),
             ] {
-                let mut button = theme::compact_button(label);
-                if label == "Reply" {
-                    button = button
-                        .fill(theme::colors(ui).accent_soft)
-                        .stroke(Stroke::new(1.0, theme::ACCENT));
-                }
-                if ui.add_enabled(message_id.is_some(), button).clicked()
+                if ui
+                    .add_enabled(message_id.is_some(), theme::compact_button(label))
+                    .clicked()
                     && let Some(message_id) = message_id
                 {
                     messages.push(Message::Answer {

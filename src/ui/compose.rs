@@ -96,15 +96,13 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
                 if ui
                     .add_enabled(
                         ready && !leaving,
-                        egui::Button::new(if leaving {
+                        theme::primary(egui::Button::new(if leaving {
                             "Sending…"
                         } else if sending == Sending::Failed(SendError::Unconfirmed) {
                             "Send again"
                         } else {
                             "Send"
-                        })
-                        .fill(theme::colors(ui).accent_soft)
-                        .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
+                        })),
                     )
                     .clicked()
                 {
@@ -141,9 +139,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
                         Layout::right_to_left(Align::Center).with_main_wrap(true),
                         |ui| {
                             if ui
-                                .button(
-                                    egui::RichText::new("Discard").color(theme::colors(ui).danger),
-                                )
+                                .add(theme::danger(egui::Button::new("Discard")))
                                 .clicked()
                             {
                                 messages.push(Message::DiscardCompose);

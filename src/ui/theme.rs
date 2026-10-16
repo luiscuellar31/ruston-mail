@@ -18,6 +18,7 @@ const ANIMATION_FRAME: Duration = Duration::from_millis(50);
 /// How much of its circle the loading spinner's arc covers.
 const SPINNER_SWEEP_DEGREES: f64 = 240.0;
 const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
+const DIALOG_BUTTON_HEIGHT: f32 = 32.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
 const FOCUS_RING_WIDTH: f32 = 2.0;
@@ -39,7 +40,6 @@ pub struct Colors {
     pub danger: Color32,
     pub success: Color32,
     pub selected_folder_text: Color32,
-    pub sidebar_button_hover: Color32,
     pub row_hover: Color32,
     pub quote_fill: Color32,
     pub code_fill: Color32,
@@ -67,7 +67,6 @@ const DARK: Colors = Colors {
     danger: Color32::from_rgb(245, 112, 112),
     success: Color32::from_rgb(105, 210, 160),
     selected_folder_text: Color32::WHITE,
-    sidebar_button_hover: Color32::from_rgb(55, 47, 99),
     row_hover: Color32::from_rgb(28, 29, 36),
     quote_fill: Color32::from_rgb(27, 28, 35),
     code_fill: Color32::from_rgb(18, 19, 24),
@@ -91,7 +90,6 @@ const LIGHT: Colors = Colors {
     danger: Color32::from_rgb(174, 43, 57),
     success: Color32::from_rgb(23, 117, 76),
     selected_folder_text: Color32::from_rgb(64, 49, 150),
-    sidebar_button_hover: Color32::from_rgb(222, 214, 255),
     row_hover: Color32::from_rgb(241, 240, 249),
     quote_fill: Color32::from_rgb(246, 246, 250),
     code_fill: Color32::from_rgb(241, 242, 247),
@@ -338,6 +336,108 @@ pub fn compact_button<'a>(atoms: impl egui::IntoAtoms<'a>) -> egui::Button<'a> {
     egui::Button::new(atoms)
         .small()
         .min_size(egui::vec2(0.0, COMPACT_BUTTON_HEIGHT))
+}
+
+/// How much a button asks to be pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emphasis {
+    /// The one action a view is for, such as Send or Apply: the solid accent.
+    Primary,
+    /// Everything else: egui's neutral button.
+    Secondary,
+    /// What throws something away: a red outline and red text.
+    Danger,
+}
+
+/// `button` with the look of its `emphasis`.
+pub fn emphasized(button: egui::Button<'_>, emphasis: Emphasis) -> impl Widget + '_ {
+    move |ui: &mut egui::Ui| {
+        ui.scope(|ui| {
+            match emphasis {
+                Emphasis::Primary => primary_visuals(ui),
+                Emphasis::Secondary => {}
+                Emphasis::Danger => danger_visuals(ui),
+            }
+            ui.add(button)
+        })
+        .inner
+    }
+}
+
+pub fn primary(button: egui::Button<'_>) -> impl Widget + '_ {
+    emphasized(button, Emphasis::Primary)
+}
+
+pub fn danger(button: egui::Button<'_>) -> impl Widget + '_ {
+    emphasized(button, Emphasis::Danger)
+}
+
+/// Gives the buttons in `ui` the solid accent and white text. A disabled one
+/// keeps the look at egui's faded opacity.
+pub fn primary_visuals(ui: &mut egui::Ui) {
+    let widgets = &mut ui.visuals_mut().widgets;
+    for (state, fill) in [
+        (&mut widgets.inactive, ACCENT),
+        (&mut widgets.hovered, ACCENT_HOVER),
+        (&mut widgets.active, ACCENT_PRESSED),
+    ] {
+        state.weak_bg_fill = fill;
+        state.bg_stroke = Stroke::NONE;
+        state.fg_stroke.color = Color32::WHITE;
+    }
+}
+
+fn danger_visuals(ui: &mut egui::Ui) {
+    let danger = colors(ui).danger;
+    let widgets = &mut ui.visuals_mut().widgets;
+    // Clear at rest, so the red text keeps its contrast; tinted under the
+    // pointer.
+    for (state, tint) in [
+        (&mut widgets.inactive, 0.0),
+        (&mut widgets.hovered, 0.12),
+        (&mut widgets.active, 0.24),
+    ] {
+        state.weak_bg_fill = danger.gamma_multiply(tint);
+        state.bg_stroke = Stroke::new(1.0, danger);
+        state.fg_stroke.color = danger;
+    }
+}
+
+/// A confirmation over the window: a question, what answering it does, and
+/// the choices, from the safe one to the one the question is about. Escape
+/// or a click outside answers `dismissed`.
+pub fn confirmation<T: Clone>(
+    context: &egui::Context,
+    id: &str,
+    question: &str,
+    detail: &str,
+    choices: &[(&str, Emphasis, T)],
+    dismissed: T,
+) -> Option<T> {
+    let mut decision = None;
+    let width = (context.content_rect().width() - 48.0).clamp(0.0, 440.0);
+    let frame = egui::Frame::popup(&context.style_of(context.theme())).inner_margin(20);
+    let modal = egui::Modal::new(Id::new(id))
+        .frame(frame)
+        .show(context, |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+            ui.heading(egui::RichText::new(question).strong());
+            ui.label(detail);
+            ui.horizontal_wrapped(|ui| {
+                for (label, emphasis, choice) in choices {
+                    let button =
+                        egui::Button::new(*label).min_size(egui::vec2(0.0, DIALOG_BUTTON_HEIGHT));
+                    if ui.add(emphasized(button, *emphasis)).clicked() {
+                        decision = Some(choice.clone());
+                    }
+                }
+            });
+        });
+    if decision.is_none() && modal.should_close() {
+        decision = Some(dismissed);
+    }
+    decision
 }
 
 /// Text marks guaranteed by egui's bundled fonts.
@@ -836,6 +936,43 @@ mod tests {
 
         assert!(value);
         assert!(changed);
+    }
+
+    #[test]
+    fn buttons_come_in_three_weights() {
+        let context = egui::Context::default();
+        install(&context);
+        for emphasis in [Emphasis::Primary, Emphasis::Secondary, Emphasis::Danger] {
+            let mut neutral = Color32::PLACEHOLDER;
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                neutral = ui.visuals().widgets.inactive.weak_bg_fill;
+                ui.add(emphasized(egui::Button::new("Send"), emphasis));
+            });
+            let (frame, text) =
+                output
+                    .shapes
+                    .iter()
+                    .fold((None, None), |(frame, text), clipped| {
+                        match &clipped.shape {
+                            egui::Shape::Rect(rect) => (Some((rect.fill, rect.stroke)), text),
+                            egui::Shape::Text(shape) => (frame, Some(shape.fallback_color)),
+                            _ => (frame, text),
+                        }
+                    });
+            output.drop_without_applying_deltas();
+
+            let (fill, stroke) = frame.expect("a button frame");
+            let danger = DARK.danger;
+            let expected = match emphasis {
+                Emphasis::Primary => (ACCENT, Stroke::NONE, Color32::WHITE),
+                Emphasis::Secondary => (neutral, Stroke::NONE, DARK.text),
+                Emphasis::Danger => (Color32::TRANSPARENT, Stroke::new(1.0, danger), danger),
+            };
+            assert_eq!(
+                (fill, stroke, text),
+                (expected.0, expected.1, Some(expected.2))
+            );
+        }
     }
 
     #[test]

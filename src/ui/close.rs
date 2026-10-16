@@ -2,6 +2,7 @@
 
 use eframe::egui;
 
+use super::theme::{self, Emphasis};
 use crate::app::Message;
 
 /// What discarding the written message makes way for.
@@ -21,30 +22,17 @@ pub(super) fn confirm(context: &egui::Context, leaving: Leaving) -> Option<Messa
         Leaving::SignOut => ("Sign out?", "Discard and sign out"),
         Leaving::Demo => ("Exit demo?", "Discard and exit"),
     };
-    let mut decision = None;
-    let width = (context.content_rect().width() - 48.0).clamp(0.0, 440.0);
-    let modal = egui::Modal::new(egui::Id::new("close-with-unsaved-message"))
-        .frame(egui::Frame::popup(&context.style_of(context.theme())).inner_margin(20))
-        .show(context, |ui| {
-            ui.set_width(width);
-            ui.heading(egui::RichText::new(heading).strong());
-            ui.label("Your unsaved message will be discarded.");
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Keep writing").clicked() {
-                    decision = Some(Message::CancelDiscard);
-                }
-                if ui
-                    .button(egui::RichText::new(discard).color(super::theme::colors(ui).danger))
-                    .clicked()
-                {
-                    decision = Some(Message::DiscardCompose);
-                }
-            });
-        });
-    if decision.is_none() && modal.should_close() {
-        decision = Some(Message::CancelDiscard);
-    }
-    decision
+    theme::confirmation(
+        context,
+        "close-with-unsaved-message",
+        heading,
+        "Your unsaved message will be discarded.",
+        &[
+            ("Keep writing", Emphasis::Secondary, Message::CancelDiscard),
+            (discard, Emphasis::Danger, Message::DiscardCompose),
+        ],
+        Message::CancelDiscard,
+    )
 }
 
 #[cfg(test)]

@@ -336,31 +336,21 @@ fn sidebar_account(
     });
 }
 
+/// A neutral button like the one under it; while Settings is open, the soft
+/// violet of the open folder.
 fn settings_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
     let width = ui.available_width();
-    let hover = theme::colors(ui).sidebar_button_hover;
-    ui.scope(|ui| {
-        let widgets = &mut ui.visuals_mut().widgets;
-        let outline = Stroke::new(1.0, theme::ACCENT);
-        widgets.inactive.weak_bg_fill = if selected {
-            theme::ACCENT
-        } else {
-            Color32::TRANSPARENT
-        };
-        widgets.hovered.weak_bg_fill = if selected { theme::ACCENT_HOVER } else { hover };
-        widgets.active.weak_bg_fill = theme::ACCENT_PRESSED;
-        if selected {
-            widgets.inactive.fg_stroke.color = Color32::WHITE;
-            widgets.hovered.fg_stroke.color = Color32::WHITE;
-        }
-        widgets.active.fg_stroke.color = Color32::WHITE;
-        widgets.inactive.bg_stroke = outline;
-        widgets.hovered.bg_stroke = outline;
-        widgets.active.bg_stroke = outline;
-
-        ui.add(egui::Button::new("Settings").min_size(egui::vec2(width, 32.0)))
-    })
-    .inner
+    let mut label = egui::RichText::new("Settings");
+    if selected {
+        label = label.color(theme::colors(ui).selected_folder_text);
+    }
+    let mut button = egui::Button::new(label).min_size(egui::vec2(width, 32.0));
+    if selected {
+        button = button
+            .fill(theme::colors(ui).accent_soft)
+            .stroke(Stroke::NONE);
+    }
+    ui.add(button)
 }
 
 const NEW_MESSAGE_LABEL_ID: &str = "new-message-label";
@@ -370,9 +360,7 @@ const SELECTED_FOLDER_TEXT_OFFSET: f32 = 0.45;
 fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
     let width = ui.available_width();
     ui.scope(|ui| {
-        ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::ACCENT;
-        ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::ACCENT_HOVER;
-        ui.visuals_mut().widgets.active.weak_bg_fill = theme::ACCENT_HOVER;
+        theme::primary_visuals(ui);
         egui::Button::new((
             egui::Atom::grow(),
             egui::RichText::new("New message")
@@ -1887,13 +1875,13 @@ mod tests {
     }
 
     #[test]
-    fn settings_button_responds_to_hover_press_and_selection_in_both_themes() {
-        fn fills(shape: &egui::epaint::Shape, found: &mut Vec<Color32>) {
+    fn settings_button_is_neutral_and_soft_violet_while_settings_is_open() {
+        fn rects(shape: &egui::epaint::Shape, found: &mut Vec<(Color32, Stroke)>) {
             match shape {
-                egui::epaint::Shape::Rect(rect) => found.push(rect.fill),
+                egui::epaint::Shape::Rect(rect) => found.push((rect.fill, rect.stroke)),
                 egui::epaint::Shape::Vec(shapes) => {
                     for shape in shapes {
-                        fills(shape, found);
+                        rects(shape, found);
                     }
                 }
                 _ => {}
@@ -1910,27 +1898,42 @@ mod tests {
                 theme::apply(&context, appearance);
                 let render = |input| {
                     let mut button = egui::Rect::NOTHING;
-                    let mut hover_fill = Color32::TRANSPARENT;
+                    // At rest, under the pointer and pressed.
+                    let mut expected = [Color32::PLACEHOLDER; 3];
                     let output = context.run_ui(input, |ui| {
                         ui.set_width(240.0);
-                        hover_fill = theme::colors(ui).sidebar_button_hover;
+                        let widgets = &ui.visuals().widgets;
+                        expected = if selected {
+                            [theme::colors(ui).accent_soft; 3]
+                        } else {
+                            [
+                                widgets.inactive.weak_bg_fill,
+                                widgets.hovered.weak_bg_fill,
+                                widgets.active.weak_bg_fill,
+                            ]
+                        };
                         button = settings_button(ui, selected).rect;
                     });
-                    let mut colors = Vec::new();
+                    let mut found = Vec::new();
                     for clipped in &output.shapes {
-                        fills(&clipped.shape, &mut colors);
+                        rects(&clipped.shape, &mut found);
                     }
                     output.drop_without_applying_deltas();
-                    (button, colors, hover_fill)
+                    // No violet outline, which read as a focus ring.
+                    assert!(
+                        found
+                            .iter()
+                            .all(|(_, stroke)| stroke.color != theme::ACCENT),
+                        "{appearance:?}, {selected}"
+                    );
+                    (button, found, expected)
                 };
 
-                let (button, idle, hover_fill) = render(egui::RawInput::default());
-                let idle_fill = if selected {
-                    theme::ACCENT
-                } else {
-                    Color32::TRANSPARENT
-                };
-                assert!(idle.contains(&idle_fill), "{appearance:?}, {selected}");
+                let (button, idle, expected) = render(egui::RawInput::default());
+                assert!(
+                    idle.iter().any(|(fill, _)| *fill == expected[0]),
+                    "{appearance:?}, {selected}"
+                );
                 let position = button.center();
                 let hover = || egui::RawInput {
                     events: vec![egui::Event::PointerMoved(position)],
@@ -1938,13 +1941,8 @@ mod tests {
                 };
                 render(hover());
                 let (_, hovered, _) = render(hover());
-                let expected_hover = if selected {
-                    theme::ACCENT_HOVER
-                } else {
-                    hover_fill
-                };
                 assert!(
-                    hovered.contains(&expected_hover),
+                    hovered.iter().any(|(fill, _)| *fill == expected[1]),
                     "{appearance:?}, {selected}"
                 );
 
@@ -1959,7 +1957,7 @@ mod tests {
                 });
                 let (_, pressed, _) = render(egui::RawInput::default());
                 assert!(
-                    pressed.contains(&theme::ACCENT_PRESSED),
+                    pressed.iter().any(|(fill, _)| *fill == expected[2]),
                     "{appearance:?}, {selected}"
                 );
             }

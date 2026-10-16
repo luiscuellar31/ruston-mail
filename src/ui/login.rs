@@ -262,23 +262,12 @@ fn sign_in(
     };
     let submit_clicked = ui
         .scope(|ui| {
-            ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::ACCENT;
-            ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::ACCENT_HOVER;
-            ui.visuals_mut().widgets.active.weak_bg_fill = theme::ACCENT_HOVER;
-            let text_color = if busy {
-                ui.visuals().widgets.noninteractive.fg_stroke.color
-            } else {
-                egui::Color32::WHITE
-            };
+            theme::primary_visuals(ui);
             ui.add_enabled(
                 !busy,
-                egui::Button::new((
-                    egui::Atom::grow(),
-                    egui::RichText::new(submit).color(text_color),
-                    egui::Atom::grow(),
-                ))
-                .min_size(egui::vec2(ui.available_width(), 44.0))
-                .stroke(egui::Stroke::NONE),
+                egui::Button::new((egui::Atom::grow(), submit, egui::Atom::grow()))
+                    .min_size(egui::vec2(ui.available_width(), 44.0))
+                    .stroke(egui::Stroke::NONE),
             )
             .clicked()
         })
@@ -328,7 +317,7 @@ fn verification(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
     if ui
         .add_sized(
             [ui.available_width(), 44.0],
-            egui::Button::new("I completed the verification"),
+            theme::primary(egui::Button::new("I completed the verification")),
         )
         .clicked()
     {

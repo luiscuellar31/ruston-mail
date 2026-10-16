@@ -1,6 +1,6 @@
 use eframe::egui::{self, Align, Layout};
 
-use super::theme;
+use super::theme::{self, Emphasis};
 use crate::app::Message;
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{Appearance, ComposePlacement, Settings, StartFolder};
@@ -29,9 +29,7 @@ pub(super) fn show(
                 if ui
                     .add_enabled(
                         !changes.is_empty(),
-                        egui::Button::new("Apply")
-                            .fill(theme::colors(ui).accent_soft)
-                            .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
+                        theme::primary(egui::Button::new("Apply")),
                     )
                     .clicked()
                 {
@@ -56,46 +54,22 @@ pub(super) enum ExitDecision {
 }
 
 pub(super) fn confirm_exit(context: &egui::Context) -> Option<ExitDecision> {
-    let mut decision = None;
-    let width = (context.content_rect().width() - 48.0).clamp(0.0, 440.0);
-    let frame = egui::Frame::popup(&context.style_of(context.theme())).inner_margin(20);
-    let modal = egui::Modal::new(egui::Id::new("unsaved-settings"))
-        .frame(frame)
-        .show(context, |ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
-            ui.heading(egui::RichText::new("Unsaved settings").strong());
-            ui.label("Apply your changes before leaving Settings?");
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add(egui::Button::new("Keep editing").min_size(egui::vec2(0.0, 32.0)))
-                    .clicked()
-                {
-                    decision = Some(ExitDecision::KeepEditing);
-                }
-                if ui
-                    .add(egui::Button::new("Discard changes").min_size(egui::vec2(0.0, 32.0)))
-                    .clicked()
-                {
-                    decision = Some(ExitDecision::Discard);
-                }
-                if ui
-                    .add(
-                        egui::Button::new("Apply and continue")
-                            .min_size(egui::vec2(0.0, 32.0))
-                            .fill(theme::colors(ui).accent_soft)
-                            .stroke(egui::Stroke::new(1.0, theme::ACCENT)),
-                    )
-                    .clicked()
-                {
-                    decision = Some(ExitDecision::Apply);
-                }
-            });
-        });
-    if decision.is_none() && modal.should_close() {
-        decision = Some(ExitDecision::KeepEditing);
-    }
-    decision
+    theme::confirmation(
+        context,
+        "unsaved-settings",
+        "Unsaved settings",
+        "Apply your changes before leaving Settings?",
+        &[
+            (
+                "Keep editing",
+                Emphasis::Secondary,
+                ExitDecision::KeepEditing,
+            ),
+            ("Discard changes", Emphasis::Danger, ExitDecision::Discard),
+            ("Apply and continue", Emphasis::Primary, ExitDecision::Apply),
+        ],
+        ExitDecision::KeepEditing,
+    )
 }
 
 fn page(
