@@ -524,11 +524,16 @@ fn conversation_pane(
         if !query.is_empty() && ui.button("Clear").clicked() {
             messages.push(Message::SearchChanged(String::new()));
         }
+        // The text starts where the rows' text does, inside the outline.
+        let frame = theme::field_frame(ui).inner_margin(egui::Margin::symmetric(
+            ROW_HORIZONTAL_PADDING as i8 - SEARCH_OUTLINE,
+            8 - SEARCH_OUTLINE,
+        ));
         let response = ui.add(
             theme::text_field(ui, &mut query)
                 .id(egui::Id::new("mail-search"))
                 .hint_text("Search mail…")
-                .margin(egui::Margin::symmetric(ROW_HORIZONTAL_PADDING as i8, 8))
+                .frame(frame)
                 .desired_width(f32::INFINITY),
         );
         if state.focus_search {
@@ -641,6 +646,8 @@ const FOLDER_HEIGHT: f32 = 31.0;
 const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;
 const ROW_HORIZONTAL_PADDING: f32 = 18.0;
+/// The width of the search field's outline, inside its padding.
+const SEARCH_OUTLINE: i8 = 1;
 const ROW_LINE_CENTER_OFFSET: f32 = 12.5;
 
 struct RowAnchor {
@@ -1567,6 +1574,38 @@ mod tests {
             total,
             inspect_candidates: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_search_text_starts_where_the_rows_text_does() {
+        let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+        mailbox.finish_page(first.id, Ok(pagination_page(0, 3, 3)));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(320.0);
+            conversation_pane(ui, &mailbox, &mut UiState::default(), &mut Vec::new());
+        });
+        let left_of = |wanted: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == wanted => {
+                        Some(text.pos.x)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {wanted}"))
+        };
+
+        let (search, row) = (left_of("Search mail…"), left_of("p0"));
+        output.drop_without_applying_deltas();
+
+        assert!(
+            (search - row).abs() <= 0.5,
+            "search at {search}, rows at {row}"
+        );
     }
 
     fn pagination_mailbox(search: bool) -> Mailbox {
