@@ -35,6 +35,7 @@ pub use keys::{Key, KeyPress};
 pub use layout::{
     MIN_PANEL_WIDTH, compact as compact_layout, ratios as panel_ratios, widths as panel_widths,
 };
+use mailbox::ActionStart;
 pub use mailbox::{
     ActionRequest, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
 };
@@ -995,32 +996,58 @@ impl App {
             }
             Some(MailBackend::Proton(service)) => {
                 let request = self.next_request();
-                let Some(request) = self.active_mailbox().and_then(|mailbox| {
+                let Some(start) = self.active_mailbox().and_then(|mailbox| {
                     mailbox.start_action_on(undo.row_id, undo.kind, action, request)
                 }) else {
                     return Effects::none();
                 };
-                run_action(service, request, Message::ActionFinished)
+                self.show_started_action(&service, start)
             }
             None => Effects::none(),
         }
     }
 
-    /// Proton actions run asynchronously; the list changes only once Proton
-    /// confirms them.
+    /// Proton actions show at once and run asynchronously, one after
+    /// another; a refused one is taken back when Proton answers.
     fn start_proton_action(
         &mut self,
         service: Arc<ProtonMailService>,
         action: MailAction,
     ) -> Effects {
         let request = self.next_request();
-        let Some(request) = self
+        let Some(start) = self
             .active_mailbox()
             .and_then(|mailbox| mailbox.start_action(action, request))
         else {
             return Effects::none();
         };
-        run_action(service, request, Message::ActionFinished)
+        self.show_started_action(&service, start)
+    }
+
+    /// Sends what is ready, and opens the row that took the place of one the
+    /// action took out of the view.
+    fn show_started_action(
+        &mut self,
+        service: &Arc<ProtonMailService>,
+        start: ActionStart,
+    ) -> Effects {
+        let send = start.send.map_or_else(Effects::none, |request| {
+            run_action(Arc::clone(service), request, Message::ActionFinished)
+        });
+        let open = start.opened.map_or_else(Effects::none, |id| {
+            Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
+        });
+        Effects::batch([send, open])
+    }
+
+    /// Sends the next action in line, once the one before it has answered.
+    fn send_action(&self, request: Option<ActionRequest>) -> Effects {
+        match (request, self.backend.clone()) {
+            (Some(request), Some(MailBackend::Proton(service))) => {
+                run_action(service, request, Message::ActionFinished)
+            }
+            _ => Effects::none(),
+        }
     }
 
     fn finish_mail_action(
@@ -1028,20 +1055,33 @@ impl App {
         request: ActionRequest,
         result: Result<(), MailboxError>,
     ) -> Effects {
-        let Some(outcome) = self
+        let Some(finish) = self
             .mailbox
             .as_mut()
             .map(|mailbox| mailbox.finish_action(&request, result))
         else {
             return Effects::none();
         };
-        let next = match outcome {
-            Ok(next) => next,
-            Err(error) => {
-                self.handle_mailbox_error(Some(error));
+        if let Err(error) = finish.result {
+            // Proton is where the row really is: a row a refused move took
+            // out of the view comes back with the list.
+            let restore = self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.took_out(&request));
+            self.handle_mailbox_error(Some(error));
+            // An expired session closed the mailbox, and nothing is sent.
+            if self.mailbox.is_none() {
                 return Effects::none();
             }
-        };
+            let reload = if restore {
+                self.refresh_mailbox()
+            } else {
+                Effects::none()
+            };
+            return Effects::batch([self.send_action(finish.next), reload]);
+        }
+        let send_next = self.send_action(finish.next);
 
         // Reload only when undo returns a missing row to the visible folder.
         let arrived = self.mailbox.as_ref().is_some_and(|mailbox| {
@@ -1049,15 +1089,15 @@ impl App {
                 && !mailbox.has_row(&request.row_id)
         });
         if arrived {
-            return self.refresh_mailbox();
+            return Effects::batch([send_next, self.refresh_mailbox()]);
         }
 
         let counts = self.reload_counts();
-        let open_next = next.map_or_else(Effects::none, |id| {
+        let open_next = finish.opened.map_or_else(Effects::none, |id| {
             Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
         });
 
-        Effects::batch([counts, open_next])
+        Effects::batch([send_next, counts, open_next])
     }
 
     /// Once an unread Proton row's content is shown, marks it read on Proton.
@@ -1084,33 +1124,29 @@ impl App {
         request: ActionRequest,
         result: Result<(), MailboxError>,
     ) -> Effects {
-        match self
+        let Some(completion) = self
             .mailbox
             .as_mut()
             .map(|mailbox| mailbox.finish_mark_read(&request, result))
-        {
-            Some(Ok(completion)) => {
-                let next = match (completion.next_action, self.backend.clone()) {
-                    (Some(action), Some(MailBackend::Proton(service))) => {
-                        run_action(service, action, Message::ActionFinished)
-                    }
-                    _ => Effects::none(),
-                };
-                let counts = if completion.changed {
-                    self.reload_counts()
-                } else {
-                    Effects::none()
-                };
-                Effects::batch([next, counts])
+        else {
+            return Effects::none();
+        };
+        // The mailbox also records an error for any queued explicit action.
+        // An expired session closes the mailbox, and then nothing is sent.
+        if let Some(error) = completion.error {
+            self.handle_mailbox_error(Some(error));
+            if self.mailbox.is_none() {
+                return Effects::none();
             }
-            // The mailbox also records an error for any queued explicit action.
-            // An expired session closes the mailbox.
-            Some(Err(error)) => {
-                self.handle_mailbox_error(Some(error));
-                Effects::none()
-            }
-            _ => Effects::none(),
+            return self.send_action(completion.next_action);
         }
+        let next = self.send_action(completion.next_action);
+        let counts = if completion.changed {
+            self.reload_counts()
+        } else {
+            Effects::none()
+        };
+        Effects::batch([next, counts])
     }
 
     /// Proton owns the folder counts; reload them after a change.

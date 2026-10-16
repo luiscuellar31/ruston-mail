@@ -122,9 +122,15 @@ The reader can:
   label, Starred, or search results cannot be undone this way, because the
   conversation's folder is not known there; **Move to…** can still put it back.
 
+Actions show at once, without waiting for Proton: a moved conversation leaves
+the list and the next one opens, and its undo is offered right away. Actions
+taken in quick succession go to Proton one after another, in order. If Proton
+refuses one, the reader says so and the change is taken back; a moved
+conversation comes back when the folder reloads.
+
 If an automatic read is still pending, **Mark unread** waits for it to succeed
-before applying your choice. If that read fails or times out, the pending action
-reports an error; it is not shown as a successful change.
+before it is sent. If that read fails or times out, the pending action reports
+an error and is taken back.
 
 Ruston Mail does not permanently delete mail. It also cannot create, rename, or
 remove folders and labels yet.

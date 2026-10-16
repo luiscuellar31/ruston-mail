@@ -586,7 +586,7 @@ fn undo_notice(
                     ui.horizontal(|ui| {
                         ui.label(format!("Moved to {}.", offer.to.name()));
                         // The move back waits for a loading list.
-                        let ready = !mailbox.is_busy() && !mailbox.action_pending();
+                        let ready = !mailbox.is_busy();
                         if ui
                             .add_enabled(ready, theme::compact_button("Undo"))
                             .clicked()

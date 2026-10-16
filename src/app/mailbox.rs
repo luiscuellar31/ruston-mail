@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
@@ -50,11 +50,35 @@ pub struct ActionRequest {
     pub action: MailAction,
 }
 
-/// Confirmed automatic read and an explicit action now ready to send.
+/// How an automatic read ended, and the action that can be sent after it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReadCompletion {
+    /// Whether a loaded row went from unread to read.
     pub changed: bool,
+    /// An explicit read that waited for this one, or, when this read failed
+    /// and took that read down with it, the action waiting behind them.
     pub next_action: Option<ActionRequest>,
+    pub error: Option<MailboxError>,
+}
+
+/// What an action shows as soon as it is asked for, and what can be sent.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ActionStart {
+    /// The request to send now; `None` while it waits behind another action,
+    /// or for an automatic read of the same row.
+    pub send: Option<ActionRequest>,
+    /// The row opened in place of one the action took out of the view.
+    pub opened: Option<String>,
+}
+
+/// How an action ended, and the action that can be sent after it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ActionFinish {
+    pub result: Result<(), MailboxError>,
+    pub next: Option<ActionRequest>,
+    /// The row opened in place of one a reload had brought back while its
+    /// move was on the way.
+    pub opened: Option<String>,
 }
 
 /// A move the user can take back: the row, and where it came from.
@@ -319,7 +343,16 @@ pub struct Mailbox {
     /// Enter was pressed while a folder page was loading. Searching then
     /// would make that page look stale, so the search waits for it.
     search_deferred: bool,
+    /// The action on its way to Proton, or waiting for an automatic read of
+    /// the same row.
     action_request: Option<ActionRequest>,
+    /// Actions asked for while another was on its way, in the order asked.
+    /// Each already shows; they are sent one at a time, so taking a move back
+    /// always follows the move.
+    waiting_actions: VecDeque<ActionRequest>,
+    /// The flag each action shown early replaced, by request, to put back if
+    /// Proton refuses it.
+    shown_flags: HashMap<RequestId, MailAction>,
     action_error: Option<MailboxError>,
     /// The last move, while it can still be taken back.
     undo: Option<UndoMove>,
@@ -361,6 +394,8 @@ impl Mailbox {
             search_request: None,
             search_deferred: false,
             action_request: None,
+            waiting_actions: VecDeque::new(),
+            shown_flags: HashMap::new(),
             action_error: None,
             undo: None,
             pending_reads: HashMap::new(),
@@ -773,6 +808,7 @@ impl Mailbox {
         &self.reader
     }
 
+    #[cfg(test)]
     pub fn action_pending(&self) -> bool {
         self.action_request.is_some()
     }
@@ -979,9 +1015,13 @@ impl Mailbox {
         let row = self.row(reader.conversation_id())?;
         if !row.unread
             || self.pending_reads.contains_key(&row.id)
-            || self.action_request.as_ref().is_some_and(|action| {
-                action.row_id == row.id && matches!(action.action, MailAction::SetUnread(_))
-            })
+            || self
+                .action_request
+                .iter()
+                .chain(&self.waiting_actions)
+                .any(|action| {
+                    action.row_id == row.id && matches!(action.action, MailAction::SetUnread(_))
+                })
         {
             return None;
         }
@@ -1004,16 +1044,17 @@ impl Mailbox {
     /// mutation only after that confirmation. Stale responses release nothing.
     /// A failed predecessor also fails its queued action: a timed-out request
     /// might still be applied remotely, so it is unsafe to send its successor.
+    /// The action waiting behind that one is still sent.
     pub fn finish_mark_read(
         &mut self,
         request: &ActionRequest,
         result: Result<(), MailboxError>,
-    ) -> Result<ReadCompletion, MailboxError> {
+    ) -> ReadCompletion {
         if self.pending_reads.get(&request.row_id) != Some(&request.id) {
-            return Ok(ReadCompletion::default());
+            return ReadCompletion::default();
         }
         self.pending_reads.remove(&request.row_id);
-        let next_action = self
+        let waiting = self
             .action_request
             .as_ref()
             .filter(|action| {
@@ -1021,17 +1062,21 @@ impl Mailbox {
             })
             .cloned();
         if let Err(error) = result {
-            if let Some(action) = next_action {
-                let _ = self.finish_action(&action, Err(error));
-            }
-            return Err(error);
+            let next_action =
+                waiting.and_then(|action| self.finish_action(&action, Err(error)).next);
+            return ReadCompletion {
+                changed: false,
+                next_action,
+                error: Some(error),
+            };
         }
         self.invalidate_listings();
         if request.folder != self.folder {
-            return Ok(ReadCompletion {
+            return ReadCompletion {
                 changed: false,
-                next_action,
-            });
+                next_action: waiting,
+                error: None,
+            };
         }
 
         let mut found = false;
@@ -1040,10 +1085,11 @@ impl Mailbox {
             found = true;
         }
 
-        Ok(ReadCompletion {
+        ReadCompletion {
             changed: found,
-            next_action,
-        })
+            next_action: waiting,
+            error: None,
+        }
     }
 
     /// The move the user can still take back, if any.
@@ -1065,11 +1111,11 @@ impl Mailbox {
         };
     }
 
-    /// Claims the offer, so it is made only once. While the list loads or
-    /// another action runs, the move back could not start, so the offer
-    /// stays.
+    /// Claims the offer, so it is made only once. While the list loads, the
+    /// move back could not start, so the offer stays. Behind an action still
+    /// on its way, the move back waits its turn.
     pub fn take_undo(&mut self) -> Option<UndoMove> {
-        if self.is_busy() || self.action_pending() {
+        if self.is_busy() {
             return None;
         }
         self.undo.take()
@@ -1082,14 +1128,9 @@ impl Mailbox {
         }
     }
 
-    /// Accepts an action on the selected row. Returns it only when ready to
-    /// send; a read mutation waits for an automatic read already in flight.
-    /// Only one explicit action is pending, and none starts while loading.
-    pub fn start_action(
-        &mut self,
-        action: MailAction,
-        request: RequestId,
-    ) -> Option<ActionRequest> {
+    /// Accepts an action on the selected row and shows it at once, before
+    /// Proton answers. None starts while the list loads.
+    pub fn start_action(&mut self, action: MailAction, request: RequestId) -> Option<ActionStart> {
         let (row_id, kind) = self
             .selected_summary()
             .map(|summary| (summary.id.clone(), summary.kind))?;
@@ -1099,15 +1140,16 @@ impl Mailbox {
 
     /// Starts an action on a row by name, for rows the list no longer shows,
     /// such as one being moved back where it came from. Like `start_action`,
-    /// returns a request only when ready to send.
+    /// it shows at once. It is sent now unless another action is on its way,
+    /// or a read mutation waits for an automatic read of the same row.
     pub fn start_action_on(
         &mut self,
         row_id: String,
         kind: SummaryKind,
         action: MailAction,
         request: RequestId,
-    ) -> Option<ActionRequest> {
-        if self.is_busy() || self.action_request.is_some() {
+    ) -> Option<ActionStart> {
+        if self.is_busy() {
             return None;
         }
 
@@ -1120,41 +1162,104 @@ impl Mailbox {
             action,
         };
         self.action_error = None;
-        // Only the last move can be taken back, and only until the next one.
-        self.undo = None;
-        let wait_for_read = matches!(request.action, MailAction::SetUnread(_))
-            && self.pending_reads.contains_key(&request.row_id);
+        let opened = self.show_action(&request);
+        if self.action_request.is_some() {
+            self.waiting_actions.push_back(request);
+            return Some(ActionStart { send: None, opened });
+        }
         self.action_request = Some(request.clone());
-        (!wait_for_read).then_some(request)
+        Some(ActionStart {
+            send: self.ready_to_send(&request).then_some(request),
+            opened,
+        })
     }
 
-    /// Applies a current action response and returns the next row or error.
+    /// Whether a request can go now: a read mutation waits for an automatic
+    /// read of the same row already on its way.
+    fn ready_to_send(&self, request: &ActionRequest) -> bool {
+        !(matches!(request.action, MailAction::SetUnread(_))
+            && self.pending_reads.contains_key(&request.row_id))
+    }
+
+    /// Shows an action before Proton confirms it. A move out of the view takes
+    /// the row away, offers to take it back and returns the row opened in its
+    /// place; a flag changes on every copy of the row.
+    fn show_action(&mut self, request: &ActionRequest) -> Option<String> {
+        if self.leaves_view(&self.folder, &request.action) {
+            // Offered while the row is still listed, which tells where it was.
+            self.offer_undo(&request.row_id, request.kind, request.action.clone());
+            return self.remove_row(&request.row_id);
+        }
+        // Only the last move can be taken back, and only until the next action.
+        self.undo = None;
+        let before = self
+            .row(&request.row_id)
+            .and_then(|row| match request.action {
+                MailAction::SetUnread(unread) if row.unread != unread => {
+                    Some(MailAction::SetUnread(row.unread))
+                }
+                MailAction::SetStarred(starred) if row.starred != starred => {
+                    Some(MailAction::SetStarred(row.starred))
+                }
+                _ => None,
+            });
+        if let Some(before) = before {
+            self.shown_flags.insert(request.id, before);
+        }
+        self.record_action(&request.row_id, &request.action);
+        None
+    }
+
+    /// Settles the action on its way and names the next one to send. A refused
+    /// action is taken back: a flag returns to what it was, and a row a move
+    /// took out of the view comes back with the list, which the app reloads.
     pub fn finish_action(
         &mut self,
         request: &ActionRequest,
         result: Result<(), MailboxError>,
-    ) -> Result<Option<String>, MailboxError> {
+    ) -> ActionFinish {
         if self.action_request.as_ref() != Some(request) {
-            return Ok(None);
+            return ActionFinish {
+                result: Ok(()),
+                next: None,
+                opened: None,
+            };
         }
-        self.action_request = None;
+        self.action_request = self.waiting_actions.pop_front();
+        let next = self
+            .action_request
+            .clone()
+            .filter(|next| self.ready_to_send(next));
+        let before = self.shown_flags.remove(&request.id);
+        self.invalidate_listings();
         if let Err(error) = result {
             self.action_error = Some(error);
-            return Err(error);
+            self.take_back(request, before);
+            return ActionFinish {
+                result: Err(error),
+                next,
+                opened: None,
+            };
         }
-        self.invalidate_listings();
         // After a folder switch these rows no longer contain the acted-on row.
         if request.folder != self.folder {
-            return Ok(None);
+            return ActionFinish {
+                result: Ok(()),
+                next,
+                opened: None,
+            };
         }
 
-        if self.leaves_view(&request.folder, &request.action) {
-            self.offer_undo(&request.row_id, request.kind, request.action.clone());
-
-            return Ok(self.remove_row(&request.row_id));
-        }
-
-        self.record_action(&request.row_id, &request.action);
+        // A reload while the move was on its way can have brought the row back,
+        // and a confirmed automatic read can have covered an unread shown early.
+        let opened = if self.leaves_view(&self.folder, &request.action) {
+            self.remove_row(&request.row_id)
+        } else {
+            if !self.superseded(request) {
+                self.record_action(&request.row_id, &request.action);
+            }
+            None
+        };
         // The reader shows which labels the open conversation carries, and it
         // is the row that was just acted on.
         if let (MailAction::SetLabel { label, on }, ReaderState::Loaded(reader)) =
@@ -1163,7 +1268,48 @@ impl Mailbox {
         {
             reader.set_label(label, *on);
         }
-        Ok(None)
+        ActionFinish {
+            result: Ok(()),
+            next,
+            opened,
+        }
+    }
+
+    /// Undoes what a refused action showed early, where it can be undone here:
+    /// `before` is the flag it replaced.
+    fn take_back(&mut self, request: &ActionRequest, before: Option<MailAction>) {
+        // The move did not happen, so there is nothing to take back.
+        if self
+            .undo
+            .as_ref()
+            .is_some_and(|offer| offer.row_id == request.row_id)
+        {
+            self.undo = None;
+        }
+        if let Some(before) =
+            before.filter(|_| request.folder == self.folder && !self.superseded(request))
+        {
+            self.record_action(&request.row_id, &before);
+        }
+    }
+
+    /// Whether an action asked for later changes the same thing on the same
+    /// row, so that what it shows is what stays.
+    fn superseded(&self, request: &ActionRequest) -> bool {
+        self.action_request
+            .iter()
+            .chain(&self.waiting_actions)
+            .any(|later| {
+                later.row_id == request.row_id
+                    && std::mem::discriminant(&later.action)
+                        == std::mem::discriminant(&request.action)
+            })
+    }
+
+    /// Whether a refused action had taken its row out of the view on screen,
+    /// so only a reload can bring it back.
+    pub(super) fn took_out(&self, request: &ActionRequest) -> bool {
+        request.folder == self.folder && self.leaves_view(&self.folder, &request.action)
     }
 
     /// Whether this action removes the row from the current view.
@@ -1178,7 +1324,7 @@ impl Mailbox {
         }
     }
 
-    /// Applies a confirmed change to every loaded copy of the row.
+    /// Shows a change on every loaded copy of the row.
     pub fn record_action(&mut self, row_id: &str, action: &MailAction) {
         for row in self.row_copies(row_id) {
             match action {

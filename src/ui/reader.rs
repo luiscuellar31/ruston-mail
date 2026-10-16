@@ -321,7 +321,8 @@ fn reading_column(
             mailbox,
             &detail_data.labels,
             view.places,
-            !mailbox.is_busy() && !mailbox.action_pending(),
+            // An action asked for while another is on its way waits its turn.
+            !mailbox.is_busy(),
             messages,
         );
         if let Some(error) = mailbox.action_error() {

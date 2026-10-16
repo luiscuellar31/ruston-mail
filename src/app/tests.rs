@@ -1931,6 +1931,33 @@ fn demo_trash_and_spam_moves_update_folders() {
 }
 
 #[test]
+fn a_move_proton_refuses_brings_the_row_back_with_the_list() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    deliver_selected_demo_detail(&mut app);
+    // As the Proton path does: the move shows at once.
+    let request = app
+        .mailbox
+        .as_mut()
+        .unwrap()
+        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 90)
+        .and_then(|start| start.send)
+        .unwrap();
+    let has_row = |app: &App| app.mailbox().unwrap().has_row("demo-0");
+    assert!(!has_row(&app));
+
+    let _ = app.update(Message::ActionFinished(request, Err(MailboxError::Service)));
+
+    let mailbox = app.mailbox().unwrap();
+    assert_eq!(mailbox.action_error(), Some(MailboxError::Service));
+    let ListStatus::Refreshing(page) = mailbox.status() else {
+        panic!("the folder is read again");
+    };
+    deliver_demo_page(&mut app, page, 0);
+    assert!(has_row(&app), "Proton never moved it");
+}
+
+#[test]
 fn list_keys_wait_while_the_draft_covers_the_reader() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectConversation("demo-0".into()));

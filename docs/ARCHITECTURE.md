@@ -183,16 +183,27 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   native scroll and animation state left by a previous session. Explicit reveal
   requests take precedence, and sign-out clears the anchors. No complete listing snapshot or
   persistent scroll data is added.
+  An action shows as soon as it is asked for. A move out of the view takes the
+  row away, offers its undo and names the row to open in its place; a read or
+  star flag changes on every copy of the row, and the flag it replaced is kept
+  by request. One action is on its way to Proton at a time: actions asked for
+  meanwhile wait in order in the mailbox, so a move back follows its move, and
+  each completion returns the next request to `App`, which creates the
+  asynchronous effect only then. A refused action puts back the flag it
+  replaced, unless a later action changes the same flag, and drops its undo
+  offer; a row a refused move took out of the view comes back with the list,
+  which `App` reloads. A confirmation applies its flag again, over a confirmed
+  automatic read, and takes out again a row that a reload brought back while
+  its move was on the way.
   The mailbox state machine also orders read mutations by row. An explicit
-  read/unread action accepted during an automatic read remains in the existing
-  single action slot until that read succeeds. Its completion returns the next
-  request to `App`, which creates the asynchronous effect only then. A failed or
-  timed-out predecessor fails the queued action visibly instead of sending it with uncertain remote
-  ordering. Automatic reads cannot start while an explicit read mutation on the
-  same row is pending; other rows and action kinds keep their existing behavior.
-  Stale or duplicate completions never release a queued request. Successful
-  automatic reads still update local state, so a later explicit failure does
-  not hide an already confirmed read.
+  read/unread action accepted during an automatic read waits at the head of
+  that line until the read succeeds. A failed or timed-out predecessor fails it
+  visibly instead of sending it with uncertain remote ordering, and the action
+  behind it is still sent. Automatic reads cannot start while an explicit read
+  mutation on the same row is pending or waiting. Stale or duplicate
+  completions never release a queued request. Successful automatic reads still
+  update local state, so a later explicit failure does not hide an already
+  confirmed read.
 - `App` asks for the account's folders and labels when a mailbox opens; the
   Proton adapter requests the two lists at the same time. A list
   that arrives renames the open custom folder or, once it is gone, falls back

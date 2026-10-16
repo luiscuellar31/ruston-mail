@@ -117,6 +117,14 @@ fn load_detail(
     );
 }
 
+/// Starts an action on the selected row and expects it to go at once.
+fn send(mailbox: &mut Mailbox, action: MailAction, request: RequestId) -> ActionRequest {
+    mailbox
+        .start_action(action, request)
+        .and_then(|start| start.send)
+        .expect("the action goes at once")
+}
+
 fn searchable_mailbox() -> Mailbox {
     let (mut mailbox, request) = open();
     let conversations = vec![
@@ -283,9 +291,11 @@ fn an_empty_query_leaves_the_results_behind() {
 fn a_refresh_keeps_the_offer_to_undo() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
-    let request = mailbox
-        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4)
-        .unwrap();
+    let request = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        4,
+    );
     let _ = mailbox.finish_action(&request, Ok(()));
 
     // The moved row is already gone, so a reload changes nothing the offer
@@ -310,20 +320,23 @@ fn a_refresh_keeps_the_offer_to_undo() {
 fn a_move_out_of_a_folder_can_be_taken_back() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
-    let request = mailbox
+    let start = mailbox
         .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4)
         .unwrap();
-    assert!(mailbox.undo().is_none());
 
-    assert_eq!(
-        mailbox.finish_action(&request, Ok(())),
-        Ok(Some("b".into()))
-    );
-
+    // The move shows before Proton answers: the row leaves, the next one
+    // opens, and the move can be taken back at once.
+    assert_eq!(start.opened.as_deref(), Some("b"));
     let undo = mailbox.undo().expect("a move out of the Inbox undoes");
     assert_eq!(undo.row_id, "a");
     assert_eq!(undo.from, sys(MailFolder::Inbox));
     assert_eq!(undo.to, sys(MailFolder::Archive));
+    let finish = mailbox.finish_action(&start.send.unwrap(), Ok(()));
+    assert_eq!(finish.result, Ok(()));
+    assert!(
+        mailbox.undo().is_some(),
+        "confirming the move keeps the offer"
+    );
 
     // The offer is claimed once, and the next action replaces it.
     assert!(mailbox.take_undo().is_some());
@@ -337,13 +350,11 @@ fn archived_mail_can_go_back_to_the_inbox_and_that_can_be_taken_back_too() {
     mailbox.finish_page(request.id, page(&["a", "b"], 2));
     load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
 
-    let request = mailbox
+    let start = mailbox
         .start_action(MailAction::MoveTo(Folder::INBOX), 4)
         .unwrap();
-    assert_eq!(
-        mailbox.finish_action(&request, Ok(())),
-        Ok(Some("b".into()))
-    );
+    assert_eq!(start.opened.as_deref(), Some("b"));
+    let _ = mailbox.finish_action(&start.send.unwrap(), Ok(()));
 
     let undo = mailbox.undo().expect("a move back to the Inbox undoes");
     assert_eq!(undo.from, sys(MailFolder::Archive));
@@ -447,11 +458,12 @@ fn a_conversation_a_search_found_can_be_acted_on() {
     // it across every folder rather than in the open one.
     let request = mailbox
         .start_action(MailAction::SetStarred(true), 3)
+        .and_then(|start| start.send)
         .expect("a search result takes actions like any other row");
     assert_eq!(request.row_id, "found");
     assert_eq!(request.context, None);
 
-    assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+    assert_eq!(mailbox.finish_action(&request, Ok(())).result, Ok(()));
     assert!(
         mailbox
             .selected_summary()
@@ -469,7 +481,7 @@ fn a_search_result_is_marked_read_like_any_other_row() {
         .expect("opening a search result marks it read");
     assert_eq!(request.context, None);
 
-    assert!(mailbox.finish_mark_read(&request, Ok(())).unwrap().changed);
+    assert!(mailbox.finish_mark_read(&request, Ok(())).changed);
     assert!(!mailbox.selected_summary().unwrap().unread);
 }
 
@@ -479,11 +491,9 @@ fn a_row_in_both_listings_changes_in_both() {
     let mut mailbox = searched(&["a"], &["a"], "a");
 
     // It is listed in the folder, so the open folder is the context.
-    let request = mailbox
-        .start_action(MailAction::SetStarred(true), 3)
-        .unwrap();
+    let request = send(&mut mailbox, MailAction::SetStarred(true), 3);
     assert_eq!(request.context.as_ref(), Some(&sys(MailFolder::Inbox)));
-    assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+    assert_eq!(mailbox.finish_action(&request, Ok(())).result, Ok(()));
 
     // Both copies agree, so the folder listing holds no stale row waiting
     // for the search to be left behind.
@@ -495,18 +505,17 @@ fn a_row_in_both_listings_changes_in_both() {
 fn a_row_moved_out_leaves_the_search_results_too() {
     let mut mailbox = searched(&["a"], &["a", "b"], "a");
 
-    let request = mailbox
+    let start = mailbox
         .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
         .unwrap();
 
     // Reading goes on with the next result, and the moved row is gone
     // from the results and from the folder listing alike.
-    assert_eq!(
-        mailbox.finish_action(&request, Ok(())),
-        Ok(Some("b".into()))
-    );
+    assert_eq!(start.opened.as_deref(), Some("b"));
     assert!(!mailbox.has_row("a"));
     assert!(mailbox.conversations().is_empty());
+    let _ = mailbox.finish_action(&start.send.unwrap(), Ok(()));
+    assert!(!mailbox.has_row("a"));
 }
 
 #[test]
@@ -584,13 +593,11 @@ fn results_on_screen_offer_no_next_page() {
 fn moving_a_row_only_a_search_found_offers_no_undo() {
     let mut mailbox = searched(&["a"], &["found", "next"], "found");
 
-    let request = mailbox
+    let start = mailbox
         .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
         .unwrap();
-    assert_eq!(
-        mailbox.finish_action(&request, Ok(())),
-        Ok(Some("next".into()))
-    );
+    assert_eq!(start.opened.as_deref(), Some("next"));
+    let _ = mailbox.finish_action(&start.send.unwrap(), Ok(()));
 
     // The search listed every folder at once, so the Inbox is not where
     // this row came from and putting it there would be a move of its own.
@@ -623,8 +630,9 @@ fn a_label_leaves_the_row_where_it_is() {
             },
             4,
         )
+        .and_then(|start| start.send)
         .unwrap();
-    assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+    assert_eq!(mailbox.finish_action(&request, Ok(())).result, Ok(()));
 
     // The row keeps its place in the Inbox, and the reader shows the
     // label without loading the conversation again.
@@ -647,7 +655,7 @@ fn taking_a_label_away_inside_its_own_view_empties_the_row_out() {
     mailbox.finish_page(page_request.id, page(&["r1", "r2"], 2));
     load_detail(&mut mailbox, "r1", detail("r1", &["m1"]), 3);
 
-    let request = mailbox
+    let start = mailbox
         .start_action(
             MailAction::SetLabel {
                 label: receipts,
@@ -659,10 +667,7 @@ fn taking_a_label_away_inside_its_own_view_empties_the_row_out() {
 
     // Nothing in this view carries the label any more, so reading moves
     // on to the row that took its place.
-    assert_eq!(
-        mailbox.finish_action(&request, Ok(())),
-        Ok(Some("r2".into()))
-    );
+    assert_eq!(start.opened.as_deref(), Some("r2"));
     assert!(!mailbox.has_row("r1"));
 }
 
@@ -671,9 +676,7 @@ fn flags_and_labels_offer_nothing_to_undo() {
     // A flag change moves nothing.
     let mut mailbox = loaded_inbox(&["a"], 1);
     load_detail(&mut mailbox, "a", detail("a", &["a1"]), 2);
-    let request = mailbox
-        .start_action(MailAction::SetStarred(true), 3)
-        .unwrap();
+    let request = send(&mut mailbox, MailAction::SetStarred(true), 3);
     let _ = mailbox.finish_action(&request, Ok(()));
     assert!(mailbox.undo().is_none());
 
@@ -681,9 +684,11 @@ fn flags_and_labels_offer_nothing_to_undo() {
     let page_request = mailbox.select_folder(sys(MailFolder::Starred), 4).unwrap();
     mailbox.finish_page(page_request.id, page(&["s1"], 1));
     load_detail(&mut mailbox, "s1", detail("s1", &["m1"]), 5);
-    let request = mailbox
-        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 6)
-        .unwrap();
+    let request = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        6,
+    );
     let _ = mailbox.finish_action(&request, Ok(()));
 
     assert!(mailbox.undo().is_none());
@@ -694,9 +699,11 @@ fn flags_and_labels_offer_nothing_to_undo() {
         .unwrap();
     mailbox.finish_page(page_request.id, page(&["r1"], 1));
     load_detail(&mut mailbox, "r1", detail("r1", &["m1"]), 8);
-    let request = mailbox
-        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 9)
-        .unwrap();
+    let request = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        9,
+    );
     let _ = mailbox.finish_action(&request, Ok(()));
 
     assert!(mailbox.undo().is_none());
@@ -922,10 +929,8 @@ fn a_changed_mailbox_restores_cached_rows_while_revalidating() {
     let sent = mailbox.select_folder(sys(MailFolder::Sent), 3).unwrap();
     mailbox.finish_page(sent.id, page(&["sent"], 1));
     load_detail(&mut mailbox, "sent", detail("sent", &["message"]), 4);
-    let action = mailbox
-        .start_action(MailAction::SetStarred(true), 5)
-        .unwrap();
-    assert_eq!(mailbox.finish_action(&action, Ok(())), Ok(None));
+    let action = send(&mut mailbox, MailAction::SetStarred(true), 5);
+    assert_eq!(mailbox.finish_action(&action, Ok(())).result, Ok(()));
 
     let refresh = mailbox
         .select_folder(sys(MailFolder::Inbox), 6)
@@ -1135,7 +1140,7 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
     let read = mailbox.start_mark_read(10).unwrap();
     let next = mailbox.load_more(11).unwrap();
 
-    mailbox.finish_mark_read(&read, Ok(())).unwrap();
+    mailbox.finish_mark_read(&read, Ok(()));
     mailbox.finish_page(next.id, full_page(50, 120));
     assert!(mailbox.needs_revalidation());
     let refresh = mailbox.refresh(12).unwrap();
@@ -1615,7 +1620,7 @@ fn opened_unread_rows_are_marked_read_once_confirmed() {
     assert_eq!(mailbox.start_mark_read(4), None);
     assert!(mailbox.selected_summary().unwrap().unread);
 
-    assert!(mailbox.finish_mark_read(&request, Ok(())).unwrap().changed);
+    assert!(mailbox.finish_mark_read(&request, Ok(())).changed);
     assert!(!mailbox.selected_summary().unwrap().unread);
     assert_eq!(mailbox.start_mark_read(5), None);
 }
@@ -1653,11 +1658,13 @@ fn failed_or_stale_reads_leave_the_row_unread() {
 
     assert_eq!(
         mailbox.finish_mark_read(&stale, Ok(())),
-        Ok(ReadCompletion::default())
+        ReadCompletion::default()
     );
     assert_eq!(
-        mailbox.finish_mark_read(&request, Err(MailboxError::Connection)),
-        Err(MailboxError::Connection)
+        mailbox
+            .finish_mark_read(&request, Err(MailboxError::Connection))
+            .error,
+        Some(MailboxError::Connection)
     );
     assert!(mailbox.selected_summary().unwrap().unread);
     assert!(mailbox.start_mark_read(4).is_some());
@@ -1669,7 +1676,10 @@ fn explicit_read_mutations_wait_for_the_automatic_read() {
         let mut mailbox = opened_unread(&["a"], "a");
         let _read = mailbox.start_mark_read(3).unwrap();
 
-        assert_eq!(mailbox.start_action(MailAction::SetUnread(unread), 4), None);
+        assert_eq!(
+            mailbox.start_action(MailAction::SetUnread(unread), 4),
+            Some(ActionStart::default())
+        );
         assert!(mailbox.action_pending(), "the user's action stays queued");
         assert_eq!(mailbox.start_mark_read(5), None);
     }
@@ -1700,15 +1710,21 @@ fn failed_automatic_reads_fail_the_queued_action_without_sending_it() {
     ] {
         let mut mailbox = opened_unread(&["a"], "a");
         let read = mailbox.start_mark_read(3).unwrap();
-        assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
+        assert_eq!(
+            mailbox.start_action(MailAction::SetUnread(true), 4),
+            Some(ActionStart::default())
+        );
 
-        assert_eq!(mailbox.finish_mark_read(&read, Err(error)), Err(error));
+        assert_eq!(
+            mailbox.finish_mark_read(&read, Err(error)).error,
+            Some(error)
+        );
         assert!(!mailbox.action_pending());
         assert_eq!(mailbox.action_error(), Some(error));
         assert!(mailbox.selected_summary().unwrap().unread);
         assert_eq!(
             mailbox.finish_mark_read(&read, Ok(())),
-            Ok(ReadCompletion::default())
+            ReadCompletion::default()
         );
     }
 }
@@ -1717,15 +1733,16 @@ fn failed_automatic_reads_fail_the_queued_action_without_sending_it() {
 fn a_failed_explicit_unread_keeps_the_confirmed_automatic_read() {
     let mut mailbox = opened_unread(&["a"], "a");
     let read = mailbox.start_mark_read(3).unwrap();
-    assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
-    let action = mailbox
-        .finish_mark_read(&read, Ok(()))
-        .unwrap()
-        .next_action
-        .unwrap();
+    assert_eq!(
+        mailbox.start_action(MailAction::SetUnread(true), 4),
+        Some(ActionStart::default())
+    );
+    let action = mailbox.finish_mark_read(&read, Ok(())).next_action.unwrap();
 
     assert_eq!(
-        mailbox.finish_action(&action, Err(MailboxError::Connection)),
+        mailbox
+            .finish_action(&action, Err(MailboxError::Connection))
+            .result,
         Err(MailboxError::Connection)
     );
     assert!(!mailbox.selected_summary().unwrap().unread);
@@ -1739,7 +1756,10 @@ fn only_the_current_read_of_the_same_row_releases_a_queued_action() {
     let load = mailbox.start_conversation_load("b".into(), 4).unwrap();
     mailbox.finish_conversation(&load, Ok(detail("b", &["message-b"])));
     let second = mailbox.start_mark_read(5).unwrap();
-    assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 6), None);
+    assert_eq!(
+        mailbox.start_action(MailAction::SetUnread(true), 6),
+        Some(ActionStart::default())
+    );
 
     let stale = ActionRequest {
         id: 99,
@@ -1747,20 +1767,19 @@ fn only_the_current_read_of_the_same_row_releases_a_queued_action() {
     };
     assert_eq!(
         mailbox.finish_mark_read(&stale, Ok(())),
-        Ok(ReadCompletion::default())
+        ReadCompletion::default()
     );
     assert!(
         mailbox
             .finish_mark_read(&first, Ok(()))
-            .unwrap()
             .next_action
             .is_none()
     );
-    let completion = mailbox.finish_mark_read(&second, Ok(())).unwrap();
+    let completion = mailbox.finish_mark_read(&second, Ok(()));
     assert_eq!(completion.next_action.unwrap().id, 6);
     assert_eq!(
         mailbox.finish_mark_read(&second, Ok(())),
-        Ok(ReadCompletion::default())
+        ReadCompletion::default()
     );
 }
 
@@ -1768,16 +1787,19 @@ fn only_the_current_read_of_the_same_row_releases_a_queued_action() {
 fn queued_read_actions_keep_their_original_folder_after_navigation() {
     let mut mailbox = opened_unread(&["a"], "a");
     let read = mailbox.start_mark_read(3).unwrap();
-    assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
+    assert_eq!(
+        mailbox.start_action(MailAction::SetUnread(true), 4),
+        Some(ActionStart::default())
+    );
     mailbox.select_folder(sys(MailFolder::Sent), 5);
     mailbox.finish_page(5, page(&["b"], 1));
 
-    let completion = mailbox.finish_mark_read(&read, Ok(())).unwrap();
+    let completion = mailbox.finish_mark_read(&read, Ok(()));
     assert!(!completion.changed);
     let action = completion.next_action.unwrap();
     assert_eq!(action.context, Some(Folder::INBOX));
     assert_eq!(action.folder, Folder::INBOX);
-    assert_eq!(mailbox.finish_action(&action, Ok(())), Ok(None));
+    assert_eq!(mailbox.finish_action(&action, Ok(())).result, Ok(()));
     assert_eq!(ids(&mailbox), ["b"]);
 }
 
@@ -1785,17 +1807,14 @@ fn queued_read_actions_keep_their_original_folder_after_navigation() {
 fn unrelated_actions_do_not_wait_for_automatic_reads() {
     let mut mailbox = opened_unread(&["a"], "a");
     let read = mailbox.start_mark_read(3).unwrap();
-    let star = mailbox
-        .start_action(MailAction::SetStarred(true), 4)
-        .unwrap();
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
     assert!(
         mailbox
             .finish_mark_read(&read, Ok(()))
-            .unwrap()
             .next_action
             .is_none()
     );
-    assert_eq!(mailbox.finish_action(&star, Ok(())), Ok(None));
+    assert_eq!(mailbox.finish_action(&star, Ok(())).result, Ok(()));
     assert!(mailbox.selected_summary().unwrap().starred);
 }
 
@@ -1807,9 +1826,12 @@ fn explicit_unread_wins_over_an_automatic_read() {
         let mut mailbox = opened_unread(&["a"], "a");
         mailbox.conversations[0].kind = kind;
         let read = mailbox.start_mark_read(3).unwrap();
-        assert_eq!(mailbox.start_action(MailAction::SetUnread(true), 4), None);
+        assert_eq!(
+            mailbox.start_action(MailAction::SetUnread(true), 4),
+            Some(ActionStart::default())
+        );
 
-        let completion = mailbox.finish_mark_read(&read, Ok(())).unwrap();
+        let completion = mailbox.finish_mark_read(&read, Ok(()));
         assert!(completion.changed);
         assert!(!mailbox.selected_summary().unwrap().unread);
         let unread = completion
@@ -1817,11 +1839,11 @@ fn explicit_unread_wins_over_an_automatic_read() {
             .expect("the explicit action is now ready");
         assert_eq!(unread.id, 4);
         assert_eq!(unread.action, MailAction::SetUnread(true));
-        assert_eq!(mailbox.finish_action(&unread, Ok(())), Ok(None));
+        assert_eq!(mailbox.finish_action(&unread, Ok(())).result, Ok(()));
         assert!(mailbox.selected_summary().unwrap().unread);
         assert_eq!(
             mailbox.finish_mark_read(&read, Ok(())),
-            Ok(ReadCompletion::default())
+            ReadCompletion::default()
         );
     }
 }
@@ -1845,7 +1867,7 @@ fn reads_after_a_folder_switch_change_nothing() {
 
     assert_eq!(
         mailbox.finish_mark_read(&request, Ok(())),
-        Ok(ReadCompletion::default())
+        ReadCompletion::default()
     );
     assert!(mailbox.conversations()[0].unread);
 
@@ -1857,36 +1879,17 @@ fn reads_after_a_folder_switch_change_nothing() {
 }
 
 #[test]
-fn one_action_runs_at_a_time_on_the_selected_row() {
-    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
-
-    let request = mailbox
-        .start_action(MailAction::SetStarred(true), 3)
-        .unwrap();
-
-    assert_eq!(request.row_id, "a");
-    assert_eq!(request.folder, sys(MailFolder::Inbox));
-    assert!(mailbox.action_pending());
-    assert_eq!(
-        mailbox.start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4),
-        None
-    );
-}
-
-#[test]
 fn automatic_refresh_waits_for_pending_mail_changes() {
     let mut mailbox = opened_unread(&["a"], "a");
     assert!(mailbox.auto_refresh_available());
 
     let read = mailbox.start_mark_read(3).unwrap();
     assert!(!mailbox.auto_refresh_available());
-    assert!(mailbox.finish_mark_read(&read, Ok(())).unwrap().changed);
+    assert!(mailbox.finish_mark_read(&read, Ok(())).changed);
 
-    let action = mailbox
-        .start_action(MailAction::SetStarred(true), 4)
-        .unwrap();
+    let action = send(&mut mailbox, MailAction::SetStarred(true), 4);
     assert!(!mailbox.auto_refresh_available());
-    assert_eq!(mailbox.finish_action(&action, Ok(())), Ok(None));
+    assert_eq!(mailbox.finish_action(&action, Ok(())).result, Ok(()));
     assert!(mailbox.auto_refresh_available());
 }
 
@@ -1906,14 +1909,10 @@ fn actions_wait_for_the_list_to_load() {
 fn confirmed_flag_changes_update_the_row() {
     let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
 
-    let unread = mailbox
-        .start_action(MailAction::SetUnread(true), 3)
-        .unwrap();
-    assert_eq!(mailbox.finish_action(&unread, Ok(())), Ok(None));
-    let star = mailbox
-        .start_action(MailAction::SetStarred(true), 4)
-        .unwrap();
-    assert_eq!(mailbox.finish_action(&star, Ok(())), Ok(None));
+    let unread = send(&mut mailbox, MailAction::SetUnread(true), 3);
+    assert_eq!(mailbox.finish_action(&unread, Ok(())).result, Ok(()));
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    assert_eq!(mailbox.finish_action(&star, Ok(())).result, Ok(()));
 
     let row = mailbox.selected_summary().unwrap();
     assert!(row.unread && row.starred);
@@ -1921,30 +1920,33 @@ fn confirmed_flag_changes_update_the_row() {
 }
 
 #[test]
-fn confirmed_moves_remove_the_row_and_open_the_next() {
+fn a_move_takes_the_row_out_and_opens_the_next_before_proton_answers() {
     let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b", "c"], "b");
 
-    let request = mailbox
+    let start = mailbox
         .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
         .unwrap();
 
-    assert_eq!(
-        mailbox.finish_action(&request, Ok(())),
-        Ok(Some("c".into()))
-    );
+    assert_eq!(start.opened.as_deref(), Some("c"));
     assert_eq!(ids(&mailbox), ["a", "c"]);
     assert_eq!(mailbox.reader_state(), &ReaderState::Empty);
+    let finish = mailbox.finish_action(&start.send.unwrap(), Ok(()));
+    assert_eq!(finish.result, Ok(()));
+    assert_eq!(finish.opened, None);
+    assert_eq!(ids(&mailbox), ["a", "c"]);
 }
 
 #[test]
 fn moving_into_the_current_folder_keeps_the_row() {
     let mut mailbox = selected_in(MailFolder::Archive, &["a"], "a");
 
-    let request = mailbox
-        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
-        .unwrap();
+    let request = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
 
-    assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+    assert_eq!(mailbox.finish_action(&request, Ok(())).result, Ok(()));
     assert_eq!(ids(&mailbox), ["a"]);
 }
 
@@ -1952,50 +1954,142 @@ fn moving_into_the_current_folder_keeps_the_row() {
 fn unstarring_in_starred_removes_the_row() {
     let mut mailbox = selected_in(MailFolder::Starred, &["a", "b"], "b");
 
-    let request = mailbox
+    let start = mailbox
         .start_action(MailAction::SetStarred(false), 3)
         .unwrap();
 
-    assert_eq!(
-        mailbox.finish_action(&request, Ok(())),
-        Ok(Some("a".into()))
-    );
+    assert_eq!(start.opened.as_deref(), Some("a"));
     assert_eq!(ids(&mailbox), ["a"]);
 }
 
 #[test]
-fn failed_actions_keep_rows_and_report_the_error() {
+fn a_refused_move_reports_the_error_and_asks_for_the_list_again() {
     let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
-    let request = mailbox
-        .start_action(MailAction::MoveTo(sys(MailFolder::Trash)), 3)
-        .unwrap();
+    let request = send(&mut mailbox, MailAction::MoveTo(sys(MailFolder::Trash)), 3);
+    assert!(mailbox.undo().is_some());
 
-    let result = mailbox.finish_action(&request, Err(MailboxError::Service));
+    let finish = mailbox.finish_action(&request, Err(MailboxError::Service));
 
-    assert_eq!(result, Err(MailboxError::Service));
-    assert_eq!(ids(&mailbox), ["a", "b"]);
+    assert_eq!(finish.result, Err(MailboxError::Service));
     assert_eq!(mailbox.action_error(), Some(MailboxError::Service));
     assert!(!mailbox.action_pending());
+    // The move did not happen, so there is nothing to take back, and only
+    // the list Proton sends can put the row back where it is.
+    assert!(mailbox.undo().is_none());
+    assert!(mailbox.took_out(&request));
+    assert_eq!(ids(&mailbox), ["b"]);
+}
+
+#[test]
+fn a_flag_shows_at_once_and_goes_back_if_proton_refuses_it() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
+
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 3);
+    assert!(mailbox.selected_summary().unwrap().starred);
+    let finish = mailbox.finish_action(&star, Err(MailboxError::Connection));
+    assert_eq!(finish.result, Err(MailboxError::Connection));
+    assert!(!mailbox.selected_summary().unwrap().starred);
+    assert!(!mailbox.took_out(&star));
+
+    // Asking for what the row already has changes nothing to put back.
+    let unread = send(&mut mailbox, MailAction::SetUnread(false), 4);
+    let _ = mailbox.finish_action(&unread, Err(MailboxError::Connection));
+    assert!(!mailbox.selected_summary().unwrap().unread);
+}
+
+#[test]
+fn an_action_asked_for_while_another_is_on_its_way_waits_its_turn() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b", "c"], "a");
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 3);
+
+    // The second press is neither lost nor sent alongside the first: it
+    // shows at once and goes when the first has answered.
+    let archive = mailbox
+        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4)
+        .unwrap();
+    assert_eq!(archive.send, None);
+    assert_eq!(archive.opened.as_deref(), Some("b"));
+    assert_eq!(ids(&mailbox), ["b", "c"]);
+    // The app opens the row the move left in its place.
+    mailbox.start_conversation_load("b".into(), 6).unwrap();
+    let trash = mailbox
+        .start_action(MailAction::MoveTo(sys(MailFolder::Trash)), 5)
+        .unwrap();
+    assert_eq!(trash.opened.as_deref(), Some("c"));
+
+    let next = mailbox.finish_action(&star, Ok(())).next.unwrap();
+    assert_eq!((next.id, next.row_id.as_str()), (4, "a"));
+    let last = mailbox.finish_action(&next, Ok(())).next.unwrap();
+    assert_eq!((last.id, last.row_id.as_str()), (5, "b"));
+    assert_eq!(mailbox.finish_action(&last, Ok(())).next, None);
+    assert!(!mailbox.action_pending());
+}
+
+#[test]
+fn taking_a_move_back_goes_after_the_move() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+
+    let undo = mailbox
+        .take_undo()
+        .expect("a move can be taken back while it is on its way");
+    let back = mailbox
+        .start_action_on(undo.row_id, undo.kind, MailAction::MoveTo(undo.from), 4)
+        .unwrap();
+    assert_eq!(back.send, None, "the move back waits for the move");
+
+    let next = mailbox.finish_action(&archive, Ok(())).next.unwrap();
+    assert_eq!(next.id, 4);
+    assert_eq!(next.action, MailAction::MoveTo(Folder::INBOX));
+}
+
+#[test]
+fn a_reload_while_a_move_is_on_its_way_cannot_bring_the_row_back() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "b");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+    assert_eq!(ids(&mailbox), ["a"]);
+
+    // Proton had not moved it yet when the page was read.
+    let refresh = mailbox.refresh(4).unwrap();
+    mailbox.finish_page(refresh.id, page(&["a", "b"], 2));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    assert_eq!(ids(&mailbox), ["a"]);
 }
 
 #[test]
 fn stale_or_moved_action_responses_change_nothing() {
     let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
-    let request = mailbox
-        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 3)
-        .unwrap();
+    let request = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
     let stale = ActionRequest {
         id: 99,
         ..request.clone()
     };
 
-    assert_eq!(mailbox.finish_action(&stale, Ok(())), Ok(None));
-    assert_eq!(ids(&mailbox), ["a", "b"]);
+    let finish = mailbox.finish_action(&stale, Ok(()));
+    assert_eq!(
+        (finish.result, finish.next, finish.opened),
+        (Ok(()), None, None)
+    );
+    assert_eq!(ids(&mailbox), ["b"]);
     assert!(mailbox.action_pending());
 
     mailbox.select_folder(sys(MailFolder::Sent), 4);
     mailbox.finish_page(4, page(&["a"], 1));
-    assert_eq!(mailbox.finish_action(&request, Ok(())), Ok(None));
+    assert_eq!(mailbox.finish_action(&request, Ok(())).result, Ok(()));
     assert_eq!(ids(&mailbox), ["a"]);
 }
 
