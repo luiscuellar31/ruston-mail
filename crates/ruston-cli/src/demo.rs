@@ -986,7 +986,13 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 render::action_result(ctx.json, "unstar", &ids);
                 Ok(())
             }
-            ConversationsCmd::Snooze { ids, .. } => {
+            ConversationsCmd::Snooze {
+                ids,
+                until,
+                relative,
+            } => {
+                // Refuse what the live command refuses.
+                crate::commands::conversations::snooze_time(until, relative.as_deref(), 0)?;
                 render::action_result(ctx.json, "snooze", &ids);
                 Ok(())
             }

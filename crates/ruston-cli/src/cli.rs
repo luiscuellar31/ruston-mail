@@ -616,9 +616,11 @@ pub enum ConversationsCmd {
     Snooze {
         #[arg(required = true)]
         ids: Vec<String>,
+        /// Unix time in seconds; used instead of --in if both are given.
         #[arg(long)]
         until: Option<i64>,
-        /// Relative duration from now, e.g. `30m`, `2h`, `1d`.
+        /// A positive duration from now: seconds, or a number with s, m, h or
+        /// d, e.g. `30m`, `2h`, `1d`.
         #[arg(long = "in")]
         relative: Option<String>,
     },
