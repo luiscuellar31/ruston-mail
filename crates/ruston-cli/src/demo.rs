@@ -1079,13 +1079,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 render::messages_list(ctx.json, total, &paged);
                 Ok(())
             }
-            DraftsCmd::Save(args) => {
-                let id = "draft-demo-saved-01";
-                if ctx.json {
-                    render::sent(true, id);
-                } else {
-                    terminal::println!("Draft saved (id {id}) for subject: '{}'", args.subject);
-                }
+            DraftsCmd::Save(_) => {
+                render::draft_saved(ctx.json, "draft-demo-saved-01");
                 Ok(())
             }
             DraftsCmd::Edit { id, args } => {

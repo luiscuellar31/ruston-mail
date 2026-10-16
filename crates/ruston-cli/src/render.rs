@@ -378,6 +378,15 @@ pub fn sent(json: bool, id: &str) {
     terminal::println!("Sent (id {id})");
 }
 
+/// Report a saved draft, which was not sent (returns its message ID).
+pub fn draft_saved(json: bool, id: &str) {
+    if json {
+        json_out(&json!({ "status": "ok", "id": id }));
+        return;
+    }
+    terminal::println!("Draft saved (id {id})");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

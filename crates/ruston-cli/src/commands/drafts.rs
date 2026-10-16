@@ -22,7 +22,7 @@ pub async fn run(ctx: &Ctx, cmd: DraftsCmd) -> Result<()> {
             let body = read_body(&args.body)?;
             let opts = send_options(args, body);
             let id = client.save_draft(&opts).await?;
-            render::sent(ctx.json, &id);
+            render::draft_saved(ctx.json, &id);
         }
         DraftsCmd::Edit { id, args } => {
             let body = read_body(&args.body)?;

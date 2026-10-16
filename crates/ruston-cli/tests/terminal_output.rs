@@ -115,3 +115,32 @@ fn a_second_demo_export_into_the_same_folder_resumes() {
         "{text}"
     );
 }
+
+#[test]
+fn a_saved_draft_is_reported_as_saved_not_sent() {
+    let args = [
+        "--demo",
+        "drafts",
+        "save",
+        "--to",
+        "ana@example.org",
+        "--subject",
+        "Plans",
+        "--body",
+        "Hi",
+    ];
+    let text = run(&args);
+    assert!(text.status.success());
+    assert_eq!(
+        assert_safe(&text.stdout),
+        "Draft saved (id draft-demo-saved-01)\n"
+    );
+
+    let json = run(&[&["--json"][..], &args].concat());
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"status": "ok", "id": "draft-demo-saved-01"})
+    );
+}
