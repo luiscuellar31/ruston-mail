@@ -18,6 +18,15 @@ impl Request {
         (self.to, self.subject, self.body)
     }
 
+    /// Whether `input` is a mailto link at all, whether or not it can be
+    /// opened: the scheme test [`parse`](Self::parse) starts with.
+    pub fn is_mailto(input: &str) -> bool {
+        input
+            .trim()
+            .split_once(':')
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("mailto"))
+    }
+
     pub fn parse(input: &str) -> Option<Self> {
         // Check before any URL normalization can strip newlines or controls.
         if input.len() > MAX_URL_BYTES || input.chars().any(char::is_control) {

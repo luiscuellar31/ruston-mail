@@ -28,6 +28,10 @@ const TIMEOUT: Duration = Duration::from_secs(1);
 /// idle connections must not use up a later launch's retries.
 const HEADER_TIMEOUT: Duration = Duration::from_millis(200);
 const MAGIC: &[u8; 4] = b"RM01";
+/// Forwarded in place of a mailto link over the size limit, which the
+/// receiving process would drop without an answer. Every version refuses to
+/// open a lone `%`, so the window still says the link was not opened.
+const OVERSIZED_LINK: &str = "mailto:%";
 
 pub enum Start {
     Forwarded,
@@ -35,10 +39,11 @@ pub enum Start {
 }
 
 /// Startup arguments retain their original URI only for forwarding to another
-/// process. Within this process, the parsed request is carried directly.
+/// process. Within this process, the parsed request is carried directly; a
+/// mailto link this version cannot open has none.
 pub struct Argument {
     url: String,
-    request: Request,
+    request: Option<Request>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -157,7 +162,9 @@ impl Instance {
         };
         // Seed startup links before making the endpoint available to secondaries.
         for argument in urls {
-            instance.sender.send(Event::Mailto(argument.request));
+            instance
+                .sender
+                .send(argument.request.map_or(Event::Rejected, Event::Mailto));
         }
         let record = EndpointRecord {
             port: address.port(),
@@ -334,7 +341,12 @@ fn forward_to_primary(endpoint: &Path, urls: Vec<Argument>) -> io::Result<()> {
         return forward(&mut stream, "");
     }
     for argument in urls {
-        forward(&mut stream, &argument.url)?;
+        let url = if argument.url.len() > MAX_URL_BYTES {
+            OVERSIZED_LINK
+        } else {
+            &argument.url
+        };
+        forward(&mut stream, url)?;
     }
     Ok(())
 }
@@ -411,7 +423,12 @@ fn receive(stream: &mut TcpStream, token: &[u8; 32], sender: &Sender) -> io::Res
         let event = if url.is_empty() {
             Some(Event::Activate)
         } else {
-            Request::parse(&url).map(Event::Mailto)
+            match Request::parse(&url) {
+                Some(request) => Some(Event::Mailto(request)),
+                // The window still says a link arrived and was not opened.
+                None if Request::is_mailto(&url) => Some(Event::Rejected),
+                None => None,
+            }
         };
         let accepted = event.is_some_and(|event| sender.send(event));
         stream.write_all(&[u8::from(accepted)])?;
@@ -457,6 +474,8 @@ fn read_until(stream: &mut TcpStream, mut buffer: &mut [u8], deadline: Instant) 
 }
 
 /// Desktop URI arguments are data, never shell commands or frontend switches.
+/// Anything but a mailto link stops the launch. A mailto link this version
+/// cannot open still reaches the window, which says it was not opened.
 pub fn arguments(args: impl IntoIterator<Item = std::ffi::OsString>) -> io::Result<Vec<Argument>> {
     let mut urls = Vec::new();
     for arg in args {
@@ -477,9 +496,13 @@ pub fn arguments(args: impl IntoIterator<Item = std::ffi::OsString>) -> io::Resu
                 "expected a valid mailto link",
             ));
         }
-        let request = Request::parse(&url).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "expected a valid mailto link")
-        })?;
+        let request = Request::parse(&url);
+        if request.is_none() && !Request::is_mailto(&url) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "expected a valid mailto link",
+            ));
+        }
         urls.push(Argument { url, request });
     }
     Ok(urls)

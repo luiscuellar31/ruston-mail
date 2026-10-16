@@ -133,6 +133,8 @@ are supported. A link with more recipients is rejected, and so is one whose
 recipient domain is not written in ASCII, as in the composer. CC/BCC,
 attachments, and arbitrary mail headers
 in the link are ignored. Link bodies are treated as text, never interpreted as HTML.
+A link Ruston cannot open still opens the window, or brings it forward, with a
+notice that the link was not opened.
 
 If needed, sign in first; the link waits in memory. An existing draft is never
 replaced, including a blank draft or a message being sent. A notice lets you

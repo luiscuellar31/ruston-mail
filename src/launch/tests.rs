@@ -141,9 +141,50 @@ fn unauthenticated_and_oversized_requests_are_rejected_before_delivery() {
     assert!(oversized.read_exact(&mut reply).is_err());
     assert!(instance.drain().is_empty());
     drop(oversized);
+    // A mailto link this version cannot open is reported, never delivered.
     let mut invalid = connect(&instance.endpoint).unwrap();
-    assert!(forward(&mut invalid, "mailto:a@example.org?subject=%0AInjected").is_err());
+    assert!(forward(&mut invalid, "mailto:a@example.org?subject=%0AInjected").is_ok());
+    assert!(instance.drain() == vec![Event::Rejected]);
+    drop(invalid);
+    // Anything else is refused.
+    let mut foreign = connect(&instance.endpoint).unwrap();
+    assert!(forward(&mut foreign, "https://example.org").is_err());
     assert!(instance.drain().is_empty());
+}
+
+#[test]
+fn an_email_link_this_version_cannot_open_still_reaches_the_window() {
+    let directory = Directory::new();
+    // A cold start opens the window, which says the link was not opened.
+    let instance = primary(
+        &directory.0,
+        vec!["mailto:Jane%20Doe%20%3Cjane@example.org%3E".into()],
+    );
+    assert!(instance.drain() == vec![Event::Rejected]);
+    // A later launch hands such links over too, even one over the size limit.
+    let oversized = format!("mailto:a@example.org?body={}", "x".repeat(MAX_URL_BYTES));
+    assert!(matches!(
+        launch(
+            &directory.0,
+            vec![
+                "mailto:a@example.org#fragment".into(),
+                oversized,
+                "mailto:ok@example.org".into(),
+            ],
+        )
+        .unwrap(),
+        Start::Forwarded
+    ));
+    assert!(
+        instance.drain()
+            == vec![
+                Event::Rejected,
+                Event::Rejected,
+                mailto_event("mailto:ok@example.org"),
+            ]
+    );
+    // The stand-in for an oversized link is one no version opens.
+    assert!(Request::parse(OVERSIZED_LINK).is_none());
 }
 
 #[test]

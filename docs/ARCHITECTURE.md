@@ -58,9 +58,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   constructed only by this parser.
   Each external ingress (arguments, TCP, or Apple Events) validates once;
   process-local `Activate`, `Mailto(Request)`, and `Rejected` events carry the
-  outcome to the shell. Argument URIs are retained only until startup/forwarding;
-  the wire protocol still sends the original URI and validates it in the
-  receiving process. `App` queues the parsed request without decoding again.
+  outcome to the shell. A mailto link that does not parse becomes `Rejected`
+  at every ingress, so the window still opens or comes forward and says so;
+  any other argument stops the launch. Argument URIs are retained only until
+  startup/forwarding; the wire protocol still sends the original URI and
+  validates it in the receiving process. A link over the size limit is
+  forwarded as `mailto:%`, which every version refuses to open, because a
+  receiver drops a longer frame without answering. `App` queues the parsed
+  request without decoding again.
   [`app/mailto.rs`](../src/app/mailto.rs) owns up to 16 pending requests in memory,
   retaining them during sign-in. A closed session clears them. Internal links
   use this same queue after the existing link-confirmation policy.
