@@ -850,7 +850,8 @@ fn message_header(
             format!("{identity}, {status}"),
         )
     });
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // The whole header toggles the card, but as part of the reader, not as a
+    // link, so the pointer stays an arrow.
     if hovering_icon {
         response.on_hover_text(status)
     } else if ui.rect_contains_pointer(chevron_area(rect)) {
@@ -2404,6 +2405,31 @@ mod tests {
             body: MessageBody::PlainText("Preview".into()),
             attachments: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_message_header_keeps_the_arrow_pointer() {
+        let message = header_message(Some("Alex Rivera"));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let render = |input| {
+            let mut rect = egui::Rect::NOTHING;
+            let output = context.run_ui(input, |ui| {
+                ui.set_width(420.0);
+                rect = message_header(ui, &message, "Preview", false).rect;
+            });
+            let cursor = output.platform_output.cursor_icon;
+            output.drop_without_applying_deltas();
+            (rect, cursor)
+        };
+
+        let (rect, _) = render(egui::RawInput::default());
+        let hover = || egui::RawInput {
+            events: vec![egui::Event::PointerMoved(rect.center())],
+            ..Default::default()
+        };
+        render(hover());
+        assert_eq!(render(hover()).1, egui::CursorIcon::Default);
     }
 
     #[test]

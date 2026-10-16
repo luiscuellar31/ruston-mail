@@ -989,7 +989,7 @@ fn conversation_row(
     painter.text(
         egui::pos2(rect.right() - ROW_HORIZONTAL_PADDING, sender_center_y),
         Align2::RIGHT_CENTER,
-        time,
+        &time,
         meta_font.clone(),
         theme::colors(ui).muted,
     );
@@ -1019,13 +1019,45 @@ fn conversation_row(
     }
 
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(
+        egui::WidgetInfo::selected(
             egui::WidgetType::Button,
             true,
-            format!("{correspondents}: {subject}"),
+            selected,
+            row_description(conversation, correspondents, subject, &time),
         )
     });
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    // A row of a list rather than a link, so it keeps the arrow, as native
+    // lists do.
+    response
+}
+
+/// What a screen reader says for a row: everything the row shows, the
+/// marks it draws included, in reading order.
+fn row_description(
+    conversation: &ConversationSummary,
+    correspondents: &str,
+    subject: &str,
+    time: &str,
+) -> String {
+    let mut parts = Vec::new();
+    if conversation.unread {
+        parts.push("Unread".to_owned());
+    }
+    parts.push(correspondents.to_owned());
+    parts.push(subject.to_owned());
+    if !time.is_empty() {
+        parts.push(time.to_owned());
+    }
+    if conversation.starred {
+        parts.push("starred".to_owned());
+    }
+    if conversation.message_count > 1 {
+        parts.push(format!("{} messages", conversation.message_count));
+    }
+    if conversation.has_attachments {
+        parts.push("attachment".to_owned());
+    }
+    parts.join(", ")
 }
 
 fn conversation_skeleton(ui: &mut egui::Ui) {
@@ -2704,6 +2736,64 @@ mod tests {
             assert_eq!((sender, subject), (normal, muted), "read, {appearance:?}");
             assert_ne!(strong, normal, "{appearance:?}");
         }
+    }
+
+    #[test]
+    fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
+        let conversation = ConversationSummary {
+            id: "row".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: Some("Lunch on Friday".into()),
+            correspondents: Some("Alex Rivera".into()),
+            participants: Vec::new(),
+            preview: None,
+            time: None,
+            unread: true,
+            starred: true,
+            message_count: 3,
+            has_attachments: true,
+        };
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let now = Local::now();
+        let render = |input| {
+            let mut rect = egui::Rect::NOTHING;
+            let output = context.run_ui(input, |ui| {
+                ui.set_width(320.0);
+                rect = conversation_row(ui, &conversation, true, &now).rect;
+            });
+            let node = output
+                .platform_output
+                .accesskit_update
+                .iter()
+                .flat_map(|update| &update.nodes)
+                .find_map(|(_, node)| {
+                    node.label()
+                        .filter(|label| label.contains("Alex Rivera"))
+                        .map(|label| (label.to_owned(), node.toggled()))
+                });
+            let cursor = output.platform_output.cursor_icon;
+            output.drop_without_applying_deltas();
+            (rect, node, cursor)
+        };
+
+        let (rect, node, _) = render(egui::RawInput::default());
+        assert_eq!(
+            node,
+            Some((
+                "Unread, Alex Rivera, Lunch on Friday, starred, 3 messages, attachment".into(),
+                // egui reports a selected widget as toggled on.
+                Some(egui::accesskit::Toggled::True)
+            ))
+        );
+        let hover = || egui::RawInput {
+            events: vec![egui::Event::PointerMoved(rect.center())],
+            ..Default::default()
+        };
+        render(hover());
+        let (_, _, cursor) = render(hover());
+        assert_eq!(cursor, egui::CursorIcon::Default, "a row is not a link");
     }
 
     #[test]
