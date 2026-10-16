@@ -782,8 +782,11 @@ fn message_header(
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if hovering_icon {
         response.on_hover_text(status)
-    } else {
+    } else if ui.rect_contains_pointer(chevron_area(rect)) {
+        // The whole header toggles the card, but only the chevron explains it.
         response.on_hover_text(if expanded { "Collapse" } else { "Expand" })
+    } else {
+        response
     }
 }
 
@@ -840,6 +843,14 @@ fn paint_message_chevron(ui: &egui::Ui, rect: egui::Rect, expanded: bool, hovere
         .line_segment([points[0], points[1]], Stroke::new(1.5, color));
     ui.painter()
         .line_segment([points[1], points[2]], Stroke::new(1.5, color));
+}
+
+/// The column left of the header's text, where the chevron sits.
+fn chevron_area(rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        rect.left_top(),
+        egui::pos2(header_copy_rect(rect).left(), rect.top() + 22.0),
+    )
 }
 
 fn header_copy_rect(rect: egui::Rect) -> egui::Rect {
@@ -2169,28 +2180,36 @@ mod tests {
         assert_eq!(rect.width(), 320.0);
         let icon_center =
             header_copy_rect(rect).left_top() + egui::Vec2::splat(SIGNATURE_ICON_SIZE / 2.0);
-        for position in [icon_center, rect.center()] {
-            render(egui::RawInput {
-                events: vec![egui::Event::PointerMoved(position)],
-                ..Default::default()
-            });
-            let (_, _, shapes) = render(egui::RawInput {
-                events: vec![egui::Event::PointerMoved(position)],
-                ..Default::default()
-            });
+        let chevron_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
+        for position in [icon_center, rect.center(), chevron_center] {
+            // egui holds tooltips back for a moment after a click, and the
+            // previous position ended with one.
+            let mut shapes = Vec::new();
+            for _ in 0..10 {
+                shapes = render(egui::RawInput {
+                    events: vec![egui::Event::PointerMoved(position)],
+                    ..Default::default()
+                })
+                .2;
+            }
+            let labels: Vec<_> = shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+                    _ => None,
+                })
+                .collect();
             if position == icon_center {
-                let labels: Vec<_> = shapes
-                    .iter()
-                    .filter_map(|shape| match &shape.shape {
-                        egui::epaint::Shape::Text(text) => Some(text.galley.text()),
-                        _ => None,
-                    })
-                    .collect();
                 assert!(
                     labels.contains(&"Could not verify the message text"),
                     "hovering the icon must explain the verdict: {labels:?}"
                 );
             }
+            assert_eq!(
+                labels.contains(&"Expand"),
+                position == chevron_center,
+                "only the chevron should explain the toggle: {labels:?}"
+            );
             let pointer = |pressed| egui::Event::PointerButton {
                 pos: position,
                 button: egui::PointerButton::Primary,
