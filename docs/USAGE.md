@@ -235,6 +235,13 @@ On macOS, **File > New Message** (`Cmd+N`) uses the same composer and preserves
 an existing draft. **Ruston Mail > Settings…** (`Cmd+,`) opens preferences;
 both commands are available while signed in. The main window reserves space
 for native window buttons according to their measured size and interface zoom.
+**File > Close Window** (`Cmd+W`) closes the window in front with the same
+confirmation as its close button; closing the main window quits. **Edit** has
+Cut, Copy, Paste and Select All for text, as well as in native file dialogs,
+along with the system's Emoji & Symbols and Dictation; Undo and Redo keep
+working with `Cmd+Z` and `Shift+Cmd+Z`. **View > Enter Full Screen** and
+**Window > Minimize** (`Cmd+M`), **Zoom** and the list of open windows work as
+in other Mac apps.
 
 The reader also offers **Reply**, **Reply all**, and **Forward**. A reply goes
 to the addresses the original message asks replies to go to (its Reply-To), or

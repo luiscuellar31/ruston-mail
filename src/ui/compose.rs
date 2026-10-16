@@ -28,12 +28,17 @@ pub(super) fn window_viewport(compose: &Compose) -> egui::ViewportBuilder {
         .with_min_inner_size(MIN_WINDOW_SIZE)
 }
 
+/// Shows the composer in its own window. `edits` are the window's Edit menu
+/// commands, which reach its text as the keys would have.
 pub(super) fn show_window(
     context: &egui::Context,
     compose: &Compose,
     blocked: bool,
+    mut edits: Vec<egui::Event>,
 ) -> Vec<Message> {
     context.show_viewport_immediate(viewport_id(), window_viewport(compose), |root, _class| {
+        root.ctx()
+            .input_mut(|input| input.events.append(&mut edits));
         let mut messages = Vec::new();
         root.add_enabled_ui(!blocked, |root| show(root, compose, &mut messages));
         theme::paint_focus_ring(root.ctx());

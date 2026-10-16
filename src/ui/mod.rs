@@ -112,6 +112,9 @@ struct DesktopApp {
     focus_after_activation: bool,
     /// The draft the editors last showed, so their memory can go with it.
     shown_draft: Option<crate::app::ComposeId>,
+    /// Edit menu commands for the composer's own window, which only macOS
+    /// sends. They reach its text as input on the window's next pass.
+    composer_edits: Vec<egui::Event>,
     #[cfg(target_os = "macos")]
     native_menu: Option<macos::Menu>,
 }
@@ -161,6 +164,7 @@ impl DesktopApp {
             activation: None,
             focus_after_activation: false,
             shown_draft: None,
+            composer_edits: Vec::new(),
             #[cfg(target_os = "macos")]
             native_menu: None,
         };
@@ -428,6 +432,16 @@ impl DesktopApp {
                 context.send_viewport_cmd_to(destination, egui::ViewportCommand::Minimized(false));
                 context.send_viewport_cmd_to(destination, egui::ViewportCommand::Focus);
             }
+            macos::Action::Edit(edit) => {
+                let events = edit.events();
+                if self.composer_window_focused(context) {
+                    self.composer_edits.extend(events);
+                } else {
+                    // This runs in the main window's pass, before its widgets
+                    // read their input.
+                    context.input_mut(|input| input.events.extend(events));
+                }
+            }
             _ => {}
         }
     }
@@ -632,9 +646,13 @@ impl DesktopApp {
 
     fn app_has_focus(&self, context: &egui::Context) -> bool {
         context.input_for(egui::ViewportId::ROOT, |input| input.focused)
-            || self.app.settings().compose_placement == ComposePlacement::Window
-                && self.app.compose().is_some()
-                && context.input_for(compose::viewport_id(), |input| input.focused)
+            || self.composer_window_focused(context)
+    }
+
+    fn composer_window_focused(&self, context: &egui::Context) -> bool {
+        self.app.settings().compose_placement == ComposePlacement::Window
+            && self.app.compose().is_some()
+            && context.input_for(compose::viewport_id(), |input| input.focused)
     }
 
     fn refresh_automatically(&mut self, context: &egui::Context) {
@@ -812,6 +830,7 @@ impl eframe::App for DesktopApp {
                 self.native_action(action, context);
             }
             if let Some(menu) = &self.native_menu {
+                menu.adopt_windows();
                 menu.set_enabled(
                     matches!(self.app.auth_state(), AuthState::Authenticated { .. })
                         && self.pending_discard.is_none()
@@ -893,6 +912,7 @@ impl eframe::App for DesktopApp {
                         &context,
                         writing,
                         self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
+                        std::mem::take(&mut self.composer_edits),
                     ));
                 }
             }

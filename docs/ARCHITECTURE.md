@@ -92,9 +92,19 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   28 native points remain a fallback when no handle/metrics are available.
   The same module extends winit's existing menus with Settings and New Message,
   queues actions for the desktop shell, and routes the existing menu Quit
-  command through the root close guard. It retains selector targets, validates
-  authentication/modal availability, and restores owned menu changes on drop;
-  it does not replace winit's application or window delegates.
+  command through the root close guard. It names winit's About, Hide and Quit
+  items after the bundle and adds File › Close Window, Edit, View and Window
+  menus. Their items use AppKit's standard actions with no target, so the key
+  window answers them: a window's own close guards, a native file dialog's text
+  fields, or, at the end of each winit window's responder chain, the menu's
+  target. That target turns Cut, Copy, Paste and Select All into the egui input
+  their keys would have produced, for the main window in its `logic` pass and
+  for the separate composer in that window's next pass. Undo and Redo stop at
+  the window, whose own undo history is empty, so their keys still reach egui's
+  text fields. It retains
+  selector targets, validates authentication/modal availability, and restores
+  owned menu and responder changes on drop; it does not replace winit's
+  application or window delegates.
 - [`ui/mod.rs`](../src/ui/mod.rs) handles root close requests in `logic`,
   including minimized windows. An in-flight send or native file dialog blocks
   closing. Unapplied preferences use the existing Settings exit decisions
