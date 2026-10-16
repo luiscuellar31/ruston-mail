@@ -309,11 +309,7 @@ fn sidebar_account(
         )
         .on_hover_text(account_label);
         if let Some(error) = app.error_message() {
-            ui.label(
-                egui::RichText::new(error)
-                    .small()
-                    .color(theme::colors(ui).danger),
-            );
+            ui.label(egui::RichText::new(error).color(theme::colors(ui).danger));
         }
         if settings_button(ui, app.showing_settings() && !signing_out).clicked() {
             messages.push(Message::ShowSettings(true));

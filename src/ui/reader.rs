@@ -71,11 +71,7 @@ pub(super) fn show(
                 });
             }
             Err(error) => {
-                ui.label(
-                    egui::RichText::new(error.message())
-                        .small()
-                        .color(theme::colors(ui).danger),
-                );
+                ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
             }
         }
         ui.separator();
@@ -106,7 +102,9 @@ fn link_prompt(ui: &mut egui::Ui, link: &PendingLink, messages: &mut Vec<Message
         .stroke(Stroke::new(1.0, theme::ACCENT))
         .show(ui, |ui| {
             ui.label(format!("Open a link to {}?", link.target));
-            ui.add(egui::Label::new(egui::RichText::new(&link.url).small()).wrap());
+            // The real destination is what the prompt is for, so it is never
+            // smaller than the question.
+            ui.add(egui::Label::new(link.url.as_str()).wrap());
             ui.horizontal(|ui| {
                 if ui.button("Open").clicked() {
                     messages.push(Message::OpenLink);
@@ -327,11 +325,7 @@ fn reading_column(
             messages,
         );
         if let Some(error) = mailbox.action_error() {
-            ui.label(
-                egui::RichText::new(error.action_message())
-                    .small()
-                    .color(theme::colors(ui).danger),
-            );
+            ui.label(egui::RichText::new(error.action_message()).color(theme::colors(ui).danger));
         }
     }
     ui.add_space(8.0);

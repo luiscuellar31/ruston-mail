@@ -256,6 +256,11 @@ pub fn install(context: &egui::Context) {
         style.visuals.widgets.hovered.corner_radius = CornerRadius::same(7);
         style.visuals.widgets.active.corner_radius = CornerRadius::same(7);
         style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
+        // egui's 9 pt is too small for the notices and details drawn with it.
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::proportional(FOOTNOTE_SIZE),
+        );
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
         // Solid scrollbars reserve space instead of covering content.
@@ -545,6 +550,20 @@ mod tests {
         };
         let (a, b) = (luminance(a), luminance(b));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn small_text_is_drawn_at_footnote_size() {
+        let context = egui::Context::default();
+        install(&context);
+        for mode in [egui::Theme::Dark, egui::Theme::Light] {
+            let style = context.style_of(mode);
+            assert_eq!(
+                egui::TextStyle::Small.resolve(&style).size,
+                FOOTNOTE_SIZE,
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]

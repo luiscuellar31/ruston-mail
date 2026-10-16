@@ -172,21 +172,13 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             messages.push(Message::ComposeRecipientsLeft);
         }
         if let Some(notice) = compose.international_notice() {
-            ui.label(
-                egui::RichText::new(notice)
-                    .small()
-                    .color(theme::colors(ui).danger),
-            );
+            ui.label(egui::RichText::new(notice).color(theme::colors(ui).danger));
         }
         if let Some(notice) = compose.protection_notice() {
             if notice.is_warning() {
                 // A copy that may leave without end-to-end encryption must
                 // stand out from the field labels.
-                ui.label(
-                    egui::RichText::new(notice.message())
-                        .small()
-                        .color(theme::colors(ui).danger),
-                );
+                ui.label(egui::RichText::new(notice.message()).color(theme::colors(ui).danger));
             } else {
                 detail(ui, &notice.message());
             }
@@ -259,11 +251,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     // A send result takes priority over validation hints.
     match sending {
         Sending::Failed(error) => {
-            ui.label(
-                egui::RichText::new(error.message())
-                    .small()
-                    .color(theme::colors(ui).danger),
-            );
+            ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
         }
         _ => {
             if let Some(problem) = compose.not_ready().filter(|_| !compose.is_untouched()) {
@@ -315,7 +303,6 @@ fn answered(ui: &mut egui::Ui, answer: &Answering, addressed_here: bool) {
                     "The message asks for replies to go to {}, not to its sender, {sender}.",
                     answer.to.join(", ")
                 ))
-                .small()
                 .color(theme::colors(ui).danger),
             );
         }
@@ -332,7 +319,7 @@ fn line(
     leaving: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    detail(ui, label);
+    ui.label(egui::RichText::new(label).color(theme::colors(ui).muted));
     let mut value = compose.field(field).to_owned();
     let response = ui.add_enabled(
         !leaving,
@@ -519,8 +506,10 @@ mod tests {
             redirected_from: Some("alex@corp.example".into()),
         };
         let mut danger = egui::Color32::PLACEHOLDER;
+        let mut body = 0.0;
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             danger = theme::colors(ui).danger;
+            body = egui::TextStyle::Body.resolve(ui.style()).size;
             answered(ui, &answer, false);
         });
         let texts: Vec<(String, bool)> = output
@@ -529,11 +518,9 @@ mod tests {
             .filter_map(|clipped| match &clipped.shape {
                 egui::epaint::Shape::Text(text) => Some((
                     text.galley.text().to_owned(),
-                    text.galley
-                        .job
-                        .sections
-                        .iter()
-                        .all(|section| section.format.color == danger),
+                    text.galley.job.sections.iter().all(|section| {
+                        section.format.color == danger && section.format.font_id.size == body
+                    }),
                 )),
                 _ => None,
             })
@@ -563,15 +550,18 @@ mod tests {
         let shown = |app: &crate::app::App| {
             let mut messages = Vec::new();
             let mut danger = egui::Color32::PLACEHOLDER;
+            let mut body = 0.0;
             let output = context.run_ui(egui::RawInput::default(), |ui| {
                 danger = theme::colors(ui).danger;
+                body = egui::TextStyle::Body.resolve(ui.style()).size;
                 show(ui, app.compose().unwrap(), &mut messages);
             });
-            // The warning is named and drawn in the danger color, not as a field label.
+            // The warning is named and drawn in the danger color at full
+            // size, not as a field label.
             let found = output.shapes.iter().any(|clipped| {
                 matches!(&clipped.shape, egui::epaint::Shape::Text(text)
                     if text.galley.text().contains("not end-to-end encrypt this message for: plain@example.com")
-                        && text.galley.job.sections.iter().all(|section| section.format.color == danger))
+                        && text.galley.job.sections.iter().all(|section| section.format.color == danger && section.format.font_id.size == body))
             });
             output.drop_without_applying_deltas();
             found
@@ -606,15 +596,17 @@ mod tests {
             ));
             let mut messages = Vec::new();
             let mut danger = egui::Color32::PLACEHOLDER;
+            let mut body = 0.0;
             let output = context.run_ui(egui::RawInput::default(), |ui| {
                 danger = theme::colors(ui).danger;
+                body = egui::TextStyle::Body.resolve(ui.style()).size;
                 show(ui, app.compose().unwrap(), &mut messages);
             });
             // The look-alike is named beside a form that is plainly not paypal.com.
             let found = output.shapes.iter().any(|clipped| {
                 matches!(&clipped.shape, egui::epaint::Shape::Text(text)
                     if text.galley.text().contains("p\u{430}ypal.com is sent as xn--pypal-4ve.com")
-                        && text.galley.job.sections.iter().all(|section| section.format.color == danger))
+                        && text.galley.job.sections.iter().all(|section| section.format.color == danger && section.format.font_id.size == body))
             });
             output.drop_without_applying_deltas();
             found
@@ -622,6 +614,39 @@ mod tests {
 
         assert!(!shown(false));
         assert!(shown(true));
+    }
+
+    #[test]
+    fn field_labels_are_drawn_at_body_size() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        let mut messages = Vec::new();
+        let mut body = 0.0;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            body = egui::TextStyle::Body.resolve(ui.style()).size;
+            show(ui, app.compose().unwrap(), &mut messages);
+        });
+        let size_of = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == label => text
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map(|section| section.format.font_id.size),
+                    _ => None,
+                })
+        };
+
+        for label in ["To", "Subject"] {
+            assert_eq!(size_of(label), Some(body), "{label}");
+        }
+        output.drop_without_applying_deltas();
     }
 
     #[test]
