@@ -64,7 +64,7 @@ pub(super) fn confirm_exit(context: &egui::Context) -> Option<ExitDecision> {
         .show(context, |ui| {
             ui.set_width(width);
             ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
-            ui.heading("Unsaved settings");
+            ui.heading(egui::RichText::new("Unsaved settings").strong());
             ui.label("Apply your changes before leaving Settings?");
             ui.horizontal_wrapped(|ui| {
                 if ui
@@ -104,7 +104,7 @@ fn page(
     messages: &mut Vec<Message>,
     notification_status: super::notifications::Status,
 ) {
-    ui.heading(egui::RichText::new("Settings").size(24.0));
+    ui.heading(egui::RichText::new("Settings").size(24.0).strong());
     ui.add_space(18.0);
 
     section(ui, "Reading", |ui| {
@@ -477,7 +477,7 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
         .show(ui, |ui| {
             // Cards fill the page instead of sizing to their longest line.
             ui.set_width(ui.available_width());
-            ui.heading(egui::RichText::new(title).size(17.0));
+            ui.heading(egui::RichText::new(title).size(17.0).strong());
             ui.add_space(4.0);
             content(ui);
         })

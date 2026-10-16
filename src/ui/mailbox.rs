@@ -254,7 +254,7 @@ fn sidebar(
 }
 
 fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
-    ui.heading(egui::RichText::new("Ruston Mail").size(23.0));
+    ui.heading(egui::RichText::new("Ruston Mail").size(23.0).strong());
     ui.add_space(12.0);
 
     if new_message_button(ui).clicked() {
@@ -489,7 +489,11 @@ fn conversation_pane(
     messages: &mut Vec<Message>,
 ) {
     ui.horizontal(|ui| {
-        ui.heading(egui::RichText::new(mailbox.folder().name()).size(21.0));
+        ui.heading(
+            egui::RichText::new(mailbox.folder().name())
+                .size(21.0)
+                .strong(),
+        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let refreshing = matches!(mailbox.status(), ListStatus::Refreshing(_));
             if ui

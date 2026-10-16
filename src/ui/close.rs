@@ -27,7 +27,7 @@ pub(super) fn confirm(context: &egui::Context, leaving: Leaving) -> Option<Messa
         .frame(egui::Frame::popup(&context.style_of(context.theme())).inner_margin(20))
         .show(context, |ui| {
             ui.set_width(width);
-            ui.heading(heading);
+            ui.heading(egui::RichText::new(heading).strong());
             ui.label("Your unsaved message will be discarded.");
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Keep writing").clicked() {

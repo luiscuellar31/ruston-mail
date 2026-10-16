@@ -39,6 +39,9 @@ pub struct Colors {
     pub row_hover: Color32,
     pub quote_fill: Color32,
     pub code_fill: Color32,
+    /// Normal text and controls at rest; egui's own grey is dimmer than
+    /// `muted`, which would make secondary text the more prominent.
+    text: Color32,
     skeleton_low: Color32,
     skeleton_high: Color32,
     extreme_bg: Color32,
@@ -60,6 +63,7 @@ const DARK: Colors = Colors {
     row_hover: Color32::from_rgb(28, 29, 36),
     quote_fill: Color32::from_rgb(27, 28, 35),
     code_fill: Color32::from_rgb(18, 19, 24),
+    text: Color32::from_rgb(220, 221, 230),
     skeleton_low: Color32::from_rgb(37, 38, 47),
     skeleton_high: Color32::from_rgb(54, 56, 68),
     extreme_bg: Color32::from_rgb(17, 18, 23),
@@ -81,6 +85,7 @@ const LIGHT: Colors = Colors {
     row_hover: Color32::from_rgb(241, 240, 249),
     quote_fill: Color32::from_rgb(246, 246, 250),
     code_fill: Color32::from_rgb(241, 242, 247),
+    text: Color32::from_rgb(43, 45, 56),
     skeleton_low: Color32::from_rgb(230, 231, 239),
     skeleton_high: Color32::from_rgb(242, 243, 248),
     extreme_bg: Color32::from_rgb(237, 238, 246),
@@ -242,6 +247,8 @@ pub fn install(context: &egui::Context) {
         style.visuals.selection.bg_fill = ACCENT;
         style.visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
         style.visuals.hyperlink_color = colors.hyperlink;
+        style.visuals.widgets.noninteractive.fg_stroke.color = colors.text;
+        style.visuals.widgets.inactive.fg_stroke.color = colors.text;
         style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, colors.border);
         style.visuals.widgets.hovered.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
         style.visuals.widgets.active.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
@@ -523,8 +530,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn white_text_on_accent_buttons_keeps_adequate_contrast() {
+    /// WCAG contrast ratio between two opaque colors.
+    fn contrast(a: Color32, b: Color32) -> f64 {
         let linear = |channel: u8| {
             let value = f64::from(channel) / 255.0;
             if value <= 0.04045 {
@@ -533,14 +540,43 @@ mod tests {
                 ((value + 0.055) / 1.055).powf(2.4)
             }
         };
+        let luminance = |color: Color32| {
+            0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn white_text_on_accent_buttons_keeps_adequate_contrast() {
         for fill in [ACCENT, ACCENT_HOVER, ACCENT_PRESSED] {
-            let luminance =
-                0.2126 * linear(fill.r()) + 0.7152 * linear(fill.g()) + 0.0722 * linear(fill.b());
-            let contrast = 1.05 / (luminance + 0.05);
-            assert!(
-                contrast >= 4.5,
-                "white on {fill:?} has {contrast:.2}:1 contrast"
-            );
+            let ratio = contrast(Color32::WHITE, fill);
+            assert!(ratio >= 4.5, "white on {fill:?} has {ratio:.2}:1 contrast");
+        }
+    }
+
+    #[test]
+    fn normal_text_stands_above_secondary_text_in_both_themes() {
+        let context = egui::Context::default();
+        install(&context);
+        for (mode, colors) in [(egui::Theme::Dark, DARK), (egui::Theme::Light, LIGHT)] {
+            let visuals = &context.style_of(mode).visuals;
+            let text = visuals.text_color();
+            // A button at rest never reads dimmer than the text beside it.
+            assert_eq!(visuals.widgets.inactive.text_color(), text, "{mode:?}");
+            for surface in [
+                colors.panel,
+                colors.panel_raised,
+                colors.sidebar,
+                colors.accent_soft,
+            ] {
+                let normal = contrast(text, surface);
+                let secondary = contrast(colors.muted, surface);
+                assert!(
+                    normal > secondary && normal >= 7.0,
+                    "{mode:?} on {surface:?}: text {normal:.2}:1, secondary {secondary:.2}:1"
+                );
+            }
         }
     }
 

@@ -85,7 +85,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
 
     let heading = heading(compose);
     ui.horizontal_wrapped(|ui| {
-        ui.heading(egui::RichText::new(heading).size(24.0));
+        ui.heading(egui::RichText::new(heading).size(24.0).strong());
         ui.with_layout(
             Layout::right_to_left(Align::Center).with_main_wrap(true),
             |ui| {
