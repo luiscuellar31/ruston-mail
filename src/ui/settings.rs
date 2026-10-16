@@ -260,8 +260,9 @@ fn page(
             "A key a focused field takes never reaches the mailbox, so these stay out of the way while you type.",
         );
         ui.add_space(6.0);
+        let width = keys_width(ui);
         for (keys, what) in SHORTCUTS {
-            shortcut(ui, keys, what);
+            shortcut(ui, keys, what, width);
         }
     });
     ui.add_space(14.0);
@@ -459,22 +460,44 @@ const COMMAND_ZOOM: &str = "Ctrl + Plus / Minus / 0";
 
 /// One key and what it does, with the keys in a column of their own so the
 /// descriptions line up however wide the window is.
-fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str) {
+fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str, keys_width: f32) {
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
-            egui::vec2(KEYS_WIDTH, 0.0),
+            egui::vec2(keys_width, 0.0),
             Layout::right_to_left(Align::TOP),
             |ui| {
-                ui.add(egui::Label::new(
-                    egui::RichText::new(keys).monospace().size(12.0),
-                ));
+                ui.add(egui::Label::new(key_text(keys)));
             },
         );
         ui.vertical(|ui| description(ui, what));
     });
 }
 
-const KEYS_WIDTH: f32 = 120.0;
+fn key_text(keys: &str) -> egui::RichText {
+    egui::RichText::new(keys).monospace().size(12.0)
+}
+
+/// The width of the keys column: its widest key, or more. A key wider than
+/// its column would reach past the section's edge and pull the sections
+/// under it to the left.
+fn keys_width(ui: &egui::Ui) -> f32 {
+    SHORTCUTS
+        .iter()
+        .map(|(keys, _)| {
+            egui::WidgetText::from(key_text(keys))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+                .size()
+                .x
+        })
+        .fold(KEYS_MIN_WIDTH, f32::max)
+}
+
+const KEYS_MIN_WIDTH: f32 = 120.0;
 
 fn description(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).color(theme::colors(ui).muted));
@@ -505,6 +528,55 @@ mod tests {
                 shapes.iter().find_map(|shape| text_rect(shape, label))
             }
             _ => None,
+        }
+    }
+
+    #[test]
+    fn every_shortcut_key_stays_inside_its_section() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 4000.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                page(
+                    ui,
+                    &mut Settings::default(),
+                    &mut Vec::new(),
+                    super::super::notifications::Status::Off,
+                )
+            },
+        );
+        let lefts: Vec<(String, f32)> = SHORTCUTS
+            .iter()
+            .chain([&("About", "")])
+            .map(|(label, _)| {
+                let rect = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| text_rect(&shape.shape, label))
+                    .unwrap_or(egui::Rect::NOTHING);
+                (label.to_string(), rect.left())
+            })
+            .collect();
+        let keyboard = output
+            .shapes
+            .iter()
+            .find_map(|shape| text_rect(&shape.shape, "Keyboard"))
+            .map(|rect| rect.left());
+        output.drop_without_applying_deltas();
+
+        let keyboard = keyboard.expect("the Keyboard section is drawn");
+        for (label, left) in lefts {
+            assert!(
+                left >= keyboard - 0.5,
+                "{label} starts at {left}, left of its section at {keyboard}"
+            );
         }
     }
 
