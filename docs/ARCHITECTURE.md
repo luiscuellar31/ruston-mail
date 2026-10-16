@@ -501,10 +501,16 @@ instead of an unknown outcome.
   signature verification for compatibility.
 - [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs) owns live CLI EML
   reconstruction. It decrypts one message and then downloads each attachment
-  using the same metadata, writing MIME parts sequentially to a new file. It
-  encodes untrusted headers and never overwrites an existing export. The CLI
+  using the same metadata, writing MIME parts sequentially to a hidden
+  temporary file. A complete file is hard-linked to its final name, which
+  fails rather than replace an existing export; file systems without hard
+  links rename it once the name is checked free. A message whose file already
+  exists counts as exported, so a rerun resumes. `export_folder_report` lists
+  the messages it skipped because they, or their attachments, could not be
+  opened; a failed request or write stops the export. The CLI
   [export handler](../crates/ruston-cli/src/commands/export.rs) chooses the
-  destination and reports the result; demo mode writes fictional sample mail.
+  destination and reports the result, exiting with an error when a message was
+  skipped; demo mode writes fictional sample mail.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,

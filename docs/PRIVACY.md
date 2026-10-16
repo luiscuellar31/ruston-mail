@@ -308,9 +308,16 @@ exports only fictional sample text and does not include attachment bytes.
 
 Exported files contain plaintext mail and attachments. On Unix, new files use
 mode `0600`; protect the destination directory and its backups on all systems.
-The command never replaces an existing file. In live export, if an attachment
-or write fails, it removes the current incomplete file and stops; files exported
-earlier remain. An interrupted process may leave an incomplete file.
+The command never replaces an existing file. In live export, each file is
+written under a hidden temporary name (`.message-….eml.tmp`) and moved to its
+final name only once complete, so a file under its final name is always
+whole, and running the export again skips it. A message that cannot be
+decrypted, or whose attachments cannot, is skipped and its temporary file
+removed. A failed request or write removes the current temporary file and
+stops; files exported earlier remain. An interrupted process may leave a
+hidden temporary file holding plaintext, which the next export into that
+directory replaces when it reaches that message. Files that an older version
+left incomplete count as exported.
 
 ## Network connections
 

@@ -343,9 +343,13 @@ before retrying, since Proton may have accepted the message.
 
 The CLI's `export --out DIRECTORY` saves reconstructed `.eml` messages with
 their decrypted attachments. These files are plaintext on disk. Existing files
-are not replaced, so use an empty output directory for another export. The
-export does not preserve the original wire message or every original header;
-see [Privacy and local data](PRIVACY.md) for details.
+are never replaced: running the same export again into the same directory
+resumes it, skipping the messages already there, so use an empty directory to
+start over. A message that cannot be decrypted, or whose attachments cannot,
+is skipped and listed, the rest are still exported, and the command then exits
+with an error. A network or session failure stops the export; run it again to
+continue. The export does not preserve the original wire message or every
+original header; see [Privacy and local data](PRIVACY.md) for details.
 
 `index` builds an optional local search index for `search`. It stores
 decrypted message bodies in a SQLite database that Ruston Mail does not

@@ -1,31 +1,74 @@
 //! Export reconstructed MIME messages to `.eml` files.
 
 use super::Client;
-use super::read::FullMessage;
+use super::read::{FullMessage, UnreadableMessage};
 use crate::api;
 use crate::api::messages::ListQuery;
 use crate::error::{Error, Result};
 use crate::mail::attachments::safe_attachment_name;
 use crate::model::enums::resolve_folder;
-use crate::model::message::{Attachment, Recipient};
+use crate::model::message::{Attachment, Message, Recipient};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 const MIME_BOUNDARY: &str = "ruston-mail-export";
 
+/// What an export did with the messages it went through.
+#[derive(Debug, Default)]
+pub struct ExportReport {
+    /// Messages written to a new file.
+    pub written: usize,
+    /// Messages whose file an earlier export already wrote.
+    pub already_exported: usize,
+    /// Messages with no file, because they or their attachments could not be
+    /// opened.
+    pub skipped: Vec<UnreadableMessage>,
+}
+
+/// What exporting one message did.
+enum Exported {
+    Written,
+    AlreadyThere,
+    Skipped(Box<UnreadableMessage>),
+}
+
 impl Client {
     /// Export up to `max` messages from a folder as reconstructed MIME `.eml`
-    /// files, including decrypted attachments. Existing files are never replaced.
-    /// Returns the number written.
+    /// files, including decrypted attachments, as
+    /// [`export_folder_report`](Self::export_folder_report) does. Returns the
+    /// number written, or the error of the first message that could not be
+    /// exported, once the others are written.
     pub async fn export_folder(&self, folder: &str, out_dir: &Path, max: u32) -> Result<usize> {
+        let report = self.export_folder_report(folder, out_dir, max).await?;
+        match report.skipped.into_iter().next() {
+            Some(skipped) => Err(skipped.error),
+            None => Ok(report.written),
+        }
+    }
+
+    /// Export up to `max` messages from a folder as reconstructed MIME `.eml`
+    /// files, including decrypted attachments, and report what happened to
+    /// each. Existing files are never replaced: a message whose file is
+    /// already there counts as exported, so running again into the same
+    /// folder resumes. A message that cannot be opened, or whose attachments
+    /// cannot be, is skipped and the others are still exported. A failed
+    /// request stops the export.
+    pub async fn export_folder_report(
+        &self,
+        folder: &str,
+        out_dir: &Path,
+        max: u32,
+    ) -> Result<ExportReport> {
         std::fs::create_dir_all(out_dir)?;
         let label = resolve_folder(folder);
         let page_size = 50u32;
-        let mut written = 0u32;
+        let mut report = ExportReport::default();
+        // Every message gone through counts, so a rerun covers the same ones.
+        let mut considered = 0u32;
         let mut page = 0u32;
-        while written < max {
+        while considered < max {
             let q = ListQuery {
                 label_id: Some(label.clone()),
                 page: Some(page),
@@ -37,26 +80,50 @@ impl Client {
                 break;
             }
             for meta in &msgs {
-                if written >= max {
+                if considered >= max {
                     break;
                 }
-                self.export_message(&meta.id, out_dir).await?;
-                written += 1;
+                match self.export_message(&meta.id, out_dir).await? {
+                    Exported::Written => report.written += 1,
+                    Exported::AlreadyThere => report.already_exported += 1,
+                    Exported::Skipped(skipped) => report.skipped.push(*skipped),
+                }
+                considered += 1;
             }
             if (msgs.len() as u32) < page_size {
                 break;
             }
             page += 1;
         }
-        tracing::info!(target: "ruston_core::mail", folder, exported = written, "export_folder");
-        Ok(written as usize)
+        tracing::info!(
+            target: "ruston_core::mail",
+            folder,
+            exported = report.written,
+            already_exported = report.already_exported,
+            skipped = report.skipped.len(),
+            "export_folder"
+        );
+        Ok(report)
     }
 
-    async fn export_message(&self, message_id: &str, out_dir: &Path) -> Result<()> {
-        let message = api::messages::get_message(self.http(), message_id).await?;
-        let full = self.decrypt_message(&message).await?;
+    async fn export_message(&self, message_id: &str, out_dir: &Path) -> Result<Exported> {
         let path = out_dir.join(export_filename(message_id));
-        let mut file = BufWriter::new(create_export_file(&path)?);
+        // Only finished files ever get this name.
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Ok(Exported::AlreadyThere);
+        }
+        let message = api::messages::get_message(self.http(), message_id).await?;
+        let full = match self.decrypt_message(&message).await {
+            Ok(full) => full,
+            Err(error) => return Ok(skipped(message, error)),
+        };
+        // The file is written under a hidden name and moved into place once
+        // complete, so an interrupted export never leaves a partial file
+        // that a rerun would take as exported.
+        let temp = out_dir.join(format!(".{}.tmp", export_filename(message_id)));
+        // One left by an interrupted export is incomplete.
+        let _ = std::fs::remove_file(&temp);
+        let mut file = BufWriter::new(create_export_file(&temp)?);
 
         let result = async {
             let mut eml = EmlWriter::new(&mut file, &full)?;
@@ -68,15 +135,75 @@ impl Client {
             }
             eml.finish()?;
             file.flush()?;
+            file.get_ref().sync_all()?;
             Ok(())
         }
         .await;
 
         drop(file);
-        if result.is_err() {
-            let _ = std::fs::remove_file(path);
+        let placed = result.and_then(|()| place_export(&temp, &path));
+        // After a hard link the file has both names; after anything else
+        // the hidden one is gone or unfinished.
+        let _ = std::fs::remove_file(&temp);
+        match placed {
+            Ok(true) => Ok(Exported::Written),
+            Ok(false) => Ok(Exported::AlreadyThere),
+            Err(error) if is_about_the_message(&error) => Ok(skipped(message, error)),
+            Err(error) => Err(error),
         }
-        result
+    }
+}
+
+fn skipped(message: Message, error: Error) -> Exported {
+    tracing::debug!(target: "ruston_core::mail", message_id = %message.meta.id, error = %error, "message skipped by export");
+    Exported::Skipped(Box::new(UnreadableMessage {
+        meta: message.meta,
+        reply_tos: message.reply_tos,
+        error,
+    }))
+}
+
+/// Whether writing a message's file failed because of that message alone,
+/// so the export skips it and goes on. Anything else, such as a failed
+/// request or a full disk, would fail the next message too and stops the
+/// export.
+fn is_about_the_message(error: &Error) -> bool {
+    match error {
+        Error::Crypto(_)
+        | Error::AttachmentVerificationFailed
+        | Error::AttachmentTooLarge { .. }
+        | Error::ResponseTooLarge { .. }
+        | Error::Other(_) => true,
+        Error::Api(_)
+        | Error::Unauthorized
+        | Error::HumanVerification(_)
+        | Error::Http(_)
+        | Error::AttachmentBatchTooLarge { .. }
+        | Error::AttachmentUnavailable { .. }
+        | Error::SendUnconfirmed { .. }
+        | Error::Json(_)
+        | Error::Srp(_)
+        | Error::Session(_)
+        | Error::Cache(_)
+        | Error::Io(_)
+        | Error::NotFound { .. }
+        | Error::Ambiguous(_) => false,
+    }
+}
+
+/// Moves a finished export from `temp` to `path` unless a file is already
+/// there, and says whether it moved. A hard link fails when the name is
+/// taken, so nothing is ever replaced; on a file system without hard links,
+/// a rename follows a check that the name is free.
+fn place_export(temp: &Path, path: &Path) -> Result<bool> {
+    match std::fs::hard_link(temp, path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(_) if std::fs::symlink_metadata(path).is_ok() => Ok(false),
+        Err(_) => {
+            std::fs::rename(temp, path)?;
+            Ok(true)
+        }
     }
 }
 
@@ -469,6 +596,44 @@ mod tests {
         ));
         assert_eq!(std::fs::read(&path).unwrap(), b"existing");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn placing_an_export_never_replaces_what_is_there() {
+        let dir = std::env::temp_dir().join(format!(
+            "ruston-export-place-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let temp = dir.join(".message.eml.tmp");
+        let path = dir.join("message.eml");
+
+        std::fs::write(&temp, b"first").unwrap();
+        let first = place_export(&temp, &path).unwrap();
+        std::fs::remove_file(&temp).unwrap();
+        std::fs::write(&temp, b"second").unwrap();
+        let second = place_export(&temp, &path).unwrap();
+        // A dangling symbolic link is a name already taken, not a target.
+        #[cfg(unix)]
+        let through_link = {
+            let link = dir.join("link.eml");
+            std::os::unix::fs::symlink(dir.join("missing.eml"), &link).unwrap();
+            place_export(&temp, &link).unwrap()
+        };
+        let kept = std::fs::read(&path).unwrap();
+        let missing_created = dir.join("missing.eml").exists();
+        std::fs::remove_dir_all(dir).unwrap();
+
+        assert!(first);
+        assert!(!second);
+        assert_eq!(kept, b"first");
+        #[cfg(unix)]
+        assert!(!through_link);
+        assert!(!missing_created);
     }
 
     #[test]

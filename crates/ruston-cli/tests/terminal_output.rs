@@ -86,3 +86,32 @@ fn runtime_and_argument_errors_filter_controls_on_stderr() {
         assert!(error.contains("error:"));
     }
 }
+
+#[test]
+fn a_second_demo_export_into_the_same_folder_resumes() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let folder =
+        std::env::temp_dir().join(format!("ruston-cli-export-{}-{unique}", std::process::id()));
+    let out = folder.to_str().unwrap();
+    let args = ["--demo", "export", "--out", out, "--max", "2"];
+
+    let first = run(&args);
+    let second = run(&args);
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    assert!(first.status.success());
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let text = assert_safe(&second.stdout);
+    assert!(text.contains("Exported 0 demo message(s)"), "{text}");
+    assert!(
+        text.contains("2 message(s) were already exported there"),
+        "{text}"
+    );
+}

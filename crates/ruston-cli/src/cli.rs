@@ -223,6 +223,10 @@ pub enum Command {
         conversations: bool,
     },
     /// Export reconstructed messages and attachments to `.eml` files.
+    ///
+    /// Existing files are never replaced: running it again into the same
+    /// directory resumes. Messages that cannot be decrypted are skipped and
+    /// listed, and the command then exits with an error.
     Export {
         #[arg(long, default_value = "all")]
         folder: String,

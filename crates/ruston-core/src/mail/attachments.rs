@@ -589,6 +589,141 @@ mod tests {
         );
     }
 
+    /// A new directory name under the system temp directory.
+    fn export_directory(label: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("ruston-{label}-{}-{unique}", std::process::id()))
+    }
+
+    /// Serves `messages`, in this order, as every folder's listing, and each
+    /// one in full.
+    async fn serve_folder(server: &MockServer, messages: &[Message]) {
+        for message in messages {
+            Mock::given(method("GET"))
+                .and(path(format!("/mail/v4/messages/{}", message.meta.id)))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"Code": 1000, "Message": message})),
+                )
+                .mount(server)
+                .await;
+        }
+        let listed: Vec<_> = messages.iter().map(|message| &message.meta).collect();
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": messages.len(), "Messages": listed
+            })))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn messages_after_one_that_cannot_be_exported_are_still_exported() {
+        let server = MockServer::start().await;
+        let (client, attachment) = attachment_client(&server).await;
+        let provider = crypto::provider();
+        let address = client.keys().primary_address().unwrap();
+        let body = crypto::encrypt_self_draft(&provider, address, "body").unwrap();
+        let message = |id: &str, attachment: Attachment, body: &str| {
+            let mut message = message_with_attachment(attachment);
+            message.meta.id = id.into();
+            message.body = body.into();
+            message.mime_type = "text/plain".into();
+            message
+        };
+        // This attachment's signature was made over other plaintext.
+        let other = crypto::encrypt_attachment(&provider, address, b"different payload").unwrap();
+        let mut forged = attachment.clone();
+        forged.signature = Some(
+            String::from_utf8(
+                provider
+                    .armorer()
+                    .armor_signature(&other.signature)
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
+        serve_folder(
+            &server,
+            &[
+                message("forged", forged, &body),
+                message("garbled", attachment.clone(), "not an encrypted body"),
+                message("good", attachment, &body),
+            ],
+        )
+        .await;
+        let folder = export_directory("export-skip");
+
+        let report = client
+            .export_folder_report("inbox", &folder, 10)
+            .await
+            .unwrap();
+
+        let files: Vec<_> = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!((report.written, report.already_exported), (1, 0));
+        let skipped: Vec<_> = report
+            .skipped
+            .iter()
+            .map(|skipped| skipped.meta.id.as_str())
+            .collect();
+        assert_eq!(skipped, ["forged", "garbled"]);
+        assert!(matches!(
+            report.skipped[0].error,
+            Error::AttachmentVerificationFailed
+        ));
+        assert!(matches!(report.skipped[1].error, Error::Crypto(_)));
+        // Only the finished file is left, under its final name ("good" in hex).
+        assert_eq!(files, ["message-676f6f64.eml"]);
+    }
+
+    #[tokio::test]
+    async fn a_rerun_resumes_without_fetching_exported_messages_again() {
+        let server = MockServer::start().await;
+        let (client, attachment) = attachment_client(&server).await;
+        let address = client.keys().primary_address().unwrap();
+        let mut message = message_with_attachment(attachment);
+        message.body = crypto::encrypt_self_draft(&crypto::provider(), address, "body").unwrap();
+        message.mime_type = "text/plain".into();
+        serve_folder(&server, &[message]).await;
+        let folder = export_directory("export-resume");
+
+        let first = client.export_folder("inbox", &folder, 10).await;
+        let second = client.export_folder("inbox", &folder, 10).await;
+        let report = client.export_folder_report("inbox", &folder, 10).await;
+        // "message" in hex.
+        let exported = folder.join("message-6d657373616765.eml");
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&exported).unwrap().permissions().mode() & 0o777
+        };
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        assert_eq!(first.unwrap(), 1);
+        assert_eq!(second.unwrap(), 0);
+        let report = report.unwrap();
+        assert_eq!((report.written, report.already_exported), (0, 1));
+        assert!(report.skipped.is_empty());
+        let fetches = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.url.path() == "/mail/v4/messages/message")
+            .count();
+        assert_eq!(fetches, 1, "only the first export fetches the message");
+        #[cfg(unix)]
+        assert_eq!(mode, 0o600);
+    }
+
     #[test]
     fn untrusted_paths_and_invalid_characters_get_plain_names() {
         for (input, expected) in [

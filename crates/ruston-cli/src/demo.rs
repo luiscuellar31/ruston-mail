@@ -1274,6 +1274,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 .take(max as usize)
                 .collect();
 
+            let mut written = 0;
+            let mut already_exported = 0;
             for m in &exported {
                 let eml_path = out.join(format!("{}.eml", m.meta.id));
                 let eml_content = format!(
@@ -1297,24 +1299,40 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     use std::os::unix::fs::OpenOptionsExt;
                     options.mode(0o600);
                 }
-                let mut file = options.open(&eml_path)?;
+                let mut file = match options.open(&eml_path) {
+                    Ok(file) => file,
+                    // As in the live command, running again keeps what is there.
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        already_exported += 1;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 file.write_all(eml_content.as_bytes())?;
+                written += 1;
             }
 
             if ctx.json {
                 render::json_out(&json!({
                     "status": "ok",
-                    "exported": exported.len(),
+                    "exported": written,
+                    "already_exported": already_exported,
                     "folder": folder,
                     "output_dir": out.display().to_string(),
                 }));
             } else {
                 terminal::println!(
                     "Exported {} demo message(s) from folder '{}' to {}",
-                    exported.len(),
+                    written,
                     folder,
                     out.display()
                 );
+                if already_exported > 0 {
+                    terminal::println!(
+                        "{} message(s) were already exported there",
+                        already_exported
+                    );
+                }
             }
             Ok(())
         }
