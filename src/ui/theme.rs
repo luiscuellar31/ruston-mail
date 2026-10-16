@@ -20,6 +20,7 @@ const SPINNER_SWEEP_DEGREES: f64 = 240.0;
 const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
+const FOCUS_RING_WIDTH: f32 = 2.0;
 
 /// Colors used by the custom-painted parts of the interface. egui's native
 /// widgets use the matching `Visuals` installed below.
@@ -42,6 +43,8 @@ pub struct Colors {
     /// Normal text and controls at rest; egui's own grey is dimmer than
     /// `muted`, which would make secondary text the more prominent.
     text: Color32,
+    /// The ring around whatever has keyboard focus.
+    focus: Color32,
     skeleton_low: Color32,
     skeleton_high: Color32,
     extreme_bg: Color32,
@@ -64,6 +67,7 @@ const DARK: Colors = Colors {
     quote_fill: Color32::from_rgb(27, 28, 35),
     code_fill: Color32::from_rgb(18, 19, 24),
     text: Color32::from_rgb(220, 221, 230),
+    focus: Color32::from_rgb(133, 102, 255),
     skeleton_low: Color32::from_rgb(37, 38, 47),
     skeleton_high: Color32::from_rgb(54, 56, 68),
     extreme_bg: Color32::from_rgb(17, 18, 23),
@@ -86,6 +90,7 @@ const LIGHT: Colors = Colors {
     quote_fill: Color32::from_rgb(246, 246, 250),
     code_fill: Color32::from_rgb(241, 242, 247),
     text: Color32::from_rgb(43, 45, 56),
+    focus: Color32::from_rgb(109, 74, 255),
     skeleton_low: Color32::from_rgb(230, 231, 239),
     skeleton_high: Color32::from_rgb(242, 243, 248),
     extreme_bg: Color32::from_rgb(237, 238, 246),
@@ -245,7 +250,10 @@ pub fn install(context: &egui::Context) {
         style.visuals.extreme_bg_color = colors.extreme_bg;
         style.visuals.faint_bg_color = colors.skeleton_low;
         style.visuals.selection.bg_fill = ACCENT;
-        style.visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+        // Only its color shows, on selected text and selected buttons. egui
+        // would also draw it as a focused field's border, which
+        // `paint_focus_ring` replaces.
+        style.visuals.selection.stroke = Stroke::new(0.0, Color32::WHITE);
         style.visuals.hyperlink_color = colors.hyperlink;
         style.visuals.widgets.noninteractive.fg_stroke.color = colors.text;
         style.visuals.widgets.inactive.fg_stroke.color = colors.text;
@@ -282,6 +290,38 @@ pub fn apply(context: &egui::Context, appearance: Appearance) {
     if context.theme() != mode {
         context.set_theme(mode);
     }
+}
+
+/// Rings the widget that has keyboard focus. egui marks a focused button only
+/// with a slightly darker fill, and a focused row or message header not at
+/// all, so one ring serves every kind. Called once a window's widgets are all
+/// laid out, so the ring sits on top of the widget it marks.
+pub fn paint_focus_ring(ctx: &egui::Context) {
+    // A window in the background shows no focus, as native ones do.
+    if !ctx.input(|input| input.focused) {
+        return;
+    }
+    // Only a widget drawn in this pass: one that just went away keeps focus
+    // until the pass ends, and a ring where it used to be could linger.
+    let Some(widget) = ctx
+        .memory(|memory| memory.focused())
+        .and_then(|focused| {
+            ctx.viewport(|viewport| viewport.this_pass.widgets.get(focused).copied())
+        })
+        .filter(|widget| widget.rect.is_positive() && widget.rect.is_finite())
+    else {
+        return;
+    };
+    // Kept to the part of the widget that is in view, as the widget is.
+    let painter = ctx
+        .layer_painter(widget.layer_id)
+        .with_clip_rect(widget.interact_rect.expand(FOCUS_RING_WIDTH));
+    painter.rect_stroke(
+        widget.rect,
+        CornerRadius::same(8),
+        Stroke::new(FOCUS_RING_WIDTH, colors_for(ctx.theme()).focus),
+        egui::StrokeKind::Outside,
+    );
 }
 
 pub fn selectable_text<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -550,6 +590,69 @@ mod tests {
         };
         let (a, b) = (luminance(a), luminance(b));
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// The rectangles the focus ring marks in one frame of `content`.
+    fn focus_rings(
+        context: &egui::Context,
+        input: egui::RawInput,
+        mut content: impl FnMut(&mut egui::Ui),
+    ) -> Vec<egui::Rect> {
+        let output = context.run_ui(input, |ui| {
+            content(ui);
+            paint_focus_ring(ui.ctx());
+        });
+        let rings = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) if rect.stroke.color == DARK.focus => Some(rect.rect),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        rings
+    }
+
+    #[test]
+    fn the_widget_with_keyboard_focus_gets_a_ring() {
+        let context = egui::Context::default();
+        install(&context);
+        let mut text = String::new();
+        for field in [false, true] {
+            let mut target = egui::Rect::NOTHING;
+            let rings = focus_rings(&context, egui::RawInput::default(), |ui| {
+                let button = ui.button("Archive");
+                let edit = ui.add(text_field(&mut text));
+                let focused = if field { edit } else { button };
+                focused.request_focus();
+                target = focused.rect;
+            });
+            assert_eq!(rings, [target], "field: {field}");
+        }
+        // The ring takes the place of the border egui gives a focused field.
+        assert_eq!(
+            context
+                .style_of(egui::Theme::Dark)
+                .visuals
+                .selection
+                .stroke
+                .width,
+            0.0
+        );
+
+        // Focus outlasts a widget for the rest of the pass it disappears in,
+        // but the ring does not.
+        assert!(focus_rings(&context, egui::RawInput::default(), |_| {}).is_empty());
+        // Nor does a window in the background show one.
+        let background = egui::RawInput {
+            focused: false,
+            ..Default::default()
+        };
+        let rings = focus_rings(&context, background, |ui| {
+            ui.button("Archive").request_focus()
+        });
+        assert!(rings.is_empty());
     }
 
     #[test]

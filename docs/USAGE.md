@@ -317,7 +317,9 @@ glyph coverage but does not provide complete bidirectional/RTL text layout.
 | `Cmd`/`Ctrl` + `Enter` | Send the message being written |
 | `Cmd` + `Backspace` / `Delete` | Move the selected conversation to Trash |
 
-Shortcuts do not run while a text field is using the same key.
+Shortcuts do not run while a text field is using the same key. When `Tab` has
+put focus on a button or a row, which shows a violet ring, the arrows move that
+focus and `Enter` presses it; `j` and `k` still move through the list.
 
 ## Command line
 

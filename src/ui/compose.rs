@@ -36,6 +36,7 @@ pub(super) fn show_window(
     context.show_viewport_immediate(viewport_id(), window_viewport(compose), |root, _class| {
         let mut messages = Vec::new();
         root.add_enabled_ui(!blocked, |root| show(root, compose, &mut messages));
+        theme::paint_focus_ring(root.ctx());
 
         if blocked {
             if root.input(|input| input.viewport().close_requested()) {
