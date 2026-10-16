@@ -462,7 +462,7 @@ fn folder_button(
     }
 }
 
-fn folder_icon(folder: &Folder) -> theme::Icon {
+pub(super) fn folder_icon(folder: &Folder) -> theme::Icon {
     match folder {
         Folder::System(MailFolder::Inbox) => theme::Icon::Inbox,
         Folder::System(MailFolder::Drafts) => theme::Icon::Drafts,

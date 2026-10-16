@@ -5,7 +5,7 @@ use chrono::{Local, TimeZone};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Sense, Stroke};
 
-use super::mailbox::detail;
+use super::mailbox::{detail, folder_icon};
 use super::{UiState, theme};
 use crate::app::{ConversationReader, Mailbox, Message, PendingLink, ReaderState};
 use crate::downloads::SaveError;
@@ -182,7 +182,7 @@ fn conversation_skeleton(ui: &mut egui::Ui, view: &ReaderView<'_>, state: &mut U
                         action_toolbar(
                             ui,
                             summary,
-                            view.mailbox.folder(),
+                            view.mailbox,
                             &[],
                             view.places,
                             false,
@@ -320,7 +320,7 @@ fn reading_column(
         action_toolbar(
             ui,
             summary,
-            mailbox.folder(),
+            mailbox,
             &detail_data.labels,
             view.places,
             !mailbox.is_busy() && !mailbox.action_pending(),
@@ -370,14 +370,17 @@ fn conversation_heading(ui: &mut egui::Ui, subject: Option<&str>, count: usize) 
 fn action_toolbar(
     ui: &mut egui::Ui,
     summary: &ConversationSummary,
-    current_folder: &Folder,
+    mailbox: &Mailbox,
     carried_labels: &[String],
     places: &[Folder],
     enabled: bool,
     messages: &mut Vec<Message>,
 ) {
+    let location = mailbox.selected_location();
     ui.horizontal_wrapped(|ui| {
-        for (icon, label, folder, danger) in [
+        let back = back_to_inbox(location)
+            .map(|label| (theme::Icon::Inbox, label, MailFolder::Inbox, false));
+        let away = [
             (theme::Icon::Archive, "Archive", MailFolder::Archive, false),
             (theme::Icon::Spam, "Move to Spam", MailFolder::Spam, false),
             (
@@ -386,9 +389,10 @@ fn action_toolbar(
                 MailFolder::Trash,
                 true,
             ),
-        ] {
+        ];
+        for (icon, label, folder, danger) in back.into_iter().chain(away) {
             let destination = Folder::System(folder);
-            if current_folder == &destination {
+            if location == Some(&destination) {
                 continue;
             }
             let mut button = theme::IconButton::new(icon, label);
@@ -400,6 +404,12 @@ fn action_toolbar(
                 messages.push(Message::ApplyAction(MailAction::MoveTo(destination)));
             }
         }
+        move_menu(
+            ui,
+            &move_destinations(location, mailbox.folder(), places),
+            enabled,
+            messages,
+        );
 
         ui.separator();
         for (icon, label, selected, action) in [
@@ -437,6 +447,73 @@ fn action_toolbar(
 
         label_menu(ui, carried_labels, places, enabled, messages);
     });
+}
+
+/// Proton's Inbox, which the Move to menu lists beside the account's folders.
+static INBOX: Folder = Folder::INBOX;
+
+/// The first button for a row in Archive, Spam or Trash: the way back to the
+/// Inbox, which Spam calls Not spam.
+fn back_to_inbox(location: Option<&Folder>) -> Option<&'static str> {
+    match location.and_then(Folder::system)? {
+        MailFolder::Archive | MailFolder::Trash => Some("Move to Inbox"),
+        MailFolder::Spam => Some("Not spam (move to Inbox)"),
+        MailFolder::Inbox | MailFolder::Drafts | MailFolder::Sent | MailFolder::Starred => None,
+    }
+}
+
+/// The places the Move to menu lists: the Inbox, unless the row is there or a
+/// button already offers it, then every folder the account made except the
+/// one the row is in. Sent and Drafts list the account's own mail, which
+/// Proton keeps out of the Inbox.
+fn move_destinations<'a>(
+    location: Option<&Folder>,
+    view: &Folder,
+    places: &'a [Folder],
+) -> Vec<&'a Folder> {
+    let own_mail = matches!(view.system(), Some(MailFolder::Sent | MailFolder::Drafts));
+    let inbox = location != Some(&INBOX) && back_to_inbox(location).is_none() && !own_mail;
+    let folders = places
+        .iter()
+        .filter(|place| place.kind() == Some(CustomKind::Folder) && Some(*place) != location);
+
+    inbox.then_some(&INBOX).into_iter().chain(folders).collect()
+}
+
+fn move_menu(
+    ui: &mut egui::Ui,
+    destinations: &[&Folder],
+    enabled: bool,
+    messages: &mut Vec<Message>,
+) {
+    if destinations.is_empty() {
+        return;
+    }
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::containers::menu::MenuButton::new("Move to…").ui(ui, |ui| {
+            ui.set_min_width(180.0);
+            egui::ScrollArea::vertical()
+                .max_height(240.0)
+                .show(ui, |ui| {
+                    for destination in destinations {
+                        if destination_item(ui, destination).clicked() {
+                            messages.push(Message::ApplyAction(MailAction::MoveTo(
+                                (*destination).clone(),
+                            )));
+                            ui.close();
+                        }
+                    }
+                });
+        });
+    });
+}
+
+/// One place in the Move to menu, with the icon the sidebar gives it.
+fn destination_item(ui: &mut egui::Ui, folder: &Folder) -> egui::Response {
+    let layout = egui::Button::new((theme::icon_atom(), folder.name())).atom_ui(ui);
+    let color = ui.style().interact(&layout.response).fg_stroke.color;
+    theme::paint_atom_icon(ui, &layout, folder_icon(folder), color);
+    layout.response
 }
 
 fn label_menu(
@@ -1194,26 +1271,14 @@ mod tests {
 
     #[test]
     fn conversation_actions_share_one_compact_toolbar() {
-        let summary = ConversationSummary {
-            id: "conversation".into(),
-            kind: crate::mail::SummaryKind::Conversation,
-            subject: None,
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
-            time: None,
-            unread: true,
-            starred: true,
-            message_count: 1,
-            has_attachments: false,
-        };
-        let conversation = ConversationDetail {
-            id: summary.id.clone(),
-            subject: None,
-            labels: vec!["work".into()],
-            messages: Vec::new(),
-        };
-        let places = [Folder::label("work", "Work")];
+        // Archived mail gets every control at once: the way back to the
+        // Inbox, both menus and a label count.
+        let (mailbox, _, _) = loading_reader("Message", Folder::System(MailFolder::Archive), 1);
+        let summary = mailbox.selected_summary().unwrap();
+        let places = [
+            Folder::label("work", "Work"),
+            Folder::custom("kZ9", "Invoices"),
+        ];
         let context = egui::Context::default();
         let mut height = 0.0;
 
@@ -1222,9 +1287,9 @@ mod tests {
                 ui.set_width(680.0);
                 action_toolbar(
                     ui,
-                    &summary,
-                    &Folder::INBOX,
-                    &conversation.labels,
+                    summary,
+                    &mailbox,
+                    &["work".to_owned()],
                     &places,
                     true,
                     &mut Vec::new(),
@@ -1234,6 +1299,158 @@ mod tests {
             .drop_without_applying_deltas();
 
         assert!(height <= 32.0, "toolbar wrapped to {height} points");
+    }
+
+    #[test]
+    fn mail_in_archive_spam_or_trash_is_offered_the_way_back_to_the_inbox() {
+        let archive = Folder::System(MailFolder::Archive);
+        let spam = Folder::System(MailFolder::Spam);
+        let trash = Folder::System(MailFolder::Trash);
+
+        assert_eq!(back_to_inbox(Some(&archive)), Some("Move to Inbox"));
+        assert_eq!(back_to_inbox(Some(&trash)), Some("Move to Inbox"));
+        assert_eq!(back_to_inbox(Some(&spam)), Some("Not spam (move to Inbox)"));
+        assert_eq!(back_to_inbox(Some(&Folder::INBOX)), None);
+        assert_eq!(
+            back_to_inbox(Some(&Folder::custom("kZ9", "Invoices"))),
+            None
+        );
+        // Under a label, or in search results, the row could be anywhere.
+        assert_eq!(back_to_inbox(None), None);
+    }
+
+    #[test]
+    fn the_move_menu_lists_the_inbox_and_the_accounts_folders() {
+        let invoices = Folder::custom("kZ9", "Invoices");
+        let work = Folder::label("work", "Work");
+        let archive = Folder::System(MailFolder::Archive);
+        let places = [work.clone(), invoices.clone()];
+        let names = |location: Option<&Folder>, view: &Folder| {
+            move_destinations(location, view, &places)
+                .into_iter()
+                .map(Folder::name)
+                .collect::<Vec<_>>()
+        };
+
+        // A label is given, not moved into, so the Labels menu has it.
+        assert_eq!(names(Some(&Folder::INBOX), &Folder::INBOX), ["Invoices"]);
+        // The first button already leads back to the Inbox.
+        assert_eq!(names(Some(&archive), &archive), ["Invoices"]);
+        assert_eq!(names(Some(&invoices), &invoices), ["Inbox"]);
+        assert_eq!(names(None, &work), ["Inbox", "Invoices"]);
+        // Proton keeps the account's own mail out of the Inbox.
+        for own in [MailFolder::Sent, MailFolder::Drafts] {
+            assert_eq!(names(None, &Folder::System(own)), ["Invoices"]);
+        }
+    }
+
+    /// One frame's input with a click at `position`.
+    fn click_at(input: &egui::RawInput, position: egui::Pos2) -> egui::RawInput {
+        let mut click = input.clone();
+        click.events = vec![
+            egui::Event::PointerMoved(position),
+            egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ];
+        click
+    }
+
+    #[test]
+    fn the_first_action_outside_the_inbox_puts_the_conversation_back() {
+        for folder in [MailFolder::Archive, MailFolder::Spam, MailFolder::Trash] {
+            let (mut mailbox, request, detail) =
+                loading_reader("Message", Folder::System(folder), 1);
+            mailbox.finish_conversation(&request, Ok(detail));
+            let context = egui::Context::default();
+            theme::install(&context);
+            let mut state = UiState::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(540.0, 950.0),
+                )),
+                ..Default::default()
+            };
+            let (shapes, _) = reader_frame(
+                &context,
+                &mailbox,
+                &[],
+                Reading::default(),
+                &mut state,
+                input.clone(),
+            );
+            let first = rounded_rects(&shapes, 7)[0].center();
+
+            let (_, messages) = reader_frame(
+                &context,
+                &mailbox,
+                &[],
+                Reading::default(),
+                &mut state,
+                click_at(&input, first),
+            );
+
+            assert!(
+                matches!(
+                    messages.as_slice(),
+                    [Message::ApplyAction(MailAction::MoveTo(to))] if *to == Folder::INBOX
+                ),
+                "the first action in {folder:?} did not lead back to the Inbox"
+            );
+        }
+    }
+
+    #[test]
+    fn the_move_menu_moves_the_conversation_into_a_folder() {
+        let invoices = Folder::custom("kZ9", "Invoices");
+        let places = [invoices.clone()];
+        let (mut mailbox, request, detail) = loading_reader("Message", Folder::INBOX, 1);
+        mailbox.finish_conversation(&request, Ok(detail));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(540.0, 950.0),
+            )),
+            ..Default::default()
+        };
+        let mut frame = |input: egui::RawInput| {
+            reader_frame(
+                &context,
+                &mailbox,
+                &places,
+                Reading::default(),
+                &mut state,
+                input,
+            )
+        };
+
+        let (shapes, _) = frame(input.clone());
+        frame(click_at(&input, text_rect(&shapes, "Move to…").center()));
+        // A new popup is measured on its first frame and shown on the next.
+        frame(input.clone());
+        let (shapes, _) = frame(input.clone());
+        let (_, messages) = frame(click_at(&input, text_rect(&shapes, "Invoices").center()));
+
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::ApplyAction(MailAction::MoveTo(to))] if *to == invoices
+            ),
+            "the menu did not move the conversation into Invoices"
+        );
     }
 
     fn address(name: Option<&str>, email: &str) -> MailAddress {

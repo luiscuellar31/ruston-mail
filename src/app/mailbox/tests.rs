@@ -331,6 +331,45 @@ fn a_move_out_of_a_folder_can_be_taken_back() {
 }
 
 #[test]
+fn archived_mail_can_go_back_to_the_inbox_and_that_can_be_taken_back_too() {
+    let mut mailbox = loaded_inbox(&["x"], 1);
+    let request = mailbox.select_folder(sys(MailFolder::Archive), 2).unwrap();
+    mailbox.finish_page(request.id, page(&["a", "b"], 2));
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+
+    let request = mailbox
+        .start_action(MailAction::MoveTo(Folder::INBOX), 4)
+        .unwrap();
+    assert_eq!(
+        mailbox.finish_action(&request, Ok(())),
+        Ok(Some("b".into()))
+    );
+
+    let undo = mailbox.undo().expect("a move back to the Inbox undoes");
+    assert_eq!(undo.from, sys(MailFolder::Archive));
+    assert_eq!(undo.to, Folder::INBOX);
+}
+
+#[test]
+fn only_a_folder_that_lists_the_row_says_where_it_is() {
+    let mut mailbox = loaded_inbox(&["a"], 1);
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 2);
+    assert_eq!(mailbox.selected_location(), Some(&Folder::INBOX));
+
+    // A label is a name mail carries, wherever the mail lives.
+    let request = mailbox
+        .select_folder(Folder::label("wN2", "Receipts"), 3)
+        .unwrap();
+    mailbox.finish_page(request.id, page(&["r1"], 1));
+    load_detail(&mut mailbox, "r1", detail("r1", &["m1"]), 4);
+    assert_eq!(mailbox.selected_location(), None);
+
+    // A search looks through every folder at once.
+    let mailbox = searched(&["a"], &["found"], "found");
+    assert_eq!(mailbox.selected_location(), None);
+}
+
+#[test]
 fn an_expired_offer_cannot_dismiss_the_move_after_it() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     mailbox.offer_undo(

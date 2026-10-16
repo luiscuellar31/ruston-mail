@@ -1931,6 +1931,38 @@ fn demo_trash_and_spam_moves_update_folders() {
 }
 
 #[test]
+fn demo_mail_marked_not_spam_goes_back_to_the_inbox() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
+    deliver_selected_demo_detail(&mut app);
+    let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
+        MailFolder::Spam,
+    ))));
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Spam)));
+    deliver_latest_demo_page(&mut app, 0);
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
+    deliver_selected_demo_detail(&mut app);
+
+    let _ = app.update(Message::ApplyAction(MailAction::MoveTo(Folder::INBOX)));
+
+    let has_row = |app: &App| {
+        app.mailbox()
+            .unwrap()
+            .conversations()
+            .iter()
+            .any(|conversation| conversation.id == "demo-3")
+    };
+    assert!(!has_row(&app));
+    let undo = app.mailbox().unwrap().undo().expect("an offer to undo");
+    assert_eq!(undo.from, sys(MailFolder::Spam));
+    assert_eq!(undo.to, Folder::INBOX);
+
+    let _ = app.update(Message::SelectFolder(Folder::INBOX));
+    deliver_latest_demo_page(&mut app, 0);
+    assert!(has_row(&app));
+}
+
+#[test]
 fn inbox_search_reflects_folder_moves_immediately() {
     for message in [
         Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Archive))),

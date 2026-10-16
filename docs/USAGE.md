@@ -110,8 +110,13 @@ The reader can:
 - Star or unstar it.
 - Mark it read or unread.
 - Move it to Spam or Trash.
+- Move it back to the Inbox. In Archive and Trash this is the first button; in
+  Spam it is **Not spam**.
+- Move it into one of your folders, or back to the Inbox, with **Move to…**.
 - Add or remove a custom label.
-- Undo the latest move while its notice remains visible.
+- Undo the latest move while its notice remains visible. A move made from a
+  label, Starred, or search results cannot be undone this way, because the
+  conversation's folder is not known there; **Move to…** can still put it back.
 
 If an automatic read is still pending, **Mark unread** waits for it to succeed
 before applying your choice. If that read fails or times out, the pending action

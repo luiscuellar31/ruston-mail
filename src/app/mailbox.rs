@@ -748,6 +748,19 @@ impl Mailbox {
         self.row_ids.contains(row_id)
     }
 
+    /// The folder a row is known to be in: the open folder, when mail lives
+    /// there and lists the row. A row shown under a label, Starred, Sent or
+    /// Drafts, or one only a search found, could be anywhere.
+    fn location_of(&self, row_id: &str) -> Option<&Folder> {
+        (self.folder.is_location() && self.listed_in_folder(row_id)).then_some(&self.folder)
+    }
+
+    /// Where the selected row is known to be, so it is not offered a move
+    /// into the folder it is already in.
+    pub fn selected_location(&self) -> Option<&Folder> {
+        self.location_of(self.selected_conversation()?)
+    }
+
     #[cfg(test)]
     pub fn reader(&self) -> Option<&ConversationReader> {
         match &self.reader {
@@ -1041,13 +1054,11 @@ impl Mailbox {
     /// Replaces the undo offer for moves out of a known physical folder.
     /// Label, origin and global-search views cannot identify that folder.
     pub fn offer_undo(&mut self, row_id: &str, kind: SummaryKind, action: MailAction) {
-        let from_here = self.folder.is_location() && self.listed_in_folder(row_id);
-
-        self.undo = match action.destination() {
-            Some(to) if from_here && *to != self.folder => Some(UndoMove {
+        self.undo = match (self.location_of(row_id), action.destination()) {
+            (Some(from), Some(to)) if to != from => Some(UndoMove {
                 row_id: row_id.to_owned(),
                 kind,
-                from: self.folder.clone(),
+                from: from.clone(),
                 to: to.clone(),
             }),
             _ => None,
