@@ -382,9 +382,32 @@ fn zoom_label(zoom: f32) -> String {
 /// Fixed usable zoom levels; loaded settings clamp other values.
 const ZOOM_STEPS: [f32; 6] = [0.9, 1.0, 1.15, 1.3, 1.5, 1.75];
 
+/// A step of the interface zoom from the keyboard or the View menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ZoomStep {
+    In,
+    Out,
+    Reset,
+}
+
+/// The zoom a step leads to from `current`: the next level Settings offers
+/// up or down, staying put at either end, or the default.
+pub(super) fn zoom_step(current: f32, step: ZoomStep) -> f32 {
+    const NEAR: f32 = 0.001;
+    let found = match step {
+        ZoomStep::In => ZOOM_STEPS.into_iter().find(|level| *level > current + NEAR),
+        ZoomStep::Out => ZOOM_STEPS
+            .into_iter()
+            .rev()
+            .find(|level| *level < current - NEAR),
+        ZoomStep::Reset => Some(Settings::default().zoom),
+    };
+    found.unwrap_or(current)
+}
+
 /// What the mailbox already answers to. Listed here because a shortcut no one
 /// can find is a shortcut no one uses; the keys themselves live in `ui::mod`.
-const SHORTCUTS: [(&str, &str); 10] = [
+const SHORTCUTS: [(&str, &str); 11] = [
     ("j  /  Down", "Open the next conversation"),
     ("k  /  Up", "Open the previous one"),
     (
@@ -393,7 +416,7 @@ const SHORTCUTS: [(&str, &str); 10] = [
     ),
     (
         "Esc",
-        "Back out one layer: settings, link prompt, search, reader",
+        "Close a menu, or back out one layer: link prompt, settings, search, reader",
     ),
     (COMMAND_R, "Refresh the folder"),
     (COMMAND_F, "Jump to the search field"),
@@ -401,6 +424,7 @@ const SHORTCUTS: [(&str, &str); 10] = [
     (COMMAND_N, "Write a new message"),
     (COMMAND_ENTER, "Send the message being written"),
     (COMMAND_TRASH, "Move selected conversation to Trash"),
+    (COMMAND_ZOOM, "Zoom in, zoom out, or back to 100%"),
 ];
 
 #[cfg(target_os = "macos")]
@@ -415,6 +439,8 @@ const COMMAND_N: &str = "Cmd + N";
 const COMMAND_ENTER: &str = "Cmd + Enter";
 #[cfg(target_os = "macos")]
 const COMMAND_TRASH: &str = "Cmd + Backspace";
+#[cfg(target_os = "macos")]
+const COMMAND_ZOOM: &str = "Cmd + Plus / Minus / 0";
 
 #[cfg(not(target_os = "macos"))]
 const COMMAND_R: &str = "Ctrl + R";
@@ -428,6 +454,8 @@ const COMMAND_N: &str = "Ctrl + N";
 const COMMAND_ENTER: &str = "Ctrl + Enter";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_TRASH: &str = "Delete / Ctrl + Backspace";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_ZOOM: &str = "Ctrl + Plus / Minus / 0";
 
 /// One key and what it does, with the keys in a column of their own so the
 /// descriptions line up however wide the window is.
@@ -756,6 +784,19 @@ mod tests {
                 .iter()
                 .any(|message| matches!(message, Message::SetSystemFont(true)))
         );
+    }
+
+    #[test]
+    fn zoom_steps_move_between_the_offered_levels() {
+        assert_eq!(zoom_step(1.0, ZoomStep::In), 1.15);
+        assert_eq!(zoom_step(1.0, ZoomStep::Out), 0.9);
+        assert_eq!(zoom_step(1.5, ZoomStep::Reset), 1.0);
+        // Either end stays put.
+        assert_eq!(zoom_step(0.9, ZoomStep::Out), 0.9);
+        assert_eq!(zoom_step(1.75, ZoomStep::In), 1.75);
+        // A level from an older file joins the nearest offered one.
+        assert_eq!(zoom_step(1.05, ZoomStep::In), 1.15);
+        assert_eq!(zoom_step(1.05, ZoomStep::Out), 1.0);
     }
 
     #[test]

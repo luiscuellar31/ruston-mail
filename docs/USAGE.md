@@ -263,9 +263,10 @@ for native window buttons according to their measured size and interface zoom.
 confirmation as its close button; closing the main window quits. **Edit** has
 Cut, Copy, Paste and Select All for text, as well as in native file dialogs,
 along with the system's Emoji & Symbols and Dictation; Undo and Redo keep
-working with `Cmd+Z` and `Shift+Cmd+Z`. **View > Enter Full Screen** and
-**Window > Minimize** (`Cmd+M`), **Zoom** and the list of open windows work as
-in other Mac apps.
+working with `Cmd+Z` and `Shift+Cmd+Z`. **View** has **Actual Size**
+(`Cmd+0`), **Zoom In** (`Cmd++`) and **Zoom Out** (`Cmd+-`), which step the
+interface scale from Settings, and **Enter Full Screen**. **Window > Minimize**
+(`Cmd+M`), **Zoom** and the list of open windows work as in other Mac apps.
 
 The reader also offers **Reply**, **Reply all**, and **Forward**. A reply goes
 to the addresses the original message asks replies to go to (its Reply-To), or
@@ -347,6 +348,7 @@ glyph coverage but does not provide complete bidirectional/RTL text layout.
 | `Cmd`/`Ctrl` + `N` | Write a new message |
 | `Cmd`/`Ctrl` + `Enter` | Send the message being written |
 | `Cmd` + `Backspace` / `Delete` | Move the selected conversation to Trash |
+| `Cmd`/`Ctrl` + `+` (or `=`), `-`, `0` | Zoom in, zoom out, or back to 100%, in the interface scale's steps |
 
 Shortcuts do not run while a text field is using the same key. When `Tab` has
 put focus on a button or a row, which shows a violet ring, the arrows move that

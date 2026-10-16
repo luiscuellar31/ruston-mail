@@ -16,6 +16,8 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSBundle, NSObject, NSObjectProtocol, NSString};
 use winit::raw_window_handle::HasWindowHandle;
 
+use super::settings::ZoomStep;
+
 /// The class of the windows winit makes for egui's viewports.
 const WINIT_WINDOW: &std::ffi::CStr = c"WinitWindow";
 
@@ -25,6 +27,7 @@ pub(super) enum Action {
     NewMessage,
     Quit,
     Edit(Edit),
+    Zoom(ZoomStep),
 }
 
 /// An Edit menu command from one of the app's windows. With the menu in
@@ -87,6 +90,9 @@ fn always_available(action: Sel) -> bool {
         sel!(copy:),
         sel!(paste:),
         sel!(selectAll:),
+        sel!(rustonActualSize:),
+        sel!(rustonZoomIn:),
+        sel!(rustonZoomOut:),
     ]
     .contains(&action)
 }
@@ -152,6 +158,21 @@ define_class!(
         #[unsafe(method(selectAll:))]
         fn select_all(&self, _sender: Option<&AnyObject>) {
             self.queue(Action::Edit(Edit::SelectAll));
+        }
+
+        #[unsafe(method(rustonActualSize:))]
+        fn actual_size(&self, _sender: Option<&AnyObject>) {
+            self.queue(Action::Zoom(ZoomStep::Reset));
+        }
+
+        #[unsafe(method(rustonZoomIn:))]
+        fn zoom_in(&self, _sender: Option<&AnyObject>) {
+            self.queue(Action::Zoom(ZoomStep::In));
+        }
+
+        #[unsafe(method(rustonZoomOut:))]
+        fn zoom_out(&self, _sender: Option<&AnyObject>) {
+            self.queue(Action::Zoom(ZoomStep::Out));
         }
     }
 );
@@ -243,16 +264,23 @@ impl Menu {
                 standard_item(marker, "Select All", sel!(selectAll:), "a", command),
             ],
         );
+        // Command with equals still reaches the window, which zooms in too.
         let view = submenu(
             marker,
             "View",
-            &[standard_item(
-                marker,
-                "Enter Full Screen",
-                sel!(toggleFullScreen:),
-                "f",
-                command | NSEventModifierFlags::Control,
-            )],
+            &[
+                action_item(marker, &target, "Actual Size", "0", sel!(rustonActualSize:)),
+                action_item(marker, &target, "Zoom In", "+", sel!(rustonZoomIn:)),
+                action_item(marker, &target, "Zoom Out", "-", sel!(rustonZoomOut:)),
+                NSMenuItem::separatorItem(marker),
+                standard_item(
+                    marker,
+                    "Enter Full Screen",
+                    sel!(toggleFullScreen:),
+                    "f",
+                    command | NSEventModifierFlags::Control,
+                ),
+            ],
         );
         let window = submenu(
             marker,
@@ -524,6 +552,9 @@ mod tests {
             sel!(copy:),
             sel!(paste:),
             sel!(selectAll:),
+            sel!(rustonActualSize:),
+            sel!(rustonZoomIn:),
+            sel!(rustonZoomOut:),
         ] {
             assert!(always_available(action));
         }

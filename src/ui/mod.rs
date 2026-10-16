@@ -447,6 +447,7 @@ impl DesktopApp {
                 context.send_viewport_cmd_to(destination, egui::ViewportCommand::Minimized(false));
                 context.send_viewport_cmd_to(destination, egui::ViewportCommand::Focus);
             }
+            macos::Action::Zoom(step) => self.step_zoom(step, context),
             macos::Action::Edit(edit) => {
                 let events = edit.events();
                 if self.composer_window_focused(context) {
@@ -606,6 +607,40 @@ impl DesktopApp {
         }
         self.last_window_size = Some(current);
         self.dispatch(Message::WindowResized(current), context);
+    }
+
+    /// Command with plus, equals, minus or zero steps the zoom on every
+    /// screen, as Settings would. On macOS the View menu takes all but equals.
+    fn zoom_shortcuts(&mut self, context: &egui::Context) {
+        use egui::gui_zoom::kb_shortcuts;
+        let step = context.input_mut(|input| {
+            if input.consume_shortcut(&kb_shortcuts::ZOOM_RESET) {
+                Some(settings::ZoomStep::Reset)
+            } else if input.consume_shortcut(&kb_shortcuts::ZOOM_IN)
+                || input.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
+            {
+                Some(settings::ZoomStep::In)
+            } else if input.consume_shortcut(&kb_shortcuts::ZOOM_OUT) {
+                Some(settings::ZoomStep::Out)
+            } else {
+                None
+            }
+        });
+        if let Some(step) = step {
+            self.step_zoom(step, context);
+        }
+    }
+
+    /// Moves the zoom one offered step, keeping an open Settings page, whose
+    /// draft would otherwise put the old zoom back, in step with it.
+    fn step_zoom(&mut self, step: settings::ZoomStep, context: &egui::Context) {
+        let zoom = settings::zoom_step(self.app.settings().zoom, step);
+        if let Some(draft) = &mut self.settings_draft {
+            draft.zoom = zoom;
+        }
+        if (zoom - self.app.settings().zoom).abs() > f32::EPSILON {
+            self.dispatch(Message::SetZoom(zoom), context);
+        }
     }
 
     fn keyboard_shortcuts(&mut self, context: &egui::Context) {
@@ -892,6 +927,7 @@ impl eframe::App for DesktopApp {
         self.focus_activated_composer(context);
         self.update_notifications(context);
         self.remember_window_size(context);
+        self.zoom_shortcuts(context);
         self.keyboard_shortcuts(context);
         self.forget_finished_draft(context);
         self.refresh_automatically(context);
@@ -1517,6 +1553,29 @@ mod tests {
         desktop.dispatch(Message::ShowSettings(true), &context);
         desktop.settings_draft = Some(desktop.app.settings().clone());
         (desktop, context)
+    }
+
+    #[test]
+    fn command_equals_steps_the_zoom_and_keeps_settings_in_step() {
+        let (mut desktop, context) = demo_with_settings();
+        theme::install(&context);
+        let zoom_in = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Equals,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        };
+        let output = context.run_ui(zoom_in, |ui| desktop.zoom_shortcuts(ui.ctx()));
+        output.drop_without_applying_deltas();
+
+        assert_eq!(desktop.app.settings().zoom, 1.15);
+        assert_eq!(desktop.settings_draft.as_ref().unwrap().zoom, 1.15);
+        // egui no longer zooms on its own, so no frame shows another scale.
+        assert_eq!(context.zoom_factor(), 1.0);
     }
 
     #[test]

@@ -538,6 +538,9 @@ pub fn install(context: &egui::Context) {
         context.set_style_of(mode, style);
     }
     context.set_theme(egui::Theme::Dark);
+    // The zoom is a setting, which the app reapplies every pass; egui's own
+    // keys would draw one frame at another scale and snap back.
+    context.options_mut(|options| options.zoom_with_keyboard = false);
 }
 
 pub fn apply(context: &egui::Context, appearance: Appearance) {
