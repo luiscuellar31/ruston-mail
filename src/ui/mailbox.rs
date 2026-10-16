@@ -856,13 +856,14 @@ fn conversation_row(
     let text_left = rect.left() + ROW_HORIZONTAL_PADDING;
     let text_width = rect.right() - ROW_HORIZONTAL_PADDING - meta_width - text_left;
     let painter = ui.painter_at(rect);
+    let (sender_color, subject_color) = row_text_colors(ui, conversation.unread);
     theme::paint_truncated_text_aligned(
         &painter,
         egui::pos2(text_left, sender_center_y),
         Align2::LEFT_CENTER,
         correspondents,
         FontId::proportional(14.0),
-        ui.visuals().strong_text_color(),
+        sender_color,
         text_width,
     );
     theme::paint_truncated_text_aligned(
@@ -871,7 +872,7 @@ fn conversation_row(
         Align2::LEFT_CENTER,
         subject,
         FontId::proportional(14.0),
-        theme::colors(ui).muted,
+        subject_color,
         text_width,
     );
 
@@ -937,6 +938,18 @@ fn conversation_skeleton(ui: &mut egui::Ui) {
             "Loading conversations",
         )
     });
+}
+
+/// The sender and subject colors of a row. The bundled font has one weight,
+/// so unread mail stands out by brightness: both lines one step brighter
+/// than in mail already read, besides the dot.
+fn row_text_colors(ui: &egui::Ui, unread: bool) -> (Color32, Color32) {
+    let visuals = ui.visuals();
+    if unread {
+        (visuals.strong_text_color(), visuals.text_color())
+    } else {
+        (visuals.text_color(), theme::colors(ui).muted)
+    }
 }
 
 fn skeleton_conversation_row(ui: &mut egui::Ui, index: usize, fill: Color32) -> egui::Response {
@@ -2256,6 +2269,73 @@ mod tests {
             .drop_without_applying_deltas();
 
         assert_eq!(height, ROW_HEIGHT);
+    }
+
+    #[test]
+    fn unread_rows_are_brighter_than_rows_already_read() {
+        let now = Local::now();
+        for appearance in [
+            crate::settings::Appearance::Dark,
+            crate::settings::Appearance::Light,
+        ] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            theme::apply(&context, appearance);
+            let render = |unread: bool| {
+                let conversation = ConversationSummary {
+                    id: "row".into(),
+                    kind: crate::mail::SummaryKind::Conversation,
+                    subject: Some("Lunch on Friday".into()),
+                    correspondents: Some("Alex Rivera".into()),
+                    participants: Vec::new(),
+                    preview: None,
+                    time: None,
+                    unread,
+                    starred: false,
+                    message_count: 1,
+                    has_attachments: false,
+                };
+                let mut palette = (
+                    Color32::TRANSPARENT,
+                    Color32::TRANSPARENT,
+                    Color32::TRANSPARENT,
+                );
+                let output = context.run_ui(egui::RawInput::default(), |ui| {
+                    ui.set_width(320.0);
+                    conversation_row(ui, &conversation, false, &now);
+                    palette = (
+                        ui.visuals().strong_text_color(),
+                        ui.visuals().text_color(),
+                        theme::colors(ui).muted,
+                    );
+                });
+                let color_of = |line: &str| {
+                    output
+                        .shapes
+                        .iter()
+                        .find_map(|clipped| match &clipped.shape {
+                            egui::epaint::Shape::Text(text) if text.galley.text() == line => {
+                                Some(text.galley.job.sections[0].format.color)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("missing {line}"))
+                };
+                let lines = (color_of("Alex Rivera"), color_of("Lunch on Friday"));
+                output.drop_without_applying_deltas();
+                (lines, palette)
+            };
+
+            let ((sender, subject), (strong, normal, muted)) = render(true);
+            assert_eq!(
+                (sender, subject),
+                (strong, normal),
+                "unread, {appearance:?}"
+            );
+            let ((sender, subject), _) = render(false);
+            assert_eq!((sender, subject), (normal, muted), "read, {appearance:?}");
+            assert_ne!(strong, normal, "{appearance:?}");
+        }
     }
 
     #[test]
