@@ -3,7 +3,7 @@ use std::path::Path;
 
 use chrono::{Local, TimeZone};
 use eframe::egui::text::LayoutJob;
-use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Sense, Stroke};
+use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
 
 use super::mailbox::{detail, folder_icon};
 use super::{UiState, theme};
@@ -27,6 +27,10 @@ const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
 const MARKER_WIDTH: f32 = 12.0;
 const SIGNATURE_ICON_SIZE: f32 = 13.0;
 const SIGNATURE_ICON_INSET: f32 = SIGNATURE_ICON_SIZE + 4.0;
+/// The column left of a message header's text, which holds the chevron.
+const HEADER_TEXT_INSET: f32 = 22.0;
+/// The space kept between a header's text and its date.
+const HEADER_DATE_GAP: f32 = 8.0;
 /// Code background padding, kept clear of adjacent lines.
 const CODE_PADDING: f32 = 2.5;
 
@@ -219,12 +223,15 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
         .show(ui, |ui| {
             let width = ui.available_width();
             ui.set_min_width(width);
+            // A loading card does not know the sender yet, so it keeps room
+            // for a name and an address of its own.
             let (header, _) = ui.allocate_exact_size(
-                egui::vec2(width, message_header_height(expanded)),
+                egui::vec2(width, message_header_height(expanded, true)),
                 Sense::hover(),
             );
             paint_message_chevron(ui, header, expanded, false);
-            let copy = header_copy_rect(header);
+            let date_width = 122.0_f32.min(header.width() * 0.3);
+            let copy = header_copy_rect(header, date_width);
             let sender_height = ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(14.0)));
             let detail_height = ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(11.0)));
             theme::paint_skeleton(
@@ -239,7 +246,10 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                 ),
                 fill,
             );
-            let expanded_lines = [(20.0, 0.85, detail_height), (39.0, 0.65, detail_height)];
+            let expanded_lines = [
+                (20.0, 0.85, detail_height),
+                (recipients_top(true), 0.65, detail_height),
+            ];
             let collapsed_lines = [(22.0, 0.85, sender_height)];
             let lines = if expanded {
                 &expanded_lines[..]
@@ -261,7 +271,6 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                     fill,
                 );
             }
-            let date_width = 122.0_f32.min(header.width() * 0.3);
             theme::paint_skeleton(
                 ui.painter(),
                 egui::Rect::from_min_size(
@@ -680,17 +689,33 @@ fn message_header(
     preview: &str,
     expanded: bool,
 ) -> egui::Response {
+    let named = message.sender.name.is_some() && !message.sender.address.is_empty();
+    let separate_address = expanded && named;
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), message_header_height(expanded)),
+        egui::vec2(
+            ui.available_width(),
+            message_header_height(expanded, separate_address),
+        ),
         Sense::click(),
     );
     paint_message_chevron(ui, rect, expanded, response.hovered());
 
-    let copy_rect = header_copy_rect(rect);
     let painter = ui.painter_at(rect);
+    let time = message
+        .time
+        .map(|time| format_message_time(time, &Local))
+        .unwrap_or_default();
+    // The date keeps the width it needs, up to half the header, so in a
+    // narrow reader it is shortened instead of drawn over the sender.
+    let date = theme::truncated_galley(
+        &painter,
+        &time,
+        FontId::proportional(11.0),
+        theme::colors(ui).muted,
+        (rect.width() - HEADER_TEXT_INSET) * 0.5,
+    );
+    let copy_rect = header_copy_rect(rect, date.size().x);
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
-    let named = message.sender.name.is_some() && !message.sender.address.is_empty();
-    let separate_address = expanded && named;
     let identity_top =
         copy_rect.left_top() + egui::vec2(0.0, if separate_address { 20.0 } else { 0.0 });
     let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
@@ -739,7 +764,7 @@ fn message_header(
         }
         header_detail(
             &painter,
-            copy_rect.left_top() + egui::vec2(0.0, 39.0),
+            copy_rect.left_top() + egui::vec2(0.0, recipients_top(separate_address)),
             &format!("To: {}", recipients_label(&message.recipients)),
             theme::colors(ui).muted,
             copy_rect.width(),
@@ -755,15 +780,9 @@ fn message_header(
         );
     }
 
-    let time = message
-        .time
-        .map(|time| format_message_time(time, &Local))
-        .unwrap_or_default();
-    painter.text(
-        egui::pos2(rect.right(), rect.top() + 2.0),
-        Align2::RIGHT_TOP,
-        time,
-        FontId::proportional(11.0),
+    painter.galley(
+        egui::pos2(rect.right() - date.size().x, rect.top() + 2.0),
+        date,
         theme::colors(ui).muted,
     );
 
@@ -827,8 +846,19 @@ fn paint_name_and_address(
     painter.galley(address_origin, address, muted);
 }
 
-fn message_header_height(expanded: bool) -> f32 {
-    if expanded { 66.0 } else { 44.0 }
+/// A header's height: an open card lists its recipients under the sender,
+/// and under the sender's address when that has a line of its own.
+fn message_header_height(expanded: bool, separate_address: bool) -> f32 {
+    if expanded {
+        recipients_top(separate_address) + 27.0
+    } else {
+        44.0
+    }
+}
+
+/// How far below an open header's top its "To:" line starts.
+fn recipients_top(separate_address: bool) -> f32 {
+    if separate_address { 39.0 } else { 20.0 }
 }
 
 fn paint_message_chevron(ui: &egui::Ui, rect: egui::Rect, expanded: bool, hovered: bool) {
@@ -849,15 +879,15 @@ fn paint_message_chevron(ui: &egui::Ui, rect: egui::Rect, expanded: bool, hovere
 fn chevron_area(rect: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
         rect.left_top(),
-        egui::pos2(header_copy_rect(rect).left(), rect.top() + 22.0),
+        egui::pos2(rect.left() + HEADER_TEXT_INSET, rect.top() + 22.0),
     )
 }
 
-fn header_copy_rect(rect: egui::Rect) -> egui::Rect {
-    let date_width = 122.0_f32.min(rect.width() * 0.3);
+/// Where a header's text goes: right of the chevron, short of the date.
+fn header_copy_rect(rect: egui::Rect, date_width: f32) -> egui::Rect {
     egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 22.0, rect.top()),
-        egui::pos2(rect.right() - date_width - 8.0, rect.bottom()),
+        egui::pos2(rect.left() + HEADER_TEXT_INSET, rect.top()),
+        egui::pos2(rect.right() - date_width - HEADER_DATE_GAP, rect.bottom()),
     )
 }
 
@@ -2144,6 +2174,99 @@ mod tests {
         );
     }
 
+    /// Draws one message header `width` wide and answers with its rectangle
+    /// and its shapes.
+    fn header_shapes(
+        message: &MailMessage,
+        expanded: bool,
+        width: f32,
+    ) -> (egui::Rect, Vec<egui::epaint::ClippedShape>) {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut rect = egui::Rect::NOTHING;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(width);
+            rect = message_header(ui, message, "Preview", expanded).rect;
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (rect, shapes)
+    }
+
+    fn header_message(name: Option<&str>) -> MailMessage {
+        MailMessage {
+            id: "message".into(),
+            verdict: Verdict::Unverified,
+            sender: address(name, "alex@example.com"),
+            recipients: vec![address(None, "team@example.org")],
+            reply_to: Vec::new(),
+            reply_all_cc: Vec::new(),
+            reply_redirected: false,
+            time: Some(1_791_327_600),
+            body: MessageBody::PlainText("Preview".into()),
+            attachments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_open_header_leaves_no_gap_where_a_sender_has_no_name() {
+        for (name, address_line) in [(Some("Alex Rivera"), true), (None, false)] {
+            let (rect, shapes) = header_shapes(&header_message(name), true, 420.0);
+            let sender = text_rect(&shapes, name.unwrap_or("alex@example.com"));
+            let recipients = text_rect(&shapes, "To: team@example.org");
+            let above = if address_line {
+                text_rect(&shapes, "alex@example.com")
+            } else {
+                sender
+            };
+
+            let gap = recipients.top() - above.bottom();
+            assert!(
+                (0.0..=6.0).contains(&gap),
+                "{name:?}: {gap} pt between the recipients and the line above"
+            );
+            assert!(
+                rect.bottom() - recipients.bottom() <= 14.0,
+                "{name:?}: the header keeps blank space below its last line"
+            );
+        }
+    }
+
+    #[test]
+    fn the_date_stops_short_of_the_sender_in_a_narrow_reader() {
+        for width in [140.0, 200.0, 420.0] {
+            let message = header_message(Some("Alexandra Rivera-Montgomery"));
+            let (rect, shapes) = header_shapes(&message, false, width);
+            let date = shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text)
+                        if text.galley.text().starts_with("Oct")
+                            || text.galley.text().starts_with("Sep") =>
+                    {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .expect("the header should show its date");
+            let sender = shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text().starts_with("Alex") => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .expect("the header should show its sender");
+
+            assert!(
+                sender.right() <= date.left(),
+                "{width}: sender {sender:?} runs under the date {date:?}"
+            );
+            assert!((date.right() - rect.right()).abs() <= 0.5, "{width}");
+        }
+    }
+
     #[test]
     fn message_header_is_one_full_width_click_target() {
         let message = MailMessage {
@@ -2178,8 +2301,9 @@ mod tests {
 
         let (rect, _, _) = render(egui::RawInput::default());
         assert_eq!(rect.width(), 320.0);
-        let icon_center =
-            header_copy_rect(rect).left_top() + egui::Vec2::splat(SIGNATURE_ICON_SIZE / 2.0);
+        let icon_center = rect.left_top()
+            + egui::vec2(HEADER_TEXT_INSET, 0.0)
+            + egui::Vec2::splat(SIGNATURE_ICON_SIZE / 2.0);
         let chevron_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
         for position in [icon_center, rect.center(), chevron_center] {
             // egui holds tooltips back for a moment after a click, and the
