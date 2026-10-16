@@ -320,6 +320,8 @@ pub struct MailMessage {
     pub reply_redirected: bool,
     /// Unix timestamp in seconds.
     pub time: Option<i64>,
+    /// Whether Proton still counts this message as unread.
+    pub unread: bool,
     pub body: MessageBody,
     /// Core's signature verification result for this body, before rendering.
     pub verdict: super::Verdict,

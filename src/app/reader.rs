@@ -91,7 +91,8 @@ impl ConversationReader {
         self.opens_on_its_own(message_id, reading) != self.toggled.contains(message_id)
     }
 
-    /// Whether settings open this message before manual overrides.
+    /// Whether settings open this message before manual overrides: the
+    /// newest one, and any not read yet.
     fn opens_on_its_own(&self, message_id: &str, reading: Reading) -> bool {
         reading.expand_all_messages
             || self
@@ -99,6 +100,26 @@ impl ConversationReader {
                 .messages
                 .last()
                 .is_some_and(|message| message.id == message_id)
+            || self
+                .detail
+                .messages
+                .iter()
+                .any(|message| message.unread && message.id == message_id)
+    }
+
+    /// The message to bring into view when the conversation opens: the first
+    /// one not read yet, else the newest. `None` for a single message, which
+    /// is in view already.
+    pub fn landing(&self) -> Option<&str> {
+        let messages = &self.detail.messages;
+        if messages.len() < 2 {
+            return None;
+        }
+        messages
+            .iter()
+            .find(|message| message.unread)
+            .or(messages.last())
+            .map(|message| message.id.as_str())
     }
 
     pub fn toggle(&mut self, message_id: &str) {
@@ -164,6 +185,7 @@ mod tests {
             reply_all_cc: Vec::new(),
             reply_redirected: false,
             time: Some(time),
+            unread: false,
             body: MessageBody::PlainText(String::new()),
             attachments: Vec::new(),
         }
@@ -265,6 +287,35 @@ mod tests {
             ],
             ["a", "b", "c"]
         );
+    }
+
+    #[test]
+    fn unread_messages_open_with_the_newest_and_the_first_one_is_landed_on() {
+        let mut first_unread = message("first-unread", 2);
+        first_unread.unread = true;
+        let mut later_unread = message("later-unread", 3);
+        later_unread.unread = true;
+        let reader = reader(vec![
+            message("newest", 4),
+            later_unread,
+            message("read", 1),
+            first_unread,
+        ]);
+
+        assert!(!reader.is_expanded("read", plain()));
+        for id in ["first-unread", "later-unread", "newest"] {
+            assert!(reader.is_expanded(id, plain()), "{id}");
+        }
+        assert_eq!(reader.landing(), Some("first-unread"));
+    }
+
+    #[test]
+    fn a_read_thread_lands_on_its_newest_message_and_a_single_one_nowhere() {
+        assert_eq!(
+            reader(vec![message("a", 1), message("b", 2)]).landing(),
+            Some("b")
+        );
+        assert_eq!(reader(vec![message("only", 1)]).landing(), None);
     }
 
     #[test]

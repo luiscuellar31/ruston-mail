@@ -301,7 +301,10 @@ For example, opening a conversation starts in
 The runtime executes it, `ruston-core` reads and decrypts the messages, and a
 result message updates [`app/reader.rs`](../src/app/reader.rs). Only the newest
 load is kept: opening another conversation, changing folders or ending the
-session aborts the one in flight, and the reader ignores its answer. Only the
+session aborts the one in flight, and the reader ignores its answer. Each
+message keeps Proton's unread flag, so its first unread message, or else the
+newest, opens and is scrolled into view once, on the pass after the
+conversation opens, never on a refresh. Only the
 answer the reader waits for marks a conversation read, so a late one cannot
 mark the conversation on screen. The desktop
 adapter converts sanitized HTML into the native rich-body model in

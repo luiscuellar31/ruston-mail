@@ -952,6 +952,7 @@ fn message_without_body(
         reply_all_cc: reply.cc,
         reply_redirected,
         time: (meta.time > 0).then_some(meta.time),
+        unread: meta.unread != 0,
         body: MessageBody::Unreadable,
         verdict: Verdict::Unverified,
         id: meta.id,

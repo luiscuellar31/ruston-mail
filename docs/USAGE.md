@@ -80,9 +80,10 @@ when that row returns.
 
 ## Reading and organizing
 
-Messages in a conversation appear oldest first. The newest message starts open;
-older messages and quoted replies start folded. These defaults can be changed in
-Settings.
+Messages in a conversation appear oldest first. The newest message and any you
+have not read start open; older messages and quoted replies start folded. These
+defaults can be changed in Settings. A long conversation opens scrolled to its
+first unread message, or to its newest one.
 
 Ruston checks some grouped conversations in the background to separate repeated
 incoming messages. These checks are limited and cancelled when you change

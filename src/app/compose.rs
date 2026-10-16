@@ -968,6 +968,7 @@ mod tests {
             reply_all_cc: vec!["bob@corp.example".into()],
             reply_redirected: !reply_to.eq_ignore_ascii_case("alex@corp.example"),
             time: None,
+            unread: false,
             body: crate::mail::MessageBody::PlainText("Invoice attached".into()),
             verdict: crate::mail::Verdict::Unverified,
             attachments: Vec::new(),

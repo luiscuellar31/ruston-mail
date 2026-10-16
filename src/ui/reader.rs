@@ -130,7 +130,12 @@ fn conversation(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    reader_scroll(ui, state, |ui| reading_column(ui, reader, view, messages));
+    let landing = std::mem::take(&mut state.land_reader)
+        .then(|| reader.landing())
+        .flatten();
+    reader_scroll(ui, state, |ui| {
+        reading_column(ui, reader, view, landing, messages);
+    });
 }
 
 fn reader_scroll(ui: &mut egui::Ui, state: &mut UiState, content: impl FnOnce(&mut egui::Ui)) {
@@ -306,10 +311,13 @@ fn skeleton_bar(ui: &mut egui::Ui, width: f32, height: f32, fill: Color32) -> eg
     response
 }
 
+/// The open conversation. `landing` is the message to bring into view, on
+/// the pass after the conversation opens.
 fn reading_column(
     ui: &mut egui::Ui,
     reader: &ConversationReader,
     view: &ReaderView<'_>,
+    landing: Option<&str>,
     messages: &mut Vec<Message>,
 ) {
     let mailbox = view.mailbox;
@@ -344,6 +352,7 @@ fn reading_column(
         detail(ui, "This conversation has no messages.");
     }
     for (index, message) in detail_data.messages.iter().enumerate() {
+        let top = ui.cursor().top();
         message_card(
             ui,
             message,
@@ -353,8 +362,23 @@ fn reading_column(
             view.reading,
             messages,
         );
+        if landing == Some(message.id.as_str()) {
+            land_on(ui, top);
+        }
         ui.add_space(12.0);
     }
+}
+
+/// Brings a card that starts at `top` to the top of the reader, unless it
+/// already starts in the upper third, where a short thread keeps its heading
+/// in view.
+fn land_on(ui: &egui::Ui, top: f32) {
+    let visible = ui.clip_rect();
+    if top <= visible.top() + visible.height() / 3.0 {
+        return;
+    }
+    let card = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+    ui.scroll_to_rect_animation(card, Some(Align::TOP), egui::style::ScrollAnimation::none());
 }
 
 fn conversation_heading(ui: &mut egui::Ui, subject: Option<&str>, count: usize) {
@@ -1617,6 +1641,49 @@ mod tests {
         text_rect(&shapes, "Forward");
     }
 
+    #[test]
+    fn opening_a_long_thread_brings_its_first_unread_message_into_view() {
+        let land = |landing: bool| {
+            let (mut mailbox, request, mut detail) =
+                loading_reader("A long thread", Folder::INBOX, 8);
+            for (index, message) in detail.messages.iter_mut().enumerate() {
+                message.sender = address(Some(&format!("Person {index}")), "p@example.com");
+            }
+            detail.messages[3].unread = true;
+            mailbox.finish_conversation(&request, Ok(detail));
+            let context = egui::Context::default();
+            theme::install(&context);
+            let mut state = UiState {
+                land_reader: landing,
+                ..UiState::default()
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(540.0, 500.0),
+                )),
+                ..Default::default()
+            };
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                shapes = reader_frame(
+                    &context,
+                    &mailbox,
+                    &[],
+                    Reading::default(),
+                    &mut state,
+                    input.clone(),
+                )
+                .0;
+            }
+            assert!(!state.land_reader, "landing happens once");
+            text_rect(&shapes, "Person 3").top()
+        };
+
+        assert!(land(false) > 500.0 / 3.0, "the case needs a long thread");
+        assert!(land(true) < 60.0, "the unread message starts at the top");
+    }
+
     fn address(name: Option<&str>, email: &str) -> MailAddress {
         MailAddress {
             name: name.map(str::to_owned),
@@ -1755,6 +1822,7 @@ mod tests {
                     reply_all_cc: Vec::new(),
                     reply_redirected: false,
                     time: Some(1_791_327_600 + i64::from(index)),
+                    unread: false,
                     // The expanded body overflows the viewport, exercising the
                     // floating scrollbar without predicting its eventual height.
                     body: MessageBody::PlainText(if index == count - 1 {
@@ -2212,6 +2280,7 @@ mod tests {
             reply_all_cc: Vec::new(),
             reply_redirected: false,
             time: None,
+            unread: false,
             body: MessageBody::PlainText("Preview".into()),
             attachments: Vec::new(),
         };
@@ -2279,6 +2348,7 @@ mod tests {
             reply_all_cc: Vec::new(),
             reply_redirected: false,
             time: Some(1_791_327_600),
+            unread: false,
             body: MessageBody::PlainText("Preview".into()),
             attachments: Vec::new(),
         }
@@ -2354,6 +2424,7 @@ mod tests {
             reply_all_cc: Vec::new(),
             reply_redirected: false,
             time: None,
+            unread: false,
             body: MessageBody::PlainText("Preview".into()),
             attachments: Vec::new(),
         };
@@ -2444,6 +2515,7 @@ mod tests {
                 reply_all_cc: Vec::new(),
                 reply_redirected: false,
                 time: None,
+                unread: false,
                 body: MessageBody::PlainText("Hello.".into()),
                 attachments: Vec::new(),
             }],
@@ -2577,6 +2649,7 @@ mod tests {
                             reply_all_cc: Vec::new(),
                             reply_redirected: false,
                             time: None,
+                            unread: false,
                             body: MessageBody::PlainText("Body".into()),
                             attachments: Vec::new(),
                             verdict,

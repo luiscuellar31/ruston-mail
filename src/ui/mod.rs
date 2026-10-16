@@ -34,6 +34,9 @@ pub(super) struct UiState {
     show_password: bool,
     focus_search: bool,
     scroll_reader_top: bool,
+    /// Set when another conversation opens: once its messages show, the
+    /// reader brings the first unread one, or the newest, into view.
+    land_reader: bool,
     reveal_conversation: Option<String>,
     conversation_scroll: Option<mailbox::ConversationScroll>,
     compact_view: mailbox::CompactView,
@@ -472,6 +475,7 @@ impl DesktopApp {
                 }
                 UiEffect::ScrollReaderTop => {
                     self.ui.scroll_reader_top = true;
+                    self.ui.land_reader = true;
                     self.ui.compact_view = mailbox::CompactView::Reader;
                 }
                 UiEffect::RevealConversation(id) => self.ui.reveal_conversation = Some(id),

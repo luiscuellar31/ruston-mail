@@ -1100,6 +1100,8 @@ fn message(
         sender,
         recipients,
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),
+        // An unread conversation's newest message is the one not read yet.
+        unread: fixture.unread && newer == 0 && !from_demo_user,
         body: if fixture.html {
             MessageBody::Rich(super::html::parse(&fixture.bodies[position]))
         } else {

@@ -77,6 +77,7 @@ fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
                 reply_all_cc: Vec::new(),
                 reply_redirected: false,
                 time: Some(time as i64),
+                unread: false,
                 body: MessageBody::PlainText(String::new()),
                 attachments: Vec::new(),
             })
