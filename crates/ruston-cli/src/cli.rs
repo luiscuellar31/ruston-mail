@@ -96,6 +96,12 @@ fn parse_profile(value: &str) -> std::result::Result<String, String> {
     Ok(value.to_owned())
 }
 
+fn parse_search_date(value: &str) -> std::result::Result<String, String> {
+    ruston_core::mail::read::validate_search_date(value)
+        .map_err(|_| "expected a date as YYYY-MM-DD".to_owned())?;
+    Ok(value.to_owned())
+}
+
 /// Official-client presets for `--client`.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum ClientPreset {
@@ -295,11 +301,11 @@ pub struct SearchArgs {
     /// Match the subject.
     #[arg(long)]
     pub subject: Option<String>,
-    /// Only results on/after this date (YYYY-MM-DD).
-    #[arg(long)]
+    /// Only results on/after this date (YYYY-MM-DD, a day in UTC).
+    #[arg(long, value_parser = parse_search_date)]
     pub after: Option<String>,
-    /// Only results on/before this date (YYYY-MM-DD).
-    #[arg(long)]
+    /// Only results on/before this date (YYYY-MM-DD, a day in UTC), including it.
+    #[arg(long, value_parser = parse_search_date)]
     pub before: Option<String>,
     /// Restrict to a folder/label.
     #[arg(long)]

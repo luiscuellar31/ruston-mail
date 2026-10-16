@@ -159,6 +159,36 @@ mod tests {
     }
 
     #[test]
+    fn search_dates_are_refused_while_parsing() {
+        // Found before any session is resumed.
+        for command in ["messages", "conversations"] {
+            for flag in ["--after", "--before"] {
+                for date in ["15/01/2024", "2024-02-30", "yesterday"] {
+                    let error = Cli::try_parse_from(["ruston-cli", command, "search", flag, date])
+                        .unwrap_err();
+                    assert_eq!(
+                        error.kind(),
+                        clap::error::ErrorKind::ValueValidation,
+                        "{command} {flag} {date}"
+                    );
+                }
+            }
+            assert!(
+                Cli::try_parse_from([
+                    "ruston-cli",
+                    command,
+                    "search",
+                    "--after",
+                    "2024-01-01",
+                    "--before",
+                    "2024-01-31",
+                ])
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn send_with_stdin_body() {
         let cli = parse(&[
             "ruston-cli",

@@ -65,9 +65,12 @@ pub struct SearchOpts {
     pub to: Option<String>,
     /// Filter by subject text.
     pub subject: Option<String>,
-    /// Only messages on or after this date (`YYYY-MM-DD`).
+    /// Only messages on or after this date (`YYYY-MM-DD`, a day in UTC).
+    /// Any other form fails the search before a request.
     pub after: Option<String>,
-    /// Only messages on or before this date (`YYYY-MM-DD`).
+    /// Only messages on or before this date (`YYYY-MM-DD`, a day in UTC),
+    /// all of that day included. Any other form fails the search before a
+    /// request.
     pub before: Option<String>,
     /// Restrict to this folder (defaults to all mail).
     pub folder: Option<String>,
@@ -77,9 +80,25 @@ pub struct SearchOpts {
     pub limit: Option<u32>,
 }
 
-fn parse_date(s: &str) -> Option<i64> {
-    let d = chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()?;
-    Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
+/// Checks that `date` is a `YYYY-MM-DD` date, as [`SearchOpts`] needs, so a
+/// caller can refuse it before signing in.
+pub fn validate_search_date(date: &str) -> Result<()> {
+    parse_date(date).map(drop)
+}
+
+fn parse_date(s: &str) -> Result<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+        .map_err(|_| Error::Other(format!("invalid date '{s}': expected YYYY-MM-DD")))
+}
+
+/// The first second of `day` in UTC.
+fn day_start(day: chrono::NaiveDate) -> i64 {
+    day.and_time(chrono::NaiveTime::MIN).and_utc().timestamp()
+}
+
+/// The last second of `day` in UTC: the API's `End` includes its timestamp.
+fn day_end(day: chrono::NaiveDate) -> i64 {
+    day_start(day) + 86_399
 }
 
 fn looks_like_id(r: &str) -> bool {
@@ -137,8 +156,8 @@ impl Client {
         api::conversations::list_conversations(self.http(), &q).await
     }
 
-    fn search_query(&self, opts: &SearchOpts) -> ListQuery {
-        ListQuery {
+    fn search_query(&self, opts: &SearchOpts) -> Result<ListQuery> {
+        Ok(ListQuery {
             label_id: Some(resolve_folder(opts.folder.as_deref().unwrap_or("all"))),
             page_size: Some(opts.limit.unwrap_or(25)),
             unread: opts.unread,
@@ -146,21 +165,31 @@ impl Client {
             from: opts.from.clone(),
             to: opts.to.clone(),
             subject: opts.subject.clone(),
-            begin: opts.after.as_deref().and_then(parse_date),
-            end: opts.before.as_deref().and_then(parse_date),
+            begin: opts
+                .after
+                .as_deref()
+                .map(parse_date)
+                .transpose()?
+                .map(day_start),
+            end: opts
+                .before
+                .as_deref()
+                .map(parse_date)
+                .transpose()?
+                .map(day_end),
             ..Default::default()
-        }
+        })
     }
 
     /// Search messages server-side using the given criteria.
     pub async fn search_messages(&self, opts: &SearchOpts) -> Result<Vec<MessageMetadata>> {
-        let q = self.search_query(opts);
+        let q = self.search_query(opts)?;
         Ok(api::messages::list_messages(self.http(), &q).await?.1)
     }
 
     /// Search conversations server-side using the given criteria.
     pub async fn search_conversations(&self, opts: &SearchOpts) -> Result<Vec<Conversation>> {
-        let q = self.search_query(opts);
+        let q = self.search_query(opts)?;
         Ok(api::conversations::list_conversations(self.http(), &q)
             .await?
             .1)
@@ -173,7 +202,7 @@ impl Client {
         page: u32,
         page_size: u32,
     ) -> Result<(u32, Vec<Conversation>)> {
-        let mut q = self.search_query(opts);
+        let mut q = self.search_query(opts)?;
         q.page = Some(page);
         q.page_size = Some(page_size);
         api::conversations::list_conversations(self.http(), &q).await
@@ -823,10 +852,86 @@ mod tests {
         assert_eq!(client.resolve_ref("quarterly").await.unwrap(), "hit");
     }
 
+    #[tokio::test]
+    async fn a_search_covers_the_whole_day_it_names() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let (client, _, _) = conversation_client(&server);
+        // 2024-01-15, from its first second to its last, in UTC.
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Begin", "1705276800"))
+            .and(query_param("End", "1705363199"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 1, "Messages": [{"ID": "evening", "Time": 1_705_359_600}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let hits = client
+            .search_messages(&SearchOpts {
+                after: Some("2024-01-15".into()),
+                before: Some("2024-01-15".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_search_date_fails_before_any_request() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let (client, _, _) = conversation_client(&server);
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code": 1000, "Total": 0, "Messages": []})),
+            )
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        for date in ["15/01/2024", "2024-02-30", "yesterday", ""] {
+            for opts in [
+                SearchOpts {
+                    after: Some(date.into()),
+                    ..Default::default()
+                },
+                SearchOpts {
+                    before: Some(date.into()),
+                    ..Default::default()
+                },
+            ] {
+                assert!(
+                    matches!(client.search_messages(&opts).await, Err(Error::Other(_))),
+                    "{opts:?} was searched"
+                );
+            }
+        }
+    }
+
     #[test]
-    fn date_parsing() {
-        assert!(parse_date("2024-01-15").is_some());
-        assert!(parse_date("nonsense").is_none());
+    fn search_dates_are_whole_days_in_utc() {
+        let day = parse_date("2024-01-15").unwrap();
+        assert_eq!(
+            (day_start(day), day_end(day)),
+            (1_705_276_800, 1_705_363_199)
+        );
+        assert!(parse_date("2024-02-29").is_ok());
+        for invalid in ["2023-02-29", "nonsense", "2024-01-15T10:00"] {
+            assert!(parse_date(invalid).is_err(), "{invalid}");
+            assert!(validate_search_date(invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_search_date("2024-01-15").is_ok());
     }
 
     #[test]
