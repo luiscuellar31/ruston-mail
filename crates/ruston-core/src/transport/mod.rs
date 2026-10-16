@@ -408,8 +408,9 @@ impl HttpClient {
         })
     }
 
-    /// Refresh the access/refresh tokens via `POST /auth/v4/refresh`.
-    async fn refresh_tokens(&self, sent_auth: &AuthState) -> Result<()> {
+    /// Refresh the access/refresh tokens via `POST /auth/v4/refresh`, unless
+    /// another request or process already replaced the ones `sent_auth` holds.
+    async fn refresh_tokens(&self, sent_auth: &AuthState) -> Result<Refresh> {
         // Keep the check, refresh request, and token replacement under the
         // shared state lock so concurrent 401s reuse a successful rotation.
         let mut a = self.auth.clone().write_owned().await;
@@ -419,7 +420,7 @@ impl HttpClient {
             || a.refresh.as_ref().map(|t| t.expose_secret())
                 != sent_auth.refresh.as_ref().map(|t| t.expose_secret())
         {
-            return Ok(());
+            return Ok(Refresh::Reused);
         }
         // Hold the cross-process lock until the rotated pair is persisted.
         // Another process may have refreshed while this client was idle.
@@ -440,7 +441,7 @@ impl HttpClient {
             {
                 a.access = Some(saved.access);
                 a.refresh = Some(saved.refresh);
-                return Ok(());
+                return Ok(Refresh::Reused);
             }
             Some(lock)
         } else {
@@ -475,8 +476,19 @@ impl HttpClient {
         };
         tokio::spawn(rotation.run(a, session_lock, req, prepared, uid))
             .await
-            .map_err(|e| Error::Session(format!("token refresh task failed: {e}")))?
+            .map_err(|e| Error::Session(format!("token refresh task failed: {e}")))??;
+        Ok(Refresh::Rotated)
     }
+}
+
+/// How [`HttpClient::refresh_tokens`] replaced the tokens a refused request
+/// sent.
+enum Refresh {
+    /// Proton issued a new pair.
+    Rotated,
+    /// Another request or process had already replaced them, and that pair
+    /// may have expired since.
+    Reused,
 }
 
 /// The part of a token refresh that must not be cancelled: sending it,
@@ -634,7 +646,10 @@ impl Doer for HttpClient {
     async fn do_raw(&self, req: Request) -> Result<Response> {
         let mut work = req;
         let prepared = self.prepare_request(&mut work)?;
-        let mut refreshed = false;
+        // Tokens renewed meanwhile by another request or process may have
+        // expired too, so reusing them leaves one more refresh; a pair Proton
+        // has just issued is the last try.
+        let mut refreshes_left = 2u8;
         let mut rate_limited = false;
         let mut hv_tried = false;
 
@@ -643,10 +658,14 @@ impl Doer for HttpClient {
             let resp = Self::execute_once(&self.client, &work, &prepared, &sent_auth).await?;
             match detect(resp.status, &resp.body) {
                 Detected::Ok => return Ok(resp),
-                Detected::Api(e) if e.http_status == 401 && !work.skip_refresh && !refreshed => {
+                Detected::Api(e)
+                    if e.http_status == 401 && !work.skip_refresh && refreshes_left > 0 =>
+                {
                     tracing::debug!(target: "ruston_core::http", "401 — refreshing access token and retrying");
-                    self.refresh_tokens(&sent_auth).await?;
-                    refreshed = true;
+                    refreshes_left = match self.refresh_tokens(&sent_auth).await? {
+                        Refresh::Rotated => 0,
+                        Refresh::Reused => refreshes_left - 1,
+                    };
                     continue;
                 }
                 Detected::Api(e) if e.http_status == 401 => return Err(Error::Unauthorized),
@@ -1608,6 +1627,188 @@ mod tests {
             "new-ref"
         );
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A client still holding `old-acc` and `old-ref` while its saved session
+    /// already holds the pair another process rotated to, `cli-acc` and
+    /// `cli-ref`, as after the machine slept. Returns the folder to remove.
+    async fn client_behind_its_saved_session(
+        server: &MockServer,
+    ) -> (HttpClient, Paths, Arc<dyn SecretStore>, std::path::PathBuf) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "ruston-adopted-refresh-{}-{unique}",
+            std::process::id()
+        ));
+        let paths = Paths::with_base(&base);
+        let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
+        Session {
+            uid: "uid".into(),
+            app_version: "Other".into(),
+            base_url: server.uri(),
+            password_mode: 1,
+            user_agent: None,
+            user_id: None,
+        }
+        .save(
+            &paths,
+            "ruston",
+            store.as_ref(),
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("cli-acc"),
+                refresh: SecretString::from("cli-ref"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
+        let mut client = client(&server.uri());
+        client
+            .set_tokens(
+                "uid".into(),
+                SecretString::from("old-acc"),
+                SecretString::from("old-ref"),
+            )
+            .await;
+        crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
+        (client, paths, store, base)
+    }
+
+    /// Answers `token` with 401 `times` times, each after `delay`.
+    async fn refuse(server: &MockServer, token: &str, times: u64, delay: std::time::Duration) {
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", format!("Bearer {token}").as_str()))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"Code":401}))
+                    .set_delay(delay),
+            )
+            .expect(times)
+            .mount(server)
+            .await;
+    }
+
+    /// Accepts `cli-ref` once, rotating it to `new-acc` and `new-ref`.
+    async fn rotate_saved_refresh_token(server: &MockServer) {
+        use wiremock::matchers::body_partial_json;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .and(body_partial_json(
+                serde_json::json!({"RefreshToken": "cli-ref"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"Code":1000,"AccessToken":"new-acc","RefreshToken":"new-ref"}),
+            ))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn saved_tokens_that_have_also_expired_are_refreshed() {
+        let server = MockServer::start().await;
+        refuse(&server, "old-acc", 1, std::time::Duration::ZERO).await;
+        refuse(&server, "cli-acc", 1, std::time::Duration::ZERO).await;
+        rotate_saved_refresh_token(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer new-acc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code":1000,"Value":99})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (client, paths, store, base) = client_behind_its_saved_session(&server).await;
+
+        let result = client.decode::<ValueResp>(Request::get("/protected")).await;
+
+        let saved = Session::load(&paths, "ruston", store.as_ref())
+            .unwrap()
+            .unwrap()
+            .tokens
+            .refresh
+            .expose_secret()
+            .to_owned();
+        std::fs::remove_dir_all(base).unwrap();
+        assert_eq!(result.unwrap().value, 99);
+        server.verify().await;
+        assert_eq!(saved, "new-ref");
+    }
+
+    #[tokio::test]
+    async fn a_request_asks_proton_for_new_tokens_at_most_once() {
+        // Even the pair Proton has just issued is refused.
+        let server = MockServer::start().await;
+        refuse(&server, "old-acc", 1, std::time::Duration::ZERO).await;
+        refuse(&server, "cli-acc", 1, std::time::Duration::ZERO).await;
+        rotate_saved_refresh_token(&server).await;
+        refuse(&server, "new-acc", 1, std::time::Duration::ZERO).await;
+        let (client, _, _, base) = client_behind_its_saved_session(&server).await;
+
+        let result = client.decode::<ValueResp>(Request::get("/protected")).await;
+
+        std::fs::remove_dir_all(base).unwrap();
+        assert!(matches!(result, Err(Error::Unauthorized)));
+        server.verify().await;
+        assert_eq!(server.received_requests().await.unwrap().len(), 4);
+
+        // A refused refresh token ends the session at once.
+        let server = MockServer::start().await;
+        refuse(&server, "old-acc", 1, std::time::Duration::ZERO).await;
+        refuse(&server, "cli-acc", 1, std::time::Duration::ZERO).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .respond_with(
+                ResponseTemplate::new(422).set_body_json(serde_json::json!({"Code":10013})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (client, _, _, base) = client_behind_its_saved_session(&server).await;
+
+        let result = client.decode::<ValueResp>(Request::get("/protected")).await;
+
+        std::fs::remove_dir_all(base).unwrap();
+        assert!(matches!(result, Err(Error::Unauthorized)));
+        server.verify().await;
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_share_one_refresh_of_expired_saved_tokens() {
+        let server = MockServer::start().await;
+        // The delays keep both requests in flight before either refreshes.
+        let delay = std::time::Duration::from_millis(200);
+        refuse(&server, "old-acc", 2, delay).await;
+        refuse(&server, "cli-acc", 2, delay).await;
+        rotate_saved_refresh_token(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer new-acc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code":1000,"Value":99})),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        let (client, _, _, base) = client_behind_its_saved_session(&server).await;
+
+        let (first, second) = tokio::join!(
+            client.decode::<ValueResp>(Request::get("/protected")),
+            client.decode::<ValueResp>(Request::get("/protected")),
+        );
+
+        std::fs::remove_dir_all(base).unwrap();
+        assert_eq!(first.unwrap().value, 99);
+        assert_eq!(second.unwrap().value, 99);
+        server.verify().await;
     }
 
     #[tokio::test]
