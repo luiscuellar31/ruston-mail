@@ -275,7 +275,7 @@ when changing adapters.
 
 ## Native file dialogs and file manager validation
 
-Use the fictional mailbox to check **Attach files** in both composer placements
+Use the fictional mailbox to check **Attach…** in both composer placements
 (reading pane and separate window). Verify the picker stays associated with
 Ruston, cancelling leaves the draft unchanged, and repeated clicks do not open
 multiple dialogs. On macOS, verify an attached sheet on the owning window; on

@@ -176,8 +176,8 @@ filename: this action also never replaces an existing file, even if the native
 dialog offers replacement. If the destination exists, Ruston shows an error
 and you can choose another name.
 
-The app can reveal a saved attachment in the file manager. Use **Attach files**
-in the composer to add local files to an outgoing message.
+The app can reveal a saved attachment in the file manager. Use **Attach…**
+beside **Send** in the composer to add local files to an outgoing message.
 On Linux, **Show in folder** asks the file manager to select the saved file;
 if the desktop does not support selection, it opens the containing folder.
 

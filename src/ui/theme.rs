@@ -25,6 +25,7 @@ const FOCUS_RING_WIDTH: f32 = 2.0;
 const CHECKBOX_ATOM_ID: &str = "ruston-check-box";
 const CHECKBOX_RADIUS: u8 = 4;
 const CHECK_MARK_WIDTH: f32 = 1.6;
+const FIELD_MARGIN: egui::Margin = egui::Margin::symmetric(10, 7);
 
 /// Colors used by the custom-painted parts of the interface. egui's native
 /// widgets use the matching `Visuals` installed below.
@@ -53,6 +54,8 @@ pub struct Colors {
     focus: Color32,
     /// The outline of a control at rest, such as an unchecked box.
     control_border: Color32,
+    /// A text field's hint, readable but clearly not typed text.
+    placeholder: Color32,
     skeleton_low: Color32,
     skeleton_high: Color32,
     extreme_bg: Color32,
@@ -77,6 +80,7 @@ const DARK: Colors = Colors {
     text: Color32::from_rgb(220, 221, 230),
     focus: Color32::from_rgb(133, 102, 255),
     control_border: Color32::from_rgb(110, 113, 133),
+    placeholder: Color32::from_rgb(138, 141, 156),
     skeleton_low: Color32::from_rgb(37, 38, 47),
     skeleton_high: Color32::from_rgb(54, 56, 68),
     extreme_bg: Color32::from_rgb(17, 18, 23),
@@ -101,6 +105,7 @@ const LIGHT: Colors = Colors {
     text: Color32::from_rgb(43, 45, 56),
     focus: Color32::from_rgb(109, 74, 255),
     control_border: Color32::from_rgb(134, 138, 158),
+    placeholder: Color32::from_rgb(102, 107, 125),
     skeleton_low: Color32::from_rgb(230, 231, 239),
     skeleton_high: Color32::from_rgb(242, 243, 248),
     extreme_bg: Color32::from_rgb(237, 238, 246),
@@ -339,8 +344,18 @@ fn paint_check_box(ui: &egui::Ui, square: egui::Rect, checked: bool, response: &
 }
 
 /// A single-line field with enough vertical room for comfortable reading and clicking.
-pub fn text_field(text: &mut String) -> egui::TextEdit<'_> {
-    egui::TextEdit::singleline(text).margin(egui::Margin::symmetric(4, 6))
+pub fn text_field<'t>(ui: &egui::Ui, text: &'t mut String) -> egui::TextEdit<'t> {
+    egui::TextEdit::singleline(text).frame(field_frame(ui))
+}
+
+/// Every text field's frame: its fill, an outline that marks it as a field
+/// at rest, and the same padding. The focus ring covers it while typing.
+pub fn field_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::new()
+        .fill(ui.visuals().text_edit_bg_color())
+        .stroke(Stroke::new(1.0, colors(ui).control_border))
+        .corner_radius(ui.visuals().widgets.inactive.corner_radius)
+        .inner_margin(FIELD_MARGIN)
 }
 
 /// A compact button that remains easy to click.
@@ -475,6 +490,8 @@ pub fn install(context: &egui::Context) {
         // `paint_focus_ring` replaces.
         style.visuals.selection.stroke = Stroke::new(0.0, Color32::WHITE);
         style.visuals.hyperlink_color = colors.hyperlink;
+        // egui draws only hint text with it in this app.
+        style.visuals.weak_text_color = Some(colors.placeholder);
         style.visuals.widgets.noninteractive.fg_stroke.color = colors.text;
         style.visuals.widgets.inactive.fg_stroke.color = colors.text;
         style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, colors.border);
@@ -843,7 +860,7 @@ mod tests {
             let mut target = egui::Rect::NOTHING;
             let rings = focus_rings(&context, egui::RawInput::default(), |ui| {
                 let button = ui.button("Archive");
-                let edit = ui.add(text_field(&mut text));
+                let edit = ui.add(text_field(ui, &mut text));
                 let focused = if field { edit } else { button };
                 focused.request_focus();
                 target = focused.rect;
@@ -1031,6 +1048,44 @@ mod tests {
                     "{mode:?} on {surface:?}: text {normal:.2}:1, secondary {secondary:.2}:1"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn text_fields_are_outlined_at_rest_with_a_readable_hint() {
+        for (mode, colors) in [(egui::Theme::Dark, DARK), (egui::Theme::Light, LIGHT)] {
+            let context = egui::Context::default();
+            install(&context);
+            context.set_theme(mode);
+            let mut text = String::new();
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.add(text_field(ui, &mut text).hint_text("Search mail…"));
+            });
+            let fill = context.style_of(mode).visuals.text_edit_bg_color();
+            let outlined = output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::epaint::Shape::Rect(rect)
+                    if rect.fill == fill && rect.stroke.color == colors.control_border)
+            });
+            let hint = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "Search mail…" => {
+                        Some(text.galley.job.sections[0].format.color)
+                    }
+                    _ => None,
+                })
+                .expect("the hint should be drawn");
+            output.drop_without_applying_deltas();
+
+            assert!(outlined, "{mode:?}: a field at rest needs its outline");
+            assert_eq!(hint, colors.placeholder, "{mode:?}");
+            let ratio = contrast(hint, fill);
+            assert!(ratio >= 4.5, "{mode:?}: hint at {ratio:.2}:1");
+            assert!(
+                contrast(colors.control_border, colors.panel) >= 3.0,
+                "{mode:?}"
+            );
         }
     }
 

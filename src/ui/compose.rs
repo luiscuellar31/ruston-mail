@@ -238,18 +238,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         ui.add_space(4.0);
     }
 
-    let attach_label = if compose.attachments().is_empty() {
-        "Attach files…"
-    } else {
-        "Attach more…"
-    };
-    if ui
-        .add_enabled(!leaving, theme::compact_button(attach_label))
-        .clicked()
-    {
-        messages.push(Message::PickComposeAttachments);
-    }
-    ui.add_space(10.0);
+    ui.add_space(6.0);
 
     // A send result takes priority over validation hints.
     match sending {
@@ -270,7 +259,9 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         egui::TextEdit::multiline(&mut body)
             .id(body_id(compose.id()))
             .hint_text("Write your message…")
-            .margin(egui::Margin::same(8))
+            // What is written reads at the size it will be read at.
+            .font(egui::FontId::proportional(reader::BODY_SIZE))
+            .frame(theme::field_frame(ui))
             .desired_width(f32::INFINITY)
             .desired_rows(16),
     );
@@ -344,7 +335,7 @@ fn line(
     let mut value = compose.field(field).to_owned();
     let response = ui.add_enabled(
         !leaving,
-        theme::text_field(&mut value)
+        theme::text_field(ui, &mut value)
             .id(field_id(label, compose.id()))
             .desired_width(f32::INFINITY),
     );
@@ -443,6 +434,44 @@ mod tests {
             message,
             Message::Send | Message::CloseCompose | Message::ComposeChanged(_, _)
         )));
+    }
+
+    #[test]
+    fn the_composer_offers_one_attach_button_and_writes_at_reading_size() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        let draft = app.compose().unwrap().id();
+        app.update(Message::AddComposeAttachments(
+            draft,
+            vec![std::path::PathBuf::from("/nonexistent/notes.txt")],
+        ));
+        app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            show(ui, app.compose().unwrap(), &mut Vec::new());
+        });
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.clone()),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+
+        let attach: Vec<_> = texts
+            .iter()
+            .map(|galley| galley.text())
+            .filter(|text| text.starts_with("Attach") && *text != "Attachments")
+            .collect();
+        assert_eq!(attach, ["Attach…"]);
+        let body = texts
+            .iter()
+            .find(|galley| galley.text() == "Hello")
+            .expect("the body should be drawn");
+        assert_eq!(body.job.sections[0].format.font_id.size, reader::BODY_SIZE);
     }
 
     #[test]

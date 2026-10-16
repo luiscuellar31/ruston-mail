@@ -525,7 +525,7 @@ fn conversation_pane(
             messages.push(Message::SearchChanged(String::new()));
         }
         let response = ui.add(
-            theme::text_field(&mut query)
+            theme::text_field(ui, &mut query)
                 .id(egui::Id::new("mail-search"))
                 .hint_text("Search mail…")
                 .margin(egui::Margin::symmetric(ROW_HORIZONTAL_PADDING as i8, 8))

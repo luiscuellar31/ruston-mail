@@ -21,7 +21,7 @@ const MAX_QUOTE_DEPTH: u8 = 4;
 /// Deeper list items keep this level's indent, as in the CLI, so a deeply
 /// nested list cannot push its text out of the column.
 const MAX_LIST_DEPTH: u8 = 8;
-const BODY_SIZE: f32 = 15.0;
+pub(super) const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
 const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
 const MARKER_WIDTH: f32 = 12.0;

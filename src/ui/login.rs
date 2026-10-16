@@ -350,7 +350,7 @@ fn edit_field(
     let mut unseen = String::new();
     let response = ui.add_enabled(
         !busy,
-        theme::text_field(measured(ui, value, &mut unseen))
+        theme::text_field(ui, measured(ui, value, &mut unseen))
             .hint_text(hint)
             .desired_width(f32::INFINITY),
     );
@@ -380,7 +380,7 @@ fn edit_secret_field(
         .horizontal(|ui| {
             let response = ui.add_enabled(
                 !busy,
-                theme::text_field(measured(ui, value, &mut unseen))
+                theme::text_field(ui, measured(ui, value, &mut unseen))
                     .hint_text(hint)
                     .password(!*show_password)
                     .desired_width(width),
