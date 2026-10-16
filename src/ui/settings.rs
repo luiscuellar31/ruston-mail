@@ -108,30 +108,30 @@ fn page(
     ui.add_space(18.0);
 
     section(ui, "Reading", |ui| {
-        ui.checkbox(
+        ui.add(theme::Checkbox::new(
             &mut settings.mark_read_on_open,
             "Mark mail as read when I open it",
-        );
+        ));
         description(
             ui,
             "With this off, mail stays unread until you mark it yourself.",
         );
         ui.add_space(6.0);
 
-        ui.checkbox(
+        ui.add(theme::Checkbox::new(
             &mut settings.expand_all_messages,
             "Open every message in a conversation",
-        );
+        ));
         description(
             ui,
             "With this off, only the newest opens and the rest wait behind their headers.",
         );
         ui.add_space(6.0);
 
-        ui.checkbox(
+        ui.add(theme::Checkbox::new(
             &mut settings.show_quoted_text,
             "Show quoted text without unfolding it",
-        );
+        ));
         description(
             ui,
             "Quoted passages are the thread repeated under a reply, so they stay folded by default.",
@@ -139,7 +139,10 @@ fn page(
     });
     ui.add_space(14.0);
     section(ui, "Links and images", |ui| {
-        ui.checkbox(&mut settings.confirm_links, "Ask before opening a link");
+        ui.add(theme::Checkbox::new(
+            &mut settings.confirm_links,
+            "Ask before opening a link",
+        ));
         description(
             ui,
             "The prompt shows the real destination, which helps expose misleading links.",
@@ -207,7 +210,10 @@ fn page(
             ui.selectable_value(&mut settings.appearance, Appearance::Light, "Light");
         });
         ui.add_space(8.0);
-        ui.checkbox(&mut settings.system_font, "Use system interface font");
+        ui.add(theme::Checkbox::new(
+            &mut settings.system_font,
+            "Use system interface font",
+        ));
         description(ui, "Keeps text sizes. Uses Ruston's font if unavailable.");
         ui.add_space(8.0);
         egui::ComboBox::from_id_salt("interface-scale")
@@ -225,20 +231,20 @@ fn page(
         ui.add_space(8.0);
         #[cfg(target_os = "macos")]
         {
-            ui.checkbox(
+            ui.add(theme::Checkbox::new(
                 &mut settings.show_unread_badge,
                 "Show unread count badge on the Dock icon",
-            );
+            ));
             description(
                 ui,
                 "Updates the Dock icon with the number of unread messages in your inbox.",
             );
             ui.add_space(8.0);
         }
-        ui.checkbox(
+        ui.add(theme::Checkbox::new(
             &mut settings.desktop_notifications,
             "Show desktop notifications for new mail",
-        );
+        ));
         description(
             ui,
             "Displays a system notification with the sender and subject when new mail arrives.",
@@ -254,20 +260,20 @@ fn page(
     });
     ui.add_space(14.0);
     section(ui, "Advanced", |ui| {
-        ui.checkbox(
+        ui.add(theme::Checkbox::new(
             &mut settings.check_recipient_protection,
             "Check recipient encryption while writing",
-        );
+        ));
         description(
             ui,
             "When you leave a recipient field, Proton is asked for that address's keys to show whether the message will be end-to-end encrypted. With this off, nothing is asked until you send.",
         );
         ui.add_space(6.0);
 
-        ui.checkbox(
+        ui.add(theme::Checkbox::new(
             &mut settings.accept_international_domains,
             "Accept international domain names",
-        );
+        ));
         description(
             ui,
             "Lets you write to a domain such as münchen.de. It is sent in its ASCII form, xn--mnchen-3ya.de, which the composer shows beside it: letters from another script can imitate a familiar domain. Email links still refuse such domains.",

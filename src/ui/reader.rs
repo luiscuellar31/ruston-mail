@@ -567,7 +567,10 @@ fn label_menu(
                             let carried =
                                 label.custom_id().is_some_and(|id| carried_ids.contains(id));
                             let mut on = carried;
-                            if ui.checkbox(&mut on, label.name()).changed() {
+                            if ui
+                                .add(theme::Checkbox::new(&mut on, label.name()))
+                                .changed()
+                            {
                                 messages.push(Message::ApplyAction(MailAction::SetLabel {
                                     label: label.clone(),
                                     on: !carried,

@@ -21,6 +21,9 @@ const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
 const FOCUS_RING_WIDTH: f32 = 2.0;
+const CHECKBOX_ATOM_ID: &str = "ruston-check-box";
+const CHECKBOX_RADIUS: u8 = 4;
+const CHECK_MARK_WIDTH: f32 = 1.6;
 
 /// Colors used by the custom-painted parts of the interface. egui's native
 /// widgets use the matching `Visuals` installed below.
@@ -45,6 +48,8 @@ pub struct Colors {
     text: Color32,
     /// The ring around whatever has keyboard focus.
     focus: Color32,
+    /// The outline of a control at rest, such as an unchecked box.
+    control_border: Color32,
     skeleton_low: Color32,
     skeleton_high: Color32,
     extreme_bg: Color32,
@@ -68,6 +73,7 @@ const DARK: Colors = Colors {
     code_fill: Color32::from_rgb(18, 19, 24),
     text: Color32::from_rgb(220, 221, 230),
     focus: Color32::from_rgb(133, 102, 255),
+    control_border: Color32::from_rgb(110, 113, 133),
     skeleton_low: Color32::from_rgb(37, 38, 47),
     skeleton_high: Color32::from_rgb(54, 56, 68),
     extreme_bg: Color32::from_rgb(17, 18, 23),
@@ -91,6 +97,7 @@ const LIGHT: Colors = Colors {
     code_fill: Color32::from_rgb(241, 242, 247),
     text: Color32::from_rgb(43, 45, 56),
     focus: Color32::from_rgb(109, 74, 255),
+    control_border: Color32::from_rgb(134, 138, 158),
     skeleton_low: Color32::from_rgb(230, 231, 239),
     skeleton_high: Color32::from_rgb(242, 243, 248),
     extreme_bg: Color32::from_rgb(237, 238, 246),
@@ -218,6 +225,107 @@ impl Widget for IconButton<'_> {
         });
         response.on_hover_text(self.label)
     }
+}
+
+/// An on/off box with a label. egui draws its box with the theme's widget
+/// corners, which on a box this small make a circle, the shape of a radio
+/// button; this one keeps square corners, an outline at rest, and the
+/// accent with a white mark when checked.
+pub struct Checkbox<'a> {
+    checked: &'a mut bool,
+    atoms: egui::Atoms<'a>,
+}
+
+impl<'a> Checkbox<'a> {
+    pub fn new(checked: &'a mut bool, atoms: impl egui::IntoAtoms<'a>) -> Self {
+        Self {
+            checked,
+            atoms: atoms.into_atoms(),
+        }
+    }
+}
+
+impl Widget for Checkbox<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> Response {
+        let Self { checked, mut atoms } = self;
+        // Laid out as egui lays out its own check box, so a row keeps its size.
+        let size = ui.spacing().icon_width;
+        let height = ui.spacing().interact_size.y.max(size);
+        atoms.push_left(Atom::custom(
+            Id::new(CHECKBOX_ATOM_ID),
+            egui::vec2(size, height),
+        ));
+        let text = atoms.text().map(String::from);
+        let mut prepared = egui::AtomLayout::new(atoms)
+            .sense(egui::Sense::click())
+            .min_size(egui::Vec2::splat(height))
+            .allocate(ui);
+        if prepared.response.clicked() {
+            *checked = !*checked;
+            prepared.response.mark_changed();
+        }
+        prepared.response.widget_info(|| {
+            WidgetInfo::selected(
+                WidgetType::Checkbox,
+                ui.is_enabled(),
+                *checked,
+                text.as_deref().unwrap_or(""),
+            )
+        });
+        if !ui.is_rect_visible(prepared.response.rect) {
+            return prepared.response;
+        }
+
+        prepared.fallback_text_color = ui.style().interact(&prepared.response).text_color();
+        let laid_out = prepared.paint(ui);
+        if let Some(rect) = laid_out.rect(Id::new(CHECKBOX_ATOM_ID)) {
+            let square = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + size / 2.0, rect.center().y),
+                egui::Vec2::splat(size),
+            );
+            paint_check_box(ui, square, *checked, &laid_out.response);
+        }
+        laid_out.response
+    }
+}
+
+fn paint_check_box(ui: &egui::Ui, square: egui::Rect, checked: bool, response: &Response) {
+    let corners = CornerRadius::same(CHECKBOX_RADIUS);
+    if !checked {
+        let border = if response.hovered() {
+            ui.visuals().strong_text_color()
+        } else {
+            colors(ui).control_border
+        };
+        ui.painter().rect_stroke(
+            square,
+            corners,
+            Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        );
+        return;
+    }
+
+    let fill = if response.is_pointer_button_down_on() {
+        ACCENT_PRESSED
+    } else if response.hovered() {
+        ACCENT_HOVER
+    } else {
+        ACCENT
+    };
+    ui.painter().rect_filled(square, corners, fill);
+    let mark = egui::Rect::from_center_size(
+        square.center(),
+        egui::Vec2::splat(ui.spacing().icon_width_inner),
+    );
+    ui.painter().add(egui::Shape::line(
+        vec![
+            egui::pos2(mark.left(), mark.center().y),
+            egui::pos2(mark.center().x, mark.bottom()),
+            egui::pos2(mark.right(), mark.top()),
+        ],
+        Stroke::new(CHECK_MARK_WIDTH, Color32::WHITE),
+    ));
 }
 
 /// A single-line field with enough vertical room for comfortable reading and clicking.
@@ -653,6 +761,81 @@ mod tests {
             ui.button("Archive").request_focus()
         });
         assert!(rings.is_empty());
+    }
+
+    #[test]
+    fn a_check_box_is_square_with_an_outline_or_the_accent() {
+        let context = egui::Context::default();
+        install(&context);
+        for checked in [false, true] {
+            let mut value = checked;
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.add(Checkbox::new(&mut value, "Ask before opening a link"));
+            });
+            let boxes: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.corner_radius == CornerRadius::same(CHECKBOX_RADIUS) =>
+                    {
+                        Some(rect.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            output.drop_without_applying_deltas();
+
+            let [check_box] = boxes.as_slice() else {
+                panic!("expected one box, checked: {checked}");
+            };
+            assert_eq!(check_box.rect.width(), check_box.rect.height());
+            if checked {
+                assert_eq!(check_box.fill, ACCENT);
+            } else {
+                assert_eq!(check_box.stroke, Stroke::new(1.0, DARK.control_border));
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_a_check_box_toggles_it() {
+        let context = egui::Context::default();
+        install(&context);
+        let mut value = false;
+        let mut rect = egui::Rect::NOTHING;
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                rect = ui.add(Checkbox::new(&mut value, "Ask")).rect;
+            })
+            .drop_without_applying_deltas();
+        let click = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(rect.center()),
+                egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut changed = false;
+        context
+            .run_ui(click, |ui| {
+                changed = ui.add(Checkbox::new(&mut value, "Ask")).changed();
+            })
+            .drop_without_applying_deltas();
+
+        assert!(value);
+        assert!(changed);
     }
 
     #[test]
