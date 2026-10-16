@@ -332,7 +332,7 @@ glyph coverage but does not provide complete bidirectional/RTL text layout.
 | `j` or `Down` | Open the next conversation |
 | `k` or `Up` | Open the previous conversation |
 | `Enter` | Open the selected conversation; search all mail from the search field |
-| `Esc` | Close the topmost view or prompt |
+| `Esc` | Close the open menu, or else the topmost view or prompt |
 | `Cmd`/`Ctrl` + `R` | Refresh the folder |
 | `Cmd`/`Ctrl` + `F` | Focus the search field |
 | `Cmd`/`Ctrl` + `,` | Open Settings on macOS; open or close Settings on Linux/Windows |

@@ -616,6 +616,9 @@ impl DesktopApp {
         // Letters only matter to a text field: a focused button or row leaves
         // j and k to the list.
         let typing = context.text_edit_focused();
+        // An open menu or list takes Escape for itself, closing later in this
+        // pass, so what is behind it does not close as well.
+        let menu_open = egui::Popup::is_any_open(context);
         let presses = context.input(|input| {
             let command = input.modifiers.command;
             let plain = !command && !input.modifiers.alt && !input.modifiers.shift;
@@ -635,7 +638,7 @@ impl DesktopApp {
             if command && input.key_pressed(egui::Key::Enter) {
                 presses.push(key(Key::Enter, true));
             }
-            if input.key_pressed(egui::Key::Escape) {
+            if !menu_open && input.key_pressed(egui::Key::Escape) {
                 presses.push(key(Key::Escape, false));
             }
             // A focused widget keeps the arrows and Enter: egui moves focus
@@ -1599,6 +1602,59 @@ mod tests {
         press_j(&mut desktop, true);
         assert_eq!(selected(&desktop), Some(rows[1].clone()));
         assert_eq!(text, "j");
+    }
+
+    #[test]
+    fn escape_closes_an_open_menu_and_nothing_behind_it() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        let page = crate::mail::demo::DemoMailbox::new().list_conversations(
+            &Folder::INBOX,
+            0,
+            crate::mail::demo::PAGE_SIZE,
+            crate::mail::demo::now(),
+        );
+        desktop.dispatch(Message::ConversationsLoaded(1, page), &context);
+        let first = desktop
+            .app
+            .mailbox()
+            .unwrap()
+            .visible_conversations()
+            .next()
+            .unwrap()
+            .id
+            .clone();
+        desktop.dispatch(Message::SelectConversation(first.clone()), &context);
+        let escape = || egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let selected = |desktop: &DesktopApp| {
+            desktop
+                .app
+                .mailbox()
+                .unwrap()
+                .selected_conversation()
+                .map(str::to_owned)
+        };
+
+        egui::Popup::open_id(&context, egui::Id::new("labels-menu"));
+        context
+            .run_ui(escape(), |ui| desktop.keyboard_shortcuts(ui.ctx()))
+            .drop_without_applying_deltas();
+        assert_eq!(selected(&desktop), Some(first), "the menu took Escape");
+
+        egui::Popup::close_all(&context);
+        context
+            .run_ui(escape(), |ui| desktop.keyboard_shortcuts(ui.ctx()))
+            .drop_without_applying_deltas();
+        assert_eq!(selected(&desktop), None, "with no menu, Escape closes");
     }
 
     #[test]

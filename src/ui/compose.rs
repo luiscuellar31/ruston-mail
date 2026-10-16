@@ -62,7 +62,10 @@ pub(super) fn show_window(
                     .send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 messages.push(Message::CloseCompose);
             }
-        } else if root.input(|input| input.key_pressed(egui::Key::Escape)) {
+        } else if !egui::Popup::is_any_open(root.ctx())
+            && root.input(|input| input.key_pressed(egui::Key::Escape))
+        {
+            // An open menu takes Escape first, as in the mailbox window.
             if compose.confirming_discard() {
                 messages.push(Message::CancelDiscard);
             } else {
