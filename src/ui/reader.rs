@@ -560,11 +560,8 @@ fn label_menu(
                 .show(ui, |ui| {
                     for label in labels {
                         ui.horizontal(|ui| {
-                            let (dot, _) = ui.allocate_exact_size(
-                                egui::vec2(10.0, ui.spacing().interact_size.y),
-                                Sense::hover(),
-                            );
-                            ui.painter().circle_filled(dot.center(), 3.5, theme::ACCENT);
+                            // The tag the sidebar shows beside each label.
+                            ui.add(theme::icon_image(theme::Icon::Label, theme::ACCENT));
                             let carried =
                                 label.custom_id().is_some_and(|id| carried_ids.contains(id));
                             let mut on = carried;
@@ -1444,6 +1441,62 @@ mod tests {
                 [Message::ApplyAction(MailAction::MoveTo(to))] if *to == invoices
             ),
             "the menu did not move the conversation into Invoices"
+        );
+    }
+
+    #[test]
+    fn the_labels_menu_marks_each_label_with_the_sidebar_tag() {
+        let places = [Folder::label("lW", "Work")];
+        let (mut mailbox, request, detail) = loading_reader("Message", Folder::INBOX, 1);
+        mailbox.finish_conversation(&request, Ok(detail));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(540.0, 950.0),
+            )),
+            ..Default::default()
+        };
+        let mut frame = |input: egui::RawInput| {
+            reader_frame(
+                &context,
+                &mailbox,
+                &places,
+                Reading::default(),
+                &mut state,
+                input,
+            )
+        };
+
+        let (shapes, _) = frame(input.clone());
+        frame(click_at(&input, text_rect(&shapes, "Labels").center()));
+        // Let the popup finish fading in, so its colors are the final ones.
+        for _ in 0..30 {
+            frame(input.clone());
+        }
+        let (shapes, _) = frame(input.clone());
+
+        let name = text_rect(&shapes, "Work");
+        let tag = shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Rect(rect)
+                    if rect.brush.is_some() && rect.fill == theme::ACCENT =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("each label should carry the sidebar's tag icon");
+        assert!(tag.right() < name.left(), "the tag should precede the name");
+        assert!((tag.center().y - name.center().y).abs() <= 2.0);
+        assert!(
+            !shapes
+                .iter()
+                .any(|shape| matches!(shape.shape, egui::epaint::Shape::Circle(_))),
+            "the menu should not fall back to a plain dot"
         );
     }
 

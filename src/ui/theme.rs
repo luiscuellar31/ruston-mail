@@ -166,6 +166,13 @@ pub fn paint_atom_icon(ui: &egui::Ui, response: &AtomLayoutResponse, icon: Icon,
     }
 }
 
+/// A bundled icon on its own, at the size the sidebar and the buttons use.
+pub fn icon_image(icon: Icon, color: Color32) -> egui::Image<'static> {
+    egui::Image::new(icon.source())
+        .tint(color)
+        .fit_to_exact_size(egui::Vec2::splat(ICON_SIZE))
+}
+
 pub struct IconButton<'a> {
     icon: Icon,
     label: &'a str,
