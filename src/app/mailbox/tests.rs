@@ -2272,6 +2272,26 @@ fn split_conversation_ignores_nonexistent_or_empty() {
 }
 
 #[test]
+fn only_the_folders_left_last_stay_loaded() {
+    let mut mailbox = loaded_inbox(&["a"], 1);
+    let folders: Vec<_> = (0..9)
+        .map(|index| Folder::custom(format!("f{index}"), format!("Folder {index}")))
+        .collect();
+    for (request, folder) in (10..).zip(&folders) {
+        let page_request = mailbox.select_folder(folder.clone(), request).unwrap();
+        mailbox.finish_page(page_request.id, page(&["x"], 1));
+    }
+    // Inbox and f0 to f7 were left behind; only eight stay.
+    assert_eq!(mailbox.cached_listings.len(), LISTING_CACHE_CAPACITY);
+
+    // f0 is still loaded and opens at once.
+    assert!(mailbox.select_folder(folders[0].clone(), 30).is_none());
+    // Inbox, left longest ago, was let go and loads again.
+    assert!(mailbox.select_folder(Folder::INBOX, 31).is_some());
+    assert!(matches!(mailbox.status(), ListStatus::Loading(31)));
+}
+
+#[test]
 fn split_conversation_updates_cached_listing_when_folder_not_active() {
     let (mut mailbox, request) = open();
     mailbox.finish_page(request.id, page(&["c1"], 1));

@@ -135,7 +135,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   non-authentication failures preserve Proton's grouping.
 - [`app/mailbox.rs`](../src/app/mailbox.rs) owns folder and search pagination.
   Loaded folders keep their rows, ID index, page cursor, and inspected grouping
-  decisions together when cached; older pages append in date order, while
+  decisions together when cached, for the eight folders left most recently;
+  reopening one that was let go loads it again. Older pages append in date order, while
   overlapping dates are merged. Each split retains its server conversation
   metadata and member IDs, with a reverse message-to-conversation index. Refresh
   reuses the displayed members when that conversation's metadata is unchanged

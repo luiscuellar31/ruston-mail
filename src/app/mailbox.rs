@@ -12,6 +12,9 @@ pub type RequestId = u64;
 
 /// Recent readers are kept only for quick backtracking within this session.
 const READER_CACHE_CAPACITY: usize = 8;
+/// Folders left most recently keep their loaded listing in memory, besides
+/// the open one.
+const LISTING_CACHE_CAPACITY: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageRequest {
@@ -96,6 +99,7 @@ struct SearchState {
 /// The loaded part of one folder while another folder is open.
 /// Memory-only, so Ruston never creates a second persistent mail store.
 struct CachedListing {
+    folder: FolderKey,
     conversations: Vec<ConversationSummary>,
     row_ids: HashSet<String>,
     last_dated_time: Option<i64>,
@@ -294,7 +298,8 @@ pub struct Mailbox {
     page_size: u32,
     next_page: u32,
     has_more: bool,
-    cached_listings: HashMap<FolderKey, CachedListing>,
+    /// The folders left most recently, the one left longest ago first.
+    cached_listings: Vec<CachedListing>,
     groups: ConversationGroups,
     /// Confirmed local mutations invalidate older inspection metadata.
     inspection_revision: u64,
@@ -342,7 +347,7 @@ impl Mailbox {
             page_size,
             next_page: 0,
             has_more: false,
-            cached_listings: HashMap::new(),
+            cached_listings: Vec::new(),
             groups: ConversationGroups::default(),
             inspection_revision: 0,
             active_dirty: false,
@@ -1239,7 +1244,12 @@ impl Mailbox {
         self.search_request = None;
         self.search_deferred = false;
 
-        if let Some(cached) = self.cached_listings.remove(&FolderKey::of(&self.folder)) {
+        let cached = self.take_cached_listing(&FolderKey::of(&self.folder));
+        // Only now, so the folder being opened is never the one let go.
+        if self.cached_listings.len() > LISTING_CACHE_CAPACITY {
+            self.cached_listings.remove(0);
+        }
+        if let Some(cached) = cached {
             self.conversations = cached.conversations;
             self.row_ids = cached.row_ids;
             self.last_dated_time = cached.last_dated_time;
@@ -1279,18 +1289,27 @@ impl Mailbox {
             return;
         }
         let dirty = self.active_dirty || matches!(self.status, ListStatus::Refreshing(_));
-        self.cached_listings.insert(
-            FolderKey::of(&self.folder),
-            CachedListing {
-                conversations: std::mem::take(&mut self.conversations),
-                row_ids: std::mem::take(&mut self.row_ids),
-                last_dated_time: self.last_dated_time.take(),
-                next_page: self.next_page,
-                has_more: self.has_more,
-                dirty,
-                groups: std::mem::take(&mut self.groups),
-            },
-        );
+        let folder = FolderKey::of(&self.folder);
+        self.cached_listings
+            .retain(|cached| cached.folder != folder);
+        self.cached_listings.push(CachedListing {
+            folder,
+            conversations: std::mem::take(&mut self.conversations),
+            row_ids: std::mem::take(&mut self.row_ids),
+            last_dated_time: self.last_dated_time.take(),
+            next_page: self.next_page,
+            has_more: self.has_more,
+            dirty,
+            groups: std::mem::take(&mut self.groups),
+        });
+    }
+
+    fn take_cached_listing(&mut self, folder: &FolderKey) -> Option<CachedListing> {
+        let index = self
+            .cached_listings
+            .iter()
+            .position(|cached| cached.folder == *folder)?;
+        Some(self.cached_listings.remove(index))
     }
 
     /// Marks cached folders stale after a confirmed server mutation.
@@ -1306,7 +1325,7 @@ impl Mailbox {
     /// A periodic refresh updates the open folder now. Everything else stays
     /// instant to open, but must revalidate before becoming a clean cache hit.
     pub(super) fn invalidate_cached_listings(&mut self) {
-        for cached in self.cached_listings.values_mut() {
+        for cached in &mut self.cached_listings {
             cached.dirty = true;
         }
     }
@@ -1375,7 +1394,7 @@ impl Mailbox {
         self.has_more = self.conversations.len() < total as usize;
         // The demo snapshot is authoritative for the active folder. Other
         // folders may have changed as a side effect and must be revalidated.
-        for cached in self.cached_listings.values_mut() {
+        for cached in &mut self.cached_listings {
             cached.dirty = true;
         }
         self.active_dirty = false;
@@ -1441,7 +1460,10 @@ impl Mailbox {
                 self.last_dated_time = last_dated_time(&self.conversations);
                 self.recompute_visible();
             }
-        } else if let Some(cached) = self.cached_listings.get_mut(&FolderKey::of(folder))
+        } else if let Some(cached) = self
+            .cached_listings
+            .iter_mut()
+            .find(|cached| cached.folder == FolderKey::of(folder))
             && cached
                 .groups
                 .apply_split(&mut cached.conversations, conversation_id, split_rows)

@@ -30,7 +30,8 @@ Settings → Advanced to make the request only when sending.
 
 In the desktop client, mail and mailbox lists stay in memory while it runs.
 In addition to the conversation on screen, up to eight previously opened
-conversations can remain in memory for quick backtracking. The desktop client
+conversations can remain in memory for quick backtracking, and so can the
+loaded lists of the eight folders left most recently. The desktop client
 does not write a persistent mail cache to disk. Sign-in fields keep no undo
 history, and a draft's undo history is dropped once the draft is sent,
 discarded, or left behind by signing out, so undo cannot bring back another
