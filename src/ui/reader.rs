@@ -31,6 +31,8 @@ const SIGNATURE_ICON_INSET: f32 = SIGNATURE_ICON_SIZE + 4.0;
 const HEADER_TEXT_INSET: f32 = 22.0;
 /// The space kept between a header's text and its date.
 const HEADER_DATE_GAP: f32 = 8.0;
+/// About six lines of a link's address before it scrolls.
+const LINK_ADDRESS_MAX_HEIGHT: f32 = 120.0;
 /// Code background padding, kept clear of adjacent lines.
 const CODE_PADDING: f32 = 2.5;
 
@@ -48,7 +50,6 @@ pub(super) struct ReaderView<'a> {
     /// The folders and labels a conversation can be moved to or given.
     pub(super) places: &'a [Folder],
     pub(super) actions_available: bool,
-    pub(super) pending_link: Option<&'a PendingLink>,
     pub(super) saving_attachment: Option<&'a str>,
     pub(super) saved_attachment: Option<Result<&'a Path, SaveError>>,
     pub(super) reading: Reading,
@@ -80,11 +81,6 @@ pub(super) fn show(
         }
         ui.separator();
     }
-    if let Some(link) = view.pending_link {
-        link_prompt(ui, link, messages);
-        ui.add_space(8.0);
-    }
-
     match view.mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
         ReaderState::Loading { .. } => conversation_skeleton(ui, view, state),
@@ -103,27 +99,28 @@ pub(super) fn show(
     }
 }
 
-fn link_prompt(ui: &mut egui::Ui, link: &PendingLink, messages: &mut Vec<Message>) {
-    theme::card(ui)
-        .fill(theme::colors(ui).accent_soft)
-        .stroke(Stroke::new(1.0, theme::ACCENT))
-        .show(ui, |ui| {
-            ui.label(format!("Open a link to {}?", link.target));
+/// Asks before a link leaves for the browser or the composer. It is the
+/// window's question, so it shows wherever the reader is, and the address
+/// scrolls inside it, so a long one cannot push the buttons away.
+pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option<Message> {
+    theme::confirmation_with(
+        context,
+        "link-prompt",
+        &format!("Open a link to {}?", link.target),
+        |ui| {
             // The real destination is what the prompt is for, so it is never
             // smaller than the question.
-            ui.add(egui::Label::new(link.url.as_str()).wrap());
-            ui.horizontal(|ui| {
-                if ui.button("Open").clicked() {
-                    messages.push(Message::OpenLink);
-                }
-                if ui.button("Copy link").clicked() {
-                    messages.push(Message::CopyLink);
-                }
-                if ui.button("Cancel").clicked() {
-                    messages.push(Message::DismissLink);
-                }
-            });
-        });
+            egui::ScrollArea::vertical()
+                .max_height(LINK_ADDRESS_MAX_HEIGHT)
+                .show(ui, |ui| ui.add(egui::Label::new(link.url.as_str()).wrap()));
+        },
+        &[
+            ("Cancel", theme::Emphasis::Secondary, Message::DismissLink),
+            ("Copy link", theme::Emphasis::Secondary, Message::CopyLink),
+            ("Open", theme::Emphasis::Primary, Message::OpenLink),
+        ],
+        Message::DismissLink,
+    )
 }
 
 fn conversation(
@@ -1541,6 +1538,59 @@ mod tests {
     }
 
     #[test]
+    fn a_long_link_scrolls_inside_its_prompt_and_leaves_the_buttons_in_view() {
+        let link = PendingLink {
+            url: format!("https://example.com/?{}", "tracking=1&".repeat(400)),
+            target: "example.com".into(),
+        };
+        let context = egui::Context::default();
+        theme::install(&context);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
+        let frame = |events: Vec<egui::Event>| {
+            let mut answer = None;
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| answer = link_dialog(ui.ctx(), &link),
+            );
+            let open = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "Open" => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                });
+            output.drop_without_applying_deltas();
+            (open, answer)
+        };
+
+        let mut open = None;
+        for _ in 0..3 {
+            open = frame(Vec::new()).0;
+        }
+        let open = open.expect("the prompt offers Open");
+        assert!(screen.contains_rect(open), "Open is at {open:?}");
+
+        let press = |pressed| egui::Event::PointerButton {
+            pos: open.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let (_, answer) = frame(vec![
+            egui::Event::PointerMoved(open.center()),
+            press(true),
+            press(false),
+        ]);
+        assert!(matches!(answer, Some(Message::OpenLink)));
+    }
+
+    #[test]
     fn the_labels_menu_marks_each_label_with_the_sidebar_tag() {
         let places = [Folder::label("lW", "Work")];
         let (mut mailbox, request, detail) = loading_reader("Message", Folder::INBOX, 1);
@@ -1854,7 +1904,6 @@ mod tests {
                 mailbox,
                 places,
                 actions_available: true,
-                pending_link: None,
                 saving_attachment: None,
                 saved_attachment: None,
                 reading,
@@ -2766,7 +2815,6 @@ mod tests {
                     mailbox: &mailbox,
                     places: &[],
                     actions_available: true,
-                    pending_link: None,
                     saving_attachment: None,
                     saved_attachment: Some(Ok(&path)),
                     reading: Reading::default(),

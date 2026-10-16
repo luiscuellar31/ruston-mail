@@ -441,6 +441,27 @@ pub fn confirmation<T: Clone>(
     choices: &[(&str, Emphasis, T)],
     dismissed: T,
 ) -> Option<T> {
+    confirmation_with(
+        context,
+        id,
+        question,
+        |ui| {
+            ui.label(detail);
+        },
+        choices,
+        dismissed,
+    )
+}
+
+/// [`confirmation`] with a detail drawn by `detail` instead of one line.
+pub fn confirmation_with<T: Clone>(
+    context: &egui::Context,
+    id: &str,
+    question: &str,
+    detail: impl FnOnce(&mut egui::Ui),
+    choices: &[(&str, Emphasis, T)],
+    dismissed: T,
+) -> Option<T> {
     let mut decision = None;
     let width = (context.content_rect().width() - 48.0).clamp(0.0, 440.0);
     let frame = egui::Frame::popup(&context.style_of(context.theme())).inner_margin(20);
@@ -450,7 +471,7 @@ pub fn confirmation<T: Clone>(
             ui.set_width(width);
             ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
             ui.heading(egui::RichText::new(question).strong());
-            ui.label(detail);
+            detail(ui);
             ui.horizontal_wrapped(|ui| {
                 for (label, emphasis, choice) in choices {
                     let button =

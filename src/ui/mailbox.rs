@@ -52,7 +52,7 @@ pub(super) fn show(
             state,
             messages,
         );
-        undo_notice(&context, mailbox, state, messages);
+        undo_notice(&context, mailbox, state, None, messages);
         return;
     }
     let widths = panel_widths(app.panels(), window_width);
@@ -90,16 +90,19 @@ pub(super) fn show(
                 .size_range(MIN_PANEL_WIDTH..=(remaining - MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH))
                 .resizable(true)
                 .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-                .show(root, |ui| conversation_pane(ui, mailbox, state, messages));
+                .show(root, |ui| {
+                    conversation_pane(ui, app, mailbox, state, messages)
+                });
 
             egui::CentralPanel::default()
                 .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
                 .show(root, |ui| reading_pane(ui, app, state, messages));
-            Some(conversations.response.rect.width())
+            Some(conversations.response.rect)
         }
     };
 
-    undo_notice(&context, mailbox, state, messages);
+    undo_notice(&context, mailbox, state, conversations, messages);
+    let conversations = conversations.map(|list| list.width());
 
     let stored = app.panels();
     let sidebar = sidebar.response.rect.width();
@@ -191,7 +194,7 @@ fn show_compact(
                     CompactView::Folders => {
                         sidebar(ui, app, mailbox, email, signing_out, messages);
                     }
-                    CompactView::Mail => conversation_pane(ui, mailbox, state, messages),
+                    CompactView::Mail => conversation_pane(ui, app, mailbox, state, messages),
                     CompactView::Reader => reading_pane(ui, app, state, messages),
                 }
             }
@@ -208,7 +211,6 @@ fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mu
             mailbox: app.mailbox().expect("authenticated mailbox"),
             places: app.folders(),
             actions_available: app.mailbox_actions_available(),
-            pending_link: app.pending_link(),
             saving_attachment: app.saving_attachment(),
             saved_attachment: app.saved_attachment(),
             reading: app.settings().reading(),
@@ -487,6 +489,7 @@ pub(super) fn folder_icon(folder: &Folder) -> theme::Icon {
 
 fn conversation_pane(
     ui: &mut egui::Ui,
+    app: &App,
     mailbox: &Mailbox,
     state: &mut UiState,
     messages: &mut Vec<Message>,
@@ -498,20 +501,7 @@ fn conversation_pane(
                 .strong(),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let refreshing = matches!(mailbox.status(), ListStatus::Refreshing(_));
-            if ui
-                .add_enabled(
-                    !mailbox.is_busy(),
-                    egui::Button::new(if refreshing {
-                        "Refreshing…"
-                    } else {
-                        "Refresh"
-                    }),
-                )
-                .clicked()
-            {
-                messages.push(Message::RefreshMailbox);
-            }
+            refresh_button(ui, app, mailbox, messages);
         });
     });
     ui.add_space(6.0);
@@ -586,6 +576,30 @@ fn conversation_pane(
     }
 }
 
+/// Refresh, which says when a refresh someone asked for is on its way. The
+/// app's own check every minute leaves it as it is, and it keeps the width
+/// of its longer title, so nothing beside it moves.
+fn refresh_button(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
+    let quiet = app.refreshing_on_its_own();
+    let shown = matches!(mailbox.status(), ListStatus::Refreshing(_)) && !quiet;
+    let widest = egui::WidgetText::from("Refreshing…").into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let button = egui::Button::new(if shown { "Refreshing…" } else { "Refresh" }).min_size(
+        egui::vec2(widest.size().x + 2.0 * ui.spacing().button_padding.x, 0.0),
+    );
+    // Pressed during the app's own refresh, it shows that one instead.
+    if ui
+        .add_enabled(!mailbox.is_busy() || quiet, button)
+        .clicked()
+    {
+        messages.push(Message::RefreshMailbox);
+    }
+}
+
 /// A list with nothing to show: what happened, centered, with anything that
 /// can be done about it under it.
 fn empty_state(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
@@ -642,11 +656,16 @@ fn failure_line(
 }
 
 const UNDO_NOTICE_SECONDS: f64 = 6.0;
+const UNDO_NOTICE_MARGIN: f32 = 20.0;
 
+/// The offer to take back the last move. It sits at the foot of the list it
+/// was made from, `list`, rather than across the divider beside it; without
+/// a list on screen, at the foot of the window.
 fn undo_notice(
     context: &egui::Context,
     mailbox: &Mailbox,
     state: &mut UiState,
+    list: Option<egui::Rect>,
     messages: &mut Vec<Message>,
 ) {
     let Some(offer) = mailbox.undo() else {
@@ -660,26 +679,30 @@ fn undo_notice(
     };
     context.request_repaint_after(remaining);
 
-    let _ = egui::Area::new(egui::Id::new("undo-move-notice"))
-        .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
-        .order(egui::Order::Foreground)
-        .show(context, |ui| {
-            theme::card(ui)
-                .stroke(Stroke::new(1.0, theme::ACCENT))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Moved to {}.", offer.to.name()));
-                        // The move back waits for a loading list.
-                        let ready = !mailbox.is_busy();
-                        if ui
-                            .add_enabled(ready, theme::compact_button("Undo"))
-                            .clicked()
-                        {
-                            messages.push(Message::UndoMove);
-                        }
-                    });
+    let area = egui::Area::new(egui::Id::new("undo-move-notice"));
+    let area = match list {
+        Some(list) => area
+            .pivot(Align2::CENTER_BOTTOM)
+            .fixed_pos(list.center_bottom() - egui::vec2(0.0, UNDO_NOTICE_MARGIN)),
+        None => area.anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -UNDO_NOTICE_MARGIN)),
+    };
+    let _ = area.order(egui::Order::Foreground).show(context, |ui| {
+        theme::card(ui)
+            .stroke(Stroke::new(1.0, theme::ACCENT))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Moved to {}.", offer.to.name()));
+                    // The move back waits for a loading list.
+                    let ready = !mailbox.is_busy();
+                    if ui
+                        .add_enabled(ready, theme::compact_button("Undo"))
+                        .clicked()
+                    {
+                        messages.push(Message::UndoMove);
+                    }
                 });
-        });
+            });
+    });
 }
 
 fn sync_undo_notice(
@@ -1646,6 +1669,7 @@ mod tests {
             vec![egui::Event::PointerMoved(pos), button(true), button(false)]
         });
         let mut messages = Vec::new();
+        let (app, _) = App::boot(true, Settings::default());
         let output = context.run_ui(
             egui::RawInput {
                 events,
@@ -1653,7 +1677,7 @@ mod tests {
             },
             |ui| {
                 ui.set_width(320.0);
-                conversation_pane(ui, mailbox, &mut UiState::default(), &mut messages);
+                conversation_pane(ui, &app, mailbox, &mut UiState::default(), &mut messages);
             },
         );
         let texts = output
@@ -1726,9 +1750,10 @@ mod tests {
         mailbox.finish_page(first.id, Ok(pagination_page(0, 3, 3)));
         let context = egui::Context::default();
         theme::install(&context);
+        let (app, _) = App::boot(true, Settings::default());
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(320.0);
-            conversation_pane(ui, &mailbox, &mut UiState::default(), &mut Vec::new());
+            conversation_pane(ui, &app, &mailbox, &mut UiState::default(), &mut Vec::new());
         });
         let left_of = |wanted: &str| {
             output
@@ -2260,6 +2285,43 @@ mod tests {
             !matches!(message, Message::PanelsResized(panels) if panels.conversations != original_split)
         }));
         output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn the_offer_to_undo_sits_under_the_list_it_was_made_from() {
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::ConversationsLoaded(
+            1,
+            Ok(ConversationPage {
+                conversations: vec![
+                    pagination_row("demo-3", 1000),
+                    pagination_row("demo-4", 900),
+                ],
+                total: 2,
+                inspect_candidates: Vec::new(),
+            }),
+        ));
+        app.update(Message::SelectConversation("demo-3".into()));
+        app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+            Folder::System(MailFolder::Archive),
+        )));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let size = egui::vec2(1100.0, 700.0);
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        }
+
+        let notice = visible_text_rect(&shapes, "Moved to Archive.").expect("an offer to undo");
+        let list = visible_text_rect(&shapes, "Refresh").expect("the list's header");
+        let search = visible_text_rect(&shapes, "Search mail…").expect("the list's search");
+        // Between the list's left edge, near its search text, and its Refresh.
+        assert!(
+            search.left() - 40.0 < notice.left() && notice.right() < list.right() + 20.0,
+            "the notice at {notice:?} leaves the list column"
+        );
     }
 
     #[test]

@@ -973,6 +973,9 @@ impl eframe::App for DesktopApp {
             }
         }
 
+        if let Some(link) = self.app.pending_link() {
+            messages.extend(reader::link_dialog(&context, link));
+        }
         // The discard confirmation owns the decision even if input for the
         // same frame was already queued in a pane or the child composer.
         if self.pending_discard.is_some() {

@@ -43,6 +43,8 @@ windows. Returning after at least 30 seconds can trigger an earlier check,
 unless one just succeeded or a failure is still backing off. Busy operations
 delay automatic checks; failed folder refreshes increase the wait to at most five minutes.
 Closing the app or signing out stops these checks. The demo does not poll Proton.
+These checks leave the **Refresh** button as it is; pressing it during one shows
+that refresh instead of starting another.
 
 When **Show desktop notifications for new mail** is enabled, Ruston checks the
 20 latest Inbox message records separately from the folder on screen. The first
@@ -143,9 +145,10 @@ an error and is taken back.
 Ruston Mail does not permanently delete mail. It also cannot create, rename, or
 remove folders and labels yet.
 
-Web links open in the system browser. A confirmation prompt shows the
-destination first by default. Email (`mailto:`) links use Ruston's composer
-after the same confirmation.
+Web links open in the system browser. A confirmation dialog over the window
+shows the destination first by default; a long address scrolls inside it, and
+`Esc` dismisses it before anything else. Email (`mailto:`) links use Ruston's
+composer after the same confirmation.
 
 ## Opening email links
 

@@ -68,7 +68,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   request without decoding again.
   [`app/mailto.rs`](../src/app/mailto.rs) owns up to 16 pending requests in memory,
   retaining them during sign-in. A closed session clears them. Internal links
-  use this same queue after the existing link-confirmation policy.
+  use this same queue after the existing link-confirmation policy. The link
+  confirmation is a dialog the root window draws over everything, from
+  `reader::link_dialog`, so it stays visible whatever the reader shows, and
+  `Esc` answers it before Settings or a draft.
   The shell opens one request only when authenticated and no draft, Settings,
   link confirmation, native file dialog, or closing decision owns the UI. It
   shares its dialog/closing guard between opening and focusing; `App` owns

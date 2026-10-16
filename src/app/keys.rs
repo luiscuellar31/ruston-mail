@@ -114,6 +114,10 @@ impl App {
             }
             // One layer at a time, starting with the most recent.
             Shortcut::Dismiss => {
+                // The link prompt is a dialog over the whole window.
+                if self.pending_link.take().is_some() {
+                    return Effects::none();
+                }
                 // Leave settings before touching a message still open behind it.
                 if self.showing_settings {
                     self.showing_settings = false;
@@ -126,9 +130,6 @@ impl App {
                     } else {
                         self.close_compose();
                     }
-                    return Effects::none();
-                }
-                if self.pending_link.take().is_some() {
                     return Effects::none();
                 }
                 if let Some(mailbox) = self.active_mailbox() {

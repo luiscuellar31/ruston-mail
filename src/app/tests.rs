@@ -593,6 +593,38 @@ fn keys_do_not_reach_the_mailbox_under_a_link_prompt() {
 }
 
 #[test]
+fn escape_answers_the_link_prompt_before_the_draft_behind_it() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    deliver_selected_demo_detail(&mut app);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::LinkClicked("https://example.com/".to_owned()));
+
+    press(&mut app, Key::Escape);
+    assert!(app.pending_link().is_none());
+    assert!(app.compose().is_some(), "the draft stays");
+}
+
+#[test]
+fn the_apps_own_refresh_goes_unannounced_until_someone_asks_for_one() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::AutoRefreshMailbox);
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Refreshing(_)
+    ));
+    assert!(app.refreshing_on_its_own());
+
+    // Asking now shows the refresh already on its way.
+    let _ = app.update(Message::RefreshMailbox);
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Refreshing(_)
+    ));
+    assert!(!app.refreshing_on_its_own());
+}
+
+#[test]
 fn the_keyboard_walks_the_conversation_list() {
     let mut app = loaded_demo_app();
 

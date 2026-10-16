@@ -237,6 +237,9 @@ pub struct App {
     folders: Vec<Folder>,
     /// The folder list failed to load, so the next refresh asks again.
     refetch_folders: bool,
+    /// The page a refresh the app started on its own asked for. The list
+    /// does not show such a refresh unless someone asks for one meanwhile.
+    automatic_refresh: Option<RequestId>,
     /// What the app remembers between runs.
     settings: Settings,
     /// Settings changes and the last revision written to disk.
@@ -291,6 +294,7 @@ impl App {
             reader_load: None,
             folders: Vec::new(),
             refetch_folders: false,
+            automatic_refresh: None,
             settings,
             settings_revision: 0,
             settings_written: 0,
@@ -547,6 +551,8 @@ impl App {
                 }
             }
             Message::RefreshMailbox => {
+                // Asked for during a refresh the app started, it shows that one.
+                self.automatic_refresh = None;
                 return self.refresh_mailbox();
             }
             Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
@@ -885,6 +891,14 @@ impl App {
 
     pub fn pending_link(&self) -> Option<&PendingLink> {
         self.pending_link.as_ref()
+    }
+
+    /// Whether the refresh on its way is one the app started by itself, which
+    /// the list leaves unannounced.
+    pub fn refreshing_on_its_own(&self) -> bool {
+        self.mailbox.as_ref().is_some_and(|mailbox| {
+            matches!(mailbox.status(), ListStatus::Refreshing(id) if Some(id) == self.automatic_refresh)
+        })
     }
 
     fn open_link_target(&mut self, url: String) -> Effects {
@@ -1337,6 +1351,14 @@ impl App {
         }
 
         let refresh = self.refresh_mailbox();
+        // Nothing was loading before, so a refresh on its way is this one.
+        self.automatic_refresh = self
+            .mailbox
+            .as_ref()
+            .and_then(|mailbox| match mailbox.status() {
+                ListStatus::Refreshing(request) => Some(request),
+                _ => None,
+            });
         let notifications = if self.is_demo() {
             Effects::none()
         } else {
