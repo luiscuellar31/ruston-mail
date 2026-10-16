@@ -783,7 +783,7 @@ impl Mailbox {
             .chain(self.search.iter().flat_map(|search| search.rows.iter()))
     }
 
-    fn row(&self, row_id: &str) -> Option<&ConversationSummary> {
+    pub(super) fn row(&self, row_id: &str) -> Option<&ConversationSummary> {
         self.rows().find(|row| row.id == row_id)
     }
 
@@ -814,7 +814,7 @@ impl Mailbox {
     /// there and lists the row, or where this view saw it moved. Otherwise a
     /// row shown under a label, Starred, Sent or Drafts, or one only a search
     /// found, could be anywhere.
-    fn location_of(&self, row_id: &str) -> Option<&Folder> {
+    pub fn location_of(&self, row_id: &str) -> Option<&Folder> {
         if let Some(folder) = self.relocated.get(row_id) {
             return Some(folder);
         }
@@ -1160,7 +1160,9 @@ impl Mailbox {
     }
 
     /// Accepts an action on the selected row and shows it at once, before
-    /// Proton answers. None starts while the list loads.
+    /// Proton answers. None starts while the list loads. The app names the
+    /// row, through `start_action_on`; tests act on the open one.
+    #[cfg(test)]
     pub fn start_action(&mut self, action: MailAction, request: RequestId) -> Option<ActionStart> {
         let (row_id, kind) = self
             .selected_summary()

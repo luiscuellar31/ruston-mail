@@ -194,6 +194,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   native scroll and animation state left by a previous session. Explicit reveal
   requests take precedence, and sign-out clears the anchors. No complete listing snapshot or
   persistent scroll data is added.
+  The reader's buttons act on the open row (`Message::ApplyAction`); a row's
+  context menu names its row (`Message::ApplyRowAction`) and offers the same
+  moves and flags, built by `reader::moves` and `reader::flags`. Both reach
+  `App::apply_row_action`, which acts through the demo service or
+  `Mailbox::start_action_on`, so a row acted on from its menu is never opened
+  or read automatically.
   An action shows as soon as it is asked for. A move out of the view takes the
   row away, offers its undo and names the row to open in its place. Starred and
   labels list mail wherever it sits, so a move to another folder keeps the row

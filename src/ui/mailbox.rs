@@ -893,6 +893,19 @@ fn conversation_list(
                     if response.clicked() {
                         messages.push(Message::SelectConversation(conversation.id.clone()));
                     }
+                    let menu = response.context_menu(|ui| {
+                        reader::conversation_menu(ui, mailbox, conversation, messages);
+                    });
+                    // As native lists do, the row a menu belongs to is outlined
+                    // while it is open.
+                    if menu.is_some() {
+                        ui.painter().rect_stroke(
+                            response.rect,
+                            CornerRadius::same(8),
+                            Stroke::new(1.0, theme::ACCENT),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                 }
             });
             state.conversation_scroll = Some(ConversationScroll::capture(
@@ -2317,6 +2330,96 @@ mod tests {
             !matches!(message, Message::PanelsResized(panels) if panels.conversations != original_split)
         }));
         output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn a_right_click_on_a_row_offers_its_actions_without_opening_it() {
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::ConversationsLoaded(
+            1,
+            Ok(ConversationPage {
+                conversations: vec![
+                    pagination_row("demo-3", 1000),
+                    pagination_row("demo-4", 900),
+                ],
+                total: 2,
+                inspect_candidates: Vec::new(),
+            }),
+        ));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let size = egui::vec2(1100.0, 700.0);
+        let mut frame = |events: Vec<egui::Event>| {
+            mailbox_frame(
+                &context,
+                &app,
+                &mut state,
+                size,
+                None,
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+            )
+        };
+        let click = |pos, button| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+        };
+
+        let (_, shapes) = frame(Vec::new());
+        let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
+        let (asked, _) = frame(click(row.center(), egui::PointerButton::Secondary));
+        assert!(asked.is_empty(), "a right click opens nothing");
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = frame(Vec::new()).1;
+        }
+        for item in [
+            "Archive",
+            "Move to Spam",
+            "Delete (move to Trash)",
+            "Mark as unread",
+            "Add star",
+        ] {
+            assert!(
+                visible_text_rect(&shapes, item).is_some(),
+                "{item} is missing"
+            );
+        }
+        assert!(
+            shapes.iter().any(|clipped| matches!(&clipped.shape,
+                egui::epaint::Shape::Rect(rect)
+                    if rect.stroke.color == theme::ACCENT && rect.rect.contains(row.center()))),
+            "the row the menu belongs to is outlined"
+        );
+
+        // The sidebar has an Archive too; the menu is drawn above it, last.
+        let archive = shapes
+            .iter()
+            .rev()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == "Archive" => {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let (asked, _) = frame(click(archive.center(), egui::PointerButton::Primary));
+        assert!(
+            matches!(
+                asked.as_slice(),
+                [Message::ApplyRowAction(id, crate::mail::MailAction::MoveTo(to))]
+                    if id == "demo-4" && *to == Folder::System(MailFolder::Archive)
+            ),
+            "Archive should act on the row that was clicked"
+        );
     }
 
     #[test]

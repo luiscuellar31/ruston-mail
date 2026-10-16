@@ -74,6 +74,8 @@ pub enum Message {
     OpenLink,
     CopyLink,
     DismissLink,
+    /// Copies the address of a link in a message, from the link's menu.
+    CopyLinkAddress(String),
     Logout,
     LogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
@@ -89,6 +91,9 @@ pub enum Message {
     /// Applies one action to the selected row. Adding an action is a line in
     /// the toolbar rather than a message and an arm of its own.
     ApplyAction(MailAction),
+    /// Applies one action to a listed row without opening it, as the row's
+    /// menu does.
+    ApplyRowAction(String, MailAction),
     /// Puts the last moved conversation back where it came from.
     UndoMove,
     /// Lets this temporary undo offer expire if it is still current.
@@ -544,6 +549,9 @@ impl App {
                 }
             }
             Message::ApplyAction(action) => return self.apply_action(action),
+            Message::ApplyRowAction(row_id, action) => {
+                return self.apply_row_action(row_id, action);
+            }
             Message::UndoMove => return self.undo_move(),
             Message::DismissUndo(offer) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -720,6 +728,12 @@ impl App {
                 }
             }
             Message::DismissLink => self.pending_link = None,
+            // Copying takes the reader nowhere, so it needs no confirmation.
+            Message::CopyLinkAddress(target) => {
+                if let Some(link) = PendingLink::parse(&target) {
+                    return Effects::ui(UiEffect::CopyText(link.url));
+                }
+            }
             Message::ReceiveMailto(request) => self.receive_mailto(request),
             Message::MailtoRejected => {
                 self.mailto_error = Some("This email link could not be opened.")
@@ -945,35 +959,51 @@ impl App {
     }
 
     fn apply_action(&mut self, action: MailAction) -> Effects {
+        let Some(selected) = self
+            .mailbox
+            .as_ref()
+            .and_then(Mailbox::selected_summary)
+            .map(|summary| summary.id.clone())
+        else {
+            return Effects::none();
+        };
+        self.apply_row_action(selected, action)
+    }
+
+    /// Acts on one listed row, open or not. Only the open one, when it leaves
+    /// the view, gives its place in the reader to the row after it.
+    fn apply_row_action(&mut self, row_id: String, action: MailAction) -> Effects {
         if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
             return Effects::none();
         }
         match self.backend.clone() {
-            Some(MailBackend::Demo(service)) => self.apply_demo_action(&service, action),
-            Some(MailBackend::Proton(service)) => self.start_proton_action(service, action),
+            Some(MailBackend::Demo(service)) => self.apply_demo_action(&service, &row_id, action),
+            Some(MailBackend::Proton(service)) => self.start_proton_action(service, row_id, action),
             None => Effects::none(),
         }
     }
 
     /// Demo actions change local data at once and reload the folder snapshot.
-    fn apply_demo_action(&mut self, service: &DemoMailbox, action: MailAction) -> Effects {
+    fn apply_demo_action(
+        &mut self,
+        service: &DemoMailbox,
+        id: &str,
+        action: MailAction,
+    ) -> Effects {
         let Some(mailbox) = self.mailbox.as_ref() else {
             return Effects::none();
         };
         if mailbox.is_busy() {
             return Effects::none();
         }
-        let Some((id, kind)) = mailbox
-            .selected_summary()
-            .map(|summary| (summary.id.clone(), summary.kind))
-        else {
+        let Some(kind) = mailbox.row(id).map(|row| row.kind) else {
             return Effects::none();
         };
 
         let applied = match &action {
-            MailAction::MoveTo(folder) => service.move_to(&id, folder),
-            MailAction::SetUnread(unread) => service.set_unread(&id, *unread),
-            MailAction::SetStarred(starred) => service.set_starred(&id, *starred),
+            MailAction::MoveTo(folder) => service.move_to(id, folder),
+            MailAction::SetUnread(unread) => service.set_unread(id, *unread),
+            MailAction::SetStarred(starred) => service.set_starred(id, *starred),
             // The demo account owns no labels, so the reader offers none.
             MailAction::SetLabel { .. } => false,
         };
@@ -981,8 +1011,8 @@ impl App {
             // Demo actions never reach `finish_action`, so the offer to take
             // the move back, and the change itself, are recorded here instead.
             if let Some(mailbox) = self.active_mailbox() {
-                mailbox.record_action(&id, &action);
-                mailbox.offer_undo(&id, kind, action);
+                mailbox.record_action(id, &action);
+                mailbox.offer_undo(id, kind, action);
             }
             if let Some(next) = self.apply_demo_snapshot(service) {
                 return self.select_conversation(next);
@@ -1026,13 +1056,14 @@ impl App {
     fn start_proton_action(
         &mut self,
         service: Arc<ProtonMailService>,
+        row_id: String,
         action: MailAction,
     ) -> Effects {
         let request = self.next_request();
-        let Some(start) = self
-            .active_mailbox()
-            .and_then(|mailbox| mailbox.start_action(action, request))
-        else {
+        let Some(start) = self.active_mailbox().and_then(|mailbox| {
+            let kind = mailbox.row(&row_id)?.kind;
+            mailbox.start_action_on(row_id, kind, action, request)
+        }) else {
             return Effects::none();
         };
         self.show_started_action(&service, start)

@@ -130,6 +130,11 @@ The reader can:
   move made there offers no undo until you have moved it once from that view;
   **Move to…** can still put it back.
 
+Right-click a conversation in the list, or click it with two fingers on a
+trackpad, for the same moves the reader offers it, **Mark as read** or **Mark as
+unread**, and **Add star** or **Remove star**. They act on that conversation
+without opening it, so it is not marked read, and the open one stays open.
+
 Actions show at once, without waiting for Proton: a moved conversation leaves
 the list and the next one opens, and its undo is offered right away. Under
 Starred or a label, a conversation moved to another folder keeps its star and
@@ -144,6 +149,9 @@ an error and is taken back.
 
 Ruston Mail does not permanently delete mail. It also cannot create, rename, or
 remove folders and labels yet.
+
+Right-click a link in a message for **Open link…**, which asks first like a
+click does, or **Copy link**, which copies its address without opening it.
 
 Web links open in the system browser. A confirmation dialog over the window
 shows the destination first by default; a long address scrolls inside it, and

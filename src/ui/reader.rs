@@ -406,23 +406,7 @@ fn action_toolbar(
 ) {
     let location = mailbox.selected_location();
     ui.horizontal_wrapped(|ui| {
-        let back = back_to_inbox(location)
-            .map(|label| (theme::Icon::Inbox, label, MailFolder::Inbox, false));
-        let away = [
-            (theme::Icon::Archive, "Archive", MailFolder::Archive, false),
-            (theme::Icon::Spam, "Move to Spam", MailFolder::Spam, false),
-            (
-                theme::Icon::Trash,
-                "Delete (move to Trash)",
-                MailFolder::Trash,
-                true,
-            ),
-        ];
-        for (icon, label, folder, danger) in back.into_iter().chain(away) {
-            let destination = Folder::System(folder);
-            if location == Some(&destination) {
-                continue;
-            }
+        for (icon, label, destination, danger) in moves(location) {
             let mut button = theme::IconButton::new(icon, label);
             if danger {
                 button = button.danger();
@@ -440,28 +424,7 @@ fn action_toolbar(
         );
 
         ui.separator();
-        for (icon, label, selected, action) in [
-            (
-                theme::Icon::Mail,
-                if summary.unread {
-                    "Mark as read"
-                } else {
-                    "Mark as unread"
-                },
-                summary.unread,
-                MailAction::SetUnread(!summary.unread),
-            ),
-            (
-                theme::Icon::Star,
-                if summary.starred {
-                    "Remove star"
-                } else {
-                    "Add star"
-                },
-                summary.starred,
-                MailAction::SetStarred(!summary.starred),
-            ),
-        ] {
+        for (icon, label, selected, action) in flags(summary) {
             if ui
                 .add_enabled(
                     enabled,
@@ -479,6 +442,87 @@ fn action_toolbar(
 
 /// Proton's Inbox, which the Move to menu lists beside the account's folders.
 static INBOX: Folder = Folder::INBOX;
+
+/// The moves out of where a conversation is, as its buttons in the reader and
+/// its menu in the list offer them: the way back to the Inbox from Archive,
+/// Spam or Trash, then Archive, Spam and Trash, except where it already is.
+/// Each is an icon, a name, the destination and whether it is the risky one.
+fn moves(location: Option<&Folder>) -> Vec<(theme::Icon, &'static str, Folder, bool)> {
+    let back =
+        back_to_inbox(location).map(|label| (theme::Icon::Inbox, label, MailFolder::Inbox, false));
+    let away = [
+        (theme::Icon::Archive, "Archive", MailFolder::Archive, false),
+        (theme::Icon::Spam, "Move to Spam", MailFolder::Spam, false),
+        (
+            theme::Icon::Trash,
+            "Delete (move to Trash)",
+            MailFolder::Trash,
+            true,
+        ),
+    ];
+    back.into_iter()
+        .chain(away)
+        .map(|(icon, label, folder, danger)| (icon, label, Folder::System(folder), danger))
+        .filter(|(_, _, destination, _)| location != Some(destination))
+        .collect()
+}
+
+/// The read and star flags a conversation can be switched to, each with its
+/// icon, its name, whether it is on now, and the action that switches it.
+fn flags(summary: &ConversationSummary) -> [(theme::Icon, &'static str, bool, MailAction); 2] {
+    [
+        (
+            theme::Icon::Mail,
+            if summary.unread {
+                "Mark as read"
+            } else {
+                "Mark as unread"
+            },
+            summary.unread,
+            MailAction::SetUnread(!summary.unread),
+        ),
+        (
+            theme::Icon::Star,
+            if summary.starred {
+                "Remove star"
+            } else {
+                "Add star"
+            },
+            summary.starred,
+            MailAction::SetStarred(!summary.starred),
+        ),
+    ]
+}
+
+/// The menu a right click opens on a conversation in the list: the moves and
+/// flags the reader offers, for that conversation, without opening it.
+pub(super) fn conversation_menu(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    row: &ConversationSummary,
+    messages: &mut Vec<Message>,
+) {
+    ui.set_min_width(200.0);
+    // An action asked for while the list loads would not start.
+    let enabled = !mailbox.is_busy();
+    let mut item = |ui: &mut egui::Ui, icon, label, action| {
+        if ui
+            .add_enabled_ui(enabled, |ui| icon_item(ui, icon, label))
+            .inner
+            .clicked()
+        {
+            messages.push(Message::ApplyRowAction(row.id.clone(), action));
+            ui.close();
+        }
+    };
+    for (icon, label, destination, _) in moves(mailbox.location_of(&row.id)) {
+        item(ui, icon, label, MailAction::MoveTo(destination));
+    }
+    ui.separator();
+    for (icon, label, _, action) in flags(row) {
+        item(ui, icon, label, action);
+    }
+}
 
 /// The first button for a row in Archive, Spam or Trash: the way back to the
 /// Inbox, which Spam calls Not spam.
@@ -542,9 +586,14 @@ fn move_menu(
 
 /// One place in the Move to menu, with the icon the sidebar gives it.
 fn destination_item(ui: &mut egui::Ui, folder: &Folder) -> egui::Response {
-    let layout = egui::Button::new((theme::icon_atom(), folder.name())).atom_ui(ui);
+    icon_item(ui, folder_icon(folder), folder.name())
+}
+
+/// A menu entry led by its icon.
+fn icon_item(ui: &mut egui::Ui, icon: theme::Icon, label: &str) -> egui::Response {
+    let layout = egui::Button::new((theme::icon_atom(), label)).atom_ui(ui);
     let color = ui.style().interact(&layout.response).fg_stroke.color;
-    theme::paint_atom_icon(ui, &layout, folder_icon(folder), color);
+    theme::paint_atom_icon(ui, &layout, icon, color);
     layout.response
 }
 
@@ -1198,12 +1247,27 @@ fn rich_spans(
     for span in spans {
         let job = span_layout(ui, span, heading);
         if let Some(link) = &span.link {
-            if ui.add(egui::Link::new(job)).clicked() {
+            let response = ui.add(egui::Link::new(job));
+            if response.clicked() {
                 messages.push(Message::LinkClicked(link.to_string()));
             }
+            response.context_menu(|ui| link_menu(ui, link, messages));
         } else {
             ui.add(egui::Label::new(job).selectable(true).wrap());
         }
+    }
+}
+
+/// A link's right-click menu. Opening it still asks first, when Settings say
+/// so; copying its address takes the reader nowhere.
+fn link_menu(ui: &mut egui::Ui, link: &str, messages: &mut Vec<Message>) {
+    if ui.button("Open link…").clicked() {
+        messages.push(Message::LinkClicked(link.to_owned()));
+        ui.close();
+    }
+    if ui.button("Copy link").clicked() {
+        messages.push(Message::CopyLinkAddress(link.to_owned()));
+        ui.close();
     }
 }
 
@@ -1589,6 +1653,59 @@ mod tests {
             press(false),
         ]);
         assert!(matches!(answer, Some(Message::OpenLink)));
+    }
+
+    #[test]
+    fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
+        let span = RichSpan {
+            text: "the agenda".into(),
+            link: Some("https://example.com/agenda".into()),
+            ..RichSpan::default()
+        };
+        let context = egui::Context::default();
+        theme::install(&context);
+        let frame = |events: Vec<egui::Event>| {
+            let mut messages = Vec::new();
+            let output = context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| rich_spans(ui, std::slice::from_ref(&span), None, &mut messages),
+            );
+            let shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+            (shapes, messages)
+        };
+        let click = |pos, button| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+        };
+
+        let (shapes, _) = frame(Vec::new());
+        let link = text_rect(&shapes, "the agenda");
+        let (_, asked) = frame(click(link.center(), egui::PointerButton::Secondary));
+        assert!(asked.is_empty(), "a right click follows nothing");
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = frame(Vec::new()).0;
+        }
+        text_rect(&shapes, "Open link…");
+        let copy = text_rect(&shapes, "Copy link");
+        let (_, asked) = frame(click(copy.center(), egui::PointerButton::Primary));
+
+        assert!(
+            matches!(
+                asked.as_slice(),
+                [Message::CopyLinkAddress(address)] if address == "https://example.com/agenda"
+            ),
+            "Copy link should ask for this link's address"
+        );
     }
 
     #[test]

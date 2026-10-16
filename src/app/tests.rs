@@ -625,6 +625,55 @@ fn the_apps_own_refresh_goes_unannounced_until_someone_asks_for_one() {
 }
 
 #[test]
+fn a_rows_menu_acts_on_that_row_and_leaves_the_open_one_open() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    deliver_selected_demo_detail(&mut app);
+    let listed = |app: &App, id: &str| app.mailbox().unwrap().has_row(id);
+    let unread = |app: &App, id: &str| {
+        app.mailbox()
+            .unwrap()
+            .conversations()
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.unread)
+    };
+
+    let before = unread(&app, "demo-2").unwrap();
+    let _ = app.update(Message::ApplyRowAction(
+        "demo-2".into(),
+        MailAction::SetUnread(!before),
+    ));
+    assert_eq!(unread(&app, "demo-2"), Some(!before));
+
+    let _ = app.update(Message::ApplyRowAction(
+        "demo-1".into(),
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+    ));
+    assert!(!listed(&app, "demo-1"));
+    let mailbox = app.mailbox().unwrap();
+    assert_eq!(mailbox.selected_conversation(), Some("demo-0"));
+    let undo = mailbox.undo().expect("its folder is known");
+    assert_eq!(undo.row_id, "demo-1");
+    assert_eq!(undo.from, Folder::INBOX);
+}
+
+#[test]
+fn copying_a_links_address_needs_no_prompt_and_only_takes_web_and_mail_links() {
+    let mut app = loaded_demo_app();
+    let effects = app.update(Message::CopyLinkAddress("https://example.com/a".into()));
+    let effect = effects.into_iter().next().expect("a copy");
+    assert!(matches!(
+        effect,
+        Effect::Ui(UiEffect::CopyText(text)) if text == "https://example.com/a"
+    ));
+    assert!(app.pending_link().is_none());
+
+    let effects = app.update(Message::CopyLinkAddress("javascript:alert(1)".into()));
+    assert_eq!(effects.units(), 0);
+}
+
+#[test]
 fn the_keyboard_walks_the_conversation_list() {
     let mut app = loaded_demo_app();
 
