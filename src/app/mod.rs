@@ -1084,10 +1084,10 @@ impl App {
         let send_next = self.send_action(finish.next);
 
         // Reload only when undo returns a missing row to the visible folder.
-        let arrived = self.mailbox.as_ref().is_some_and(|mailbox| {
-            request.action.destination() == Some(mailbox.folder())
-                && !mailbox.has_row(&request.row_id)
-        });
+        let arrived = self
+            .mailbox
+            .as_ref()
+            .is_some_and(|mailbox| mailbox.brought_back(&request));
         if arrived {
             return Effects::batch([send_next, self.refresh_mailbox()]);
         }

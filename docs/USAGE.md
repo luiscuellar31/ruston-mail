@@ -118,14 +118,17 @@ The reader can:
   Spam it is **Not spam**.
 - Move it into one of your folders, or back to the Inbox, with **Move to…**.
 - Add or remove a custom label.
-- Undo the latest move while its notice remains visible. A move made from a
-  label, Starred, or search results cannot be undone this way, because the
-  conversation's folder is not known there; **Move to…** can still put it back.
+- Undo the latest move while its notice remains visible. Under a label,
+  Starred, or in search results the conversation's folder is not known, so a
+  move made there offers no undo until you have moved it once from that view;
+  **Move to…** can still put it back.
 
 Actions show at once, without waiting for Proton: a moved conversation leaves
-the list and the next one opens, and its undo is offered right away. Actions
-taken in quick succession go to Proton one after another, in order. If Proton
-refuses one, the reader says so and the change is taken back; a moved
+the list and the next one opens, and its undo is offered right away. Under
+Starred or a label, a conversation moved to another folder keeps its star and
+labels, so it stays in the list; a move to Spam or Trash still takes it out.
+Actions taken in quick succession go to Proton one after another, in order. If
+Proton refuses one, the reader says so and the change is taken back; a moved
 conversation comes back when the folder reloads.
 
 If an automatic read is still pending, **Mark unread** waits for it to succeed

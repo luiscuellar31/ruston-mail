@@ -361,6 +361,88 @@ fn archived_mail_can_go_back_to_the_inbox_and_that_can_be_taken_back_too() {
     assert_eq!(undo.to, Folder::INBOX);
 }
 
+/// A mailbox showing `view` with rows "a" and "b", "a" open.
+fn viewing(view: Folder) -> Mailbox {
+    let mut mailbox = loaded_inbox(&["x"], 1);
+    let request = mailbox.select_folder(view, 2).unwrap();
+    mailbox.finish_page(request.id, page(&["a", "b"], 2));
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+    mailbox
+}
+
+#[test]
+fn mail_moved_to_another_folder_stays_under_its_star_or_label() {
+    let invoices = Folder::custom("kZ9", "Invoices");
+    for view in [sys(MailFolder::Starred), Folder::label("wN2", "Receipts")] {
+        for to in [sys(MailFolder::Archive), Folder::INBOX, invoices.clone()] {
+            let mut mailbox = viewing(view.clone());
+            let start = mailbox
+                .start_action(MailAction::MoveTo(to.clone()), 4)
+                .unwrap();
+
+            assert_eq!(start.opened, None, "{view:?} to {to:?}");
+            assert!(mailbox.has_row("a"), "{view:?} to {to:?}");
+            // The reader knows where it went, so it offers the way back
+            // instead of the move just made.
+            assert_eq!(mailbox.selected_location(), Some(&to), "{view:?}");
+            let _ = mailbox.finish_action(&start.send.unwrap(), Ok(()));
+            assert!(mailbox.has_row("a"), "{view:?} to {to:?}");
+            assert_eq!(mailbox.selected_location(), Some(&to), "{view:?}");
+        }
+
+        // Spam and Trash still take the row away.
+        for to in [MailFolder::Spam, MailFolder::Trash] {
+            let mut mailbox = viewing(view.clone());
+            let start = mailbox
+                .start_action(MailAction::MoveTo(sys(to)), 4)
+                .unwrap();
+            assert_eq!(start.opened.as_deref(), Some("b"), "{view:?} to {to:?}");
+            assert!(!mailbox.has_row("a"), "{view:?} to {to:?}");
+        }
+    }
+}
+
+#[test]
+fn a_refused_move_under_a_label_forgets_where_the_row_went() {
+    let mut mailbox = viewing(sys(MailFolder::Starred));
+    let request = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        4,
+    );
+    let _ = mailbox.finish_action(&request, Err(MailboxError::Service));
+
+    assert!(mailbox.has_row("a"));
+    assert_eq!(mailbox.selected_location(), None);
+}
+
+#[test]
+fn taking_back_a_move_out_of_a_label_view_asks_for_the_row_again() {
+    let mut mailbox = viewing(sys(MailFolder::Starred));
+    let archived = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        4,
+    );
+    let _ = mailbox.finish_action(&archived, Ok(()));
+    let trashed = send(&mut mailbox, MailAction::MoveTo(sys(MailFolder::Trash)), 5);
+    let _ = mailbox.finish_action(&trashed, Ok(()));
+    let undo = mailbox
+        .undo()
+        .cloned()
+        .expect("it was known to be in Archive");
+    assert_eq!(undo.from, sys(MailFolder::Archive));
+
+    let back = mailbox
+        .start_action_on(undo.row_id, undo.kind, MailAction::MoveTo(undo.from), 6)
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&back, Ok(()));
+
+    assert!(!mailbox.has_row("a"));
+    assert!(mailbox.brought_back(&back), "only a reload can show it");
+}
+
 #[test]
 fn only_a_folder_that_lists_the_row_says_where_it_is() {
     let mut mailbox = loaded_inbox(&["a"], 1);

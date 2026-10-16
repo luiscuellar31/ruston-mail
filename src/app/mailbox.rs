@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
-    ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAction, MailFolder,
-    MailboxCounts, MailboxError, SummaryKind,
+    ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder, MailAction,
+    MailFolder, MailboxCounts, MailboxError, SummaryKind,
 };
 
 /// Identifies an asynchronous mailbox request. Only the response matching the
@@ -359,6 +359,10 @@ pub struct Mailbox {
     /// Automatic reads in flight, by row. Explicit read mutations on the same
     /// row wait here without blocking independent rows or other action kinds.
     pending_reads: HashMap<String, RequestId>,
+    /// Where rows moved without leaving the view now are. Starred and labels
+    /// list mail wherever it sits, so a conversation moved to another folder
+    /// stays in them, and only this says where it went.
+    relocated: HashMap<String, Folder>,
 }
 
 impl Mailbox {
@@ -399,6 +403,7 @@ impl Mailbox {
             action_error: None,
             undo: None,
             pending_reads: HashMap::new(),
+            relocated: HashMap::new(),
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -784,9 +789,13 @@ impl Mailbox {
     }
 
     /// The folder a row is known to be in: the open folder, when mail lives
-    /// there and lists the row. A row shown under a label, Starred, Sent or
-    /// Drafts, or one only a search found, could be anywhere.
+    /// there and lists the row, or where this view saw it moved. Otherwise a
+    /// row shown under a label, Starred, Sent or Drafts, or one only a search
+    /// found, could be anywhere.
     fn location_of(&self, row_id: &str) -> Option<&Folder> {
+        if let Some(folder) = self.relocated.get(row_id) {
+            return Some(folder);
+        }
         (self.folder.is_location() && self.listed_in_folder(row_id)).then_some(&self.folder)
     }
 
@@ -1291,6 +1300,14 @@ impl Mailbox {
         {
             self.record_action(&request.row_id, &before);
         }
+        // A refused move that kept its row leaves its place unknown again.
+        if request.action.destination().is_some()
+            && request.folder == self.folder
+            && !self.leaves_view(&self.folder, &request.action)
+            && !self.superseded(request)
+        {
+            self.relocated.remove(&request.row_id);
+        }
     }
 
     /// Whether an action asked for later changes the same thing on the same
@@ -1312,6 +1329,14 @@ impl Mailbox {
         request.folder == self.folder && self.leaves_view(&self.folder, &request.action)
     }
 
+    /// Whether a confirmed move belongs in the open view but its row is not
+    /// listed, as when a move is taken back; only a reload can show it.
+    pub(super) fn brought_back(&self, request: &ActionRequest) -> bool {
+        request.action.destination().is_some()
+            && !self.leaves_view(&self.folder, &request.action)
+            && !self.has_row(&request.row_id)
+    }
+
     /// Whether this action removes the row from the current view.
     fn leaves_view(&self, folder: &Folder, action: &MailAction) -> bool {
         match action {
@@ -1320,7 +1345,13 @@ impl Mailbox {
             }
             MailAction::SetLabel { label, on } => !on && label == folder,
             MailAction::SetUnread(_) => false,
-            moved => moved.destination() != Some(folder),
+            MailAction::MoveTo(to) if lists_by_label(folder) => {
+                // Moved to another folder, mail keeps its star and labels. Spam
+                // and Trash still take the row away, as they always have: the
+                // next refresh says whether Proton lists it there.
+                matches!(to.system(), Some(MailFolder::Spam | MailFolder::Trash))
+            }
+            MailAction::MoveTo(to) => to != folder,
         }
     }
 
@@ -1333,9 +1364,11 @@ impl Mailbox {
                 MailAction::MoveTo(_) | MailAction::SetLabel { .. } => {}
             }
         }
-        if self.leaves_view(&self.folder, action)
-            && let Some(search) = &mut self.search
-        {
+        if !self.leaves_view(&self.folder, action) {
+            if let Some(to) = action.destination() {
+                self.relocated.insert(row_id.to_owned(), to.clone());
+            }
+        } else if let Some(search) = &mut self.search {
             search.rows.retain(|row| row.id != row_id);
             search.row_ids.remove(row_id);
             self.recompute_visible();
@@ -1396,6 +1429,7 @@ impl Mailbox {
         self.action_error = None;
         // The offer belongs to the folder it was made in.
         self.undo = None;
+        self.relocated.clear();
         // So do search results: a folder is a different question.
         self.search = None;
         self.search_request = None;
@@ -1920,6 +1954,12 @@ fn contains_ignoring_case(haystack: &str, needle: &str) -> bool {
             }
         }
     })
+}
+
+/// Whether a view lists mail by a name it carries, Starred or a label, rather
+/// than by the folder it sits in.
+fn lists_by_label(folder: &Folder) -> bool {
+    folder.system() == Some(MailFolder::Starred) || folder.kind() == Some(CustomKind::Label)
 }
 
 #[cfg(test)]
