@@ -673,7 +673,8 @@ Signing out clears credentials, but retains the account's disk cache.
 Indexing a folder stores decrypted message bodies in that local database;
 it is not encrypted at rest
 by this code. It keeps no signature verdicts, so it decrypts without looking up
-sender keys. On Unix, core creates the cache directory and database with
+sender keys. Up to three bodies download at once and are saved in listing
+order, so a stop leaves exactly the messages before it indexed. On Unix, core creates the cache directory and database with
 private permissions and tightens older cache permissions before opening them;
 explicit cache paths require a private parent directory. Cache writes and index
 maintenance live in [`cache.rs`](../crates/ruston-core/src/cache.rs), which

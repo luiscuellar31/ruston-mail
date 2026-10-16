@@ -9,11 +9,14 @@ use crate::model::enums::resolve_folder;
 use crate::model::message::MessageMetadata;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
 use crate::transport::Doer;
+use futures::{FutureExt, StreamExt, stream};
 use std::borrow::Borrow;
 use std::future::Future;
 use std::path::PathBuf;
 
 const RESYNC_PAGE_SIZE: u32 = 100;
+/// How many bodies `index` downloads at once, as conversation reads do.
+const INDEX_BODY_FETCH_CONCURRENCY: usize = 3;
 
 /// Outcome of a sync run.
 #[derive(Debug, Clone)]
@@ -200,8 +203,14 @@ where
         if msgs.is_empty() {
             break;
         }
-        for meta in &msgs {
-            match read_message(meta.id.clone()).await {
+        let listed = msgs.len();
+        // A few bodies download at once, and are saved in listing order, so
+        // a stop leaves exactly the messages before it saved.
+        let mut reads = stream::iter(msgs)
+            .map(|meta| read_message(meta.id.clone()).map(move |read| (meta, read)))
+            .buffered(INDEX_BODY_FETCH_CONCURRENCY);
+        while let Some((meta, read)) = reads.next().await {
+            match read {
                 Ok(full) => {
                     cache.borrow().store_index_result(
                         cursor.as_deref(),
@@ -215,7 +224,7 @@ where
                 Err(error) if is_definitive_read_failure(&error) => {
                     cache
                         .borrow()
-                        .store_index_result(cursor.as_deref(), meta, None)?;
+                        .store_index_result(cursor.as_deref(), &meta, None)?;
                 }
                 // Anything else says nothing about the body, and would most
                 // likely fail the next read too: keep what is indexed and stop.
@@ -225,7 +234,7 @@ where
                 }
             }
         }
-        if (msgs.len() as u32) < page_size {
+        if (listed as u32) < page_size {
             break;
         }
     }
@@ -789,8 +798,13 @@ mod tests {
     async fn index_keeps_the_page_cursor_after_an_earlier_body_commits() {
         let cache = Cache::open(Path::new(":memory:")).unwrap();
         cache.set_last_event_id("old").unwrap();
+        // m2 downloads too, but comes after m1 and so is never saved.
         let http = ListingDoer {
-            pages: vec![vec![cached_message("m0"), cached_message("m1")]],
+            pages: vec![vec![
+                cached_message("m0"),
+                cached_message("m1"),
+                cached_message("m2"),
+            ]],
             gate: Semaphore::new(1),
         };
         let body_gate = Semaphore::new(0);
@@ -815,6 +829,71 @@ mod tests {
         assert_eq!(remaining[0].id, "m0");
         assert_eq!(cache.search("downloadedbody", 10).unwrap()[0].id, "m0");
         assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn index_reads_three_bodies_at_once_and_stores_them_in_listing_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+        async fn wait_for(counter: &AtomicUsize, count: usize) {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while counter.load(SeqCst) < count {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("body reads did not make progress");
+        }
+
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        let http = ListingDoer {
+            pages: vec![
+                (0..5)
+                    .map(|index| cached_message(&format!("m{index}")))
+                    .collect(),
+            ],
+            gate: Semaphore::new(1),
+        };
+        let gates: Vec<_> = (0..5).map(|_| Semaphore::new(0)).collect();
+        let (started, finished, active, peak) = (
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+        );
+        let index = index_cache(&http, &cache, "inbox", 1, 10, |id| {
+            let (gates, started, finished, active, peak) =
+                (&gates, &started, &finished, &active, &peak);
+            async move {
+                let position: usize = id[1..].parse().unwrap();
+                started.fetch_add(1, SeqCst);
+                peak.fetch_max(active.fetch_add(1, SeqCst) + 1, SeqCst);
+                gates[position].acquire().await.unwrap().forget();
+                active.fetch_sub(1, SeqCst);
+                finished.fetch_add(1, SeqCst);
+                Ok(full_message(cached_message(&id)))
+            }
+        });
+        let release = async {
+            wait_for(&started, 3).await;
+            // Later bodies arrive first, but wait for the first one.
+            gates[2].add_permits(1);
+            gates[1].add_permits(1);
+            wait_for(&finished, 2).await;
+            assert!(cache.search("downloadedbody", 10).unwrap().is_empty());
+            assert_eq!(started.load(SeqCst), 3);
+            gates[0].add_permits(1);
+            wait_for(&started, 5).await;
+            gates[3].add_permits(1);
+            gates[4].add_permits(1);
+        };
+
+        let (indexed, ()) = tokio::join!(index, release);
+
+        assert_eq!(indexed.unwrap(), 5);
+        assert_eq!(peak.load(SeqCst), 3);
+        assert_eq!(cache.search("downloadedbody", 10).unwrap().len(), 5);
     }
 
     #[tokio::test]
