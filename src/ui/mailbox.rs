@@ -761,7 +761,9 @@ fn conversation_list(
                         egui::pos2(ui.max_rect().left(), content_top + index as f32 * row_step),
                         egui::vec2(ui.available_width(), ROW_HEIGHT),
                     );
-                    ui.scroll_to_rect(row_rect, Some(egui::Align::Center));
+                    // As a native list does: not at all while the row is in
+                    // view, and otherwise just far enough to show it.
+                    ui.scroll_to_rect(row_rect, None);
                 }
 
                 for index in range {
@@ -1727,6 +1729,36 @@ mod tests {
         let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
         assert_eq!(after.subjects["p45"], before.subjects["p45"]);
         assert_eq!(mailbox.selected_conversation(), Some("p40"));
+    }
+
+    #[test]
+    fn a_keyboard_step_scrolls_the_list_only_as_far_as_the_row() {
+        let mailbox = pagination_mailbox(false);
+        let context = egui::Context::default();
+        theme::install(&context);
+        context
+            .all_styles_mut(|style| style.scroll_animation = egui::style::ScrollAnimation::none());
+        let mut state = UiState::default();
+        // The scroll lands on the pass after the request, and the rows are
+        // drawn where it left them on the one after that.
+        let mut reveal = |row: &str| {
+            state.reveal_conversation = Some(row.into());
+            for _ in 0..2 {
+                pagination_frame(&context, &mailbox, &mut state, Default::default());
+            }
+            pagination_frame(&context, &mailbox, &mut state, Default::default())
+        };
+
+        // A row already in view leaves the list where it is.
+        assert_eq!(reveal("p5").offset, 0.0);
+        // One below the view comes up to its bottom edge, not to the middle.
+        let below = reveal("p9");
+        assert!(below.offset > 0.0);
+        assert!(
+            below.subjects["p9"] > 480.0 * 0.75,
+            "p9 was scrolled to {}",
+            below.subjects["p9"]
+        );
     }
 
     #[test]
