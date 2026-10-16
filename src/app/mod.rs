@@ -734,16 +734,19 @@ impl App {
             }
             Message::KeyPressed(press) => return self.handle_key(press),
             // A drag reports many sizes; only a real change is worth a write.
-            Message::WindowResized(size) => {
-                let moved = (size.width - self.settings.window.width).abs() >= RESIZE_STEP
-                    || (size.height - self.settings.window.height).abs() >= RESIZE_STEP;
-                if moved {
-                    self.remember(|settings| {
-                        settings.window = Window {
-                            width: size.width,
-                            height: size.height,
-                        };
-                    });
+            Message::WindowResized(window) => {
+                let saved = self.settings.window;
+                let far = |a: f32, b: f32| (a - b).abs() >= RESIZE_STEP;
+                let moved = match (window.position, saved.position) {
+                    (Some([x, y]), Some([saved_x, saved_y])) => far(x, saved_x) || far(y, saved_y),
+                    (now, before) => now != before,
+                };
+                let changed = far(window.width, saved.width)
+                    || far(window.height, saved.height)
+                    || window.maximized != saved.maximized
+                    || moved;
+                if changed {
+                    self.remember(|settings| settings.window = window);
                 }
             }
             Message::SaveAttachment(message_id, attachment_id) => {

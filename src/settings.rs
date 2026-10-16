@@ -18,7 +18,7 @@ const TEMP_ATTEMPTS: u32 = 100;
 /// no room to read in.
 const MIN_RATIO: f32 = 0.1;
 const MAX_RATIO: f32 = 0.9;
-const MIN_WINDOW: (f32, f32) = (820.0, 480.0);
+const MIN_WINDOW: (f32, f32) = (480.0, 420.0);
 /// Zoom is a scale on every length in the interface, so it has to stay within
 /// what a window can still show something useful at.
 pub const MIN_ZOOM: f32 = 0.8;
@@ -106,6 +106,13 @@ impl Default for Settings {
 pub struct Window {
     pub width: f32,
     pub height: f32,
+    /// Reopen maximized. The size above is the one to come back to.
+    #[serde(default)]
+    pub maximized: bool,
+    /// Where the window's top-left corner was, in the desktop's own
+    /// coordinates; `None` leaves the place to the system.
+    #[serde(default)]
+    pub position: Option<[f32; 2]>,
 }
 
 impl Default for Window {
@@ -113,6 +120,8 @@ impl Default for Window {
         Self {
             width: 1_100.0,
             height: 700.0,
+            maximized: false,
+            position: None,
         }
     }
 }
@@ -255,6 +264,10 @@ impl Settings {
             clamp_ratio(self.panels.conversations, defaults.panels.conversations);
         self.window.width = clamp_size(self.window.width, MIN_WINDOW.0, defaults.window.width);
         self.window.height = clamp_size(self.window.height, MIN_WINDOW.1, defaults.window.height);
+        self.window.position = self
+            .window
+            .position
+            .filter(|position| position.iter().all(|coordinate| coordinate.is_finite()));
 
         self
     }
@@ -547,6 +560,8 @@ mod tests {
             window: Window {
                 width: -5.0,
                 height: 10.0,
+                position: Some([f32::NAN, 40.0]),
+                ..Window::default()
             },
             ..Settings::default()
         }
@@ -559,5 +574,31 @@ mod tests {
         );
         assert_eq!(damaged.window.width, Settings::default().window.width);
         assert_eq!(damaged.window.height, Settings::default().window.height);
+        assert_eq!(damaged.window.position, None);
+    }
+
+    #[test]
+    fn older_settings_reopen_a_normal_window_where_the_system_puts_it() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        let window = old["window"].as_object_mut().unwrap();
+        window.remove("maximized");
+        window.remove("position");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert!(!restored.window.maximized);
+        assert_eq!(restored.window.position, None);
+    }
+
+    #[test]
+    fn a_narrow_window_is_kept_down_to_the_composers_minimum() {
+        let narrow = Settings {
+            window: Window {
+                width: 520.0,
+                height: 430.0,
+                ..Window::default()
+            },
+            ..Settings::default()
+        }
+        .sanitized();
+        assert_eq!((narrow.window.width, narrow.window.height), (520.0, 430.0));
     }
 }

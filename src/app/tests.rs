@@ -2070,6 +2070,7 @@ fn resetting_layout_preserves_other_preferences() {
     app.settings.window = Window {
         width: 1_300.0,
         height: 900.0,
+        ..Window::default()
     };
     app.settings.panels = Panels {
         sidebar: 0.35,

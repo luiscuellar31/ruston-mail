@@ -225,7 +225,8 @@ Signing out of the shared profile affects both frontends.
 Ruston Mail keeps `settings.json` in its own platform config directory; a demo
 process keeps `settings-demo.json` beside it instead, so nothing changed while
 trying the demo reaches a real account. It
-contains preferences, the last folder, window size, and pane widths. When a
+contains preferences, the last folder, the window's size and place on screen,
+whether it was maximized, and pane widths. When a
 session ends, a remembered folder or label you created is replaced by the
 Inbox, so its name never reaches the next account to sign in. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged

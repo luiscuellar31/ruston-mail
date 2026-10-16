@@ -85,6 +85,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   before native windows are created. The ID matches the existing macOS bundle
   and the Linux desktop filename; session and preference paths keep their
   separate storage identifiers.
+- [`ui/window_place.rs`](../src/ui/window_place.rs) reads the main window's
+  place from winit and puts it back before the window first shows, only when
+  its top edge lands on a connected screen, then maximizes it if it was. Places
+  are points on macOS and pixels elsewhere; Wayland gives none. `ui/mod.rs`
+  remembers the normal size and place, but nothing while the window is full
+  screen or minimized, and on Windows and Linux keeps the normal size while it
+  is maximized. On macOS, zoom is remembered as the larger frame it is.
 - On macOS, [`ui/macos.rs`](../src/ui/macos.rs) measures the root window's
   traffic lights with eframe's `WindowChromeMetrics` on each logic pass.
   [`ui/theme.rs`](../src/ui/theme.rs) converts native points to egui points

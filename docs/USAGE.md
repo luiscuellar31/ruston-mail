@@ -2,10 +2,13 @@
 
 Ruston Mail has three panes: folders on the left, conversations in the middle,
 and the open conversation on the right. Drag either divider to resize them.
-The app remembers the layout for the next run.
+The app remembers the layout for the next run, along with the window's size and
+place, and on Windows and Linux whether it was maximized. A place on a screen
+that is no longer connected is not reused.
 
 When a small window or a high interface scale leaves too little room for all
-three panes, the app shows one pane at a time. Use **Folders**, **Mail**, and
+three panes, the app shows one pane at a time. The window can be as narrow as
+480 points, so it fits half a laptop screen in this mode. Use **Folders**, **Mail**, and
 **Reading** at the top to move between them; **Reading** becomes **Message**
 while writing in the reading pane. Opening a conversation switches to its
 content, and the search shortcut returns to **Mail**. Widening the window or

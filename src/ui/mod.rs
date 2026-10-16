@@ -12,6 +12,7 @@ mod notifications;
 mod reader;
 mod settings;
 mod theme;
+mod window_place;
 
 use eframe::egui;
 
@@ -21,7 +22,8 @@ use crate::runtime::Runtime;
 use crate::settings::{ComposePlacement, Settings, Window};
 use auto_refresh::AutoRefresh;
 
-const MIN_WINDOW_SIZE: [f32; 2] = [820.0, 480.0];
+/// Narrow enough for half a laptop screen, where the panes show one at a time.
+const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 /// Debounces settings writes while a window or divider is dragged.
 const SETTINGS_QUIET: f32 = 0.75;
 const LAYOUT_RESET_WAIT: f64 = 2.0;
@@ -103,7 +105,9 @@ struct DesktopApp {
     last_window_size: Option<Window>,
     /// Waits for the requested window size before resetting egui's cached pane widths.
     layout_reset_at: Option<f64>,
-    /// Retained until each native dialog completes, including portal export.
+    /// The main window: the parent of native dialogs, retained until each
+    /// completes, including portal export, and the window whose place is
+    /// remembered.
     dialog_parent: Option<std::sync::Arc<winit::window::Window>>,
     /// Native dialog completion, including cancellation, releases this slot.
     file_dialog_open: bool,
@@ -128,6 +132,9 @@ impl DesktopApp {
     fn new(creation: &eframe::CreationContext<'_>, demo: bool, settings: Settings) -> Self {
         let mut app = Self::with_context(&creation.egui_ctx, demo, settings);
         app.dialog_parent = creation.winit_window().cloned();
+        if let Some(window) = &app.dialog_parent {
+            window_place::restore(window, app.app.settings().window);
+        }
         #[cfg(target_os = "macos")]
         {
             app.native_menu = macos::Menu::install(&creation.egui_ctx);
@@ -536,15 +543,42 @@ impl DesktopApp {
     }
 
     fn remember_window_size(&mut self, context: &egui::Context) {
-        let Some(size) = context.input(|input| input.viewport().inner_rect.map(|rect| rect.size()))
-        else {
+        let (size, maximized, passing) = context.input(|input| {
+            let viewport = input.viewport();
+            (
+                viewport.inner_rect.map(|rect| rect.size()),
+                // Zoom only makes a Mac window larger, and that frame comes
+                // back as it is, as it does for other Mac apps. winit does not
+                // report the zoom it restores as maximized, either.
+                viewport.maximized == Some(true) && !cfg!(target_os = "macos"),
+                viewport.fullscreen == Some(true) || viewport.minimized == Some(true),
+            )
+        });
+        // Full screen and the Dock or taskbar are passing states: the window
+        // to come back to is the one already remembered.
+        let Some(size) = size.filter(|_| !passing) else {
             return;
         };
-        // Store unscaled points so zoom does not change the remembered window.
-        let unscaled = size * context.zoom_factor();
-        let current = Window {
-            width: unscaled.x,
-            height: unscaled.y,
+        let saved = self.app.settings().window;
+        let current = if maximized {
+            // Restoring it returns to the normal size and place, which stay.
+            Window {
+                maximized: true,
+                ..saved
+            }
+        } else {
+            // Store unscaled points so zoom does not change the remembered window.
+            let unscaled = size * context.zoom_factor();
+            Window {
+                width: unscaled.x,
+                height: unscaled.y,
+                maximized: false,
+                position: self
+                    .dialog_parent
+                    .as_deref()
+                    .and_then(window_place::position)
+                    .or(saved.position),
+            }
         };
         if let Some(started_at) = self.layout_reset_at {
             let target = Window::default();
@@ -561,6 +595,8 @@ impl DesktopApp {
         if let Some(last) = self.last_window_size
             && (last.width - current.width).abs() < f32::EPSILON
             && (last.height - current.height).abs() < f32::EPSILON
+            && last.maximized == current.maximized
+            && last.position == current.position
         {
             return;
         }
@@ -1874,6 +1910,7 @@ mod tests {
             Some(Window {
                 width: 1000.0,
                 height: 700.0,
+                ..Window::default()
             })
         );
 
@@ -1904,11 +1941,64 @@ mod tests {
             Some(Window {
                 width: 1200.0,
                 height: 800.0,
+                ..Window::default()
             })
         );
         assert_eq!(desktop.app.settings().window.width, 1200.0);
         assert_eq!(desktop.app.settings().window.height, 800.0);
         assert!(desktop.app.settings_revision() > revision_before);
+    }
+
+    #[test]
+    fn full_screen_and_maximized_windows_keep_the_size_to_come_back_to() {
+        let context = egui::Context::default();
+        let frame = |size: egui::Vec2, maximized: bool, fullscreen: bool| {
+            let mut input = egui::RawInput::default();
+            let viewport = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+            viewport.inner_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+            viewport.maximized = Some(maximized);
+            viewport.fullscreen = Some(fullscreen);
+            context.run_ui(input, |_| {}).drop_without_applying_deltas();
+        };
+        let mut settings = Settings::default();
+        settings.window.width = 1_000.0;
+        settings.window.height = 700.0;
+        let mut desktop = DesktopApp::with_context(&context, true, settings);
+        let window = |desktop: &DesktopApp| desktop.app.settings().window;
+
+        // Full screen changes nothing that is remembered.
+        frame(egui::vec2(1_512.0, 982.0), false, true);
+        desktop.remember_window_size(&context);
+        assert_eq!(
+            (
+                window(&desktop).width,
+                window(&desktop).height,
+                window(&desktop).maximized
+            ),
+            (1_000.0, 700.0, false)
+        );
+
+        frame(egui::vec2(1_512.0, 945.0), true, false);
+        desktop.remember_window_size(&context);
+        if cfg!(target_os = "macos") {
+            // A zoomed Mac window is remembered as the frame it has.
+            assert!(!window(&desktop).maximized);
+            assert_eq!(window(&desktop).width, 1_512.0);
+        } else {
+            assert!(window(&desktop).maximized);
+            assert_eq!(
+                (window(&desktop).width, window(&desktop).height),
+                (1_000.0, 700.0)
+            );
+        }
+
+        frame(egui::vec2(1_100.0, 750.0), false, false);
+        desktop.remember_window_size(&context);
+        assert!(!window(&desktop).maximized);
+        assert_eq!(
+            (window(&desktop).width, window(&desktop).height),
+            (1_100.0, 750.0)
+        );
     }
 
     #[test]
@@ -1927,6 +2017,7 @@ mod tests {
         let old = Window {
             width: 1_300.0,
             height: 900.0,
+            ..Window::default()
         };
         context
             .run_ui(input(egui::vec2(old.width, old.height)), |_| {})
