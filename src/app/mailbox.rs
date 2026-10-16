@@ -107,7 +107,18 @@ pub enum ListStatus {
     Refreshing(RequestId),
     LoadingMore(RequestId),
     Loaded,
-    Failed(MailboxError),
+    Failed(MailboxError, ListAttempt),
+}
+
+/// What a list request that failed asked for, so trying again asks the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListAttempt {
+    /// The folder's first page, on opening or refreshing it.
+    Folder,
+    /// The next page of the folder or of the search results.
+    More,
+    /// A server search.
+    Search,
 }
 
 /// One server search: what was asked, and what came back. Results replace the
@@ -604,7 +615,12 @@ impl Mailbox {
                 None
             }
             Err(error) => {
-                self.status = ListStatus::Failed(error);
+                let attempt = if request.page > 0 {
+                    ListAttempt::More
+                } else {
+                    ListAttempt::Search
+                };
+                self.status = ListStatus::Failed(error, attempt);
                 Some(error)
             }
         }
@@ -619,7 +635,7 @@ impl Mailbox {
             self.status = ListStatus::Loaded;
         }
         self.search_request = None;
-        if matches!(self.status, ListStatus::Failed(_)) {
+        if matches!(self.status, ListStatus::Failed(..)) {
             self.status = ListStatus::Loaded;
         }
         self.recompute_visible();
@@ -1639,7 +1655,12 @@ impl Mailbox {
                 if !append {
                     self.active_dirty = true;
                 }
-                self.status = ListStatus::Failed(error);
+                let attempt = if append {
+                    ListAttempt::More
+                } else {
+                    ListAttempt::Folder
+                };
+                self.status = ListStatus::Failed(error, attempt);
                 Some(error)
             }
         }

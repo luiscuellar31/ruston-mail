@@ -78,6 +78,10 @@ at the top stays at the top, including on startup. If the open message's row is
 temporarily absent, its content stays visible; row actions become available again
 when that row returns.
 
+If a refresh, **Load more**, or a search fails while conversations are listed, a
+line above them says so; **Try again** repeats what failed, so after a failed
+search it searches again rather than reloading the folder.
+
 ## Reading and organizing
 
 Messages in a conversation appear oldest first. The newest message and any you

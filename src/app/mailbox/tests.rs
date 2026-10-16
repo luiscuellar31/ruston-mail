@@ -372,6 +372,34 @@ fn viewing(view: Folder) -> Mailbox {
 }
 
 #[test]
+fn a_failure_remembers_what_it_asked_for() {
+    let mut mailbox = loaded_inbox(&["a"], 100);
+    let refresh = mailbox.refresh(3).unwrap();
+    mailbox.finish_page(refresh.id, Err(MailboxError::Connection));
+    assert_eq!(
+        mailbox.status(),
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Folder)
+    );
+
+    let mut mailbox = loaded_inbox(&["a"], 100);
+    let more = mailbox.load_more(3).unwrap();
+    mailbox.finish_page(more.id, Err(MailboxError::Service));
+    assert_eq!(
+        mailbox.status(),
+        ListStatus::Failed(MailboxError::Service, ListAttempt::More)
+    );
+
+    let mut mailbox = searchable_mailbox();
+    mailbox.set_search_query("rust".into());
+    let search = mailbox.start_search(3).unwrap();
+    mailbox.finish_search(&search, Err(MailboxError::Connection));
+    assert_eq!(
+        mailbox.status(),
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Search)
+    );
+}
+
+#[test]
 fn mail_moved_to_another_folder_stays_under_its_star_or_label() {
     let invoices = Folder::custom("kZ9", "Invoices");
     for view in [sys(MailFolder::Starred), Folder::label("wN2", "Receipts")] {
@@ -962,7 +990,7 @@ fn loading_then_error() {
     assert_eq!(error, Some(MailboxError::Connection));
     assert_eq!(
         mailbox.status(),
-        ListStatus::Failed(MailboxError::Connection)
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Folder)
     );
     assert!(mailbox.conversations().is_empty());
 }
@@ -1433,7 +1461,10 @@ fn failed_refresh_keeps_previous_list() {
     mailbox.finish_page(request.id, Err(MailboxError::Service));
 
     assert_eq!(ids(&mailbox), ["a"]);
-    assert_eq!(mailbox.status(), ListStatus::Failed(MailboxError::Service));
+    assert_eq!(
+        mailbox.status(),
+        ListStatus::Failed(MailboxError::Service, ListAttempt::Folder)
+    );
 }
 
 #[test]

@@ -90,8 +90,11 @@ pub(super) fn show(
         ReaderState::Loading { .. } => conversation_skeleton(ui, view, state),
         ReaderState::Failed { error, .. } => {
             theme::centered_group(ui, |ui| {
-                ui.label(error.conversation_message());
-                if ui.button("Retry").clicked() {
+                ui.label(
+                    egui::RichText::new(error.conversation_message())
+                        .color(theme::colors(ui).danger),
+                );
+                if ui.button("Try again").clicked() {
                     messages.push(Message::RetryConversation);
                 }
             });

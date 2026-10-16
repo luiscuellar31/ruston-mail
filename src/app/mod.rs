@@ -37,7 +37,7 @@ pub use layout::{
 };
 use mailbox::ActionStart;
 pub use mailbox::{
-    ActionRequest, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
+    ActionRequest, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
 };
 use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};

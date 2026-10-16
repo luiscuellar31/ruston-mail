@@ -4,10 +4,10 @@ use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, S
 
 use super::{UiState, UndoNotice, compose, reader, settings, theme};
 use crate::app::{
-    App, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, UndoMove, compact_layout, panel_ratios,
-    panel_widths,
+    App, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, UndoMove, compact_layout,
+    panel_ratios, panel_widths,
 };
-use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder};
+use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError};
 use crate::settings::{ComposePlacement, Panels, Settings};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
@@ -557,28 +557,88 @@ fn conversation_pane(
     ui.add_space(4.0);
 
     let empty = mailbox.is_empty_visible();
+    let muted = theme::colors(ui).muted;
     match (mailbox.status(), empty) {
         (ListStatus::Loading(_), _) => conversation_skeleton(ui),
-        (ListStatus::Failed(error), true) => {
-            centered(ui, error.message());
-            if ui.button("Try again").clicked() {
-                messages.push(Message::RefreshMailbox);
-            }
-        }
-        (_, true) if mailbox.search_results().is_some() => {
-            centered(ui, "Proton found no mail matching that.");
-        }
-        (_, true) if mailbox.is_searching() => {
-            centered(ui, "No matches in the conversations loaded so far.");
+        (ListStatus::Failed(error, attempt), true) => empty_state(ui, |ui| {
+            state_message(ui, error.message(), theme::colors(ui).danger);
+            try_again(ui, attempt, messages);
+        }),
+        (_, true) if mailbox.search_results().is_some() => empty_state(ui, |ui| {
+            state_message(ui, "Proton found no mail matching that.", muted);
+        }),
+        (_, true) if mailbox.is_searching() => empty_state(ui, |ui| {
+            state_message(ui, "No matches in the conversations loaded so far.", muted);
             detail(ui, "Press Enter to search all of your mail.");
             load_more(ui, mailbox, messages);
+        }),
+        (_, true) => empty_state(ui, |ui| {
+            let message = format!("No conversations in {}.", mailbox.folder().name());
+            state_message(ui, &message, muted);
+        }),
+        (status, false) => {
+            // With rows on screen a failure would leave no trace in the list.
+            if let ListStatus::Failed(error, attempt) = status {
+                failure_line(ui, error, attempt, messages);
+            }
+            conversation_list(ui, mailbox, state, messages);
         }
-        (_, true) => centered(
-            ui,
-            &format!("No conversations in {}.", mailbox.folder().name()),
-        ),
-        _ => conversation_list(ui, mailbox, state, messages),
     }
+}
+
+/// A list with nothing to show: what happened, centered, with anything that
+/// can be done about it under it.
+fn empty_state(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(24.0);
+    ui.vertical_centered(content);
+}
+
+fn state_message(ui: &mut egui::Ui, text: &str, color: Color32) {
+    ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
+}
+
+/// Asks again for what failed: the folder, its next page, or the search.
+fn try_again(ui: &mut egui::Ui, attempt: ListAttempt, messages: &mut Vec<Message>) {
+    if ui.add(theme::compact_button("Try again")).clicked() {
+        messages.push(match attempt {
+            ListAttempt::Folder => Message::RefreshMailbox,
+            ListAttempt::More => Message::LoadMoreConversations,
+            ListAttempt::Search => Message::SearchSubmitted,
+        });
+    }
+}
+
+/// One quiet line above rows that a failed request left in place.
+fn failure_line(
+    ui: &mut egui::Ui,
+    error: MailboxError,
+    attempt: ListAttempt,
+    messages: &mut Vec<Message>,
+) {
+    // A password store to unlock needs its explanation; any other failure
+    // keeps it for the tooltip.
+    let text = if error == MailboxError::SessionUnavailable {
+        error.message()
+    } else {
+        match attempt {
+            ListAttempt::Folder => "Couldn't refresh.",
+            ListAttempt::More => "Couldn't load more.",
+            ListAttempt::Search => "The search failed.",
+        }
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .small()
+                    .color(theme::colors(ui).danger),
+            )
+            .wrap(),
+        )
+        .on_hover_text(error.message());
+        try_again(ui, attempt, messages);
+    });
+    ui.add_space(4.0);
 }
 
 const UNDO_NOTICE_SECONDS: f64 = 6.0;
@@ -1043,13 +1103,6 @@ fn load_more(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) 
     {
         messages.push(Message::LoadMoreConversations);
     }
-}
-
-fn centered(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(24.0);
-    ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new(text).color(theme::colors(ui).muted));
-    });
 }
 
 pub(super) fn detail(ui: &mut egui::Ui, text: &str) {
@@ -1574,6 +1627,97 @@ mod tests {
             total,
             inspect_candidates: Vec::new(),
         }
+    }
+
+    /// Draws the list pane 320 pt wide, with a click at `click`, and answers
+    /// with its texts and what it asked for.
+    fn pane_frame(
+        context: &egui::Context,
+        mailbox: &Mailbox,
+        click: Option<egui::Pos2>,
+    ) -> (Vec<(String, egui::Rect)>, Vec<Message>) {
+        let events = click.map_or_else(Vec::new, |pos| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            vec![egui::Event::PointerMoved(pos), button(true), button(false)]
+        });
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_width(320.0);
+                conversation_pane(ui, mailbox, &mut UiState::default(), &mut messages);
+            },
+        );
+        let texts = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                // A centered galley is placed by its middle, so its rows
+                // are offset from `pos`.
+                egui::epaint::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        (texts, messages)
+    }
+
+    fn rect_of(texts: &[(String, egui::Rect)], wanted: &str) -> egui::Rect {
+        texts
+            .iter()
+            .find(|(text, _)| text == wanted)
+            .map(|(_, rect)| *rect)
+            .unwrap_or_else(|| panic!("missing {wanted}: {texts:?}"))
+    }
+
+    #[test]
+    fn an_empty_list_centers_its_message_and_what_can_be_done() {
+        let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+        mailbox.finish_page(first.id, Err(MailboxError::Connection));
+        let context = egui::Context::default();
+        theme::install(&context);
+
+        let (texts, _) = pane_frame(&context, &mailbox, None);
+        let message = rect_of(&texts, MailboxError::Connection.message());
+        let action = rect_of(&texts, "Try again");
+        assert!(
+            (message.center().x - action.center().x).abs() <= 1.0,
+            "{message:?} and {action:?} should share a center"
+        );
+
+        let (_, asked) = pane_frame(&context, &mailbox, Some(action.center()));
+        assert!(matches!(asked.as_slice(), [Message::RefreshMailbox]));
+    }
+
+    #[test]
+    fn a_search_that_fails_over_rows_says_so_and_tries_the_search_again() {
+        let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+        mailbox.finish_page(first.id, Ok(pagination_page(0, 3, 3)));
+        mailbox.set_search_query("p1".into());
+        let search = mailbox.start_search(3).unwrap();
+        mailbox.finish_search(&search, Err(MailboxError::Service));
+        let context = egui::Context::default();
+        theme::install(&context);
+
+        let (texts, _) = pane_frame(&context, &mailbox, None);
+        rect_of(&texts, "p1");
+        let line = rect_of(&texts, "The search failed.");
+        let action = rect_of(&texts, "Try again");
+        assert!(line.right() < action.left(), "the action follows the line");
+
+        let (_, asked) = pane_frame(&context, &mailbox, Some(action.center()));
+        assert!(matches!(asked.as_slice(), [Message::SearchSubmitted]));
     }
 
     #[test]

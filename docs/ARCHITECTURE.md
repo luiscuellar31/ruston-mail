@@ -167,7 +167,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   uses an ID-to-row index to move existing metadata into the new listing.
   Page responses preserve the open reader, including expansion and quote state.
   A server search submitted while a folder page loads waits for that page, so
-  the search does not turn the folder response into a stale one.
+  the search does not turn the folder response into a stale one. A failed list
+  request records what it asked for (`ListAttempt`: the folder, a next page or
+  a search), so the list's Try again sends the same request again.
   A refreshed listing can regroup a message or omit its row without proving
   deletion; the reader remains visible and loses its cache stamp if its row is
   absent. Typing in the search field keeps the reader open the same way, even
