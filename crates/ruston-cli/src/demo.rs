@@ -12,8 +12,8 @@ use ruston_core::mail::attachments::safe_attachment_name;
 use ruston_core::model::ConversationLabel;
 use ruston_core::model::enums::{label_ids, resolve_folder};
 use ruston_core::{
-    AddressInfo, Attachment, Contact, ContactEmail, Conversation, Error, Filter, FullMessage,
-    Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
+    AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
+    Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
 };
 use serde_json::json;
 
@@ -952,10 +952,11 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                         Error::Other(format!("demo conversation not found for id '{id}'"))
                     })?;
 
-                let conv_messages: Vec<FullMessage> = fixtures_messages
+                // Every demo message opens.
+                let conv_messages: Vec<_> = fixtures_messages
                     .into_iter()
                     .filter(|m| m.meta.conversation_id == conv.id)
-                    .map(|m| m.to_full())
+                    .map(|m| ConversationMessage::Opened(m.to_full()))
                     .collect();
 
                 render::conversation_read(ctx.json, &conv, &conv_messages);

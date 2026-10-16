@@ -10,9 +10,9 @@ use futures::channel::{mpsc, oneshot};
 use ruston_core::model::enums::{label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
-    Client, Conversation, Error, FullMessage, HvChallenge, HvResolver, Label, LabelCount,
-    LoginOptions, MessageMetadata, Recipient, RecipientProtection, SearchOpts, SendOptions,
-    TotpPrompt,
+    Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, HvResolver, Label,
+    LabelCount, LoginOptions, MessageMetadata, Recipient, RecipientProtection, SearchOpts,
+    SendOptions, TotpPrompt, UnreadableMessage, Verdict,
 };
 use secrecy::SecretString;
 
@@ -360,14 +360,15 @@ impl ProtonMailService {
     }
 
     /// Decrypts a conversation of about `message_count` messages oldest-first;
-    /// ruston-core sanitizes its HTML.
+    /// ruston-core sanitizes its HTML. A message that cannot be decrypted
+    /// stays in the thread without its body.
     pub async fn conversation_detail(
         &self,
         id: &str,
         message_count: u32,
     ) -> Result<ConversationDetail, MailboxError> {
         let (conversation, messages) = timed_with(
-            self.client.read_conversation(id),
+            self.client.read_conversation_each(id),
             conversation_deadline(message_count),
             MailboxError::Connection,
             map_mailbox_error,
@@ -386,7 +387,14 @@ impl ProtonMailService {
             labels,
             messages: messages
                 .into_iter()
-                .map(|message| mail_message(message, &self.own_addresses))
+                .map(|message| match message {
+                    ConversationMessage::Opened(message) => {
+                        mail_message(message, &self.own_addresses)
+                    }
+                    ConversationMessage::Unreadable(unreadable) => {
+                        unreadable_mail_message(unreadable, &self.own_addresses)
+                    }
+                })
                 .collect(),
         })
     }
@@ -893,9 +901,6 @@ fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
         attachments,
         reply_tos,
     } = message;
-    let own: Vec<String> = own.iter().cloned().collect();
-    let reply = ruston_core::reply_recipients(&meta, &reply_tos, &own);
-    let reply_redirected = ruston_core::reply_redirected(&meta, &reply_tos);
     let body = if ruston_core::html::is_html_mime(&mime_type) {
         MessageBody::Rich(html::parse(&body))
     } else {
@@ -910,6 +915,31 @@ fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
             .filter(|attachment| !attachment.is_inline())
             .map(mail_attachment)
             .collect(),
+        body,
+        verdict,
+        ..message_without_body(meta, &reply_tos, own)
+    }
+}
+
+/// A message that could not be decrypted keeps its headers, so it can still
+/// be answered.
+fn unreadable_mail_message(message: UnreadableMessage, own: &OwnAddresses) -> MailMessage {
+    message_without_body(message.meta, &message.reply_tos, own)
+}
+
+/// Who sent a message, to whom, when, and where an answer goes, with no
+/// body or attachments.
+fn message_without_body(
+    meta: MessageMetadata,
+    reply_tos: &[Recipient],
+    own: &OwnAddresses,
+) -> MailMessage {
+    let own: Vec<String> = own.iter().cloned().collect();
+    let reply = ruston_core::reply_recipients(&meta, reply_tos, &own);
+    let reply_redirected = ruston_core::reply_redirected(&meta, reply_tos);
+
+    MailMessage {
+        attachments: Vec::new(),
         sender: mail_address(&meta.sender),
         recipients: meta
             .to_list
@@ -922,8 +952,8 @@ fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
         reply_all_cc: reply.cc,
         reply_redirected,
         time: (meta.time > 0).then_some(meta.time),
-        body,
-        verdict,
+        body: MessageBody::Unreadable,
+        verdict: Verdict::Unverified,
         id: meta.id,
     }
 }
@@ -1182,6 +1212,40 @@ mod tests {
 
         assert_eq!(message.body, MessageBody::PlainText(body.into()));
         assert_eq!(message.time, None);
+    }
+
+    #[test]
+    fn an_unreadable_message_keeps_its_headers_and_reply_recipients() {
+        let meta = MessageMetadata {
+            id: "message".into(),
+            sender: person("Alex", "alex@example.com"),
+            to_list: vec![person("Demo", "demo@example.com")],
+            cc_list: vec![person("", "team@example.org")],
+            time: 1_700_000_000,
+            ..Default::default()
+        };
+        let own = OwnAddresses::from(["demo@example.com".to_owned()]);
+
+        let message = unreadable_mail_message(
+            UnreadableMessage {
+                meta,
+                reply_tos: vec![person("", "replies@example.com")],
+                error: Error::Crypto("body decrypt failed".into()),
+            },
+            &own,
+        );
+
+        assert_eq!(message.id, "message");
+        assert_eq!(message.body, MessageBody::Unreadable);
+        assert_eq!(message.verdict, Verdict::Unverified);
+        assert!(message.attachments.is_empty());
+        assert_eq!(message.sender.address, "alex@example.com");
+        assert_eq!(message.recipients.len(), 2);
+        // Answering still goes where core will send it.
+        assert_eq!(message.reply_to, ["replies@example.com"]);
+        assert_eq!(message.reply_all_cc, ["team@example.org"]);
+        assert!(message.reply_redirected);
+        assert_eq!(message.time, Some(1_700_000_000));
     }
 
     #[test]

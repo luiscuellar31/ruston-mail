@@ -11,7 +11,8 @@ use crate::app::{ConversationReader, Mailbox, Message, PendingLink, ReaderState}
 use crate::downloads::SaveError;
 use crate::mail::{
     BlockKind, ConversationSummary, CustomKind, Folder, MailAction, MailAddress, MailAttachment,
-    MailFolder, MailMessage, MessageBody, RichBlock, RichBody, RichSpan, Verdict,
+    MailFolder, MailMessage, MessageBody, RichBlock, RichBody, RichSpan, UNREADABLE_NOTICE,
+    Verdict,
 };
 use crate::settings::Reading;
 
@@ -589,6 +590,20 @@ fn signature_status(ui: &egui::Ui, verdict: Verdict) -> (theme::Icon, &'static s
     }
 }
 
+/// What the header says about the text: its signature, or that there is no
+/// text to check.
+fn message_status(ui: &egui::Ui, message: &MailMessage) -> (theme::Icon, &'static str, Color32) {
+    if matches!(message.body, MessageBody::Unreadable) {
+        (
+            theme::Icon::Unlock,
+            "Message could not be decrypted",
+            theme::colors(ui).muted,
+        )
+    } else {
+        signature_status(ui, message.verdict)
+    }
+}
+
 /// The whole header is one disclosure control. Copy selection is enabled only
 /// below it, so clicking a sender or preview reliably expands the message.
 fn message_header(
@@ -611,7 +626,7 @@ fn message_header(
     let identity_top =
         copy_rect.left_top() + egui::vec2(0.0, if separate_address { 20.0 } else { 0.0 });
     let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
-    let (icon, status, color) = signature_status(ui, message.verdict);
+    let (icon, status, color) = message_status(ui, message);
     egui::Image::new(icon.source())
         .tint(color)
         .paint_at(ui, icon_rect);
@@ -853,6 +868,13 @@ fn message_body(
             );
         }
         MessageBody::Rich(body) => rich_body(ui, body, &message.id, reader, reading, messages),
+        MessageBody::Unreadable => {
+            ui.label(
+                egui::RichText::new(UNREADABLE_NOTICE)
+                    .size(BODY_SIZE)
+                    .color(theme::colors(ui).danger),
+            );
+        }
     }
 }
 
@@ -1734,6 +1756,61 @@ mod tests {
             &context,
             &mailbox,
             &places,
+            Reading::default(),
+            &mut state,
+            click,
+        );
+        assert!(
+            matches!(messages.as_slice(), [Message::Answer { message_id, forward: false, everyone: false }] if message_id == "message-0")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_message_shows_a_notice_and_can_still_be_answered() {
+        let (mut mailbox, request, mut detail) = loading_reader("Message", Folder::INBOX, 1);
+        detail.messages[0].body = MessageBody::Unreadable;
+        mailbox.finish_conversation(&request, Ok(detail));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(540.0, 950.0),
+            )),
+            ..Default::default()
+        };
+
+        let (shapes, _) = reader_frame(
+            &context,
+            &mailbox,
+            &[],
+            Reading::default(),
+            &mut state,
+            input.clone(),
+        );
+        text_rect(&shapes, UNREADABLE_NOTICE);
+        let reply = text_rect(&shapes, "Reply").center();
+        let mut click = input;
+        click.events = vec![
+            egui::Event::PointerMoved(reply),
+            egui::Event::PointerButton {
+                pos: reply,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: reply,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ];
+        let (_, messages) = reader_frame(
+            &context,
+            &mailbox,
+            &[],
             Reading::default(),
             &mut state,
             click,

@@ -15,7 +15,7 @@ pub(crate) const INSPECTION_CONCURRENCY: usize = 4;
 pub use model::{
     BlockKind, ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder,
     IncomingMail, MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
-    MailboxError, MessageBody, RichBlock, RichBody, RichSpan, SummaryKind,
+    MailboxError, MessageBody, RichBlock, RichBody, RichSpan, SummaryKind, UNREADABLE_NOTICE,
 };
 pub use outgoing::{
     BodyFormat, Domains, InternationalDomain, Kind, Outgoing, Protection, ProtectionCheck,

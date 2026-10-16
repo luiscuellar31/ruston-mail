@@ -32,6 +32,28 @@ pub struct FullMessage {
     pub reply_tos: Vec<Recipient>,
 }
 
+/// One message of a conversation read with
+/// [`read_conversation_each`](Client::read_conversation_each).
+#[derive(Debug)]
+pub enum ConversationMessage {
+    /// The message opened.
+    Opened(FullMessage),
+    /// The message downloaded but could not be opened.
+    Unreadable(UnreadableMessage),
+}
+
+/// A message of a conversation that downloaded but could not be opened, for
+/// example because no key the account holds decrypts it.
+#[derive(Debug)]
+pub struct UnreadableMessage {
+    /// Message metadata (headers, flags, labels).
+    pub meta: MessageMetadata,
+    /// The Reply-To addresses the message asks replies to go to, if any.
+    pub reply_tos: Vec<Recipient>,
+    /// Why the message could not be opened.
+    pub error: Error,
+}
+
 /// Search options.
 #[derive(Debug, Default, Clone)]
 pub struct SearchOpts {
@@ -272,7 +294,28 @@ impl Client {
     }
 
     /// Fetch a conversation and decrypt all of its messages (oldest first).
+    /// Fails if any message cannot be opened; see
+    /// [`read_conversation_each`](Self::read_conversation_each) to keep the others.
     pub async fn read_conversation(&self, id: &str) -> Result<(Conversation, Vec<FullMessage>)> {
+        let (conv, messages) = self.read_conversation_each(id).await?;
+        let messages = messages
+            .into_iter()
+            .map(|message| match message {
+                ConversationMessage::Opened(message) => Ok(message),
+                ConversationMessage::Unreadable(unreadable) => Err(unreadable.error),
+            })
+            .collect::<Result<_>>()?;
+        Ok((conv, messages))
+    }
+
+    /// Fetch a conversation and decrypt each of its messages (oldest first).
+    /// A message that downloads but cannot be opened comes back as
+    /// [`ConversationMessage::Unreadable`], and the rest still open. A failed
+    /// request still fails the whole read.
+    pub async fn read_conversation_each(
+        &self,
+        id: &str,
+    ) -> Result<(Conversation, Vec<ConversationMessage>)> {
         let (conv, mut msgs) = api::conversations::get_conversation(self.http(), id).await?;
         msgs.sort_by_key(|m| m.meta.time);
         // The senders are known now: fetch their keys together up front.
@@ -280,7 +323,23 @@ impl Client {
         // Bodies download and decrypt at the same time, three of each at
         // most, and still come out in conversation order.
         let out = fetch_conversation_bodies(self.http(), msgs)
-            .map_ok(|message| self.open_message(message))
+            .map_ok(|message| async move {
+                let meta = message.meta.clone();
+                let reply_tos = message.reply_tos.clone();
+                Ok::<_, Error>(match self.open_message(message).await {
+                    Ok(message) => ConversationMessage::Opened(message),
+                    // A failed key lookup only leaves a body unverified, so a
+                    // failure to open is about this message alone.
+                    Err(error) => {
+                        tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message could not be opened");
+                        ConversationMessage::Unreadable(UnreadableMessage {
+                            meta,
+                            reply_tos,
+                            error,
+                        })
+                    }
+                })
+            })
             .try_buffered(CONVERSATION_BODY_FETCH_CONCURRENCY)
             .try_collect()
             .await?;
@@ -621,6 +680,100 @@ mod tests {
             "took {:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn an_undecryptable_message_leaves_the_rest_of_the_thread_readable() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let (client, address, public) = conversation_client(&server);
+        let messages = [
+            ("alice@example.org", 10),
+            ("bob@example.org", 20),
+            ("alice@example.org", 30),
+        ];
+        serve_conversation(&server, &address, &public, &messages, Duration::ZERO).await;
+        // The middle message is encrypted to a key this account does not hold.
+        let (_, stranger, _) = conversation_client(&server);
+        let body = crypto::encrypt_self_draft(&crypto::provider(), &stranger, "secret").unwrap();
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages/m1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000,
+                "Message": {
+                    "ID": "m1", "Time": 20, "AddressID": "address",
+                    "Sender": {"Address": "bob@example.org"}, "LabelIDs": ["0"],
+                    "ReplyTos": [{"Address": "replies@example.org"}],
+                    "Body": body, "MIMEType": "text/plain"
+                }
+            })))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        let (_, read) = client.read_conversation_each("c1").await.unwrap();
+
+        let [
+            ConversationMessage::Opened(first),
+            ConversationMessage::Unreadable(unreadable),
+            ConversationMessage::Opened(third),
+        ] = &read[..]
+        else {
+            panic!("expected only the middle message to be unreadable");
+        };
+        assert_eq!(first.body, "body 0");
+        assert_eq!(unreadable.meta.id, "m1");
+        assert_eq!(unreadable.meta.sender.address, "bob@example.org");
+        assert_eq!(unreadable.reply_tos[0].address, "replies@example.org");
+        assert!(
+            matches!(unreadable.error, Error::Crypto(_)),
+            "{:?}",
+            unreadable.error
+        );
+        assert_eq!(third.body, "body 2");
+        // Reading the thread as a whole still reports the message it could not open.
+        assert!(matches!(
+            client.read_conversation("c1").await,
+            Err(Error::Crypto(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_body_download_still_fails_the_whole_thread() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        for status in [503, 401] {
+            let server = wiremock::MockServer::start().await;
+            let (client, address, public) = conversation_client(&server);
+            let messages = [("alice@example.org", 10), ("bob@example.org", 20)];
+            serve_conversation(&server, &address, &public, &messages, Duration::ZERO).await;
+            Mock::given(method("GET"))
+                .and(path("/mail/v4/messages/m1"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_json(serde_json::json!({"Code": status})),
+                )
+                .with_priority(1)
+                .mount(&server)
+                .await;
+
+            // A request that failed says nothing about the message, so it is
+            // never shown as one that could not be decrypted.
+            let Err(error) = client.read_conversation_each("c1").await else {
+                panic!("a failed download must fail the read");
+            };
+            if status == 401 {
+                assert!(matches!(error, Error::Unauthorized), "{error:?}");
+            } else {
+                assert!(
+                    matches!(&error, Error::Api(api) if api.http_status == 503),
+                    "{error:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

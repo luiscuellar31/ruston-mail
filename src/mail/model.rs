@@ -200,6 +200,9 @@ impl MailAddress {
     }
 }
 
+/// What the reader shows in place of a message it could not decrypt.
+pub const UNREADABLE_NOTICE: &str = "Ruston Mail could not decrypt this message.";
+
 /// A message body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageBody {
@@ -207,6 +210,9 @@ pub enum MessageBody {
     /// Structure and inline styles taken from an HTML body. Nothing in it
     /// runs scripts or loads remote content.
     Rich(RichBody),
+    /// The message downloaded but could not be decrypted, so there is no
+    /// body to show.
+    Unreadable,
 }
 
 impl MessageBody {
@@ -215,6 +221,7 @@ impl MessageBody {
         match self {
             Self::PlainText(text) => text.clone(),
             Self::Rich(rich) => rich.plain_text(),
+            Self::Unreadable => String::new(),
         }
     }
 }

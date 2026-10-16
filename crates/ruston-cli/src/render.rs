@@ -8,8 +8,8 @@ use std::borrow::Cow;
 use crate::cli::ReadFormat;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{
-    AddressInfo, Attachment, Contact, ContactEmail, Conversation, Filter, FullMessage, Label,
-    LabelCount, MessageMetadata, Recipient,
+    AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Filter,
+    FullMessage, Label, LabelCount, MessageMetadata, Recipient,
 };
 use serde_json::json;
 
@@ -242,19 +242,50 @@ fn displayed_body<'a>(body: &'a str, mime_type: &str, format: ReadFormat) -> Cow
     }
 }
 
-pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[FullMessage]) {
-    if json {
-        // Borrowed, not copied into a `json!` value: a thread holds every
-        // message's body.
-        #[derive(serde::Serialize)]
-        struct Thread<'a> {
-            conversation: &'a Conversation,
-            messages: &'a [FullMessage],
+/// A conversation as `--json` writes it. Borrowed, not copied into a `json!`
+/// value: a thread holds every message's body.
+#[derive(serde::Serialize)]
+struct Thread<'a> {
+    conversation: &'a Conversation,
+    messages: Vec<ThreadMessage<'a>>,
+}
+
+/// An opened message is written as before; one that could not be opened
+/// keeps its headers and says why, with no body.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum ThreadMessage<'a> {
+    Opened(&'a FullMessage),
+    Unreadable {
+        meta: &'a MessageMetadata,
+        reply_tos: &'a [Recipient],
+        error: String,
+    },
+}
+
+impl<'a> Thread<'a> {
+    fn new(conversation: &'a Conversation, messages: &'a [ConversationMessage]) -> Self {
+        let messages = messages
+            .iter()
+            .map(|message| match message {
+                ConversationMessage::Opened(message) => ThreadMessage::Opened(message),
+                ConversationMessage::Unreadable(unreadable) => ThreadMessage::Unreadable {
+                    meta: &unreadable.meta,
+                    reply_tos: &unreadable.reply_tos,
+                    error: unreadable.error.to_string(),
+                },
+            })
+            .collect();
+        Self {
+            conversation,
+            messages,
         }
-        json_out(&Thread {
-            conversation: conv,
-            messages: msgs,
-        });
+    }
+}
+
+pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[ConversationMessage]) {
+    if json {
+        json_out(&Thread::new(conv, msgs));
         return;
     }
     terminal::println!("Conversation: {}", subject_or_empty(&conv.subject));
@@ -265,11 +296,23 @@ pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[FullMessage]) 
     );
     terminal::println!("Id: {}", conv.id);
     for (i, m) in msgs.iter().enumerate() {
+        terminal::println!("\n--- message {}/{} ---", i + 1, msgs.len());
+        let m = match m {
+            ConversationMessage::Opened(m) => m,
+            ConversationMessage::Unreadable(unreadable) => {
+                print_message_header(&unreadable.meta, "not decrypted", "-");
+                terminal::println!();
+                terminal::println!(
+                    "(This message could not be decrypted: {})",
+                    unreadable.error
+                );
+                continue;
+            }
+        };
         let verdict = serde_json::to_string(&m.verdict)
             .ok()
             .map(|s| s.trim_matches('"').to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        terminal::println!("\n--- message {}/{} ---", i + 1, msgs.len());
         print_message_header(&m.meta, &verdict, &m.mime_type);
         terminal::println!();
         terminal::print!("{}", m.body);
@@ -395,5 +438,45 @@ mod tests {
         assert_eq!(label_name("16"), "snoozed");
         // Unknown / custom label ids pass through unchanged.
         assert_eq!(label_name("custom-xyz"), "custom-xyz");
+    }
+
+    #[test]
+    fn an_unreadable_thread_message_says_why_and_has_no_body() {
+        let opened = FullMessage {
+            meta: MessageMetadata {
+                id: "m0".into(),
+                ..Default::default()
+            },
+            body: "Hello".into(),
+            mime_type: "text/plain".into(),
+            verdict: ruston_core::Verdict::Verified,
+            attachments: Vec::new(),
+            reply_tos: Vec::new(),
+        };
+        let conversation = Conversation::default();
+        let messages = [
+            ConversationMessage::Opened(opened.clone()),
+            ConversationMessage::Unreadable(ruston_core::UnreadableMessage {
+                meta: MessageMetadata {
+                    id: "m1".into(),
+                    ..Default::default()
+                },
+                reply_tos: Vec::new(),
+                error: ruston_core::Error::Crypto("body decrypt failed".into()),
+            }),
+        ];
+
+        let json = serde_json::to_value(Thread::new(&conversation, &messages)).unwrap();
+
+        // An opened message is written exactly as before.
+        assert_eq!(json["messages"][0], serde_json::to_value(&opened).unwrap());
+        let unreadable = &json["messages"][1];
+        assert_eq!(unreadable["meta"]["ID"], "m1");
+        assert!(
+            unreadable["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("body decrypt failed"))
+        );
+        assert!(unreadable.get("body").is_none());
     }
 }

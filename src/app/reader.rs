@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use crate::mail::{ConversationDetail, Folder, MailboxError, MessageBody};
+use crate::mail::{ConversationDetail, Folder, MailboxError, MessageBody, UNREADABLE_NOTICE};
 use crate::settings::Reading;
 
 /// How much of a message its collapsed header stands in for.
@@ -139,6 +139,7 @@ fn preview(body: &MessageBody) -> String {
     let text = match body {
         MessageBody::PlainText(content) => Cow::Borrowed(content.as_str()),
         MessageBody::Rich(rich) => Cow::Owned(rich.plain_text()),
+        MessageBody::Unreadable => Cow::Borrowed(UNREADABLE_NOTICE),
     };
     text.split_whitespace()
         .take(PREVIEW_WORDS)
@@ -219,6 +220,13 @@ mod tests {
         assert_eq!(reader.preview_at(2), "Hello there again");
         // A position the conversation does not carry has nothing to show.
         assert_eq!(reader.preview_at(3), "");
+    }
+
+    #[test]
+    fn an_unreadable_message_previews_its_notice() {
+        let reader = reader(vec![saying("locked", MessageBody::Unreadable)]);
+
+        assert_eq!(reader.preview_at(0), UNREADABLE_NOTICE);
     }
 
     fn order(reader: &ConversationReader) -> Vec<&str> {

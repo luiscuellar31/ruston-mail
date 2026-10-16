@@ -282,7 +282,9 @@ unsigned or unverified bodies, and a danger-colored warning for invalid
 signatures.
 Hover text and accessibility labels explain the verdict. The sender's domain
 does not determine the icon. This verdict applies to the body alone, not its
-attachments.
+attachments. A message core could not decrypt keeps its headers and reply
+recipients with an `Unreadable` body: the reader shows a notice in place of the
+text, and the header says the message could not be decrypted.
 Loading and loaded readers share the scroll container, bounded column, heading,
 and toolbar layout. Loading uses the listing's subject and message count and
 disables actions; unknown message fields remain skeletons. Skeletons and the
@@ -473,7 +475,11 @@ instead of an unknown outcome.
   first, so each sender is looked up once and no body waits for another's
   lookup. Decrypting, MIME parsing and sanitizing run on the blocking pool, up
   to three bodies at a time while the next ones download; attachment
-  decryption and signature checks run there too.
+  decryption and signature checks run there too. Both frontends read threads
+  through `read_conversation_each`: a message that downloads but cannot be
+  opened comes back as `ConversationMessage::Unreadable`, with its headers,
+  and the rest still open. A failed request still fails the whole read, and
+  `read_conversation` keeps failing on any message it cannot open.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
   owns the filename policy shared by both frontends. Each frontend chooses its
   destination and creates the file exclusively. Core can pass decrypted

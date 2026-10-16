@@ -28,7 +28,7 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
             render::conversations_list(ctx.json, convs.len() as u32, &convs);
         }
         ConversationsCmd::Read { id } => {
-            let (conv, msgs) = client.read_conversation(&id).await?;
+            let (conv, msgs) = client.read_conversation_each(&id).await?;
             render::conversation_read(ctx.json, &conv, &msgs);
         }
         ConversationsCmd::Move { ids, dest } => {
