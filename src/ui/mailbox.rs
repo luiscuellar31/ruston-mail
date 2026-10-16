@@ -262,13 +262,15 @@ fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &m
     }
     ui.add_space(12.0);
 
+    // Settings covers the mail panes, so it alone shows as chosen.
+    let current = (!app.showing_settings()).then(|| mailbox.folder());
     for folder in MailFolder::ALL.into_iter().map(Folder::System).chain(
         app.folders()
             .iter()
             .filter(|folder| folder.kind() == Some(CustomKind::Folder))
             .cloned(),
     ) {
-        folder_button(ui, mailbox, folder, messages);
+        folder_button(ui, mailbox, current, folder, messages);
     }
 
     let labels: Vec<_> = app
@@ -281,7 +283,7 @@ fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &m
         ui.add_space(14.0);
         detail(ui, "LABELS");
         for label in labels {
-            folder_button(ui, mailbox, label, messages);
+            folder_button(ui, mailbox, current, label, messages);
         }
     }
 }
@@ -355,7 +357,6 @@ fn settings_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
 
 const NEW_MESSAGE_LABEL_ID: &str = "new-message-label";
 const FOLDER_NAME_ATOM_ID: &str = "folder-name";
-const SELECTED_FOLDER_TEXT_OFFSET: f32 = 0.45;
 
 fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
     let width = ui.available_width();
@@ -376,13 +377,16 @@ fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
     .inner
 }
 
+/// One place in the sidebar. `current` is the place to mark as chosen, if
+/// any.
 fn folder_button(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
+    current: Option<&Folder>,
     folder: Folder,
     messages: &mut Vec<Message>,
 ) {
-    let selected = &folder == mailbox.folder();
+    let selected = current == Some(&folder);
     let icon = folder_icon(&folder);
     let unread = mailbox
         .counts()
@@ -414,7 +418,19 @@ fn folder_button(
             .fill(theme::colors(ui).accent_soft)
             .stroke(Stroke::NONE);
     }
-    let layout = button.atom_ui(ui);
+    let layout = ui
+        .scope(|ui| {
+            // egui's grey hover is brighter than the soft violet of the
+            // selection; a place under the pointer gets a quieter tint of it.
+            let colors = theme::colors(ui);
+            let widgets = &mut ui.visuals_mut().widgets;
+            widgets.hovered.weak_bg_fill = colors.sidebar_hover;
+            widgets.hovered.bg_stroke = Stroke::NONE;
+            widgets.active.weak_bg_fill = colors.accent_soft;
+            widgets.active.bg_stroke = Stroke::NONE;
+            button.atom_ui(ui)
+        })
+        .inner;
     let icon_color = if icon == theme::Icon::Label {
         theme::ACCENT
     } else if selected {
@@ -424,15 +440,18 @@ fn folder_button(
     };
     theme::paint_atom_icon(ui, &layout, icon, icon_color);
     if selected && let Some(rect) = layout.rect(egui::Id::new(FOLDER_NAME_ATOM_ID)) {
+        // The bundled font has one weight. A second pass one physical pixel
+        // to the right reads as bold at every display density.
+        let offset = 1.0 / ui.ctx().pixels_per_point();
         let painter = ui.painter().with_clip_rect(rect);
         theme::paint_truncated_text_aligned(
             &painter,
-            rect.left_center() + egui::vec2(SELECTED_FOLDER_TEXT_OFFSET, 0.0),
+            rect.left_center() + egui::vec2(offset, 0.0),
             Align2::LEFT_CENTER,
             folder.name(),
             egui::TextStyle::Button.resolve(ui.style()),
             theme::colors(ui).selected_folder_text,
-            rect.width() - SELECTED_FOLDER_TEXT_OFFSET,
+            rect.width() - offset,
         );
     }
     let response = layout.response;
@@ -2145,7 +2164,13 @@ mod tests {
             let context = egui::Context::default();
             let mut output = context.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(240.0);
-                folder_button(ui, &mailbox, Folder::INBOX, &mut Vec::new());
+                folder_button(
+                    ui,
+                    &mailbox,
+                    Some(mailbox.folder()),
+                    Folder::INBOX,
+                    &mut Vec::new(),
+                );
             });
             let count = output
                 .shapes
@@ -2157,6 +2182,98 @@ mod tests {
         };
 
         assert_eq!(render(true), render(false) + 1);
+    }
+
+    /// The fills of every rectangle in one pass's shapes.
+    fn rect_fills(output: &egui::FullOutput) -> Vec<(Color32, Stroke)> {
+        fn collect(shape: &egui::epaint::Shape, found: &mut Vec<(Color32, Stroke)>) {
+            match shape {
+                egui::epaint::Shape::Rect(rect) => found.push((rect.fill, rect.stroke)),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut found);
+        }
+        found
+    }
+
+    #[test]
+    fn a_folder_under_the_pointer_takes_a_quiet_tint() {
+        for appearance in [
+            crate::settings::Appearance::Dark,
+            crate::settings::Appearance::Light,
+        ] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            theme::apply(&context, appearance);
+            let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+            let drafts = Folder::System(MailFolder::Drafts);
+            let render = |input| {
+                let mut place = egui::Rect::NOTHING;
+                let mut tint = Color32::PLACEHOLDER;
+                let output = context.run_ui(input, |ui| {
+                    ui.set_width(240.0);
+                    tint = theme::colors(ui).sidebar_hover;
+                    folder_button(
+                        ui,
+                        &mailbox,
+                        Some(mailbox.folder()),
+                        drafts.clone(),
+                        &mut Vec::new(),
+                    );
+                    place = ui.min_rect();
+                });
+                let fills = rect_fills(&output);
+                output.drop_without_applying_deltas();
+                (place, fills, tint)
+            };
+
+            let (place, fills, tint) = render(egui::RawInput::default());
+            assert!(
+                !fills.iter().any(|(fill, _)| *fill == tint),
+                "{appearance:?}"
+            );
+            let hover = || egui::RawInput {
+                events: vec![egui::Event::PointerMoved(place.center())],
+                ..Default::default()
+            };
+            render(hover());
+            let (_, fills, _) = render(hover());
+            assert!(
+                fills
+                    .iter()
+                    .any(|(fill, stroke)| *fill == tint && stroke.is_empty()),
+                "{appearance:?}: {fills:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_open_settings_page_leaves_no_folder_marked_as_chosen() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+        let render = |current| {
+            let mut soft = Color32::PLACEHOLDER;
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(240.0);
+                soft = theme::colors(ui).accent_soft;
+                folder_button(ui, &mailbox, current, Folder::INBOX, &mut Vec::new());
+            });
+            let marked = rect_fills(&output).iter().any(|(fill, _)| *fill == soft);
+            output.drop_without_applying_deltas();
+            marked
+        };
+
+        assert!(render(Some(mailbox.folder())));
+        assert!(!render(None));
     }
 
     #[test]
@@ -2227,7 +2344,13 @@ mod tests {
         context
             .run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(200.0);
-                folder_button(ui, &mailbox, label.clone(), &mut Vec::new());
+                folder_button(
+                    ui,
+                    &mailbox,
+                    Some(mailbox.folder()),
+                    label.clone(),
+                    &mut Vec::new(),
+                );
                 used = ui.min_rect();
             })
             .drop_without_applying_deltas();

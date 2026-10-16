@@ -41,6 +41,9 @@ pub struct Colors {
     pub success: Color32,
     pub selected_folder_text: Color32,
     pub row_hover: Color32,
+    /// A sidebar place under the pointer: a tint of the selection, quieter
+    /// than it, so the open folder still reads as the chosen one.
+    pub sidebar_hover: Color32,
     pub quote_fill: Color32,
     pub code_fill: Color32,
     /// Normal text and controls at rest; egui's own grey is dimmer than
@@ -68,6 +71,7 @@ const DARK: Colors = Colors {
     success: Color32::from_rgb(105, 210, 160),
     selected_folder_text: Color32::WHITE,
     row_hover: Color32::from_rgb(28, 29, 36),
+    sidebar_hover: Color32::from_rgb(30, 29, 45),
     quote_fill: Color32::from_rgb(27, 28, 35),
     code_fill: Color32::from_rgb(18, 19, 24),
     text: Color32::from_rgb(220, 221, 230),
@@ -91,6 +95,7 @@ const LIGHT: Colors = Colors {
     success: Color32::from_rgb(23, 117, 76),
     selected_folder_text: Color32::from_rgb(64, 49, 150),
     row_hover: Color32::from_rgb(241, 240, 249),
+    sidebar_hover: Color32::from_rgb(237, 235, 248),
     quote_fill: Color32::from_rgb(246, 246, 250),
     code_fill: Color32::from_rgb(241, 242, 247),
     text: Color32::from_rgb(43, 45, 56),
@@ -1026,6 +1031,18 @@ mod tests {
                     "{mode:?} on {surface:?}: text {normal:.2}:1, secondary {secondary:.2}:1"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_hovered_sidebar_place_stays_quieter_than_the_open_one() {
+        for (mode, colors) in [(egui::Theme::Dark, DARK), (egui::Theme::Light, LIGHT)] {
+            let hover = contrast(colors.sidebar_hover, colors.sidebar);
+            let selection = contrast(colors.accent_soft, colors.sidebar);
+            assert!(
+                1.03 < hover && hover < selection,
+                "{mode:?}: hover {hover:.2}:1, selection {selection:.2}:1"
+            );
         }
     }
 
