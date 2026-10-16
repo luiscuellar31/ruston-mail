@@ -616,7 +616,10 @@ separately in `Ruston Mail`'s config directory. Core
 tokens as one keychain entry and the session's API address as another; loading
 rejects metadata whose address differs from it. Session writes and token refresh use a per-profile
 file lock. On a 401, another process's rotated tokens are reloaded before
-refreshing again; persistence errors still reach the request. That reload reads
+refreshing again; persistence errors still reach the request. The desktop
+reports them as a session it could not access and keeps the mailbox open,
+since unlocking the credential store fixes the next request; only an expired
+session signs it out, including one found while saving an attachment. That reload reads
 only the tokens and the bound API address, never the key passphrase. Once the refresh
 request is sent, the rotation finishes on a task of its own that holds both
 locks, so cancelling the request that needed it, through a view deadline or a

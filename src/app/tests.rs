@@ -2274,6 +2274,58 @@ fn expired_session_signs_out_and_clears_mailbox() {
 }
 
 #[test]
+fn a_session_that_cannot_be_read_keeps_the_mailbox_and_the_draft() {
+    let mut app = authenticated_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::Body,
+        "private draft".to_owned(),
+    ));
+
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Err(MailboxError::SessionUnavailable),
+    ));
+
+    // Unlocking the password storage fixes the next request.
+    assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
+    assert!(app.mailbox.is_some());
+    assert!(app.compose().is_some());
+}
+
+#[test]
+fn an_attachment_save_that_finds_the_session_expired_signs_out() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+
+    deliver_attachment(&mut app, Err(SaveError::SessionExpired));
+
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
+    assert!(app.mailbox.is_none());
+}
+
+#[test]
+fn a_failed_download_says_why_the_file_was_not_saved() {
+    for (error, saved) in [
+        (
+            MailboxError::AttachmentVerificationFailed,
+            SaveError::VerificationFailed,
+        ),
+        (MailboxError::SessionExpired, SaveError::SessionExpired),
+        (
+            MailboxError::SessionUnavailable,
+            SaveError::SessionUnavailable,
+        ),
+        (MailboxError::Connection, SaveError::NotFetched),
+        (MailboxError::Service, SaveError::NotFetched),
+        (MailboxError::Unavailable, SaveError::NotFetched),
+    ] {
+        assert_eq!(super::unsaved(error), saved);
+    }
+}
+
+#[test]
 fn stale_expired_session_response_is_ignored() {
     let mut app = authenticated_app();
 

@@ -435,10 +435,7 @@ impl App {
                         .await
                         .unwrap_or(Err(SaveError::Failed))
                     }
-                    Err(MailboxError::AttachmentVerificationFailed) => {
-                        Err(SaveError::VerificationFailed)
-                    }
-                    Err(_) => Err(SaveError::NotFetched),
+                    Err(error) => Err(unsaved(error)),
                 }
             },
             move |outcome| Message::AttachmentSaved(completion, outcome),
@@ -768,6 +765,11 @@ impl App {
                     return Effects::none();
                 }
                 self.saving_attachment = None;
+                // An expired session ends here as it does for any request.
+                if matches!(outcome, Err(SaveError::SessionExpired)) {
+                    self.handle_mailbox_error(Some(MailboxError::SessionExpired));
+                    return Effects::none();
+                }
                 // A save that landed after the session ended has nobody left
                 // to tell, and its news must not surface in the next one.
                 if self.mailbox.is_some() {
@@ -1480,9 +1482,24 @@ impl App {
         }
     }
 
+    /// Signs out when Proton ended the session. A session that could not be
+    /// read or saved only shows its message: unlocking the password storage
+    /// fixes the next request, and signing out would drop the draft.
     fn handle_mailbox_error(&mut self, error: Option<MailboxError>) {
         if error == Some(MailboxError::SessionExpired) {
             self.close_mailbox(Some(AuthError::SessionExpired));
+        }
+    }
+}
+
+/// Why an attachment that did not arrive was not saved.
+fn unsaved(error: MailboxError) -> SaveError {
+    match error {
+        MailboxError::AttachmentVerificationFailed => SaveError::VerificationFailed,
+        MailboxError::SessionExpired => SaveError::SessionExpired,
+        MailboxError::SessionUnavailable => SaveError::SessionUnavailable,
+        MailboxError::Connection | MailboxError::Service | MailboxError::Unavailable => {
+            SaveError::NotFetched
         }
     }
 }

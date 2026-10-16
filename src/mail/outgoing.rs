@@ -281,6 +281,10 @@ impl SendError {
             Self::Mailbox(MailboxError::SessionExpired) => Cow::Borrowed(
                 "Your Proton session has expired. Sign in again; the message was not sent.",
             ),
+            Self::Mailbox(MailboxError::SessionUnavailable) => Cow::Borrowed(
+                "Ruston Mail could not access the saved Proton session. Unlock your password \
+                 storage and try again; the message was not sent.",
+            ),
             Self::Mailbox(MailboxError::Service | MailboxError::Unavailable) => {
                 Cow::Borrowed("Proton would not accept the message. It was not sent.")
             }

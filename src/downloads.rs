@@ -22,6 +22,10 @@ pub enum SaveError {
     VerificationFailed,
     /// The explicitly selected destination already exists.
     AlreadyExists,
+    /// Proton ended the session before the file arrived.
+    SessionExpired,
+    /// The saved session could not be read or saved.
+    SessionUnavailable,
 }
 
 impl SaveError {
@@ -35,6 +39,13 @@ impl SaveError {
             }
             Self::VerificationFailed => {
                 "Ruston Mail could not verify this attachment's signature. The file was not saved."
+            }
+            Self::SessionExpired => {
+                "Your Proton session has expired. Sign in again; the file was not saved."
+            }
+            Self::SessionUnavailable => {
+                "Ruston Mail could not access the saved Proton session. Unlock your password \
+                 storage and try again; the file was not saved."
             }
         }
     }

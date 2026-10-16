@@ -430,16 +430,25 @@ impl MailAction {
 pub enum MailboxError {
     Connection,
     SessionExpired,
+    /// The saved session could not be read or saved, for example because
+    /// the system's password storage is locked. Unlocking it is enough, so
+    /// the mailbox stays open.
+    SessionUnavailable,
     Service,
     Unavailable,
     AttachmentVerificationFailed,
 }
+
+/// The saved session can be fixed in place, or replaced by signing in again.
+const SESSION_UNAVAILABLE: &str = "Ruston Mail could not access the saved Proton session. \
+    Unlock your password storage and try again, or sign in again.";
 
 impl MailboxError {
     pub fn message(self) -> &'static str {
         match self {
             Self::Connection => "Ruston Mail could not connect to Proton.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::SessionUnavailable => SESSION_UNAVAILABLE,
             Self::Service => "Proton Mail could not load this folder. Try again later.",
             Self::Unavailable => "Ruston Mail could not load this folder. Try again.",
             Self::AttachmentVerificationFailed => {
@@ -452,6 +461,7 @@ impl MailboxError {
         match self {
             Self::Connection => "Ruston Mail could not connect to load this conversation.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::SessionUnavailable => SESSION_UNAVAILABLE,
             Self::Service => "Proton Mail could not load this conversation. Try again later.",
             Self::Unavailable => "Ruston Mail could not load this conversation. Try again.",
             Self::AttachmentVerificationFailed => {
@@ -464,6 +474,7 @@ impl MailboxError {
         match self {
             Self::Connection => "Ruston Mail could not connect to update this conversation.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::SessionUnavailable => SESSION_UNAVAILABLE,
             Self::Service => "Proton Mail could not update this conversation. Try again later.",
             Self::Unavailable => "Ruston Mail could not update this conversation. Try again.",
             Self::AttachmentVerificationFailed => {

@@ -1009,6 +1009,9 @@ fn map_mailbox_error(error: Error) -> MailboxError {
         Error::Http(_) => MailboxError::Connection,
         Error::AttachmentVerificationFailed => MailboxError::AttachmentVerificationFailed,
         Error::Api(_) | Error::HumanVerification(_) => MailboxError::Service,
+        // Loading or saving the session while renewing its tokens: a locked
+        // password storage, or a session saved for another server.
+        Error::Session(_) => MailboxError::SessionUnavailable,
         _ => MailboxError::Unavailable,
     }
 }
@@ -1834,6 +1837,28 @@ mod tests {
 
         // Unknown to the sidebar means unknown to the counts.
         assert_eq!(map_counts(&counts, &[]).unread(&invoices), None);
+    }
+
+    #[test]
+    fn a_session_that_cannot_be_read_or_saved_is_named_as_such() {
+        for message in [
+            "keyring get: locked".to_owned(),
+            "keyring set: access denied".to_owned(),
+            format!("saved session {SESSION_ADDRESS_MISMATCH}"),
+        ] {
+            assert_eq!(
+                map_mailbox_error(Error::Session(message)),
+                MailboxError::SessionUnavailable
+            );
+        }
+        // Reading a file to attach has nothing to do with the session.
+        assert_eq!(
+            map_mailbox_error(Error::Io(std::io::Error::other("unreadable"))),
+            MailboxError::Unavailable
+        );
+        let sending = SendError::Mailbox(MailboxError::SessionUnavailable).message();
+        assert!(sending.contains("was not sent"), "{sending}");
+        assert!(!sending.contains("would not accept"), "{sending}");
     }
 
     #[test]

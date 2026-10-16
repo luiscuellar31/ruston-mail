@@ -204,7 +204,9 @@ The API address the session was created for is saved beside them. A session
 file that names a different address is not resumed; sign in again to replace
 it. Sessions saved before this record existed resume only on the default
 Proton API address.
-If the credential store rejects a token refresh, the request reports an error.
+If the credential store is locked or rejects a token refresh, the request
+reports that Ruston Mail could not access the saved session, and the desktop
+stays signed in so the next request can succeed once the store is unlocked.
 The new tokens remain in memory, but reopening the app may require signing in
 again.
 
