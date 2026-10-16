@@ -280,19 +280,30 @@ fn an_empty_query_leaves_the_results_behind() {
 }
 
 #[test]
-fn refreshing_drops_the_offer_to_undo() {
+fn a_refresh_keeps_the_offer_to_undo() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
     let request = mailbox
         .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4)
         .unwrap();
     let _ = mailbox.finish_action(&request, Ok(()));
+
+    // The moved row is already gone, so a reload changes nothing the offer
+    // describes.
+    let refresh = mailbox.refresh(5).unwrap();
+    assert!(mailbox.undo().is_some());
+    // The move back cannot start while the list loads, so the offer waits.
+    assert!(mailbox.take_undo().is_none());
     assert!(mailbox.undo().is_some());
 
-    // The reloaded list no longer shows what the offer talked about.
-    let _ = mailbox.refresh(5);
-
-    assert!(mailbox.undo().is_none());
+    mailbox.finish_page(refresh.id, page(&["b"], 1));
+    let undo = mailbox.take_undo().expect("the offer outlives the refresh");
+    assert_eq!(undo.row_id, "a");
+    assert!(
+        mailbox
+            .start_action_on(undo.row_id, undo.kind, MailAction::MoveTo(undo.from), 6)
+            .is_some()
+    );
 }
 
 #[test]

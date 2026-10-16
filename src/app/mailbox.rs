@@ -1049,8 +1049,13 @@ impl Mailbox {
         };
     }
 
-    /// Claims the offer, so it is made only once.
+    /// Claims the offer, so it is made only once. While the list loads or
+    /// another action runs, the move back could not start, so the offer
+    /// stays.
     pub fn take_undo(&mut self) -> Option<UndoMove> {
+        if self.is_busy() || self.action_pending() {
+            return None;
+        }
         self.undo.take()
     }
 
@@ -1306,12 +1311,12 @@ impl Mailbox {
         }
     }
 
+    /// Reloads the first page. The undo offer stays: the moved row is already
+    /// gone from the list, so a reload changes nothing the offer describes.
     pub fn refresh(&mut self, request: RequestId) -> Option<PageRequest> {
         if self.is_busy() {
             return None;
         }
-        // The reloaded list no longer shows what the offer talked about.
-        self.undo = None;
         // If a mutation completes after this request starts it sets this back
         // to true, and the app follows this response with one fresh request.
         self.active_dirty = false;
