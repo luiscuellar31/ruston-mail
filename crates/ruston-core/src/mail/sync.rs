@@ -210,11 +210,18 @@ where
                     )?;
                     n += 1;
                 }
-                Err(_) => {
-                    // A failed refresh must not keep an older body searchable.
+                // The message is gone or its body cannot be opened, so an
+                // older body must not stay searchable.
+                Err(error) if is_definitive_read_failure(&error) => {
                     cache
                         .borrow()
                         .store_index_result(cursor.as_deref(), meta, None)?;
+                }
+                // Anything else says nothing about the body, and would most
+                // likely fail the next read too: keep what is indexed and stop.
+                Err(error) => {
+                    tracing::info!(target: "ruston_core::sync", folder, indexed = n, error = %error, "local search indexing stopped");
+                    return Err(error);
                 }
             }
         }
@@ -224,6 +231,48 @@ where
     }
     tracing::info!(target: "ruston_core::sync", folder, indexed = n, "local search index built");
     Ok(n)
+}
+
+/// Proton's code for a message that does not exist.
+const MESSAGE_DOES_NOT_EXIST: i64 = 2501;
+/// Proton's code for an ID it does not accept.
+const INVALID_ID: i64 = 2061;
+/// Proton's code for a request that needs human verification.
+const HUMAN_VERIFICATION_REQUIRED: i64 = 9001;
+
+/// Whether reading a body failed because of the message itself: it is gone,
+/// or its body cannot be decrypted or parsed, so reading it again would fail
+/// the same way. A lost connection, an expired session or rate limiting says
+/// nothing about the body.
+fn is_definitive_read_failure(error: &Error) -> bool {
+    match error {
+        // Proton's own clients take a 422 for a full message as "gone".
+        Error::Api(api) => {
+            matches!(api.code, MESSAGE_DOES_NOT_EXIST | INVALID_ID)
+                || (api.http_status == 422 && api.code != HUMAN_VERIFICATION_REQUIRED)
+        }
+        Error::NotFound { .. }
+        | Error::Crypto(_)
+        | Error::Json(_)
+        | Error::ResponseTooLarge { .. }
+        // Only the decryption worker fails this way on a body read.
+        | Error::Other(_) => true,
+        Error::Unauthorized
+        | Error::HumanVerification(_)
+        | Error::Http(_)
+        | Error::Session(_)
+        | Error::Io(_)
+        | Error::Cache(_)
+        | Error::Srp(_) => false,
+        // A body read never fails these ways. Should that change, stop rather
+        // than drop bodies.
+        Error::AttachmentBatchTooLarge { .. }
+        | Error::AttachmentTooLarge { .. }
+        | Error::AttachmentUnavailable { .. }
+        | Error::AttachmentVerificationFailed
+        | Error::SendUnconfirmed { .. }
+        | Error::Ambiguous(_) => false,
+    }
 }
 
 fn cached_page(
@@ -342,8 +391,12 @@ impl Client {
 
     /// Build the local full-text search index: page a folder, decrypt each
     /// message body, and index it (bounded by `max_pages`).
-    /// Returns a retry error if sync changes the page's cursor before a result
-    /// is saved; previously committed messages remain indexed.
+    /// A message that is gone, or whose body cannot be decrypted, loses any
+    /// body indexed before. Any other failed read, such as a lost connection
+    /// or rate limiting, stops indexing with its error and leaves that
+    /// message as it was. Returns a retry error if sync changes the page's
+    /// cursor before a result is saved. Either way, previously committed
+    /// messages remain indexed.
     pub async fn index_folder(
         &self,
         folder: &str,
@@ -707,7 +760,7 @@ mod tests {
                             let permit = body_gate.acquire().await.unwrap();
                             permit.forget();
                             if failed_read {
-                                Err(Error::Other("download failed".into()))
+                                Err(Error::Crypto("body decrypt failed".into()))
                             } else {
                                 Ok(full_message(cached_message(&id)))
                             }
@@ -818,7 +871,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_index_read_atomically_refreshes_metadata_and_invalidates_body() {
+    async fn an_unreadable_body_atomically_refreshes_metadata_and_invalidates_it() {
         let cache = Cache::open(Path::new(":memory:")).unwrap();
         cache.set_last_event_id("old").unwrap();
         cache
@@ -832,7 +885,7 @@ mod tests {
         };
         assert_eq!(
             index_cache(&http, &cache, "inbox", 1, 10, |_| async {
-                Err(Error::Other("download failed".into()))
+                Err(Error::Crypto("body decrypt failed".into()))
             })
             .await
             .unwrap(),
@@ -841,6 +894,134 @@ mod tests {
         assert!(cache.search("oldbody", 10).unwrap().is_empty());
         assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].unread, 1);
         assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
+    }
+
+    #[tokio::test]
+    async fn index_stops_at_an_outage_but_drops_a_missing_message_s_body() {
+        let server = MockServer::start().await;
+        let mut listed_m1 = message("m1");
+        listed_m1["Unread"] = 1.into();
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3,
+                "Messages": [message("m0"), listed_m1, message("m2")]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages/m0"))
+            .respond_with(ResponseTemplate::new(422).set_body_json(
+                serde_json::json!({"Code": 2501, "Error": "Message does not exist"}),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages/m1"))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_json(serde_json::json!({"Code": 503})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages/m2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code": 1000, "Message": message("m2")})),
+            )
+            .mount(&server)
+            .await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        cache
+            .index_message(&cached_message("m0"), "goneoldbody")
+            .unwrap();
+        cache
+            .index_message(&cached_message("m1"), "keptoldbody")
+            .unwrap();
+
+        let result = index_cache(&http, &cache, "inbox", 1, 10, |id| {
+            let http = &http;
+            async move {
+                let message = api::messages::get_message(http, &id).await?;
+                Ok(full_message(message.meta))
+            }
+        })
+        .await;
+
+        assert!(
+            matches!(&result, Err(Error::Api(api)) if api.http_status == 503),
+            "{result:?}"
+        );
+        // The message Proton no longer has loses its body.
+        assert!(cache.search("goneoldbody", 10).unwrap().is_empty());
+        // The outage says nothing about m1: its body and metadata stay.
+        let kept = cache.search("keptoldbody", 10).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!((kept[0].id.as_str(), kept[0].unread), ("m1", 0));
+        // And indexing stopped there.
+        let cached: Vec<_> = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        assert!(!cached.contains(&"m2".to_owned()), "{cached:?}");
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn only_failures_about_the_message_itself_drop_its_body() {
+        let api = |http_status, code| {
+            Error::Api(crate::error::ApiError {
+                http_status,
+                code,
+                message: String::new(),
+                raw_body: String::new(),
+            })
+        };
+        let http = Error::from(
+            reqwest::Client::new()
+                .get("://invalid")
+                .build()
+                .unwrap_err(),
+        );
+        let challenge = crate::error::HvChallenge {
+            token: String::new(),
+            methods: Vec::new(),
+            web_url: String::new(),
+        };
+        for (error, definitive) in [
+            (api(422, 2501), true),
+            (api(404, 2501), true),
+            (api(422, 2061), true),
+            (api(422, 2001), true),
+            (
+                Error::NotFound {
+                    kind: "message".into(),
+                },
+                true,
+            ),
+            (Error::Crypto("body decrypt failed".into()), true),
+            (
+                Error::Json(serde_json::from_str::<()>("{").unwrap_err()),
+                true,
+            ),
+            (Error::ResponseTooLarge { limit: 1 }, true),
+            (Error::Other("decryption worker failed".into()), true),
+            (api(422, 9001), false),
+            (api(404, 0), false),
+            (api(429, 2028), false),
+            (api(503, 0), false),
+            (Error::Unauthorized, false),
+            (Error::HumanVerification(challenge), false),
+            (http, false),
+            (Error::Session("keyring get: locked".into()), false),
+            (Error::Io(std::io::Error::other("disk full")), false),
+        ] {
+            assert_eq!(is_definitive_read_failure(&error), definitive, "{error:?}");
+        }
     }
 
     #[tokio::test]

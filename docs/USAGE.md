@@ -353,4 +353,5 @@ original header; see [Privacy and local data](PRIVACY.md) for details.
 
 `index` builds an optional local search index for `search`. It stores
 decrypted message bodies in a SQLite database that Ruston Mail does not
-encrypt.
+encrypt. A network, session, or rate-limit failure stops `index` with an
+error and keeps what was already indexed; run it again to continue.

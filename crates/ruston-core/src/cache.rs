@@ -536,9 +536,10 @@ impl Cache {
         tx.commit().map_err(map)
     }
 
-    /// Commit a downloaded body, or invalidate a failed refresh, only while the
-    /// cursor captured before listing the page still matches. Both outcomes
-    /// update metadata and the body index atomically without changing the cursor.
+    /// Commit a downloaded body, or drop the body of a message that is gone
+    /// or cannot be opened, only while the cursor captured before listing the
+    /// page still matches. Both outcomes update metadata and the body index
+    /// atomically without changing the cursor.
     pub(crate) fn store_index_result(
         &self,
         expected_cursor: Option<&str>,

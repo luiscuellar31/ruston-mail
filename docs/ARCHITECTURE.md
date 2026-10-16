@@ -696,7 +696,9 @@ page request and retain it for all body downloads from that page. Before writing
 SQLite's immediate transaction checks that cursor, including an uninitialized
 cursor. A competing sync or resync causes a retry error without applying the
 stale result. Backfill commits each page atomically; indexing commits metadata
-and the body together, or metadata and body invalidation when a read fails.
+and the body together, or metadata and body invalidation when the message is
+gone or its body cannot be opened. Any other failed read stops indexing with
+its error and writes nothing for that message.
 No database transaction is held during a network request or decryption, and
 completed pages or messages remain cached if a later result is rejected.
 Initial cursor creation is also conditional. When Proton
