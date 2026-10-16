@@ -240,7 +240,9 @@ message reached.
 
 Messages can be sent as plain text or HTML. The editor remains plain text in
 both modes: text that looks like an HTML tag is sent as text, not executed as
-markup.
+markup. Recipients outside Proton who receive PGP-encrypted mail through a
+published key get an HTML message as plain text, since that kind of PGP mail
+carries text only; links keep their address in angle brackets.
 
 Ruston Mail does not save drafts, schedule messages, or offer self-destructing
 messages yet.
@@ -333,7 +335,8 @@ want a separate login; an existing CLI `default` session remains available with
 `--profile default`. `NAME` must be a single path component without separators.
 
 When sending from a terminal, the CLI asks before treating a body that looks
-like HTML as HTML. For scripts, pass `--html` explicitly.
+like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached
+through a published PGP key get an HTML body as plain text.
 
 Output can be piped into tools that stop reading early, such as `head`: the
 CLI then ends quietly with exit status 0.

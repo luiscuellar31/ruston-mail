@@ -276,7 +276,8 @@ pub struct SendOptions {
     pub subject: String,
     /// Message body content.
     pub body: String,
-    /// Whether the body is HTML (otherwise plain text).
+    /// Whether the body is HTML (otherwise plain text). PGP/Inline
+    /// recipients, who can only receive text, get a plain-text version.
     pub html: bool,
     /// Regular readable file paths to attach, limited to 32 MiB each and
     /// 128 MiB combined. Files are checked again when read.
@@ -668,32 +669,36 @@ impl Client {
         let mut eo_addrs = Map::new();
         let mut external_addrs = Map::new();
         let mut modulus_cache: Option<(String, String)> = None;
+        // PGP/Inline carries plain text only, so an HTML body reaches those
+        // recipients as text, under a session key of its own.
+        let mut text_body: Option<(crypto::SessionKeyMaterial, Vec<u8>)> = None;
 
         // Build a per-recipient encrypted entry (Type 1 or Type 8) wrapping the
-        // body + attachment session keys to `pubkey`.
-        let entry_for = |pubkey: &str, pkg_type: i64| -> Result<Value> {
-            let bkp = crypto::wrap_session_key(provider, pubkey, &material)?;
-            let mut entry = json!({
-                "Type": pkg_type,
-                "BodyKeyPacket": STANDARD.encode(&bkp),
-                "Signature": 0,
-            });
-            if !uploaded.is_empty() {
-                let mut akp = Map::new();
-                for u in &uploaded {
-                    akp.insert(
-                        u.id.clone(),
-                        json!(STANDARD.encode(crypto::wrap_session_key(
-                            provider,
-                            pubkey,
-                            &u.material
-                        )?)),
-                    );
+        // session keys of `body` and of the attachments to `pubkey`.
+        let entry_for =
+            |pubkey: &str, pkg_type: i64, body: &crypto::SessionKeyMaterial| -> Result<Value> {
+                let bkp = crypto::wrap_session_key(provider, pubkey, body)?;
+                let mut entry = json!({
+                    "Type": pkg_type,
+                    "BodyKeyPacket": STANDARD.encode(&bkp),
+                    "Signature": 0,
+                });
+                if !uploaded.is_empty() {
+                    let mut akp = Map::new();
+                    for u in &uploaded {
+                        akp.insert(
+                            u.id.clone(),
+                            json!(STANDARD.encode(crypto::wrap_session_key(
+                                provider,
+                                pubkey,
+                                &u.material
+                            )?)),
+                        );
+                    }
+                    entry["AttachmentKeyPackets"] = Value::Object(akp);
                 }
-                entry["AttachmentKeyPackets"] = Value::Object(akp);
-            }
-            Ok(entry)
-        };
+                Ok(entry)
+            };
 
         for email in &recipients {
             let rk = api::keys::get_all_public_keys(self.http(), email).await?;
@@ -702,12 +707,20 @@ impl Client {
             // Otherwise → Type 4 (cleartext, with a warning).
             if let Some(key) = api::keys::pick_encryption_key(&rk.keys) {
                 tracing::debug!(target: "ruston_core::send", recipient = %email, "internal recipient — E2E package (Type 1)");
-                internal_addrs.insert(email.clone(), entry_for(&key.public_key, package_type::PM)?);
+                internal_addrs.insert(
+                    email.clone(),
+                    entry_for(&key.public_key, package_type::PM, &material)?,
+                );
             } else if let Some(key) = api::keys::pick_encryption_key(&rk.unverified) {
                 tracing::debug!(target: "ruston_core::send", recipient = %email, "external recipient with PGP key — PGP-inline (Type 8)");
+                if opts.html && text_body.is_none() {
+                    let text = crate::html::to_text(&opts.body);
+                    text_body = Some(crypto::encrypt_for_transport(provider, addr, &text)?);
+                }
+                let body = text_body.as_ref().map_or(&material, |(text, _)| text);
                 pgp_addrs.insert(
                     email.clone(),
-                    entry_for(&key.public_key, package_type::PGP_INLINE)?,
+                    entry_for(&key.public_key, package_type::PGP_INLINE, body)?,
                 );
             } else if let Some((password, hint)) = eo {
                 // Encrypted-outside (password-protected) recipient — Type 2.
@@ -754,13 +767,17 @@ impl Client {
             }));
         }
         if !pgp_addrs.is_empty() {
-            // PGP-inline is plaintext; the encrypted body is reused.
-            let body_kp = crypto::wrap_session_key_to_self(provider, addr, &material)?;
+            // PGP-inline is plain text: the text version of an HTML body, or
+            // the plain body itself.
+            let (body, packet) = text_body
+                .as_ref()
+                .map_or((&material, &data_packet), |(text, packet)| (text, packet));
+            let body_kp = crypto::wrap_session_key_to_self(provider, addr, body)?;
             packages.push(json!({
                 "Addresses": Value::Object(pgp_addrs),
                 "MIMEType": "text/plain",
                 "Type": package_type::PGP_INLINE,
-                "Body": STANDARD.encode(&data_packet),
+                "Body": STANDARD.encode(packet),
                 "BodyKeyPacket": STANDARD.encode(&body_kp),
             }));
         }
@@ -1280,6 +1297,113 @@ mod tests {
             STANDARD.encode(original.material.key.as_slice())
         );
         assert_eq!(clear["Algorithm"], "aes256");
+    }
+
+    #[tokio::test]
+    async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
+        use proton_crypto::crypto::{
+            DataEncoding, Decryptor, DecryptorSync, PGPProviderSync, VerifiedData,
+        };
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let (me, _) = test_address("me@proton.me", "address-1");
+        let (friend, friend_public) = test_address("friend@proton.me", "friend-address");
+        let (outsider, outsider_public) = test_address("pgp@example.org", "outsider-address");
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "friend@proton.me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000, "RecipientType": 1,
+                "Address": {"Keys": [{"PublicKey": friend_public, "Flags": 3, "Primary": 1}]}
+            })))
+            .mount(&server)
+            .await;
+        // A key published outside Proton, as through WKD.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "pgp@example.org"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000, "RecipientType": 2,
+                "Unverified": {"Keys": [{"PublicKey": outsider_public, "Flags": 3}]}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let html = "<p>Hi Alex,<br>How are you?</p>\n<p>See you <b>Thursday</b>.</p>";
+
+        test_client(&server, vec![me])
+            .send(&SendOptions {
+                to: vec!["friend@proton.me".into(), "pgp@example.org".into()],
+                subject: "Plans".into(),
+                body: html.into(),
+                html: true,
+                ..SendOptions::default()
+            })
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let send = requests
+            .iter()
+            .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
+            .unwrap();
+        let body: Value = serde_json::from_slice(&send.body).unwrap();
+        let packages = body["Packages"].as_array().unwrap();
+        let provider = crypto::provider();
+        // What `recipient` reads in the package of `kind`, and its stated type.
+        let open = |kind: i64, recipient: &AddressKeys| {
+            let package = packages
+                .iter()
+                .find(|package| package["Type"] == kind)
+                .unwrap();
+            let entry = &package["Addresses"][recipient.email.as_str()];
+            let material = crypto::decrypt_session_key(
+                &provider,
+                recipient,
+                entry["BodyKeyPacket"].as_str().unwrap(),
+            )
+            .unwrap();
+            let key = provider
+                .session_key_import(&material.key, material.algo)
+                .unwrap();
+            let data = STANDARD.decode(package["Body"].as_str().unwrap()).unwrap();
+            let text = provider
+                .new_decryptor()
+                .with_session_key(key)
+                .decrypt(&data, DataEncoding::Bytes)
+                .unwrap();
+            // Bodies are signed as text, which canonicalizes line ends.
+            let text = String::from_utf8(text.as_bytes().to_vec())
+                .unwrap()
+                .replace("\r\n", "\n");
+            (text, package["MIMEType"].as_str().unwrap().to_owned())
+        };
+
+        assert_eq!(
+            open(package_type::PM, &friend),
+            (html.to_owned(), "text/html".to_owned())
+        );
+        assert_eq!(
+            open(package_type::PGP_INLINE, &outsider),
+            (
+                "Hi Alex,\nHow are you?\n\nSee you Thursday.".to_owned(),
+                "text/plain".to_owned()
+            )
+        );
     }
 
     #[tokio::test]

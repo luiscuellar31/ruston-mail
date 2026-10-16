@@ -34,6 +34,7 @@ futures = { workspace = true }
 urlencoding = { workspace = true }
 rusqlite = { workspace = true }
 ammonia = { workspace = true }
+html5ever = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

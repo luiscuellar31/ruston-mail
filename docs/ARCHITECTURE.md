@@ -574,7 +574,11 @@ instead of an unknown outcome.
   signed and drafts encrypted with the first. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
   HTML before either frontend renders it. Links keep only `http`, `https` and
   `mailto` URLs and relative ones are dropped, for exports and quoted replies
-  as much as for the readers; the sanitizer is built once.
+  as much as for the readers; the sanitizer is built once. Its crate-private
+  `to_text` turns an outgoing HTML body into plain text for PGP/Inline
+  recipients, who can only receive text: `send.rs` encrypts that version
+  under a session key of its own for their package alone. It is a third HTML
+  tokenizer beside the CLI's and the desktop's converters.
 
 ## Where to start
 
