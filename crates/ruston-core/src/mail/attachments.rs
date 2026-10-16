@@ -700,6 +700,7 @@ mod tests {
         let report = client.export_folder_report("inbox", &folder, 10).await;
         // "message" in hex.
         let exported = folder.join("message-6d657373616765.eml");
+        let written = exported.is_file();
         #[cfg(unix)]
         let mode = {
             use std::os::unix::fs::PermissionsExt;
@@ -707,6 +708,7 @@ mod tests {
         };
         std::fs::remove_dir_all(&folder).unwrap();
 
+        assert!(written);
         assert_eq!(first.unwrap(), 1);
         assert_eq!(second.unwrap(), 0);
         let report = report.unwrap();
