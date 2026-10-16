@@ -1383,13 +1383,45 @@ fn refresh_keeps_reader_when_row_is_absent_from_the_page() {
     assert_eq!(mailbox.reader_state(), &reader);
     assert!(mailbox.reader_stamp.is_none());
 
-    // Explicit filtering and folder navigation still close the old reader.
+    // Typing keeps it too; folder navigation closes it.
     mailbox.set_search_query("no match".into());
-    assert_eq!(mailbox.selected_conversation(), None);
+    assert_eq!(mailbox.selected_conversation(), Some("b"));
     mailbox.set_search_query(String::new());
+    assert_eq!(mailbox.selected_conversation(), Some("b"));
     load_detail(&mut mailbox, "a", detail("a", &["a1"]), 10);
     mailbox.select_folder(sys(MailFolder::Sent), 11);
     assert_eq!(mailbox.selected_conversation(), None);
+}
+
+#[test]
+fn typing_in_the_search_leaves_the_open_conversation_open() {
+    let mut mailbox = searchable_mailbox();
+    load_detail(&mut mailbox, "sender", detail("sender", &["s1"]), 9);
+
+    for typed in ["r", "ru", "rus"] {
+        mailbox.set_search_query(typed.into());
+        assert_eq!(mailbox.selected_conversation(), Some("sender"), "{typed}");
+    }
+    assert_eq!(visible_ids(&mailbox), ["subject"]);
+    // Deleting what hid it brings its row back, still open.
+    mailbox.set_search_query("r".into());
+    assert!(visible_ids(&mailbox).contains(&"sender"));
+    assert_eq!(mailbox.selected_conversation(), Some("sender"));
+}
+
+#[test]
+fn moving_a_conversation_the_search_hides_opens_nothing_in_its_place() {
+    let mut mailbox = searchable_mailbox();
+    load_detail(&mut mailbox, "sender", detail("sender", &["s1"]), 9);
+    mailbox.set_search_query("rust".into());
+
+    let start = mailbox
+        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 10)
+        .unwrap();
+
+    assert_eq!(start.opened, None);
+    assert_eq!(mailbox.selected_conversation(), None);
+    assert_eq!(visible_ids(&mailbox), ["subject"]);
 }
 
 #[test]
@@ -2353,13 +2385,13 @@ fn clearing_search_restores_normal_results() {
 }
 
 #[test]
-fn no_match_clears_hidden_reader_selection() {
+fn typing_keeps_a_conversation_that_is_still_loading() {
     let mut mailbox = searchable_mailbox();
     mailbox.start_conversation_load("sender".into(), 3);
 
     mailbox.set_search_query("rust".into());
 
-    assert_eq!(mailbox.selected_conversation(), None);
+    assert_eq!(mailbox.selected_conversation(), Some("sender"));
     assert_eq!(visible_ids(&mailbox), ["subject"]);
 }
 

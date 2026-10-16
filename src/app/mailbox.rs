@@ -612,6 +612,7 @@ impl Mailbox {
 
     /// Goes back to the folder listing, leaving any results behind.
     pub fn clear_search(&mut self) {
+        let leaving_results = self.search.is_some();
         self.search = None;
         self.search_deferred = false;
         if self.search_request.is_some() {
@@ -622,7 +623,11 @@ impl Mailbox {
             self.status = ListStatus::Loaded;
         }
         self.recompute_visible();
-        self.close_reader_if_hidden();
+        // Leaving results is a new list; only emptying what was typed keeps
+        // the reader, as typing does.
+        if leaving_results {
+            self.close_reader_if_hidden();
+        }
     }
 
     /// Closes the reader when what it holds is no longer on screen.
@@ -645,8 +650,9 @@ impl Mailbox {
         if self.search_query.trim().is_empty() {
             self.clear_search();
         } else {
+            // What is typed narrows the list but leaves the open conversation
+            // open, as a refresh does, so deleting a letter brings its row back.
             self.recompute_visible();
-            self.close_reader_if_hidden();
         }
     }
 
@@ -1395,7 +1401,14 @@ impl Mailbox {
             return None;
         }
 
-        self.open_row_after(index?)
+        match index {
+            Some(index) => self.open_row_after(index),
+            // What was typed hid it, so it had no place on screen to fill.
+            None => {
+                self.discard_reader();
+                None
+            }
+        }
     }
 
     /// Closes the reader and names the visible row that took the place of the

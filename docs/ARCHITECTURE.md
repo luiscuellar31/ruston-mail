@@ -170,7 +170,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   the search does not turn the folder response into a stale one.
   A refreshed listing can regroup a message or omit its row without proving
   deletion; the reader remains visible and loses its cache stamp if its row is
-  absent. Explicit filtering, folder changes, and organizing actions retain their
+  absent. Typing in the search field keeps the reader open the same way, even
+  when its row no longer matches; a move of that hidden row opens nothing in its
+  place. Server results, folder changes, and organizing actions retain their
   existing selection behavior. Reader scroll resets only when opening another row.
   [`ui/mailbox.rs`](../src/ui/mailbox.rs) keeps two visible row IDs, their parent
   conversation, indices, and the scroll offset for the current folder and search.

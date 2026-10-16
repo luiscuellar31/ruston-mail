@@ -63,10 +63,10 @@ is in the foreground. On Windows, Ruston creates a per-user Start menu shortcut
 if needed. Clicking a transient toast while Ruston is running restores and
 focuses the mailbox window.
 
-Typing in the search field narrows the conversations already loaded. Press
-`Enter` to ask Proton to search the whole mailbox; while the folder is still
-loading, the search starts once it has loaded. Clear the field to return to
-the open folder.
+Typing in the search field narrows the conversations already loaded, and the
+open conversation stays open even when it no longer matches. Press `Enter` to
+ask Proton to search the whole mailbox; while the folder is still loading, the
+search starts once it has loaded. Clear the field to return to the open folder.
 
 Folder lists and server search load 50 conversations at a time. Use **Load more**
 at the end of the list to request another page when available. Loading another
