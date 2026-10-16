@@ -88,6 +88,7 @@ fn show(root: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
 fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     let sending = compose.sending();
     let leaving = sending == Sending::InFlight;
+    focus_new_draft(ui, compose);
 
     let heading = heading(compose);
     ui.horizontal_wrapped(|ui| {
@@ -276,6 +277,24 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     if response.changed() {
         messages.push(Message::ComposeChanged(ComposeField::Body, body));
     }
+}
+
+/// Puts the cursor where writing starts the first time a draft shows: in To
+/// for a new message or a forward, in the body for a reply. Asked before the
+/// fields are made, so they take it on this pass.
+fn focus_new_draft(ui: &egui::Ui, compose: &Compose) {
+    let shown = egui::Id::new("compose-focused-draft");
+    let draft = compose.id();
+    if ui.data(|data| data.get_temp::<ComposeId>(shown)) == Some(draft) {
+        return;
+    }
+    ui.data_mut(|data| data.insert_temp(shown, draft));
+    let field = if compose.asks_for_recipients() {
+        field_id("To", draft)
+    } else {
+        body_id(draft)
+    };
+    ui.memory_mut(|memory| memory.request_focus(field));
 }
 
 fn heading(compose: &Compose) -> &'static str {
@@ -616,6 +635,64 @@ mod tests {
 
         assert!(!shown(false));
         assert!(shown(true));
+    }
+
+    #[test]
+    fn a_new_draft_puts_the_cursor_where_writing_starts() {
+        use crate::mail::demo;
+
+        let context = egui::Context::default();
+        theme::install(&context);
+        let focused_after_showing = |app: &crate::app::App| {
+            context
+                .run_ui(egui::RawInput::default(), |ui| {
+                    show(ui, app.compose().unwrap(), &mut Vec::new());
+                })
+                .drop_without_applying_deltas();
+            context.memory(|memory| memory.focused())
+        };
+
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        let draft = app.compose().unwrap().id();
+        assert_eq!(focused_after_showing(&app), Some(field_id("To", draft)));
+        // Given once: after that the cursor stays wherever the writer puts it.
+        context.memory_mut(|memory| memory.surrender_focus(field_id("To", draft)));
+        assert_eq!(focused_after_showing(&app), None);
+
+        // A reply knows its recipients, so it starts in the body.
+        app.update(Message::DiscardCompose);
+        let mailbox = demo::DemoMailbox::new();
+        let page = mailbox.list_conversations(
+            &crate::mail::Folder::INBOX,
+            0,
+            demo::PAGE_SIZE,
+            demo::now(),
+        );
+        app.update(Message::ConversationsLoaded(1, page));
+        app.update(Message::SelectConversation("demo-0".into()));
+        let crate::app::ReaderState::Loading {
+            conversation_id,
+            request,
+        } = app.mailbox().unwrap().reader_state()
+        else {
+            panic!("the conversation is loading");
+        };
+        let request = crate::app::ReaderRequest {
+            id: *request,
+            conversation_id: conversation_id.clone(),
+            kind: crate::mail::SummaryKind::Conversation,
+            messages: 1,
+        };
+        let detail = mailbox.conversation_detail(&request.conversation_id, demo::now());
+        app.update(Message::ConversationLoaded(request, detail));
+        app.update(Message::Answer {
+            message_id: "demo-0-2".into(),
+            forward: false,
+            everyone: false,
+        });
+        let reply = app.compose().expect("a reply is open").id();
+        assert_eq!(focused_after_showing(&app), Some(body_id(reply)));
     }
 
     #[test]

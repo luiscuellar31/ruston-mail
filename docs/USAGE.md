@@ -16,7 +16,8 @@ Switching panes keeps the open conversation, draft, and list position.
 
 Enter your Proton username or email and password. Ruston Mail asks for a TOTP
 code, a separate mailbox password, or Proton's browser-based human verification
-when the account needs one.
+when the account needs one. Each step opens with the cursor in its first empty
+field, so you can type right away.
 
 A saved session opens automatically on later runs. Signing out asks Proton to
 revoke that session and removes its local copy. If you were reading one of your
@@ -218,7 +219,10 @@ nothing until you send; the notice is not shown then.
 
 The composer opens in the reading pane by default, so folders and conversations
 stay visible. Settings can open it in a separate window instead. The same choice
-applies to new messages, replies, and forwards.
+applies to new messages, replies, and forwards. It opens with the cursor in
+**To** for a new message or a forward, and in the message for a reply. While it
+fills the reading pane, the list keys (`j`, `k`, the arrows and `Enter`) wait,
+so they never open a conversation out of sight.
 The composer scrolls vertically when its fields or attachments exceed the
 available height, in either placement.
 

@@ -1,6 +1,7 @@
 //! Mailbox keyboard shortcuts. The UI only reports raw key presses.
 
 use super::{App, Effects, Step, UiEffect};
+use crate::settings::ComposePlacement;
 
 /// What a key press means to the mailbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +67,10 @@ pub struct KeyPress {
 }
 
 impl App {
+    fn draft_covers_reader(&self) -> bool {
+        self.compose.is_some() && self.settings.compose_placement == ComposePlacement::ReadingPane
+    }
+
     pub(super) fn handle_key(&mut self, press: KeyPress) -> Effects {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
@@ -75,6 +80,12 @@ impl App {
         let shortcut_blocked = (self.showing_settings && shortcut != Shortcut::ToggleSettings)
             || self.pending_link.is_some();
         if shortcut_blocked && shortcut != Shortcut::Dismiss {
+            return Effects::none();
+        }
+
+        // The draft covers the reader, so a step through the list would open,
+        // and could mark read, a conversation nobody sees.
+        if matches!(shortcut, Shortcut::Move(_) | Shortcut::Open) && self.draft_covers_reader() {
             return Effects::none();
         }
 

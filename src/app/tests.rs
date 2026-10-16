@@ -1931,6 +1931,38 @@ fn demo_trash_and_spam_moves_update_folders() {
 }
 
 #[test]
+fn list_keys_wait_while_the_draft_covers_the_reader() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    deliver_selected_demo_detail(&mut app);
+    let _ = app.update(Message::OpenCompose);
+    let plain = |key| {
+        Message::KeyPressed(KeyPress {
+            key,
+            command: false,
+            other_modifier: false,
+        })
+    };
+
+    for key in [Key::Character('j'), Key::ArrowDown] {
+        let _ = app.update(plain(key));
+        assert_eq!(
+            app.mailbox().unwrap().selected_conversation(),
+            Some("demo-0"),
+            "{key:?} opened a conversation behind the draft"
+        );
+    }
+
+    // In its own window the draft leaves the reader in view.
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
+    let _ = app.update(plain(Key::Character('j')));
+    assert_eq!(
+        app.mailbox().unwrap().selected_conversation(),
+        Some("demo-1")
+    );
+}
+
+#[test]
 fn demo_mail_marked_not_spam_goes_back_to_the_inbox() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectConversation("demo-3".into()));

@@ -192,9 +192,9 @@ fn sign_in(
     );
     ui.add_space(30.0);
 
-    match step {
+    let fields = match step {
         SignInStep::Credentials => {
-            let field = edit_field(
+            let username = edit_field(
                 ui,
                 "Username or email",
                 "name@proton.me",
@@ -202,10 +202,10 @@ fn sign_in(
                 busy,
                 messages,
             );
-            if field.changed() {
+            if username.changed() {
                 app.login_edited();
             }
-            let field = edit_secret_field(
+            let password = edit_secret_field(
                 ui,
                 "Password",
                 "Password",
@@ -214,9 +214,13 @@ fn sign_in(
                 busy,
                 messages,
             );
-            if field.changed() {
+            if password.changed() {
                 app.login_edited();
             }
+            vec![
+                (username, app.username_mut().is_empty()),
+                (password, app.password_mut().is_empty()),
+            ]
         }
         SignInStep::Totp => {
             ui.label("Enter the code from your authenticator app.");
@@ -231,6 +235,7 @@ fn sign_in(
             if field.changed() {
                 app.login_edited();
             }
+            vec![(field, app.totp_mut().is_empty())]
         }
         SignInStep::MailboxPassword => {
             ui.label("This account uses a separate mailbox password.");
@@ -246,7 +251,12 @@ fn sign_in(
             if field.changed() {
                 app.login_edited();
             }
+            vec![(field, app.mailbox_password_mut().is_empty())]
         }
+    };
+    // A field waiting for a reply cannot take the cursor.
+    if !busy {
+        focus_on_arrival(ui, step, &fields);
     }
 
     error(ui, app);
@@ -388,6 +398,30 @@ fn edit_secret_field(
         .inner;
     ui.add_space(14.0);
     response
+}
+
+/// Remembers which step last gave a field the cursor.
+const FOCUSED_STEP: &str = "sign-in-focused-step";
+
+/// Puts the cursor in the first empty field the first time a step shows, or
+/// in the last field when all are filled, so typing can start at once.
+fn focus_on_arrival(ui: &egui::Ui, step: SignInStep, fields: &[(egui::Response, bool)]) {
+    let shown = egui::Id::new(FOCUSED_STEP);
+    if ui.is_sizing_pass() || ui.data(|data| data.get_temp::<SignInStep>(shown)) == Some(step) {
+        return;
+    }
+    ui.data_mut(|data| data.insert_temp(shown, step));
+    if let Some((field, _)) = fields.iter().find(|(_, empty)| *empty).or(fields.last()) {
+        field.request_focus();
+        // The field was made before it was given focus; show it focused now.
+        ui.ctx().request_repaint();
+    }
+}
+
+/// Lets the next step, or the same one shown again after an attempt or a
+/// visit to the mailbox, put the cursor in its fields.
+pub(super) fn forget_focus(context: &egui::Context) {
+    context.data_mut(|data| data.remove::<SignInStep>(egui::Id::new(FOCUSED_STEP)));
 }
 
 /// What a field shows. The invisible measuring pass only needs its size, and
@@ -977,6 +1011,39 @@ mod tests {
         frame(&mut password, Vec::new());
         frame(&mut password, undo());
         assert!(password.is_empty(), "undo brought back a typed password");
+    }
+
+    #[test]
+    fn each_sign_in_step_puts_the_cursor_in_its_first_empty_field() {
+        let mut app = App::signed_out();
+        let context = egui::Context::default();
+        theme::install(&context);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            context
+                .run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |root| {
+                        show(root, app, &mut false, &mut Vec::new());
+                    },
+                )
+                .drop_without_applying_deltas();
+        };
+
+        // The cursor arrives on the first pass and takes typing on the next.
+        frame(&mut app, Vec::new());
+        frame(&mut app, vec![egui::Event::Text("ada".into())]);
+        assert_eq!(app.username_mut().as_str(), "ada");
+
+        // Shown again, as after a failed attempt, the step starts in the
+        // field still empty.
+        forget_focus(&context);
+        frame(&mut app, Vec::new());
+        frame(&mut app, vec![egui::Event::Text("x".into())]);
+        assert_eq!(app.username_mut().as_str(), "ada");
+        assert_eq!(app.password_mut().as_str(), "x");
     }
 
     #[test]

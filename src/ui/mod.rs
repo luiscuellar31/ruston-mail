@@ -296,6 +296,11 @@ impl DesktopApp {
         {
             self.ui.show_password = false;
         }
+        if submitted_or_cancelled
+            || matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+        {
+            login::forget_focus(context);
+        }
         self.update_notifications(context);
         self.execute(effects, context);
         if let Some((request, succeeded)) = page {
