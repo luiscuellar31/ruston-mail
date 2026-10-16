@@ -493,8 +493,12 @@ fn move_menu(
     if destinations.is_empty() {
         return;
     }
+    // In a narrow reader the toolbar wraps between buttons, never inside one.
+    let title = "Move to…";
+    let button = egui::Button::new(title).wrap_mode(egui::TextWrapMode::Extend);
+    wrap_for(ui, button_width(ui, title));
     ui.add_enabled_ui(enabled, |ui| {
-        egui::containers::menu::MenuButton::new("Move to…").ui(ui, |ui| {
+        egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
             ui.set_min_width(180.0);
             egui::ScrollArea::vertical()
                 .max_height(240.0)
@@ -518,6 +522,27 @@ fn destination_item(ui: &mut egui::Ui, folder: &Folder) -> egui::Response {
     let color = ui.style().interact(&layout.response).fg_stroke.color;
     theme::paint_atom_icon(ui, &layout, folder_icon(folder), color);
     layout.response
+}
+
+/// The width of a text button showing `title` on one line.
+fn button_width(ui: &egui::Ui, title: &str) -> f32 {
+    let galley = egui::WidgetText::from(title).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    galley.size().x + 2.0 * ui.spacing().button_padding.x
+}
+
+/// In a wrapping toolbar, starts a new row when a control `width` wide no
+/// longer fits in this one. egui wraps widgets on its own, but not a child
+/// `Ui` such as the one that disables a menu button, which would overflow.
+fn wrap_for(ui: &mut egui::Ui, width: f32) {
+    let row_started = ui.cursor().left() > ui.max_rect().left();
+    if row_started && ui.available_size_before_wrap().x < width {
+        ui.end_row();
+    }
 }
 
 fn label_menu(
@@ -553,14 +578,13 @@ fn label_menu(
         f32::INFINITY,
         egui::TextStyle::Button,
     );
+    let width = max_title.size().x + 2.0 * ui.spacing().button_padding.x;
     let button = egui::Button::new(title)
         .wrap_mode(egui::TextWrapMode::Extend)
-        .min_size(egui::vec2(
-            max_title.size().x + 2.0 * ui.spacing().button_padding.x,
-            0.0,
-        ));
+        .min_size(egui::vec2(width, 0.0));
 
     ui.separator();
+    wrap_for(ui, width);
     ui.add_enabled_ui(enabled, |ui| {
         egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
             ui.set_min_width(180.0);
@@ -623,7 +647,11 @@ fn message_card(
 fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec<Message>) {
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), REPLY_TOOLBAR_HEIGHT),
-        Layout::left_to_right(Align::Center).with_main_align(Align::Max),
+        // A narrow reader moves a button to the next row rather than letting
+        // the row widen the card past the pane, which would cut off the body.
+        Layout::left_to_right(Align::Center)
+            .with_main_align(Align::Max)
+            .with_main_wrap(true),
         |ui| {
             // Core addresses replies from the message being answered.
             for (label, forward, everyone) in [
@@ -1539,6 +1567,54 @@ mod tests {
                 .any(|shape| matches!(shape.shape, egui::epaint::Shape::Circle(_))),
             "the menu should not fall back to a plain dot"
         );
+    }
+
+    #[test]
+    fn a_narrow_reader_keeps_its_buttons_and_body_inside_the_pane() {
+        let places = [
+            Folder::custom("kZ9", "Invoices"),
+            Folder::label("lW", "Work"),
+        ];
+        let (mut mailbox, request, detail) = loading_reader("Message", Folder::INBOX, 1);
+        mailbox.finish_conversation(&request, Ok(detail));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        // The reader at its narrowest: a 200 pt pane without its padding.
+        let pane = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(168.0, 900.0));
+        let input = egui::RawInput {
+            screen_rect: Some(pane),
+            ..Default::default()
+        };
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = reader_frame(
+                &context,
+                &mailbox,
+                &places,
+                Reading::default(),
+                &mut state,
+                input.clone(),
+            )
+            .0;
+        }
+
+        for shape in &shapes {
+            if let egui::epaint::Shape::Text(text) = &shape.shape {
+                let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                assert!(
+                    rect.right() <= pane.right() + 0.5,
+                    "{:?} reaches {} in a {} pt pane",
+                    text.galley.text(),
+                    rect.right(),
+                    pane.width()
+                );
+                if text.galley.text() == "Move to…" {
+                    assert_eq!(text.galley.rows.len(), 1, "Move to… wrapped");
+                }
+            }
+        }
+        text_rect(&shapes, "Forward");
     }
 
     fn address(name: Option<&str>, email: &str) -> MailAddress {
