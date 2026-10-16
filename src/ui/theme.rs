@@ -176,13 +176,6 @@ pub fn paint_atom_icon(ui: &egui::Ui, response: &AtomLayoutResponse, icon: Icon,
     }
 }
 
-/// A bundled icon on its own, at the size the sidebar and the buttons use.
-pub fn icon_image(icon: Icon, color: Color32) -> egui::Image<'static> {
-    egui::Image::new(icon.source())
-        .tint(color)
-        .fit_to_exact_size(egui::Vec2::splat(ICON_SIZE))
-}
-
 pub struct IconButton<'a> {
     icon: Icon,
     label: &'a str,
@@ -240,6 +233,27 @@ impl Widget for IconButton<'_> {
         });
         response.on_hover_text(self.label)
     }
+}
+
+/// An icon button that opens a menu: drawn, sized and announced like the
+/// other icon buttons, with the menu egui's `MenuButton` would open.
+pub fn icon_menu<R>(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    button: IconButton<'_>,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<egui::InnerResponse<R>> {
+    use egui::containers::menu::MenuConfig;
+    let response = ui.add_enabled(enabled, button);
+    let config = MenuConfig::find(ui);
+    egui::Popup::menu(&response)
+        .close_behavior(config.close_behavior)
+        .style(config.style.clone())
+        .info(
+            egui::UiStackInfo::new(egui::UiKind::Menu)
+                .with_tag_value(MenuConfig::MENU_CONFIG_TAG, config),
+        )
+        .show(content)
 }
 
 /// An on/off box with a label. egui draws its box with the theme's widget

@@ -124,7 +124,8 @@ The reader can:
 - Move it back to the Inbox. In Archive and Trash this is the first button; in
   Spam it is **Not spam**.
 - Move it into one of your folders, or back to the Inbox, with **Move to…**.
-- Add or remove a custom label.
+- Add or remove a custom label from the tag button, which is filled while the
+  conversation carries one.
 - Undo the latest move while its notice remains visible. Under a label,
   Starred, or in search results the conversation's folder is not known, so a
   move made there offers no undo until you have moved it once from that view;

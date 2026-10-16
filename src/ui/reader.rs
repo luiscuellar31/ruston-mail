@@ -642,49 +642,35 @@ fn label_menu(
     } else {
         format!("Labels ({applied})")
     };
-
-    // Counts arrive with the detail. Reserve their widest possible title now,
-    // so a newly displayed count cannot wrap or move the message card.
-    let max_title = egui::WidgetText::from(format!("Labels ({})", labels.len())).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Button,
-    );
-    let width = max_title.size().x + 2.0 * ui.spacing().button_padding.x;
-    let button = egui::Button::new(title)
-        .wrap_mode(egui::TextWrapMode::Extend)
-        .min_size(egui::vec2(width, 0.0));
+    // The tag, as the sidebar marks labels; filled, like the star, while the
+    // conversation carries any. Its size never changes, so a count arriving
+    // with the detail cannot move the card.
+    let mut button = theme::IconButton::new(theme::Icon::Label, &title);
+    if applied > 0 {
+        button = button.selected(true);
+    }
 
     ui.separator();
-    wrap_for(ui, width);
-    ui.add_enabled_ui(enabled, |ui| {
-        egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-            ui.set_min_width(180.0);
-            egui::ScrollArea::vertical()
-                .max_height(240.0)
-                .show(ui, |ui| {
-                    for label in labels {
-                        ui.horizontal(|ui| {
-                            // The tag the sidebar shows beside each label.
-                            ui.add(theme::icon_image(theme::Icon::Label, theme::ACCENT));
-                            let carried =
-                                label.custom_id().is_some_and(|id| carried_ids.contains(id));
-                            let mut on = carried;
-                            if ui
-                                .add(theme::Checkbox::new(&mut on, label.name()))
-                                .changed()
-                            {
-                                messages.push(Message::ApplyAction(MailAction::SetLabel {
-                                    label: label.clone(),
-                                    on: !carried,
-                                }));
-                                ui.close();
-                            }
-                        });
+    theme::icon_menu(ui, enabled, button, |ui| {
+        ui.set_min_width(180.0);
+        egui::ScrollArea::vertical()
+            .max_height(240.0)
+            .show(ui, |ui| {
+                for label in labels {
+                    let carried = label.custom_id().is_some_and(|id| carried_ids.contains(id));
+                    let mut on = carried;
+                    if ui
+                        .add(theme::Checkbox::new(&mut on, label.name()))
+                        .changed()
+                    {
+                        messages.push(Message::ApplyAction(MailAction::SetLabel {
+                            label: label.clone(),
+                            on: !carried,
+                        }));
+                        ui.close();
                     }
-                });
-        });
+                }
+            });
     });
 }
 
@@ -1708,13 +1694,40 @@ mod tests {
         );
     }
 
+    /// Every icon painted, as the rectangles their textures fill.
+    fn icons(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+        shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Rect(rect) if rect.brush.is_some() => Some(rect.rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The Labels button's tag: the last icon of the toolbar's first row.
+    fn labels_button(shapes: &[egui::epaint::ClippedShape]) -> egui::Rect {
+        let icons = icons(shapes);
+        let row = icons
+            .iter()
+            .map(|icon| icon.top())
+            .fold(f32::INFINITY, f32::min);
+        icons
+            .into_iter()
+            .filter(|icon| (icon.top() - row).abs() <= 0.5)
+            .max_by(|a, b| a.left().total_cmp(&b.left()))
+            .expect("the toolbar shows its icons")
+    }
+
     #[test]
-    fn the_labels_menu_marks_each_label_with_the_sidebar_tag() {
-        let places = [Folder::label("lW", "Work")];
-        let (mut mailbox, request, detail) = loading_reader("Message", Folder::INBOX, 1);
+    fn the_labels_menu_opens_from_its_tag_and_lists_a_box_and_a_name() {
+        let places = [Folder::label("lW", "Work"), Folder::label("lF", "Family")];
+        let (mut mailbox, request, mut detail) = loading_reader("Message", Folder::INBOX, 1);
+        detail.labels = vec!["lW".into()];
         mailbox.finish_conversation(&request, Ok(detail));
         let context = egui::Context::default();
         theme::install(&context);
+        context.enable_accesskit();
         let mut state = UiState::default();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -1735,32 +1748,34 @@ mod tests {
         };
 
         let (shapes, _) = frame(input.clone());
-        frame(click_at(&input, text_rect(&shapes, "Labels").center()));
-        // Let the popup finish fading in, so its colors are the final ones.
+        let tag = labels_button(&shapes);
+        let closed = icons(&shapes).len();
+        // The conversation carries a label, so the tag is filled, like the star.
+        assert!(
+            shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::epaint::Shape::Rect(rect)
+                    if rect.fill == theme::ACCENT && rect.rect.contains(tag.center()))),
+            "a labelled conversation shows a filled tag"
+        );
+        assert!(
+            !shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::epaint::Shape::Text(text) if text.galley.text().starts_with("Labels"))),
+            "the button shows its tag, not a title"
+        );
+        frame(click_at(&input, tag.center()));
         for _ in 0..30 {
             frame(input.clone());
         }
         let (shapes, _) = frame(input.clone());
 
-        let name = text_rect(&shapes, "Work");
-        let tag = shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::epaint::Shape::Rect(rect)
-                    if rect.brush.is_some() && rect.fill == theme::ACCENT =>
-                {
-                    Some(rect.rect)
-                }
-                _ => None,
-            })
-            .expect("each label should carry the sidebar's tag icon");
-        assert!(tag.right() < name.left(), "the tag should precede the name");
-        assert!((tag.center().y - name.center().y).abs() <= 2.0);
+        // Each label is a box and its name: the menu adds no icon of its own.
+        assert_eq!(icons(&shapes).len(), closed);
+        let work = text_rect(&shapes, "Work");
+        let family = text_rect(&shapes, "Family");
+        assert!((work.left() - family.left()).abs() <= 0.5);
         assert!(
-            !shapes
-                .iter()
-                .any(|shape| matches!(shape.shape, egui::epaint::Shape::Circle(_))),
-            "the menu should not fall back to a plain dot"
+            work.left() - tag.left() < 60.0,
+            "nothing wide before the names"
         );
     }
 
@@ -2083,7 +2098,7 @@ mod tests {
         let after = rounded_rects(loaded, 10)[0];
         assert_same_pixel_position("card top", before.left_top(), after.left_top(), scale);
         assert_same_pixel_position("card right", before.right_top(), after.right_top(), scale);
-        for label in [subject, &message_count_label(count as usize), "Labels"] {
+        for label in [subject, &message_count_label(count as usize)] {
             let before = text_rect(loading, label);
             let after = text_rect(loaded, label);
             assert_same_pixel_position(label, before.left_top(), after.left_top(), scale);
@@ -2315,11 +2330,7 @@ mod tests {
         );
         let reply = text_rect(&shapes, "Reply").center();
         let controls = rounded_rects(&shapes, 7);
-        for position in [
-            controls[0].center(),
-            text_rect(&shapes, "Labels").center(),
-            reply,
-        ] {
+        for position in [controls[0].center(), labels_button(&shapes).center(), reply] {
             let mut click = input.clone();
             click.events = vec![
                 egui::Event::PointerMoved(position),

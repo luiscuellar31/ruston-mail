@@ -353,8 +353,9 @@ spinner of the waiting screens (opening, signing out) share one clock in
 card follows the initial expansion preference and reserves the real header,
 sender icon inset, and reply area before its body markers. The scroll reset for
 a new selection is applied during loading rather than waiting for the response.
-The Labels button reserves room for its applied count to avoid reflow when
-detail arrives. Body lengths and attachment lists remain content-dependent.
+The Labels button is a fixed-size tag icon, filled while the conversation
+carries a label, so nothing reflows when the detail arrives with its labels.
+Body lengths and attachment lists remain content-dependent.
 
 Desktop new-mail detection is owned by
 [`app/notifications.rs`](../src/app/notifications.rs), independently of unread
