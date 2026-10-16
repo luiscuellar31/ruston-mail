@@ -142,13 +142,14 @@ pub async fn get_all_public_keys<D: Doer>(d: &D, email: &str) -> Result<Recipien
     })
 }
 
-/// Pick the primary encryption-capable key (Flags & NOT_OBSOLETE), else the
-/// first encryption-capable one.
+/// Pick the primary key mail may be encrypted to, else the first such key:
+/// one that is not obsolete, on an address whose owner has not turned email
+/// encryption off.
 pub fn pick_encryption_key(keys: &[ApiPublicKey]) -> Option<&ApiPublicKey> {
     use crate::model::enums::key_flag;
     keys.iter()
-        .find(|k| k.primary == 1 && key_flag::can_encrypt(k.flags))
-        .or_else(|| keys.iter().find(|k| key_flag::can_encrypt(k.flags)))
+        .find(|k| k.primary == 1 && key_flag::can_encrypt_mail(k.flags))
+        .or_else(|| keys.iter().find(|k| key_flag::can_encrypt_mail(k.flags)))
 }
 
 #[cfg(test)]
@@ -193,6 +194,26 @@ mod tests {
         let keys2 = vec![k("obsolete", obsolete, 1), k("cap", cap, 0)];
         assert_eq!(pick_encryption_key(&keys2).unwrap().public_key, "cap");
         assert!(pick_encryption_key(&[k("x", obsolete, 1)]).is_none());
+    }
+
+    #[test]
+    fn keys_whose_address_turned_email_encryption_off_are_skipped() {
+        use crate::model::enums::key_flag::{EMAIL_NO_ENCRYPT, EMAIL_NO_SIGN};
+        let cap = 3;
+        let keys = vec![k("off", cap | EMAIL_NO_ENCRYPT, 1), k("on", cap, 0)];
+        assert_eq!(pick_encryption_key(&keys).unwrap().public_key, "on");
+        for flags in [
+            cap | EMAIL_NO_ENCRYPT,
+            cap | EMAIL_NO_ENCRYPT | EMAIL_NO_SIGN,
+        ] {
+            assert!(pick_encryption_key(&[k("off", flags, 1)]).is_none());
+        }
+        // Only signing is off: mail is still encrypted to it.
+        let unsigned = [k("unsigned", cap | EMAIL_NO_SIGN, 1)];
+        assert_eq!(
+            pick_encryption_key(&unsigned).unwrap().public_key,
+            "unsigned"
+        );
     }
 
     #[test]

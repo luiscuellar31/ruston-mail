@@ -172,7 +172,8 @@ pub enum RecipientProtection {
     EndToEnd,
     /// Another provider's address with a published PGP key: encrypted to it.
     Pgp,
-    /// No usable key: Proton delivers the message without end-to-end encryption.
+    /// No usable key, or the address's owner turned email encryption off:
+    /// Proton delivers the message without end-to-end encryption.
     Unencrypted,
 }
 
@@ -704,7 +705,8 @@ impl Client {
             let rk = api::keys::get_all_public_keys(self.http(), email).await?;
             // Internal = Proton-verified keys present → Type 1 (E2E).
             // External with a published PGP/WKD key → Type 8 (PGP-inline).
-            // Otherwise → Type 4 (cleartext, with a warning).
+            // Otherwise → Type 4 (cleartext, with a warning). A key whose
+            // address turned email encryption off counts as no key.
             if let Some(key) = api::keys::pick_encryption_key(&rk.keys) {
                 tracing::debug!(target: "ruston_core::send", recipient = %email, "internal recipient — E2E package (Type 1)");
                 internal_addrs.insert(
@@ -923,6 +925,69 @@ mod tests {
             RecipientProtection::of(&recipient_keys(&[NOT_COMPROMISED], &[NOT_COMPROMISED])),
             RecipientProtection::Unencrypted
         );
+        // Nor are keys on an address whose owner turned email encryption off.
+        let off = usable | crate::model::enums::key_flag::EMAIL_NO_ENCRYPT;
+        assert_eq!(
+            RecipientProtection::of(&recipient_keys(&[off], &[])),
+            RecipientProtection::Unencrypted
+        );
+    }
+
+    #[tokio::test]
+    async fn an_address_that_turned_email_encryption_off_gets_a_cleartext_package() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let (me, _) = test_address("me@proton.me", "address-1");
+        let (_, forwarding_public) = test_address("fwd@proton.me", "forwarding-address");
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+            )
+            .mount(&server)
+            .await;
+        // A Proton address that forwards elsewhere: its key is not for mail.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", "fwd@proton.me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000, "RecipientType": 1,
+                "Address": {"Keys": [{"PublicKey": forwarding_public, "Flags": 7, "Primary": 1}]}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        test_client(&server, vec![me])
+            .send(&SendOptions {
+                to: vec!["fwd@proton.me".into()],
+                body: "Hello".into(),
+                ..SendOptions::default()
+            })
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let send = requests
+            .iter()
+            .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
+            .unwrap();
+        let body: Value = serde_json::from_slice(&send.body).unwrap();
+        let types: Vec<_> = body["Packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|package| package["Type"].as_i64().unwrap())
+            .collect();
+        assert_eq!(types, [package_type::CLEAR]);
+        assert!(body["Packages"][0]["Addresses"]["fwd@proton.me"].is_object());
     }
 
     fn attachment_path() -> PathBuf {

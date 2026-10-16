@@ -112,9 +112,17 @@ pub mod key_flag {
     /// Email signing is disabled for this address.
     pub const EMAIL_NO_SIGN: u32 = 8;
 
-    /// True if the key may be used to encrypt to this recipient.
+    /// True if the key is not obsolete, so it may encrypt. Whether mail to
+    /// its address may be encrypted is [`can_encrypt_mail`].
     pub fn can_encrypt(flags: u32) -> bool {
         flags & NOT_OBSOLETE != 0
+    }
+
+    /// True if mail may be encrypted to the key: it may encrypt, and the
+    /// address's owner has not turned email encryption off, as Proton does
+    /// for an address that forwards to another provider.
+    pub fn can_encrypt_mail(flags: u32) -> bool {
+        can_encrypt(flags) && flags & EMAIL_NO_ENCRYPT == 0
     }
 
     /// True if signatures made with the key may be trusted: Proton has not
@@ -262,6 +270,12 @@ mod tests {
             key_flag::NOT_OBSOLETE | key_flag::NOT_COMPROMISED
         ));
         assert!(!key_flag::can_encrypt(key_flag::NOT_COMPROMISED));
+        let usable = key_flag::NOT_OBSOLETE | key_flag::NOT_COMPROMISED;
+        assert!(key_flag::can_encrypt_mail(usable | key_flag::EMAIL_NO_SIGN));
+        assert!(!key_flag::can_encrypt_mail(
+            usable | key_flag::EMAIL_NO_ENCRYPT
+        ));
+        assert!(!key_flag::can_encrypt_mail(key_flag::NOT_COMPROMISED));
         assert!(key_flag::can_verify(key_flag::NOT_COMPROMISED));
         assert!(!key_flag::can_verify(key_flag::NOT_OBSOLETE));
         assert_eq!(package_type::PM, 1);

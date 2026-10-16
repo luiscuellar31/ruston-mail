@@ -202,7 +202,9 @@ composer still refuse these domains, whatever the setting says.
 
 After you leave a recipient field, the composer shows how Proton will protect
 the new message: end-to-end encrypted for every recipient, or a warning that
-names the addresses that will not get an end-to-end encrypted copy. Addresses
+names the addresses that will not get an end-to-end encrypted copy. That
+includes a Proton address whose owner turned end-to-end encryption off, for
+example because it forwards mail to another provider. Addresses
 are looked up once per draft and only after the field loses focus. If a lookup
 fails, the warning names that address too and claims nothing about it. Replies
 show no notice; their recipients come from the original message. Turn off **Check
