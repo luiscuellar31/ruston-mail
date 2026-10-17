@@ -33,6 +33,10 @@ const APP_ID_KEY: PROPERTYKEY = PROPERTYKEY {
     pid: 5,
 };
 
+/// Every toast carries this tag, so a new message replaces the last one's
+/// toast, as on macOS, instead of piling up senders and subjects.
+const TAG: &str = "new-mail";
+
 struct Apartment;
 impl Drop for Apartment {
     fn drop(&mut self) {
@@ -73,6 +77,7 @@ pub(super) fn show(
             texts.Item(index as u32)?.AppendChild(&text)?;
         }
         let toast = ToastNotification::CreateToastNotification(&document)?;
+        toast.SetTag(&HSTRING::from(TAG))?;
         let activation_enabled = enabled.clone();
         toast.Activated(&TypedEventHandler::new(move |_, _| {
             if activation_enabled.load(Ordering::Acquire) {
@@ -92,6 +97,25 @@ pub(super) fn show(
         Ok(Status::Ready)
     };
     result().unwrap_or(Status::Unavailable)
+}
+
+/// Removes Ruston's toasts from the notification center, so the senders and
+/// subjects of an account that signed out, or turned notifications off, do
+/// not stay there. Best effort: a failure leaves them to the user. Tests never
+/// call it, so they leave the toasts of the Ruston Mail the machine runs.
+#[cfg_attr(test, allow(dead_code))]
+pub(super) fn clear() {
+    let result = || -> windows::core::Result<()> {
+        // SAFETY: the call initializes this thread's WinRT apartment; the
+        // guard balances initialization on all return paths.
+        unsafe {
+            RoInitialize(RO_INIT_MULTITHREADED)?;
+        }
+        let _apartment = Apartment;
+        ToastNotificationManager::History()?
+            .ClearWithId(&HSTRING::from(crate::ui::identity::APP_ID))
+    };
+    let _ = result();
 }
 
 /// Whether Windows turns toasts away. It keeps no setting for an app until the

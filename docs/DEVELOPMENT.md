@@ -282,7 +282,9 @@ harmless messages; the demo deliberately sends no notifications.
   and recovery. Returning soon after a background success must not duplicate it.
 - Disable the option, sign out, and switch accounts while a request is pending.
   Its later result must not notify. Closing the app stops polling. Test Do Not
-  Disturb and confirm delivered history follows system preferences.
+  Disturb and confirm delivered history follows system preferences. On
+  Windows, a second message must replace the first toast, and signing out
+  must leave no Ruston toast in the notification center.
 
 Record OS/build, desktop/compositor, session type, package/commit, permission
 state, and observations. Mark untested combinations as **not run**. Reference

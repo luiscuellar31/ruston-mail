@@ -62,9 +62,12 @@ applications launched as URL handlers.
 When desktop notifications are enabled, a new-mail notification can show the
 sender and subject. A pending notification result is discarded during sign-out
 or after the session changes. Disabling the option also invalidates pending
-detection and native delivery work. Once handed to the operating system,
-notifications can remain in its notification history; signing out does not
-remove notifications already delivered. No email content is logged by the
+detection and native delivery work. On Windows, a new notification replaces
+the previous one, and signing out or turning notifications off removes
+Ruston's notifications from the notification center. Elsewhere, once handed
+to the operating system, notifications can remain in its notification
+history; signing out does not remove notifications already delivered. No
+email content is logged by the
 notification integration. Headers are bounded and treated as literal text,
 without controls or invisible direction marks; notification delivery does not
 load links or remote images.
