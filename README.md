@@ -43,6 +43,8 @@ Get a release from the
 | macOS 11 or later, Intel | `ruston-mail-<version>-x86_64-UNSIGNED.dmg` |
 | Linux x86_64, glibc 2.35 or later | `ruston-mail-<version>-x86_64.AppImage` |
 | Linux ARM64, glibc 2.35 or later | `ruston-mail-<version>-aarch64.AppImage` |
+| Windows 10 or later, x86_64 | `ruston-mail-<version>-x86_64-setup-UNSIGNED.exe`, or the portable `ruston-mail-<version>-x86_64-windows-UNSIGNED.zip` |
+| Windows 10 or later, ARM64 | `ruston-mail-<version>-arm64-setup-UNSIGNED.exe`, or the portable `ruston-mail-<version>-arm64-windows-UNSIGNED.zip` |
 
 Every release publishes `SHA256SUMS.txt`. Check your download against it from
 the folder that holds both:
@@ -50,6 +52,13 @@ the folder that holds both:
 ```sh
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # macOS
 sha256sum -c SHA256SUMS.txt --ignore-missing       # Linux
+```
+
+On Windows, compare the hash PowerShell prints with the file's line in
+`SHA256SUMS.txt`:
+
+```powershell
+Get-FileHash .\ruston-mail-<version>-x86_64-setup-UNSIGNED.exe
 ```
 
 **macOS:** open the DMG and drag Ruston Mail to Applications. The app is not
@@ -64,13 +73,20 @@ chmod +x ruston-mail-<version>-x86_64.AppImage
 ./ruston-mail-<version>-x86_64.AppImage
 ```
 
-Windows builds are not published yet; [build from source](#build-from-source).
+**Windows:** run the setup file. It installs for your user without
+administrator rights and adds Ruston Mail to the Start menu; it can also offer
+Ruston Mail for email links and put `ruston-cli` on your `PATH`. The files are
+not signed, so SmartScreen may say that it protected your PC: choose **More
+info**, then **Run anyway**. Windows with Smart App Control turned on does not
+run unsigned apps. To use Ruston Mail without installing it, extract the ZIP
+and start `ruston.exe`; its `README.txt` covers email links and removal.
 
 ## Command line
 
 `ruston-cli` ships inside the app and shares its session. On macOS it is
 `Ruston Mail.app/Contents/MacOS/ruston-cli`; on Linux, pass `--cli` as the
-AppImage's first argument.
+AppImage's first argument; on Windows it is `ruston-cli.exe`, beside
+`ruston.exe` in `%LOCALAPPDATA%\Programs\Ruston Mail`.
 
 ```sh
 ruston-cli messages list --folder inbox

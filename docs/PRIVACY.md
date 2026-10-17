@@ -78,11 +78,12 @@ attachments. Its reference IDs and timestamp stay in process memory. The first
 successful snapshot is silent; new unread IDs can notify even when the unread
 count does not grow. Turning the option off clears this reference.
 
-Windows toast registration creates `Ruston Mail.lnk` in the user's Start menu
-Programs folder, pointing to the running executable and carrying Ruston's
-AppUserModelID. It does not replace a shortcut belonging to another application
-and requires no administrator privileges. The shortcut remains when the app
-closes; remove it when uninstalling a manually copied executable. macOS asks
+Windows toast registration needs `Ruston Mail.lnk` in the user's Start menu
+Programs folder, carrying Ruston's AppUserModelID. The installer creates it and
+removes it on uninstall; a portable copy creates it at the first notification,
+pointing to the running executable. It does not replace a shortcut belonging
+to another application and requires no administrator privileges. A portable
+copy's shortcut remains when the app closes; delete it with the folder. macOS asks
 for system authorization when notifications become active for a signed-in
 account; a bare development executable does not request permission or notify.
 
@@ -258,6 +259,25 @@ again. Only a Developer ID signature keeps one identity across versions.
 The signature turns on the hardened runtime, so macOS does not load libraries
 injected with `DYLD_INSERT_LIBRARIES` into the process that reads the saved
 session from the Keychain.
+
+On Windows, everything stays in the user's profile, which Windows' default
+access rules keep to that user, the system and administrators:
+
+| Data | Location |
+| --- | --- |
+| Tokens and key passphrase | Credential Manager, generic credentials named `<profile>:…ruston-mail` |
+| Session metadata | `%APPDATA%\ruston-mail\config\sessions` |
+| Desktop settings | `%APPDATA%\Ruston Mail\config\settings.json` |
+| CLI cache | `%LOCALAPPDATA%\ruston-mail\cache\accounts` |
+| Single-instance lock | `%LOCALAPPDATA%\Ruston Mail\data\activation` |
+
+`%APPDATA%` follows a roaming profile to other computers, and so do the
+Credential Manager entries, which use enterprise persistence. Any program
+running as the same user can read those entries; Windows has no per-app access
+check like the macOS Keychain's. Uninstalling removes the program, its Start
+menu shortcut, the email-link registration and the `PATH` entry, and leaves
+the rest: sign out first to remove the session from Credential Manager, then
+delete the folders above to remove settings and the cache.
 
 ## Attachments
 

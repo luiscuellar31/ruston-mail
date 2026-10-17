@@ -184,10 +184,16 @@ foreach ($executable in $executables) {
     }
 }
 
-Write-Step 'ruston-cli --version'
-$reported = & (Join-Path $Directory 'ruston-cli.exe') --version
-if ($LASTEXITCODE -ne 0 -or $reported -ne "ruston-cli $version") {
-    Stop-Verification "ruston-cli reports '$reported', expected 'ruston-cli $version'"
+# An x64 system cannot run ARM64 programs; an ARM64 one runs both.
+$os = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+if ($Architecture -eq 'arm64' -and $os -ne 'Arm64') {
+    Write-Step "ruston-cli --version not run: $Architecture build on a $os system"
+} else {
+    Write-Step 'ruston-cli --version'
+    $reported = & (Join-Path $Directory 'ruston-cli.exe') --version
+    if ($LASTEXITCODE -ne 0 -or $reported -ne "ruston-cli $version") {
+        Stop-Verification "ruston-cli reports '$reported', expected 'ruston-cli $version'"
+    }
 }
 
 Write-Step "$Directory is ready: $Architecture, version $version"

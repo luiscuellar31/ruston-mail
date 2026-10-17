@@ -61,10 +61,12 @@ cargo test --locked --workspace --all-features
 CI uses Bash on all runners, including Git Bash on Windows, and sets
 `RUSTDOCFLAGS` through the workflow's `env` field. Linux jobs run on
 `ubuntu-24.04` and `ubuntu-24.04-arm`, named rather than `ubuntu-latest` so a
-new Ubuntu reaches CI only through a workflow change. The Windows job uses the
-`windows-2025` x86_64 runner and the native MSVC toolchain. Its cache is separate
-from the Linux and macOS caches. All platforms run the same checks; a failure
-on one platform does not cancel the other jobs.
+new Ubuntu reaches CI only through a workflow change. The Windows jobs use the
+`windows-2025` x86_64 and `windows-11-arm` ARM64 runners with the native MSVC
+toolchain; on ARM64, aws-lc-sys also needs LLVM's clang-cl, which the job puts
+on the `PATH`. Their caches are separate from the Linux and macOS caches. All
+platforms run the same checks; a failure on one platform does not cancel the
+other jobs.
 
 Linux also validates the desktop entry with `desktop-file-validate` and its
 AppStream metadata with `appstreamcli validate`. Windows builds `ruston.exe`
@@ -557,6 +559,51 @@ AppImage runs through a link named `ruston-cli`. Release builds run on Ubuntu
 22.04, the oldest LTS in standard support and the system the AppImage catalog
 tests on, so the AppImage needs glibc 2.35 or newer.
 
+## Packaging (Windows)
+
+On Windows, build `ruston.exe` and `ruston-cli.exe` from the lockfile, check
+them, and write an installer and a portable ZIP to `dist/`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1
+```
+
+The script needs [Inno Setup 6](https://jrsoftware.org/isinfo.php) (pass
+`-InnoSetup <path to ISCC.exe>` if it is not in a usual place). Options:
+- `-Architecture x86_64` or `arm64`: the default is the machine's. An ARM64
+  build on an x64 machine needs Visual Studio's ARM64 build tools and its
+  C++ Clang compiler (clang-cl on the `PATH`), which aws-lc-sys uses for ARM64.
+- `-SkipBuild`: package the existing `target/<triple>/release` binaries.
+- `-Dist <folder>`: write somewhere other than `dist/`.
+
+It checks the binaries with
+[`verify-windows.ps1`](../packaging/windows/verify-windows.ps1) and writes:
+- `ruston-mail-<version>-<arch>-setup-UNSIGNED.exe`, built from
+  [`ruston-mail.iss`](../packaging/windows/ruston-mail.iss). It installs for the
+  current user only, without administrator rights, in
+  `%LOCALAPPDATA%\Programs\Ruston Mail`, and adds the `Ruston Mail` Start menu
+  shortcut with the app's AppUserModelID, which toast notifications need.
+  Optional tasks register the email-link handler, as `register-mailto.ps1`
+  does, and add the folder to the user's `PATH`. Uninstalling removes them and
+  keeps settings, the session and caches. A later version upgrades it in place
+  and closes a running copy first.
+- `ruston-mail-<version>-<arch>-windows-UNSIGNED.zip`: the same executables in
+  one folder with the license, the mailto scripts and a
+  [`README.txt`](../packaging/windows/README.txt).
+- a `.sha256` file beside each, holding its hash.
+
+`-UNSIGNED` marks files without an Authenticode signature: SmartScreen warns
+about them, and Smart App Control does not run them.
+
+[`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) starts `ruston.exe`
+and fails unless its window opens and draws without an error box, then closes
+it. [`test-installer.ps1`](../packaging/windows/test-installer.ps1) installs
+silently, checks the files, shortcut and registration, starts the installed
+app, uninstalls, and checks that another app's registration survived. It
+installs into the real user profile, so run it on a disposable machine, or
+with `$env:RUSTON_DEMO = "1"` set so the app it starts opens the fictional
+mailbox.
+
 ## Releases
 
 The [release workflow](../.github/workflows/release-artifacts.yml) builds every
@@ -569,9 +616,12 @@ packaging break shows up before a release:
 | `ruston-mail-<version>-x86_64-UNSIGNED.dmg` | macOS 15 Intel runner | `verify-bundle.sh`, then started once |
 | `ruston-mail-<version>-x86_64.AppImage` and its `.zsync` | Ubuntu 22.04 runner | `appdir-lint.sh`, glibc 2.35 floor, started once under Xvfb |
 | `ruston-mail-<version>-aarch64.AppImage` and its `.zsync` | Ubuntu 22.04 ARM runner | as for x86_64 |
+| `ruston-mail-<version>-x86_64-setup-UNSIGNED.exe` and `ruston-mail-<version>-x86_64-windows-UNSIGNED.zip` | Windows Server 2025 runner | `verify-windows.ps1`, the ZIP's app started once, the installer installed, started and uninstalled |
+| `ruston-mail-<version>-arm64-setup-UNSIGNED.exe` and `ruston-mail-<version>-arm64-windows-UNSIGNED.zip` | Windows 11 ARM runner | as for x86_64 |
 
 The builds use pinned, digest-checked tools and no cache, so each release comes
-from the lockfile alone.
+from the lockfile alone. Windows runners have no GPU, so the started app draws
+with WARP, as a virtual machine would.
 
 To publish a release:
 

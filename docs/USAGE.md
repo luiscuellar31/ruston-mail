@@ -182,7 +182,9 @@ Launching Ruston again activates the existing instance for that user; the demo
 has its own instance. The system can restrict bringing a window to the front,
 especially on Wayland, where it can show an attention indicator instead.
 See the [setup instructions](DEVELOPMENT.md#email-link-handlers-and-activation)
-to enable email-link handling on your platform.
+to enable email-link handling on your platform. On Windows, the installer's
+email-link option registers Ruston; then choose it for MAILTO in Settings >
+Apps > Default apps.
 
 ## Attachments
 
@@ -399,6 +401,11 @@ inside the app:
 
 - **Linux:** pass `--cli` as the AppImage's first argument, or start the
   AppImage through a link named `ruston-cli`.
+- **Windows:** `ruston-cli.exe` sits beside `ruston.exe`, in
+  `%LOCALAPPDATA%\Programs\Ruston Mail` after installing. Select *Add
+  ruston-cli to the PATH* in the installer to run it as `ruston-cli` from any
+  terminal; with the portable ZIP, run it from its folder or add the folder to
+  your `PATH`.
 
 From source, run `cargo run -p ruston-cli -- --help`. `ruston-cli --help` lists
 every command, and `ruston-cli <command> --help` its options.

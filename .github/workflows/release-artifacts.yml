@@ -269,6 +269,94 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  build-windows:
+    name: Build Windows (${{ matrix.arch }})
+    needs:
+      - verify-source
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      VERSION: ${{ needs.verify-source.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x86_64
+          - runner: windows-11-arm
+            arch: arm64
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Inno Setup
+        run: |
+          # Pin the release and check its digest, so the tool that builds the
+          # installer cannot change under us. Installed for this user only.
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $installer
+          $digest = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+          if ($digest -ne '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732') {
+            throw "Unexpected Inno Setup digest: $digest"
+          }
+          $folder = Join-Path $env:RUNNER_TEMP 'inno-setup'
+          Start-Process -FilePath $installer -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$folder`""
+          $iscc = Join-Path $folder 'ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) { throw 'Inno Setup did not install' }
+          "INNO_SETUP=$iscc" >> $env:GITHUB_ENV
+
+      # No build cache: a release is built from scratch from the lockfile.
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      # aws-lc-sys builds its ARM64 code with clang-cl from LLVM.
+      - name: Put clang-cl on the PATH
+        if: matrix.arch == 'arm64'
+        run: |
+          if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue)) {
+            $llvm = Join-Path $env:ProgramFiles 'LLVM\bin'
+            $env:PATH = "$llvm;$env:PATH"
+            $llvm >> $env:GITHUB_PATH
+          }
+          clang-cl --version
+
+      - name: Build the installer and the ZIP
+        run: ./packaging/windows/package.ps1 -Architecture $env:ARCH -Dist dist -InnoSetup $env:INNO_SETUP
+
+      # Runners have no GPU, so the app draws with WARP, as a VM would.
+      - name: Start the portable app
+        run: ./packaging/windows/smoke-test.ps1 -Executable "dist/ruston-mail-$env:VERSION-$env:ARCH-windows/ruston.exe"
+
+      - name: Install, start and uninstall
+        run: ./packaging/windows/test-installer.ps1 -Installer "dist/ruston-mail-$env:VERSION-$env:ARCH-setup-UNSIGNED.exe"
+
+      - name: Collect Windows artifacts
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          foreach ($file in "ruston-mail-$env:VERSION-$env:ARCH-setup-UNSIGNED.exe", "ruston-mail-$env:VERSION-$env:ARCH-windows-UNSIGNED.zip") {
+            foreach ($part in "dist/$file", "dist/$file.sha256") {
+              if (-not (Test-Path -LiteralPath $part)) { throw "Missing $part" }
+              Copy-Item -LiteralPath $part -Destination out
+            }
+          }
+          Get-ChildItem out
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
   publish-assets:
     name: Upload assets to release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -276,6 +364,7 @@ jobs:
       - verify-source
       - build-macos
       - build-linux
+      - build-windows
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -317,6 +406,14 @@ jobs:
               exit 1
             }
           done
+          for arch in x86_64 arm64; do
+            setup="release-assets/windows-${arch}/ruston-mail-${VERSION}-${arch}-setup-UNSIGNED.exe"
+            zip="release-assets/windows-${arch}/ruston-mail-${VERSION}-${arch}-windows-UNSIGNED.zip"
+            [[ -s "$setup" && -s "$zip" ]] || {
+              echo "Missing Windows installer or ZIP for ${arch}"
+              exit 1
+            }
+          done
           # Per-file .sha256 sidecars are replaced by one combined list.
           find release-assets -type f ! -name '*.sha256' | sort > publish-files.txt
           : > SHA256SUMS.txt
@@ -336,6 +433,8 @@ jobs:
             release-assets/**/*.dmg
             release-assets/**/*.AppImage
             release-assets/**/*.zsync
+            release-assets/**/*.exe
+            release-assets/**/*.zip
 
       - name: Generate draft release notes
         env:
