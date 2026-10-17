@@ -48,7 +48,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   [`launch/macos.rs`](../src/launch/macos.rs) registers a retained `GURL` Apple
   Event target before the event loop starts, without replacing winit's delegate.
   Linux's `.desktop` file passes `%u`; Windows exposes a selectable per-user
-  handler through [`register-mailto.ps1`](../packaging/windows/register-mailto.ps1).
+  handler through [`register-mailto.ps1`](../packaging/windows/register-mailto.ps1),
+  which [`unregister-mailto.ps1`](../packaging/windows/unregister-mailto.ps1)
+  removes.
 - On Windows the desktop is a window app with no console of its own
   (`windows_subsystem` in [`src/main.rs`](../src/main.rs)), so standard error
   reaches nobody unless the caller hands it down. [`src/diagnostics.rs`](../src/diagnostics.rs)

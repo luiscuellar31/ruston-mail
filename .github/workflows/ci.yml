@@ -105,15 +105,30 @@ jobs:
           Copy-Item -LiteralPath 'target/debug/ruston.exe' -Destination $executable
           $choice = 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\mailto\UserChoice'
           $before = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
+          # Other apps' registrations share this key and must survive.
+          $apps = 'HKCU:\Software\RegisteredApplications'
+          if (-not (Test-Path $apps)) { New-Item -Path $apps | Out-Null }
+          New-ItemProperty -Path $apps -Name 'Other app' -Value 'Software\Other\Capabilities' -PropertyType String -Force | Out-Null
+          # Twice, as a reinstall would.
+          & ./packaging/windows/register-mailto.ps1 -ExecutablePath $executable
           & ./packaging/windows/register-mailto.ps1 -ExecutablePath $executable
           $command = (Get-Item 'HKCU:\Software\Classes\com.luiscuellar.ruston-mail.mailto\shell\open\command').GetValue('')
           if ($command -ne ('"{0}" "%1"' -f $executable)) { throw 'Executable path was not quoted correctly.' }
           $handler = Get-ItemPropertyValue 'HKCU:\Software\Ruston Mail\Capabilities\UrlAssociations' -Name mailto
           if ($handler -ne 'com.luiscuellar.ruston-mail.mailto') { throw 'MAILTO capability was not registered.' }
-          $registered = Get-ItemPropertyValue 'HKCU:\Software\RegisteredApplications' -Name 'Ruston Mail'
+          $registered = Get-ItemPropertyValue $apps -Name 'Ruston Mail'
           if ($registered -ne 'Software\Ruston Mail\Capabilities') { throw 'Application registration is missing.' }
+          if ((Get-ItemPropertyValue $apps -Name 'Other app') -ne 'Software\Other\Capabilities') { throw 'Registration removed another app.' }
           $after = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
           if ($after -ne $before) { throw 'Registration changed the default MAILTO association.' }
+
+          & ./packaging/windows/unregister-mailto.ps1
+          if (Test-Path 'HKCU:\Software\Classes\com.luiscuellar.ruston-mail.mailto') { throw 'The mailto handler is still registered.' }
+          if (Test-Path 'HKCU:\Software\Ruston Mail') { throw 'The capabilities are still registered.' }
+          if ((Get-Item $apps).Property -contains 'Ruston Mail') { throw 'The application is still registered.' }
+          if ((Get-ItemPropertyValue $apps -Name 'Other app') -ne 'Software\Other\Capabilities') { throw 'Unregistration removed another app.' }
+          $after = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
+          if ($after -ne $before) { throw 'Unregistration changed the default MAILTO association.' }
 
       - name: Verify Windows executables
         if: runner.os == 'Windows'

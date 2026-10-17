@@ -447,23 +447,33 @@ set `$env:RUSTON_DEMO = '1'` before `cargo run -- 'mailto:...'`.
   `Info.plist`. Select Ruston in Mail > Settings > General > Default email
   reader. Test both cold and warm reception with
   `open -a '/path/to/Ruston Mail.app' 'mailto:team@example.org?subject=Hello'`.
-- Windows: keep `ruston.exe` in its installed location, then run
-  `./packaging/windows/register-mailto.ps1 -ExecutablePath 'C:\path with spaces\ruston.exe'`
-  from PowerShell. The script registers current-user capabilities and a quoted
-  command; it neither changes the default app nor modifies `UserChoice`.
-  Select Ruston for `MAILTO` in Settings > Apps > Default apps. Test a link
-  using `Start-Process 'mailto:team@example.org?subject=Hello'`.
+- Windows: keep `ruston.exe` in its installed location, then run this from
+  PowerShell. Windows PowerShell does not run downloaded or unsigned scripts
+  by default, so `-ExecutionPolicy Bypass` allows this one script only:
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\packaging\windows\register-mailto.ps1 -ExecutablePath 'C:\path with spaces\ruston.exe'
+  ```
+
+  The script registers current-user capabilities and a quoted command; it
+  neither changes the default app nor modifies `UserChoice`, and it keeps the
+  other apps listed under `HKCU\Software\RegisteredApplications`. Select
+  Ruston for `MAILTO` in Settings > Apps > Default apps. Test a link using
+  `Start-Process 'mailto:team@example.org?subject=Hello'`.
 
 To undo default selection, choose the previous email app in the same settings.
-For manual Windows uninstall, remove only Ruston's registered-application
-value, `HKCU\Software\Classes\com.luiscuellar.ruston-mail.mailto`, and
-`HKCU\Software\Ruston Mail\Capabilities`; do not edit `UserChoice`.
+To remove the registration, run
+`powershell -ExecutionPolicy Bypass -File .\packaging\windows\unregister-mailto.ps1`.
+It deletes Ruston's handler and capabilities and only Ruston's value under
+`RegisteredApplications`, and leaves `UserChoice` alone: if Ruston was the
+default, Windows asks for another app at the next link.
 
 Automated tests cover URI decoding/injection, login/draft/modal guards, real
 loopback forwarding, lock takeover, overflow, private Unix permissions, idle
-and slow peers. Windows CI additionally exercises the registration script with an
-executable path containing spaces and verifies that the default association
-is unchanged. Native desktop smoke checks still require each platform:
+and slow peers. Windows CI additionally runs the registration script twice
+with an executable path containing spaces, then the removal script, and
+verifies that another app's registration and the default association are
+unchanged. Native desktop smoke checks still require each platform:
 
 1. Open a link with Ruston stopped, then with it running/minimized. Confirm one
    instance and the correct recipients, Unicode subject, and multi-line body.
