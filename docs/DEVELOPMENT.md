@@ -574,5 +574,17 @@ To inspect Proton request results without logging message bodies or secrets:
 RUSTON_DEBUG_HTTP=1 cargo run
 ```
 
+On Windows the desktop is a window app without a console of its own, so its
+standard error goes where the caller hands it, as `cargo run` and redirects
+do. Started from a terminal any other way, it writes to that terminal, which
+takes its prompt back at once; Ctrl+C there leaves the window open. To keep
+the output in a file instead:
+
+```powershell
+$env:RUSTON_DEBUG_HTTP = "1"
+Start-Process .\target\debug\ruston.exe -Wait -RedirectStandardError http.log
+Remove-Item Env:RUSTON_DEBUG_HTTP
+```
+
 See [Privacy and local data](PRIVACY.md#http-diagnostics) for exactly what this
 prints.

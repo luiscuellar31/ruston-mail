@@ -48,6 +48,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Event target before the event loop starts, without replacing winit's delegate.
   Linux's `.desktop` file passes `%u`; Windows exposes a selectable per-user
   handler through [`register-mailto.ps1`](../packaging/windows/register-mailto.ps1).
+- On Windows the desktop is a window app with no console of its own
+  (`windows_subsystem` in [`src/main.rs`](../src/main.rs)), so standard error
+  reaches nobody unless the caller hands it down. [`src/diagnostics.rs`](../src/diagnostics.rs)
+  shows a failure to start, or to hand a link to the open window, and a panic
+  that ends the process in a message box. With `RUSTON_DEBUG_HTTP` it attaches
+  to the console of the terminal Ruston was started from, unless standard
+  error already goes to a file or pipe, and ignores that console's Ctrl+C.
 - [`src/mailto.rs`](../src/mailto.rs) accepts only recipient, subject, and plain
   text body defaults. It decodes UTF-8 escapes once, preserves literal `+`,
   rejects control/header injection and ambiguous duplicate fields, and ignores

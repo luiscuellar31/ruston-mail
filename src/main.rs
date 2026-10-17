@@ -1,4 +1,9 @@
+// A window app on Windows: launching it never opens a console, whose closing
+// would end Ruston without asking about a written message.
+#![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
+
 mod app;
+mod diagnostics;
 mod downloads;
 mod file_manager;
 mod launch;
@@ -9,6 +14,7 @@ mod settings;
 mod ui;
 
 use std::ffi::OsStr;
+use std::process::ExitCode;
 
 use tracing_subscriber::EnvFilter;
 
@@ -23,22 +29,30 @@ const DEBUG_HTTP_FILTER: &str = "ruston_core::http=debug";
 /// Set to `1` to open a local fictional mailbox instead of Proton.
 const DEMO_ENV: &str = "RUSTON_DEMO";
 
-fn main() -> eframe::Result {
+fn main() -> ExitCode {
     if std::env::var_os(DEBUG_HTTP_ENV).is_some() {
+        diagnostics::show_debug_output();
         let _ = tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::new(DEBUG_HTTP_FILTER))
             .with_writer(std::io::stderr)
             .try_init();
     }
 
+    match diagnostics::report_panics(start) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            diagnostics::report_failure(&error);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn start() -> Result<(), Box<dyn std::error::Error>> {
     let demo = demo_requested(std::env::var_os(DEMO_ENV).as_deref());
-    let urls = launch::arguments(std::env::args_os().skip(1))
-        .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?;
-    match launch::Instance::start(demo, urls)
-        .map_err(|error| eframe::Error::AppCreation(Box::new(error)))?
-    {
+    let urls = launch::arguments(std::env::args_os().skip(1))?;
+    match launch::Instance::start(demo, urls)? {
         launch::Start::Forwarded => Ok(()),
-        launch::Start::Primary(instance) => ui::run(demo, instance),
+        launch::Start::Primary(instance) => Ok(ui::run(demo, instance)?),
     }
 }
 
