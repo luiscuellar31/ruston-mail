@@ -130,8 +130,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   the window, whose own undo history is empty, so their keys still reach egui's
   text fields. View's Actual Size, Zoom In and Zoom Out queue zoom steps, which
   the shell applies like `Cmd`/`Ctrl` with `0`, `+`, `=` or `-` on every
-  platform: one of Settings' scale levels, saved at once and copied into an
-  open Settings draft. egui's own keyboard zoom is off, since the shell
+  platform, pressed in the mailbox or the separate composer, whose window
+  hands the step back to the shell: one of Settings' scale levels, saved at
+  once and copied into an open Settings draft. egui's own keyboard zoom is off, since the shell
   reapplies the saved zoom every pass. It retains
   selector targets, validates authentication/modal availability, and restores
   owned menu and responder changes on drop; it does not replace winit's

@@ -638,21 +638,7 @@ impl DesktopApp {
     /// Command with plus, equals, minus or zero steps the zoom on every
     /// screen, as Settings would. On macOS the View menu takes all but equals.
     fn zoom_shortcuts(&mut self, context: &egui::Context) {
-        use egui::gui_zoom::kb_shortcuts;
-        let step = context.input_mut(|input| {
-            if input.consume_shortcut(&kb_shortcuts::ZOOM_RESET) {
-                Some(settings::ZoomStep::Reset)
-            } else if input.consume_shortcut(&kb_shortcuts::ZOOM_IN)
-                || input.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
-            {
-                Some(settings::ZoomStep::In)
-            } else if input.consume_shortcut(&kb_shortcuts::ZOOM_OUT) {
-                Some(settings::ZoomStep::Out)
-            } else {
-                None
-            }
-        });
-        if let Some(step) = step {
+        if let Some(step) = zoom_keys(context) {
             self.step_zoom(step, context);
         }
     }
@@ -976,6 +962,7 @@ impl eframe::App for DesktopApp {
         }
         let context = ui.ctx().clone();
         let mut messages = Vec::new();
+        let mut composer_zoom = None;
         email_link_notice(ui, &self.app, &mut messages);
         if !self.app.showing_settings()
             || !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
@@ -1018,12 +1005,14 @@ impl eframe::App for DesktopApp {
                 if self.app.settings().compose_placement == ComposePlacement::Window
                     && let Some(writing) = self.app.compose()
                 {
-                    messages.extend(compose::show_window(
+                    let (window_messages, zoom) = compose::show_window(
                         &context,
                         writing,
                         self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
                         std::mem::take(&mut self.composer_edits),
-                    ));
+                    );
+                    messages.extend(window_messages);
+                    composer_zoom = zoom;
                 }
             }
             AuthState::SigningOut => {
@@ -1051,6 +1040,9 @@ impl eframe::App for DesktopApp {
             .pending_discard
             .and_then(|leaving| close::confirm(&context, leaving));
         theme::paint_focus_ring(&context);
+        if let Some(step) = composer_zoom {
+            self.step_zoom(step, &context);
+        }
         let has_messages = !messages.is_empty();
         for message in messages {
             self.dispatch(message, &context);
@@ -1065,6 +1057,25 @@ impl eframe::App for DesktopApp {
             context.request_repaint();
         }
     }
+}
+
+/// Takes the zoom keys pressed in the window being drawn, the mailbox's or
+/// the composer's, and returns the step they ask for.
+fn zoom_keys(context: &egui::Context) -> Option<settings::ZoomStep> {
+    use egui::gui_zoom::kb_shortcuts;
+    context.input_mut(|input| {
+        if input.consume_shortcut(&kb_shortcuts::ZOOM_RESET) {
+            Some(settings::ZoomStep::Reset)
+        } else if input.consume_shortcut(&kb_shortcuts::ZOOM_IN)
+            || input.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
+        {
+            Some(settings::ZoomStep::In)
+        } else if input.consume_shortcut(&kb_shortcuts::ZOOM_OUT) {
+            Some(settings::ZoomStep::Out)
+        } else {
+            None
+        }
+    })
 }
 
 fn key(key: Key, command: bool) -> KeyPress {
@@ -1602,6 +1613,32 @@ mod tests {
         assert_eq!(desktop.settings_draft.as_ref().unwrap().zoom, 1.15);
         // egui no longer zooms on its own, so no frame shows another scale.
         assert_eq!(context.zoom_factor(), 1.0);
+    }
+
+    #[test]
+    fn zoom_keys_in_the_composer_window_reach_the_shell() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        let zoom_out = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Minus,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        };
+        // Without a backend the window is drawn inside this one, with its keys.
+        let mut zoom = None;
+        let output = context.run_ui(zoom_out, |ui| {
+            let compose = desktop.app.compose().unwrap();
+            zoom = compose::show_window(ui.ctx(), compose, false, Vec::new()).1;
+        });
+        output.drop_without_applying_deltas();
+
+        assert_eq!(zoom, Some(settings::ZoomStep::Out));
     }
 
     #[test]

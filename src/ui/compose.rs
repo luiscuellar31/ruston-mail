@@ -1,5 +1,6 @@
 use eframe::egui::{self, Align, Layout};
 
+use super::settings::ZoomStep;
 use super::{identity, mailbox::detail, reader, theme};
 use crate::app::{Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
@@ -29,16 +30,19 @@ pub(super) fn window_viewport(compose: &Compose) -> egui::ViewportBuilder {
 }
 
 /// Shows the composer in its own window. `edits` are the window's Edit menu
-/// commands, which reach its text as the keys would have.
+/// commands, which reach its text as the keys would have. Returns what the
+/// window asks for, and the zoom step its keys ask the shell for: zoom applies
+/// to both windows, as from the mailbox window.
 pub(super) fn show_window(
     context: &egui::Context,
     compose: &Compose,
     blocked: bool,
     mut edits: Vec<egui::Event>,
-) -> Vec<Message> {
+) -> (Vec<Message>, Option<ZoomStep>) {
     context.show_viewport_immediate(viewport_id(), window_viewport(compose), |root, _class| {
         root.ctx()
             .input_mut(|input| input.events.append(&mut edits));
+        let zoom = super::zoom_keys(root.ctx());
         let mut messages = Vec::new();
         root.add_enabled_ui(!blocked, |root| show(root, compose, &mut messages));
         theme::paint_focus_ring(root.ctx());
@@ -48,7 +52,7 @@ pub(super) fn show_window(
                 root.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
-            return Vec::new();
+            return (Vec::new(), zoom);
         }
 
         if root.input(|input| input.viewport().close_requested()) {
@@ -78,7 +82,7 @@ pub(super) fn show_window(
             messages.push(Message::Send);
         }
 
-        messages
+        (messages, zoom)
     })
 }
 
