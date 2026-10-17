@@ -286,8 +286,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   bounds connection and reply to three seconds and falls back to opening the
   containing folder with `xdg-open`.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
-  to egui visuals and custom-painted widget colors. The shell stores it for
-  the next run and applies [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
+  to egui visuals and custom-painted widget colors; egui gives each window's
+  title bar the same theme when it changes. winit gives a Windows title bar
+  the Windows theme again whenever Windows announces a changed setting, so
+  `theme::TitleBar` repeats egui's request for the main and composer windows
+  when the Windows theme changes or the window comes back to the front. A
+  change announced while the window keeps focus shows until then. The shell
+  stores the preference for the next run and applies
+  [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
   Bundled typography stays primary by default. The optional system UI face is
   San Francisco/Helvetica Neue on macOS, Segoe UI/Arial on Windows, or
   Fontconfig's sans-serif family on Linux (with known local alternatives).

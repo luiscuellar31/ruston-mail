@@ -150,6 +150,9 @@ struct DesktopApp {
     /// Edit menu commands for the composer's own window, which only macOS
     /// sends. They reach its text as input on the window's next pass.
     composer_edits: Vec<egui::Event>,
+    /// Keep each window's title bar in the app's theme on Windows.
+    root_title_bar: theme::TitleBar,
+    composer_title_bar: theme::TitleBar,
     #[cfg(target_os = "macos")]
     native_menu: Option<macos::Menu>,
 }
@@ -203,6 +206,8 @@ impl DesktopApp {
             focus_after_activation: false,
             shown_draft: None,
             composer_edits: Vec::new(),
+            root_title_bar: theme::TitleBar::default(),
+            composer_title_bar: theme::TitleBar::default(),
             #[cfg(target_os = "macos")]
             native_menu: None,
         };
@@ -927,6 +932,7 @@ impl eframe::App for DesktopApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.runtime.attach(context);
         theme::apply(context, self.app.settings().appearance);
+        self.root_title_bar.keep(context);
         self.apply_zoom(context);
         fonts::apply(context, self.app.settings().system_font);
         self.drain_runtime(context);
@@ -1028,6 +1034,7 @@ impl eframe::App for DesktopApp {
                         writing,
                         self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
                         std::mem::take(&mut self.composer_edits),
+                        &mut self.composer_title_bar,
                     );
                     messages.extend(window.messages);
                     composer_zoom = window.zoom;
@@ -1681,7 +1688,14 @@ mod tests {
         let mut zoom = None;
         let output = context.run_ui(zoom_out, |ui| {
             let compose = desktop.app.compose().unwrap();
-            zoom = compose::show_window(ui.ctx(), compose, false, Vec::new()).zoom;
+            zoom = compose::show_window(
+                ui.ctx(),
+                compose,
+                false,
+                Vec::new(),
+                &mut theme::TitleBar::default(),
+            )
+            .zoom;
         });
         output.drop_without_applying_deltas();
 
@@ -1714,7 +1728,14 @@ mod tests {
         let mut dropped = Vec::new();
         let output = context.run_ui(drop, |ui| {
             let compose = desktop.app.compose().unwrap();
-            dropped = compose::show_window(ui.ctx(), compose, false, Vec::new()).dropped;
+            dropped = compose::show_window(
+                ui.ctx(),
+                compose,
+                false,
+                Vec::new(),
+                &mut theme::TitleBar::default(),
+            )
+            .dropped;
         });
         output.drop_without_applying_deltas();
 

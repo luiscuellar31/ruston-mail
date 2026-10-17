@@ -567,6 +567,45 @@ pub fn apply(context: &egui::Context, appearance: Appearance) {
     }
 }
 
+/// Gives a window's title bar back the theme egui gave it, when Windows may
+/// have taken it away. egui tells a window its title bar's theme when the
+/// app's theme changes, but winit 0.30 gives the bar the Windows theme again
+/// whenever Windows announces a changed setting, which can leave a dark bar
+/// over a light window. That announcement does not reach the app, so the
+/// request is repeated when the Windows theme changes and when the window
+/// comes back to the front, which usually follows a change made elsewhere.
+/// Never every pass, since each request repaints the window's frame.
+#[derive(Default)]
+pub struct TitleBar {
+    /// The Windows theme and whether the window had focus, at the last pass.
+    seen: Option<(Option<egui::Theme>, bool)>,
+}
+
+impl TitleBar {
+    /// Repeats egui's title bar theme for the window `context` is drawing,
+    /// when it may need it. Other systems keep their title bars.
+    pub fn keep(&mut self, context: &egui::Context) {
+        if !cfg!(target_os = "windows") {
+            return;
+        }
+        // `raw` holds the focus even when only the app's logic runs.
+        let now = context.input(|input| (input.raw.system_theme, input.raw.focused));
+        let lost = self
+            .seen
+            .is_some_and(|(system, focused)| system != now.0 || (now.1 && !focused));
+        self.seen = Some(now);
+        if lost {
+            // As egui itself sends it.
+            let theme = match context.options(|options| options.theme_preference) {
+                egui::ThemePreference::System => egui::SystemTheme::SystemDefault,
+                egui::ThemePreference::Dark => egui::SystemTheme::Dark,
+                egui::ThemePreference::Light => egui::SystemTheme::Light,
+            };
+            context.send_viewport_cmd(egui::ViewportCommand::SetTheme(theme));
+        }
+    }
+}
+
 /// Rings the widget that has keyboard focus. egui marks a focused button only
 /// with a slightly darker fill, and a focused row or message header not at
 /// all, so one ring serves every kind. Called once a window's widgets are all
@@ -1343,6 +1382,46 @@ mod tests {
             context.style_of(egui::Theme::Dark).visuals.panel_fill,
             DARK.panel
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_title_bar_gets_its_theme_again_when_windows_may_have_taken_it() {
+        let context = egui::Context::default();
+        install(&context);
+        let mut title_bar = TitleBar::default();
+        let mut pass = |focused, system_theme| {
+            let raw = egui::RawInput {
+                focused,
+                system_theme,
+                ..Default::default()
+            };
+            let mut output = context.run_ui(raw, |ui| title_bar.keep(ui.ctx()));
+            let commands = output
+                .viewport_output
+                .remove(&egui::ViewportId::ROOT)
+                .map(|viewport| viewport.commands)
+                .unwrap_or_default();
+            output.drop_without_applying_deltas();
+            commands
+        };
+        let dark = vec![egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark)];
+        let light = vec![egui::ViewportCommand::SetTheme(egui::SystemTheme::Light)];
+        let windows_light = Some(egui::Theme::Light);
+        let windows_dark = Some(egui::Theme::Dark);
+
+        // egui's own request, which the bar keeps until something changes.
+        assert_eq!(pass(true, windows_light), dark);
+        assert!(pass(true, windows_light).is_empty());
+        // Windows changed theme, which winit gave the title bar too.
+        assert_eq!(pass(true, windows_dark), dark);
+        // Back in front: a setting may have changed meanwhile.
+        assert!(pass(false, windows_dark).is_empty());
+        assert_eq!(pass(true, windows_dark), dark);
+        // egui's request for the new theme, not repeated.
+        apply(&context, Appearance::Light);
+        assert_eq!(pass(true, windows_dark), light);
+        assert!(pass(true, windows_dark).is_empty());
     }
 
     #[test]

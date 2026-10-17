@@ -163,6 +163,10 @@ try {
   WARP, Windows' software renderer.
 - Switch between light and dark appearance, resize the panes, close the app,
   and reopen it. Verify that applied appearance and settled sizes are restored.
+- With Windows in the other app mode, verify that the title bars of the main
+  and composer windows take Ruston's appearance. Change the Windows accent
+  color with Ruston behind another window: once Ruston is back in front, its
+  title bar is in Ruston's appearance again.
 - Check the UI at Windows display scaling of 100% and 150%. If two monitors are
   available, move the window between different display scales and check text,
   pointer targets, and the file dialog position.

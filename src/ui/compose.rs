@@ -65,14 +65,17 @@ pub(super) struct WindowPass {
 }
 
 /// Shows the composer in its own window. `edits` are the window's Edit menu
-/// commands, which reach its text as the keys would have.
+/// commands, which reach its text as the keys would have; `title_bar` keeps
+/// the window's title bar in the app's theme on Windows.
 pub(super) fn show_window(
     context: &egui::Context,
     compose: &Compose,
     blocked: bool,
     mut edits: Vec<egui::Event>,
+    title_bar: &mut theme::TitleBar,
 ) -> WindowPass {
     context.show_viewport_immediate(viewport_id(), window_viewport(compose), |root, _class| {
+        title_bar.keep(root.ctx());
         root.ctx()
             .input_mut(|input| input.events.append(&mut edits));
         let zoom = super::zoom_keys(root.ctx());
