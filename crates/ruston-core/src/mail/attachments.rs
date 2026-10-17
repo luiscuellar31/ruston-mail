@@ -68,6 +68,26 @@ pub fn is_invisible_mark(c: char) -> bool {
     )
 }
 
+/// Marks a saved attachment as downloaded from the internet, as browsers mark
+/// their downloads: on Windows, SmartScreen then checks the file before it
+/// runs and Office opens it in Protected View. Elsewhere this does nothing.
+/// The mark is an NTFS alternate data stream, so on a file system without
+/// them, such as FAT32, the file stays unmarked and this returns the error.
+pub fn mark_downloaded(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        // Zone 3 is the Internet zone.
+        std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 fn is_windows_reserved(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or(name).trim_end();
     if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"]
@@ -782,5 +802,24 @@ mod tests {
         ] {
             assert_eq!(safe_attachment_name(input), expected);
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_marked_download_carries_the_internet_zone() {
+        let path = std::env::temp_dir().join(format!(
+            "ruston-zone-{} informe ñ, 100%.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"%PDF").unwrap();
+        mark_downloaded(&path).unwrap();
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        assert_eq!(
+            std::fs::read_to_string(stream).unwrap(),
+            "[ZoneTransfer]\r\nZoneId=3\r\n"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -566,7 +566,10 @@ instead of an unknown outcome.
   `read_conversation` keeps failing on any message it cannot open.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
   owns the filename policy shared by both frontends. Each frontend chooses its
-  destination and creates the file exclusively. Core can pass decrypted
+  destination and creates the file exclusively, then marks it with core's
+  `mark_downloaded`: on Windows a `Zone.Identifier` stream naming the Internet
+  zone, best effort, so SmartScreen and Office's Protected View apply; nothing
+  elsewhere. Core can pass decrypted
   attachments to a caller one at a time; the CLI uses this path for `--all`,
   fetching message metadata once and saving each file before the next download.
   The convenience API that returns all attachment bytes has a total size limit.
