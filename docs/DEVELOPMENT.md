@@ -264,7 +264,8 @@ harmless messages; the demo deliberately sends no notifications.
   available. Verify Ruston's name/icon, literal `<`, `>`, `&` in the subject,
   and a graceful unavailable status when there is no notification service.
 - On Windows, verify the per-user `Ruston Mail.lnk` shortcut carries
-  `com.luiscuellar.ruston-mail` and toasts appear as Ruston. Minimize the mailbox
+  `com.luiscuellar.ruston-mail` and toasts appear as Ruston, the first one on
+  a profile that never showed a Ruston toast included. Minimize the mailbox
   and verify clicking a transient toast restores/focuses it while running.
   An existing foreign shortcut must be preserved. This implementation uses an
   in-memory activation handler; reopening the app through notification history

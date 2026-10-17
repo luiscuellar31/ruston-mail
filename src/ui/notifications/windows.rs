@@ -62,7 +62,7 @@ pub(super) fn show(
         let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(
             crate::ui::identity::APP_ID,
         ))?;
-        if notifier.Setting()? != NotificationSetting::Enabled {
+        if turned_away(notifier.Setting()) {
             return Ok(Status::Denied);
         }
         let document =
@@ -92,6 +92,13 @@ pub(super) fn show(
         Ok(Status::Ready)
     };
     result().unwrap_or(Status::Unavailable)
+}
+
+/// Whether Windows turns toasts away. It keeps no setting for an app until the
+/// app's first toast shows, and answers "element not found" until then, so
+/// only a setting it does report can say no.
+fn turned_away(setting: windows::core::Result<NotificationSetting>) -> bool {
+    setting.is_ok_and(|setting| setting != NotificationSetting::Enabled)
 }
 
 /// Win32 toasts need an AUMID-bearing Start menu shortcut. Registration stays
@@ -138,4 +145,20 @@ fn ensure_shortcut() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_setting_windows_reports_turns_toasts_away() {
+        // What Windows answers before an app's first toast: element not found.
+        let first =
+            windows::core::Error::from_hresult(windows::core::HRESULT(0x8007_0490_u32 as i32));
+        assert!(!turned_away(Err(first)));
+        assert!(!turned_away(Ok(NotificationSetting::Enabled)));
+        assert!(turned_away(Ok(NotificationSetting::DisabledForUser)));
+        assert!(turned_away(Ok(NotificationSetting::DisabledByGroupPolicy)));
+    }
 }
