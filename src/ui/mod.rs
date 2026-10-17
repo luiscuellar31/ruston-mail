@@ -645,6 +645,22 @@ impl DesktopApp {
         }
     }
 
+    /// Files dropped on the window that shows the draft join it, unless a
+    /// file dialog or a confirmation owns the window: a dialog's own result
+    /// is what releases its slot.
+    fn attach_dropped(&mut self, paths: Vec<std::path::PathBuf>, context: &egui::Context) {
+        if paths.is_empty()
+            || self.file_dialog_open
+            || self.pending_discard.is_some()
+            || self.pending_settings_exit.is_some()
+        {
+            return;
+        }
+        if let Some(draft) = self.app.compose().map(crate::app::Compose::id) {
+            self.dispatch(Message::AddComposeAttachments(draft, paths), context);
+        }
+    }
+
     /// Moves the zoom one offered step, keeping an open Settings page, whose
     /// draft would otherwise put the old zoom back, in step with it.
     fn step_zoom(&mut self, step: settings::ZoomStep, context: &egui::Context) {
@@ -964,6 +980,7 @@ impl eframe::App for DesktopApp {
         let context = ui.ctx().clone();
         let mut messages = Vec::new();
         let mut composer_zoom = None;
+        let mut dropped = Vec::new();
         email_link_notice(ui, &self.app, &mut messages);
         if !self.app.showing_settings()
             || !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
@@ -1006,14 +1023,18 @@ impl eframe::App for DesktopApp {
                 if self.app.settings().compose_placement == ComposePlacement::Window
                     && let Some(writing) = self.app.compose()
                 {
-                    let (window_messages, zoom) = compose::show_window(
+                    let window = compose::show_window(
                         &context,
                         writing,
                         self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
                         std::mem::take(&mut self.composer_edits),
                     );
-                    messages.extend(window_messages);
-                    composer_zoom = zoom;
+                    messages.extend(window.messages);
+                    composer_zoom = window.zoom;
+                    dropped = window.dropped;
+                } else if self.app.compose().is_some() && !self.app.showing_settings() {
+                    // The draft is in this window's reading pane.
+                    dropped = dropped_paths(&context);
                 }
             }
             AuthState::SigningOut => {
@@ -1044,6 +1065,7 @@ impl eframe::App for DesktopApp {
         if let Some(step) = composer_zoom {
             self.step_zoom(step, &context);
         }
+        self.attach_dropped(dropped, &context);
         let has_messages = !messages.is_empty();
         for message in messages {
             self.dispatch(message, &context);
@@ -1058,6 +1080,19 @@ impl eframe::App for DesktopApp {
             context.request_repaint();
         }
     }
+}
+
+/// The local files dropped on the window being drawn in this pass. Wayland
+/// delivers none: winit does not support dropping files there.
+fn dropped_paths(context: &egui::Context) -> Vec<std::path::PathBuf> {
+    context.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_path_buf())
+            .collect()
+    })
 }
 
 /// Takes the zoom keys pressed in the window being drawn, the mailbox's or
@@ -1646,11 +1681,87 @@ mod tests {
         let mut zoom = None;
         let output = context.run_ui(zoom_out, |ui| {
             let compose = desktop.app.compose().unwrap();
-            zoom = compose::show_window(ui.ctx(), compose, false, Vec::new()).1;
+            zoom = compose::show_window(ui.ctx(), compose, false, Vec::new()).zoom;
         });
         output.drop_without_applying_deltas();
 
         assert_eq!(zoom, Some(settings::ZoomStep::Out));
+    }
+
+    #[derive(Debug)]
+    struct DroppedFile(std::path::PathBuf);
+
+    impl egui::DroppedFile for DroppedFile {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn files_dropped_on_the_composer_window_reach_the_shell() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        let path = std::env::temp_dir().join("agenda, ñ.pdf");
+        let drop = egui::RawInput {
+            dropped_files: vec![std::sync::Arc::new(DroppedFile(path.clone()))],
+            ..Default::default()
+        };
+        let mut dropped = Vec::new();
+        let output = context.run_ui(drop, |ui| {
+            let compose = desktop.app.compose().unwrap();
+            dropped = compose::show_window(ui.ctx(), compose, false, Vec::new()).dropped;
+        });
+        output.drop_without_applying_deltas();
+
+        assert_eq!(dropped, [path]);
+    }
+
+    #[test]
+    fn dropped_files_join_the_draft_unless_a_file_dialog_is_open() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        let first = std::path::PathBuf::from("/tmp/first.pdf");
+        let second = std::path::PathBuf::from("/tmp/second.pdf");
+
+        // The picker is choosing: a drop must not join, nor free its slot.
+        desktop.file_dialog_open = true;
+        desktop.attach_dropped(vec![first.clone()], &context);
+        assert!(desktop.app.compose().unwrap().attachments().is_empty());
+        assert!(desktop.file_dialog_open);
+
+        desktop.file_dialog_open = false;
+        desktop.attach_dropped(vec![first.clone(), second.clone()], &context);
+        assert_eq!(
+            desktop.app.compose().unwrap().attachments(),
+            [first, second]
+        );
+    }
+
+    #[test]
+    fn files_dragged_over_the_draft_show_where_they_go() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::OpenCompose);
+        let hovering = egui::RawInput {
+            hovered_files: vec![egui::HoveredFile::default()],
+            ..Default::default()
+        };
+        let output = context.run_ui(hovering, |ui| {
+            compose::show_in_pane(ui, app.compose().unwrap(), &mut Vec::new());
+        });
+        let shows_hint = output.shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::epaint::Shape::Text(text)
+                if text.galley.text() == "Drop files to attach")
+        });
+        output.drop_without_applying_deltas();
+        assert!(shows_hint);
     }
 
     #[test]

@@ -161,7 +161,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   API exposes no native handle for an immediate child viewport. Dialog creation
   stays on the UI thread; results return through the runtime. Cancelled compose
   pickers return an empty result to release the dialog slot, while draft IDs
-  still prevent results from modifying a closed or replaced composer.
+  still prevent results from modifying a closed or replaced composer. Files
+  dropped on the window that shows the draft, the reading pane's or the
+  composer's own, which hands them back like its zoom keys, join it through the
+  same message, but only while no file dialog or confirmation is open, so a
+  drop never releases a dialog's slot. winit delivers no drops on Wayland.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine.

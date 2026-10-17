@@ -300,8 +300,10 @@ when changing adapters.
 Use the fictional mailbox to check **Attach…** in both composer placements
 (reading pane and separate window). Verify the picker stays associated with
 Ruston, cancelling leaves the draft unchanged, and repeated clicks do not open
-multiple dialogs. On macOS, verify an attached sheet on the owning window; on
-Windows, check ownership and focus after closing the dialog. On Linux, check
+multiple dialogs. Drag files from the file manager over the draft in both
+placements: the drop hint shows, and dropping attaches them. On macOS, verify
+an attached sheet on the owning window; on Windows, check ownership and focus
+after closing the dialog. On Linux, check
 the portal under Wayland and X11 where available. eframe exposes only the root
 native window, so a Linux picker opened from the separate composer is currently
 associated with the mailbox window. A late result after closing/replacing the

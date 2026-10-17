@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use eframe::egui::{self, Align, Layout};
 
 use super::settings::ZoomStep;
@@ -20,6 +22,29 @@ pub(super) fn show_in_pane(ui: &mut egui::Ui, compose: &Compose, messages: &mut 
             .auto_shrink([false, false])
             .show(ui, |ui| page(ui, compose, messages));
     });
+    drop_hint(ui, ui.max_rect());
+}
+
+/// While files are dragged over the window, says that the draft takes them.
+fn drop_hint(ui: &egui::Ui, rect: egui::Rect) {
+    if ui.ctx().input(|input| input.raw.hovered_files.is_empty()) {
+        return;
+    }
+    let colors = theme::colors(ui);
+    ui.painter().rect(
+        rect.shrink(4.0),
+        8.0,
+        colors.accent_soft,
+        ui.visuals().selection.stroke,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop files to attach",
+        egui::FontId::proportional(18.0),
+        ui.visuals().strong_text_color(),
+    );
 }
 
 pub(super) fn window_viewport(compose: &Compose) -> egui::ViewportBuilder {
@@ -29,20 +54,29 @@ pub(super) fn window_viewport(compose: &Compose) -> egui::ViewportBuilder {
         .with_min_inner_size(MIN_WINDOW_SIZE)
 }
 
+/// What the composer's own window hands the shell after one pass.
+pub(super) struct WindowPass {
+    pub(super) messages: Vec<Message>,
+    /// The step its zoom keys ask for: zoom applies to both windows, as from
+    /// the mailbox window.
+    pub(super) zoom: Option<ZoomStep>,
+    /// Files dropped on the window, which the shell attaches when it may.
+    pub(super) dropped: Vec<PathBuf>,
+}
+
 /// Shows the composer in its own window. `edits` are the window's Edit menu
-/// commands, which reach its text as the keys would have. Returns what the
-/// window asks for, and the zoom step its keys ask the shell for: zoom applies
-/// to both windows, as from the mailbox window.
+/// commands, which reach its text as the keys would have.
 pub(super) fn show_window(
     context: &egui::Context,
     compose: &Compose,
     blocked: bool,
     mut edits: Vec<egui::Event>,
-) -> (Vec<Message>, Option<ZoomStep>) {
+) -> WindowPass {
     context.show_viewport_immediate(viewport_id(), window_viewport(compose), |root, _class| {
         root.ctx()
             .input_mut(|input| input.events.append(&mut edits));
         let zoom = super::zoom_keys(root.ctx());
+        let dropped = super::dropped_paths(root.ctx());
         let mut messages = Vec::new();
         root.add_enabled_ui(!blocked, |root| show(root, compose, &mut messages));
         theme::paint_focus_ring(root.ctx());
@@ -52,7 +86,11 @@ pub(super) fn show_window(
                 root.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
-            return (Vec::new(), zoom);
+            return WindowPass {
+                messages: Vec::new(),
+                zoom,
+                dropped: Vec::new(),
+            };
         }
 
         if root.input(|input| input.viewport().close_requested()) {
@@ -82,7 +120,11 @@ pub(super) fn show_window(
             messages.push(Message::Send);
         }
 
-        (messages, zoom)
+        WindowPass {
+            messages,
+            zoom,
+            dropped,
+        }
     })
 }
 
