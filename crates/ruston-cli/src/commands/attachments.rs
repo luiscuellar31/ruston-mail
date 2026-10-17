@@ -5,7 +5,7 @@ use crate::cli::Ctx;
 use crate::commands::resume;
 use crate::render;
 use crate::terminal;
-use ruston_core::mail::attachments::safe_attachment_name;
+use ruston_core::mail::attachments::{mark_downloaded, safe_attachment_name};
 use ruston_core::{Error, Result};
 use serde_json::json;
 use std::fs::OpenOptions;
@@ -98,6 +98,8 @@ fn save_attachment(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<Path
             let _ = std::fs::remove_file(&path);
             return Err(error);
         }
+        // Best effort: a file system without the mark still gets the file.
+        let _ = mark_downloaded(&path);
         return Ok(path);
     }
 
@@ -138,6 +140,22 @@ mod tests {
             assert_eq!(path.file_name().unwrap(), expected);
             assert_eq!(std::fs::read(path).unwrap(), b"mail");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn saved_attachments_are_marked_as_downloaded_from_the_internet() {
+        let dir = test_dir("zone");
+        let mut stream = save_attachment(&dir, "factura.pdf", b"%PDF")
+            .unwrap()
+            .into_os_string();
+        stream.push(":Zone.Identifier");
+        assert!(
+            std::fs::read_to_string(stream)
+                .unwrap()
+                .contains("ZoneId=3")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

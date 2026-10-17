@@ -1,7 +1,7 @@
 //! Saves attachments using safe sender names or user-selected destinations,
 //! without overwriting existing files.
 
-use ruston_core::mail::attachments::safe_attachment_name as safe_name;
+use ruston_core::mail::attachments::{mark_downloaded, safe_attachment_name as safe_name};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -82,6 +82,8 @@ pub fn save_selected(path: &Path, contents: &[u8]) -> Result<PathBuf, SaveError>
         let _ = std::fs::remove_file(path);
         return Err(SaveError::Failed);
     }
+    // Best effort: a file system without the mark still gets the file.
+    let _ = mark_downloaded(path);
     Ok(path.to_path_buf())
 }
 
@@ -109,6 +111,8 @@ fn save_to(folder: &Path, name: &str, contents: &[u8]) -> Result<PathBuf, SaveEr
             let _ = std::fs::remove_file(&path);
             return Err(SaveError::Failed);
         }
+        // Best effort: a file system without the mark still gets the file.
+        let _ = mark_downloaded(&path);
         return Ok(path);
     }
 
@@ -118,6 +122,25 @@ fn save_to(folder: &Path, name: &str, contents: &[u8]) -> Result<PathBuf, SaveEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn saved_files_are_marked_as_downloaded_from_the_internet() {
+        let folder = std::env::temp_dir().join(format!("ruston-save-zone-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let saved = save_to(&folder, "factura.pdf", b"%PDF").unwrap();
+        let selected = save_selected(&folder.join("elegido.pdf"), b"%PDF").unwrap();
+        for path in [saved, selected] {
+            let mut stream = path.into_os_string();
+            stream.push(":Zone.Identifier");
+            assert!(
+                std::fs::read_to_string(stream)
+                    .unwrap()
+                    .contains("ZoneId=3")
+            );
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn selected_destination_preserves_existing_files_and_exact_names() {

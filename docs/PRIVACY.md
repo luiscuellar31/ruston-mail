@@ -268,7 +268,11 @@ The CLI saves them in `--output-dir`, or the current directory
 by default. Both reduce sender-provided paths to a plain file name. Invisible
 direction marks are removed, so a name cannot disguise its real extension.
 Names with invalid characters become `attachment`, Windows device names receive
-an underscore prefix, and existing files are never overwritten.
+an underscore prefix, and existing files are never overwritten. On Windows,
+both mark a saved attachment as downloaded from the internet, as browsers do
+(a `Zone.Identifier` stream naming the Internet zone), so SmartScreen checks it
+before it runs and Office opens it in Protected View. A file system without
+such streams, such as FAT32, keeps the file unmarked.
 Sender-provided names are sanitized before suggesting a name in the save
 dialog too. Revealing a saved file sends its local path to the operating
 system's file manager (a file URI over the session bus on Linux).
