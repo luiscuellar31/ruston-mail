@@ -114,8 +114,12 @@ explicit test credentials. Run the following smoke checks on Windows x86_64
 before claiming native integration has been verified.
 
 Install Rust with the `x86_64-pc-windows-msvc` toolchain and Visual Studio Build
-Tools with the Desktop development with C++ workload and a Windows SDK. Build
-both frontends from PowerShell:
+Tools with the Desktop development with C++ workload and a Windows SDK.
+`.gitattributes` checks every text file out with LF line endings on Windows too,
+whatever `core.autocrlf` says, so the shell scripts run under Git Bash. A clone
+made before that file existed keeps its CRLF copies; clone again, or on a clean
+tree run `git rm --cached -r .` and then `git reset --hard`. Build both
+frontends from PowerShell:
 
 ```powershell
 rustc -vV
