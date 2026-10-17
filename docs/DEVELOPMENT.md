@@ -152,6 +152,11 @@ try {
 
 - Minimize, restore, maximize, and resize the main window. Verify that Windows
   decorations work and the panels remain usable at the default interface scale.
+- Repeat with `$env:RUSTON_RENDERER = "opengl"`: Windows draws with DirectX 12
+  by default and with OpenGL when DirectX 12 fails or this variable asks for
+  it. Check the separate composer with both. Where available, check a virtual
+  machine or Remote Desktop session without a GPU, where DirectX 12 runs on
+  WARP, Windows' software renderer.
 - Switch between light and dark appearance, resize the panes, close the app,
   and reopen it. Verify that applied appearance and settled sizes are restored.
 - Check the UI at Windows display scaling of 100% and 150%. If two monitors are

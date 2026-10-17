@@ -90,6 +90,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   ignores ordinary focus requests. Activation remains subject to compositor policy.
 - [`src/ui/`](../src/ui/) draws widgets with `eframe` and `egui`, gathers user
   actions, dispatches `Message`s, and applies effects that require the UI thread.
+- [`ui/graphics.rs`](../src/ui/graphics.rs) picks the renderer: OpenGL (glow)
+  on macOS and Linux; on Windows DirectX 12 through wgpu, on the GPU that uses
+  the least power or on WARP, Windows' software renderer, without one, and
+  OpenGL when `RUSTON_RENDERER=opengl`. If DirectX 12 fails before the app is
+  created, `ui::run` opens the window again with OpenGL. The activation
+  instance waits in a `Cell` until the app takes it, so the retry keeps the
+  single-instance lock and link hand-off.
 - [`ui/identity.rs`](../src/ui/identity.rs) supplies the shared logo and app ID
   to the mailbox and composer viewports. It sets the Windows process identity
   before native windows are created. The ID matches the existing macOS bundle
