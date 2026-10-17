@@ -150,6 +150,12 @@ jobs:
         shell: pwsh
         run: ./packaging/windows/verify-windows.ps1 -Directory target/debug -Architecture ${{ runner.arch == 'ARM64' && 'arm64' || 'x86_64' }}
 
+      # Runners have no GPU, so the window draws with WARP, as in a virtual machine.
+      - name: Start the Windows desktop app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/windows/smoke-test.ps1 -Executable target/debug/ruston.exe
+
       - name: Ensure clean workspace
         run: git diff --exit-code
 
