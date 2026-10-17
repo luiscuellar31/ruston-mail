@@ -78,8 +78,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub user_agent: Option<String>,
 
-    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window
-    /// (throwaway profile); press Enter once verified and the window is closed.
+    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window, or
+    /// Chromium, Brave or Edge (throwaway profile); press Enter once verified
+    /// and the window is closed.
     #[arg(long, global = true)]
     pub captcha_chrome: bool,
 

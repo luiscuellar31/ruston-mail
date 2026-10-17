@@ -109,13 +109,19 @@ async fn solve(
 
 /// Proton's standalone verification page for `chal`, restricted to the captcha
 /// method (the only one whose external-browser result the retry can redeem).
-/// Keeps the host of the server-provided `WebUrl` when it is https.
+/// Keeps the host of the server-provided `WebUrl` when it is https and a plain
+/// host name, which the browser launch then passes on as written.
 fn verify_url(chal: &HvChallenge) -> String {
     let origin = chal
         .web_url
         .strip_prefix("https://")
         .and_then(|rest| rest.split(['/', '?', '#']).next())
-        .filter(|host| !host.is_empty())
+        .filter(|host| {
+            !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        })
         .map_or_else(
             || DEFAULT_VERIFY_ORIGIN.to_string(),
             |host| format!("https://{host}"),
@@ -451,26 +457,48 @@ fn urlencode(s: &str) -> String {
 }
 
 fn open_browser(url: &str) -> std::io::Result<()> {
-    browser_command(url).spawn().map(|_| ())
+    browser_command(url)?.spawn().map(|_| ())
 }
 
-/// The system's way to open `url` in the default browser.
-fn browser_command(url: &str) -> std::process::Command {
+/// The system's way to open `url` in the default browser. No shell reads the
+/// address: `cmd /C start` would cut it at the first `&`.
+fn browser_command(url: &str) -> std::io::Result<std::process::Command> {
     #[cfg(target_os = "macos")]
     let mut cmd = std::process::Command::new("open");
     #[cfg(target_os = "linux")]
     let mut cmd = std::process::Command::new("xdg-open");
     #[cfg(target_os = "windows")]
     let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
+        let mut c = std::process::Command::new(system_rundll32()?);
+        c.arg("url.dll,FileProtocolHandler");
         c
     };
     cmd.arg(url);
     cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     without_secrets(&mut cmd);
-    cmd
+    Ok(cmd)
+}
+
+/// rundll32 from System32. Windows looks for a program named without a
+/// folder beside this executable first, where a download could be waiting.
+#[cfg(target_os = "windows")]
+fn system_rundll32() -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut buffer = [0_u16; 260];
+    // SAFETY: the length passed is the buffer's own; the API writes at most
+    // that many UTF-16 units and returns how many it wrote, or 0 on failure.
+    let length = unsafe {
+        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    } as usize;
+    if length == 0 || length >= buffer.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])).join("rundll32.exe"))
 }
 
 /// A browser started now may outlive the CLI, so it gets none of the
@@ -515,29 +543,30 @@ fn chrome_command(chrome: &str, profile: &std::path::Path, url: &str) -> std::pr
 }
 
 fn find_chrome() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    let candidates = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ];
-    #[cfg(target_os = "linux")]
-    let candidates = [
-        "google-chrome",
-        "google-chrome-stable",
-        "chromium",
-        "chromium-browser",
-        "brave-browser",
-    ];
     #[cfg(target_os = "windows")]
-    let candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    ];
-    for c in candidates {
-        #[cfg(unix)]
-        {
+    {
+        windows_browsers()
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+    }
+    #[cfg(unix)]
+    {
+        #[cfg(target_os = "macos")]
+        let candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ];
+        #[cfg(target_os = "linux")]
+        let candidates = [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "brave-browser",
+        ];
+        for c in candidates {
             if c.contains('/') {
                 if std::path::Path::new(c).exists() {
                     return Some(c.to_string());
@@ -546,14 +575,29 @@ fn find_chrome() -> Option<String> {
                 return Some(p);
             }
         }
-        #[cfg(not(unix))]
-        {
-            if std::path::Path::new(c).exists() {
-                return Some(c.to_string());
-            }
-        }
+        None
     }
-    None
+}
+
+/// Chromium-based browsers in the per-machine and per-user install folders.
+/// Microsoft Edge comes with Windows, so one is nearly always found.
+#[cfg(target_os = "windows")]
+fn windows_browsers() -> Vec<String> {
+    const BROWSERS: [&str; 3] = [
+        r"Google\Chrome\Application\chrome.exe",
+        r"BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"Microsoft\Edge\Application\msedge.exe",
+    ];
+    let roots: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect();
+    BROWSERS
+        .iter()
+        .flat_map(|browser| roots.iter().map(move |root| root.join(browser)))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 #[cfg(unix)]
@@ -576,7 +620,7 @@ mod tests {
     fn browsers_never_inherit_sign_in_secrets() {
         let url = "https://verify.proton.me/?methods=captcha";
         for command in [
-            browser_command(url),
+            browser_command(url).unwrap(),
             chrome_command("chrome", std::path::Path::new("profile"), url),
         ] {
             let removed: Vec<_> = command
@@ -591,6 +635,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_verification_page_keeps_only_a_plain_https_host() {
+        let page = |web_url: &str| {
+            verify_url(&HvChallenge {
+                token: "t".into(),
+                methods: vec!["captcha".into()],
+                web_url: web_url.into(),
+            })
+        };
+        assert_eq!(
+            page("https://verify-api.proton.me/?methods=captcha"),
+            "https://verify-api.proton.me/?methods=captcha&token=t"
+        );
+        for hostile in [
+            "https://x&calc&/",
+            "https://evil host/",
+            "https://a\"b/",
+            "http://verify.proton.me/",
+            "https://",
+        ] {
+            assert_eq!(
+                page(hostile),
+                format!("{DEFAULT_VERIFY_ORIGIN}/?methods=captcha&token=t"),
+                "{hostile}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_hands_the_whole_address_to_system_rundll32() {
+        let url =
+            "https://mail-api.proton.me/core/v4/captcha?Token=a&ForceWebMessaging=1#ruston=1.2";
+        let command = browser_command(url).unwrap();
+        let program = std::path::Path::new(command.get_program());
+        assert!(program.is_absolute(), "{program:?}");
+        assert!(program.ends_with("rundll32.exe"), "{program:?}");
+        assert!(program.exists(), "{program:?}");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["url.dll,FileProtocolHandler", url]);
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_looks_for_edge_and_per_user_browsers() {
+        let browsers = windows_browsers();
+        assert!(
+            browsers
+                .iter()
+                .all(|path| std::path::Path::new(path).is_absolute())
+        );
+        assert!(browsers.iter().any(|path| path.ends_with(r"\msedge.exe")));
+        let local = std::env::var("LOCALAPPDATA").unwrap();
+        assert!(browsers.iter().any(|path| path.starts_with(&local)));
     }
 
     #[test]

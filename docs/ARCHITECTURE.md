@@ -325,7 +325,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Settings ends with an About card containing the existing logo, package version,
   technology and author credits, license, and a Source code button. The button
   dispatches `OpenSourceCode` through `App`, which opens the package repository
-  using the existing background browser effect.
+  using the existing background browser effect. That effect, like the CLI's
+  human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
+  the address to the system's opener without a shell: `open`, `xdg-open`, or
+  on Windows `rundll32 url.dll,FileProtocolHandler` from System32, never a
+  `rundll32` that Windows would first look for beside the executable.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches
