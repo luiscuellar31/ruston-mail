@@ -327,7 +327,10 @@ Settings control:
 - Interface scale.
 - Optional system interface font, with Ruston's fonts retained as fallback.
 - A button to reset the window and pane sizes to their defaults immediately.
-- On macOS, whether the Dock icon shows the unread inbox count.
+- On macOS, whether the Dock icon shows the unread inbox count; on Windows,
+  whether the taskbar button does. Windows shows it only while badges are on
+  in its taskbar settings (Settings › Personalization › Taskbar › Taskbar
+  behaviors).
 
 Window size and pane widths are remembered automatically. Use **Reset window and
 pane sizes** under Settings → Interface to restore the defaults; this action

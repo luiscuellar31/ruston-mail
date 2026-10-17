@@ -100,6 +100,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   created, `ui::run` opens the window again with OpenGL. The activation
   instance waits in a `Cell` until the app takes it, so the retry keeps the
   single-instance lock and link hand-off.
+- The Inbox unread count goes on the Dock tile on macOS and, through
+  [`ui/taskbar.rs`](../src/ui/taskbar.rs), over the Windows taskbar button as
+  an overlay icon: a red disc with the count, up to "99+", drawn in Segoe UI
+  with GDI, and the count as its description. The shell sets it once the
+  window is visible and again when the count or the Settings option changes.
 - [`ui/identity.rs`](../src/ui/identity.rs) supplies the shared logo and app ID
   to the mailbox and composer viewports. It sets the Windows process identity
   before native windows are created. The ID matches the existing macOS bundle

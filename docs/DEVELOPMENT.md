@@ -217,8 +217,10 @@ spaces, commas and non-ASCII characters.
 Record the commit, Windows version, Rust host/version, display scaling, and
 pass/fail result for each check in the PR or release notes. Mark unavailable
 checks as **not run**. Record failures with reproduction steps; do not include
-passwords, tokens, or personal message contents. Unread icon badges are not
-implemented on Windows yet; notification checks are described below.
+passwords, tokens, or personal message contents. Notification checks are
+described below. The unread count appears over the taskbar button only while
+badges are on in Windows' taskbar settings; check it at 100% and 200% display
+scaling, and that turning the Settings option off takes it away.
 
 ## macOS menus, window chrome, and safe closing
 

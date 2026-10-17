@@ -215,6 +215,19 @@ fn page(
             );
             ui.add_space(8.0);
         }
+        #[cfg(target_os = "windows")]
+        {
+            ui.add(theme::Checkbox::new(
+                &mut settings.show_unread_badge,
+                "Show unread count on the taskbar button",
+            ));
+            description(
+                ui,
+                "Marks the taskbar button with the number of unread messages in your inbox, \
+                 while badges are on in Windows' taskbar settings.",
+            );
+            ui.add_space(8.0);
+        }
         ui.add(theme::Checkbox::new(
             &mut settings.desktop_notifications,
             "Show desktop notifications for new mail",

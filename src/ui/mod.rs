@@ -12,6 +12,8 @@ mod mailbox;
 mod notifications;
 mod reader;
 mod settings;
+#[cfg(target_os = "windows")]
+mod taskbar;
 mod theme;
 mod window_place;
 
@@ -822,9 +824,8 @@ impl DesktopApp {
 
     fn update_dock_badge(&mut self) {
         let badge = dock_badge_count(&self.app);
-        if badge != self.dock_badge {
+        if badge != self.dock_badge && set_dock_badge(self.dialog_parent.as_deref(), badge) {
             self.dock_badge = badge;
-            set_dock_badge(badge);
         }
     }
 
@@ -953,7 +954,7 @@ impl eframe::App for DesktopApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.notifications.stop();
         self.app.save_settings();
-        set_dock_badge(None);
+        set_dock_badge(self.dialog_parent.as_deref(), None);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1176,8 +1177,11 @@ pub(crate) fn dock_badge_count(app: &App) -> Option<u32> {
         .filter(|&count| count > 0)
 }
 
+/// Shows the unread count on the Dock icon, or on Windows the taskbar
+/// button. Returns false while the window cannot show it yet, so the next
+/// pass tries again.
 #[cfg(target_os = "macos")]
-fn set_dock_badge(count: Option<u32>) {
+fn set_dock_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
     use objc2_app_kit::NSApplication;
     use objc2_foundation::{MainThreadMarker, NSString};
 
@@ -1187,10 +1191,18 @@ fn set_dock_badge(count: Option<u32>) {
         let label = count.map(|c| NSString::from_str(&c.to_string()));
         dock_tile.setBadgeLabel(label.as_deref());
     }
+    true
 }
 
-#[cfg(not(target_os = "macos"))]
-fn set_dock_badge(_count: Option<u32>) {}
+#[cfg(target_os = "windows")]
+fn set_dock_badge(window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
+    window.is_none_or(|window| taskbar::show_unread(window, count))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn set_dock_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> bool {
+    true
+}
 
 #[cfg(test)]
 mod tests {
@@ -1919,8 +1931,8 @@ mod tests {
 
     #[test]
     fn set_dock_badge_does_not_panic() {
-        set_dock_badge(Some(5));
-        set_dock_badge(None);
+        assert!(set_dock_badge(None, Some(5)));
+        assert!(set_dock_badge(None, None));
     }
 
     #[test]
