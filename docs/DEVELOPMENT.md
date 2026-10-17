@@ -208,7 +208,7 @@ that signing out also prevents the default CLI from resuming it. Download a
 fictional test attachment twice: both copies must reach the system Downloads
 folder with distinct names and unchanged contents. Use **Show in Explorer**
 to verify that Explorer selects the saved file, including a filename with
-spaces and non-ASCII characters.
+spaces, commas and non-ASCII characters.
 
 Record the commit, Windows version, Rust host/version, display scaling, and
 pass/fail result for each check in the PR or release notes. Mark unavailable

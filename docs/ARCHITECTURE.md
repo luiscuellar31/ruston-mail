@@ -269,9 +269,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   collision suffixes; explicit destinations use the user's exact absolute path.
   Both use exclusive creation and never replace existing files or follow a
   final-component symlink. [`src/file_manager.rs`](../src/file_manager.rs)
-  reveals saved files: Finder/Explorer on macOS/Windows and FileManager1.ShowItems
-  with an encoded file URI on Linux. Linux bounds connection and reply to three
-  seconds and falls back to opening the containing folder with `xdg-open`.
+  reveals saved files: Finder on macOS, FileManager1.ShowItems with an encoded
+  file URI on Linux, and on Windows the shell's `SHOpenFolderAndSelectItems`,
+  called on a blocking worker in a single-threaded COM apartment, which takes
+  the path whole where Explorer's command line splits it at commas. Linux
+  bounds connection and reply to three seconds and falls back to opening the
+  containing folder with `xdg-open`.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
   to egui visuals and custom-painted widget colors. The shell stores it for
   the next run and applies [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
