@@ -243,6 +243,12 @@ Verify the download first. \`SHA256SUMS.txt\` is attached to this release:
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing  # macOS
 sha256sum -c SHA256SUMS.txt --ignore-missing      # Linux
 \`\`\`
+
+On Windows, compare the hash PowerShell prints with the file's line in \`SHA256SUMS.txt\`:
+
+\`\`\`powershell
+Get-FileHash .\\ruston-mail-${VERSION}-x86_64-setup-UNSIGNED.exe
+\`\`\`
 EOF
 
   if [[ -n "$REPO" ]]; then
@@ -290,6 +296,14 @@ ln -sf "\$PWD/ruston-mail-${VERSION}-x86_64.AppImage" ~/.local/bin/ruston-cli
 \`\`\`
 
 Replace \`x86_64\` with \`aarch64\` on ARM64 machines. Without FUSE, add \`--appimage-extract-and-run\` after the AppImage's name.
+
+### Windows
+
+Run \`ruston-mail-${VERSION}-x86_64-setup-UNSIGNED.exe\`, or \`ruston-mail-${VERSION}-arm64-setup-UNSIGNED.exe\` on ARM64 PCs. It installs for your user without administrator rights, adds Ruston Mail to the Start menu, and can offer it for email links and put \`ruston-cli\` on your \`PATH\`. Windows 10 or later is required. To run Ruston Mail without installing it, extract \`ruston-mail-${VERSION}-x86_64-windows-UNSIGNED.zip\` (or the \`arm64\` one) and start \`ruston.exe\`; its \`README.txt\` covers email links and removal.
+
+The files are not signed, so SmartScreen may say that it protected your PC: choose **More info**, then **Run anyway**. Windows with Smart App Control turned on does not run unsigned apps.
+
+The command-line client, \`ruston-cli.exe\`, sits beside \`ruston.exe\` in the installation folder, \`%LOCALAPPDATA%\\Programs\\Ruston Mail\`.
 
 </details>
 

@@ -826,8 +826,8 @@ session or keychain entry behind. CLI parser and demo tests
 are in [`crates/ruston-cli/src/main.rs`](../crates/ruston-cli/src/main.rs).
 Run and check commands are in [Development](DEVELOPMENT.md).
 
-The shared [CI workflow](../.github/workflows/ci.yml) checks Linux and macOS on
-x86_64 and arm64, and Windows on x86_64 using the native MSVC toolchain. All
+The shared [CI workflow](../.github/workflows/ci.yml) checks Linux, macOS and
+Windows on x86_64 and arm64, Windows with the native MSVC toolchain. All
 platforms run the same formatting, Clippy, documentation, and test gates.
 Linux validates the desktop entry and the AppStream metadata in
 [`packaging/linux/`](../packaging/linux/), which describe the application to
@@ -863,7 +863,21 @@ architecture on a native runner:
   [`AppRun`](../packaging/linux/AppRun) starts the app or the CLI, and
   [`check-glibc.sh`](../packaging/linux/check-glibc.sh) holds the glibc floor at
   2.35.
-- Every app is started once with [`smoke-test.sh`](../packaging/smoke-test.sh).
+- Windows Server 2025 and Windows 11 ARM runners run
+  [`package.ps1`](../packaging/windows/package.ps1) with a pinned,
+  digest-checked Inno Setup. It checks both executables with
+  `verify-windows.ps1` and writes a per-user installer, from
+  [`ruston-mail.iss`](../packaging/windows/ruston-mail.iss), and a portable ZIP.
+  The installer adds the Start menu shortcut with the app's AppUserModelID and
+  optionally the email-link registration and a `PATH` entry, all removed again
+  on uninstall.
+- Every macOS and Linux app is started once with
+  [`smoke-test.sh`](../packaging/smoke-test.sh). On Windows,
+  [`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) requires the window
+  to open and draw without an error box, since a failure to start shows one
+  instead of ending the process, and
+  [`test-installer.ps1`](../packaging/windows/test-installer.ps1) installs,
+  starts and uninstalls the installer.
 
 Only the publishing job may write to the repository. It adds `SHA256SUMS.txt`,
 build provenance attestations, and notes that
