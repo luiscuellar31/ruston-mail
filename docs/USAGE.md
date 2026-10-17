@@ -376,7 +376,7 @@ always draw with OpenGL.
 | `Cmd`/`Ctrl` + `,` | Open Settings on macOS; open or close Settings on Linux/Windows |
 | `Cmd`/`Ctrl` + `N` | Write a new message |
 | `Cmd`/`Ctrl` + `Enter` | Send the message being written |
-| `Cmd` + `Backspace` / `Delete` | Move the selected conversation to Trash |
+| `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move the selected conversation to Trash |
 | `Cmd`/`Ctrl` + `+` (or `=`), `-`, `0` | Zoom in, zoom out, or back to 100%, in the interface scale's steps |
 
 Shortcuts do not run while a text field is using the same key. When `Tab` has
