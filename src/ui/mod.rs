@@ -3,6 +3,7 @@ mod close;
 mod compose;
 mod dialogs;
 mod fonts;
+mod graphics;
 mod identity;
 mod login;
 #[cfg(target_os = "macos")]
@@ -67,9 +68,32 @@ pub fn run(demo: bool, activation: crate::launch::Instance) -> eframe::Result {
     #[cfg(target_os = "windows")]
     identity::set_process_app_id()?;
 
+    // The app takes the activation once its window draws. A renderer that
+    // fails before then leaves it for the next one.
+    let activation = std::cell::Cell::new(Some(activation));
+    let result = open(demo, &activation, graphics::preferred_renderer());
+    #[cfg(target_os = "windows")]
+    if let Err(eframe::Error::Wgpu(error)) = &result
+        && let Some(instance) = activation.take()
+    {
+        eprintln!("Ruston Mail: DirectX 12 cannot draw the window ({error}); using OpenGL");
+        activation.set(Some(instance));
+        return open(demo, &activation, eframe::Renderer::Glow);
+    }
+    result
+}
+
+fn open(
+    demo: bool,
+    activation: &std::cell::Cell<Option<crate::launch::Instance>>,
+    renderer: eframe::Renderer,
+) -> eframe::Result {
     let settings = Settings::load(demo);
     let options = eframe::NativeOptions {
         viewport: main_viewport(&settings),
+        renderer,
+        #[cfg(target_os = "windows")]
+        wgpu_options: graphics::wgpu_options(),
         ..Default::default()
     };
 
@@ -78,8 +102,10 @@ pub fn run(demo: bool, activation: crate::launch::Instance) -> eframe::Result {
         options,
         Box::new(move |creation| {
             let mut desktop = DesktopApp::new(creation, demo, settings);
-            activation.attach(&creation.egui_ctx);
-            desktop.activation = Some(activation);
+            if let Some(activation) = activation.take() {
+                activation.attach(&creation.egui_ctx);
+                desktop.activation = Some(activation);
+            }
             Ok(Box::new(desktop))
         }),
     )

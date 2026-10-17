@@ -37,7 +37,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   other local users cannot use up a later launch's retries. It wakes egui
   through a bounded channel; shutdown joins it before releasing the lock. The
   private activation directory contains only the lock and a
-  port/token/process-ID record, never email contents. The record lives only as
+  port/token/process-ID record, never email contents. Windows keeps it in the
+  local application data, which does not roam with the profile. The record lives only as
   long as the process, so it is not flushed to disk; if it cannot be written,
   the window still opens, a warning goes to standard error, and later launches
   cannot hand it their links. A stale record that cannot be removed still stops
@@ -47,7 +48,16 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   [`launch/macos.rs`](../src/launch/macos.rs) registers a retained `GURL` Apple
   Event target before the event loop starts, without replacing winit's delegate.
   Linux's `.desktop` file passes `%u`; Windows exposes a selectable per-user
-  handler through [`register-mailto.ps1`](../packaging/windows/register-mailto.ps1).
+  handler through [`register-mailto.ps1`](../packaging/windows/register-mailto.ps1),
+  which [`unregister-mailto.ps1`](../packaging/windows/unregister-mailto.ps1)
+  removes.
+- On Windows the desktop is a window app with no console of its own
+  (`windows_subsystem` in [`src/main.rs`](../src/main.rs)), so standard error
+  reaches nobody unless the caller hands it down. [`src/diagnostics.rs`](../src/diagnostics.rs)
+  shows a failure to start, or to hand a link to the open window, and a panic
+  that ends the process in a message box. With `RUSTON_DEBUG_HTTP` it attaches
+  to the console of the terminal Ruston was started from, unless standard
+  error already goes to a file or pipe, and ignores that console's Ctrl+C.
 - [`src/mailto.rs`](../src/mailto.rs) accepts only recipient, subject, and plain
   text body defaults. It decodes UTF-8 escapes once, preserves literal `+`,
   rejects control/header injection and ambiguous duplicate fields, and ignores
@@ -83,6 +93,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   ignores ordinary focus requests. Activation remains subject to compositor policy.
 - [`src/ui/`](../src/ui/) draws widgets with `eframe` and `egui`, gathers user
   actions, dispatches `Message`s, and applies effects that require the UI thread.
+- [`ui/graphics.rs`](../src/ui/graphics.rs) picks the renderer: OpenGL (glow)
+  on macOS and Linux; on Windows DirectX 12 through wgpu, on the GPU that uses
+  the least power or on WARP, Windows' software renderer, without one, and
+  OpenGL when `RUSTON_RENDERER=opengl`. If DirectX 12 fails before the app is
+  created, `ui::run` opens the window again with OpenGL. The activation
+  instance waits in a `Cell` until the app takes it, so the retry keeps the
+  single-instance lock and link hand-off.
 - [`ui/identity.rs`](../src/ui/identity.rs) supplies the shared logo and app ID
   to the mailbox and composer viewports. It sets the Windows process identity
   before native windows are created. The ID matches the existing macOS bundle
@@ -252,9 +269,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   collision suffixes; explicit destinations use the user's exact absolute path.
   Both use exclusive creation and never replace existing files or follow a
   final-component symlink. [`src/file_manager.rs`](../src/file_manager.rs)
-  reveals saved files: Finder/Explorer on macOS/Windows and FileManager1.ShowItems
-  with an encoded file URI on Linux. Linux bounds connection and reply to three
-  seconds and falls back to opening the containing folder with `xdg-open`.
+  reveals saved files: Finder on macOS, FileManager1.ShowItems with an encoded
+  file URI on Linux, and on Windows the shell's `SHOpenFolderAndSelectItems`,
+  called on a blocking worker in a single-threaded COM apartment, which takes
+  the path whole where Explorer's command line splits it at commas. Linux
+  bounds connection and reply to three seconds and falls back to opening the
+  containing folder with `xdg-open`.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
   to egui visuals and custom-painted widget colors. The shell stores it for
   the next run and applies [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
@@ -308,7 +328,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Settings ends with an About card containing the existing logo, package version,
   technology and author credits, license, and a Source code button. The button
   dispatches `OpenSourceCode` through `App`, which opens the package repository
-  using the existing background browser effect.
+  using the existing background browser effect. That effect, like the CLI's
+  human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
+  the address to the system's opener without a shell: `open`, `xdg-open`, or
+  on Windows `rundll32 url.dll,FileProtocolHandler` from System32, never a
+  `rundll32` that Windows would first look for beside the executable.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches
@@ -542,7 +566,10 @@ instead of an unknown outcome.
   `read_conversation` keeps failing on any message it cannot open.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
   owns the filename policy shared by both frontends. Each frontend chooses its
-  destination and creates the file exclusively. Core can pass decrypted
+  destination and creates the file exclusively, then marks it with core's
+  `mark_downloaded`: on Windows a `Zone.Identifier` stream naming the Internet
+  zone, best effort, so SmartScreen and Office's Protected View apply; nothing
+  elsewhere. Core can pass decrypted
   attachments to a caller one at a time; the CLI uses this path for `--all`,
   fetching message metadata once and saving each file before the next download.
   The convenience API that returns all attachment bytes has a total size limit.
@@ -799,15 +826,22 @@ session or keychain entry behind. CLI parser and demo tests
 are in [`crates/ruston-cli/src/main.rs`](../crates/ruston-cli/src/main.rs).
 Run and check commands are in [Development](DEVELOPMENT.md).
 
-The shared [CI workflow](../.github/workflows/ci.yml) checks Linux and macOS on
-x86_64 and arm64, and Windows on x86_64 using the native MSVC toolchain. All
+The shared [CI workflow](../.github/workflows/ci.yml) checks Linux, macOS and
+Windows on x86_64 and arm64, Windows with the native MSVC toolchain. All
 platforms run the same formatting, Clippy, documentation, and test gates.
 Linux validates the desktop entry and the AppStream metadata in
 [`packaging/linux/`](../packaging/linux/), which describe the application to
-software centers and AppImage catalogs. Windows additionally builds the desktop
-executable and checks its embedded version information. Root [`build.rs`](../build.rs)
-uses `winresource` only for Windows targets to embed the ICO and Cargo version;
-it leaves the CLI and core packages' binaries untouched. Committed Linux PNGs
+software centers and AppImage catalogs. Windows additionally builds both
+executables and checks them with
+[`verify-windows.ps1`](../packaging/windows/verify-windows.ps1): architecture,
+window or console subsystem, DLLs Windows includes, manifest, and version
+information. Root [`build.rs`](../build.rs) uses `winresource` only for Windows
+targets to embed the ICO, Cargo version and an application manifest in
+`ruston.exe`; the CLI's [`build.rs`](../crates/ruston-cli/build.rs) embeds its
+version and manifest, inline so the published crate needs no files outside it.
+[`.cargo/config.toml`](../.cargo/config.toml) links the C runtime statically
+for MSVC targets, so neither executable needs the Visual C++ redistributable.
+Committed Linux PNGs
 and the Windows ICO are derived from the existing logo by
 [`packaging/generate-desktop-icons.py`](../packaging/generate-desktop-icons.py).
 A Windows-only identity test reads back the process AppUserModelID with the
@@ -829,7 +863,21 @@ architecture on a native runner:
   [`AppRun`](../packaging/linux/AppRun) starts the app or the CLI, and
   [`check-glibc.sh`](../packaging/linux/check-glibc.sh) holds the glibc floor at
   2.35.
-- Every app is started once with [`smoke-test.sh`](../packaging/smoke-test.sh).
+- Windows Server 2025 and Windows 11 ARM runners run
+  [`package.ps1`](../packaging/windows/package.ps1) with a pinned,
+  digest-checked Inno Setup. It checks both executables with
+  `verify-windows.ps1` and writes a per-user installer, from
+  [`ruston-mail.iss`](../packaging/windows/ruston-mail.iss), and a portable ZIP.
+  The installer adds the Start menu shortcut with the app's AppUserModelID and
+  optionally the email-link registration and a `PATH` entry, all removed again
+  on uninstall.
+- Every macOS and Linux app is started once with
+  [`smoke-test.sh`](../packaging/smoke-test.sh). On Windows,
+  [`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) requires the window
+  to open and draw without an error box, since a failure to start shows one
+  instead of ending the process, and
+  [`test-installer.ps1`](../packaging/windows/test-installer.ps1) installs,
+  starts and uninstalls the installer.
 
 Only the publishing job may write to the repository. It adds `SHA256SUMS.txt`,
 build provenance attestations, and notes that

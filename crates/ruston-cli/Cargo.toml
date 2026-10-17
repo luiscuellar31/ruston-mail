@@ -27,3 +27,9 @@ rpassword = { workspace = true }
 secrecy = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+
+[build-dependencies]
+winresource = { version = "0.1.31", default-features = false }

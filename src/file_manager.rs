@@ -1,9 +1,11 @@
 //! Reveals downloaded files through the desktop's native file manager.
 
 use std::path::Path;
+#[cfg(not(target_os = "windows"))]
 use std::process::Command;
 
-/// Uses argument vectors rather than interpreting paths through a shell.
+/// Uses argument vectors or the shell's API rather than interpreting paths
+/// through a shell.
 pub async fn reveal(path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -21,25 +23,72 @@ pub async fn reveal(path: &Path) -> std::io::Result<()> {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("open");
-        command.arg("-R").arg(path);
-        command
-    };
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("explorer");
-        command.arg(format!("/select,{}", path.display()));
-        command
+    {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || select_in_explorer(&path))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            let mut command = Command::new("open");
+            command.arg("-R").arg(path);
+            command
+        };
+        #[cfg(not(target_os = "macos"))]
+        let mut command = {
+            let mut command = Command::new("xdg-open");
+            command.arg(path.parent().unwrap_or(path));
+            command
+        };
+        command.spawn().map(drop)
+    }
+}
+
+/// Opens the file's folder in Explorer with the file selected. The shell API
+/// takes the path whole: Explorer's command line splits `/select,` at commas,
+/// and `explorer` named without a folder is looked for beside this
+/// executable first.
+#[cfg(target_os = "windows")]
+fn select_in_explorer(path: &Path) -> std::io::Result<()> {
+    use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
     };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let mut command = {
-        let mut command = Command::new("xdg-open");
-        command.arg(path.parent().unwrap_or(path));
-        command
-    };
-    command.spawn().map(drop)
+    use windows::Win32::UI::Shell::{ILFree, SHOpenFolderAndSelectItems, SHParseDisplayName};
+    use windows::core::HSTRING;
+
+    struct Apartment;
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            // SAFETY: created only after CoInitializeEx succeeded on this
+            // blocking worker, which it cannot leave.
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    // SAFETY: initializes COM for this blocking worker; the guard balances it.
+    let initialized =
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    // A worker already in the multithreaded apartment can use the shell too.
+    if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
+        return Err(windows::core::Error::from_hresult(initialized).into());
+    }
+    let _apartment = initialized.is_ok().then_some(Apartment);
+
+    let mut item = std::ptr::null_mut();
+    // SAFETY: the name is a live, NUL-terminated wide string, and `item`
+    // receives an item ID list the shell allocates.
+    unsafe { SHParseDisplayName(&HSTRING::from(path.as_os_str()), None, &mut item, 0, None) }?;
+    // SAFETY: with no children, the full ID list names the item to select in
+    // its parent folder; it is freed once the call has returned.
+    let selected = unsafe { SHOpenFolderAndSelectItems(item, None, 0) };
+    // SAFETY: `item` came from SHParseDisplayName and is not used again.
+    unsafe { ILFree(Some(item)) };
+    Ok(selected?)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -138,5 +187,14 @@ mod tests {
             assert!(uri.as_str().contains("%25%20%23"));
             drop(server);
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn explorer_stays_closed_for_a_file_that_is_gone() {
+        // The shell resolves the path before Explorer opens, so no window
+        // appears; a comma is where Explorer's command line used to split.
+        let missing = std::env::temp_dir().join("ruston missing, informe ñ.pdf");
+        assert!(select_in_explorer(&missing).is_err());
     }
 }

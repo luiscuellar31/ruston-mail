@@ -48,8 +48,10 @@ while Ruston is running. It accepts bounded email-link requests after a random
 256-bit token handshake; it exposes no account or mailbox data and cannot send
 mail. The private `activation` directory under Ruston's configuration directory
 contains an OS lock file and an endpoint record with the port, token, and process
-ID. Unix permissions are 0700 for the directory and 0600 for the files; Windows
-uses the current user's application-data directory and inherited access rules.
+ID. Unix permissions are 0700 for the directory and 0600 for the files. Windows
+keeps the directory in the local, non-roaming application data,
+`%LOCALAPPDATA%\Ruston Mail\data\activation`, with the access rules it inherits
+from the user's profile.
 The endpoint is removed on orderly exit and replaced after a crash. The lock
 file remains for safe coordination. `activation-demo` isolates the demo.
 Pending email links stay in memory through sign-in and are cleared when a
@@ -76,11 +78,12 @@ attachments. Its reference IDs and timestamp stay in process memory. The first
 successful snapshot is silent; new unread IDs can notify even when the unread
 count does not grow. Turning the option off clears this reference.
 
-Windows toast registration creates `Ruston Mail.lnk` in the user's Start menu
-Programs folder, pointing to the running executable and carrying Ruston's
-AppUserModelID. It does not replace a shortcut belonging to another application
-and requires no administrator privileges. The shortcut remains when the app
-closes; remove it when uninstalling a manually copied executable. macOS asks
+Windows toast registration needs `Ruston Mail.lnk` in the user's Start menu
+Programs folder, carrying Ruston's AppUserModelID. The installer creates it and
+removes it on uninstall; a portable copy creates it at the first notification,
+pointing to the running executable. It does not replace a shortcut belonging
+to another application and requires no administrator privileges. A portable
+copy's shortcut remains when the app closes; delete it with the folder. macOS asks
 for system authorization when notifications become active for a signed-in
 account; a bare development executable does not request permission or notify.
 
@@ -257,6 +260,25 @@ The signature turns on the hardened runtime, so macOS does not load libraries
 injected with `DYLD_INSERT_LIBRARIES` into the process that reads the saved
 session from the Keychain.
 
+On Windows, everything stays in the user's profile, which Windows' default
+access rules keep to that user, the system and administrators:
+
+| Data | Location |
+| --- | --- |
+| Tokens and key passphrase | Credential Manager, generic credentials named `<profile>:…ruston-mail` |
+| Session metadata | `%APPDATA%\ruston-mail\config\sessions` |
+| Desktop settings | `%APPDATA%\Ruston Mail\config\settings.json` |
+| CLI cache | `%LOCALAPPDATA%\ruston-mail\cache\accounts` |
+| Single-instance lock | `%LOCALAPPDATA%\Ruston Mail\data\activation` |
+
+`%APPDATA%` follows a roaming profile to other computers, and so do the
+Credential Manager entries, which use enterprise persistence. Any program
+running as the same user can read those entries; Windows has no per-app access
+check like the macOS Keychain's. Uninstalling removes the program, its Start
+menu shortcut, the email-link registration and the `PATH` entry, and leaves
+the rest: sign out first to remove the session from Credential Manager, then
+delete the folders above to remove settings and the cache.
+
 ## Attachments
 
 Desktop attachments are downloaded only after **Save** or a confirmed **Save as…**
@@ -266,7 +288,11 @@ The CLI saves them in `--output-dir`, or the current directory
 by default. Both reduce sender-provided paths to a plain file name. Invisible
 direction marks are removed, so a name cannot disguise its real extension.
 Names with invalid characters become `attachment`, Windows device names receive
-an underscore prefix, and existing files are never overwritten.
+an underscore prefix, and existing files are never overwritten. On Windows,
+both mark a saved attachment as downloaded from the internet, as browsers do
+(a `Zone.Identifier` stream naming the Internet zone), so SmartScreen checks it
+before it runs and Office opens it in Protected View. A file system without
+such streams, such as FAT32, keeps the file unmarked.
 Sender-provided names are sanitized before suggesting a name in the save
 dialog too. Revealing a saved file sends its local path to the operating
 system's file manager (a file URI over the session bus on Linux).

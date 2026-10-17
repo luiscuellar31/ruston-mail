@@ -182,13 +182,17 @@ Launching Ruston again activates the existing instance for that user; the demo
 has its own instance. The system can restrict bringing a window to the front,
 especially on Wayland, where it can show an attention indicator instead.
 See the [setup instructions](DEVELOPMENT.md#email-link-handlers-and-activation)
-to enable email-link handling on your platform.
+to enable email-link handling on your platform. On Windows, the installer's
+email-link option registers Ruston; then choose it for MAILTO in Settings >
+Apps > Default apps.
 
 ## Attachments
 
 Choose **Save** to save an attachment in the system Downloads folder. Ruston Mail
 uses a safe file name and never replaces an existing file; it adds a number to
-the new name instead.
+the new name instead. On Windows, saved attachments are marked as downloaded
+from the internet, like a browser's downloads, so SmartScreen checks a program
+before it runs and Office opens documents in Protected View.
 
 Choose **Save as…** to select another folder or filename in the native save
 dialog. Cancelling does not download or write the attachment. Choose a new
@@ -343,6 +347,22 @@ show placeholder boxes for a moment at startup.
 Coverage depends on local fonts; there are no font downloads. This expands
 glyph coverage but does not provide complete bidirectional/RTL text layout.
 
+## Graphics on Windows
+
+On Windows, Ruston Mail draws with DirectX 12 on the graphics processor that
+uses the least power, or with Windows' software renderer where there is none,
+as in many virtual machines. If DirectX 12 cannot draw the window, Ruston uses
+OpenGL instead. To use OpenGL from the start, for example when a graphics
+driver draws the window wrongly, set `RUSTON_RENDERER` to `opengl` for your
+user in PowerShell and start Ruston again:
+
+```powershell
+[Environment]::SetEnvironmentVariable('RUSTON_RENDERER', 'opengl', 'User')
+```
+
+Pass `$null` instead of `'opengl'` to go back to DirectX 12. macOS and Linux
+always draw with OpenGL.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -381,6 +401,11 @@ inside the app:
 
 - **Linux:** pass `--cli` as the AppImage's first argument, or start the
   AppImage through a link named `ruston-cli`.
+- **Windows:** `ruston-cli.exe` sits beside `ruston.exe`, in
+  `%LOCALAPPDATA%\Programs\Ruston Mail` after installing. Select *Add
+  ruston-cli to the PATH* in the installer to run it as `ruston-cli` from any
+  terminal; with the portable ZIP, run it from its folder or add the folder to
+  your `PATH`.
 
 From source, run `cargo run -p ruston-cli -- --help`. `ruston-cli --help` lists
 every command, and `ruston-cli <command> --help` its options.
