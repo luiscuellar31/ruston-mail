@@ -445,6 +445,30 @@ fn command_enter_sends_compose() {
 }
 
 #[test]
+fn the_mailbox_keys_leave_a_draft_in_its_own_window_alone() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
+    deliver_selected_demo_detail(&mut app);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::To,
+        "recipient@example.com".into(),
+    ));
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
+
+    // Escape and Send in the mailbox window are not meant for the draft:
+    // its own window handles them.
+    press_command(&mut app, Key::Enter);
+    press(&mut app, Key::Escape);
+    let draft = app.compose().unwrap();
+    assert_eq!(draft.sending(), Sending::Writing);
+    assert!(!draft.confirming_discard());
+    // Escape went on to what the mailbox window shows.
+    assert!(app.mailbox().unwrap().reader().is_none());
+}
+
+#[test]
 fn trash_shortcuts_move_selected_conversation() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectConversation("demo-3".into()));

@@ -71,6 +71,12 @@ impl App {
         self.compose.is_some() && self.settings.compose_placement == ComposePlacement::ReadingPane
     }
 
+    /// A draft in its own window takes that window's Escape and Send keys;
+    /// the keys handled here come from the mailbox window.
+    fn draft_in_window(&self) -> bool {
+        self.compose.is_some() && self.settings.compose_placement == ComposePlacement::Window
+    }
+
     pub(super) fn handle_key(&mut self, press: KeyPress) -> Effects {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
@@ -124,7 +130,9 @@ impl App {
                     return Effects::none();
                 }
                 // In-flight messages cannot be dismissed.
-                if let Some(compose) = self.compose().filter(|c| !c.in_flight()) {
+                if !self.draft_in_window()
+                    && let Some(compose) = self.compose().filter(|c| !c.in_flight())
+                {
                     if compose.confirming_discard() {
                         self.cancel_discard();
                     } else {
@@ -153,7 +161,7 @@ impl App {
                 Effects::none()
             }
             Shortcut::Send => {
-                if self.compose.is_some() {
+                if self.compose.is_some() && !self.draft_in_window() {
                     return self.send_compose();
                 }
                 Effects::none()
