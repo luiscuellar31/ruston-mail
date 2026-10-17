@@ -93,8 +93,15 @@ impl Instance {
             directories::ProjectDirs::from("", "", "Ruston Mail").ok_or_else(|| {
                 io::Error::other("could not find the desktop configuration directory")
             })?;
+        // Windows roams the configuration directory with the user's profile,
+        // sometimes to a network share, where another computer would find the
+        // lock held. The lock and endpoint belong to this computer.
+        #[cfg(target_os = "windows")]
+        let base = directories.data_local_dir();
+        #[cfg(not(target_os = "windows"))]
+        let base = directories.config_dir();
         // A demo process must never forward an email link to a real account.
-        let folder = directories.config_dir().join(if demo {
+        let folder = base.join(if demo {
             "activation-demo"
         } else {
             "activation"

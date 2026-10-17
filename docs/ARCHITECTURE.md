@@ -37,7 +37,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   other local users cannot use up a later launch's retries. It wakes egui
   through a bounded channel; shutdown joins it before releasing the lock. The
   private activation directory contains only the lock and a
-  port/token/process-ID record, never email contents. The record lives only as
+  port/token/process-ID record, never email contents. Windows keeps it in the
+  local application data, which does not roam with the profile. The record lives only as
   long as the process, so it is not flushed to disk; if it cannot be written,
   the window still opens, a warning goes to standard error, and later launches
   cannot hand it their links. A stale record that cannot be removed still stops

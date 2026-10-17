@@ -48,8 +48,10 @@ while Ruston is running. It accepts bounded email-link requests after a random
 256-bit token handshake; it exposes no account or mailbox data and cannot send
 mail. The private `activation` directory under Ruston's configuration directory
 contains an OS lock file and an endpoint record with the port, token, and process
-ID. Unix permissions are 0700 for the directory and 0600 for the files; Windows
-uses the current user's application-data directory and inherited access rules.
+ID. Unix permissions are 0700 for the directory and 0600 for the files. Windows
+keeps the directory in the local, non-roaming application data,
+`%LOCALAPPDATA%\Ruston Mail\data\activation`, with the access rules it inherits
+from the user's profile.
 The endpoint is removed on orderly exit and replaced after a crash. The lock
 file remains for safe coordination. `activation-demo` isolates the demo.
 Pending email links stay in memory through sign-in and are cleared when a
