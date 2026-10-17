@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(safe_name("Q3 report.pdf"), "Q3 report.pdf");
 
         // Names that include separators or a drive prefix still become safe.
-        assert_eq!(safe_name("C:report.pdf"), "attachment");
+        assert_eq!(safe_name("C:report.pdf"), "C_report.pdf");
         assert_eq!(safe_name(r"C:\Windows\evil.exe"), "evil.exe");
         assert_eq!(safe_name(r"\\server\share\file"), "file");
     }

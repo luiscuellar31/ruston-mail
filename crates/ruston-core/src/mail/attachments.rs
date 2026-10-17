@@ -15,29 +15,38 @@ pub const MAX_BULK_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
 /// reading limit, which proton-crypto applies to every decrypted plaintext.
 pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: usize = 50 * 1024 * 1024;
 
+/// The longest name kept, in UTF-8 bytes. NTFS allows 255 UTF-16 units and
+/// Linux and macOS file systems 255 bytes; this leaves room for the number a
+/// frontend adds to a copy, such as " (9999)".
+const MAX_NAME_BYTES: usize = 240;
+
 /// Return a portable plain filename for an untrusted attachment name.
 /// Invisible direction marks are dropped; path components are removed;
-/// invalid characters and empty names become `attachment`, and Windows device
-/// names are prefixed with an underscore.
+/// characters no file system accepts become `_`; a long name is cut, keeping
+/// its extension; empty names become `attachment`, and Windows device names
+/// are prefixed with an underscore.
 pub fn safe_attachment_name(name: &str) -> String {
     let name: String = name.chars().filter(|&c| !is_invisible_mark(c)).collect();
-    let name = name
+    let name: String = name
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or("")
-        .trim()
-        .trim_start_matches('.')
-        .trim_end_matches('.');
+        .chars()
+        .map(|c| {
+            if c.is_control() || "<>:\"|?*".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = shorten(trim_name(&name));
+    let name = trim_name(&name);
     let mut components = Path::new(name).components();
     let plain_name =
         matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
 
-    if name.is_empty()
-        || name
-            .chars()
-            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
-        || !plain_name
-    {
+    if name.is_empty() || !plain_name {
         return "attachment".to_owned();
     }
 
@@ -46,6 +55,32 @@ pub fn safe_attachment_name(name: &str) -> String {
     } else {
         name.to_owned()
     }
+}
+
+/// Leading dots would hide the file on Linux and macOS, and Windows drops
+/// trailing dots and spaces, so a name ending in them would be saved under
+/// another one than the frontend reports.
+fn trim_name(name: &str) -> &str {
+    name.trim_start_matches(|c: char| c == '.' || c.is_whitespace())
+        .trim_end_matches(|c: char| c == '.' || c.is_whitespace())
+}
+
+/// Cuts a name longer than [`MAX_NAME_BYTES`] at a character boundary,
+/// keeping a short extension.
+fn shorten(name: &str) -> String {
+    if name.len() <= MAX_NAME_BYTES {
+        return name.to_owned();
+    }
+    let extension = match name.rfind('.') {
+        Some(dot) if dot > 0 && name.len() - dot <= 16 => &name[dot..],
+        _ => "",
+    };
+    let stem = &name[..name.len() - extension.len()];
+    let mut end = MAX_NAME_BYTES - extension.len();
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{extension}", &stem[..end])
 }
 
 /// Characters a file manager, terminal or notification draws as nothing.
@@ -96,10 +131,13 @@ fn is_windows_reserved(name: &str) -> bool {
     {
         return true;
     }
-    let bytes = stem.as_bytes();
-    bytes.len() == 4
-        && (bytes[..3].eq_ignore_ascii_case(b"COM") || bytes[..3].eq_ignore_ascii_case(b"LPT"))
-        && bytes[3].is_ascii_digit()
+    // COM and LPT with one digit, the superscripts ¹, ² and ³ included.
+    let mut chars = stem.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    let digit = chars.next();
+    chars.next().is_none()
+        && (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+        && digit.is_some_and(|c| c.is_ascii_digit() || matches!(c, '¹' | '²' | '³'))
 }
 
 impl Client {
@@ -752,16 +790,53 @@ mod tests {
             ("../../etc/passwd", "passwd"),
             (r"..\windows\file.txt", "file.txt"),
             ("/tmp/report.pdf", "report.pdf"),
-            ("C:report.pdf", "attachment"),
-            ("bad\nname.txt", "attachment"),
-            ("bad\0name.txt", "attachment"),
-            ("bad?name.txt", "attachment"),
+            ("C:report.pdf", "C_report.pdf"),
+            ("bad\nname.txt", "bad_name.txt"),
+            ("bad\0name.txt", "bad_name.txt"),
+            ("bad?name.txt", "bad_name.txt"),
+            ("Reunión 10:30.ics", "Reunión 10_30.ics"),
+            ("notes.txt:hidden", "notes.txt_hidden"),
+            (r#"<"a"|b*>.txt"#, "__a__b__.txt"),
             ("...", "attachment"),
             ("", "attachment"),
             ("Q3 report.pdf", "Q3 report.pdf"),
         ] {
             assert_eq!(safe_attachment_name(input), expected);
         }
+    }
+
+    #[test]
+    fn names_end_where_windows_would_end_them() {
+        // Windows drops trailing dots and spaces when it creates a file.
+        for (input, expected) in [
+            ("report.pdf .", "report.pdf"),
+            ("report.pdf. . ", "report.pdf"),
+            (" . report.pdf", "report.pdf"),
+        ] {
+            assert_eq!(safe_attachment_name(input), expected, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn long_names_are_cut_keeping_their_extension() {
+        let long = format!("{}.pdf", "a".repeat(300));
+        let name = safe_attachment_name(&long);
+        assert_eq!(name.len(), MAX_NAME_BYTES);
+        assert!(name.ends_with("aaa.pdf"));
+
+        // A cut never splits a character.
+        let accented = format!("{}.docx", "ñ".repeat(200));
+        let name = safe_attachment_name(&accented);
+        assert!(name.len() <= MAX_NAME_BYTES && name.ends_with("ñ.docx"));
+
+        // Without a short extension, the end of the name goes.
+        let name = safe_attachment_name(&format!("{}.{}", "b".repeat(10), "c".repeat(300)));
+        assert_eq!(name.len(), MAX_NAME_BYTES);
+        assert!(name.starts_with("bbbbbbbbbb.ccc"));
+
+        // A cut that lands on spaces does not leave them at the end.
+        let spaced = format!("{}{}", "d".repeat(239), " ".repeat(20));
+        assert_eq!(safe_attachment_name(&spaced), "d".repeat(239));
     }
 
     #[test]
@@ -798,7 +873,12 @@ mod tests {
             ("CONIN$.log", "_CONIN$.log"),
             ("CONOUT$", "_CONOUT$"),
             ("CLOCK$", "_CLOCK$"),
+            ("COM¹.txt", "_COM¹.txt"),
+            ("com².log", "_com².log"),
+            ("LPT³", "_LPT³"),
             ("COM10.txt", "COM10.txt"),
+            ("COM.txt", "COM.txt"),
+            ("COM⁴.txt", "COM⁴.txt"),
         ] {
             assert_eq!(safe_attachment_name(input), expected);
         }

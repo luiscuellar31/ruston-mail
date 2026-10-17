@@ -287,8 +287,11 @@ exact path chosen by the user, and cancelling its dialog starts no download.
 The CLI saves them in `--output-dir`, or the current directory
 by default. Both reduce sender-provided paths to a plain file name. Invisible
 direction marks are removed, so a name cannot disguise its real extension.
-Names with invalid characters become `attachment`, Windows device names receive
-an underscore prefix, and existing files are never overwritten. On Windows,
+Characters no file system accepts become `_`, a name longer than 240 bytes is
+cut keeping its extension, leading dots and trailing dots and spaces are
+removed, a name left empty becomes `attachment`, Windows device names (`CON`,
+`COM1`, `LPT¹` and the like) receive an underscore prefix, and existing files
+are never overwritten. On Windows,
 both mark a saved attachment as downloaded from the internet, as browsers do
 (a `Zone.Identifier` stream naming the Internet zone), so SmartScreen checks it
 before it runs and Office opens it in Protected View. A file system without

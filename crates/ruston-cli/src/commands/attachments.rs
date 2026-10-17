@@ -130,16 +130,31 @@ mod tests {
             ("../../outside.txt", "outside.txt"),
             ("/tmp/absolute.txt", "absolute.txt"),
             (r"..\windows\file.txt", "file.txt"),
-            ("C:drive.txt", "attachment"),
+            ("C:drive.txt", "C_drive.txt"),
             ("CON.txt", "_CON.txt"),
             ("CON .txt", "_CON .txt"),
-            ("...", "attachment (1)"),
+            ("...", "attachment"),
         ] {
             let path = save_attachment(&dir, untrusted, b"mail").unwrap();
             assert_eq!(path.parent(), Some(dir.as_path()));
             assert_eq!(path.file_name().unwrap(), expected);
             assert_eq!(std::fs::read(path).unwrap(), b"mail");
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_long_name_and_its_numbered_copy_can_both_be_saved() {
+        let dir = test_dir("long");
+        let long = format!("{}.pdf", "informe ".repeat(40));
+        let first = save_attachment(&dir, &long, b"one").unwrap();
+        let second = save_attachment(&dir, &long, b"two").unwrap();
+        assert_ne!(first, second);
+        for path in [&first, &second] {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(name.len() <= 255 && name.ends_with(".pdf"), "{name}");
+        }
+        assert_eq!(std::fs::read(second).unwrap(), b"two");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
