@@ -811,10 +811,17 @@ x86_64 and arm64, and Windows on x86_64 using the native MSVC toolchain. All
 platforms run the same formatting, Clippy, documentation, and test gates.
 Linux validates the desktop entry and the AppStream metadata in
 [`packaging/linux/`](../packaging/linux/), which describe the application to
-software centers and AppImage catalogs. Windows additionally builds the desktop
-executable and checks its embedded version information. Root [`build.rs`](../build.rs)
-uses `winresource` only for Windows targets to embed the ICO and Cargo version;
-it leaves the CLI and core packages' binaries untouched. Committed Linux PNGs
+software centers and AppImage catalogs. Windows additionally builds both
+executables and checks them with
+[`verify-windows.ps1`](../packaging/windows/verify-windows.ps1): architecture,
+window or console subsystem, DLLs Windows includes, manifest, and version
+information. Root [`build.rs`](../build.rs) uses `winresource` only for Windows
+targets to embed the ICO, Cargo version and an application manifest in
+`ruston.exe`; the CLI's [`build.rs`](../crates/ruston-cli/build.rs) embeds its
+version and manifest, inline so the published crate needs no files outside it.
+[`.cargo/config.toml`](../.cargo/config.toml) links the C runtime statically
+for MSVC targets, so neither executable needs the Visual C++ redistributable.
+Committed Linux PNGs
 and the Windows ICO are derived from the existing logo by
 [`packaging/generate-desktop-icons.py`](../packaging/generate-desktop-icons.py).
 A Windows-only identity test reads back the process AppUserModelID with the

@@ -89,9 +89,9 @@ jobs:
           # Warnings fail validation too; --no-net keeps CI off the network.
           appstreamcli validate --no-net packaging/linux/com.luiscuellar.ruston-mail.appdata.xml
 
-      - name: Build Windows desktop executable
+      - name: Build Windows executables
         if: runner.os == 'Windows'
-        run: cargo build --locked --bin ruston
+        run: cargo build --locked -p ruston-mail -p ruston-cli --bins
 
       - name: Validate Windows mailto registration
         if: runner.os == 'Windows'
@@ -115,21 +115,10 @@ jobs:
           $after = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
           if ($after -ne $before) { throw 'Registration changed the default MAILTO association.' }
 
-      - name: Verify Windows executable metadata
+      - name: Verify Windows executables
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw 'Could not read Cargo metadata' }
-          $package = $metadata.packages | Where-Object { $_.name -eq 'ruston-mail' }
-          $version = (Get-Item target/debug/ruston.exe).VersionInfo
-          if ($version.ProductName -ne 'Ruston Mail' -or
-              $version.ProductVersion -ne $package.version -or
-              $version.FileDescription -ne 'Ruston Mail' -or
-              $version.Comments -ne $package.description -or
-              $version.OriginalFilename -ne 'ruston.exe') {
-              throw 'Windows executable metadata does not match the desktop package'
-          }
+        run: ./packaging/windows/verify-windows.ps1 -Directory target/debug -Architecture x86_64
 
       - name: Ensure clean workspace
         run: git diff --exit-code

@@ -1,0 +1,5 @@
+# Windows does not ship the Visual C++ runtime. Link it into the executables,
+# so they start on a clean system and a per-user install needs no
+# administrator to add the redistributable.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

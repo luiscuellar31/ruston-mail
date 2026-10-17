@@ -27,3 +27,6 @@ rpassword = { workspace = true }
 secrecy = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+winresource = { version = "0.1.31", default-features = false }

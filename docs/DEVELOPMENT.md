@@ -67,9 +67,13 @@ from the Linux and macOS caches. All platforms run the same checks; a failure
 on one platform does not cancel the other jobs.
 
 Linux also validates the desktop entry with `desktop-file-validate` and its
-AppStream metadata with `appstreamcli validate`. Windows
-builds `ruston.exe` and checks its version information against the desktop
-package; this catches missing resources without requiring a graphical session.
+AppStream metadata with `appstreamcli validate`. Windows builds `ruston.exe`
+and `ruston-cli.exe` and checks them with
+[`verify-windows.ps1`](../packaging/windows/verify-windows.ps1): their
+architecture, that the desktop is a window app and the CLI a console program,
+that they load only DLLs Windows includes, their manifest, and their version
+information against each package. This catches a missing resource or C
+runtime without requiring a graphical session.
 A Windows-only test also sets and reads back the process AppUserModelID through
 the native APIs.
 
@@ -315,10 +319,20 @@ not prove real sheet, portal, or file-manager behavior.
 Native windows use `com.luiscuellar.ruston-mail`, matching the existing macOS
 bundle identifier. Both the mailbox and separate composer use the existing
 Ruston logo. On Windows, the process sets this AppUserModelID before opening
-windows, and the build embeds a multi-resolution icon and version metadata in
-`ruston.exe`. Native Windows builds require the Windows SDK resource compiler
-alongside the MSVC toolchain described above; failure to embed resources fails
-the build. The version comes from Cargo rather than a second version setting.
+windows, and the build embeds a multi-resolution icon, version metadata and an
+application manifest in `ruston.exe`, and version metadata and a manifest in
+`ruston-cli.exe`. The manifests declare Windows 10 and 11, long paths and
+UTF-8 as the ANSI code page; the desktop's also declares per-monitor DPI and
+the themed common controls its error boxes use. Native Windows builds require
+the Windows SDK resource compiler alongside the MSVC toolchain described
+above; failure to embed resources fails the build. The version comes from
+Cargo rather than a second version setting.
+
+[`.cargo/config.toml`](../.cargo/config.toml) links the C runtime statically
+for MSVC targets, since Windows does not include the Visual C++ runtime: the
+executables start on a clean system, and a per-user install needs no
+administrator to add the redistributable. A `RUSTFLAGS` environment variable
+replaces that setting, so leave it unset for release builds.
 
 Linux's launcher filename and icon name match the Wayland app ID. On X11, the
 window's class is the same ID: egui-winit names windows after the app ID, and
