@@ -1068,7 +1068,7 @@ impl eframe::App for DesktopApp {
             | AuthState::NeedsHumanVerification { .. } => {
                 login::show(ui, &mut self.app, &mut self.ui.show_password, &mut messages);
             }
-            AuthState::Authenticated { email } => {
+            AuthState::Authenticated { .. } => {
                 if self.app.mailbox().is_some() {
                     let draft = if self.app.showing_settings() {
                         Some(
@@ -1078,15 +1078,7 @@ impl eframe::App for DesktopApp {
                     } else {
                         None
                     };
-                    mailbox::show(
-                        ui,
-                        &self.app,
-                        email.as_deref(),
-                        false,
-                        draft,
-                        &mut self.ui,
-                        &mut messages,
-                    );
+                    mailbox::show(ui, &self.app, draft, &mut self.ui, &mut messages);
                 } else {
                     status_view(ui, "Opening mailbox…");
                 }
@@ -1111,7 +1103,7 @@ impl eframe::App for DesktopApp {
             }
             AuthState::SigningOut => {
                 if self.app.mailbox().is_some() {
-                    mailbox::show(ui, &self.app, None, true, None, &mut self.ui, &mut messages);
+                    mailbox::show(ui, &self.app, None, &mut self.ui, &mut messages);
                 } else {
                     status_view(ui, "Signing out…");
                 }
@@ -2105,15 +2097,7 @@ mod tests {
         desktop.dispatch(Message::ConversationsLoaded(1, page), &context);
         context
             .run_ui(egui::RawInput::default(), |root| {
-                mailbox::show(
-                    root,
-                    &desktop.app,
-                    None,
-                    false,
-                    None,
-                    &mut desktop.ui,
-                    &mut Vec::new(),
-                );
+                mailbox::show(root, &desktop.app, None, &mut desktop.ui, &mut Vec::new());
             })
             .drop_without_applying_deltas();
         assert!(desktop.ui.conversation_scroll.is_some());

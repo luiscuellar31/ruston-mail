@@ -4,14 +4,18 @@ use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, S
 
 use super::{UiState, UndoNotice, compose, reader, settings, theme};
 use crate::app::{
-    App, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, UndoMove, compact_layout,
-    panel_ratios, panel_widths,
+    App, AuthState, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, UndoMove,
+    compact_layout, panel_ratios, panel_widths,
 };
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError};
 use crate::settings::{ComposePlacement, Panels, Settings};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
 const CONVERSATION_PANEL_ID: &str = "conversation-list";
+/// Drawing the saved panel ratios measures back ratios a little off them, so
+/// a smaller difference is not a resize: saving it would rewrite the settings
+/// on frames where nothing was dragged.
+const PANEL_RATIO_TOLERANCE: f32 = 0.002;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CompactView {
@@ -33,8 +37,6 @@ pub(super) fn reset_panel_sizes(context: &egui::Context) {
 pub(super) fn show(
     root: &mut egui::Ui,
     app: &App,
-    email: Option<&str>,
-    signing_out: bool,
     settings_draft: Option<&mut Settings>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
@@ -43,15 +45,7 @@ pub(super) fn show(
     let context = root.ctx().clone();
     let window_width = root.available_width();
     if compact_layout(window_width) {
-        show_compact(
-            root,
-            app,
-            email,
-            signing_out,
-            settings_draft,
-            state,
-            messages,
-        );
+        show_compact(root, app, settings_draft, state, messages);
         undo_notice(&context, mailbox, state, None, messages);
         return;
     }
@@ -64,7 +58,7 @@ pub(super) fn show(
         .resizable(true)
         .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
         .show(root, |ui| {
-            sidebar(ui, app, mailbox, email, signing_out, messages);
+            sidebar(ui, app, mailbox, messages);
         });
 
     let conversations = match settings_draft {
@@ -115,8 +109,8 @@ pub(super) fn show(
             ..stored
         },
     };
-    if (actual.sidebar - stored.sidebar).abs() > 0.002
-        || (actual.conversations - stored.conversations).abs() > 0.002
+    if (actual.sidebar - stored.sidebar).abs() > PANEL_RATIO_TOLERANCE
+        || (actual.conversations - stored.conversations).abs() > PANEL_RATIO_TOLERANCE
     {
         messages.push(Message::PanelsResized(actual));
     }
@@ -125,8 +119,6 @@ pub(super) fn show(
 fn show_compact(
     root: &mut egui::Ui,
     app: &App,
-    email: Option<&str>,
-    signing_out: bool,
     settings_draft: Option<&mut Settings>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
@@ -135,10 +127,8 @@ fn show_compact(
     let inset = theme::titlebar_inset(root.ctx());
     let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
         && app.compose().is_some();
-    if state.compact_view == CompactView::Reader
-        && mailbox.selected_conversation().is_none()
-        && !writing
-    {
+    let reader_available = writing || mailbox.selected_conversation().is_some();
+    if state.compact_view == CompactView::Reader && !reader_available {
         state.compact_view = CompactView::Mail;
     }
     egui::Panel::top("compact-navigation")
@@ -153,9 +143,7 @@ fn show_compact(
                         if writing { "Message" } else { "Reading" },
                     ),
                 ] {
-                    let enabled = view != CompactView::Reader
-                        || writing
-                        || mailbox.selected_conversation().is_some();
+                    let enabled = view != CompactView::Reader || reader_available;
                     if ui
                         .add_enabled(
                             enabled,
@@ -192,7 +180,7 @@ fn show_compact(
             } else {
                 match state.compact_view {
                     CompactView::Folders => {
-                        sidebar(ui, app, mailbox, email, signing_out, messages);
+                        sidebar(ui, app, mailbox, messages);
                     }
                     CompactView::Mail => conversation_pane(ui, app, mailbox, state, messages),
                     CompactView::Reader => reading_pane(ui, app, state, messages),
@@ -223,8 +211,6 @@ fn sidebar(
     ui: &mut egui::Ui,
     app: &App,
     mailbox: &Mailbox,
-    email: Option<&str>,
-    signing_out: bool,
     messages: &mut Vec<Message>,
 ) -> egui::scroll_area::ScrollAreaOutput<()> {
     ui.scope_builder(
@@ -236,9 +222,7 @@ fn sidebar(
                     top: theme::PANEL_PADDING,
                     ..Default::default()
                 }))
-                .show(ui, |ui| {
-                    sidebar_account(ui, app, email, signing_out, messages)
-                });
+                .show(ui, |ui| sidebar_account(ui, app, messages));
             if account.response.rect.bottom() > available.bottom() + 1.0 {
                 // A bottom panel needs one measured frame before its height is
                 // known. Schedule that frame even if the pointer is stationary.
@@ -290,13 +274,13 @@ fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &m
     }
 }
 
-fn sidebar_account(
-    ui: &mut egui::Ui,
-    app: &App,
-    email: Option<&str>,
-    signing_out: bool,
-    messages: &mut Vec<Message>,
-) {
+fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
+    // The mailbox is shown only while signed in, or while signing out.
+    let (email, signing_out) = match app.auth_state() {
+        AuthState::Authenticated { email } => (email.as_deref(), false),
+        AuthState::SigningOut => (None, true),
+        _ => (None, false),
+    };
     ui.vertical(|ui| {
         let account_label = if app.is_demo() {
             "demo@example.com"
@@ -1231,17 +1215,7 @@ mod tests {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                 ..input
             },
-            |root| {
-                show(
-                    root,
-                    app,
-                    None,
-                    false,
-                    draft.as_deref_mut(),
-                    state,
-                    &mut messages,
-                )
-            },
+            |root| show(root, app, draft.as_deref_mut(), state, &mut messages),
         );
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -1345,6 +1319,62 @@ mod tests {
     }
 
     #[test]
+    fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.set_auth_state(AuthState::SigningOut);
+        let mut state = UiState::default();
+        let mut messages = Vec::new();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1500.0, 950.0));
+
+        let mut label = None;
+        for _ in 0..3 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |root| show(root, &app, None, &mut state, &mut messages),
+            );
+            label = visible_text_rect(&output.shapes, "Signing out…");
+            output.drop_without_applying_deltas();
+        }
+        let position = label.expect("the sidebar says it is signing out").center();
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events: vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |root| show(root, &app, None, &mut state, &mut messages),
+            )
+            .drop_without_applying_deltas();
+
+        assert!(
+            !messages
+                .iter()
+                .any(|message| matches!(message, Message::Logout)),
+            "a sign-out under way must not start another"
+        );
+    }
+
+    #[test]
     fn folders_scroll_independently_while_account_actions_remain_accessible() {
         let context = egui::Context::default();
         theme::install(&context);
@@ -1367,14 +1397,7 @@ mod tests {
                     },
                     |root| {
                         egui::CentralPanel::default().show(root, |ui| {
-                            let scroll = sidebar(
-                                ui,
-                                &app,
-                                app.mailbox().unwrap(),
-                                None,
-                                false,
-                                &mut messages,
-                            );
+                            let scroll = sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
                             scroll_id = scroll.id;
                             assert!(scroll.content_size.y > scroll.inner_rect.height());
                             assert!(scroll.content_size.x <= scroll.inner_rect.width() + 1.0);
@@ -1396,7 +1419,7 @@ mod tests {
                 },
                 |root| {
                     egui::CentralPanel::default().show(root, |ui| {
-                        sidebar(ui, &app, app.mailbox().unwrap(), None, false, &mut messages);
+                        sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
                     });
                 },
             );
@@ -1434,7 +1457,7 @@ mod tests {
                 },
                 |root| {
                     egui::CentralPanel::default().show(root, |ui| {
-                        sidebar(ui, &app, app.mailbox().unwrap(), None, false, &mut messages);
+                        sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
                     });
                 },
             )
@@ -1651,7 +1674,7 @@ mod tests {
                         screen_rect: Some(window),
                         ..Default::default()
                     },
-                    |root| show(root, &app, None, false, None, &mut state, &mut messages),
+                    |root| show(root, &app, None, &mut state, &mut messages),
                 )
                 .drop_without_applying_deltas();
         }
@@ -2309,15 +2332,7 @@ mod tests {
                 ..Default::default()
             },
             |root| {
-                show(
-                    root,
-                    &app,
-                    None,
-                    false,
-                    Some(&mut draft),
-                    &mut state,
-                    &mut messages,
-                );
+                show(root, &app, Some(&mut draft), &mut state, &mut messages);
             },
         );
         assert!(
@@ -2420,6 +2435,34 @@ mod tests {
             ),
             "Archive should act on the row that was clicked"
         );
+    }
+
+    #[test]
+    fn the_compact_reader_opens_only_with_a_conversation_to_read() {
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::ConversationsLoaded(
+            1,
+            Ok(ConversationPage {
+                conversations: vec![pagination_row("demo-3", 1000)],
+                total: 1,
+                inspect_candidates: Vec::new(),
+            }),
+        ));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let size = egui::vec2(469.0, 700.0);
+        let mut state = UiState {
+            compact_view: CompactView::Reader,
+            ..Default::default()
+        };
+
+        mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        assert_eq!(state.compact_view, CompactView::Mail, "nothing to read");
+
+        app.update(Message::SelectConversation("demo-3".into()));
+        state.compact_view = CompactView::Reader;
+        mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        assert_eq!(state.compact_view, CompactView::Reader);
     }
 
     #[test]
