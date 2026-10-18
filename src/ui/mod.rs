@@ -843,10 +843,14 @@ impl DesktopApp {
             && !self.app.is_demo();
         let available = self.app.auto_refresh_available();
 
-        if self
-            .auto_refresh
-            .should_start(now, focused, active, available)
-        {
+        if self.auto_refresh.should_start(
+            now,
+            auto_refresh::Conditions {
+                focused,
+                active,
+                available,
+            },
+        ) {
             self.dispatch(Message::AutoRefreshMailbox, context);
             let request = self
                 .app
@@ -1759,7 +1763,11 @@ mod tests {
             ),
             &context,
         );
-        assert!(!desktop.auto_refresh.should_start(0.0, true, true, true));
+        assert!(
+            !desktop
+                .auto_refresh
+                .should_start(0.0, auto_refresh::FOREGROUND)
+        );
         desktop.dispatch(Message::AutoRefreshMailbox, &context);
         let crate::app::ListStatus::Refreshing(request) = desktop.app.mailbox().unwrap().status()
         else {
@@ -1771,15 +1779,27 @@ mod tests {
         desktop.dispatch(Message::SelectFolder(sent), &context);
         // The old result need never arrive for the scheduler to recover.
         assert!(desktop.auto_refresh.repaint_after(0.0, true).is_some());
-        assert!(desktop.auto_refresh.should_start(60.0, true, true, true));
+        assert!(
+            desktop
+                .auto_refresh
+                .should_start(60.0, auto_refresh::FOREGROUND)
+        );
     }
 
     #[test]
     fn stale_pages_do_not_reset_polling_backoff() {
         let context = egui::Context::default();
         let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
-        assert!(!desktop.auto_refresh.should_start(0.0, true, true, true));
-        assert!(desktop.auto_refresh.should_start(60.0, true, true, true));
+        assert!(
+            !desktop
+                .auto_refresh
+                .should_start(0.0, auto_refresh::FOREGROUND)
+        );
+        assert!(
+            desktop
+                .auto_refresh
+                .should_start(60.0, auto_refresh::FOREGROUND)
+        );
         desktop.auto_refresh.started(7);
         desktop.auto_refresh.page_finished(7, false, 61.0);
         let page = crate::mail::demo::DemoMailbox::new().list_conversations(
@@ -1789,8 +1809,16 @@ mod tests {
             crate::mail::demo::now(),
         );
         desktop.dispatch(Message::ConversationsLoaded(99, page), &context);
-        assert!(!desktop.auto_refresh.should_start(100.0, true, true, true));
-        assert!(desktop.auto_refresh.should_start(181.0, true, true, true));
+        assert!(
+            !desktop
+                .auto_refresh
+                .should_start(100.0, auto_refresh::FOREGROUND)
+        );
+        assert!(
+            desktop
+                .auto_refresh
+                .should_start(181.0, auto_refresh::FOREGROUND)
+        );
     }
 
     #[test]
