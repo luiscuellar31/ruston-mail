@@ -439,6 +439,8 @@ mod tests {
         assert_eq!(fmt_time(1), "1970-01-01 00:00:01 UTC");
         // A well-known timestamp: 1_700_000_000 = 2023-11-14 22:13:20 UTC.
         assert_eq!(fmt_time(1_700_000_000), "2023-11-14 22:13:20 UTC");
+        // And the first second of 2021.
+        assert_eq!(fmt_time(1_609_459_200), "2021-01-01 00:00:00 UTC");
     }
 
     #[test]
