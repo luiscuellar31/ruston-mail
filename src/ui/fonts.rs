@@ -224,6 +224,10 @@ fn fallback_candidates() -> Vec<Vec<PathBuf>> {
         windows_fonts(&["msyh.ttc", "meiryo.ttc", "msgothic.ttc"]),
         windows_fonts(&["malgun.ttf"]),
         windows_fonts(&["arial.ttf", "tahoma.ttf"]),
+        // None of the above has the Indic scripts or Thai. Nirmala UI comes
+        // as a collection, or on older Windows as a single file.
+        windows_fonts(&["Nirmala.ttc", "Nirmala.ttf"]),
+        windows_fonts(&["LeelawUI.ttf"]),
     ]
 }
 
@@ -370,6 +374,28 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_fallbacks_cover_the_indic_scripts_and_thai() {
+        let definitions = loaded_definitions(false);
+        let covered = |glyph: char| {
+            definitions.font_data.values().any(|data| {
+                FontRef::from_index(data.font.as_ref(), data.index)
+                    .is_ok_and(|font| font.charmap().map(glyph).is_some())
+            })
+        };
+        let installed = |names: &[&str]| windows_fonts(names).iter().any(|path| path.exists());
+        if installed(&["Nirmala.ttc", "Nirmala.ttf"]) {
+            // Devanagari, Bengali and Tamil.
+            for glyph in ['क', 'ক', 'க'] {
+                assert!(covered(glyph), "Nirmala UI should cover {glyph}");
+            }
+        }
+        if installed(&["LeelawUI.ttf"]) {
+            assert!(covered('ส'), "Leelawadee UI should cover Thai");
         }
     }
 

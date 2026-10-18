@@ -433,8 +433,9 @@ report a false negative when a real glyph uses the replacement glyph's face.
 Native visual checks should compare long Spanish subjects, accented names,
 Cyrillic and CJK names, email addresses, Reply controls, login, Settings, and
 monospace body passages. Check truncation, wrapping, and clipped ascenders at
-100% and 175% zoom. On Windows test Segoe UI and installed language packs;
-on Linux test Fontconfig, missing `fc-match`, and minimal/font-poor installs.
+100% and 175% zoom. On Windows test Segoe UI, installed language packs, and
+Thai and Devanagari names, which Leelawadee UI and Nirmala UI cover; on Linux
+test Fontconfig, missing `fc-match`, and minimal/font-poor installs.
 Missing fonts must preserve usability through the bundled chain. Coverage does
 not establish complete RTL/bidirectional support in the current layout engine.
 
