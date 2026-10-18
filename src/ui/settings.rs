@@ -137,6 +137,11 @@ fn page(
             }
         });
         description(ui, "Where Write, Reply and Forward open.");
+        // eframe gives only the main window an accessibility tree.
+        description(
+            ui,
+            "Screen readers cannot read a new window yet, so with one, keep the reading pane.",
+        );
         ui.add_space(10.0);
 
         ui.horizontal_wrapped(|ui| {

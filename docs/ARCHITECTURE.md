@@ -332,6 +332,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   The sidebar scrolls its folders and labels independently, reserving the
   account, Settings, and sign-out actions at the bottom;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.
+  eframe 0.36 connects AccessKit only to the main window, so screen readers
+  find nothing in the composer's own window; Settings says so beside the
+  placement, whose default is the reading pane.
 - With a mailbox open, [`ui/mailbox.rs`](../src/ui/mailbox.rs) replaces the
   conversation list and reader with
   [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. The desktop

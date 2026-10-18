@@ -392,6 +392,9 @@ focus and `Enter` presses it; `j` and `k` still move through the list. On
 Windows, `Ctrl` + `Alt` with a key runs no `Ctrl` shortcut, since Windows types
 with it what `AltGr` types.
 
+Screen readers cannot read the composer when it opens in a new window yet:
+with one, keep **Settings** › **Writing** on **Reading pane**, the default.
+
 Screen readers announce each conversation row with what it shows: whether it is
 unread, who and what it is about, its date, its star, how many messages it has
 and whether it has attachments, and whether it is the conversation open.
