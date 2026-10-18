@@ -414,36 +414,22 @@ impl ProtonMailService {
             labels,
             messages: messages
                 .into_iter()
-                .map(|message| match message {
-                    ConversationMessage::Opened(message) => {
-                        mail_message(message, &self.own_addresses)
-                    }
-                    ConversationMessage::Unreadable(unreadable) => {
-                        unreadable_mail_message(unreadable, &self.own_addresses)
-                    }
-                })
+                .map(|message| conversation_message(message, &self.own_addresses))
                 .collect(),
         })
     }
 
-    /// Fetches and decrypts one message that the list shows on its own.
+    /// Fetches and decrypts one message that the list shows on its own. One
+    /// that cannot be opened shows as it does in a conversation.
     pub async fn message_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
         let message = timed_with(
-            self.client.read_message(id),
+            self.client.read_message_or_unreadable(id),
             conversation_deadline(1),
             MailboxError::Connection,
             map_mailbox_error,
         )
         .await?;
-        let subject = message.meta.subject.trim().to_owned();
-        let labels = message.meta.label_ids.clone();
-
-        Ok(ConversationDetail {
-            id: id.to_owned(),
-            subject: (!subject.is_empty()).then_some(subject),
-            labels,
-            messages: vec![mail_message(message, &self.own_addresses)],
-        })
+        Ok(single_message_detail(id, message, &self.own_addresses))
     }
 
     /// Searches one page across all folders.
@@ -1063,6 +1049,34 @@ fn unreadable_mail_message(message: UnreadableMessage, own: &OwnAddresses) -> Ma
     message_without_body(message.meta, &message.reply_tos, own)
 }
 
+/// One message of the reader: opened, or with its headers and a notice.
+fn conversation_message(message: ConversationMessage, own: &OwnAddresses) -> MailMessage {
+    match message {
+        ConversationMessage::Opened(message) => mail_message(message, own),
+        ConversationMessage::Unreadable(unreadable) => unreadable_mail_message(unreadable, own),
+    }
+}
+
+/// The reader's view of a message the list shows on its own.
+fn single_message_detail(
+    id: &str,
+    message: ConversationMessage,
+    own: &OwnAddresses,
+) -> ConversationDetail {
+    let meta = match &message {
+        ConversationMessage::Opened(message) => &message.meta,
+        ConversationMessage::Unreadable(message) => &message.meta,
+    };
+    let subject = meta.subject.trim().to_owned();
+    let labels = meta.label_ids.clone();
+    ConversationDetail {
+        id: id.to_owned(),
+        subject: (!subject.is_empty()).then_some(subject),
+        labels,
+        messages: vec![conversation_message(message, own)],
+    }
+}
+
 /// Who sent a message, to whom, when, and where an answer goes, with no
 /// body or attachments.
 fn message_without_body(
@@ -1315,6 +1329,36 @@ mod tests {
         .await;
         assert_eq!(result, Err(MailboxError::SessionExpired));
         assert_eq!(limiter.available_permits(), 1);
+    }
+
+    #[test]
+    fn a_message_on_its_own_that_cannot_be_opened_shows_as_in_a_conversation() {
+        let unreadable = UnreadableMessage {
+            meta: MessageMetadata {
+                id: "m1".into(),
+                subject: " Invoice ".into(),
+                label_ids: vec!["0".into()],
+                sender: person("Boss", "boss@corp.example"),
+                ..Default::default()
+            },
+            reply_tos: Vec::new(),
+            error: Error::Crypto("no key of the account opens it".into()),
+        };
+
+        let detail = single_message_detail(
+            "m1",
+            ConversationMessage::Unreadable(unreadable),
+            &OwnAddresses::new(),
+        );
+
+        assert_eq!(detail.id, "m1");
+        assert_eq!(detail.subject.as_deref(), Some("Invoice"));
+        assert_eq!(detail.labels, ["0"]);
+        let [message] = &detail.messages[..] else {
+            panic!("the message itself");
+        };
+        assert_eq!(message.id, "m1");
+        assert!(matches!(message.body, MessageBody::Unreadable));
     }
 
     fn person(name: &str, address: &str) -> Recipient {

@@ -323,6 +323,28 @@ impl Client {
         self.open_message(msg).await
     }
 
+    /// Fetch and open one message, as
+    /// [`read_conversation_each`](Self::read_conversation_each) does each of
+    /// a conversation's: one that downloads but cannot be opened comes back
+    /// as [`ConversationMessage::Unreadable`], with its headers, rather than
+    /// as an error. A failed download still fails.
+    pub async fn read_message_or_unreadable(&self, id: &str) -> Result<ConversationMessage> {
+        let msg = api::messages::get_message(self.http(), id).await?;
+        let meta = msg.meta.clone();
+        let reply_tos = msg.reply_tos.clone();
+        Ok(match self.open_message(msg).await {
+            Ok(message) => ConversationMessage::Opened(message),
+            Err(error) => {
+                tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message could not be opened");
+                ConversationMessage::Unreadable(UnreadableMessage {
+                    meta,
+                    reply_tos,
+                    error,
+                })
+            }
+        })
+    }
+
     /// Fetch and decrypt a message for a caller that keeps only its text: the
     /// sender's keys are not looked up, and the verdict is always unverified.
     pub(super) async fn read_message_unverified(&self, id: &str) -> Result<FullMessage> {
@@ -773,6 +795,57 @@ mod tests {
         // Reading the thread as a whole still reports the message it could not open.
         assert!(matches!(
             client.read_conversation("c1").await,
+            Err(Error::Crypto(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_message_on_its_own_that_cannot_be_opened_comes_back_unreadable() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let (client, address, _) = conversation_client(&server);
+        let (_, stranger, _) = conversation_client(&server);
+        let provider = crypto::provider();
+        for (id, key) in [("own", &address), ("stranger", &stranger)] {
+            let body = crypto::encrypt_self_draft(&provider, key, "secret").unwrap();
+            Mock::given(method("GET"))
+                .and(path(format!("/mail/v4/messages/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Code": 1000,
+                    "Message": {
+                        "ID": id, "Time": 20, "AddressID": "address",
+                        "Sender": {"Address": "bob@example.org"}, "LabelIDs": ["0"],
+                        "Body": body, "MIMEType": "text/plain"
+                    }
+                })))
+                .mount(&server)
+                .await;
+        }
+
+        let ConversationMessage::Opened(opened) =
+            client.read_message_or_unreadable("own").await.unwrap()
+        else {
+            panic!("the account's own key opens it");
+        };
+        assert_eq!(opened.body, "secret");
+
+        let ConversationMessage::Unreadable(unreadable) =
+            client.read_message_or_unreadable("stranger").await.unwrap()
+        else {
+            panic!("no key of the account opens it");
+        };
+        assert_eq!(unreadable.meta.id, "stranger");
+        assert_eq!(unreadable.meta.sender.address, "bob@example.org");
+        assert!(
+            matches!(unreadable.error, Error::Crypto(_)),
+            "{:?}",
+            unreadable.error
+        );
+        // Read on its own, it is still an error.
+        assert!(matches!(
+            client.read_message("stranger").await,
             Err(Error::Crypto(_))
         ));
     }

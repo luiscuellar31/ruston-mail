@@ -111,9 +111,10 @@ independently. If the sender's keys cannot be fetched, the message shows as not
 verified.
 
 A message that cannot be decrypted, for example because it was encrypted to a
-key your account no longer has, shows a notice instead of its text. The rest of
-the conversation still opens, and you can still reply to it or forward it,
-without its text quoted.
+key your account no longer has, shows a notice instead of its text, whether it
+is part of a conversation or listed on its own. The rest of the conversation
+still opens, and you can still reply to it or forward it, without its text
+quoted.
 
 HTML mail is converted to native text and layout. Headings, lists, links, basic
 formatting, and quotes remain, but scripts and remote content do not run. Remote

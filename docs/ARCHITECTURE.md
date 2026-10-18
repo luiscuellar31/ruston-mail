@@ -629,7 +629,9 @@ instead of an unknown outcome.
   through `read_conversation_each`: a message that downloads but cannot be
   opened comes back as `ConversationMessage::Unreadable`, with its headers,
   and the rest still open. A failed request still fails the whole read, and
-  `read_conversation` keeps failing on any message it cannot open.
+  `read_conversation` keeps failing on any message it cannot open. The desktop
+  reads a message listed on its own through `read_message_or_unreadable`, the
+  same way; `read_message` still fails on one it cannot open.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
   owns the filename policy shared by both frontends. Each frontend chooses its
   destination and creates the file exclusively, then marks it with core's
