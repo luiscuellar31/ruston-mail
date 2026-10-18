@@ -2412,6 +2412,27 @@ fn search_applies_to_the_selected_folder() {
 }
 
 #[test]
+fn clearing_a_search_keeps_a_failure_of_the_folder_itself() {
+    let mut mailbox = searchable_mailbox();
+    let refresh = mailbox.refresh(9).unwrap();
+    mailbox.finish_page(refresh.id, Err(MailboxError::Connection));
+    mailbox.set_search_query("rust".into());
+    mailbox.set_search_query(String::new());
+    assert_eq!(
+        mailbox.status(),
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Folder)
+    );
+
+    // The search's own failure goes with it.
+    let mut mailbox = searchable_mailbox();
+    mailbox.set_search_query("rust".into());
+    let search = mailbox.start_search(3).unwrap();
+    mailbox.finish_search(&search, Err(MailboxError::Connection));
+    mailbox.set_search_query(String::new());
+    assert_eq!(mailbox.status(), ListStatus::Loaded);
+}
+
+#[test]
 fn clearing_search_restores_normal_results() {
     let mut mailbox = searchable_mailbox();
     mailbox.set_search_query("rust".into());

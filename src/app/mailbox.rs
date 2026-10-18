@@ -636,7 +636,14 @@ impl Mailbox {
             self.status = ListStatus::Loaded;
         }
         self.search_request = None;
-        if matches!(self.status, ListStatus::Failed(..)) {
+        // Only the search's own failure goes with it: a folder that failed to
+        // load still says so, with its way to try again.
+        let search_failed = match self.status {
+            ListStatus::Failed(_, ListAttempt::Search) => true,
+            ListStatus::Failed(_, ListAttempt::More) => leaving_results,
+            _ => false,
+        };
+        if search_failed {
             self.status = ListStatus::Loaded;
         }
         self.recompute_visible();

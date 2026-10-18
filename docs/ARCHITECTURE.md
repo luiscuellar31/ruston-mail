@@ -213,7 +213,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   A server search submitted while a folder page loads waits for that page, so
   the search does not turn the folder response into a stale one. A failed list
   request records what it asked for (`ListAttempt`: the folder, a next page or
-  a search), so the list's Try again sends the same request again.
+  a search), so the list's Try again sends the same request again. Clearing
+  the search clears only the search's own failure; a folder that failed to
+  load keeps saying so.
   A refreshed listing can regroup a message or omit its row without proving
   deletion; the reader remains visible and loses its cache stamp if its row is
   absent. Typing in the search field keeps the reader open the same way, even
