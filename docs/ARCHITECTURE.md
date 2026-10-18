@@ -285,7 +285,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   password prompts wait for the person, and running out is a timeout of its
   own, not a failed connection. The mailbox password of a two-password account
   is a prompt of the same sign-in, through core's `LoginPrompts`, so the
-  password and code are not entered or checked twice.
+  password and code are not entered or checked twice. Resuming the saved
+  session at startup has the same two minutes. A failure that may pass, such
+  as no network, Proton being unavailable or locked password storage, keeps
+  the session saved, and `App` offers the sign-in screen's **Try again**,
+  which resumes it again; only the check the startup screen waits for is
+  applied.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
   process in a file of its own, and moves a file it cannot read aside before
   saving defaults in its place. `App` counts a write only once it succeeds: one

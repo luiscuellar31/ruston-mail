@@ -134,14 +134,7 @@ pub struct ProtonMailService {
 
 impl ProtonMailService {
     pub async fn resume() -> ResumeOutcome {
-        match Client::resume(PROFILE).await {
-            Ok(client) => ResumeOutcome::Authenticated(Arc::new(Self::from_client(client))),
-            Err(Error::Unauthorized | Error::Crypto(_) | Error::Srp(_)) => ResumeOutcome::SignedOut,
-            Err(Error::Api(error)) if matches!(error.http_status, 401 | 403) => {
-                ResumeOutcome::SignedOut
-            }
-            Err(error) => ResumeOutcome::Failed(map_auth_error(error)),
-        }
+        resume_within(Client::resume(PROFILE), SIGN_IN_TIMEOUT).await
     }
 
     /// Signs in, forwarding interactive prompts and always emitting `Finished`.
@@ -1176,6 +1169,28 @@ fn map_mailbox_error(error: Error) -> MailboxError {
     }
 }
 
+/// What resuming the saved session comes to, with `deadline` to finish. A
+/// session Proton refuses is signed out; any other failure, running out of
+/// time included, keeps it saved for another try.
+async fn resume_within(
+    resume: impl Future<Output = ruston_core::Result<Client>>,
+    deadline: Duration,
+) -> ResumeOutcome {
+    let Ok(resumed) = tokio::time::timeout(deadline, resume).await else {
+        return ResumeOutcome::Failed(AuthError::TimedOut);
+    };
+    match resumed {
+        Ok(client) => {
+            ResumeOutcome::Authenticated(Arc::new(ProtonMailService::from_client(client)))
+        }
+        Err(Error::Unauthorized | Error::Crypto(_) | Error::Srp(_)) => ResumeOutcome::SignedOut,
+        Err(Error::Api(error)) if matches!(error.http_status, 401 | 403) => {
+            ResumeOutcome::SignedOut
+        }
+        Err(error) => ResumeOutcome::Failed(map_auth_error(error)),
+    }
+}
+
 /// Whether Ruston can answer `challenge`: its external-browser flow solves a
 /// CAPTCHA, which Proton also means when it names no method.
 fn offers_captcha(challenge: &HvChallenge) -> bool {
@@ -1555,6 +1570,31 @@ mod tests {
             methods: vec!["captcha".into()],
             web_url: String::new(),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_resume_that_outlasts_its_deadline_keeps_the_session() {
+        let outcome = resume_within(std::future::pending(), SIGN_IN_TIMEOUT).await;
+        assert!(matches!(
+            outcome,
+            ResumeOutcome::Failed(AuthError::TimedOut)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_resume_signs_out_only_when_proton_refuses_the_session() {
+        let refused = resume_within(async { Err(Error::Unauthorized) }, SIGN_IN_TIMEOUT).await;
+        assert!(matches!(refused, ResumeOutcome::SignedOut));
+
+        let unreachable = resume_within(
+            async { Err(Error::Session("keyring get: locked".into())) },
+            SIGN_IN_TIMEOUT,
+        )
+        .await;
+        assert!(matches!(
+            unreachable,
+            ResumeOutcome::Failed(AuthError::SessionUnavailable)
+        ));
     }
 
     #[test]

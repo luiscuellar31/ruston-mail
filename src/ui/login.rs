@@ -267,6 +267,10 @@ fn sign_in(
     }
 
     error(ui, app);
+    // The saved session is still there, and may open now.
+    if app.can_retry_saved_session() && ui.button("Try again").clicked() {
+        messages.push(Message::RetrySavedSession);
+    }
     ui.add_space(12.0);
     let submit = if busy {
         "Signing in…"
@@ -552,6 +556,53 @@ fn error(ui: &mut egui::Ui, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sign_in_screen_offers_to_try_a_saved_session_again() {
+        let (mut app, _) = App::boot(false, crate::settings::Settings::default());
+        let _ = app.update(Message::SessionChecked(crate::mail::ResumeOutcome::Failed(
+            crate::mail::AuthError::Connection,
+        )));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut messages = Vec::new();
+            let output = context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| sign_in(ui, app, &mut false, &mut messages),
+            );
+            let button = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "Try again" => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()).center())
+                    }
+                    _ => None,
+                });
+            output.drop_without_applying_deltas();
+            (button, messages)
+        };
+
+        let (button, _) = frame(&mut app, Vec::new());
+        let center = button.expect("the saved session can be tried again");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(center)]);
+        let (_, messages) = frame(&mut app, vec![press(true), press(false)]);
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::RetrySavedSession))
+        );
+    }
 
     #[test]
     fn screen_readers_hear_each_sign_in_field_by_its_name() {

@@ -65,6 +65,8 @@ pub enum Message {
     Submit,
     CancelChallenge,
     SessionChecked(ResumeOutcome),
+    /// Tries the saved session again after a failure that may pass.
+    RetrySavedSession,
     SignInFinished(AuthAttempt, SignInOutcome),
     SignInPrompt(AuthAttempt, SignInPrompt),
     OpenVerificationPage,
@@ -218,6 +220,10 @@ pub struct App {
     auth_state: AuthState,
     login_form: LoginForm,
     auth_error: Option<AuthError>,
+    /// The saved session could not open for a reason that may pass, such as
+    /// no network, and is still saved; the sign-in screen offers to try it
+    /// again.
+    resume_may_retry: bool,
     /// Changes for every authentication attempt so queued results from an
     /// aborted task cannot affect its replacement.
     auth_attempt: AuthAttempt,
@@ -292,6 +298,7 @@ impl App {
             auth_state: AuthState::CheckingSession,
             login_form: LoginForm::default(),
             auth_error: None,
+            resume_may_retry: false,
             auth_attempt: 0,
             pending_prompt: None,
             pending_link: None,
@@ -536,6 +543,7 @@ impl App {
             Message::Submit => return self.sign_in(),
             Message::CancelChallenge => return self.cancel_sign_in(),
             Message::SessionChecked(outcome) => return self.finish_session_check(outcome),
+            Message::RetrySavedSession => return self.retry_saved_session(),
             Message::SignInFinished(attempt, outcome) => {
                 return self.finish_sign_in(attempt, outcome);
             }

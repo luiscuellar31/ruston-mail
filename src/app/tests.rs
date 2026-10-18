@@ -2442,6 +2442,91 @@ fn about_source_code_uses_the_background_browser_effect() {
 }
 
 #[test]
+fn an_offline_start_keeps_the_saved_session_to_try_again() {
+    let mut app = App::new(Settings::default());
+
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::Failed(
+        AuthError::Connection,
+    )));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::Connection));
+    assert!(app.can_retry_saved_session());
+
+    let retry = app.update(Message::RetrySavedSession);
+    assert_eq!(retry.units(), 1);
+    assert_eq!(app.auth_state, AuthState::CheckingSession);
+    assert_eq!(app.auth_error, None);
+    assert!(!app.can_retry_saved_session());
+    // A second press while it runs starts nothing more.
+    assert_eq!(app.update(Message::RetrySavedSession).units(), 0);
+}
+
+#[test]
+fn only_a_failure_that_may_pass_offers_the_saved_session_again() {
+    for (outcome, retry) in [
+        (ResumeOutcome::Failed(AuthError::TimedOut), true),
+        (ResumeOutcome::Failed(AuthError::SessionUnavailable), true),
+        (
+            ResumeOutcome::Failed(AuthError::Service {
+                http_status: 503,
+                code: 0,
+            }),
+            true,
+        ),
+        (
+            ResumeOutcome::Failed(AuthError::Service {
+                http_status: 422,
+                code: 2001,
+            }),
+            false,
+        ),
+        (
+            ResumeOutcome::Failed(AuthError::SessionAddressMismatch),
+            false,
+        ),
+        (ResumeOutcome::SignedOut, false),
+    ] {
+        let label = match &outcome {
+            ResumeOutcome::Failed(error) => format!("{error:?}"),
+            _ => "signed out".to_owned(),
+        };
+        let mut app = App::new(Settings::default());
+        let _ = app.update(Message::SessionChecked(outcome));
+        assert_eq!(app.can_retry_saved_session(), retry, "{label}");
+    }
+}
+
+#[test]
+fn signing_in_instead_leaves_nothing_to_retry_and_ignores_a_late_check() {
+    let mut app = App::new(Settings::default());
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::Failed(
+        AuthError::Connection,
+    )));
+    app.login_form.username = "username sentinel".into();
+    app.login_form.password = "password sentinel".to_owned().into();
+
+    let _ = app.update(Message::Submit);
+    assert!(!app.can_retry_saved_session());
+    assert_eq!(app.update(Message::RetrySavedSession).units(), 0);
+
+    // A check that answers once a sign-in runs changes nothing.
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    assert_eq!(
+        app.auth_state,
+        AuthState::SigningIn(SignInStep::Credentials)
+    );
+
+    // Back on the form after that sign-in failed, its error is the one
+    // shown, with no offer to try the old session beside it.
+    let _ = app.update(Message::SignInFinished(
+        app.auth_attempt,
+        SignInOutcome::Failed(AuthError::Connection),
+    ));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert!(!app.can_retry_saved_session());
+}
+
+#[test]
 fn absent_saved_session_opens_login() {
     let mut app = App::new(Settings::default());
 

@@ -166,6 +166,8 @@ impl App {
             non_empty_secret(&self.login_form.mailbox_password),
         );
         self.auth_error = None;
+        // Signing in replaces the saved session; there is nothing to retry.
+        self.resume_may_retry = false;
         self.auth_state = AuthState::SigningIn(step);
         let attempt = self.advance_auth_attempt();
 
@@ -245,16 +247,38 @@ impl App {
     }
 
     pub(super) fn finish_session_check(&mut self, outcome: ResumeOutcome) -> Effects {
+        // Only the check the startup screen waits for decides anything.
+        if self.auth_state != AuthState::CheckingSession {
+            return Effects::none();
+        }
         match outcome {
             ResumeOutcome::Authenticated(service) => return self.set_authenticated(service),
             ResumeOutcome::SignedOut => self.auth_state = AuthState::SignedOut,
             ResumeOutcome::Failed(error) => {
+                self.resume_may_retry = error.may_pass();
                 self.auth_error = Some(error);
                 self.auth_state = AuthState::SignedOut;
             }
         }
 
         Effects::none()
+    }
+
+    /// Whether the sign-in screen offers to try the saved session again.
+    pub fn can_retry_saved_session(&self) -> bool {
+        self.resume_may_retry && self.auth_state == AuthState::SignedOut
+    }
+
+    /// Goes back to the startup check with the session still saved, as when
+    /// Ruston starts.
+    pub(super) fn retry_saved_session(&mut self) -> Effects {
+        if !self.can_retry_saved_session() {
+            return Effects::none();
+        }
+        self.resume_may_retry = false;
+        self.auth_error = None;
+        self.auth_state = AuthState::CheckingSession;
+        Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
     }
 
     pub(super) fn finish_sign_in(

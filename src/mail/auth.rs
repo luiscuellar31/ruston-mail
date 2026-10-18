@@ -27,6 +27,18 @@ pub enum AuthError {
     DemoSignInUnavailable,
 }
 
+impl AuthError {
+    /// Whether trying again later may succeed with nothing changed in Ruston:
+    /// the network or Proton came back, or the password storage was unlocked.
+    pub fn may_pass(self) -> bool {
+        match self {
+            Self::Connection | Self::TimedOut | Self::SessionUnavailable => true,
+            Self::Service { http_status, .. } => http_status == 429 || http_status >= 500,
+            _ => false,
+        }
+    }
+}
+
 impl fmt::Display for AuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
