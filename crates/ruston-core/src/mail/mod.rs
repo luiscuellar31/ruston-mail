@@ -226,11 +226,45 @@ impl Client {
             prompts.totp.as_ref(),
         )
         .await?;
+        let opened = Self::open_logged_in(
+            &http,
+            &login,
+            &opts,
+            &prompts,
+            &base_url,
+            app_version,
+            store.as_ref(),
+        );
+        let (keys, paths, cache_identity) = auth::or_end_session(&http, opened).await?;
 
+        Self::wire_refresh(&mut http, store.clone(), paths.clone(), &opts.profile);
+        Ok(Client {
+            http,
+            keys,
+            paths,
+            profile: opts.profile,
+            session_uid: login.tokens.uid,
+            cache_identity,
+            store,
+            sender_cache: Mutex::new(SenderKeyCache::default()),
+        })
+    }
+
+    /// The rest of a login once Proton has accepted the password: unlocks the
+    /// account's keys and saves the session.
+    async fn open_logged_in(
+        http: &HttpClient,
+        login: &auth::LoginResult,
+        opts: &LoginOptions,
+        prompts: &LoginPrompts,
+        base_url: &str,
+        app_version: String,
+        store: &dyn SecretStore,
+    ) -> Result<(KeyStore, Paths, CacheIdentity)> {
         let provider = crypto::provider();
         let (salts, (user, addresses)) =
-            tokio::try_join!(api::keys::get_key_salts(&http), account(&http))?;
-        let cache_identity = CacheIdentity::new(&base_url, &user.id)?;
+            tokio::try_join!(api::keys::get_key_salts(http), account(http))?;
+        let cache_identity = CacheIdentity::new(base_url, &user.id)?;
 
         let mut asked = None;
         let mailbox_pw = if login.password_mode == 2 {
@@ -250,25 +284,14 @@ impl Client {
         let session = Session {
             uid: login.tokens.uid.clone(),
             app_version,
-            base_url: base_url.clone(),
+            base_url: base_url.to_owned(),
             password_mode: login.password_mode,
             user_agent: opts.user_agent.clone(),
             user_id: Some(user.id.clone()),
         };
         let paths = Paths::system()?;
-        session.save(&paths, &opts.profile, store.as_ref(), &login.tokens, &skp)?;
-
-        Self::wire_refresh(&mut http, store.clone(), paths.clone(), &opts.profile);
-        Ok(Client {
-            http,
-            keys,
-            paths,
-            profile: opts.profile,
-            session_uid: session.uid,
-            cache_identity,
-            store,
-            sender_cache: Mutex::new(SenderKeyCache::default()),
-        })
+        session.save(&paths, &opts.profile, store, &login.tokens, &skp)?;
+        Ok((keys, paths, cache_identity))
     }
 
     /// Resume a saved session and unlock keys using the stored `skp`.

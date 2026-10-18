@@ -713,6 +713,8 @@ instead of an unknown outcome.
   asks through `LoginPrompts` for what the account needs and the options do not
   carry: a TOTP code once any human verification is done, and a separate mailbox
   password once the account password is accepted, so neither repeats the other.
+  Once Proton has accepted the password, `auth::or_end_session` ends the session
+  if the second factor, unlocking the keys or saving the session then fails.
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
   message cryptography. Each address key is unlocked once per session and kept
   as an unlocked export in zeroized memory, so later operations skip its

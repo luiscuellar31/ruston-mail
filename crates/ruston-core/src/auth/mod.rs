@@ -9,7 +9,13 @@ use futures::future::BoxFuture;
 use proton_srp::{RPGPVerifier, SRPAuth, SRPProofB64, SrpHashVersion};
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::IgnoredAny;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// How long a failed login waits for Proton to end the session it opened,
+/// before reporting its own error.
+const UNUSED_SESSION_REVOCATION_TIMEOUT: Duration = Duration::from_secs(10);
 use types::{AuthInfo, AuthResponse, SessionResp};
 
 /// Asks the user for a TOTP code during login.
@@ -129,7 +135,11 @@ pub async fn login_with_prompt(
     .await;
 
     // 6. 2FA if required.
-    second_factor(http, resp.two_fa.enabled, totp, totp_prompt).await?;
+    or_end_session(
+        http,
+        second_factor(http, resp.two_fa.enabled, totp, totp_prompt),
+    )
+    .await?;
     tracing::info!(target: "ruston_core::auth", "login: complete");
 
     Ok(LoginResult {
@@ -193,12 +203,60 @@ pub async fn logout(http: &HttpClient) -> Result<()> {
     Ok(())
 }
 
+/// Runs `work`, the rest of a login once Proton has accepted the password.
+/// If it fails, the session Proton opened is ended, best effort and briefly:
+/// nothing would use or save it, yet it would stay valid on the account. A
+/// login cancelled meanwhile leaves the session to expire.
+pub(crate) async fn or_end_session<T>(
+    http: &HttpClient,
+    work: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let result = work.await;
+    if result.is_err() {
+        let ended = tokio::time::timeout(UNUSED_SESSION_REVOCATION_TIMEOUT, logout(http)).await;
+        tracing::debug!(target: "ruston_core::auth", ended = matches!(ended, Ok(Ok(()))), "login failed after the password was accepted; ending its session");
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn a_login_that_fails_after_the_password_ends_its_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/core/v4/auth"))
+            .and(header("authorization", "Bearer opened-access"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = HttpClient::new(server.uri(), "Other");
+        http.set_tokens(
+            "opened-uid".into(),
+            SecretString::from("opened-access"),
+            SecretString::from("opened-refresh"),
+        )
+        .await;
+
+        // An account whose only second factor is a security key cannot go on.
+        let failed = or_end_session(&http, second_factor(&http, 2, None, None))
+            .await
+            .unwrap_err();
+        // The login's own error is what comes back.
+        assert!(failed.to_string().contains("FIDO2"), "{failed}");
+
+        // A login that goes on keeps its session.
+        or_end_session(&http, async { Ok(()) }).await.unwrap();
+        server.verify().await;
+    }
 
     #[tokio::test]
     async fn logout_calls_revoke() {

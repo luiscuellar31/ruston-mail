@@ -220,6 +220,10 @@ it. Sessions saved before this record existed resume only on the default
 Proton API address. Signing in removes the previous session's tokens and key
 passphrase before saving anything of the new one, so a save that fails part
 way leaves no session to resume, rather than old tokens beside a new address.
+A sign-in that fails after Proton accepted the password, at the second factor,
+the mailbox password or saving the session, asks Proton to end the session it
+opened, for up to 10 seconds, instead of leaving it valid on the account with
+nothing using it.
 If the credential store is locked or rejects a token refresh, the request
 reports that Ruston Mail could not access the saved session, and the desktop
 stays signed in so the next request can succeed once the store is unlocked.
