@@ -247,65 +247,84 @@ fn run_manual_flow(page: &str) -> Result<(String, String)> {
     let nonce = new_nonce()?;
     let captcha_url = captcha_page_url(page, port, &nonce);
 
-    let console = capture_snippet(Some((port, &nonce)));
-    let bookmarklet = capture_snippet(None);
-    let err = std::io::stderr();
-    let mut e = err.lock();
-    let _ = terminal::writeln!(e, "\n── Human verification (CAPTCHA) ──");
+    print_manual_instructions(
+        &mut std::io::stderr().lock(),
+        &capture_snippet(Some((port, &nonce))),
+        &capture_snippet(None),
+        &captcha_url,
+    );
+    let _ = open_browser(&captcha_url);
+
+    let token = wait_for_token(&listener, &nonce, Instant::now() + HV_TIMEOUT)?;
+    let _ = terminal::writeln!(std::io::stderr(), "Token received — continuing login.");
+    Ok((token, "captcha".to_string()))
+}
+
+/// Tells the person how to hand this sign-in's token back: through the
+/// browser console with `console`, or the saved `bookmarklet`, on the page
+/// at `captcha_url`.
+fn print_manual_instructions(
+    output: &mut impl Write,
+    console: &str,
+    bookmarklet: &str,
+    captcha_url: &str,
+) {
+    let _ = terminal::writeln!(output, "\n── Human verification (CAPTCHA) ──");
     let _ = terminal::writeln!(
-        e,
+        output,
         "A browser tab is opening at the captcha page. Then EITHER:"
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "\n  [A] Console: open DevTools → Console (F12) and paste once:"
     );
-    let _ = terminal::writeln!(e, "      {console}");
+    let _ = terminal::writeln!(output, "      {console}");
     let _ = terminal::writeln!(
-        e,
+        output,
         "\n  [B] Bookmarklet (save it once): save this as a bookmark, then click it"
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "      on the captcha page opened from here (no console, no \"allow pasting\")."
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "      One saved by an earlier version is refused; save this one instead:"
     );
-    let _ = terminal::writeln!(e, "      javascript:{bookmarklet}");
+    let _ = terminal::writeln!(output, "      javascript:{bookmarklet}");
     let _ = terminal::writeln!(
-        e,
+        output,
         "\nSolve the CAPTCHA — the token returns here automatically."
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "(Fallback: copy the token, re-run login with --captcha-token <token>.)"
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "\nCaptcha URL (open it whole; the bookmarklet reads its end): {captcha_url}"
     );
-    let _ = e.flush();
+    let _ = output.flush();
+}
 
-    let _ = open_browser(&captcha_url);
-
-    let deadline = Instant::now() + HV_TIMEOUT;
+/// Waits until this sign-in's page hands in its token on `listener`, which
+/// does not block, or `deadline` passes. Requests that carry another nonce,
+/// or no token, are answered and the wait goes on.
+fn wait_for_token(listener: &TcpListener, nonce: &str, deadline: Instant) -> Result<String> {
     loop {
         if Instant::now() >= deadline {
             break Err(Error::Other("human verification timed out".into()));
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if let Some(token) = handle_conn(&mut stream, &nonce) {
-                    let _ = terminal::writeln!(e, "Token received — continuing login.");
-                    break Ok((token, "captcha".to_string()));
+                if let Some(token) = handle_conn(&mut stream, nonce) {
+                    break Ok(token);
                 }
             }
-            Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(150));
             }
-            Err(err) => break Err(Error::Other(format!("hv accept: {err}"))),
+            Err(error) => break Err(Error::Other(format!("hv accept: {error}"))),
         }
     }
 }
@@ -878,24 +897,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
 
-        let handle = std::thread::spawn(move || -> Option<String> {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if Instant::now() >= deadline {
-                    return None;
-                }
-                match listener.accept() {
-                    Ok((mut s, _)) => {
-                        if let Some(t) = handle_conn(&mut s, NONCE) {
-                            return Some(t);
-                        }
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(_) => return None,
-                }
-            }
+        let handle = std::thread::spawn(move || {
+            wait_for_token(&listener, NONCE, Instant::now() + Duration::from_secs(5))
         });
 
         std::thread::sleep(Duration::from_millis(100));
@@ -906,7 +909,38 @@ mod tests {
         let _ = c.read_to_string(&mut resp);
 
         let got = handle.join().unwrap();
-        assert_eq!(got.as_deref(), Some("raw:token abc"));
+        assert_eq!(got.ok().as_deref(), Some("raw:token abc"));
+    }
+
+    #[test]
+    fn a_wait_for_the_token_ends_at_its_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let waited = wait_for_token(&listener, NONCE, Instant::now());
+
+        assert!(matches!(
+            waited,
+            Err(Error::Other(ref message)) if message == "human verification timed out"
+        ));
+    }
+
+    #[test]
+    fn the_manual_instructions_offer_the_console_the_bookmarklet_and_the_page() {
+        let mut output = Vec::new();
+        print_manual_instructions(&mut output, "CONSOLE", "BOOKMARKLET", "https://page/#n");
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(
+            text.starts_with("\n── Human verification (CAPTCHA) ──\n"),
+            "{text}"
+        );
+        assert!(text.contains("\n      CONSOLE\n"), "{text}");
+        assert!(text.contains("\n      javascript:BOOKMARKLET\n"), "{text}");
+        assert!(
+            text.ends_with("the bookmarklet reads its end): https://page/#n\n"),
+            "{text}"
+        );
     }
 
     #[test]
