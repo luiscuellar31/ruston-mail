@@ -712,7 +712,14 @@ const FOLDER_HEIGHT: f32 = 31.0;
 /// Virtualized rows must draw at this height to stay aligned with scrolling.
 const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;
+/// From one row's top to the next one's: the step the virtualized list
+/// places and scrolls its rows by.
+const ROW_PITCH: f32 = ROW_HEIGHT + ROW_GAP;
 const ROW_HORIZONTAL_PADDING: f32 = 18.0;
+/// Room at a row's right for its time and marks; its text ends before it.
+const ROW_META_WIDTH: f32 = 70.0;
+/// The corners of a row, and of the outline drawn while its menu is open.
+const ROW_CORNER_RADIUS: CornerRadius = CornerRadius::same(8);
 /// The width of the search field's outline, inside its padding.
 const SEARCH_OUTLINE: i8 = 1;
 const ROW_LINE_CENTER_OFFSET: f32 = 12.5;
@@ -742,7 +749,7 @@ impl ConversationScroll {
         previous: Option<&Self>,
     ) -> Self {
         let previous = previous.filter(|saved| saved.same_view(mailbox, scroll_id));
-        let first = (offset / (ROW_HEIGHT + ROW_GAP)).floor() as usize;
+        let first = (offset / ROW_PITCH).floor() as usize;
         let first = first.min(mailbox.visible_count().saturating_sub(1));
         Self {
             scroll_id,
@@ -794,7 +801,7 @@ impl ConversationScroll {
         }
         self.anchors.iter().flatten().find_map(|anchor| {
             let index = mailbox.visible_anchor_index(&anchor.id, anchor.conversation.as_deref())?;
-            let delta = (index as f32 - anchor.index as f32) * (ROW_HEIGHT + ROW_GAP);
+            let delta = (index as f32 - anchor.index as f32) * ROW_PITCH;
             Some((self.offset + delta).max(0.0))
         })
     }
@@ -848,15 +855,7 @@ fn conversation_list(
 
             let output = scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
                 if let Some(index) = reveal {
-                    let row_step = ROW_HEIGHT + ROW_GAP;
-                    let content_top = ui.max_rect().top() - range.start as f32 * row_step;
-                    let row_rect = egui::Rect::from_min_size(
-                        egui::pos2(ui.max_rect().left(), content_top + index as f32 * row_step),
-                        egui::vec2(ui.available_width(), ROW_HEIGHT),
-                    );
-                    // As a native list does: not at all while the row is in
-                    // view, and otherwise just far enough to show it.
-                    ui.scroll_to_rect(row_rect, None);
+                    scroll_row_into_view(ui, range.start, index);
                 }
 
                 for index in range {
@@ -864,32 +863,8 @@ fn conversation_list(
                         load_more(ui, mailbox, messages);
                         continue;
                     };
-                    let response = ui
-                        .push_id(&conversation.id, |ui| {
-                            conversation_row(
-                                ui,
-                                conversation,
-                                selected == Some(conversation.id.as_str()),
-                                &now,
-                            )
-                        })
-                        .inner;
-                    if response.clicked() {
-                        messages.push(Message::SelectConversation(conversation.id.clone()));
-                    }
-                    let menu = response.context_menu(|ui| {
-                        reader::conversation_menu(ui, mailbox, conversation, messages);
-                    });
-                    // As native lists do, the row a menu belongs to is outlined
-                    // while it is open.
-                    if menu.is_some() {
-                        ui.painter().rect_stroke(
-                            response.rect,
-                            CornerRadius::same(8),
-                            Stroke::new(1.0, theme::ACCENT),
-                            egui::StrokeKind::Inside,
-                        );
-                    }
+                    let chosen = selected == Some(conversation.id.as_str());
+                    list_row(ui, mailbox, conversation, chosen, &now, messages);
                 }
             });
             state.conversation_scroll = Some(ConversationScroll::capture(
@@ -905,9 +880,78 @@ fn conversation_list(
     );
 }
 
+/// Scrolls the list just far enough to show the row at `index`, as a native
+/// list does: not at all while the row is in view. `first` is the row that
+/// `show_rows` draws at the top of `ui`.
+fn scroll_row_into_view(ui: &mut egui::Ui, first: usize, index: usize) {
+    let content_top = ui.max_rect().top() - first as f32 * ROW_PITCH;
+    let row_rect = egui::Rect::from_min_size(
+        egui::pos2(ui.max_rect().left(), content_top + index as f32 * ROW_PITCH),
+        egui::vec2(ui.available_width(), ROW_HEIGHT),
+    );
+    ui.scroll_to_rect(row_rect, None);
+}
+
+/// One conversation of the list: its row, the selection a click asks for,
+/// and its menu. As native lists do, the row a menu belongs to is outlined
+/// while the menu is open.
+fn list_row(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    conversation: &ConversationSummary,
+    selected: bool,
+    now: &DateTime<Local>,
+    messages: &mut Vec<Message>,
+) {
+    let response = ui
+        .push_id(&conversation.id, |ui| {
+            conversation_row(ui, conversation, selected, now)
+        })
+        .inner;
+    if response.clicked() {
+        messages.push(Message::SelectConversation(conversation.id.clone()));
+    }
+    let menu = response.context_menu(|ui| {
+        reader::conversation_menu(ui, mailbox, conversation, messages);
+    });
+    if menu.is_some() {
+        ui.painter().rect_stroke(
+            response.rect,
+            ROW_CORNER_RADIUS,
+            Stroke::new(1.0, theme::ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 /// Whether the virtualized list needs a trailing load-more row.
 fn ends_with_load_more(mailbox: &Mailbox) -> bool {
     matches!(mailbox.status(), ListStatus::LoadingMore(_)) || mailbox.has_more()
+}
+
+/// Where a row's text goes, for the row and its skeleton alike.
+struct RowLines {
+    /// The middle of the sender line.
+    sender_y: f32,
+    /// The middle of the subject line.
+    subject_y: f32,
+    /// Where both lines start.
+    text_left: f32,
+    /// Where both lines end, before the time and marks.
+    text_right: f32,
+    /// Where the time and marks end.
+    meta_right: f32,
+}
+
+fn row_lines(rect: egui::Rect) -> RowLines {
+    let meta_right = rect.right() - ROW_HORIZONTAL_PADDING;
+    RowLines {
+        sender_y: rect.center().y - ROW_LINE_CENTER_OFFSET,
+        subject_y: rect.center().y + ROW_LINE_CENTER_OFFSET,
+        text_left: rect.left() + ROW_HORIZONTAL_PADDING,
+        text_right: meta_right - ROW_META_WIDTH,
+        meta_right,
+    }
 }
 
 fn conversation_row(
@@ -939,33 +983,30 @@ fn conversation_row(
     };
     ui.painter().rect(
         rect,
-        CornerRadius::same(8),
+        ROW_CORNER_RADIUS,
         hovered_fill,
         Stroke::NONE,
         egui::StrokeKind::Inside,
     );
 
-    let sender_center_y = rect.center().y - ROW_LINE_CENTER_OFFSET;
-    let subject_center_y = rect.center().y + ROW_LINE_CENTER_OFFSET;
+    let lines = row_lines(rect);
 
     if conversation.unread {
         // On the sender line: at the row's centre it reads as belonging to
         // neither line.
         ui.painter().circle_filled(
-            egui::pos2(rect.left() + 7.0, sender_center_y),
+            egui::pos2(rect.left() + 7.0, lines.sender_y),
             3.5,
             theme::ACCENT,
         );
     }
 
-    let meta_width = 70.0;
-    let text_left = rect.left() + ROW_HORIZONTAL_PADDING;
-    let text_width = rect.right() - ROW_HORIZONTAL_PADDING - meta_width - text_left;
+    let text_width = lines.text_right - lines.text_left;
     let painter = ui.painter_at(rect);
     let (sender_color, subject_color) = row_text_colors(ui, conversation.unread);
     theme::paint_truncated_text_aligned(
         &painter,
-        egui::pos2(text_left, sender_center_y),
+        egui::pos2(lines.text_left, lines.sender_y),
         Align2::LEFT_CENTER,
         correspondents,
         FontId::proportional(14.0),
@@ -974,7 +1015,7 @@ fn conversation_row(
     );
     theme::paint_truncated_text_aligned(
         &painter,
-        egui::pos2(text_left, subject_center_y),
+        egui::pos2(lines.text_left, lines.subject_y),
         Align2::LEFT_CENTER,
         subject,
         FontId::proportional(14.0),
@@ -984,7 +1025,7 @@ fn conversation_row(
 
     let meta_font = FontId::proportional(11.0);
     painter.text(
-        egui::pos2(rect.right() - ROW_HORIZONTAL_PADDING, sender_center_y),
+        egui::pos2(lines.meta_right, lines.sender_y),
         Align2::RIGHT_CENTER,
         &time,
         meta_font.clone(),
@@ -1000,7 +1041,7 @@ fn conversation_row(
     }
     let facts_left = painter
         .text(
-            egui::pos2(rect.right() - ROW_HORIZONTAL_PADDING, subject_center_y),
+            egui::pos2(lines.meta_right, lines.subject_y),
             Align2::RIGHT_CENTER,
             facts.join(&format!(" {} ", theme::DOT)),
             meta_font,
@@ -1010,7 +1051,7 @@ fn conversation_row(
     if conversation.has_attachments {
         theme::paint_clip(
             &painter,
-            egui::pos2(facts_left - 9.0, subject_center_y),
+            egui::pos2(facts_left - 9.0, lines.subject_y),
             theme::colors(ui).muted,
         );
     }
@@ -1060,7 +1101,7 @@ fn row_description(
 fn conversation_skeleton(ui: &mut egui::Ui) {
     let fill = theme::skeleton_fill(ui);
     let available = ui.available_height();
-    let rows = (((available + ROW_GAP) / (ROW_HEIGHT + ROW_GAP)).floor() as usize).clamp(1, 12);
+    let rows = (((available + ROW_GAP) / ROW_PITCH).floor() as usize).clamp(1, 12);
     let response = ui
         .scope(|ui| {
             ui.spacing_mut().item_spacing.y = ROW_GAP;
@@ -1097,38 +1138,32 @@ fn skeleton_conversation_row(ui: &mut egui::Ui, index: usize, fill: Color32) -> 
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), Sense::hover());
     let painter = ui.painter_at(rect);
-    let sender_center_y = rect.center().y - ROW_LINE_CENTER_OFFSET;
-    let subject_center_y = rect.center().y + ROW_LINE_CENTER_OFFSET;
-    let text_left = rect.left() + ROW_HORIZONTAL_PADDING;
-    let text_right = rect.right() - ROW_HORIZONTAL_PADDING - 70.0;
-    let text_width = (text_right - text_left).max(24.0);
+    let lines = row_lines(rect);
+    let text_width = (lines.text_right - lines.text_left).max(24.0);
     let bar = |center_y: f32, width: f32, height: f32| {
         theme::paint_skeleton(
             &painter,
             egui::Rect::from_min_size(
-                egui::pos2(text_left, center_y - height * 0.5),
+                egui::pos2(lines.text_left, center_y - height * 0.5),
                 egui::vec2(width, height),
             ),
             fill,
         );
     };
     bar(
-        sender_center_y,
+        lines.sender_y,
         text_width * SENDER_WIDTHS[index % SENDER_WIDTHS.len()],
         11.0,
     );
     bar(
-        subject_center_y,
+        lines.subject_y,
         text_width * SUBJECT_WIDTHS[index % SUBJECT_WIDTHS.len()],
         9.0,
     );
     theme::paint_skeleton(
         &painter,
         egui::Rect::from_center_size(
-            egui::pos2(
-                rect.right() - ROW_HORIZONTAL_PADDING - 18.0,
-                sender_center_y,
-            ),
+            egui::pos2(lines.meta_right - 18.0, lines.sender_y),
             egui::vec2(36.0, 8.0),
         ),
         fill,
@@ -2016,7 +2051,7 @@ mod tests {
                 .insert(0, pagination_row("overlap", 1001));
             mailbox.finish_page(request.id, Ok(page));
             let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
-            assert_eq!(after.offset, before.offset + ROW_HEIGHT + ROW_GAP);
+            assert_eq!(after.offset, before.offset + ROW_PITCH);
             assert_eq!(after.subjects["p44"], before.subjects["p44"]);
             assert_eq!(mailbox.selected_conversation(), Some("p40"));
         }
@@ -2162,7 +2197,7 @@ mod tests {
             let id = format!("p{parent}");
             mailbox.split_conversation(&Folder::INBOX, &id, inspected_page_members(parent));
             let (context, mut state, _) = pagination_view(&mailbox);
-            set_list_offset(&context, &state, parent as f32 * (ROW_HEIGHT + ROW_GAP));
+            set_list_offset(&context, &state, parent as f32 * ROW_PITCH);
             let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
             for request in 20..24 {
                 let refresh = mailbox.refresh(request).unwrap();
@@ -2200,7 +2235,7 @@ mod tests {
         let mut mailbox = pagination_mailbox(false);
         mailbox.split_conversation(&Folder::INBOX, "p20", inspected_page_members(20));
         let (context, mut state, _) = pagination_view(&mailbox);
-        set_list_offset(&context, &state, 21.0 * (ROW_HEIGHT + ROW_GAP));
+        set_list_offset(&context, &state, 21.0 * ROW_PITCH);
         let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
         let refresh = mailbox.refresh(20).unwrap();
         let mut page = pagination_page(0, 50, 120);
@@ -2815,6 +2850,34 @@ mod tests {
             .drop_without_applying_deltas();
 
         assert_eq!(height, ROW_HEIGHT);
+    }
+
+    #[test]
+    fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
+        let sender = "A sender whose name runs on and on, well past the time";
+        let mut conversation = pagination_row("A subject", 1_700_000_000);
+        conversation.correspondents = Some(sender.into());
+        let context = egui::Context::default();
+        let now = Local::now();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(320.0);
+            conversation_row(ui, &conversation, false, &now);
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+
+        let sender = visible_text_rect(&shapes, sender).expect("the sender line");
+        let subject = visible_text_rect(&shapes, "A subject").expect("the subject line");
+        let time = visible_text_rect(&shapes, &format_time(1_700_000_000, &now)).expect("the time");
+        assert!(
+            sender.center().y < subject.center().y,
+            "{sender:?} {subject:?}"
+        );
+        assert_eq!(sender.left(), subject.left());
+        assert!(
+            sender.right() <= time.left(),
+            "{sender:?} runs into {time:?}"
+        );
     }
 
     #[test]
