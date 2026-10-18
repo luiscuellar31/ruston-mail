@@ -719,7 +719,7 @@ impl App {
             }
             Message::NewMailLoaded(epoch, request, result) => {
                 if !self.is_current_session(epoch)
-                    || !matches!(self.auth_state, AuthState::Authenticated { .. })
+                    || !self.auth_state.is_authenticated()
                     || !self.settings.desktop_notifications
                     || self.new_mail.pending != Some(request)
                 {
@@ -913,10 +913,11 @@ impl App {
     }
 
     pub(crate) fn accepts_page(&self, request: RequestId) -> bool {
-        matches!(self.auth_state, AuthState::Authenticated { .. })
-            && self.mailbox.as_ref().is_some_and(|mailbox| {
-                matches!(mailbox.status(), ListStatus::Loading(id) | ListStatus::Refreshing(id) | ListStatus::LoadingMore(id) if id == request)
-            })
+        self.auth_state.is_authenticated()
+            && self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.status().request_in_flight() == Some(request))
     }
 
     pub fn is_demo(&self) -> bool {
@@ -930,7 +931,7 @@ impl App {
     /// Whether a background-triggered list request can start without racing
     /// another list-changing operation.
     pub fn auto_refresh_available(&self) -> bool {
-        matches!(self.auth_state, AuthState::Authenticated { .. })
+        self.auth_state.is_authenticated()
             && self.backend.is_some()
             && self
                 .mailbox
@@ -1003,7 +1004,7 @@ impl App {
     }
 
     fn select_conversation(&mut self, id: String) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+        if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
         self.pending_link = None;
@@ -1034,7 +1035,7 @@ impl App {
     /// Acts on one listed row, open or not. Only the open one, when it leaves
     /// the view, gives its place in the reader to the row after it.
     fn apply_row_action(&mut self, row_id: String, action: MailAction) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+        if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
         match self.backend.clone() {
@@ -1406,7 +1407,7 @@ impl App {
     }
 
     fn select_folder(&mut self, folder: Folder) -> Effects {
-        if matches!(self.auth_state, AuthState::Authenticated { .. })
+        if self.auth_state.is_authenticated()
             && self
                 .mailbox
                 .as_ref()
@@ -1545,7 +1546,7 @@ impl App {
     }
 
     fn start_inspections(&mut self) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+        if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
         let (Some(backend), Some(mailbox)) = (self.backend.clone(), self.mailbox.as_ref()) else {
@@ -1620,7 +1621,7 @@ impl App {
     }
 
     fn fetch_new_mail_notification(&mut self) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. })
+        if !self.auth_state.is_authenticated()
             || !self.settings.desktop_notifications
             || self.new_mail.pending.is_some()
         {

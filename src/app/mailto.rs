@@ -1,6 +1,6 @@
 //! Email links wait in memory until the shell can safely show a new composer.
 
-use super::{App, AuthState, ComposeField};
+use super::{App, ComposeField};
 use crate::mailto::{MAX_PENDING, Request};
 
 impl App {
@@ -21,7 +21,7 @@ impl App {
     }
 
     pub fn can_open_pending_mailto(&self) -> bool {
-        matches!(self.auth_state, AuthState::Authenticated { .. })
+        self.auth_state.is_authenticated()
             && !self.pending_mailto.is_empty()
             && self.compose.is_none()
             && !self.showing_settings

@@ -2491,6 +2491,40 @@ fn human_verification_waits_for_confirmation() {
     assert!(matches!(app.auth_state, AuthState::SigningIn(_)));
 }
 
+/// A sign-in in its own `NeedsHumanVerification` step, and the answer the
+/// browser check waits for.
+fn verifying_app() -> (App, futures::channel::oneshot::Receiver<()>) {
+    let mut app = signing_in_app();
+    let (done, answer) = crate::mail::PromptAnswer::channel();
+    let url = "https://verify.proton.me/?methods=captcha&token=t".to_owned();
+    let _ = app.update(Message::SignInPrompt(
+        app.auth_attempt,
+        SignInPrompt::HumanVerification { url, done },
+    ));
+    (app, answer)
+}
+
+#[test]
+fn a_sign_in_waiting_for_the_browser_check_is_still_running() {
+    let (mut app, mut answer) = verifying_app();
+    let effects = app.update(Message::CancelChallenge);
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert!(answer.try_recv().is_err());
+    assert!(matches!(
+        effects.into_iter().next(),
+        Some(Effect::CancelSignIn)
+    ));
+
+    // Its outcome still applies while the check is open.
+    let (mut app, _answer) = verifying_app();
+    let _ = app.update(Message::SignInFinished(
+        app.auth_attempt,
+        SignInOutcome::Failed(AuthError::Connection),
+    ));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::Connection));
+}
+
 #[test]
 fn going_back_cancels_the_pending_prompt() {
     let mut app = signing_in_app();

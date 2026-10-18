@@ -347,9 +347,7 @@ impl DesktopApp {
         {
             self.ui.show_password = false;
         }
-        if submitted_or_cancelled
-            || matches!(self.app.auth_state(), AuthState::Authenticated { .. })
-        {
+        if submitted_or_cancelled || self.app.auth_state().is_authenticated() {
             login::forget_focus(context);
         }
         self.update_notifications(context);
@@ -742,7 +740,7 @@ impl DesktopApp {
     }
 
     fn keyboard_shortcuts(&mut self, context: &egui::Context) {
-        if !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+        if !self.app.auth_state().is_authenticated()
             || self.pending_discard.is_some()
             || self.pending_settings_exit.is_some()
             || self.deferred_leave.waiting().is_some()
@@ -840,7 +838,7 @@ impl DesktopApp {
     fn refresh_automatically(&mut self, context: &egui::Context) {
         let now = context.input(|input| input.time);
         let focused = self.app_has_focus(context);
-        let active = matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+        let active = self.app.auth_state().is_authenticated()
             && self.app.mailbox().is_some()
             && !self.app.is_demo();
         let available = self.app.auto_refresh_available();
@@ -915,7 +913,7 @@ impl DesktopApp {
     }
 
     fn update_notifications(&mut self, context: &egui::Context) {
-        let enabled = matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+        let enabled = self.app.auth_state().is_authenticated()
             && self.app.settings().desktop_notifications
             && !self.app.is_demo();
         self.notifications.set_enabled(enabled, context);
@@ -1053,9 +1051,7 @@ impl eframe::App for DesktopApp {
         let mut composer_zoom = None;
         let mut dropped = Vec::new();
         email_link_notice(ui, &self.app, &mut messages);
-        if !self.app.showing_settings()
-            || !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
-        {
+        if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
             self.settings_draft = None;
             self.pending_settings_exit = None;
         }
@@ -1267,7 +1263,7 @@ fn email_link_notice(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>
     if count == 0 && app.mailto_error().is_none() {
         return;
     }
-    let reason = if !matches!(app.auth_state(), AuthState::Authenticated { .. }) {
+    let reason = if !app.auth_state().is_authenticated() {
         "Sign in to write the message."
     } else if app.compose().is_some() {
         "Finish or close your current draft to open it."

@@ -111,6 +111,18 @@ pub enum ListStatus {
     Failed(MailboxError, ListAttempt),
 }
 
+impl ListStatus {
+    /// The list request this status waits for, if one is in flight.
+    pub fn request_in_flight(self) -> Option<RequestId> {
+        match self {
+            Self::Loading(request) | Self::Refreshing(request) | Self::LoadingMore(request) => {
+                Some(request)
+            }
+            Self::Loaded | Self::Failed(..) => None,
+        }
+    }
+}
+
 /// What a list request that failed asked for, so trying again asks the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListAttempt {
@@ -857,10 +869,7 @@ impl Mailbox {
     }
 
     pub fn is_busy(&self) -> bool {
-        matches!(
-            self.status,
-            ListStatus::Loading(_) | ListStatus::Refreshing(_) | ListStatus::LoadingMore(_)
-        )
+        self.status.request_in_flight().is_some()
     }
 
     pub(super) fn auto_refresh_available(&self) -> bool {

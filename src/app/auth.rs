@@ -36,6 +36,27 @@ pub enum AuthState {
     SigningOut,
 }
 
+impl AuthState {
+    pub fn is_authenticated(&self) -> bool {
+        matches!(self, Self::Authenticated { .. })
+    }
+
+    /// Whether a sign-in is under way: running, or waiting for the person.
+    /// Only then can it be cancelled, or its outcome be applied.
+    pub(super) fn sign_in_running(&self) -> bool {
+        match self {
+            Self::SigningIn(_)
+            | Self::NeedsTotp
+            | Self::NeedsMailboxPassword
+            | Self::NeedsHumanVerification { .. } => true,
+            Self::CheckingSession
+            | Self::SignedOut
+            | Self::Authenticated { .. }
+            | Self::SigningOut => false,
+        }
+    }
+}
+
 pub(super) struct LoginForm {
     pub(super) username: String,
     pub(super) password: Zeroizing<String>,
@@ -241,15 +262,7 @@ impl App {
         attempt: super::AuthAttempt,
         outcome: SignInOutcome,
     ) -> Effects {
-        if attempt != self.auth_attempt
-            || matches!(
-                self.auth_state,
-                AuthState::CheckingSession
-                    | AuthState::SignedOut
-                    | AuthState::Authenticated { .. }
-                    | AuthState::SigningOut
-            )
-        {
+        if attempt != self.auth_attempt || !self.auth_state.sign_in_running() {
             return Effects::none();
         }
         if let Some(prompt) = self.pending_prompt.take() {
@@ -288,13 +301,7 @@ impl App {
     }
 
     pub(super) fn cancel_sign_in(&mut self) -> Effects {
-        if !matches!(
-            self.auth_state,
-            AuthState::SigningIn(_)
-                | AuthState::NeedsTotp
-                | AuthState::NeedsMailboxPassword
-                | AuthState::NeedsHumanVerification { .. }
-        ) {
+        if !self.auth_state.sign_in_running() {
             return Effects::none();
         }
         if let Some(prompt) = self.pending_prompt.take() {
@@ -346,7 +353,7 @@ impl App {
     }
 
     pub(super) fn logout(&mut self) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+        if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
         // Signing out never takes a message with it: the outcome of a send
