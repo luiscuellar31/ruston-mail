@@ -364,7 +364,9 @@ The artwork is drawn by
 which writes the source logo,
 [`assets/macos/ruston-mail-1024.png`](../assets/macos/ruston-mail-1024.png), in
 sRGB. The PNGs, ICNS, and ICO derived from it are committed, so ordinary builds
-do not need image tools. After changing the artwork, regenerate them on macOS
+do not need image tools. Besides the desktop PNG sizes, the ICO carries 20, 30,
+36 and 40 px frames, which Windows draws at 125% and 150% scaling instead of
+shrinking a larger one. After changing the artwork, regenerate them on macOS
 with Swift, Python 3, and the system `sips` tool:
 
 ```sh

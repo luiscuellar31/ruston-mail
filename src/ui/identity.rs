@@ -101,9 +101,11 @@ mod tests {
         let ico = include_bytes!("../../assets/windows/ruston-mail.ico");
         assert_eq!(&ico[..4], &[0, 0, 1, 0]);
         let count = u16::from_le_bytes(ico[4..6].try_into().unwrap()) as usize;
-        assert_eq!(count, 7);
+        // 20, 30, 36 and 40 serve 125% and 150% scaling.
+        let dimensions = [16, 20, 24, 30, 32, 36, 40, 48, 64, 128, 256];
+        assert_eq!(count, dimensions.len());
         let (frames, _) = ico[6..6 + count * 16].as_chunks::<16>();
-        for (frame, dimension) in frames.iter().zip([16, 24, 32, 48, 64, 128, 256]) {
+        for (frame, dimension) in frames.iter().zip(dimensions) {
             let encoded_dimension = if dimension == 256 { 0 } else { dimension as u8 };
             assert_eq!(frame[0..2], [encoded_dimension; 2]);
             let size = u32::from_le_bytes(frame[8..12].try_into().unwrap()) as usize;
