@@ -9,10 +9,13 @@ use crate::model::enums::label_ids;
 use crate::model::message::MessageMetadata;
 use serde_json::json;
 
-/// A draft written from `addr`, its body encrypted to that address's key.
-fn draft_message_json(addr: &AddressKeys, opts: &SendOptions) -> Result<serde_json::Value> {
+/// A draft written from `addr`, its body encrypted to that address's key:
+/// what saving a draft writes, and what sending one starts from.
+pub(super) fn draft_message_json(
+    addr: &AddressKeys,
+    opts: &SendOptions,
+) -> Result<serde_json::Value> {
     let provider = crypto::provider();
-    let mime_type = if opts.html { "text/html" } else { "text/plain" };
     let armored = crypto::encrypt_self_draft(&provider, addr, &opts.body)?;
     Ok(json!({
         "Message": {
@@ -22,7 +25,7 @@ fn draft_message_json(addr: &AddressKeys, opts: &SendOptions) -> Result<serde_js
             "Subject": opts.subject,
             "Sender": { "Address": addr.email, "Name": "" },
             "Body": armored,
-            "MIMEType": mime_type,
+            "MIMEType": opts.body_mime_type(),
         }
     }))
 }
@@ -45,6 +48,16 @@ fn sender_not_found() -> Error {
 }
 
 impl Client {
+    /// The keys of the address a new message is written from: `from`, or
+    /// the account's primary address.
+    pub(super) fn sender_keys(&self, from: Option<&str>) -> Result<&AddressKeys> {
+        match from {
+            Some(email) => self.keys().address_for_email(email),
+            None => self.keys().primary_address(),
+        }
+        .ok_or_else(sender_not_found)
+    }
+
     /// Create a draft (encrypted to self, stored in Drafts) with its
     /// attachments, without sending it. A draft whose attachments fail to
     /// upload is deleted again, so trying again leaves no part-made copy.
@@ -52,11 +65,7 @@ impl Client {
         tracing::info!(target: "ruston_core::mail", to = opts.to.len(), attachments = opts.attachments.len(), "save_draft");
         refuse_send_options(opts)?;
         validate_attachments(&opts.attachments).await?;
-        let addr = match &opts.from {
-            Some(email) => self.keys().address_for_email(email),
-            None => self.keys().primary_address(),
-        }
-        .ok_or_else(sender_not_found)?;
+        let addr = self.sender_keys(opts.from.as_deref())?;
         let body = draft_message_json(addr, opts)?;
         let created = api::messages::create_draft(self.http(), body).await?;
         let id = created.meta.id;

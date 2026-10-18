@@ -1,6 +1,7 @@
 //! Sending: draft → upload → package → send, plus reply / forward.
 
 use super::Client;
+use super::drafts::draft_message_json;
 use crate::api;
 use crate::crypto::{self, SessionKeyMaterial, keys::AddressKeys};
 use crate::error::{Error, Result};
@@ -313,6 +314,13 @@ pub struct SendOptions {
     pub expires_in: Option<i64>,
 }
 
+impl SendOptions {
+    /// The MIME type of the body as written.
+    pub(super) fn body_mime_type(&self) -> &'static str {
+        if self.html { "text/html" } else { "text/plain" }
+    }
+}
+
 fn dedupe(lists: &[&[String]]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -459,8 +467,13 @@ async fn submit_send<D: Doer>(http: &D, message_id: &str, request: Value) -> Res
         })
 }
 
+/// Deletes the draft of a send that failed, unless the failure leaves open
+/// whether Proton sent it: then the draft stays, so callers can check Sent.
 async fn cleanup_failed_draft<D: Doer>(http: &D, message_id: &str, error: &Error) {
-    if !matches!(error, Error::SendUnconfirmed { .. }) {
+    if matches!(error, Error::SendUnconfirmed { .. }) {
+        tracing::warn!(target: "ruston_core::send", message_id = %message_id, error = %error, "send outcome unconfirmed — skipping draft cleanup");
+    } else {
+        tracing::warn!(target: "ruston_core::send", message_id = %message_id, error = %error, "send failed — deleting draft");
         let _ = api::messages::delete(http, &[message_id.to_owned()]).await;
     }
 }
@@ -600,30 +613,13 @@ impl Client {
     ) -> Result<String> {
         validate_attachments(&opts.attachments).await?;
         let provider = crypto::provider();
-        let addr = match &opts.from {
-            Some(e) => self.keys().address_for_email(e),
-            None => self.keys().primary_address(),
-        }
-        .ok_or_else(|| Error::NotFound {
-            kind: "sender address".into(),
-        })?;
-        let mime_type = if opts.html { "text/html" } else { "text/plain" };
+        let addr = self.sender_keys(opts.from.as_deref())?;
+        let mime_type = opts.body_mime_type();
         tracing::info!(target: "ruston_core::send", from = %addr.email, to = opts.to.len(), cc = opts.cc.len(), bcc = opts.bcc.len(), attachments = opts.attachments.len(), mime = mime_type, "send: starting pipeline");
 
         // 1. create draft (self-encrypted body).
         tracing::debug!(target: "ruston_core::send", "send step 1: creating encrypted draft (POST /mail/v4/messages)");
-        let armored = crypto::encrypt_self_draft(&provider, addr, &opts.body)?;
-        let mut draft = json!({
-            "Message": {
-                "ToList": recipient_list(&opts.to),
-                "CCList": recipient_list(&opts.cc),
-                "BCCList": recipient_list(&opts.bcc),
-                "Subject": opts.subject,
-                "Sender": { "Address": addr.email, "Name": "" },
-                "Body": armored,
-                "MIMEType": mime_type,
-            }
-        });
+        let mut draft = draft_message_json(addr, opts)?;
         if let Some(p) = parent_id {
             draft["ParentID"] = json!(p);
         }
@@ -657,11 +653,6 @@ impl Client {
                 Ok(message_id)
             }
             Err(e) => {
-                if matches!(e, Error::SendUnconfirmed { .. }) {
-                    tracing::warn!(target: "ruston_core::send", message_id = %message_id, error = %e, "send outcome unconfirmed — skipping draft cleanup");
-                } else {
-                    tracing::warn!(target: "ruston_core::send", message_id = %message_id, error = %e, "send failed — deleting draft");
-                }
                 cleanup_failed_draft(self.http(), &message_id, &e).await;
                 Err(e)
             }
