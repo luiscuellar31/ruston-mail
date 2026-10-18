@@ -2809,46 +2809,152 @@ mod tests {
         assert!(open[1].y > open[0].y && open[1].y > open[2].y);
     }
 
-    #[test]
-    fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
-        for (verdict, expected_icon, label) in [
+    /// A verdict, the icon and status the reader shows for it, and the color
+    /// of that icon.
+    type VerdictCase = (
+        Verdict,
+        theme::Icon,
+        &'static str,
+        fn(&theme::Colors) -> Color32,
+    );
+
+    fn verdict_cases() -> [VerdictCase; 4] {
+        [
             (
                 Verdict::Verified,
                 theme::Icon::Lock,
                 "Message text verified",
+                |colors| colors.success,
             ),
             (
                 Verdict::Unsigned,
                 theme::Icon::Unlock,
                 "Message text not signed",
+                |colors| colors.muted,
             ),
             (
                 Verdict::Unverified,
                 theme::Icon::Unlock,
                 "Could not verify the message text",
+                |colors| colors.muted,
             ),
             (
                 Verdict::Invalid,
                 theme::Icon::Spam,
                 "Message verification failed. Use caution.",
+                |colors| colors.danger,
             ),
+        ]
+    }
+
+    #[test]
+    fn each_verdict_has_its_icon_status_and_color() {
+        for appearance in [
+            crate::settings::Appearance::Dark,
+            crate::settings::Appearance::Light,
         ] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            theme::apply(&context, appearance);
+            context
+                .run_ui(egui::RawInput::default(), |ui| {
+                    let colors = theme::colors(ui);
+                    for (verdict, icon, status, color) in verdict_cases() {
+                        assert_eq!(
+                            signature_status(ui, verdict),
+                            (icon, status, color(&colors)),
+                            "{verdict:?} {appearance:?}"
+                        );
+                    }
+                })
+                .drop_without_applying_deltas();
+        }
+    }
+
+    /// Draws the one message card of `reader`, twice so its text is laid
+    /// out, and returns the second pass's shapes and the colors it used.
+    fn rendered_card(
+        context: &egui::Context,
+        reader: &ConversationReader,
+    ) -> (Vec<egui::epaint::ClippedShape>, theme::Colors) {
+        let mut colors = None;
+        let mut draw = || {
+            context.run_ui(egui::RawInput::default(), |ui| {
+                colors = Some(theme::colors(ui));
+                message_card(
+                    ui,
+                    &reader.detail().messages[0],
+                    reader.preview_at(0),
+                    reader,
+                    None,
+                    Reading::default(),
+                    &mut Vec::new(),
+                );
+            })
+        };
+        draw().drop_without_applying_deltas();
+        let output = draw();
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, colors.expect("the card was drawn"))
+    }
+
+    /// The image `shapes` draw `icon` with, at the size of the signature
+    /// icon.
+    fn icon_shape<'a>(
+        context: &egui::Context,
+        shapes: &'a [egui::epaint::ClippedShape],
+        icon: theme::Icon,
+    ) -> Option<&'a egui::epaint::RectShape> {
+        let texture = egui::Image::new(icon.source())
+            .source(context)
+            .clone()
+            .load(
+                context,
+                egui::TextureOptions::LINEAR,
+                egui::load::SizeHint::Size {
+                    width: SIGNATURE_ICON_SIZE as u32,
+                    height: SIGNATURE_ICON_SIZE as u32,
+                    maintain_aspect_ratio: false,
+                },
+            )
+            .expect("signature SVG must load")
+            .texture_id()
+            .expect("signature SVG must be ready");
+        shapes.iter().find_map(|shape| match &shape.shape {
+            egui::epaint::Shape::Rect(rect)
+                if rect
+                    .brush
+                    .as_ref()
+                    .is_some_and(|brush| brush.fill_texture_id == texture) =>
+            {
+                Some(rect)
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
+        for (verdict, icon, status, color) in verdict_cases() {
             for appearance in [
                 crate::settings::Appearance::Dark,
                 crate::settings::Appearance::Light,
             ] {
                 for name in [None, Some("Sender")] {
                     for expanded in [false, true] {
+                        let case =
+                            format!("{verdict:?} {appearance:?} name={name:?} expanded={expanded}");
+                        // Only the verdict decides the icon: a verified
+                        // sender comes from another domain than the rest.
+                        let sender = if verdict == Verdict::Verified {
+                            "sender@example.org"
+                        } else {
+                            "sender@proton.me"
+                        };
                         let message = MailMessage {
                             id: "message".into(),
-                            sender: address(
-                                name,
-                                if verdict == Verdict::Verified {
-                                    "sender@example.org"
-                                } else {
-                                    "sender@proton.me"
-                                },
-                            ),
+                            sender: address(name, sender),
                             recipients: Vec::new(),
                             reply_to: Vec::new(),
                             reply_all_cc: Vec::new(),
@@ -2868,68 +2974,20 @@ mod tests {
                         if !expanded {
                             reader.toggle("message");
                         }
-                        assert_eq!(reader.is_expanded("message", Reading::default()), expanded);
+                        assert_eq!(
+                            reader.is_expanded("message", Reading::default()),
+                            expanded,
+                            "{case}"
+                        );
                         let context = egui::Context::default();
                         theme::install(&context);
                         theme::apply(&context, appearance);
-                        let mut color = Color32::TRANSPARENT;
-                        let mut draw = || {
-                            context.run_ui(egui::RawInput::default(), |ui| {
-                                let colors = theme::colors(ui);
-                                color = match verdict {
-                                    Verdict::Invalid => colors.danger,
-                                    Verdict::Verified => colors.success,
-                                    _ => colors.muted,
-                                };
-                                let (icon, status, actual_color) = signature_status(ui, verdict);
-                                assert_eq!(icon, expected_icon);
-                                assert_eq!(status, label);
-                                assert_eq!(actual_color, color);
-                                message_card(
-                                    ui,
-                                    &reader.detail().messages[0],
-                                    reader.preview_at(0),
-                                    &reader,
-                                    None,
-                                    Reading::default(),
-                                    &mut Vec::new(),
-                                );
-                            })
-                        };
-                        draw().drop_without_applying_deltas();
-                        let output = draw();
-                        let shapes = output.shapes.clone();
-                        output.drop_without_applying_deltas();
-                        let texture = egui::Image::new(expected_icon.source())
-                            .source(&context)
-                            .clone()
-                            .load(
-                                &context,
-                                egui::TextureOptions::LINEAR,
-                                egui::load::SizeHint::Size {
-                                    width: SIGNATURE_ICON_SIZE as u32,
-                                    height: SIGNATURE_ICON_SIZE as u32,
-                                    maintain_aspect_ratio: false,
-                                },
-                            )
-                            .expect("signature SVG must load")
-                            .texture_id()
-                            .expect("signature SVG must be ready");
-                        let image = shapes
-                            .iter()
-                            .find_map(|shape| match &shape.shape {
-                                egui::epaint::Shape::Rect(rect)
-                                    if rect
-                                        .brush
-                                        .as_ref()
-                                        .is_some_and(|brush| brush.fill_texture_id == texture) =>
-                                {
-                                    Some(rect)
-                                }
-                                _ => None,
-                            })
-                            .unwrap_or_else(|| panic!("missing {label}, expanded={expanded}"));
-                        assert_eq!(image.fill, color);
+
+                        let (shapes, colors) = rendered_card(&context, &reader);
+
+                        let image = icon_shape(&context, &shapes, icon)
+                            .unwrap_or_else(|| panic!("{case}: no icon for {status:?}"));
+                        assert_eq!(image.fill, color(&colors), "{case}");
                         let identity = text_rect(
                             &shapes,
                             if expanded && name.is_some() {
@@ -2939,14 +2997,24 @@ mod tests {
                             },
                         );
                         let icon_rect = image.rect;
-                        assert!(icon_rect.right() < identity.left(), "icon overlaps address");
-                        assert!((icon_rect.top() - identity.top()).abs() <= 0.5);
-                        assert!((icon_rect.width() - SIGNATURE_ICON_SIZE).abs() <= 0.5);
+                        assert!(
+                            icon_rect.right() < identity.left(),
+                            "{case}: icon overlaps address"
+                        );
+                        assert!(
+                            (icon_rect.top() - identity.top()).abs() <= 0.5,
+                            "{case}: icon and sender are not aligned"
+                        );
+                        assert!(
+                            (icon_rect.width() - SIGNATURE_ICON_SIZE).abs() <= 0.5,
+                            "{case}: the icon is {} wide",
+                            icon_rect.width()
+                        );
                         assert!(
                             !shapes.iter().any(|shape| matches!(&shape.shape,
-                                egui::epaint::Shape::Text(text) if text.galley.text() == label
+                                egui::epaint::Shape::Text(text) if text.galley.text() == status
                             )),
-                            "status should be in the tooltip, not a separate row"
+                            "{case}: status should be in the tooltip, not a separate row"
                         );
                     }
                 }

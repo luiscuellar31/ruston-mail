@@ -1248,13 +1248,13 @@ mod tests {
         assert!(group.height() > 0.0, "the group was never laid out");
         assert!(group.height() < available.height(), "it filled the height");
         assert!(group.width() < available.width(), "it filled the width");
-        for (axis, group, available) in [
+        for (axis, group_center, available_center) in [
             ("vertically", group.center().y, available.center().y),
             ("horizontally", group.center().x, available.center().x),
         ] {
             assert!(
-                (group - available).abs() <= 1.0,
-                "the group is not centered {axis}: {group} against {available}"
+                (group_center - available_center).abs() <= 1.0,
+                "the group is not centered {axis}: {group_center} against {available_center}"
             );
         }
     }

@@ -579,13 +579,15 @@ mod tests {
         }
     }
 
-    /// Lays out a physical window at the requested zoom and returns the
-    /// card-and-footer group's rectangle and the window in egui points.
-    fn laid_out(
-        physical_size: egui::Vec2,
-        appearance: Appearance,
-        zoom: f32,
-    ) -> (egui::Rect, egui::Rect) {
+    /// Where the card-and-footer group of the login screen lands, and the
+    /// window it was laid out in, in egui points.
+    struct Layout {
+        group: egui::Rect,
+        window: egui::Rect,
+    }
+
+    /// Lays out a physical window at the requested zoom.
+    fn laid_out(physical_size: egui::Vec2, appearance: Appearance, zoom: f32) -> Layout {
         let mut app = App::signed_out();
         let _ = app.update(Message::SetAppearance(appearance));
         let _ = app.update(Message::SetZoom(zoom));
@@ -630,54 +632,65 @@ mod tests {
             .drop_without_applying_deltas();
         assert_eq!(context.zoom_factor(), zoom);
 
-        (card, window)
+        Layout {
+            group: card,
+            window,
+        }
     }
 
     #[test]
     fn the_login_group_is_centered_vertically_and_scrolls_when_space_is_short() {
-        let (group, window) = laid_out(egui::vec2(1200.0, 800.0), Appearance::Dark, 1.0);
-        let (taller, tall_window) = laid_out(egui::vec2(1200.0, 1400.0), Appearance::Dark, 1.0);
-        let (small, minimum) = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 1.0);
-        let (zoomed, zoomed_window) = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 2.0);
-        let (light, _) = laid_out(egui::vec2(820.0, 480.0), Appearance::Light, 1.0);
+        let regular = laid_out(egui::vec2(1200.0, 800.0), Appearance::Dark, 1.0);
+        let taller = laid_out(egui::vec2(1200.0, 1400.0), Appearance::Dark, 1.0);
+        let small = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 1.0);
+        let zoomed = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 2.0);
+        let light = laid_out(egui::vec2(820.0, 480.0), Appearance::Light, 1.0);
 
-        assert!(group.height() > 0.0, "the login group was never laid out");
         assert!(
-            (group.height() - taller.height()).abs() <= 1.0,
-            "the login group grew with the window: {} against {}",
-            group.height(),
-            taller.height()
+            regular.group.height() > 0.0,
+            "the login group was never laid out"
         );
-        for (group, window) in [(group, window), (taller, tall_window)] {
+        assert!(
+            (regular.group.height() - taller.group.height()).abs() <= 1.0,
+            "the login group grew with the window: {} against {}",
+            regular.group.height(),
+            taller.group.height()
+        );
+        for (case, Layout { group, window }) in [("regular", &regular), ("taller", &taller)] {
             assert!(
                 (group.center().y - window.center().y).abs() <= 12.0,
-                "login group {group:?} is not centered vertically in {window:?}"
+                "{case}: login group {group:?} is not centered vertically in {window:?}"
             );
         }
-        for (group, window) in [
-            (group, window),
-            (small, minimum),
-            (zoomed, zoomed_window),
-            (light, minimum),
+        for (case, Layout { group, window }) in [
+            ("regular", &regular),
+            ("small", &small),
+            ("zoomed", &zoomed),
+            ("light", &light),
         ] {
             assert!(
                 group.left() >= window.left(),
-                "login group overflows left: {group:?}"
+                "{case}: login group overflows left: {group:?}"
             );
             assert!(
                 group.right() <= window.right(),
-                "login group overflows right: {group:?}"
+                "{case}: login group overflows right: {group:?}"
             );
             assert!(
                 (group.center().x - window.center().x).abs() <= 12.0,
-                "login group is not horizontally centered: {group:?} in {window:?}"
+                "{case}: login group is not horizontally centered: {group:?} in {window:?}"
             );
         }
-        for (group, window) in [(small, minimum), (zoomed, zoomed_window), (light, minimum)] {
-            assert!(group.top() >= window.top());
+        for (case, Layout { group, window }) in
+            [("small", &small), ("zoomed", &zoomed), ("light", &light)]
+        {
+            assert!(
+                group.top() >= window.top(),
+                "{case}: login group overflows the top"
+            );
             assert!(
                 group.bottom() > window.bottom(),
-                "the login group should scroll when available height is short"
+                "{case}: the login group should scroll when available height is short"
             );
         }
     }
