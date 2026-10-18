@@ -207,8 +207,7 @@ fn asking_for_every_message_reaches_the_open_conversation() {
     // The choice is read where a message is drawn, so it applies to the
     // conversation already open, not only the next one.
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::SetExpandAllMessages(true));
 
@@ -478,8 +477,7 @@ fn command_enter_sends_compose() {
 fn the_mailbox_keys_leave_a_draft_in_its_own_window_alone() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
     let _ = app.update(Message::OpenCompose);
     let _ = app.update(Message::ComposeChanged(
         ComposeField::To,
@@ -501,29 +499,20 @@ fn the_mailbox_keys_leave_a_draft_in_its_own_window_alone() {
 #[test]
 fn trash_shortcuts_move_selected_conversation() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
 
     press_command(&mut app, Key::Backspace);
 
-    let has_row = |app: &App| {
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|row| row.id == "demo-3")
-    };
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
     assert!(app.mailbox().unwrap().undo().is_some());
 
     let _ = app.update(Message::UndoMove);
-    assert!(has_row(&app));
+    assert!(is_listed(&app, "demo-3"));
 
     // Plain Delete key also moves to trash
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
     press(&mut app, Key::Delete);
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
 }
 
 #[test]
@@ -649,8 +638,7 @@ fn keys_do_not_reach_the_mailbox_under_a_link_prompt() {
 #[test]
 fn escape_answers_the_link_prompt_before_the_draft_behind_it() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let _ = app.update(Message::OpenCompose);
     let _ = app.update(Message::LinkClicked("https://example.com/".to_owned()));
 
@@ -681,8 +669,7 @@ fn the_apps_own_refresh_goes_unannounced_until_someone_asks_for_one() {
 #[test]
 fn a_rows_menu_acts_on_that_row_and_leaves_the_open_one_open() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let listed = |app: &App, id: &str| app.mailbox().unwrap().has_row(id);
     let unread = |app: &App, id: &str| {
         app.mailbox()
@@ -1121,10 +1108,7 @@ fn demo_startup_opens_mailbox_without_session_resume() {
 
 #[test]
 fn demo_mailbox_uses_production_pagination() {
-    let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
-    let counts = demo_service(&app).counts();
-    let _ = app.update(Message::CountsLoaded(2, Ok(counts)));
+    let mut app = loaded_demo_app();
 
     let mailbox = app.mailbox().unwrap();
     assert_eq!(mailbox.conversations().len(), 10);
@@ -1228,8 +1212,7 @@ fn demo_selection_opens_reader_with_newest_message_expanded() {
     let (mut app, _) = App::boot(true, Settings::default());
     deliver_demo_page(&mut app, 1, 0);
 
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let reader = app.mailbox().unwrap().reader().unwrap();
     assert_eq!(reader.conversation_id(), "demo-0");
@@ -1243,16 +1226,14 @@ fn demo_selection_opens_reader_with_newest_message_expanded() {
 fn returning_to_a_conversation_restores_its_reader_without_loading() {
     let (mut app, _) = App::boot(true, Settings::default());
     deliver_demo_page(&mut app, 1, 0);
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
     let reader = app.mailbox().unwrap().reader().unwrap();
     assert!(reader.is_expanded("demo-0-0", Reading::default()));
     assert!(reader.is_expanded("demo-0-2", Reading::default()));
 
-    let _ = app.update(Message::SelectConversation("demo-2".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-2");
     let effects = app.update(Message::SelectConversation("demo-0".into()));
     // The only work is scrolling the restored reader to its top.
     assert_eq!(effects.units(), 1);
@@ -1340,30 +1321,22 @@ fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
 #[test]
 fn an_automatic_refresh_keeps_the_offer_to_undo_a_move() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
     press_command(&mut app, Key::Backspace);
-    let has_row = |app: &App| {
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|row| row.id == "demo-3")
-    };
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
 
     // The poll lands while the notice is still up.
     assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 2);
     assert!(app.mailbox().unwrap().undo().is_some());
     // Undo waits for the reloading list...
     let _ = app.update(Message::UndoMove);
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
     assert!(app.mailbox().unwrap().undo().is_some());
     // ...and works once it is back.
     let page_request = app.last_request - 1;
     deliver_demo_page(&mut app, page_request, 0);
     let _ = app.update(Message::UndoMove);
-    assert!(has_row(&app));
+    assert!(is_listed(&app, "demo-3"));
 }
 
 #[test]
@@ -1605,8 +1578,7 @@ fn detail_failure_and_retry_use_a_new_request() {
 fn demo_read_actions_update_row_and_count_idempotently() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SearchChanged("design review".into()));
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let detail = app.mailbox().unwrap().reader().unwrap().detail().clone();
 
     assert!(!app.mailbox().unwrap().conversations()[0].unread);
@@ -1680,32 +1652,20 @@ fn abandoned_conversation_loads_are_stopped_and_ignored() {
 #[test]
 fn demo_star_actions_update_starred_folder_and_selection() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-1".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-1");
     let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
     let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
     assert!(app.mailbox().unwrap().conversations()[1].starred);
 
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Starred)));
     deliver_latest_demo_page(&mut app, 0);
-    assert!(
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|conversation| conversation.id == "demo-1")
-    );
+    assert!(is_listed(&app, "demo-1"));
 
     let effects = app.update(Message::SelectConversation("demo-1".into()));
     assert_eq!(effects.units(), 1);
     let _ = app.update(Message::ApplyAction(MailAction::SetStarred(false)));
     let mailbox = app.mailbox().unwrap();
-    assert!(
-        mailbox
-            .conversations()
-            .iter()
-            .all(|conversation| conversation.id != "demo-1")
-    );
+    assert!(!is_listed(&app, "demo-1"));
     assert!(
         mailbox
             .selected_conversation()
@@ -1910,8 +1870,7 @@ fn a_conversation_the_server_found_can_still_be_acted_on() {
         .expect("the search found something")
         .id
         .clone();
-    let _ = app.update(Message::SelectConversation(found.clone()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, &found);
 
     // The row is not in the open folder's listing, which used to leave
     // the reader with no actions at all.
@@ -1945,8 +1904,7 @@ fn archiving_from_the_results_takes_the_row_out_of_them() {
         .map(|row| row.id.clone())
         .collect();
     assert!(rows.len() > 1, "the search found more than one row");
-    let _ = app.update(Message::SelectConversation(rows[0].clone()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, &rows[0]);
 
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
         MailFolder::Archive,
@@ -1965,31 +1923,19 @@ fn archiving_from_the_results_takes_the_row_out_of_them() {
 #[test]
 fn demo_archive_removes_selected_and_opens_next() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
         MailFolder::Archive,
     ))));
 
     let mailbox = app.mailbox().unwrap();
-    assert!(
-        mailbox
-            .conversations()
-            .iter()
-            .all(|conversation| conversation.id != "demo-0")
-    );
+    assert!(!is_listed(&app, "demo-0"));
     assert_eq!(mailbox.selected_conversation(), Some("demo-1"));
 
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
     deliver_latest_demo_page(&mut app, 0);
-    assert!(
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|conversation| conversation.id == "demo-0")
-    );
+    assert!(is_listed(&app, "demo-0"));
 }
 
 #[test]
@@ -2018,25 +1964,17 @@ fn moving_selected_conversation_invalidates_its_pending_detail() {
 #[test]
 fn undoing_a_demo_move_puts_the_conversation_back() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
 
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
         MailFolder::Archive,
     ))));
-    let has_row = |app: &App| {
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|conversation| conversation.id == "demo-3")
-    };
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
     assert!(app.mailbox().unwrap().undo().is_some());
 
     let _ = app.update(Message::UndoMove);
 
-    assert!(has_row(&app));
+    assert!(is_listed(&app, "demo-3"));
     assert!(app.mailbox().unwrap().undo().is_none());
 }
 
@@ -2053,34 +1991,20 @@ fn demo_trash_and_spam_moves_update_folders() {
         ),
     ] {
         let mut app = loaded_demo_app();
-        let _ = app.update(Message::SelectConversation("demo-3".into()));
-        deliver_selected_demo_detail(&mut app);
+        open_conversation(&mut app, "demo-3");
         let _ = app.update(message);
-        assert!(
-            app.mailbox()
-                .unwrap()
-                .conversations()
-                .iter()
-                .all(|conversation| conversation.id != "demo-3")
-        );
+        assert!(!is_listed(&app, "demo-3"));
 
         let _ = app.update(Message::SelectFolder(folder.clone()));
         deliver_latest_demo_page(&mut app, 0);
-        assert!(
-            app.mailbox()
-                .unwrap()
-                .conversations()
-                .iter()
-                .any(|conversation| conversation.id == "demo-3")
-        );
+        assert!(is_listed(&app, "demo-3"));
     }
 }
 
 #[test]
 fn a_move_proton_refuses_brings_the_row_back_with_the_list() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     // As the Proton path does: the move shows at once.
     let request = app
         .mailbox
@@ -2106,19 +2030,11 @@ fn a_move_proton_refuses_brings_the_row_back_with_the_list() {
 #[test]
 fn list_keys_wait_while_the_draft_covers_the_reader() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let _ = app.update(Message::OpenCompose);
-    let plain = |key| {
-        Message::KeyPressed(KeyPress {
-            key,
-            command: false,
-            other_modifier: false,
-        })
-    };
 
     for key in [Key::Character('j'), Key::ArrowDown] {
-        let _ = app.update(plain(key));
+        press(&mut app, key);
         assert_eq!(
             app.mailbox().unwrap().selected_conversation(),
             Some("demo-0"),
@@ -2128,7 +2044,7 @@ fn list_keys_wait_while_the_draft_covers_the_reader() {
 
     // In its own window the draft leaves the reader in view.
     let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
-    let _ = app.update(plain(Key::Character('j')));
+    press(&mut app, Key::Character('j'));
     assert_eq!(
         app.mailbox().unwrap().selected_conversation(),
         Some("demo-1")
@@ -2152,6 +2068,15 @@ fn unread_rows(app: &App) -> Vec<String> {
         .filter(|row| row.unread)
         .map(|row| row.id.clone())
         .collect()
+}
+
+/// Whether the open folder's list has a row for `id`.
+fn is_listed(app: &App, id: &str) -> bool {
+    app.mailbox()
+        .unwrap()
+        .conversations()
+        .iter()
+        .any(|row| row.id == id)
 }
 
 fn open_conversation(app: &mut App, id: &str) {
@@ -2265,33 +2190,24 @@ fn moving_the_draft_to_its_own_window_shows_what_it_covered() {
 #[test]
 fn demo_mail_marked_not_spam_goes_back_to_the_inbox() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
         MailFolder::Spam,
     ))));
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Spam)));
     deliver_latest_demo_page(&mut app, 0);
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
 
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(Folder::INBOX)));
 
-    let has_row = |app: &App| {
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|conversation| conversation.id == "demo-3")
-    };
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
     let undo = app.mailbox().unwrap().undo().expect("an offer to undo");
     assert_eq!(undo.from, sys(MailFolder::Spam));
     assert_eq!(undo.to, Folder::INBOX);
 
     let _ = app.update(Message::SelectFolder(Folder::INBOX));
     deliver_latest_demo_page(&mut app, 0);
-    assert!(has_row(&app));
+    assert!(is_listed(&app, "demo-3"));
 }
 
 #[test]
@@ -2304,8 +2220,7 @@ fn inbox_search_reflects_folder_moves_immediately() {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SearchChanged("blue notebook".into()));
         assert_eq!(app.mailbox().unwrap().visible_conversations().count(), 1);
-        let _ = app.update(Message::SelectConversation("demo-3".into()));
-        deliver_selected_demo_detail(&mut app);
+        open_conversation(&mut app, "demo-3");
 
         let _ = app.update(message);
 
@@ -2341,8 +2256,7 @@ fn moving_only_conversation_closes_reader_cleanly() {
 fn resizing_panels_only_changes_layout() {
     let (mut app, _) = App::boot(true, Settings::default());
     deliver_demo_page(&mut app, 1, 0);
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
     let requests = app.last_request;
     let default_panels = app.panels();
@@ -2608,8 +2522,7 @@ fn going_back_cancels_the_pending_prompt() {
 
 #[test]
 fn prompts_without_a_running_sign_in_are_cancelled() {
-    let mut app = App::new(Settings::default());
-    app.auth_state = AuthState::SignedOut;
+    let mut app = App::signed_out();
     let (reply, mut answer) = crate::mail::Reply::<SecretString>::channel();
 
     let _ = app.update(Message::SignInPrompt(
@@ -2976,8 +2889,7 @@ fn a_reply_needs_nobody_named_because_proton_knows() {
     // Core addresses a reply from the message being answered, so the window
     // must not refuse to send for want of a recipient.
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
@@ -2993,8 +2905,7 @@ fn a_reply_needs_nobody_named_because_proton_knows() {
 #[test]
 fn a_forward_still_has_to_be_addressed() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
@@ -3017,8 +2928,7 @@ fn a_forward_still_has_to_be_addressed() {
 #[test]
 fn answering_says_what_is_being_answered() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
