@@ -78,3 +78,17 @@ docs: map the workspace architecture
 
 For a breaking change, use `!` after the type or scope and explain the impact
 and migration in the commit body with a `BREAKING CHANGE:` footer.
+
+The release notes list each subject line unchanged, grouped by type, so choose
+the type by who notices the change:
+
+- `feat`, `fix`, and `perf` are for changes that users notice: a new
+  capability, corrected behavior, or faster work. That includes what they
+  download and install, such as a new installer.
+- Changes to CI, builds, packaging scripts, and tests use `ci`, `build`,
+  `test`, or `chore`, even when they fix something.
+
+Write the subject as the effect, not the mechanism: `fix(app): take over from
+an instance that is closing` rather than `fix(app): retry the instance lock
+while connecting`. The body, which the release notes do not show, can explain
+how.
