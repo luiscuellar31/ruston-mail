@@ -516,8 +516,8 @@ impl Cache {
             .optional()
             .map_err(map)?;
         if current.as_deref() != expected {
-            return Err(Error::Cache(
-                "sync cursor changed during cache download; retry".into(),
+            return Err(Error::cache_changed(
+                "sync cursor changed during cache download",
             ));
         }
         Ok(tx)
@@ -569,8 +569,8 @@ impl Cache {
             .optional()
             .map_err(map)?;
         if current_cursor.as_deref() != Some(previous_cursor) {
-            return Err(Error::Cache(
-                "sync cursor changed during incremental sync; retry".into(),
+            return Err(Error::cache_changed(
+                "sync cursor changed during incremental sync",
             ));
         }
 
@@ -748,16 +748,14 @@ impl Cache {
             .optional()
             .map_err(map)?;
         if current_cursor.as_deref() != Some(previous_cursor) {
-            return Err(Error::Cache(
-                "sync cursor changed during resync; retry".into(),
-            ));
+            return Err(Error::cache_changed("sync cursor changed during resync"));
         }
         let staged: i64 = tx
             .query_row("SELECT COUNT(*) FROM resync_messages", [], |row| row.get(0))
             .map_err(map)?;
         if staged != i64::from(expected_total) {
-            return Err(Error::Cache(
-                "incomplete mailbox listing during resync; retry".into(),
+            return Err(Error::cache_changed(
+                "incomplete mailbox listing during resync",
             ));
         }
 

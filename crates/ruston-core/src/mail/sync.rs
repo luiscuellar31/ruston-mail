@@ -56,12 +56,12 @@ async fn rebuild_cache<D: Doer>(
         };
         let (total, messages) = api::messages::list_messages(http, &query).await?;
         if expected_total.is_some_and(|expected| expected != total) {
-            return Err(Error::Cache("mailbox changed during resync; retry".into()));
+            return Err(Error::cache_changed("mailbox changed during resync"));
         }
         expected_total = Some(total);
         if messages.is_empty() && (u64::from(page) * u64::from(page_size)) < u64::from(total) {
-            return Err(Error::Cache(
-                "incomplete mailbox listing during resync; retry".into(),
+            return Err(Error::cache_changed(
+                "incomplete mailbox listing during resync",
             ));
         }
         cache.stage_rebuild_page(&messages)?;
@@ -93,7 +93,7 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
                 });
             }
             cache.last_event_id()?.ok_or_else(|| {
-                Error::Cache("sync cursor disappeared during initialization; retry".into())
+                Error::cache_changed("sync cursor disappeared during initialization")
             })?
         }
     };
@@ -104,9 +104,7 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
         let batch = api::events::get_events(http, &id).await?;
         if batch.refresh {
             if rebuilt.is_some() {
-                return Err(Error::Cache(
-                    "server requested another resync; retry".into(),
-                ));
+                return Err(Error::cache_changed("server requested another resync"));
             }
             let (cursor, count) = rebuild_cache(http, cache, &id, RESYNC_PAGE_SIZE).await?;
             tracing::warn!(target: "ruston_core::sync", rebuilt = count, "server requested full resync — cache rebuilt");
@@ -159,7 +157,7 @@ async fn pin_cursor<D: Doer, C: Borrow<Cache>>(http: &D, cache: C) -> Result<C> 
 fn page_cursor(cache: &Cache) -> Result<String> {
     cache
         .last_event_id()?
-        .ok_or_else(|| Error::Cache("sync cursor disappeared during cache download; retry".into()))
+        .ok_or_else(|| Error::cache_changed("sync cursor disappeared during cache download"))
 }
 
 // Client passes an owned Cache to keep its future Send: SQLite connections are
@@ -823,7 +821,9 @@ mod tests {
                         body_gate.add_permits(1);
                     }
                     assert!(
-                        matches!(index.await, Err(Error::Cache(message)) if message.contains("retry"))
+                        index
+                            .await
+                            .is_err_and(|error| error.is_retryable_cache_error())
                     );
                     assert_competing_event_preserved(&cache, event_action);
                 }
@@ -860,7 +860,11 @@ mod tests {
         assert_eq!(cache.search("downloadedbody", 10).unwrap()[0].id, "m0");
         apply_competing_event(&cache, action::DELETE);
         body_gate.add_permits(1);
-        assert!(matches!(index.await, Err(Error::Cache(message)) if message.contains("retry")));
+        assert!(
+            index
+                .await
+                .is_err_and(|error| error.is_retryable_cache_error())
+        );
         let remaining = cache.list("0", false, 10, 0).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, "m0");
@@ -951,7 +955,9 @@ mod tests {
             apply_competing_event(&cache, event_action);
             http.gate.add_permits(1);
             assert!(
-                matches!(backfill.await, Err(Error::Cache(message)) if message.contains("retry"))
+                backfill
+                    .await
+                    .is_err_and(|error| error.is_retryable_cache_error())
             );
             assert_competing_event_preserved(&cache, event_action);
         }

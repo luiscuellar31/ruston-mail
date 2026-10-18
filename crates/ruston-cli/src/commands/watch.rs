@@ -26,13 +26,14 @@ fn needs_index(report: &SyncReport, forced: bool) -> bool {
 }
 
 /// Whether `error` may pass if `watch` tries again later: the network,
-/// Proton being busy or down, or the cache changing during a sync. Anything
-/// else, a refused session first, stops it.
+/// Proton being busy or down, or the cache changing during a sync, which the
+/// core reports as [`Error::is_retryable_cache_error`]. Anything else, a
+/// refused session first, stops it.
 fn is_transient(error: &Error) -> bool {
     match error {
         Error::Http(_) => true,
         Error::Api(api) => api.http_status == 429 || api.http_status >= 500,
-        Error::Cache(message) => message.contains("retry"),
+        Error::Cache(_) => error.is_retryable_cache_error(),
         _ => false,
     }
 }

@@ -137,6 +137,11 @@ pub enum Error {
     Session(String),
 
     /// A local cache read or write failed.
+    ///
+    /// When the cache or Proton's listing changed while the operation ran,
+    /// for example because another process moved the sync cursor, the
+    /// message ends in `; retry` and trying again later may succeed:
+    /// [`Error::is_retryable_cache_error`] recognizes these.
     #[error("cache error: {0}")]
     Cache(String),
 
@@ -166,6 +171,9 @@ impl From<reqwest::Error> for Error {
     }
 }
 
+/// How a cache error says that trying again later may succeed.
+const CACHE_CHANGED_SUFFIX: &str = "; retry";
+
 /// Convenience exit-code mapping for any error (defaults to 1 for non-API).
 impl Error {
     /// Map this error to a CLI process exit code (defaults to 1 for non-API errors).
@@ -177,6 +185,18 @@ impl Error {
             Error::Ambiguous(_) => 4,
             _ => 1,
         }
+    }
+
+    /// A cache error for an operation that found the cache, or Proton's
+    /// listing, changed under it; `reason` says what changed.
+    pub(crate) fn cache_changed(reason: &str) -> Self {
+        Error::Cache(format!("{reason}{CACHE_CHANGED_SUFFIX}"))
+    }
+
+    /// Whether this is a cache error that may pass if the operation is tried
+    /// again later, because the cache changed while it ran.
+    pub fn is_retryable_cache_error(&self) -> bool {
+        matches!(self, Error::Cache(message) if message.ends_with(CACHE_CHANGED_SUFFIX))
     }
 }
 
@@ -259,5 +279,19 @@ mod tests {
         );
         assert_eq!(Error::Ambiguous(3).exit_code(), 4);
         assert_eq!(Error::Other("x".into()).exit_code(), 1);
+    }
+
+    #[test]
+    fn only_a_cache_that_changed_under_an_operation_asks_to_be_tried_again() {
+        let changed = Error::cache_changed("mailbox changed during resync");
+        assert_eq!(
+            changed.to_string(),
+            "cache error: mailbox changed during resync; retry"
+        );
+        assert!(changed.is_retryable_cache_error());
+        assert!(
+            !Error::Cache("database disk image is malformed".into()).is_retryable_cache_error()
+        );
+        assert!(!Error::Session("sync cursor changed; retry".into()).is_retryable_cache_error());
     }
 }
