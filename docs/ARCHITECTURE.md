@@ -290,7 +290,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   containing folder with `xdg-open`.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
   to egui visuals and custom-painted widget colors; egui gives each window's
-  title bar the same theme when it changes. winit gives a Windows title bar
+  title bar the same theme when it changes. Following the system sets egui's
+  `ThemePreference::System`, which tracks the theme winit reports, with the
+  stored scheme as its fallback; settings keep that choice in a field of its
+  own, so an older version still reads a scheme it knows. winit 0.30 reports
+  no system theme on Linux, so Settings offers the choice on macOS and Windows. winit gives a Windows title bar
   the Windows theme again whenever Windows announces a changed setting, so
   `theme::TitleBar` repeats egui's request for the main and composer windows
   when the Windows theme changes or the window comes back to the front. A

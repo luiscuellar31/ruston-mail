@@ -163,6 +163,12 @@ fn settings_changes_reach_the_app() {
     assert_eq!(app.settings().compose_placement, ComposePlacement::Window);
     assert_eq!(app.settings().zoom, 1.3);
     assert_eq!(app.settings().appearance, Appearance::Light);
+    // Following the system keeps the scheme chosen; choosing one stops it.
+    let _ = app.update(Message::SetFollowSystemAppearance(true));
+    assert!(app.settings().follow_system_appearance);
+    assert_eq!(app.settings().appearance, Appearance::Light);
+    let _ = app.update(Message::SetAppearance(Appearance::Light));
+    assert!(!app.settings().follow_system_appearance);
     assert_eq!(
         app.settings().reading(),
         Reading {

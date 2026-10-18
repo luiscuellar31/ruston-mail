@@ -155,8 +155,10 @@ pub enum Message {
     SetShowQuotedText(bool),
     /// Scales the whole interface.
     SetZoom(f32),
-    /// Chooses the desktop color scheme.
+    /// Chooses the desktop color scheme, which stops following the system's.
     SetAppearance(Appearance),
+    /// Follows the system's light or dark mode, or the chosen scheme.
+    SetFollowSystemAppearance(bool),
     SetSystemFont(bool),
     /// Shows or hides the unread mail badge on the dock/app icon.
     SetShowUnreadBadge(bool),
@@ -814,7 +816,13 @@ impl App {
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {
-                self.remember(|settings| settings.appearance = appearance);
+                self.remember(|settings| {
+                    settings.appearance = appearance;
+                    settings.follow_system_appearance = false;
+                });
+            }
+            Message::SetFollowSystemAppearance(on) => {
+                self.remember(|settings| settings.follow_system_appearance = on);
             }
             Message::SetSystemFont(enabled) => {
                 self.remember(|settings| settings.system_font = enabled)

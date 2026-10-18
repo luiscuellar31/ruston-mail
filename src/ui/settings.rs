@@ -184,10 +184,30 @@ fn page(
     ui.add_space(14.0);
     section(ui, "Interface", |ui| {
         ui.label("Appearance");
+        // winit tells the system's mode on macOS and Windows, not on Linux.
+        let offer_system = !cfg!(target_os = "linux");
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut settings.appearance, Appearance::Dark, "Dark");
-            ui.selectable_value(&mut settings.appearance, Appearance::Light, "Light");
+            // Following the system keeps the scheme last chosen, for where
+            // the system tells none.
+            if offer_system
+                && ui
+                    .selectable_label(settings.follow_system_appearance, "System")
+                    .clicked()
+            {
+                settings.follow_system_appearance = true;
+            }
+            for (appearance, label) in [(Appearance::Dark, "Dark"), (Appearance::Light, "Light")] {
+                let chosen =
+                    !settings.follow_system_appearance && settings.appearance == appearance;
+                if ui.selectable_label(chosen, label).clicked() {
+                    settings.follow_system_appearance = false;
+                    settings.appearance = appearance;
+                }
+            }
         });
+        if offer_system {
+            description(ui, "System follows your computer's light or dark mode.");
+        }
         ui.add_space(8.0);
         ui.add(theme::Checkbox::new(
             &mut settings.system_font,
@@ -370,8 +390,13 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     if (draft.zoom - current.zoom).abs() > f32::EPSILON {
         messages.push(Message::SetZoom(draft.zoom));
     }
-    if draft.appearance != current.appearance {
+    let scheme_changed = draft.appearance != current.appearance;
+    if scheme_changed || (current.follow_system_appearance && !draft.follow_system_appearance) {
         messages.push(Message::SetAppearance(draft.appearance));
+    }
+    // Choosing a scheme stops following the system, so following comes after.
+    if draft.follow_system_appearance && (scheme_changed || !current.follow_system_appearance) {
+        messages.push(Message::SetFollowSystemAppearance(true));
     }
     if draft.system_font != current.system_font {
         messages.push(Message::SetSystemFont(draft.system_font));
@@ -874,6 +899,38 @@ mod tests {
                 .iter()
                 .any(|message| matches!(message, Message::SetSystemFont(true)))
         );
+    }
+
+    #[test]
+    fn following_the_system_and_choosing_a_scheme_again_reach_apply() {
+        let dark = Settings::default();
+        let mut light = Settings::default();
+        light.appearance = Appearance::Light;
+        let mut following = Settings::default();
+        following.follow_system_appearance = true;
+        assert!(matches!(
+            preference_changes(&dark, &following)[..],
+            [Message::SetFollowSystemAppearance(true)]
+        ));
+        assert!(matches!(
+            preference_changes(&following, &dark)[..],
+            [Message::SetAppearance(Appearance::Dark)]
+        ));
+        assert!(matches!(
+            preference_changes(&following, &light)[..],
+            [Message::SetAppearance(Appearance::Light)]
+        ));
+        assert!(preference_changes(&following, &following).is_empty());
+        // A scheme changed while following still keeps following.
+        let mut following_light = light.clone();
+        following_light.follow_system_appearance = true;
+        assert!(matches!(
+            preference_changes(&dark, &following_light)[..],
+            [
+                Message::SetAppearance(Appearance::Light),
+                Message::SetFollowSystemAppearance(true)
+            ]
+        ));
     }
 
     #[test]

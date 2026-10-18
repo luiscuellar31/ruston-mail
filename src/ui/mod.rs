@@ -178,7 +178,7 @@ impl DesktopApp {
 
     fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
         theme::install(context);
-        theme::apply(context, settings.appearance);
+        apply_appearance(context, &settings);
         fonts::apply(context, settings.system_font);
         let runtime = Runtime::new().expect("failed to start background runtime");
         runtime.attach(context);
@@ -931,7 +931,7 @@ impl DesktopApp {
 impl eframe::App for DesktopApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.runtime.attach(context);
-        theme::apply(context, self.app.settings().appearance);
+        apply_appearance(context, self.app.settings());
         self.root_title_bar.keep(context);
         self.apply_zoom(context);
         fonts::apply(context, self.app.settings().system_font);
@@ -1134,6 +1134,14 @@ fn key(key: Key, command: bool) -> KeyPress {
         key,
         command,
         other_modifier: false,
+    }
+}
+
+fn apply_appearance(context: &egui::Context, settings: &Settings) {
+    if settings.follow_system_appearance {
+        theme::follow_system(context, settings.appearance);
+    } else {
+        theme::apply(context, settings.appearance);
     }
 }
 

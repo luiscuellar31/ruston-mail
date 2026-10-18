@@ -327,7 +327,8 @@ Settings control:
 - Whether the composer checks recipient encryption while you write (Advanced).
 - Whether recipient fields accept international domain names (Advanced).
 - The folder shown at startup.
-- Dark or light appearance. Dark remains the default for existing settings.
+- Dark or light appearance, or on macOS and Windows the system's. Dark remains
+  the default.
 - Interface scale.
 - Optional system interface font, with Ruston's fonts retained as fallback.
 - A button to reset the window and pane sizes to their defaults immediately.
@@ -339,10 +340,14 @@ Settings control:
 Window size and pane widths are remembered automatically. Use **Reset window and
 pane sizes** under Settings → Interface to restore the defaults; this action
 takes effect immediately and does not apply other pending preference changes.
-Choose Dark or Light under Settings → Interface and press Apply. The selection
-is saved for the next run; the app does not follow the system theme.
-The sign-in screen also has a theme button in its header and a control beside
-each password field to show or hide what you type.
+Choose Dark or Light, or on macOS and Windows System, under Settings →
+Interface and press Apply. The selection is saved for the next run. System
+follows the light or dark mode of macOS or Windows as it changes and keeps the
+last scheme you chose, which an older version of Ruston opens with. Linux has
+no System choice yet, since its windowing library reports no system mode. The
+sign-in screen also has a theme button in its header, which switches to the
+other scheme from the one on screen, and a control beside each password field
+to show or hide what you type.
 
 **Use system interface font** under Settings → Interface is optional and takes
 effect after Apply, without changing text sizes. The default keeps Ruston's

@@ -557,13 +557,36 @@ pub fn install(context: &egui::Context) {
     context.options_mut(|options| options.zoom_with_keyboard = false);
 }
 
+/// Draws in `appearance`.
 pub fn apply(context: &egui::Context, appearance: Appearance) {
-    let mode = match appearance {
+    let mode = egui_theme(appearance);
+    prefer(context, mode.into(), mode);
+}
+
+/// Draws in the system's light or dark mode, which egui follows as it
+/// changes, and in `appearance` where the system tells none.
+pub fn follow_system(context: &egui::Context, appearance: Appearance) {
+    prefer(
+        context,
+        egui::ThemePreference::System,
+        egui_theme(appearance),
+    );
+}
+
+fn egui_theme(appearance: Appearance) -> egui::Theme {
+    match appearance {
         Appearance::Dark => egui::Theme::Dark,
         Appearance::Light => egui::Theme::Light,
-    };
-    if context.theme() != mode {
-        context.set_theme(mode);
+    }
+}
+
+fn prefer(context: &egui::Context, preference: egui::ThemePreference, fallback: egui::Theme) {
+    let current = context.options(|options| (options.theme_preference, options.fallback_theme));
+    if current != (preference, fallback) {
+        context.options_mut(|options| {
+            options.theme_preference = preference;
+            options.fallback_theme = fallback;
+        });
     }
 }
 
@@ -1384,6 +1407,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn following_the_system_draws_in_its_mode_and_otherwise_in_the_chosen_one() {
+        let context = egui::Context::default();
+        install(&context);
+        let drawn = |system_theme| {
+            let raw = egui::RawInput {
+                system_theme,
+                ..Default::default()
+            };
+            context.run_ui(raw, |_| {}).drop_without_applying_deltas();
+            context.theme()
+        };
+
+        follow_system(&context, Appearance::Dark);
+        assert_eq!(drawn(Some(egui::Theme::Light)), egui::Theme::Light);
+        assert_eq!(drawn(Some(egui::Theme::Dark)), egui::Theme::Dark);
+        // Where the system tells none, the scheme last chosen.
+        follow_system(&context, Appearance::Light);
+        assert_eq!(drawn(None), egui::Theme::Light);
+        apply(&context, Appearance::Dark);
+        assert_eq!(drawn(Some(egui::Theme::Light)), egui::Theme::Dark);
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn a_title_bar_gets_its_theme_again_when_windows_may_have_taken_it() {
@@ -1422,6 +1468,14 @@ mod tests {
         apply(&context, Appearance::Light);
         assert_eq!(pass(true, windows_dark), light);
         assert!(pass(true, windows_dark).is_empty());
+        // Following the system hands the bar back to Windows' own theme.
+        let system = vec![egui::ViewportCommand::SetTheme(
+            egui::SystemTheme::SystemDefault,
+        )];
+        follow_system(&context, Appearance::Light);
+        assert_eq!(pass(true, windows_dark), system);
+        assert!(pass(false, windows_dark).is_empty());
+        assert_eq!(pass(true, windows_dark), system);
     }
 
     #[test]

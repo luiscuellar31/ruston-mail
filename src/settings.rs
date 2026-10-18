@@ -57,6 +57,12 @@ pub struct Settings {
     /// Color scheme of the desktop interface.
     #[serde(default)]
     pub appearance: Appearance,
+    /// Follow the system's light or dark mode instead. `appearance` stays the
+    /// last scheme chosen, used where the system tells none. A field of its
+    /// own, not a third `Appearance`: an older version would not read that
+    /// and would put every setting back to its default.
+    #[serde(default)]
+    pub follow_system_appearance: bool,
     /// Opt-in native UI face; bundled fonts remain the default and fallback.
     #[serde(default)]
     pub system_font: bool,
@@ -92,6 +98,7 @@ impl Default for Settings {
             check_recipient_protection: true,
             accept_international_domains: false,
             appearance: Appearance::Dark,
+            follow_system_appearance: false,
             system_font: false,
             zoom: 1.0,
             show_unread_badge: true,
@@ -363,10 +370,33 @@ mod tests {
     fn older_settings_keep_the_dark_appearance() {
         let mut old = serde_json::to_value(Settings::default()).unwrap();
         old.as_object_mut().unwrap().remove("appearance");
+        old.as_object_mut()
+            .unwrap()
+            .remove("follow_system_appearance");
         old.as_object_mut().unwrap().remove("system_font");
         let restored: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(restored.appearance, Appearance::Dark);
+        assert!(!restored.follow_system_appearance);
         assert!(!restored.system_font);
+    }
+
+    #[test]
+    fn following_the_system_leaves_older_versions_a_scheme_they_read() {
+        let following = Settings {
+            appearance: Appearance::Light,
+            follow_system_appearance: true,
+            ..Settings::default()
+        };
+        let mut written = serde_json::to_value(&following).unwrap();
+        // A version before this choice finds a scheme it knows...
+        assert_eq!(written["appearance"], "Light");
+        // ...and skips the field it does not, as this one skips a later one's.
+        written
+            .as_object_mut()
+            .unwrap()
+            .insert("from_a_later_version".into(), true.into());
+        let read: Settings = serde_json::from_value(written).unwrap();
+        assert_eq!(read, following);
     }
 
     #[test]

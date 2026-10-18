@@ -34,7 +34,14 @@ pub(super) fn show(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(theme::titlebar_inset(ui.ctx()) + 12.0);
-                    header(ui, app.settings().appearance, messages);
+                    // The toggle offers the other scheme from the one on
+                    // screen, which is the system's while following it.
+                    let showing = if ui.visuals().dark_mode {
+                        Appearance::Dark
+                    } else {
+                        Appearance::Light
+                    };
+                    header(ui, showing, messages);
                     // The invisible sizing pass disables interaction and measures whichever
                     // authentication step is currently visible before placing the group.
                     let mut measure = ui.new_child(

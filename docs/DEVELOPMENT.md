@@ -166,7 +166,8 @@ try {
 - With Windows in the other app mode, verify that the title bars of the main
   and composer windows take Ruston's appearance. Change the Windows accent
   color with Ruston behind another window: once Ruston is back in front, its
-  title bar is in Ruston's appearance again.
+  title bar is in Ruston's appearance again. Choose **System** in Settings and
+  switch the Windows app mode: Ruston follows it.
 - Check the UI at Windows display scaling of 100% and 150%. If two monitors are
   available, move the window between different display scales and check text,
   pointer targets, and the file dialog position.
