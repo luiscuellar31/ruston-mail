@@ -1197,7 +1197,10 @@ fn load_more_appends_without_duplicates() {
 
 #[test]
 fn load_more_preserves_the_open_reader_on_success_and_failure() {
-    for result in [page(&["c"], 3), Err(MailboxError::Connection)] {
+    for (case, result) in [
+        ("a page", page(&["c"], 3)),
+        ("a failure", Err(MailboxError::Connection)),
+    ] {
         let mut mailbox = loaded_inbox(&["a", "b"], 120);
         load_detail(&mut mailbox, "b", detail("b", &["b1", "b2"]), 9);
         mailbox.toggle_message("b1");
@@ -1205,9 +1208,9 @@ fn load_more_preserves_the_open_reader_on_success_and_failure() {
         let reader = mailbox.reader_state().clone();
 
         let request = mailbox.load_more(10).unwrap();
-        assert_eq!(mailbox.reader_state(), &reader);
+        assert_eq!(mailbox.reader_state(), &reader, "{case}");
         mailbox.finish_page(request.id, result);
-        assert_eq!(mailbox.reader_state(), &reader);
+        assert_eq!(mailbox.reader_state(), &reader, "{case}");
     }
 }
 
@@ -1749,10 +1752,14 @@ fn explicit_read_mutations_wait_for_the_automatic_read() {
 
         assert_eq!(
             mailbox.start_action(MailAction::SetUnread(unread), 4),
-            Some(ActionStart::default())
+            Some(ActionStart::default()),
+            "{unread}"
         );
-        assert!(mailbox.action_pending(), "the user's action stays queued");
-        assert_eq!(mailbox.start_mark_read(5), None);
+        assert!(
+            mailbox.action_pending(),
+            "the user's action stays queued: {unread}"
+        );
+        assert_eq!(mailbox.start_mark_read(5), None, "{unread}");
     }
 }
 
@@ -1790,12 +1797,13 @@ fn failed_automatic_reads_fail_the_queued_action_without_sending_it() {
             mailbox.finish_mark_read(&read, Err(error)).error,
             Some(error)
         );
-        assert!(!mailbox.action_pending());
+        assert!(!mailbox.action_pending(), "{error:?}");
         assert_eq!(mailbox.action_error(), Some(error));
-        assert!(mailbox.selected_summary().unwrap().unread);
+        assert!(mailbox.selected_summary().unwrap().unread, "{error:?}");
         assert_eq!(
             mailbox.finish_mark_read(&read, Ok(())),
-            ReadCompletion::default()
+            ReadCompletion::default(),
+            "{error:?}"
         );
     }
 }
@@ -1868,11 +1876,11 @@ fn a_later_change_of_the_same_flag_decides_what_the_row_shows() {
         let unstar = mailbox
             .start_action(MailAction::SetStarred(false), 4)
             .unwrap();
-        assert_eq!(unstar.send, None);
+        assert_eq!(unstar.send, None, "{result:?}");
 
         // Whatever Proton says to the star, the row keeps the later choice.
         let next = mailbox.finish_action(&star, result).next_action.unwrap();
-        assert_eq!(next.id, 4);
+        assert_eq!(next.id, 4, "{result:?}");
         assert!(!mailbox.selected_summary().unwrap().starred, "{result:?}");
     }
 }
@@ -1980,18 +1988,23 @@ fn explicit_unread_wins_over_an_automatic_read() {
         );
 
         let completion = mailbox.finish_mark_read(&read, Ok(()));
-        assert!(completion.read_confirmed);
-        assert!(!mailbox.selected_summary().unwrap().unread);
+        assert!(completion.read_confirmed, "{kind:?}");
+        assert!(!mailbox.selected_summary().unwrap().unread, "{kind:?}");
         let unread = completion
             .next_action
             .expect("the explicit action is now ready");
-        assert_eq!(unread.id, 4);
-        assert_eq!(unread.action, MailAction::SetUnread(true));
-        assert_eq!(mailbox.finish_action(&unread, Ok(())).result, Ok(()));
-        assert!(mailbox.selected_summary().unwrap().unread);
+        assert_eq!(unread.id, 4, "{kind:?}");
+        assert_eq!(unread.action, MailAction::SetUnread(true), "{kind:?}");
+        assert_eq!(
+            mailbox.finish_action(&unread, Ok(())).result,
+            Ok(()),
+            "{kind:?}"
+        );
+        assert!(mailbox.selected_summary().unwrap().unread, "{kind:?}");
         assert_eq!(
             mailbox.finish_mark_read(&read, Ok(())),
-            ReadCompletion::default()
+            ReadCompletion::default(),
+            "{kind:?}"
         );
     }
 }

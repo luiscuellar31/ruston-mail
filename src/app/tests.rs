@@ -907,10 +907,14 @@ fn email_links_wait_through_login_and_open_only_an_editable_new_message() {
         AuthState::SignedOut,
         AuthState::NeedsTotp,
     ] {
-        app.auth_state = auth;
-        assert_eq!(app.update(Message::OpenPendingMailto).units(), 0);
-        assert!(app.compose().is_none());
-        assert_eq!(app.pending_mailto_count(), 1);
+        app.auth_state = auth.clone();
+        assert_eq!(
+            app.update(Message::OpenPendingMailto).units(),
+            0,
+            "{auth:?}"
+        );
+        assert!(app.compose().is_none(), "{auth:?}");
+        assert_eq!(app.pending_mailto_count(), 1, "{auth:?}");
     }
     app.open_mailbox(MailBackend::demo(), None);
     assert_eq!(app.update(Message::OpenPendingMailto).units(), 0);
@@ -1056,15 +1060,18 @@ fn clicked_links_wait_for_confirmation_and_clear() {
 fn rerender_inputs_issue_no_mailbox_requests() {
     let mut app = loaded_demo_app();
     let requests = app.last_request;
-    for message in [
-        Message::SearchChanged("alex".into()),
-        Message::PanelsResized(Panels {
-            sidebar: 0.3,
-            ..app.panels()
-        }),
-        Message::SearchChanged(String::new()),
+    for (case, message) in [
+        ("search typed", Message::SearchChanged("alex".into())),
+        (
+            "panels resized",
+            Message::PanelsResized(Panels {
+                sidebar: 0.3,
+                ..app.panels()
+            }),
+        ),
+        ("search cleared", Message::SearchChanged(String::new())),
     ] {
-        assert_eq!(app.update(message).units(), 0);
+        assert_eq!(app.update(message).units(), 0, "{case}");
     }
 
     assert_eq!(app.last_request, requests);
@@ -1792,19 +1799,31 @@ fn cancelling_save_as_does_not_download_or_change_a_later_save() {
 
     let second = choose_attachment_destination(&mut app);
     assert_ne!(first, second);
-    for stale in [
-        Message::AttachmentDestinationChosen(
-            first.clone(),
-            Some(std::env::temp_dir().join("stale.pdf")),
+    for (case, stale) in [
+        (
+            "a destination for the earlier download",
+            Message::AttachmentDestinationChosen(
+                first.clone(),
+                Some(std::env::temp_dir().join("stale.pdf")),
+            ),
         ),
-        Message::AttachmentDestinationChosen(first.clone(), None),
-        Message::AttachmentSaved(first, Err(SaveError::Failed)),
+        (
+            "no destination for the earlier download",
+            Message::AttachmentDestinationChosen(first.clone(), None),
+        ),
+        (
+            "the earlier download's result",
+            Message::AttachmentSaved(first, Err(SaveError::Failed)),
+        ),
         // A completion cannot skip the destination-selection phase.
-        Message::AttachmentSaved(second, Err(SaveError::Failed)),
+        (
+            "a result before its destination",
+            Message::AttachmentSaved(second, Err(SaveError::Failed)),
+        ),
     ] {
-        assert_eq!(app.update(stale).units(), 0);
-        assert_eq!(app.saving_attachment(), Some("file"));
-        assert!(app.saved_attachment().is_none());
+        assert_eq!(app.update(stale).units(), 0, "{case}");
+        assert_eq!(app.saving_attachment(), Some("file"), "{case}");
+        assert!(app.saved_attachment().is_none(), "{case}");
     }
 }
 
@@ -1993,11 +2012,11 @@ fn demo_trash_and_spam_moves_update_folders() {
         let mut app = loaded_demo_app();
         open_conversation(&mut app, "demo-3");
         let _ = app.update(message);
-        assert!(!is_listed(&app, "demo-3"));
+        assert!(!is_listed(&app, "demo-3"), "{folder:?}");
 
         let _ = app.update(Message::SelectFolder(folder.clone()));
         deliver_latest_demo_page(&mut app, 0);
-        assert!(is_listed(&app, "demo-3"));
+        assert!(is_listed(&app, "demo-3"), "{folder:?}");
     }
 }
 
@@ -2233,22 +2252,18 @@ fn demo_mail_marked_not_spam_goes_back_to_the_inbox() {
 
 #[test]
 fn inbox_search_reflects_folder_moves_immediately() {
-    for message in [
-        Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Archive))),
-        Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Trash))),
-        Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Spam))),
-    ] {
+    for folder in [MailFolder::Archive, MailFolder::Trash, MailFolder::Spam] {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SearchChanged("blue notebook".into()));
         assert_eq!(app.mailbox().unwrap().visible_conversations().count(), 1);
         open_conversation(&mut app, "demo-3");
 
-        let _ = app.update(message);
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(folder))));
 
         let mailbox = app.mailbox().unwrap();
-        assert_eq!(mailbox.search_query(), "blue notebook");
-        assert_eq!(mailbox.visible_conversations().count(), 0);
-        assert_eq!(mailbox.selected_conversation(), None);
+        assert_eq!(mailbox.search_query(), "blue notebook", "{folder:?}");
+        assert_eq!(mailbox.visible_conversations().count(), 0, "{folder:?}");
+        assert_eq!(mailbox.selected_conversation(), None, "{folder:?}");
     }
 }
 
@@ -2716,7 +2731,7 @@ fn a_failed_download_says_why_the_file_was_not_saved() {
         (MailboxError::Service, SaveError::NotFetched),
         (MailboxError::Unavailable, SaveError::NotFetched),
     ] {
-        assert_eq!(super::unsaved(error), saved);
+        assert_eq!(super::unsaved(error), saved, "{error:?}");
     }
 }
 
@@ -3089,11 +3104,14 @@ fn inspection_queue_drains_with_bounded_deduplicated_work() {
 
 #[test]
 fn inspections_are_cancelled_when_the_context_changes() {
-    for transition in [
-        Message::SelectFolder(sys(MailFolder::Sent)),
-        Message::SearchSubmitted,
-        Message::RefreshMailbox,
-        Message::Logout,
+    for (case, transition) in [
+        (
+            "another folder",
+            Message::SelectFolder(sys(MailFolder::Sent)),
+        ),
+        ("a search", Message::SearchSubmitted),
+        ("a refresh", Message::RefreshMailbox),
+        ("signing out", Message::Logout),
     ] {
         let mut app = loaded_demo_app();
         let effects = app.inspect_candidates(vec!["demo-0".into()]);
@@ -3113,9 +3131,9 @@ fn inspections_are_cancelled_when_the_context_changes() {
         };
         *result = Err(MailboxError::SessionExpired);
         let expected_auth = app.auth_state.clone();
-        assert_eq!(app.update(message).units(), 0);
-        assert_eq!(app.auth_state, expected_auth);
-        assert!(!app.inspections.finish(request, "demo-0"));
+        assert_eq!(app.update(message).units(), 0, "{case}");
+        assert_eq!(app.auth_state, expected_auth, "{case}");
+        assert!(!app.inspections.finish(request, "demo-0"), "{case}");
     }
 }
 

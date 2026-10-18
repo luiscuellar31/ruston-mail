@@ -252,7 +252,7 @@ fn arguments_cannot_be_used_as_command_options_or_arbitrary_urls() {
         "--profile=other",
         "file:///etc/passwd",
     ] {
-        assert!(arguments([arg.into()]).is_err());
+        assert!(arguments([arg.into()]).is_err(), "{arg}");
     }
 }
 
@@ -308,7 +308,7 @@ fn the_token_comparison_checks_every_byte() {
     for position in [0, 15, 31] {
         let mut guess = token;
         guess[position] ^= 1;
-        assert!(!same_token(&guess, &token));
+        assert!(!same_token(&guess, &token), "{position}");
     }
 }
 
