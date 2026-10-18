@@ -466,7 +466,10 @@ form. Email links always use the ASCII rule. The draft reads its recipient
 fields when one of them or the rule changes and keeps the result, so the checks
 the window repeats on every frame neither parse addresses nor copy the body or
 attachments; only Send builds the outgoing message. Duplicates are found with
-hash sets, so a long recipient list reads in one pass.
+hash sets, so a long recipient list reads in one pass. The composer reads each
+attachment's size once, when the attachment first shows, and keeps it with
+the draft's editor memory: asking the file system on every frame would wait
+on a network share that stopped answering.
 
 Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
 validation, shared by the desktop backend and all SDK/CLI send paths. New local

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eframe::egui::{self, Align, Layout};
@@ -265,14 +266,17 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
 
     if !compose.attachments().is_empty() {
         detail(ui, "Attachments");
+        let sizes = attachment_sizes(ui, compose);
         for (index, path) in compose.attachments().iter().enumerate() {
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("Attachment");
-            let size = std::fs::metadata(path)
-                .ok()
-                .map(|m| format!(" ({})", reader::size_label(m.len())))
+            let size = sizes
+                .get(path)
+                .copied()
+                .flatten()
+                .map(|bytes| format!(" ({})", reader::size_label(bytes)))
                 .unwrap_or_default();
             ui.horizontal(|ui| {
                 ui.label(
@@ -410,13 +414,43 @@ fn field_id(label: &str, draft: ComposeId) -> egui::Id {
     egui::Id::new(("compose", label, draft))
 }
 
+/// The size of each of a draft's attachments, as read when it first showed.
+type AttachmentSizes = HashMap<PathBuf, Option<u64>>;
+
+fn sizes_id(draft: ComposeId) -> egui::Id {
+    egui::Id::new(("compose-attachment-sizes", draft))
+}
+
+/// Reads each attachment's size once. Asking the file system on every frame
+/// held up the window for as long as a network share that went away took to
+/// answer.
+fn attachment_sizes(ui: &egui::Ui, compose: &Compose) -> AttachmentSizes {
+    let id = sizes_id(compose.id());
+    let mut sizes: AttachmentSizes = ui.data(|data| data.get_temp(id)).unwrap_or_default();
+    let unread: Vec<_> = compose
+        .attachments()
+        .iter()
+        .filter(|path| !sizes.contains_key(*path))
+        .cloned()
+        .collect();
+    if !unread.is_empty() {
+        for path in unread {
+            let size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+            sizes.insert(path, size);
+        }
+        ui.data_mut(|data| data.insert_temp(id, sizes.clone()));
+    }
+    sizes
+}
+
 /// Drops the editor memory of a draft that is gone, with the text its undo
-/// history kept.
+/// history kept, and the sizes of its attachments.
 pub(super) fn forget_draft(context: &egui::Context, draft: ComposeId) {
     context.data_mut(|data| {
         for id in draft_editors(draft) {
             data.remove::<egui::text_edit::TextEditState>(id);
         }
+        data.remove::<AttachmentSizes>(sizes_id(draft));
     });
 }
 
@@ -524,6 +558,50 @@ mod tests {
             .find(|galley| galley.text() == "Hello")
             .expect("the body should be drawn");
         assert_eq!(body.job.sections[0].format.font_id.size, reader::BODY_SIZE);
+    }
+
+    #[test]
+    fn an_attachment_size_is_read_once_and_forgotten_with_its_draft() {
+        let file =
+            std::env::temp_dir().join(format!("ruston-attachment-size-{}.txt", std::process::id()));
+        std::fs::write(&file, [b'a'; 2048]).unwrap();
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        let draft = app.compose().unwrap().id();
+        app.update(Message::AddComposeAttachments(draft, vec![file.clone()]));
+        let attachment_label = |app: &crate::app::App| {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                show(ui, app.compose().unwrap(), &mut Vec::new());
+            });
+            let label = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text().starts_with('📎') => {
+                        Some(text.galley.text().to_owned())
+                    }
+                    _ => None,
+                })
+                .expect("the attachment should be listed");
+            output.drop_without_applying_deltas();
+            label
+        };
+
+        let first = attachment_label(&app);
+        assert!(first.ends_with(&format!("({})", reader::size_label(2048))));
+        // Later frames do not ask again, so a file that went away with its
+        // share keeps its label without holding up the window.
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(attachment_label(&app), first);
+
+        forget_draft(&context, draft);
+        assert!(
+            context
+                .data(|data| data.get_temp::<AttachmentSizes>(sizes_id(draft)))
+                .is_none()
+        );
     }
 
     #[test]
