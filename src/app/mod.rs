@@ -253,6 +253,9 @@ pub struct App {
     /// The UI waits for resizing to settle before calling [`Self::save_settings`].
     settings_revision: u64,
     settings_written: u64,
+    /// The revision whose write failed, tried again with a later change or on
+    /// quitting rather than on every frame.
+    settings_failed: Option<u64>,
     /// Whether Settings replaces the conversation list and reader.
     showing_settings: bool,
     /// The message being written, if there is one.
@@ -308,6 +311,7 @@ impl App {
             settings,
             settings_revision: 0,
             settings_written: 0,
+            settings_failed: None,
             showing_settings: false,
             compose: None,
             read_once_shown: None,
@@ -493,12 +497,28 @@ impl App {
     }
 
     /// Writes changed settings best-effort; in-memory changes always remain.
+    /// A write that failed stays to be done, tried again with the next change.
     pub fn save_settings(&mut self) {
-        if !self.settings_unsaved() {
+        self.write_settings(false, Settings::save);
+    }
+
+    /// Writes changed settings before quitting, trying again even a write
+    /// that failed: there is no later.
+    pub fn save_settings_before_quitting(&mut self) {
+        self.write_settings(true, Settings::save);
+    }
+
+    fn write_settings(&mut self, again: bool, write: impl FnOnce(&Settings) -> bool) {
+        let revision = self.settings_revision;
+        if !self.settings_unsaved() || (!again && self.settings_failed == Some(revision)) {
             return;
         }
-        self.settings.save();
-        self.settings_written = self.settings_revision;
+        if write(&self.settings) {
+            self.settings_written = revision;
+            self.settings_failed = None;
+        } else {
+            self.settings_failed = Some(revision);
+        }
     }
 
     /// Handles one message. One that uncovers the reader, as closing a draft

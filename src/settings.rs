@@ -218,19 +218,21 @@ impl Settings {
         settings
     }
 
-    /// Writes the settings. Failures are ignored: this is a convenience, and
-    /// a read-only disk is not a reason to interrupt someone's mail.
-    pub fn save(&self) {
+    /// Writes the settings, and says whether they are where they should be:
+    /// written, or settings no file takes, such as those built in memory. A
+    /// failure interrupts nothing: this is a convenience, and a read-only disk
+    /// is not a reason to interrupt someone's mail.
+    pub fn save(&self) -> bool {
         if !self.stored {
-            return;
+            return true;
         }
         let Some(path) = path(self.demo) else {
-            return;
+            return true;
         };
         let Ok(text) = serde_json::to_string_pretty(self) else {
-            return;
+            return false;
         };
-        let _ = write_atomically(&path, text.as_bytes());
+        write_atomically(&path, text.as_bytes()).is_ok()
     }
 
     /// In-memory settings that open a given folder without becoming writable.
@@ -667,6 +669,12 @@ mod tests {
         let kept = folder.join("settings.json.unreadable");
         assert_eq!(fs::read_to_string(kept).unwrap(), damaged);
         let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn settings_no_file_takes_count_as_saved() {
+        // Built in memory, as every test does: nothing is written, nothing waits.
+        assert!(Settings::default().save());
     }
 
     #[test]

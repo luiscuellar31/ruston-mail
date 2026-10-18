@@ -255,7 +255,9 @@ contain account passwords or session tokens. A missing, incomplete, or damaged
 settings file falls back to defaults. One that is there but cannot be read is
 first renamed with `.unreadable` added, such as `settings.json.unreadable`, so
 the defaults saved instead replace nothing; if it cannot be renamed, it is left
-as it is and that run saves no preferences.
+as it is and that run saves no preferences. A save that fails, on a full or
+read-only disk for example, is tried again with the next change and when Ruston
+Mail quits.
 
 Signing out first removes local session metadata and credentials, then tries
 to revoke the server session for up to 30 seconds. If the access token has

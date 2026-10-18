@@ -1037,7 +1037,7 @@ impl eframe::App for DesktopApp {
     /// not they have settled.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.notifications.stop();
-        self.app.save_settings();
+        self.app.save_settings_before_quitting();
         set_dock_badge(self.dialog_parent.as_deref(), None);
     }
 

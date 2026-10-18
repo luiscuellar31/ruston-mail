@@ -120,6 +120,30 @@ fn only_a_real_change_counts_as_one() {
 }
 
 #[test]
+fn a_failed_settings_write_is_tried_again_with_the_next_change_or_on_quitting() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetConfirmLinks(false));
+    let writes = std::cell::Cell::new(0);
+    let failing = |_: &Settings| {
+        writes.set(writes.get() + 1);
+        false
+    };
+
+    app.write_settings(false, failing);
+    assert!(app.settings_unsaved(), "nothing reached the file");
+    // Not again on every frame...
+    app.write_settings(false, failing);
+    assert_eq!(writes.get(), 1);
+    // ...but on quitting, the last chance,
+    app.write_settings(true, failing);
+    assert_eq!(writes.get(), 2);
+    // and with the next change, which is then done with.
+    let _ = app.update(Message::SetConfirmLinks(true));
+    app.write_settings(false, |_| true);
+    assert!(!app.settings_unsaved());
+}
+
+#[test]
 fn a_change_waits_to_be_written_and_is_written_once() {
     let mut app = loaded_demo_app();
 

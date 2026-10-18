@@ -288,7 +288,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   password and code are not entered or checked twice.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
   process in a file of its own, and moves a file it cannot read aside before
-  saving defaults in its place;
+  saving defaults in its place. `App` counts a write only once it succeeds: one
+  that fails is tried again with the next change and on quitting, not on every
+  frame;
   [`src/downloads.rs`](../src/downloads.rs) writes downloaded attachments.
   Incoming attachment saves have a session and unique request ID. **Save as**
   chooses a destination before downloading; cancellation starts no download,
