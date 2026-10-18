@@ -129,9 +129,9 @@ struct DesktopApp {
     /// and what discarding it makes way for.
     pending_discard: Option<close::Leaving>,
     window_close_approved: bool,
-    /// Holds a close asked for while changes were still on their way to
-    /// Proton.
-    close_once_sent: close::OnceSent,
+    /// Holds a close or a sign-out asked for while changes were still on
+    /// their way to Proton, or while a sign-out was under way.
+    deferred_leave: close::DeferredLeave,
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
@@ -198,7 +198,7 @@ impl DesktopApp {
             pending_settings_exit: None,
             pending_discard: None,
             window_close_approved: false,
-            close_once_sent: close::OnceSent::default(),
+            deferred_leave: close::DeferredLeave::default(),
             settings_seen: 0,
             settings_seen_at: 0.0,
             last_window_size: None,
@@ -302,8 +302,8 @@ impl DesktopApp {
                 close::Leaving::SignOut
             };
             if self
-                .close_once_sent
-                .holds(leaving, self.holding(leaving).is_some())
+                .deferred_leave
+                .defer(leaving, self.holding(leaving).is_some())
             {
                 context.request_repaint();
                 return;
@@ -436,7 +436,7 @@ impl DesktopApp {
             );
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
             context.request_repaint();
-        } else if self.close_once_sent.holds(
+        } else if self.deferred_leave.defer(
             close::Leaving::Window,
             self.holding(close::Leaving::Window).is_some(),
         ) {
@@ -458,10 +458,10 @@ impl DesktopApp {
             self.request_window_close(context);
         }
         // A close or a sign-out that waited goes ahead once nothing holds it.
-        if let Some(leaving) = self.close_once_sent.waiting()
+        if let Some(leaving) = self.deferred_leave.waiting()
             && self.holding(leaving).is_none()
         {
-            self.close_once_sent.cancel();
+            self.deferred_leave.cancel();
             self.leave(leaving, context);
         }
     }
@@ -742,7 +742,7 @@ impl DesktopApp {
         if !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
             || self.pending_discard.is_some()
             || self.pending_settings_exit.is_some()
-            || self.close_once_sent.waiting().is_some()
+            || self.deferred_leave.waiting().is_some()
         {
             return;
         }
@@ -1129,10 +1129,10 @@ impl eframe::App for DesktopApp {
             .and_then(|_| settings::confirm_exit(&context));
         let discard_decision = self
             .pending_discard
-            .and_then(|leaving| close::confirm(&context, leaving));
-        let unsent_decision = self.close_once_sent.waiting().and_then(|leaving| {
+            .and_then(|leaving| close::confirm_discard(&context, leaving));
+        let wait_decision = self.deferred_leave.waiting().and_then(|leaving| {
             let holding = self.holding(leaving)?;
-            close::confirm_unsent(&context, leaving, holding)
+            close::confirm_wait(&context, leaving, holding)
         });
         theme::paint_focus_ring(&context);
         if let Some(step) = composer_zoom {
@@ -1149,11 +1149,11 @@ impl eframe::App for DesktopApp {
         if let Some(decision) = discard_decision {
             self.resolve_discard(decision, &context);
         }
-        match unsent_decision {
-            Some(close::Unsent::Stay) => self.close_once_sent.cancel(),
+        match wait_decision {
+            Some(close::WaitDecision::Stay) => self.deferred_leave.cancel(),
             // Asking again while it waits goes ahead at once.
-            Some(close::Unsent::GoNow) => {
-                if let Some(leaving) = self.close_once_sent.waiting() {
+            Some(close::WaitDecision::GoNow) => {
+                if let Some(leaving) = self.deferred_leave.waiting() {
                     self.leave(leaving, &context);
                 }
             }
@@ -1527,10 +1527,7 @@ mod tests {
         // In the demo, signing out is leaving it; it waits the same way.
         desktop.dispatch(Message::Logout, &context);
         assert!(signed_in(&desktop));
-        assert_eq!(
-            desktop.close_once_sent.waiting(),
-            Some(close::Leaving::Demo)
-        );
+        assert_eq!(desktop.deferred_leave.waiting(), Some(close::Leaving::Demo));
 
         // Once Proton has the change, the sign-out goes ahead by itself.
         let _ = desktop
@@ -1542,7 +1539,7 @@ mod tests {
             desktop.check_window_close(context);
         });
         assert!(!signed_in(&desktop));
-        assert_eq!(desktop.close_once_sent.waiting(), None);
+        assert_eq!(desktop.deferred_leave.waiting(), None);
     }
 
     #[test]

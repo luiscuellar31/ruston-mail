@@ -6,7 +6,8 @@ use eframe::egui;
 use super::theme::{self, Emphasis};
 use crate::app::Message;
 
-/// What discarding the written message makes way for.
+/// A way of leaving: what discarding a written message makes way for, and
+/// what a [`DeferredLeave`] holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Leaving {
     /// Closing the main window, which quits the app.
@@ -17,7 +18,8 @@ pub(super) enum Leaving {
     Demo,
 }
 
-pub(super) fn confirm(context: &egui::Context, leaving: Leaving) -> Option<Message> {
+/// Asks whether to discard the written message in order to leave this way.
+pub(super) fn confirm_discard(context: &egui::Context, leaving: Leaving) -> Option<Message> {
     let (heading, discard) = match leaving {
         Leaving::Window => ("Close Ruston Mail?", "Discard and close"),
         Leaving::SignOut => ("Sign out?", "Discard and sign out"),
@@ -36,20 +38,21 @@ pub(super) fn confirm(context: &egui::Context, leaving: Leaving) -> Option<Messa
     )
 }
 
-/// Holds a close or a sign-out, once asked for, while changes are still on
-/// their way to Proton, since going ahead would lose them. It goes ahead once
-/// they arrive, or at once when asked again.
+/// Holds a close or a sign-out, once asked for, while something it would cut
+/// short is under way: changes on their way to Proton, which going ahead
+/// would lose, or a sign-out that has not yet forgotten the session on this
+/// device. It goes ahead once that ends, or at once when asked again.
 #[derive(Debug, Default)]
-pub(super) struct OnceSent {
+pub(super) struct DeferredLeave {
     waiting: Option<Leaving>,
 }
 
-impl OnceSent {
-    /// Whether `leaving`, asked for while something it would cut short is
-    /// `pending`, waits for it. Asking again while it waits does not.
-    pub(super) fn holds(&mut self, leaving: Leaving, pending: bool) -> bool {
+impl DeferredLeave {
+    /// Whether `leaving` waits, which it does while something it would cut
+    /// short is `blocking` it. Asking again while it waits goes ahead at once.
+    pub(super) fn defer(&mut self, leaving: Leaving, blocking: bool) -> bool {
         let again = self.waiting == Some(leaving);
-        self.waiting = (pending && !again).then_some(leaving);
+        self.waiting = (blocking && !again).then_some(leaving);
         self.waiting.is_some()
     }
 
@@ -75,18 +78,20 @@ pub(super) enum Holding {
 
 /// What to do while a close or a sign-out waits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Unsent {
+pub(super) enum WaitDecision {
     /// Keep the window open, or stay signed in.
     Stay,
     /// Go ahead now, cutting short what it waited for.
     GoNow,
 }
 
-pub(super) fn confirm_unsent(
+/// Says what a close or a sign-out waits for, and asks whether to keep
+/// waiting.
+pub(super) fn confirm_wait(
     context: &egui::Context,
     leaving: Leaving,
     holding: Holding,
-) -> Option<Unsent> {
+) -> Option<WaitDecision> {
     let (then, going, stay, go) = match leaving {
         Leaving::Window => ("closes", "Closing", "Keep open", "Close now"),
         Leaving::SignOut => ("signs out", "Signing out", "Stay signed in", "Sign out now"),
@@ -120,10 +125,10 @@ pub(super) fn confirm_unsent(
         heading,
         &detail,
         &[
-            (stay, Emphasis::Secondary, Unsent::Stay),
-            (go, Emphasis::Danger, Unsent::GoNow),
+            (stay, Emphasis::Secondary, WaitDecision::Stay),
+            (go, Emphasis::Danger, WaitDecision::GoNow),
         ],
-        Unsent::Stay,
+        WaitDecision::Stay,
     )
 }
 
@@ -133,20 +138,23 @@ mod tests {
 
     #[test]
     fn leaving_waits_once_for_changes_on_their_way() {
-        let mut close = OnceSent::default();
-        assert!(!close.holds(Leaving::Window, false), "nothing to wait for");
+        let mut deferred = DeferredLeave::default();
+        assert!(
+            !deferred.defer(Leaving::Window, false),
+            "nothing to wait for"
+        );
 
-        assert!(close.holds(Leaving::Window, true));
-        assert_eq!(close.waiting(), Some(Leaving::Window));
+        assert!(deferred.defer(Leaving::Window, true));
+        assert_eq!(deferred.waiting(), Some(Leaving::Window));
         // Asking again while it waits goes ahead at once.
-        assert!(!close.holds(Leaving::Window, true));
-        assert_eq!(close.waiting(), None);
+        assert!(!deferred.defer(Leaving::Window, true));
+        assert_eq!(deferred.waiting(), None);
 
         // Signing out waits the same way, and staying forgets it.
-        assert!(close.holds(Leaving::SignOut, true));
-        assert_eq!(close.waiting(), Some(Leaving::SignOut));
-        close.cancel();
-        assert_eq!(close.waiting(), None);
+        assert!(deferred.defer(Leaving::SignOut, true));
+        assert_eq!(deferred.waiting(), Some(Leaving::SignOut));
+        deferred.cancel();
+        assert_eq!(deferred.waiting(), None);
     }
 
     #[test]
@@ -154,7 +162,7 @@ mod tests {
         let context = egui::Context::default();
         context
             .run_ui(egui::RawInput::default(), |_| {
-                assert!(confirm_unsent(&context, Leaving::Window, Holding::Changes(2)).is_none());
+                assert!(confirm_wait(&context, Leaving::Window, Holding::Changes(2)).is_none());
             })
             .drop_without_applying_deltas();
         let raw = egui::RawInput {
@@ -170,8 +178,8 @@ mod tests {
         context
             .run_ui(raw, |_| {
                 assert_eq!(
-                    confirm_unsent(&context, Leaving::Window, Holding::Changes(2)),
-                    Some(Unsent::Stay)
+                    confirm_wait(&context, Leaving::Window, Holding::Changes(2)),
+                    Some(WaitDecision::Stay)
                 );
             })
             .drop_without_applying_deltas();
@@ -182,7 +190,7 @@ mod tests {
         let context = egui::Context::default();
         context
             .run_ui(egui::RawInput::default(), |_| {
-                assert!(confirm(&context, Leaving::Window).is_none());
+                assert!(confirm_discard(&context, Leaving::Window).is_none());
             })
             .drop_without_applying_deltas();
         let raw = egui::RawInput {
@@ -198,7 +206,7 @@ mod tests {
         context
             .run_ui(raw, |_| {
                 assert!(matches!(
-                    confirm(&context, Leaving::Window),
+                    confirm_discard(&context, Leaving::Window),
                     Some(Message::CancelDiscard)
                 ));
             })

@@ -157,7 +157,7 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   `App::unsent_changes` counts mailbox actions or automatic reads Proton has
   not confirmed, and a close also while a sign-out is under way, whose local
   cleanup runs on a blocking worker that quitting would stop:
-  `close::OnceSent` holds it, the window says why, and it goes ahead once
+  `close::DeferredLeave` holds it, the window says why, and it goes ahead once
   they are done, or at once on **Close now** or **Sign out now** or a second
   request.
   `App` itself refuses to sign out over a written message or an
