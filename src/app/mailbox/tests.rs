@@ -1941,7 +1941,7 @@ fn queued_read_actions_keep_their_original_folder_after_navigation() {
     mailbox.finish_page(5, page(&["b"], 1));
 
     let completion = mailbox.finish_mark_read(&read, Ok(()));
-    assert!(!completion.changed);
+    assert!(completion.changed, "Proton's counts changed");
     let action = completion.next_action.unwrap();
     assert_eq!(action.context, Some(Folder::INBOX));
     assert_eq!(action.folder, Folder::INBOX);
@@ -1995,7 +1995,7 @@ fn explicit_unread_wins_over_an_automatic_read() {
 }
 
 #[test]
-fn reads_after_a_folder_switch_change_nothing() {
+fn reads_after_a_folder_switch_change_only_the_counts() {
     let mut mailbox = opened_unread(&["a"], "a");
     let request = mailbox.start_mark_read(3).unwrap();
     mailbox.select_folder(sys(MailFolder::Sent), 4);
@@ -2011,9 +2011,14 @@ fn reads_after_a_folder_switch_change_nothing() {
         }),
     );
 
+    // The rows of the folder now open stay as Proton listed them, but the
+    // counts the read changed are reloaded.
     assert_eq!(
         mailbox.finish_mark_read(&request, Ok(())),
-        ReadCompletion::default()
+        ReadCompletion {
+            changed: true,
+            ..ReadCompletion::default()
+        }
     );
     assert!(mailbox.conversations()[0].unread);
 

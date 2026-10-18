@@ -53,7 +53,8 @@ pub struct ActionRequest {
 /// How an automatic read ended, and the action that can be sent after it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReadCompletion {
-    /// Whether a loaded row went from unread to read.
+    /// Whether Proton took the read, which changes its counts, whether or
+    /// not the row is still listed here.
     pub changed: bool,
     /// An explicit read that waited for this one, or, when this read failed
     /// and took that read down with it, the action waiting behind them.
@@ -1110,22 +1111,16 @@ impl Mailbox {
             };
         }
         self.invalidate_listings();
-        if request.folder != self.folder {
-            return ReadCompletion {
-                changed: false,
-                next_action: waiting,
-                error: None,
-            };
-        }
-
-        let mut found = false;
-        for row in self.row_copies(&request.row_id) {
-            row.unread = false;
-            found = true;
+        // The row is only marked here while its folder is open, but Proton's
+        // counts changed wherever the person went meanwhile.
+        if request.folder == self.folder {
+            for row in self.row_copies(&request.row_id) {
+                row.unread = false;
+            }
         }
 
         ReadCompletion {
-            changed: found,
+            changed: true,
             next_action: waiting,
             error: None,
         }

@@ -262,7 +262,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   mutation on the same row is pending or waiting. Stale or duplicate
   completions never release a queued request. Successful automatic reads still
   update local state, so a later explicit failure does not hide an already
-  confirmed read.
+  confirmed read, and reload the folder counts even when the person has moved
+  to another folder meanwhile.
 - `App` asks for the account's folders and labels when a mailbox opens; the
   Proton adapter requests the two lists at the same time. A list
   that arrives renames the open custom folder or, once it is gone, falls back
