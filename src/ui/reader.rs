@@ -223,7 +223,7 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             // A loading card does not know the sender yet, so it keeps room
             // for a name and an address of its own.
             let (header, _) = ui.allocate_exact_size(
-                egui::vec2(width, message_header_height(expanded, true)),
+                egui::vec2(width, message_header_height(expanded, true, 1)),
                 Sense::hover(),
             );
             paint_message_chevron(ui, header, expanded, false);
@@ -858,10 +858,15 @@ fn message_header(
     expanded: bool,
 ) -> egui::Response {
     let line = SenderLine::of(message, expanded);
+    let recipients = if expanded {
+        recipient_lines(message)
+    } else {
+        Vec::new()
+    };
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(
             ui.available_width(),
-            message_header_height(expanded, line.separate_address()),
+            message_header_height(expanded, line.separate_address(), recipients.len()),
         ),
         Sense::click(),
     );
@@ -883,7 +888,7 @@ fn message_header(
     );
     let copy_rect = header_copy_rect(rect, date.size().x);
     let (icon_rect, status) = paint_sender(ui, &painter, message, line, copy_rect);
-    paint_header_details(ui, &painter, message, preview, expanded, line, copy_rect);
+    paint_header_details(ui, &painter, &recipients, preview, line, copy_rect);
     painter.galley(
         egui::pos2(rect.right() - date.size().x, rect.top() + 2.0),
         date,
@@ -957,25 +962,27 @@ fn paint_sender(
     (icon_rect, status)
 }
 
-/// Paints what follows the sender: an open card's recipients, or a
-/// collapsed card's preview.
+/// Paints what follows the sender: an open card's recipient lines, or, with
+/// none, a collapsed card's preview.
 fn paint_header_details(
     ui: &egui::Ui,
     painter: &egui::Painter,
-    message: &MailMessage,
+    recipients: &[String],
     preview: &str,
-    expanded: bool,
     line: SenderLine,
     copy_rect: egui::Rect,
 ) {
-    if expanded {
-        header_detail(
-            painter,
-            copy_rect.left_top() + egui::vec2(0.0, recipients_top(line.separate_address())),
-            &format!("To: {}", recipients_label(&message.recipients)),
-            theme::colors(ui).muted,
-            copy_rect.width(),
-        );
+    if !recipients.is_empty() {
+        let top = recipients_top(line.separate_address());
+        for (index, recipient_line) in recipients.iter().enumerate() {
+            header_detail(
+                painter,
+                copy_rect.left_top() + egui::vec2(0.0, top + index as f32 * RECIPIENT_LINE_PITCH),
+                recipient_line,
+                theme::colors(ui).muted,
+                copy_rect.width(),
+            );
+        }
     } else {
         theme::paint_truncated_text(
             painter,
@@ -1056,13 +1063,31 @@ fn paint_name_and_address(
 }
 
 /// A header's height: an open card lists its recipients under the sender,
-/// and under the sender's address when that has a line of its own.
-fn message_header_height(expanded: bool, separate_address: bool) -> f32 {
+/// and under the sender's address when that has a line of its own, in
+/// `recipient_lines` lines.
+fn message_header_height(expanded: bool, separate_address: bool, recipient_lines: usize) -> f32 {
     if expanded {
-        recipients_top(separate_address) + 27.0
+        let more = recipient_lines.saturating_sub(1) as f32;
+        recipients_top(separate_address) + 27.0 + more * RECIPIENT_LINE_PITCH
     } else {
         44.0
     }
+}
+
+/// From one recipient line of an open header to the next: the same step as
+/// from the sender's address down to "To:".
+const RECIPIENT_LINE_PITCH: f32 = 19.0;
+
+/// An open header's recipient lines: To always, Cc and Bcc when the message
+/// has them, so a copy never reads as one of the people it was sent to.
+fn recipient_lines(message: &MailMessage) -> Vec<String> {
+    let mut lines = vec![format!("To: {}", recipients_label(&message.to))];
+    for (field, people) in [("Cc", &message.cc), ("Bcc", &message.bcc)] {
+        if !people.is_empty() {
+            lines.push(format!("{field}: {}", recipients_label(people)));
+        }
+    }
+    lines
 }
 
 /// How far below an open header's top its "To:" line starts.
@@ -2124,7 +2149,9 @@ mod tests {
                     id: format!("message-{index}"),
                     verdict: Verdict::Unverified,
                     sender: address(Some("Alex Rivera"), "alex@example.com"),
-                    recipients: vec![address(None, "team@example.org")],
+                    to: vec![address(None, "team@example.org")],
+                    cc: Vec::new(),
+                    bcc: Vec::new(),
                     reply_to: Vec::new(),
                     reply_all_cc: Vec::new(),
                     reply_redirected: false,
@@ -2577,7 +2604,9 @@ mod tests {
             id: "message".into(),
             verdict: Verdict::Verified,
             sender: address(Some("PayPal <service@paypal.com>"), "phish@proton.me"),
-            recipients: Vec::new(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
             reply_to: Vec::new(),
             reply_all_cc: Vec::new(),
             reply_redirected: false,
@@ -2645,7 +2674,9 @@ mod tests {
             id: "message".into(),
             verdict: Verdict::Unverified,
             sender: address(name, "alex@example.com"),
-            recipients: vec![address(None, "team@example.org")],
+            to: vec![address(None, "team@example.org")],
+            cc: Vec::new(),
+            bcc: Vec::new(),
             reply_to: Vec::new(),
             reply_all_cc: Vec::new(),
             reply_redirected: false,
@@ -2679,6 +2710,33 @@ mod tests {
         };
         render(hover());
         assert_eq!(render(hover()).1, egui::CursorIcon::Default);
+    }
+
+    #[test]
+    fn an_open_header_gives_cc_and_bcc_lines_of_their_own() {
+        let mut message = header_message(Some("Alex Rivera"));
+        message.cc = vec![address(None, "copy@example.org")];
+        message.bcc = vec![address(None, "hidden@example.net")];
+        let (open, shapes) = header_shapes(&message, true, 420.0);
+        let (plain, _) = header_shapes(&header_message(Some("Alex Rivera")), true, 420.0);
+
+        // Only the people it was sent to are under To.
+        let to = text_rect(&shapes, "To: team@example.org");
+        let cc = text_rect(&shapes, "Cc: copy@example.org");
+        let bcc = text_rect(&shapes, "Bcc: hidden@example.net");
+        for (above, below) in [(to, cc), (cc, bcc)] {
+            let gap = below.top() - above.bottom();
+            assert!(
+                (0.0..=6.0).contains(&gap),
+                "{gap} pt between recipient lines"
+            );
+        }
+        assert!(
+            bcc.bottom() <= open.bottom() && open.bottom() - bcc.bottom() <= 14.0,
+            "the header ends {} pt below its last line",
+            open.bottom() - bcc.bottom()
+        );
+        assert_eq!(open.height() - plain.height(), 2.0 * RECIPIENT_LINE_PITCH);
     }
 
     #[test]
@@ -2861,7 +2919,9 @@ mod tests {
                 id: "message".into(),
                 verdict: Verdict::Unverified,
                 sender: sender.clone(),
-                recipients: Vec::new(),
+                to: Vec::new(),
+                cc: Vec::new(),
+                bcc: Vec::new(),
                 reply_to: Vec::new(),
                 reply_all_cc: Vec::new(),
                 reply_redirected: false,
@@ -2945,7 +3005,9 @@ mod tests {
             id: "message".into(),
             verdict: Verdict::Unverified,
             sender: address(Some("Alex Rivera"), "alex@example.com"),
-            recipients: Vec::new(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
             reply_to: Vec::new(),
             reply_all_cc: Vec::new(),
             reply_redirected: false,
@@ -3036,7 +3098,9 @@ mod tests {
                 id: "message".into(),
                 verdict: Verdict::Unverified,
                 sender: address(Some("Alex Rivera"), "alex@example.com"),
-                recipients: vec![address(None, "team@example.org")],
+                to: vec![address(None, "team@example.org")],
+                cc: Vec::new(),
+                bcc: Vec::new(),
                 reply_to: Vec::new(),
                 reply_all_cc: Vec::new(),
                 reply_redirected: false,
@@ -3276,7 +3340,9 @@ mod tests {
                         let message = MailMessage {
                             id: "message".into(),
                             sender: address(name, sender),
-                            recipients: Vec::new(),
+                            to: Vec::new(),
+                            cc: Vec::new(),
+                            bcc: Vec::new(),
                             reply_to: Vec::new(),
                             reply_all_cc: Vec::new(),
                             reply_redirected: false,

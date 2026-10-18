@@ -310,7 +310,10 @@ pub struct RichSpan {
 pub struct MailMessage {
     pub id: String,
     pub sender: MailAddress,
-    pub recipients: Vec<MailAddress>,
+    pub to: Vec<MailAddress>,
+    pub cc: Vec<MailAddress>,
+    /// Known only for mail the account sent itself.
+    pub bcc: Vec<MailAddress>,
     /// Where a reply goes, as core sends it: the Reply-To addresses the
     /// message asks for, or its sender.
     pub reply_to: Vec<String>,

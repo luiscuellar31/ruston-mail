@@ -1098,7 +1098,10 @@ fn message(
         reply_all_cc,
         reply_redirected: false,
         sender,
-        recipients,
+        // The fictional mail goes to its people directly, never as a copy.
+        to: recipients,
+        cc: Vec::new(),
+        bcc: Vec::new(),
         time: Some(now - fixture.age - newer as i64 * THREAD_GAP),
         // An unread conversation's newest message is the one not read yet.
         unread: fixture.unread && newer == 0 && !from_demo_user,
@@ -1454,7 +1457,7 @@ mod tests {
         let own = &answered.messages[0];
         assert_eq!(own.sender.address, DEMO_USER_ADDRESS);
         let recipients: Vec<String> = own
-            .recipients
+            .to
             .iter()
             .map(|recipient| recipient.address.clone())
             .collect();
@@ -1588,7 +1591,7 @@ mod tests {
         assert_eq!(unknown.sender.display_name(), None);
 
         let garden = &detail(6).messages[0];
-        assert_eq!(garden.recipients.len(), GARDEN_VOLUNTEERS.len());
+        assert_eq!(garden.to.len(), GARDEN_VOLUNTEERS.len());
 
         let long = &detail(5).messages[0];
         assert_eq!(long.body, MessageBody::PlainText(LONG_BODY.to_owned()));
@@ -1613,7 +1616,11 @@ mod tests {
     fn fixture_addresses_are_fictional() {
         for (index, _) in fixtures().iter().enumerate() {
             for message in detail(index).messages {
-                for address in std::iter::once(&message.sender).chain(&message.recipients) {
+                for address in std::iter::once(&message.sender)
+                    .chain(&message.to)
+                    .chain(&message.cc)
+                    .chain(&message.bcc)
+                {
                     if let Some((_, domain)) = address.address.rsplit_once('@') {
                         assert!(
                             matches!(domain, "example.com" | "example.org" | "example.net"),

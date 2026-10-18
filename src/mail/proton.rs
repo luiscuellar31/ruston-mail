@@ -1104,13 +1104,9 @@ fn message_without_body(
     MailMessage {
         attachments: Vec::new(),
         sender: mail_address(&meta.sender),
-        recipients: meta
-            .to_list
-            .iter()
-            .chain(&meta.cc_list)
-            .chain(&meta.bcc_list)
-            .map(mail_address)
-            .collect(),
+        to: meta.to_list.iter().map(mail_address).collect(),
+        cc: meta.cc_list.iter().map(mail_address).collect(),
+        bcc: meta.bcc_list.iter().map(mail_address).collect(),
         reply_to: reply.to,
         reply_all_cc: reply.cc,
         reply_redirected,
@@ -1447,7 +1443,13 @@ mod tests {
         assert_eq!(message.verdict, ruston_core::Verdict::Invalid);
         assert_eq!(message.sender.name, None);
         assert_eq!(message.sender.address, "alex@example.com");
-        assert_eq!(message.recipients.len(), 3);
+        // To, Cc and Bcc stay apart, so the reader can say which is which.
+        let addresses = |people: &[MailAddress]| -> Vec<String> {
+            people.iter().map(|person| person.address.clone()).collect()
+        };
+        assert_eq!(addresses(&message.to), ["demo@example.com"]);
+        assert_eq!(addresses(&message.cc), ["team@example.org"]);
+        assert_eq!(addresses(&message.bcc), ["archive@example.net"]);
         // The reader knows where core will send a reply before it is written.
         assert_eq!(message.reply_to, ["replies@example.com"]);
         assert_eq!(message.reply_all_cc, ["team@example.org"]);
@@ -1505,7 +1507,10 @@ mod tests {
         assert_eq!(message.verdict, Verdict::Unverified);
         assert!(message.attachments.is_empty());
         assert_eq!(message.sender.address, "alex@example.com");
-        assert_eq!(message.recipients.len(), 2);
+        assert_eq!(
+            (message.to.len(), message.cc.len(), message.bcc.len()),
+            (1, 1, 0)
+        );
         // Answering still goes where core will send it.
         assert_eq!(message.reply_to, ["replies@example.com"]);
         assert_eq!(message.reply_all_cc, ["team@example.org"]);

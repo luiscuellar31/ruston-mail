@@ -95,7 +95,9 @@ search it searches again rather than reloading the folder.
 Messages in a conversation appear oldest first. The newest message and any you
 have not read start open; older messages and quoted replies start folded. These
 defaults can be changed in Settings. A long conversation opens scrolled to its
-first unread message, or to its newest one.
+first unread message, or to its newest one. An open message lists the people
+it was sent to under **To**, and those copied under **Cc** and **Bcc** on
+lines of their own; Bcc is known only for mail you sent.
 
 Ruston checks some grouped conversations in the background to separate repeated
 incoming messages. These checks are limited and cancelled when you change
