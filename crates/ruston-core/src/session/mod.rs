@@ -110,7 +110,20 @@ impl Paths {
     fn session_file(&self, profile: &str) -> PathBuf {
         self.sessions_dir().join(format!("{profile}.json"))
     }
+    /// The file whose lock a profile's readers and writers take.
+    fn lock_file(&self, profile: &str) -> PathBuf {
+        self.session_file(profile).with_extension("lock")
+    }
+    /// Where new metadata is written before it replaces the old in one
+    /// rename.
+    fn metadata_temp_file(&self, profile: &str) -> PathBuf {
+        self.session_file(profile).with_extension("json.tmp")
+    }
 }
+
+/// Permissions of the sessions folder and of the files in it, on Unix.
+const PRIVATE_DIR_MODE: u32 = 0o700;
+const PRIVATE_FILE_MODE: u32 = 0o600;
 
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
@@ -128,15 +141,15 @@ impl Session {
         validate_profile_name(profile)?;
         let dir = paths.sessions_dir();
         std::fs::create_dir_all(&dir)?;
-        set_mode(&dir, 0o700)?;
-        let path = paths.session_file(profile).with_extension("lock");
+        set_mode(&dir, PRIVATE_DIR_MODE)?;
+        let path = paths.lock_file(profile);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(&path)?;
-        set_mode(&path, 0o600)?;
+        set_mode(&path, PRIVATE_FILE_MODE)?;
         file.lock()?;
         Ok(file)
     }
@@ -182,13 +195,13 @@ impl Session {
     fn write_metadata(&self, paths: &Paths, profile: &str) -> Result<()> {
         let dir = paths.sessions_dir();
         std::fs::create_dir_all(&dir)?;
-        set_mode(&dir, 0o700)?;
+        set_mode(&dir, PRIVATE_DIR_MODE)?;
         let file = paths.session_file(profile);
-        let temporary = file.with_extension("json.tmp");
+        let temporary = paths.metadata_temp_file(profile);
         let json = serde_json::to_vec_pretty(self)?;
         let written = std::fs::write(&temporary, json)
             .map_err(Error::from)
-            .and_then(|()| set_mode(&temporary, 0o600))
+            .and_then(|()| set_mode(&temporary, PRIVATE_FILE_MODE))
             .and_then(|()| std::fs::rename(&temporary, &file).map_err(Error::from));
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);
@@ -205,12 +218,7 @@ impl Session {
         user_id: &str,
     ) -> Result<()> {
         let _lock = Self::lock(paths, profile)?;
-        let bytes = match std::fs::read(paths.session_file(profile)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-        let Ok(mut session) = serde_json::from_slice::<Session>(&bytes) else {
+        let Some(mut session) = Self::read_metadata(paths, profile)? else {
             return Ok(());
         };
         if session.uid != uid || session.user_id.as_deref() == Some(user_id) {
@@ -274,15 +282,8 @@ impl Session {
         profile: &str,
         store: &dyn SecretStore,
     ) -> Result<Option<(Session, Tokens)>> {
-        let file = paths.session_file(profile);
-        let bytes = match std::fs::read(&file) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        let session: Session = match serde_json::from_slice(&bytes) {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
+        let Some(session) = Self::read_metadata(paths, profile)? else {
+            return Ok(None);
         };
         let Some(pair) = store.get(K_TOKENS)? else {
             return Ok(None);
@@ -326,26 +327,29 @@ impl Session {
         uid: &str,
     ) -> Result<()> {
         let _lock = Self::lock(paths, profile)?;
-        let file = paths.session_file(profile);
-        match std::fs::read(&file) {
-            Ok(bytes) => {
-                // Incomplete metadata cannot resume a session; still remove its secrets.
-                if let Ok(session) = serde_json::from_slice::<Session>(&bytes)
-                    && session.uid != uid
-                {
-                    return Ok(());
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+        // Incomplete metadata cannot resume a session; still remove its secrets.
+        if Self::read_metadata(paths, profile)?.is_some_and(|session| session.uid != uid) {
+            return Ok(());
         }
         Self::clear_unlocked(paths, profile, store)
+    }
+
+    /// The saved metadata of `profile`. `None` when there is none, or when it
+    /// is not a session: either way no session can resume from it. Any other
+    /// failure to read it is an error.
+    fn read_metadata(paths: &Paths, profile: &str) -> Result<Option<Session>> {
+        let bytes = match std::fs::read(paths.session_file(profile)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(serde_json::from_slice(&bytes).ok())
     }
 
     fn clear_unlocked(paths: &Paths, profile: &str, store: &dyn SecretStore) -> Result<()> {
         let file = paths.session_file(profile);
         // What an interrupted metadata write left behind goes too.
-        let _ = std::fs::remove_file(file.with_extension("json.tmp"));
+        let _ = std::fs::remove_file(paths.metadata_temp_file(profile));
         let metadata = match std::fs::remove_file(&file) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -803,6 +807,34 @@ mod tests {
     }
 
     #[test]
+    fn metadata_that_is_no_session_is_ignored_but_a_failed_read_is_an_error() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let store = MemoryStore::new();
+        saved_session("https://mail.proton.me/api", &paths, &store);
+
+        // Metadata that is not a session: there is none to resume, no ID is
+        // recorded into it, and its secrets are still cleared.
+        std::fs::write(paths.session_file("default"), b"not json").unwrap();
+        assert!(Session::load(&paths, "default", &store).unwrap().is_none());
+        Session::record_user_id(&paths, "default", "UID1", "user-1").unwrap();
+        assert_eq!(
+            std::fs::read(paths.session_file("default")).unwrap(),
+            b"not json"
+        );
+        Session::clear_if_current(&paths, "default", &store, "UID1").unwrap();
+        assert!(store.get(K_TOKENS).unwrap().is_none());
+
+        // A file that cannot be read at all is an error, never no session.
+        let _ = std::fs::remove_file(paths.session_file("default"));
+        std::fs::create_dir(paths.session_file("default")).unwrap();
+        assert!(Session::load(&paths, "default", &store).is_err());
+        assert!(Session::record_user_id(&paths, "default", "UID1", "user-1").is_err());
+        assert!(Session::clear_if_current(&paths, "default", &store, "UID1").is_err());
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn the_account_id_is_recorded_only_for_the_session_it_belongs_to() {
         let base = unique_base();
         let paths = Paths::with_base(&base);
@@ -823,12 +855,7 @@ mod tests {
         assert_eq!(loaded.skp.expose_secret(), "skp");
 
         // The file is replaced whole, with its permissions kept.
-        assert!(
-            !paths
-                .session_file("default")
-                .with_extension("json.tmp")
-                .exists()
-        );
+        assert!(!paths.metadata_temp_file("default").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
