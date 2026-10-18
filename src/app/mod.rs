@@ -923,6 +923,18 @@ impl App {
             && !self.compose.as_ref().is_some_and(Compose::in_flight)
     }
 
+    /// Changes Proton has not confirmed yet, which quitting now would lose.
+    pub fn unsent_changes(&self) -> usize {
+        self.mailbox.as_ref().map_or(0, Mailbox::unsent_changes)
+    }
+
+    /// The mailbox, for tests outside this module that put actions on their
+    /// way as Proton's would be.
+    #[cfg(test)]
+    pub(crate) fn mailbox_mut(&mut self) -> Option<&mut Mailbox> {
+        self.mailbox.as_mut()
+    }
+
     pub fn panels(&self) -> Panels {
         self.settings.panels
     }

@@ -153,7 +153,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   repeated close requests never approve it. Discard/cancel reuse App messages,
   and closing rechecks current send/draft state. Signing out or leaving the
   demo asks through the same confirmation, then signs out once the message is
-  discarded. `App` itself refuses to sign out over a written message or an
+  discarded. A close with nothing else to ask about waits while
+  `App::unsent_changes` counts mailbox actions or automatic reads Proton has
+  not confirmed: `close::OnceSent` holds it, the window says why, and the close
+  goes ahead once they arrive, or at once on **Close now** or a second request.
+  `App` itself refuses to sign out over a written message or an
   in-flight send; during a send the sidebar's sign-out button is disabled. The
   separate composer is disabled during a root confirmation. macOS menu Quit/Cmd+Q uses this same
   path; direct OS termination (including Dock Quit) bypasses these guards.

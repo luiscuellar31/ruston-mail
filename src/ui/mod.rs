@@ -129,6 +129,9 @@ struct DesktopApp {
     /// and what discarding it makes way for.
     pending_discard: Option<close::Leaving>,
     window_close_approved: bool,
+    /// Holds a close asked for while changes were still on their way to
+    /// Proton.
+    close_once_sent: close::OnceSent,
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
@@ -195,6 +198,7 @@ impl DesktopApp {
             pending_settings_exit: None,
             pending_discard: None,
             window_close_approved: false,
+            close_once_sent: close::OnceSent::default(),
             settings_seen: 0,
             settings_seen_at: 0.0,
             last_window_size: None,
@@ -417,6 +421,12 @@ impl DesktopApp {
             );
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
             context.request_repaint();
+        } else if self.close_once_sent.holds(self.app.unsent_changes()) {
+            // Changes still on their way to Proton would be lost; the window
+            // closes once they arrive.
+            context
+                .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
+            context.request_repaint();
         } else {
             self.window_close_approved = true;
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
@@ -425,7 +435,9 @@ impl DesktopApp {
 
     fn check_window_close(&mut self, context: &egui::Context) {
         // eframe also calls logic while minimized, so cancellation belongs here.
-        if context.input(|input| input.viewport().close_requested()) {
+        if context.input(|input| input.viewport().close_requested())
+            || self.close_once_sent.arrived(self.app.unsent_changes())
+        {
             self.request_window_close(context);
         }
     }
@@ -682,6 +694,7 @@ impl DesktopApp {
         if !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
             || self.pending_discard.is_some()
             || self.pending_settings_exit.is_some()
+            || self.close_once_sent.waiting()
         {
             return;
         }
@@ -1069,6 +1082,11 @@ impl eframe::App for DesktopApp {
         let discard_decision = self
             .pending_discard
             .and_then(|leaving| close::confirm(&context, leaving));
+        let unsent_decision = if self.close_once_sent.waiting() {
+            close::confirm_unsent(&context, self.app.unsent_changes())
+        } else {
+            None
+        };
         theme::paint_focus_ring(&context);
         if let Some(step) = composer_zoom {
             self.step_zoom(step, &context);
@@ -1083,6 +1101,12 @@ impl eframe::App for DesktopApp {
         }
         if let Some(decision) = discard_decision {
             self.resolve_discard(decision, &context);
+        }
+        match unsent_decision {
+            Some(close::Unsent::KeepOpen) => self.close_once_sent.cancel(),
+            // Asking again while it waits closes at once.
+            Some(close::Unsent::CloseNow) => self.request_window_close(&context),
+            None => {}
         }
         if has_messages {
             context.request_repaint();
@@ -1350,6 +1374,71 @@ mod tests {
             .viewport_commands
             .remove(&egui::ViewportId::ROOT)
             .unwrap_or_default()
+    }
+
+    /// A demo window whose mailbox has one change on its way, as Proton's
+    /// would be, and that change.
+    fn window_with_a_change_on_its_way(
+        context: &egui::Context,
+    ) -> (DesktopApp, crate::app::ActionRequest) {
+        let mut desktop = DesktopApp::with_context(context, true, Settings::default());
+        let page = crate::mail::demo::DemoMailbox::new().list_conversations(
+            &Folder::INBOX,
+            0,
+            crate::mail::demo::PAGE_SIZE,
+            crate::mail::demo::now(),
+        );
+        desktop.dispatch(Message::ConversationsLoaded(1, page), context);
+        let sent = desktop
+            .app
+            .mailbox_mut()
+            .unwrap()
+            .start_action_on(
+                "demo-0".into(),
+                crate::mail::SummaryKind::Conversation,
+                crate::mail::MailAction::SetStarred(true),
+                900,
+            )
+            .unwrap()
+            .send
+            .unwrap();
+        (desktop, sent)
+    }
+
+    #[test]
+    fn closing_waits_for_changes_on_their_way_to_proton() {
+        let context = egui::Context::default();
+        let (mut desktop, sent) = window_with_a_change_on_its_way(&context);
+
+        let commands = native_close(&mut desktop, &context);
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!desktop.window_close_approved);
+
+        // Once Proton has it, the close goes ahead by itself.
+        let _ = desktop
+            .app
+            .mailbox_mut()
+            .unwrap()
+            .finish_action(&sent, Ok(()));
+        let mut output = context.run_logic(&egui::RawInput::default(), |context| {
+            desktop.check_window_close(context);
+        });
+        let commands = output
+            .viewport_commands
+            .remove(&egui::ViewportId::ROOT)
+            .unwrap_or_default();
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(desktop.window_close_approved);
+    }
+
+    #[test]
+    fn closing_again_while_changes_are_on_their_way_closes_at_once() {
+        let context = egui::Context::default();
+        let (mut desktop, _) = window_with_a_change_on_its_way(&context);
+
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::Close));
+        assert!(desktop.window_close_approved);
     }
 
     #[test]

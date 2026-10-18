@@ -2168,6 +2168,42 @@ fn only_the_conversation_the_reader_shows_after_a_draft_is_read() {
 }
 
 #[test]
+fn changes_on_their_way_to_proton_count_until_they_arrive() {
+    let mut app = loaded_demo_app();
+    assert_eq!(app.unsent_changes(), 0);
+    // Proton's actions go one after another, the way the demo's never wait.
+    let star = |app: &mut App, row: &str, request| {
+        app.mailbox
+            .as_mut()
+            .unwrap()
+            .start_action_on(
+                row.to_owned(),
+                crate::mail::SummaryKind::Conversation,
+                MailAction::SetStarred(true),
+                request,
+            )
+            .unwrap()
+    };
+    let sent = star(&mut app, "demo-0", 900).send.unwrap();
+    assert!(
+        star(&mut app, "demo-1", 901).send.is_none(),
+        "it waits its turn"
+    );
+    assert_eq!(app.unsent_changes(), 2);
+
+    let finish = |app: &mut App, request| {
+        app.mailbox
+            .as_mut()
+            .unwrap()
+            .finish_action(&request, Ok(()))
+    };
+    let next = finish(&mut app, sent).next.unwrap();
+    assert_eq!(app.unsent_changes(), 1);
+    let _ = finish(&mut app, next);
+    assert_eq!(app.unsent_changes(), 0);
+}
+
+#[test]
 fn a_conversation_left_behind_a_draft_is_never_marked_read() {
     let mut app = loaded_demo_app();
     let inbox_unread = |app: &App| demo_service(app).counts().unread(&Folder::INBOX);

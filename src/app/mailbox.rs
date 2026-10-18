@@ -859,6 +859,14 @@ impl Mailbox {
         !self.is_busy() && self.action_request.is_none() && self.pending_reads.is_empty()
     }
 
+    /// Changes shown here that Proton has not confirmed yet: the action on its
+    /// way, those waiting behind it, and automatic reads.
+    pub fn unsent_changes(&self) -> usize {
+        usize::from(self.action_request.is_some())
+            + self.waiting_actions.len()
+            + self.pending_reads.len()
+    }
+
     pub(super) fn needs_revalidation(&self) -> bool {
         self.active_dirty && !self.is_busy()
     }
