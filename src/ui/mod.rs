@@ -513,7 +513,7 @@ impl DesktopApp {
         match action {
             macos::Action::Quit => self.request_window_close(context),
             macos::Action::Settings | macos::Action::NewMessage
-                if matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+                if self.app.auth_state().is_authenticated()
                     && self.pending_discard.is_none()
                     && self.pending_settings_exit.is_none()
                     && !self.file_dialog_open =>
@@ -1013,7 +1013,7 @@ impl eframe::App for DesktopApp {
             if let Some(menu) = &self.native_menu {
                 menu.adopt_windows();
                 menu.set_enabled(
-                    matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+                    self.app.auth_state().is_authenticated()
                         && self.pending_discard.is_none()
                         && self.pending_settings_exit.is_none()
                         && !self.file_dialog_open,
@@ -1515,7 +1515,7 @@ mod tests {
     }
 
     fn signed_in(desktop: &DesktopApp) -> bool {
-        matches!(desktop.app.auth_state(), AuthState::Authenticated { .. })
+        desktop.app.auth_state().is_authenticated()
     }
 
     #[test]
@@ -1635,10 +1635,7 @@ mod tests {
         assert_eq!(desktop.pending_discard, Some(close::Leaving::Demo));
         desktop.resolve_discard(Message::CancelDiscard, &context);
         assert!(desktop.app.compose().is_some());
-        assert!(matches!(
-            desktop.app.auth_state(),
-            AuthState::Authenticated { .. }
-        ));
+        assert!(desktop.app.auth_state().is_authenticated());
 
         desktop.dispatch(Message::Logout, &context);
         desktop.resolve_discard(Message::DiscardCompose, &context);
@@ -1660,10 +1657,7 @@ mod tests {
         desktop.dispatch(Message::Logout, &context);
         assert_eq!(desktop.pending_discard, None, "a send cannot be discarded");
         assert!(desktop.app.compose().unwrap().in_flight());
-        assert!(matches!(
-            desktop.app.auth_state(),
-            AuthState::Authenticated { .. }
-        ));
+        assert!(desktop.app.auth_state().is_authenticated());
     }
 
     #[test]
@@ -2323,10 +2317,7 @@ mod tests {
         let (mut desktop, context) = demo_with_settings();
         desktop.settings_draft.as_mut().unwrap().confirm_links = false;
         desktop.dispatch(Message::Logout, &context);
-        assert!(matches!(
-            desktop.app.auth_state(),
-            AuthState::Authenticated { .. }
-        ));
+        assert!(desktop.app.auth_state().is_authenticated());
         desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
         assert!(matches!(desktop.app.auth_state(), AuthState::SignedOut));
         assert!(desktop.app.settings().confirm_links);
