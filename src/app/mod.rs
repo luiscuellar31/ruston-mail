@@ -29,7 +29,7 @@ use crate::mail::{
 
 use auth::LoginForm;
 pub use auth::{AuthState, SignInStep};
-pub use compose::{Answering, Compose, ComposeField, ComposeId, Sending};
+pub use compose::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Sending};
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{
@@ -182,12 +182,10 @@ pub enum Message {
     OpenPendingMailto,
     DismissPendingMailto,
     DismissMailtoError,
-    /// Answers the open message, or passes it on. `everyone` is only read by
-    /// a reply.
+    /// Answers the open message, or passes it on.
     Answer {
         message_id: String,
-        forward: bool,
-        everyone: bool,
+        kind: AnswerKind,
     },
     /// Puts an unsent message away. Untouched messages close; written ones ask first.
     CloseCompose,
@@ -890,11 +888,7 @@ impl App {
                 self.showing_settings = false;
                 self.open_compose();
             }
-            Message::Answer {
-                message_id,
-                forward,
-                everyone,
-            } => self.answer(&message_id, forward, everyone),
+            Message::Answer { message_id, kind } => self.answer(&message_id, kind),
             Message::CloseCompose => self.close_compose(),
             Message::DiscardCompose => self.discard_compose(),
             Message::CancelDiscard => self.cancel_discard(),

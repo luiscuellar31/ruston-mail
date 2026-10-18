@@ -7,7 +7,7 @@ use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
 
 use super::mailbox::{detail, folder_icon};
 use super::{UiState, theme};
-use crate::app::{ConversationReader, Mailbox, Message, PendingLink, ReaderState};
+use crate::app::{AnswerKind, ConversationReader, Mailbox, Message, PendingLink, ReaderState};
 use crate::downloads::SaveError;
 use crate::mail::{
     BlockKind, ConversationSummary, CustomKind, Folder, MailAction, MailAddress, MailAttachment,
@@ -713,10 +713,10 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
             .with_main_wrap(true),
         |ui| {
             // Core addresses replies from the message being answered.
-            for (label, forward, everyone) in [
-                ("Reply", false, false),
-                ("Reply all", false, true),
-                ("Forward", true, false),
+            for (label, kind) in [
+                ("Reply", AnswerKind::Reply),
+                ("Reply all", AnswerKind::ReplyAll),
+                ("Forward", AnswerKind::Forward),
             ] {
                 if ui
                     .add_enabled(message_id.is_some(), theme::compact_button(label))
@@ -725,8 +725,7 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
                 {
                     messages.push(Message::Answer {
                         message_id: message_id.to_owned(),
-                        forward,
-                        everyone,
+                        kind,
                     });
                 }
             }
@@ -2391,7 +2390,7 @@ mod tests {
             click,
         );
         assert!(
-            matches!(messages.as_slice(), [Message::Answer { message_id, forward: false, everyone: false }] if message_id == "message-0")
+            matches!(messages.as_slice(), [Message::Answer { message_id, kind: AnswerKind::Reply }] if message_id == "message-0")
         );
     }
 
@@ -2446,7 +2445,7 @@ mod tests {
             click,
         );
         assert!(
-            matches!(messages.as_slice(), [Message::Answer { message_id, forward: false, everyone: false }] if message_id == "message-0")
+            matches!(messages.as_slice(), [Message::Answer { message_id, kind: AnswerKind::Reply }] if message_id == "message-0")
         );
     }
 

@@ -5,7 +5,7 @@ use eframe::egui::{self, Align, Layout};
 
 use super::settings::ZoomStep;
 use super::{identity, mailbox::detail, reader, theme};
-use crate::app::{Answering, Compose, ComposeField, ComposeId, Message, Sending};
+use crate::app::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
 
 const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
@@ -347,9 +347,11 @@ fn focus_new_draft(ui: &egui::Ui, compose: &Compose) {
 fn heading(compose: &Compose) -> &'static str {
     match compose.answering() {
         None => "New message",
-        Some(answer) if answer.everyone => "Reply to everyone",
-        Some(_) if !compose.asks_for_recipients() => "Reply",
-        Some(_) => "Forward",
+        Some(answer) => match answer.kind {
+            AnswerKind::Reply => "Reply",
+            AnswerKind::ReplyAll => "Reply to everyone",
+            AnswerKind::Forward => "Forward",
+        },
     }
 }
 
@@ -680,7 +682,7 @@ mod tests {
         let answer = Answering {
             sender: "Alex Rivera".into(),
             subject: "Invoice".into(),
-            everyone: true,
+            kind: AnswerKind::ReplyAll,
             to: vec!["attacker@evil.example".into()],
             cc: vec!["bob@corp.example".into()],
             redirected_from: Some("alex@corp.example".into()),
@@ -847,8 +849,7 @@ mod tests {
         app.update(Message::ConversationLoaded(request, detail));
         app.update(Message::Answer {
             message_id: "demo-0-2".into(),
-            forward: false,
-            everyone: false,
+            kind: AnswerKind::Reply,
         });
         let reply = app.compose().expect("a reply is open").id();
         assert_eq!(focused_after_showing(&app), Some(body_id(reply)));

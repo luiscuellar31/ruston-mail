@@ -2981,8 +2981,7 @@ fn a_reply_needs_nobody_named_because_proton_knows() {
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        forward: false,
-        everyone: false,
+        kind: AnswerKind::Reply,
     });
 
     let writing = app.compose().expect("a reply is open");
@@ -2999,8 +2998,7 @@ fn a_forward_still_has_to_be_addressed() {
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        forward: true,
-        everyone: false,
+        kind: AnswerKind::Forward,
     });
 
     let writing = app.compose().expect("a forward is open");
@@ -3024,15 +3022,14 @@ fn answering_says_what_is_being_answered() {
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        forward: false,
-        everyone: true,
+        kind: AnswerKind::ReplyAll,
     });
 
     let answering = app
         .compose()
         .and_then(Compose::answering)
         .expect("it says what it answers");
-    assert!(answering.everyone);
+    assert_eq!(answering.kind, AnswerKind::ReplyAll);
     assert!(!answering.subject.is_empty());
     assert!(!answering.sender.is_empty());
 }
@@ -3043,8 +3040,7 @@ fn answering_a_message_that_is_not_there_opens_nothing() {
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        forward: false,
-        everyone: false,
+        kind: AnswerKind::Reply,
     });
 
     assert!(app.compose().is_none());

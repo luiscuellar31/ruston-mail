@@ -119,13 +119,42 @@ pub enum Sending {
     Failed(SendError),
 }
 
+/// How a message is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerKind {
+    /// A reply to whoever the message asks replies to go to.
+    Reply,
+    /// A reply that also copies in everyone else the message went to.
+    ReplyAll,
+    /// The message passed on to recipients the user types.
+    Forward,
+}
+
+impl AnswerKind {
+    /// What core sends to answer the message `message_id` this way.
+    fn outgoing(self, message_id: &str) -> Kind {
+        let message_id = message_id.to_owned();
+        match self {
+            AnswerKind::Reply => Kind::Reply {
+                message_id,
+                everyone: false,
+            },
+            AnswerKind::ReplyAll => Kind::Reply {
+                message_id,
+                everyone: true,
+            },
+            AnswerKind::Forward => Kind::Forward { message_id },
+        }
+    }
+}
+
 /// The message being answered. Core writes the subject and, for a reply,
 /// sends to the recipients shown here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answering {
     pub sender: String,
     pub subject: String,
-    pub everyone: bool,
+    pub kind: AnswerKind,
     /// Where a reply goes; empty for a forward, whose recipients are typed.
     pub to: Vec<String>,
     /// What Reply all copies in.
@@ -448,19 +477,12 @@ impl Compose {
     }
 }
 
-/// What the composer says about the message `kind` answers.
-fn answering_for(kind: &Kind, message: &MailMessage, subject: Option<&str>) -> Answering {
-    let everyone = matches!(kind, Kind::Reply { everyone: true, .. });
+/// What the composer says about the message it answers this way.
+fn answering_for(kind: AnswerKind, message: &MailMessage, subject: Option<&str>) -> Answering {
     let (to, cc) = match kind {
-        Kind::Reply { everyone, .. } => (
-            message.reply_to.clone(),
-            if *everyone {
-                message.reply_all_cc.clone()
-            } else {
-                Vec::new()
-            },
-        ),
-        _ => (Vec::new(), Vec::new()),
+        AnswerKind::Reply => (message.reply_to.clone(), Vec::new()),
+        AnswerKind::ReplyAll => (message.reply_to.clone(), message.reply_all_cc.clone()),
+        AnswerKind::Forward => (Vec::new(), Vec::new()),
     };
     // Core says when Reply-To moved the answer: a reply to mail you sent
     // also goes to someone other than its sender, without any redirect.
@@ -474,7 +496,7 @@ fn answering_for(kind: &Kind, message: &MailMessage, subject: Option<&str>) -> A
             .unwrap_or("(unknown sender)")
             .to_owned(),
         subject: subject.unwrap_or("(No subject)").to_owned(),
-        everyone,
+        kind,
         to,
         cc,
         redirected_from,
@@ -498,7 +520,7 @@ impl App {
     }
 
     /// Answers the message with the given id in the open conversation.
-    pub(super) fn answer(&mut self, message_id: &str, forward: bool, everyone: bool) {
+    pub(super) fn answer(&mut self, message_id: &str, kind: AnswerKind) {
         let Some(ReaderState::Loaded(reader)) = self.mailbox().map(super::Mailbox::reader_state)
         else {
             return;
@@ -511,20 +533,10 @@ impl App {
         else {
             return;
         };
-        let kind = if forward {
-            Kind::Forward {
-                message_id: message_id.to_owned(),
-            }
-        } else {
-            Kind::Reply {
-                message_id: message_id.to_owned(),
-                everyone,
-            }
-        };
         // Read what the composer shows while the reader still holds the
         // message, rather than copying its decrypted body and attachments.
-        let answering = answering_for(&kind, message, reader.detail().subject.as_deref());
-        self.open_answer(kind, answering);
+        let answering = answering_for(kind, message, reader.detail().subject.as_deref());
+        self.open_answer(kind.outgoing(message_id), answering);
     }
 
     /// Answers or forwards a message. Core addresses replies itself; the
@@ -975,36 +987,32 @@ mod tests {
         }
     }
 
-    fn answering(kind: Kind, message: &MailMessage) -> Answering {
-        answering_for(&kind, message, Some("Invoice"))
+    fn answering(kind: AnswerKind, message: &MailMessage) -> Answering {
+        answering_for(kind, message, Some("Invoice"))
     }
 
     #[test]
     fn a_reply_shows_where_it_goes_and_flags_a_redirect() {
-        let reply = |everyone| Kind::Reply {
-            message_id: "message".into(),
-            everyone,
-        };
-
-        let honest = answering(reply(false), &answered_message("Alex@Corp.example"));
+        let honest = answering(AnswerKind::Reply, &answered_message("Alex@Corp.example"));
         assert_eq!(honest.to, ["Alex@Corp.example"]);
         assert!(honest.cc.is_empty());
         assert_eq!(honest.redirected_from, None);
 
-        let redirected = answering(reply(false), &answered_message("attacker@evil.example"));
+        let redirected = answering(
+            AnswerKind::Reply,
+            &answered_message("attacker@evil.example"),
+        );
         assert_eq!(redirected.to, ["attacker@evil.example"]);
         assert_eq!(
             redirected.redirected_from.as_deref(),
             Some("alex@corp.example")
         );
 
-        let everyone = answering(reply(true), &answered_message("alex@corp.example"));
+        let everyone = answering(AnswerKind::ReplyAll, &answered_message("alex@corp.example"));
         assert_eq!(everyone.cc, ["bob@corp.example"]);
 
         let forward = answering(
-            Kind::Forward {
-                message_id: "message".into(),
-            },
+            AnswerKind::Forward,
             &answered_message("attacker@evil.example"),
         );
         assert!(forward.to.is_empty() && forward.cc.is_empty());
