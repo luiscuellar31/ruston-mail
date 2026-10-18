@@ -78,6 +78,53 @@ async fn get_conversation_decodes_message_metadata() {
 }
 
 #[tokio::test]
+async fn a_bulk_action_names_the_ids_proton_refused() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/mail/v4/messages/label"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Code": 1001,
+            "Responses": [
+                {"ID": "a", "Response": {"Code": 1000}},
+                {"ID": "b", "Response": {"Code": 2501, "Error": "Message does not exist"}}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/mail/v4/conversations/label"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Code": 1001,
+            "Responses": [
+                {"ID": "c1", "Response": {"Code": 1000}},
+                {"ID": "c2", "Response": {"Code": 1000}}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let http = client(&server.uri());
+
+    let ids = ["a".to_string(), "b".to_string()];
+    let error = api::messages::label(&http, "6", &ids).await.unwrap_err();
+    let ruston_core::Error::Api(refused) = error else {
+        panic!("expected an API error, got {error:?}");
+    };
+    assert_eq!(refused.code, 2501);
+    assert!(
+        refused.message.contains("1 of 2")
+            && refused.message.contains("b (Message does not exist)"),
+        "{}",
+        refused.message
+    );
+    // Every ID taken is a success.
+    api::conversations::label(&http, "6", &["c1".to_string(), "c2".to_string()])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn trash_posts_label_3() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))

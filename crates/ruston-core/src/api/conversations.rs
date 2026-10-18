@@ -6,7 +6,6 @@ use crate::model::conversation::Conversation;
 use crate::model::message::Message;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
-use serde::de::IgnoredAny;
 
 #[derive(Deserialize)]
 struct ListResp {
@@ -41,10 +40,10 @@ pub async fn get_conversation<D: Doer>(d: &D, id: &str) -> Result<(Conversation,
 
 async fn label_op<D: Doer>(d: &D, op: &str, label_id: &str, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "LabelID": label_id, "IDs": ids });
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put(format!("/mail/v4/conversations/{op}")).json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 /// Add a label (or move to a folder) for the given conversations.
@@ -66,37 +65,37 @@ pub async fn mark<D: Doer>(d: &D, read: bool, ids: &[String], label_id: &str) ->
             serde_json::json!({ "IDs": ids, "LabelID": label_id }),
         )
     };
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put(format!("/mail/v4/conversations/{op}")).json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 /// Permanently delete the given conversations from a folder.
 pub async fn delete<D: Doer>(d: &D, ids: &[String], label_id: &str) -> Result<()> {
     let body = serde_json::json!({ "IDs": ids, "LabelID": label_id });
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put("/mail/v4/conversations/delete").json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 /// Snooze conversations until a Unix timestamp.
 pub async fn snooze<D: Doer>(d: &D, ids: &[String], snooze_time: i64) -> Result<()> {
     let body = serde_json::json!({ "IDs": ids, "SnoozeTime": snooze_time });
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put("/mail/v4/conversations/snooze").json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 /// Unsnooze the given conversations.
 pub async fn unsnooze<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "IDs": ids });
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put("/mail/v4/conversations/unsnooze").json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 #[derive(serde::Deserialize)]

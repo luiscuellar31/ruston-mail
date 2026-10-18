@@ -638,7 +638,10 @@ instead of an unknown outcome.
   [export handler](../crates/ruston-cli/src/commands/export.rs) chooses the
   destination and reports the result, exiting with an error when a message was
   skipped; demo mode writes fictional sample mail.
-- [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints;
+- [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints.
+  Actions on several messages or conversations read the response Proton gives
+  for each ID (`Code` 1001 with `Responses`), and fail with an API error that
+  names the IDs it refused, instead of reporting all of them done;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
   authentication headers, token refresh, retries, bounded response bodies, and

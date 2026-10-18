@@ -136,10 +136,10 @@ pub async fn send_message<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> 
 
 async fn label_op<D: Doer>(d: &D, op: &str, label_id: &str, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "LabelID": label_id, "IDs": ids });
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put(format!("/mail/v4/messages/{op}")).json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 /// Add a label (or move to a folder) for the given messages.
@@ -153,10 +153,10 @@ pub async fn unlabel<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<(
 
 async fn ids_op<D: Doer>(d: &D, op: &str, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "IDs": ids });
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put(format!("/mail/v4/messages/{op}")).json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 #[derive(serde::Deserialize)]
