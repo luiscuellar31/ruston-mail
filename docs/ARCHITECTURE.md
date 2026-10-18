@@ -209,6 +209,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Grouping records are pruned with their loaded rows; no disk storage is added.
   Ordinary appended pages do not rebuild or scan the grouping index; refresh
   uses an ID-to-row index to move existing metadata into the new listing.
+  Proton pages a folder by position, so each row a confirmed action takes out
+  of the loaded pages moves its later pages up by one: **Load more** asks for
+  the page that holds the first row not loaded, and the rows it repeats are
+  dropped as already listed. A row that comes back, as with Undo, counts again.
   Page responses preserve the open reader, including expansion and quote state.
   A server search submitted while a folder page loads waits for that page, so
   the search does not turn the folder response into a stale one. A failed list

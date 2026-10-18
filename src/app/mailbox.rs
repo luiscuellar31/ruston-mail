@@ -348,6 +348,14 @@ pub struct Mailbox {
     visible_cache: Vec<usize>,
     page_size: u32,
     next_page: u32,
+    /// The page `load_more` asked for, which the next page continues from.
+    more_page: u32,
+    /// Rows of the loaded pages a move took off the screen, before Proton
+    /// answered.
+    moving_out: HashSet<String>,
+    /// Rows Proton confirmed gone from the loaded pages since the last page
+    /// arrived: Proton's later pages now start that many rows earlier.
+    moved_out: HashSet<String>,
     has_more: bool,
     /// The folders left most recently, the one left longest ago first.
     cached_listings: Vec<CachedListing>,
@@ -413,6 +421,9 @@ impl Mailbox {
             visible_cache: Vec::new(),
             page_size,
             next_page: 0,
+            more_page: 0,
+            moving_out: HashSet::new(),
+            moved_out: HashSet::new(),
             has_more: false,
             cached_listings: Vec::new(),
             groups: ConversationGroups::default(),
@@ -1279,6 +1290,9 @@ impl Mailbox {
         if self.leaves_view(&self.folder, &request.action) {
             // Offered while the row is still listed, which tells where it was.
             self.offer_undo(&request.row_id, request.kind, request.action.clone());
+            if self.row_ids.contains(&request.row_id) {
+                self.moving_out.insert(request.row_id.clone());
+            }
             return self.remove_row(&request.row_id);
         }
         // Only the last move can be taken back, and only until the next action.
@@ -1346,6 +1360,9 @@ impl Mailbox {
         // A later move of the same row, such as one taking it back, decides
         // whether it stays.
         let opened = if self.leaves_view(&self.folder, &request.action) {
+            if self.moving_out.remove(&request.row_id) {
+                self.moved_out.insert(request.row_id.clone());
+            }
             if self.superseded(request) {
                 None
             } else {
@@ -1355,6 +1372,8 @@ impl Mailbox {
             // A move that keeps its row here is where Proton now lists it.
             if request.action.destination().is_some() {
                 self.listed_again.remove(&request.row_id);
+                // Back where it was, it counts in Proton's pages again.
+                self.moved_out.remove(&request.row_id);
             }
             if !self.superseded(request) {
                 self.record_action(&request.row_id, &request.action);
@@ -1379,6 +1398,7 @@ impl Mailbox {
     /// Undoes what a refused action showed early, where it can be undone here:
     /// `before` is the flag it replaced.
     fn take_back(&mut self, request: &ActionRequest, before: Option<MailAction>) {
+        self.moving_out.remove(&request.row_id);
         // A move back that did not happen leaves its row where it went.
         if self.listed_again.remove(&request.row_id) {
             let _ = self.remove_row(&request.row_id);
@@ -1530,6 +1550,8 @@ impl Mailbox {
         self.undo = None;
         self.relocated.clear();
         self.listed_again.clear();
+        self.moving_out.clear();
+        self.moved_out.clear();
         // So do search results: a folder is a different question.
         self.search = None;
         self.search_request = None;
@@ -1645,7 +1667,13 @@ impl Mailbox {
         }
 
         self.status = ListStatus::LoadingMore(request);
-        Some(self.page_request(request, self.next_page))
+        // Rows that left the loaded pages moved Proton's later ones up: ask for
+        // the page holding the first row not loaded, and what it repeats is
+        // dropped as already listed.
+        let moved_out = u32::try_from(self.moved_out.len()).unwrap_or(u32::MAX);
+        let first_unloaded = (self.next_page * self.page_size).saturating_sub(moved_out);
+        self.more_page = first_unloaded / self.page_size;
+        Some(self.page_request(request, self.more_page))
     }
 
     /// Starts a counts refresh, superseding any older request.
@@ -1891,7 +1919,9 @@ impl Mailbox {
             } else {
                 self.recompute_visible();
             }
-            self.next_page += 1;
+            // What is loaded now reaches the end of the page asked for.
+            self.next_page = self.more_page + 1;
+            self.moved_out.clear();
             if !invalidated.is_empty() {
                 self.groups.retain_rows(&self.row_ids);
             }

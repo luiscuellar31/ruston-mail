@@ -2794,6 +2794,84 @@ fn an_empty_page_offers_no_next_one_whatever_the_total_says() {
     );
 }
 
+/// Confirms moving each of `rows` to Archive, from the open Inbox.
+fn archive_confirmed(mailbox: &mut Mailbox, rows: &[&str], first_request: u64) {
+    for (request, row) in (first_request..).zip(rows) {
+        let moved = mailbox
+            .start_action_on(
+                (*row).into(),
+                SummaryKind::Conversation,
+                MailAction::MoveTo(sys(MailFolder::Archive)),
+                request,
+            )
+            .and_then(|start| start.send)
+            .unwrap();
+        let _ = mailbox.finish_action(&moved, Ok(()));
+    }
+}
+
+#[test]
+fn loading_more_after_moves_out_does_not_skip_the_rows_that_moved_up() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    archive_confirmed(&mut mailbox, &["p10", "p20", "p30"], 3);
+
+    // Proton's first page now reaches three rows further, to p52.
+    let more = mailbox.load_more(10).unwrap();
+    assert_eq!(more.page, 0);
+    let rows = (0..53)
+        .filter(|number| ![10, 20, 30].contains(number))
+        .map(|number| dated(&format!("p{number}"), page_time(number)))
+        .collect();
+    mailbox.finish_page(more.id, page_of(rows, 117));
+    let ids = visible_ids(&mailbox);
+    assert_eq!(ids.len(), PAGE_SIZE as usize);
+    assert_eq!(&ids[47..], ["p50", "p51", "p52"]);
+
+    // The next page follows the one just loaded.
+    assert_eq!(mailbox.load_more(11).unwrap().page, 1);
+}
+
+#[test]
+fn a_move_of_a_row_only_a_search_found_leaves_the_pages_as_they_were() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    mailbox.set_search_query("invoice".into());
+    let search = mailbox.start_search(3).unwrap();
+    mailbox.finish_search(&search, page(&["found"], 1));
+    archive_confirmed(&mut mailbox, &["found"], 4);
+
+    // The loaded pages never held it, so Proton's later pages did not move.
+    mailbox.set_search_query(String::new());
+    assert_eq!(mailbox.load_more(6).unwrap().page, 1);
+}
+
+#[test]
+fn moves_that_did_not_leave_keep_load_more_on_the_next_page() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    let refused = mailbox
+        .start_action_on(
+            "p10".into(),
+            SummaryKind::Conversation,
+            MailAction::MoveTo(sys(MailFolder::Archive)),
+            3,
+        )
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&refused, Err(MailboxError::Service));
+    archive_confirmed(&mut mailbox, &["p20"], 4);
+    let undo = mailbox.take_undo().unwrap();
+    let back = mailbox
+        .start_move_back(undo, 5)
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&back, Ok(()));
+
+    // One move was refused and the other taken back: nothing left the pages.
+    assert_eq!(mailbox.load_more(6).unwrap().page, 1);
+}
+
 /// A two-page Inbox with `row` archived and the archive confirmed.
 fn archived_from_a_deeper_page(row: &str) -> Mailbox {
     let (mut mailbox, first) = open();
