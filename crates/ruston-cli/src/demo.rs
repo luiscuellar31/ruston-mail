@@ -1293,14 +1293,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     m.meta.id,
                     m.body
                 );
-                let mut options = fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                let mut file = match options.open(&eml_path) {
+                let mut file = match ruston_core::mail::export::create_private(&eml_path) {
                     Ok(file) => file,
                     // As in the live command, running again keeps what is there.
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {

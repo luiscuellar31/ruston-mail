@@ -115,8 +115,8 @@ characters while retaining the original decoded values. Explicit `--format html`
 when redirected to a file or pipe; when displayed on a terminal, they also
 filter controls. `messages read --output` and EML exports preserve the body
 content supplied by core, including its HTML sanitization. `--output` writes a
-file only you can read and replaces whatever is at that path, a symbolic link
-included, instead of writing through it.
+file only you can read, as exports are below, and replaces whatever is at that
+path, a symbolic link included, instead of writing through it.
 When replying or forwarding as HTML, sender details and quoted plain text are
 escaped before insertion; quoted HTML keeps the markup sanitized during reading.
 
@@ -346,8 +346,11 @@ copy of the received message: the original MIME structure, some original
 headers, and inline Content-ID references are not preserved. The offline demo
 exports only fictional sample text and does not include attachment bytes.
 
-Exported files contain plaintext mail and attachments. On Unix, new files use
-mode `0600`; protect the destination directory and its backups on all systems.
+Exported files contain plaintext mail and attachments. New files can be opened
+only by you: on Unix they use mode `0600`, and on Windows an access list for
+you, administrators and the system, as your profile's folders have, that takes
+nothing from the destination folder, so a shared folder does not share them.
+Protect the destination directory's backups on all systems.
 The command never replaces an existing file. In live export, each file is
 written under a hidden temporary name (`.message-….eml.tmp`) and moved to its
 final name only once complete, so a file under its final name is always

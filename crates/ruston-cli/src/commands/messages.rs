@@ -11,7 +11,6 @@ use html5ever::tokenizer::{
 };
 use ruston_core::{AddressInfo, Client, Error, LocalCache, Result, SendOptions};
 use std::cell::Cell;
-use std::fs::OpenOptions;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::Path;
 
@@ -163,11 +162,7 @@ fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
             name.to_string_lossy(),
             std::process::id()
         ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = match options.open(&temporary) {
+        let mut file = match ruston_core::mail::export::create_private(&temporary) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -613,6 +608,25 @@ mod tests {
             assert_eq!(std::fs::read(&elsewhere).unwrap(), b"keep");
             assert!(!std::fs::symlink_metadata(&output).unwrap().is_symlink());
             assert_eq!(std::fs::read(&output).unwrap(), b"decrypted body");
+        }
+        // On Windows the file keeps its own access list through the rename:
+        // the owner, the system and administrators, none inherited.
+        #[cfg(windows)]
+        {
+            let icacls = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap())
+                .join("System32")
+                .join("icacls.exe");
+            let listed = std::process::Command::new(icacls)
+                .arg(&output)
+                .output()
+                .unwrap();
+            let listed = String::from_utf8_lossy(&listed.stdout);
+            let entries: Vec<_> = listed.lines().filter(|line| line.contains(":(")).collect();
+            assert_eq!(entries.len(), 3, "{listed}");
+            assert!(
+                entries.iter().all(|entry| !entry.contains("(I)")),
+                "{listed}"
+            );
         }
         // No temporary file is left behind.
         assert!(std::fs::read_dir(&dir).unwrap().all(|entry| {
