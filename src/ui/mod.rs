@@ -271,36 +271,25 @@ impl DesktopApp {
             if self.pending_settings_exit.is_some() {
                 return;
             }
-            if self.settings_draft.as_ref().is_some_and(|draft| {
-                !settings::preference_changes(self.app.settings(), draft).is_empty()
-            }) {
+            if self.has_unapplied_settings() {
                 self.pending_settings_exit = Some(SettingsExit::Navigate(Box::new(message)));
                 context.request_repaint();
                 return;
             }
         }
-        // Signing out discards a written message only once the user says so.
-        if matches!(message, Message::Logout)
-            && self
+        if matches!(message, Message::Logout) {
+            let leaving = self.sign_out_leaving();
+            // Signing out discards a written message only once the user says so.
+            if self
                 .app
                 .compose()
                 .is_some_and(|draft| !draft.in_flight() && !draft.is_untouched())
-        {
-            self.pending_discard = Some(if self.app.is_demo() {
-                close::Leaving::Demo
-            } else {
-                close::Leaving::SignOut
-            });
-            context.request_repaint();
-            return;
-        }
-        // Signing out drops what has not reached Proton yet, so it waits.
-        if matches!(message, Message::Logout) {
-            let leaving = if self.app.is_demo() {
-                close::Leaving::Demo
-            } else {
-                close::Leaving::SignOut
-            };
+            {
+                self.pending_discard = Some(leaving);
+                context.request_repaint();
+                return;
+            }
+            // Signing out drops what has not reached Proton yet, so it waits.
             if self
                 .deferred_leave
                 .defer(leaving, self.holding(leaving).is_some())
@@ -399,56 +388,76 @@ impl DesktopApp {
         if self.window_close_approved {
             return;
         }
+        // A send, a native file dialog or a settings prompt already open keeps
+        // the window open without asking anything more.
         let sending = self
             .app
             .compose()
             .is_some_and(crate::app::Compose::in_flight);
-        let unsaved_message = self
+        if sending || self.file_dialog_open || self.pending_settings_exit.is_some() {
+            Self::cancel_root_close(context);
+            return;
+        }
+        if self.has_unapplied_settings() {
+            Self::cancel_root_close(context);
+            self.pending_settings_exit = Some(SettingsExit::CloseWindow);
+            Self::bring_main_window_forward(context);
+            return;
+        }
+        if self
             .app
             .compose()
-            .is_some_and(|draft| !draft.is_untouched());
-        let unsaved_settings = self.app.showing_settings()
-            && self.settings_draft.as_ref().is_some_and(|draft| {
-                !settings::preference_changes(self.app.settings(), draft).is_empty()
-            });
-        if sending
-            || self.file_dialog_open
-            || unsaved_message
-            || unsaved_settings
-            || self.pending_settings_exit.is_some()
+            .is_some_and(|draft| !draft.is_untouched())
         {
-            context
-                .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
-            if sending || self.file_dialog_open {
-                return;
-            }
-            if self.pending_settings_exit.is_some() {
-                return;
-            }
-            if unsaved_settings {
-                self.pending_settings_exit = Some(SettingsExit::CloseWindow);
-            } else {
-                self.pending_discard = Some(close::Leaving::Window);
-            }
-            context.send_viewport_cmd_to(
-                egui::ViewportId::ROOT,
-                egui::ViewportCommand::Minimized(false),
-            );
-            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
-            context.request_repaint();
-        } else if self.deferred_leave.defer(
+            Self::cancel_root_close(context);
+            self.pending_discard = Some(close::Leaving::Window);
+            Self::bring_main_window_forward(context);
+            return;
+        }
+        if self.deferred_leave.defer(
             close::Leaving::Window,
             self.holding(close::Leaving::Window).is_some(),
         ) {
             // Changes still on their way to Proton would be lost, and a
             // sign-out cut short could leave the session saved; the window
             // closes once they are done.
-            context
-                .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
+            Self::cancel_root_close(context);
             context.request_repaint();
+            return;
+        }
+        self.window_close_approved = true;
+        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+    }
+
+    /// Keeps the main window open after a close was asked for.
+    fn cancel_root_close(context: &egui::Context) {
+        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
+    }
+
+    /// Shows the main window, so the question it now asks is seen.
+    fn bring_main_window_forward(context: &egui::Context) {
+        context.send_viewport_cmd_to(
+            egui::ViewportId::ROOT,
+            egui::ViewportCommand::Minimized(false),
+        );
+        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+        context.request_repaint();
+    }
+
+    /// Whether the open settings page has changes that are not applied yet.
+    fn has_unapplied_settings(&self) -> bool {
+        self.app.showing_settings()
+            && self.settings_draft.as_ref().is_some_and(|draft| {
+                !settings::preference_changes(self.app.settings(), draft).is_empty()
+            })
+    }
+
+    /// What signing out leaves: the demo mailbox, or the account.
+    fn sign_out_leaving(&self) -> close::Leaving {
+        if self.app.is_demo() {
+            close::Leaving::Demo
         } else {
-            self.window_close_approved = true;
-            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+            close::Leaving::SignOut
         }
     }
 
@@ -494,15 +503,9 @@ impl DesktopApp {
         let leaving = self.pending_discard.take();
         let discard = matches!(decision, Message::DiscardCompose);
         self.dispatch(decision, context);
-        if discard {
-            // App refuses to discard an in-flight send; recheck before leaving.
-            match leaving {
-                Some(close::Leaving::Window) => self.request_window_close(context),
-                Some(close::Leaving::SignOut | close::Leaving::Demo) => {
-                    self.dispatch(Message::Logout, context);
-                }
-                None => {}
-            }
+        // App refuses to discard an in-flight send, so leaving checks again.
+        if discard && let Some(leaving) = leaving {
+            self.leave(leaving, context);
         }
         context.request_repaint();
     }
