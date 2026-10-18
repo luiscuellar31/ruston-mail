@@ -461,20 +461,7 @@ impl Mailbox {
             Some(search) => {
                 self.visible_cache.extend(0..search.rows.len());
             }
-            None => {
-                let trimmed = self.search_query.trim();
-                if trimmed.is_empty() {
-                    self.visible_cache.extend(0..self.conversations.len());
-                } else {
-                    let query = trimmed.to_lowercase();
-                    self.visible_cache
-                        .extend(self.conversations.iter().enumerate().filter_map(
-                            |(idx, conversation)| {
-                                matches_search(conversation, &query).then_some(idx)
-                            },
-                        ));
-                }
-            }
+            None => self.append_visible(0),
         }
     }
 
@@ -593,9 +580,12 @@ impl Mailbox {
 
         match result {
             Ok(page) => {
-                let has_more = !page.conversations.is_empty()
-                    && (u64::from(request.page) + 1) * u64::from(request.page_size)
-                        < u64::from(page.total);
+                let has_more = has_more_pages(
+                    page.conversations.len(),
+                    u64::from(request.page) + 1,
+                    request.page_size,
+                    page.total,
+                );
                 if request.page > 0 {
                     let search = self
                         .search
@@ -1840,10 +1830,9 @@ impl Mailbox {
                 .collect();
             self.row_ids.extend(new.iter().map(|row| row.id.clone()));
             let from = self.conversations.len();
-            let (last_dated_time, appended_at_end) =
-                append_newest_first(&mut self.conversations, new, self.last_dated_time);
-            self.last_dated_time = last_dated_time;
-            if appended_at_end && invalidated.is_empty() && self.search.is_none() {
+            let appended = append_newest_first(&mut self.conversations, new, self.last_dated_time);
+            self.last_dated_time = appended.last_dated_time;
+            if appended.at_end && invalidated.is_empty() && self.search.is_none() {
                 self.append_visible(from);
             } else {
                 self.recompute_visible();
@@ -1874,9 +1863,19 @@ impl Mailbox {
             self.reader_stamp = None;
         }
 
-        self.has_more = received > 0
-            && u64::from(self.next_page) * u64::from(self.page_size) < u64::from(page.total);
+        self.has_more = has_more_pages(
+            received,
+            u64::from(self.next_page),
+            self.page_size,
+            page.total,
+        );
     }
+}
+
+/// Whether a listing has pages left after `pages_loaded` pages of
+/// `page_size`. An empty page means it ran out, whatever `total` says.
+fn has_more_pages(received: usize, pages_loaded: u64, page_size: u32, total: u32) -> bool {
+    received > 0 && pages_loaded * u64::from(page_size) < u64::from(total)
 }
 
 fn deduplicate_rows(rows: &mut Vec<ConversationSummary>) {
@@ -1892,24 +1891,24 @@ fn last_dated_time(rows: &[ConversationSummary]) -> Option<i64> {
     rows.iter().rev().find_map(|row| row.time)
 }
 
+/// Where a page went: the time of the last dated row after it, and whether
+/// it went at the end, after every row already there.
+struct Appended {
+    last_dated_time: Option<i64>,
+    at_end: bool,
+}
+
 /// Keeps older pages proportional to the new page. Interleaved pages use a
 /// stable linear merge, with earlier pages winning ties.
 fn append_newest_first(
     rows: &mut Vec<ConversationSummary>,
     incoming: Vec<ConversationSummary>,
     last_dated: Option<i64>,
-) -> (Option<i64>, bool) {
+) -> Appended {
     let seed = last_dated
         .or_else(|| incoming.iter().find_map(|row| row.time))
         .unwrap_or(i64::MAX);
-    let mut previous = seed;
-    let mut keyed: Vec<_> = incoming
-        .into_iter()
-        .map(|row| {
-            previous = row.time.unwrap_or(previous);
-            (previous, row)
-        })
-        .collect();
+    let mut keyed = keyed_by_time(incoming, seed);
     let tail_key = last_dated.unwrap_or(seed);
 
     keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
@@ -1917,51 +1916,61 @@ fn append_newest_first(
         // The old rows are already ordered. Recreate their undated sort keys
         // using the same seed as sorting the concatenated pages would use.
         let old_seed = rows.iter().find_map(|row| row.time).unwrap_or(seed);
-        let mut previous = old_seed;
-        let old = std::mem::take(rows);
-        let mut old = old
+        let mut old = keyed_by_time(std::mem::take(rows), old_seed)
             .into_iter()
-            .map(|row| {
-                previous = row.time.unwrap_or(previous);
-                (previous, row)
-            })
             .peekable();
         let mut new = keyed.into_iter().peekable();
         rows.reserve(old.len() + new.len());
 
-        while old.peek().is_some() && new.peek().is_some() {
-            if old.peek().unwrap().0 >= new.peek().unwrap().0 {
-                rows.push(old.next().unwrap().1);
+        while let (Some((older, _)), Some((newer, _))) = (old.peek(), new.peek()) {
+            let next = if older >= newer {
+                old.next()
             } else {
-                rows.push(new.next().unwrap().1);
-            }
+                new.next()
+            };
+            rows.extend(next.map(|(_, row)| row));
         }
         rows.extend(old.chain(new).map(|(_, row)| row));
-        return (last_dated_time(rows), false);
+        return Appended {
+            last_dated_time: last_dated_time(rows),
+            at_end: false,
+        };
     }
 
-    let next_last_dated = keyed
+    let last_dated_time = keyed
         .iter()
         .rev()
         .find_map(|(_, row)| row.time)
         .or(last_dated);
     rows.extend(keyed.into_iter().map(|(_, row)| row));
-    (next_last_dated, true)
+    Appended {
+        last_dated_time,
+        at_end: true,
+    }
 }
 
 /// Sorts newest first while preserving undated rows' relative positions.
 fn sort_newest_first(rows: &mut Vec<ConversationSummary>) {
-    // Borrow a neighboring time so stable sorting does not move undated rows.
-    let mut previous = rows.iter().find_map(|row| row.time).unwrap_or(i64::MAX);
-    let mut keyed: Vec<_> = rows
-        .drain(..)
+    let seed = rows.iter().find_map(|row| row.time).unwrap_or(i64::MAX);
+    let mut keyed = keyed_by_time(rows.drain(..), seed);
+    keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+    rows.extend(keyed.into_iter().map(|(_, row)| row));
+}
+
+/// Pairs each row with the time it sorts by: its own, or for an undated row
+/// the time of the row before it, and `seed` for the first. A stable sort
+/// then leaves undated rows beside their neighbours.
+fn keyed_by_time(
+    rows: impl IntoIterator<Item = ConversationSummary>,
+    seed: i64,
+) -> Vec<(i64, ConversationSummary)> {
+    let mut previous = seed;
+    rows.into_iter()
         .map(|row| {
             previous = row.time.unwrap_or(previous);
             (previous, row)
         })
-        .collect();
-    keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
-    rows.extend(keyed.into_iter().map(|(_, row)| row));
+        .collect()
 }
 
 fn matches_search(conversation: &ConversationSummary, query: &str) -> bool {

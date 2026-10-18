@@ -2744,3 +2744,22 @@ fn a_locally_removed_member_cannot_be_restored_from_a_cached_group() {
     assert_eq!(ids(&mailbox), ["c1"]);
     assert!(mailbox.groups.splits.is_empty());
 }
+
+#[test]
+fn an_empty_page_offers_no_next_one_whatever_the_total_says() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(request.id, page_of(Vec::new(), 120));
+    assert!(!mailbox.has_more(), "the folder ran out before its total");
+
+    let mut mailbox = loaded_inbox(&["a"], 120);
+    mailbox.set_search_query("invoice".into());
+    let search = mailbox.start_search(3).unwrap();
+    assert_eq!(
+        mailbox.finish_search(&search, page_of(Vec::new(), 40)),
+        None
+    );
+    assert!(
+        !mailbox.has_more(),
+        "the results ran out before their total"
+    );
+}
