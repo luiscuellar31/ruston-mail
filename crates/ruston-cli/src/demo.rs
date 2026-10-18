@@ -797,7 +797,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if ctx.json {
                     render::sent(true, id);
                 } else {
-                    terminal::println!("Sent (id {id}) to {}", args.to.join(", "));
+                    terminal::println!("Sent (id {id}) to {}", args.message.to.join(", "));
                 }
                 Ok(())
             }

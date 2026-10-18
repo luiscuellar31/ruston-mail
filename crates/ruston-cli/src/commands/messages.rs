@@ -1,7 +1,7 @@
 //! Message commands.
 
 use crate::cli::Ctx;
-use crate::cli::{LabelAction, MessagesCmd, SendArgs};
+use crate::cli::{DraftArgs, LabelAction, MessagesCmd};
 use crate::commands::{read_body, resolve_all, resume};
 use crate::render;
 use crate::terminal;
@@ -14,7 +14,7 @@ use std::cell::Cell;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::Path;
 
-pub(crate) fn send_options(a: SendArgs, body: String) -> SendOptions {
+pub(crate) fn send_options(a: DraftArgs, body: String) -> SendOptions {
     SendOptions {
         to: a.to,
         cc: a.cc,
@@ -24,8 +24,7 @@ pub(crate) fn send_options(a: SendArgs, body: String) -> SendOptions {
         body,
         html: a.html,
         attachments: a.attach,
-        send_at: a.send_at,
-        expires_in: a.expires,
+        ..SendOptions::default()
     }
 }
 
@@ -232,25 +231,28 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::Send(mut args) => {
             let client = resume(&ctx.profile).await?;
-            if args.from.is_none() && can_prompt(ctx) {
+            let message = &mut args.message;
+            if message.from.is_none() && can_prompt(ctx) {
                 let addresses = client.addresses();
                 if addresses.len() > 1 {
-                    args.from = Some(prompt_sender(
+                    message.from = Some(prompt_sender(
                         &addresses,
                         &mut io::stdin().lock(),
                         &mut io::stderr().lock(),
                     )?);
                 }
             }
-            let body = read_body(&args.body)?;
-            if !args.html && can_prompt(ctx) && looks_like_html(&body) {
-                args.html = confirm_html(&mut io::stdin().lock(), &mut io::stderr().lock())?;
+            let body = read_body(&message.body)?;
+            if !message.html && can_prompt(ctx) && looks_like_html(&body) {
+                message.html = confirm_html(&mut io::stdin().lock(), &mut io::stderr().lock())?;
             }
-            let eo_password = args.eo_password.clone();
-            let eo_hint = args.eo_hint.clone();
-            let opts = send_options(args, body);
-            let id = match &eo_password {
-                Some(pw) => client.send_eo(&opts, pw, eo_hint.as_deref()).await?,
+            let opts = SendOptions {
+                send_at: args.send_at,
+                expires_in: args.expires,
+                ..send_options(args.message, body)
+            };
+            let id = match &args.eo_password {
+                Some(pw) => client.send_eo(&opts, pw, args.eo_hint.as_deref()).await?,
                 None => client.send(&opts).await?,
             };
             render::sent(ctx.json, &id);

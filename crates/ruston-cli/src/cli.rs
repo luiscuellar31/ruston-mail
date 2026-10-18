@@ -335,9 +335,9 @@ impl From<SearchArgs> for SearchOpts {
     }
 }
 
-/// Compose options shared by `send`.
+/// What a message holds: everything a saved draft keeps.
 #[derive(Debug, Args)]
-pub struct SendArgs {
+pub struct DraftArgs {
     /// Primary recipient(s) (repeatable).
     #[arg(long = "to", required = true)]
     pub to: Vec<String>,
@@ -347,8 +347,9 @@ pub struct SendArgs {
     /// Blind carbon-copy recipient(s) (repeatable).
     #[arg(long = "bcc")]
     pub bcc: Vec<String>,
-    /// Sender address (prompted for on a terminal with multiple addresses;
-    /// otherwise defaults to the primary address).
+    /// Sender address. `messages send` asks for one on a terminal when the
+    /// account has several; otherwise a new message comes from the primary
+    /// address, and an edited draft from its own.
     #[arg(long)]
     pub from: Option<String>,
     /// Message subject.
@@ -357,12 +358,20 @@ pub struct SendArgs {
     /// Message body, or `-` to read from stdin.
     #[arg(long)]
     pub body: String,
-    /// Treat the body as HTML. A terminal may ask when the body looks like HTML.
+    /// Treat the body as HTML. `messages send` may ask on a terminal when the
+    /// body looks like HTML.
     #[arg(long)]
     pub html: bool,
     /// Attach a file (repeatable).
     #[arg(long = "attach")]
     pub attach: Vec<PathBuf>,
+}
+
+/// Compose options for `send`: a message, and how it is sent.
+#[derive(Debug, Args)]
+pub struct SendArgs {
+    #[command(flatten)]
+    pub message: DraftArgs,
     /// Schedule delivery at this Unix timestamp.
     #[arg(long = "send-at")]
     pub send_at: Option<i64>,
@@ -667,14 +676,17 @@ pub enum DraftsCmd {
         #[arg(long = "page-size", default_value_t = 25)]
         page_size: u32,
     },
-    /// Save a new draft (does not send).
-    Save(SendArgs),
-    /// Replace an existing draft's content.
+    /// Save a new draft with its attachments (does not send). A delivery
+    /// time, an expiration and a message password are `messages send`
+    /// options; a draft keeps none of them.
+    Save(DraftArgs),
+    /// Replace an existing draft's content, adding any `--attach` files to
+    /// the attachments it has.
     Edit {
         /// Draft message ID.
         id: String,
         #[command(flatten)]
-        args: SendArgs,
+        args: DraftArgs,
     },
     /// Permanently delete drafts. Lists them and asks first; outside a
     /// terminal `--yes` is required. Other messages are refused.

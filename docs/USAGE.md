@@ -439,6 +439,14 @@ When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached
 through a published PGP key get an HTML body as plain text.
 
+`drafts save` and `drafts edit` upload `--attach` files to the draft. If one
+cannot be uploaded, `drafts save` deletes the draft it made, while `drafts
+edit` keeps the files attached before it. An edited draft stays written from
+its own address unless `--from` names another; one with attachments keeps its
+address, since they are encrypted to it. A draft keeps no delivery time,
+expiration, or message password: `--send-at`, `--expires`, and
+`--eo-password` are options of `messages send`.
+
 Output can be piped into tools that stop reading early, such as `head`: the
 CLI then ends quietly with exit status 0.
 

@@ -576,6 +576,13 @@ instead of an unknown outcome.
   `drafts delete` lists each draft, and `messages empty` accepts only Trash or
   Spam. Without a terminal to ask on, all three need `--yes`. Core's
   `delete_draft` refuses the whole request if any ID is not a draft.
+  `save_draft` and `update_draft` upload attached files to the draft once its
+  content is written, and refuse a delivery time or an expiration, which only
+  sending applies; the draft commands do not offer those, nor a message
+  password. A new draft whose attachments fail to upload is deleted again.
+  `update_draft` refuses any other message and keeps the draft's address
+  unless another is named; a draft with attachments, which are keyed to that
+  address, cannot change it.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
   commands and uses the shared attachment filename policy. The desktop has its
   own demo mailbox in `src/mail/demo.rs`.

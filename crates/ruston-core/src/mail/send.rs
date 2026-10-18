@@ -164,6 +164,30 @@ async fn prepare_attachment(
     })
 }
 
+/// Uploads files to a draft, each encrypted to the sender's key and together
+/// within the combined limit, and returns what each one is keyed with.
+pub(super) async fn upload_attachments<D: Doer>(
+    http: &D,
+    addr: &AddressKeys,
+    message_id: &str,
+    paths: &[PathBuf],
+) -> Result<Vec<Uploaded>> {
+    let mut uploaded = Vec::with_capacity(paths.len());
+    let mut remaining = MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES;
+    for path in paths {
+        let prepared =
+            prepare_attachment(path.clone(), addr.clone(), message_id.to_owned(), remaining)
+                .await?;
+        remaining -= prepared.size;
+        let id = api::attachments::upload_prepared(http, prepared.request).await?;
+        uploaded.push(Uploaded {
+            id,
+            material: prepared.material,
+        });
+    }
+    Ok(uploaded)
+}
+
 /// How a message to one recipient is protected when it carries no message
 /// password.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,7 +358,7 @@ fn guess_mime(path: &std::path::Path) -> String {
 
 /// Carried between draft-creation and packaging.
 #[derive(Clone)]
-struct Uploaded {
+pub(super) struct Uploaded {
     id: String,
     material: SessionKeyMaterial,
 }
@@ -641,18 +665,8 @@ impl Client {
                 material: crypto::decrypt_session_key(provider, addr, key_packets)?,
             });
         }
-        let mut remaining = MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES;
-        for path in &opts.attachments {
-            let prepared =
-                prepare_attachment(path.clone(), addr.clone(), message_id.to_owned(), remaining)
-                    .await?;
-            remaining -= prepared.size;
-            let att_id = api::attachments::upload_prepared(self.http(), prepared.request).await?;
-            uploaded.push(Uploaded {
-                id: att_id,
-                material: prepared.material,
-            });
-        }
+        let added = upload_attachments(self.http(), addr, message_id, &opts.attachments).await?;
+        uploaded.extend(added);
 
         if !uploaded.is_empty() {
             tracing::debug!(target: "ruston_core::send", count = uploaded.len(), "send step 2: attachments uploaded");

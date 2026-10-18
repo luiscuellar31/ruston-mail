@@ -205,10 +205,10 @@ mod tests {
             Command::Messages {
                 cmd: MessagesCmd::Send(a),
             } => {
-                assert_eq!(a.to, vec!["a@b.com"]);
-                assert_eq!(a.subject, "x");
-                assert_eq!(a.body, "-");
-                assert!(!a.html);
+                assert_eq!(a.message.to, vec!["a@b.com"]);
+                assert_eq!(a.message.subject, "x");
+                assert_eq!(a.message.body, "-");
+                assert!(!a.message.html);
             }
             _ => panic!("wrong command"),
         }
@@ -240,12 +240,65 @@ mod tests {
             Command::Messages {
                 cmd: MessagesCmd::Send(a),
             } => {
-                assert_eq!(a.to.len(), 2);
-                assert_eq!(a.cc, vec!["e@f.com"]);
-                assert!(a.html);
-                assert_eq!(a.attach.len(), 2);
+                assert_eq!(a.message.to.len(), 2);
+                assert_eq!(a.message.cc, vec!["e@f.com"]);
+                assert!(a.message.html);
+                assert_eq!(a.message.attach.len(), 2);
             }
             _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn drafts_take_attachments_but_no_sending_options() {
+        let draft = [
+            "ruston-cli",
+            "drafts",
+            "save",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "hi",
+            "--body",
+            "hello",
+            "--attach",
+            "/tmp/x.pdf",
+        ];
+        match parse(&draft).command {
+            Command::Drafts {
+                cmd: DraftsCmd::Save(a),
+            } => assert_eq!(a.attach.len(), 1),
+            _ => panic!("wrong command"),
+        }
+        // Only sending can schedule, expire or password-protect a message.
+        for option in [
+            ["--send-at", "1900000000"],
+            ["--expires", "3600"],
+            ["--eo-password", "secret"],
+            ["--eo-hint", "hint"],
+        ] {
+            for command in ["save", "edit"] {
+                let mut args = draft.to_vec();
+                args[2] = command;
+                if command == "edit" {
+                    args.insert(3, "draft1");
+                }
+                args.extend(option);
+                assert!(
+                    Cli::try_parse_from(&args).is_err(),
+                    "drafts {command} took {}",
+                    option[0]
+                );
+            }
+            let mut send = draft.to_vec();
+            send[1] = "messages";
+            send[2] = "send";
+            send.extend(option);
+            assert!(
+                Cli::try_parse_from(&send).is_ok(),
+                "send refused {}",
+                option[0]
+            );
         }
     }
 
