@@ -1611,7 +1611,7 @@ impl PendingLink {
         let url = url::Url::parse(link.trim()).ok()?;
         let target = match url.scheme() {
             "http" | "https" => url.host_str()?.to_owned(),
-            "mailto" => url.path().to_owned(),
+            "mailto" => mail_target(url.as_str()).unwrap_or_else(|| url.path().to_owned()),
             _ => return None,
         };
 
@@ -1620,6 +1620,26 @@ impl PendingLink {
             target,
         })
     }
+}
+
+/// Who a mail link writes to: the addresses the composer would take from it,
+/// those after `?to=` included, as the first few and how many more. `None`
+/// when the composer would refuse the link.
+fn mail_target(link: &str) -> Option<String> {
+    const NAMED: usize = 3;
+    let (to, _, _) = crate::mailto::Request::parse(link)?.into_fields();
+    let addresses: Vec<_> = to
+        .split(", ")
+        .filter(|address| !address.is_empty())
+        .collect();
+    if addresses.len() <= NAMED {
+        return Some(addresses.join(", "));
+    }
+    Some(format!(
+        "{} and {} more",
+        addresses[..NAMED].join(", "),
+        addresses.len() - NAMED
+    ))
 }
 
 /// Runs one mailbox action on Proton and reports the outcome under

@@ -851,6 +851,17 @@ fn only_web_and_mail_links_are_offered() {
             .target,
         "evil.example"
     );
+    // So does every address a mail link writes to, past its `?` too.
+    let target = |link| PendingLink::parse(link).unwrap().target;
+    assert_eq!(
+        target("mailto:support@bank.example?to=x@evil.example&subject=Hi"),
+        "support@bank.example, x@evil.example"
+    );
+    assert_eq!(target("mailto:?to=x@evil.example"), "x@evil.example");
+    assert_eq!(
+        target("mailto:a@example.org,b@example.org?to=c@example.org,d@example.org,e@example.org"),
+        "a@example.org, b@example.org, c@example.org and 2 more"
+    );
 
     for rejected in [
         "javascript:alert(1)",

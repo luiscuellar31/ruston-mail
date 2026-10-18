@@ -157,7 +157,9 @@ click does, or **Copy link**, which copies its address without opening it.
 Web links open in the system browser. A confirmation dialog over the window
 shows the destination first by default; a long address scrolls inside it, and
 `Esc` dismisses it before anything else. Email (`mailto:`) links use Ruston's
-composer after the same confirmation.
+composer after the same confirmation, which names every recipient the new
+message would get, those a `?to=` adds included; past three it names the
+first three and how many more.
 
 ## Opening email links
 
