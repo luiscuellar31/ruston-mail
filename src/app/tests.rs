@@ -2500,6 +2500,39 @@ fn totp_prompt_is_answered_within_the_same_sign_in() {
 }
 
 #[test]
+fn mailbox_password_prompt_is_answered_within_the_same_sign_in() {
+    let mut app = signing_in_app();
+    let attempt = app.auth_attempt;
+    let (reply, mut answer) = crate::mail::Reply::channel();
+
+    let _ = app.update(Message::SignInPrompt(
+        attempt,
+        SignInPrompt::MailboxPassword(reply),
+    ));
+    assert_eq!(app.auth_state, AuthState::NeedsMailboxPassword);
+    assert_eq!(app.login_form.password.as_str(), "password sentinel");
+
+    let _ = app.update(Message::Submit);
+    assert_eq!(app.auth_error, Some(AuthError::MailboxPasswordRequired));
+    assert!(matches!(answer.try_recv(), Ok(None)));
+
+    *app.mailbox_password_mut() = " two words ".into();
+    app.login_edited();
+    let _ = app.update(Message::Submit);
+    // Taken exactly as typed, spaces included.
+    let password = answer.try_recv().unwrap().unwrap();
+    assert_eq!(password.expose_secret(), " two words ");
+    assert_eq!(
+        app.auth_state,
+        AuthState::SigningIn(SignInStep::MailboxPassword)
+    );
+    // The same sign-in goes on: no new attempt asks for the password or a
+    // code again.
+    assert_eq!(app.auth_attempt, attempt);
+    assert!(app.login_form.mailbox_password.is_empty());
+}
+
+#[test]
 fn human_verification_waits_for_confirmation() {
     let mut app = signing_in_app();
     let (done, mut answer) = crate::mail::Reply::channel();

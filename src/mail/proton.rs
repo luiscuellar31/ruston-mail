@@ -11,8 +11,8 @@ use ruston_core::model::enums::{label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
     Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, HvResolver, Label,
-    LabelCount, LoginOptions, MessageMetadata, Recipient, RecipientProtection, SearchOpts,
-    SendOptions, TotpPrompt, UnreadableMessage, Verdict,
+    LabelCount, LoginOptions, LoginPrompts, MailboxPasswordPrompt, MessageMetadata, Recipient,
+    RecipientProtection, SearchOpts, SendOptions, TotpPrompt, UnreadableMessage, Verdict,
 };
 use secrecy::SecretString;
 
@@ -77,6 +77,8 @@ pub enum SignInOutcome {
 pub enum SignInPrompt {
     /// Enter the current TOTP code.
     Totp(Reply<SecretString>),
+    /// Enter the separate mailbox password of a two-password account.
+    MailboxPassword(Reply<SecretString>),
     /// Complete Proton's check at `url` in a browser, then confirm.
     HumanVerification { url: String, done: Reply<()> },
 }
@@ -85,7 +87,7 @@ impl SignInPrompt {
     /// Abandons the prompt; the waiting sign-in ends as cancelled.
     pub fn cancel(self) {
         match self {
-            Self::Totp(reply) => reply.cancel(),
+            Self::Totp(reply) | Self::MailboxPassword(reply) => reply.cancel(),
             Self::HumanVerification { done, .. } => done.cancel(),
         }
     }
@@ -147,6 +149,7 @@ impl ProtonMailService {
         let has_totp = request.totp.is_some();
         let has_mailbox_password = request.mailbox_password.is_some();
         let prompted_totp = Arc::new(AtomicBool::new(false));
+        let prompted_mailbox_password = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
         let prompts = Arc::new(PromptTime::default());
         let options = LoginOptions {
@@ -164,17 +167,27 @@ impl ProtonMailService {
                 prompts.clone(),
             )),
         };
-        let totp_prompt = totp_prompt(
-            events.clone(),
-            prompted_totp.clone(),
-            cancelled.clone(),
-            prompts.clone(),
-        );
+        // The mailbox password is asked for in the same sign-in, so the
+        // password and the code are not asked for, and checked, again.
+        let login_prompts = LoginPrompts {
+            totp: Some(totp_prompt(
+                events.clone(),
+                prompted_totp.clone(),
+                cancelled.clone(),
+                prompts.clone(),
+            )),
+            mailbox_password: Some(mailbox_password_prompt(
+                events.clone(),
+                prompted_mailbox_password.clone(),
+                cancelled.clone(),
+                prompts.clone(),
+            )),
+        };
 
         let outcome = match within(
             SIGN_IN_TIMEOUT,
             &prompts,
-            Client::login_with_totp_prompt(options, totp_prompt),
+            Client::login_with_prompts(options, login_prompts),
         )
         .await
         {
@@ -182,6 +195,8 @@ impl ProtonMailService {
             Some(Err(_)) if cancelled.load(Ordering::Relaxed) => SignInOutcome::Cancelled,
             Some(Err(error)) => {
                 let has_totp = has_totp || prompted_totp.load(Ordering::Relaxed);
+                let has_mailbox_password =
+                    has_mailbox_password || prompted_mailbox_password.load(Ordering::Relaxed);
                 map_sign_in_error(error, has_totp, has_mailbox_password)
             }
             None => SignInOutcome::Failed(AuthError::TimedOut),
@@ -626,21 +641,56 @@ fn totp_prompt(
     cancelled: Arc<AtomicBool>,
     prompts: Arc<PromptTime>,
 ) -> TotpPrompt {
+    secret_prompt(
+        events,
+        SignInPrompt::Totp,
+        "no TOTP code was given",
+        prompted,
+        cancelled,
+        prompts,
+    )
+}
+
+/// Asks for the mailbox password only when the account has a separate one,
+/// once its password and any code are accepted.
+fn mailbox_password_prompt(
+    events: mpsc::Sender<SignInEvent>,
+    prompted: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+    prompts: Arc<PromptTime>,
+) -> MailboxPasswordPrompt {
+    secret_prompt(
+        events,
+        SignInPrompt::MailboxPassword,
+        "no mailbox password was given",
+        prompted,
+        cancelled,
+        prompts,
+    )
+}
+
+/// A secret the sign-in asks the person for with `prompt`. Only a sign-in
+/// asks, so a secret nobody gives ends it, with `unanswered`.
+fn secret_prompt(
+    events: mpsc::Sender<SignInEvent>,
+    prompt: fn(Reply<SecretString>) -> SignInPrompt,
+    unanswered: &'static str,
+    prompted: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
+    prompts: Arc<PromptTime>,
+) -> TotpPrompt {
     Arc::new(move || {
         let events = events.clone();
         let prompted = prompted.clone();
         let cancelled = cancelled.clone();
         let prompts = prompts.clone();
         Box::pin(async move {
-            // Only a sign-in asks for a code, so a code nobody gives ends it.
-            let code = ask(events, &prompts, SignInPrompt::Totp)
-                .await
-                .map_err(|_| {
-                    cancelled.store(true, Ordering::Relaxed);
-                    Error::Other("no TOTP code was given".to_owned())
-                })?;
+            let secret = ask(events, &prompts, prompt).await.map_err(|_| {
+                cancelled.store(true, Ordering::Relaxed);
+                Error::Other(unanswered.to_owned())
+            })?;
             prompted.store(true, Ordering::Relaxed);
-            Ok(code)
+            Ok(secret)
         })
     })
 }
@@ -1470,7 +1520,7 @@ mod tests {
         let cancelled = Arc::new(AtomicBool::new(false));
         let prompted = Arc::new(AtomicBool::new(false));
         let code = tokio::spawn(totp_prompt(
-            events,
+            events.clone(),
             prompted.clone(),
             cancelled.clone(),
             prompts,
@@ -1480,6 +1530,24 @@ mod tests {
         };
         prompt.cancel();
         assert!(code.await.unwrap().is_err());
+        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(!prompted.load(Ordering::Relaxed));
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let prompted = Arc::new(AtomicBool::new(false));
+        let password = tokio::spawn(mailbox_password_prompt(
+            events,
+            prompted.clone(),
+            cancelled.clone(),
+            Arc::new(PromptTime::default()),
+        )());
+        let Some(SignInEvent::Prompt(prompt @ SignInPrompt::MailboxPassword(_))) =
+            shown.next().await
+        else {
+            panic!("no mailbox password prompt");
+        };
+        prompt.cancel();
+        assert!(password.await.unwrap().is_err());
         assert!(cancelled.load(Ordering::Relaxed));
         assert!(!prompted.load(Ordering::Relaxed));
     }

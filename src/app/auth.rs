@@ -170,6 +170,11 @@ impl App {
                 self.auth_state = AuthState::NeedsTotp;
                 Effects::none()
             }
+            SignInPrompt::MailboxPassword(_) => {
+                self.login_form.mailbox_password.zeroize();
+                self.auth_state = AuthState::NeedsMailboxPassword;
+                Effects::none()
+            }
             SignInPrompt::HumanVerification { url, .. } => {
                 self.auth_state = AuthState::NeedsHumanVerification { url: url.clone() };
                 // A browser that fails to start goes unreported: the prompt
@@ -195,6 +200,18 @@ impl App {
                 self.login_form.totp.zeroize();
                 reply.send(code);
                 self.auth_state = AuthState::SigningIn(SignInStep::Totp);
+            }
+            SignInPrompt::MailboxPassword(reply) => {
+                if self.login_form.mailbox_password.is_empty() {
+                    self.auth_error = Some(AuthError::MailboxPasswordRequired);
+                    self.pending_prompt = Some(SignInPrompt::MailboxPassword(reply));
+                    return Effects::none();
+                }
+                // Taken exactly as typed, and kept no longer than the answer.
+                let password = SecretString::from(self.login_form.mailbox_password.as_str());
+                self.login_form.mailbox_password.zeroize();
+                reply.send(password);
+                self.auth_state = AuthState::SigningIn(SignInStep::MailboxPassword);
             }
             SignInPrompt::HumanVerification { done, .. } => {
                 done.send(());
