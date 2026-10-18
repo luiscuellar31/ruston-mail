@@ -206,12 +206,18 @@ fn dated_page(rows: &[(&str, i64)], total: u32) -> Result<ConversationPage, Mail
     )
 }
 
+/// The date `full_page` gives the row `p<number>`: a second older per row,
+/// so a row's place in the folder is its age.
+fn page_time(number: u32) -> i64 {
+    i64::from(1_000_000 - number)
+}
+
 /// A full page of dated rows named `p<n>`, newest first.
 fn full_page(start: u32, total: u32) -> Result<ConversationPage, MailboxError> {
     let conversations = (0..PAGE_SIZE)
         .map(|index| {
             let number = start + index;
-            dated(&format!("p{number}"), i64::from(1_000_000 - number))
+            dated(&format!("p{number}"), page_time(number))
         })
         .collect();
 
@@ -246,8 +252,11 @@ fn search_loads_more_than_fifty_results_without_losing_the_first_page() {
     mailbox.set_search_query("invoice".into());
     let first = mailbox.start_search(3).unwrap();
     assert_eq!(first.page, 0);
-    assert_eq!(mailbox.finish_search(&first, full_page(0, 51)), None);
-    assert_eq!(visible_ids(&mailbox).len(), 50);
+    assert_eq!(
+        mailbox.finish_search(&first, full_page(0, PAGE_SIZE + 1)),
+        None
+    );
+    assert_eq!(visible_ids(&mailbox).len(), PAGE_SIZE as usize);
     assert!(mailbox.has_more());
     assert_eq!(mailbox.load_more(4), None);
 
@@ -256,9 +265,12 @@ fn search_loads_more_than_fifty_results_without_losing_the_first_page() {
     assert_eq!(next.page_size, PAGE_SIZE);
     assert!(mailbox.load_more_search(5).is_none());
     assert_eq!(mailbox.finish_search(&first, page(&["stale"], 1)), None);
-    assert_eq!(mailbox.finish_search(&next, page(&["p50"], 51)), None);
+    assert_eq!(
+        mailbox.finish_search(&next, page(&["p50"], PAGE_SIZE + 1)),
+        None
+    );
 
-    assert_eq!(visible_ids(&mailbox).len(), 51);
+    assert_eq!(visible_ids(&mailbox).len(), PAGE_SIZE as usize + 1);
     assert_eq!(visible_ids(&mailbox).last(), Some(&"p50"));
     assert!(!mailbox.has_more());
     assert!(mailbox.load_more_search(6).is_none());
@@ -893,14 +905,14 @@ fn refreshing_keeps_the_pages_already_loaded() {
     let more = mailbox.load_more(7).unwrap();
     mailbox.finish_page(
         more.id,
-        dated_page(&[("p99", 999_901), ("p100", 999_900)], 120),
+        dated_page(&[("p99", page_time(99)), ("p100", page_time(100))], 120),
     );
-    assert_eq!(mailbox.conversations().len(), 101);
+    assert_eq!(mailbox.conversations().len(), 2 * PAGE_SIZE as usize + 1);
     assert_eq!(mailbox.conversations().last().unwrap().id, "p100");
 
     // A short reload means the folder itself is short now.
     let refresh = mailbox.refresh(8).unwrap();
-    mailbox.finish_page(refresh.id, dated_page(&[("p0", 1_000_000)], 1));
+    mailbox.finish_page(refresh.id, dated_page(&[("p0", page_time(0))], 1));
     assert_eq!(visible_ids(&mailbox), ["p0"]);
 }
 
@@ -1221,9 +1233,9 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
     let split = vec![
         ConversationSummary {
             unread: true,
-            ..split_message("m40-a", 999_960)
+            ..split_message("m40-a", page_time(40))
         },
-        split_message("m40-b", 999_950),
+        split_message("m40-b", page_time(50)),
     ];
     mailbox.split_conversation(&Folder::INBOX, "p40", split.clone());
     load_detail(&mut mailbox, "m40-a", detail("m40-a", &["m40-a"]), 9);
@@ -1233,7 +1245,7 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
     let next = mailbox.load_more(11).unwrap();
 
     mailbox.finish_mark_read(&read, Ok(()));
-    mailbox.finish_page(next.id, full_page(50, 120));
+    mailbox.finish_page(next.id, full_page(PAGE_SIZE, 120));
     assert!(mailbox.needs_revalidation());
     let refresh = mailbox.refresh(12).unwrap();
     mailbox.finish_page(refresh.id, full_page(0, 120));
@@ -2599,12 +2611,14 @@ fn cached_split_rows_are_not_added_again_by_the_next_page() {
     assert_eq!(ids(&mailbox), ["m1", "m2", "c2", "c3"]);
 }
 
+/// The first inbox page with its last row, p49, split into two messages:
+/// the inbox then shows one row more than a page.
 fn inspected_last_inbox() -> (Mailbox, Vec<ConversationSummary>) {
     let (mut mailbox, first) = open();
     mailbox.finish_page(first.id, full_page(0, 120));
     let members = vec![
-        split_message("m49-a", 999_951),
-        split_message("m49-b", 999_940),
+        split_message("m49-a", page_time(49)),
+        split_message("m49-b", page_time(60)),
     ];
     mailbox.split_conversation(&Folder::INBOX, "p49", members.clone());
     (mailbox, members)
@@ -2626,8 +2640,8 @@ fn repeated_refresh_reuses_split_rows_and_reinspection_updates_without_duplicate
         updated[1].subject = Some(format!("fresh {request}"));
         mailbox.split_conversation(&Folder::INBOX, "p49", updated);
         assert_eq!(visible_ids(&mailbox), original);
-        assert_eq!(mailbox.visible_count(), 51);
-        assert_eq!(mailbox.row_ids.len(), 51);
+        assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize + 1);
+        assert_eq!(mailbox.row_ids.len(), PAGE_SIZE as usize + 1);
         assert_eq!(
             mailbox.row("m49-b").unwrap().subject.as_deref(),
             Some(format!("fresh {request}").as_str())
@@ -2640,9 +2654,9 @@ fn changed_conversation_invalidates_its_split_members_even_below_the_page_bounda
     let (mut mailbox, _) = inspected_last_inbox();
     let refresh = mailbox.refresh(10).unwrap();
     let mut changed = full_page(0, 120).unwrap();
-    changed.conversations[49].message_count += 1;
+    changed.conversations.last_mut().unwrap().message_count += 1;
     mailbox.finish_page(refresh.id, Ok(changed));
-    assert_eq!(mailbox.visible_count(), 50);
+    assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize);
     assert!(mailbox.has_row("p49"));
     assert!(!mailbox.has_row("m49-a"));
     assert!(!mailbox.has_row("m49-b"));
@@ -2655,10 +2669,11 @@ fn refreshed_read_and_star_flags_keep_grouping_until_fresh_inspection_updates_me
     let (mut mailbox, mut split) = inspected_last_inbox();
     let refresh = mailbox.refresh(10).unwrap();
     let mut page = full_page(0, 120).unwrap();
-    page.conversations[49].unread = true;
-    page.conversations[49].starred = true;
+    let last = page.conversations.last_mut().unwrap();
+    last.unread = true;
+    last.starred = true;
     mailbox.finish_page(refresh.id, Ok(page));
-    assert_eq!(mailbox.visible_count(), 51);
+    assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize + 1);
     assert!(!mailbox.has_row("p49"));
     assert!(mailbox.groups.splits["p49"].source.unread);
     assert!(mailbox.groups.splits["p49"].source.starred);
@@ -2667,19 +2682,19 @@ fn refreshed_read_and_star_flags_keep_grouping_until_fresh_inspection_updates_me
     mailbox.split_conversation(&Folder::INBOX, "p49", split);
     assert!(mailbox.row("m49-b").unwrap().unread);
     assert!(mailbox.row("m49-b").unwrap().starred);
-    assert_eq!(mailbox.row_ids.len(), 51);
+    assert_eq!(mailbox.row_ids.len(), PAGE_SIZE as usize + 1);
 }
 
 #[test]
 fn overlapping_pages_keep_verified_groups_and_deduplicate_new_rows() {
     let (mut mailbox, _) = inspected_last_inbox();
     let next = mailbox.load_more(10).unwrap();
-    let mut page = full_page(50, 120).unwrap();
-    page.conversations.insert(0, dated("p49", 999_951));
-    page.conversations.push(dated("p50", 999_950));
+    let mut page = full_page(PAGE_SIZE, 120).unwrap();
+    page.conversations.insert(0, dated("p49", page_time(49)));
+    page.conversations.push(dated("p50", page_time(50)));
     mailbox.finish_page(next.id, Ok(page));
-    assert_eq!(mailbox.visible_count(), 101);
-    assert_eq!(mailbox.row_ids.len(), 101);
+    assert_eq!(mailbox.visible_count(), 2 * PAGE_SIZE as usize + 1);
+    assert_eq!(mailbox.row_ids.len(), 2 * PAGE_SIZE as usize + 1);
     assert!(!mailbox.has_row("p49"));
     assert!(mailbox.has_row("m49-b"));
 }
@@ -2706,20 +2721,20 @@ fn deeper_split_conversations_keep_all_members_by_parent_time() {
     let (mut mailbox, first) = open();
     mailbox.finish_page(first.id, full_page(0, 120));
     let next = mailbox.load_more(10).unwrap();
-    mailbox.finish_page(next.id, full_page(50, 120));
+    mailbox.finish_page(next.id, full_page(PAGE_SIZE, 120));
     mailbox.split_conversation(
         &Folder::INBOX,
         "p60",
         vec![
-            split_message("m60-a", 999_940),
-            split_message("m60-b", 999_800),
+            split_message("m60-a", page_time(60)),
+            split_message("m60-b", page_time(200)),
         ],
     );
     let refresh = mailbox.refresh(11).unwrap();
     mailbox.finish_page(refresh.id, full_page(0, 120));
     assert!(mailbox.has_row("m60-a") && mailbox.has_row("m60-b"));
     assert!(mailbox.has_inspection_target("p60"));
-    assert_eq!(mailbox.visible_count(), 101);
+    assert_eq!(mailbox.visible_count(), 2 * PAGE_SIZE as usize + 1);
 }
 
 #[test]

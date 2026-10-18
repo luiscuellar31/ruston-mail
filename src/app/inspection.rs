@@ -7,7 +7,7 @@ use crate::mail::INSPECTION_CONCURRENCY;
 
 /// One Proton page of best-effort work, including running inspections. Overflow
 /// keeps the server's conversation grouping instead of retaining more tasks.
-const CAPACITY: usize = 50;
+pub(super) const CAPACITY: usize = 50;
 
 /// Waiting candidates are only IDs: they hold neither a task nor a client.
 #[derive(Default)]

@@ -1,8 +1,8 @@
 //! End-to-end state-machine tests through `App::update`.
 
 use super::*;
-use crate::mail::SendError;
 use crate::mail::demo;
+use crate::mail::{INSPECTION_CONCURRENCY, SendError};
 use crate::settings::{ComposePlacement, Reading};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -14,6 +14,9 @@ fn sys(folder: MailFolder) -> Folder {
 }
 
 const NOW: i64 = 1_789_000_000;
+
+/// What a refresh asks for: the open folder's page and its counts.
+const PAGE_AND_COUNTS: usize = 2;
 
 fn authenticated_app() -> App {
     let mut app = App::new(Settings::default());
@@ -842,12 +845,15 @@ fn a_folder_list_that_fails_to_load_keeps_the_open_folder_and_is_asked_again() {
     // and only until it arrives.
     let mut app = loaded_demo_app();
     deliver_folders(&mut app, Err(MailboxError::Connection));
-    assert_eq!(app.update(Message::RefreshMailbox).units(), 3);
+    assert_eq!(
+        app.update(Message::RefreshMailbox).units(),
+        PAGE_AND_COUNTS + 1
+    );
     let page_request = app.last_request - 1;
     deliver_demo_page(&mut app, page_request, 0);
     deliver_folders(&mut app, Ok(vec![invoices.clone()]));
     assert_eq!(app.folders(), [invoices]);
-    assert_eq!(app.update(Message::RefreshMailbox).units(), 2);
+    assert_eq!(app.update(Message::RefreshMailbox).units(), PAGE_AND_COUNTS);
 }
 
 #[test]
@@ -1118,7 +1124,7 @@ fn demo_mailbox_uses_production_pagination() {
     let mut app = loaded_demo_app();
 
     let mailbox = app.mailbox().unwrap();
-    assert_eq!(mailbox.conversations().len(), 10);
+    assert_eq!(mailbox.conversations().len(), demo::PAGE_SIZE as usize);
     assert!(mailbox.has_more());
     assert_eq!(
         mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
@@ -1310,7 +1316,10 @@ fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
         0
     );
 
-    assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 2);
+    assert_eq!(
+        app.update(Message::AutoRefreshMailbox).units(),
+        PAGE_AND_COUNTS
+    );
     let page_request = app.last_request - 1;
     deliver_demo_page(&mut app, page_request, 0);
 
@@ -1333,7 +1342,10 @@ fn an_automatic_refresh_keeps_the_offer_to_undo_a_move() {
     assert!(!is_listed(&app, "demo-3"));
 
     // The poll lands while the notice is still up.
-    assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 2);
+    assert_eq!(
+        app.update(Message::AutoRefreshMailbox).units(),
+        PAGE_AND_COUNTS
+    );
     assert!(app.mailbox().unwrap().undo().is_some());
     // Undo waits for the reloading list...
     let _ = app.update(Message::UndoMove);
@@ -1349,7 +1361,7 @@ fn an_automatic_refresh_keeps_the_offer_to_undo_a_move() {
 #[test]
 fn automatic_refresh_does_not_overlap_a_list_request() {
     let mut app = loaded_demo_app();
-    assert_eq!(app.update(Message::RefreshMailbox).units(), 2);
+    assert_eq!(app.update(Message::RefreshMailbox).units(), PAGE_AND_COUNTS);
     let requests = app.last_request;
 
     assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 0);
@@ -2308,7 +2320,7 @@ fn resizing_panels_only_changes_layout() {
     let mailbox = app.mailbox().unwrap();
     assert_eq!(mailbox.folder(), &sys(MailFolder::Inbox));
     assert_eq!(mailbox.status(), ListStatus::Loaded);
-    assert_eq!(mailbox.conversations().len(), 10);
+    assert_eq!(mailbox.conversations().len(), demo::PAGE_SIZE as usize);
     let reader = mailbox.reader().unwrap();
     assert_eq!(reader.conversation_id(), "demo-0");
     assert!(reader.is_expanded("demo-0-0", Reading::default()));
@@ -3049,13 +3061,14 @@ fn inspection_page(app: &App, count: usize) -> ConversationPage {
 #[test]
 fn inspection_candidates_do_not_spawn_an_unbounded_number_of_tasks() {
     let mut app = loaded_demo_app();
-    let mut page = inspection_page(&app, 100);
+    // Twice as many candidates as the queue takes, each offered twice.
+    let mut page = inspection_page(&app, 2 * inspection::CAPACITY);
     page.inspect_candidates
         .extend(page.inspect_candidates.clone());
     let _ = app.update(Message::RefreshMailbox);
     let request = app.last_request - 1;
     let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
-    assert_eq!(effects.units(), 4);
+    assert_eq!(effects.units(), INSPECTION_CONCURRENCY);
 }
 
 #[test]
@@ -3069,7 +3082,8 @@ fn stale_page_response_does_not_start_inspections() {
 #[test]
 fn inspection_queue_drains_with_bounded_deduplicated_work() {
     let mut app = loaded_demo_app();
-    let mut page = inspection_page(&app, 100);
+    // Twice as many candidates as the queue takes, each offered twice.
+    let mut page = inspection_page(&app, 2 * inspection::CAPACITY);
     page.inspect_candidates
         .extend(page.inspect_candidates.clone());
     let _ = app.update(Message::RefreshMailbox);
@@ -3097,9 +3111,13 @@ fn inspection_queue_drains_with_bounded_deduplicated_work() {
         // A duplicate completion cannot release another slot or launch work.
         assert_eq!(app.update(message).units(), 0);
         running.extend(next.into_iter());
-        assert!(running.len() <= 4);
+        assert!(running.len() <= INSPECTION_CONCURRENCY);
     }
-    assert_eq!(completed.len(), 50, "overflow must keep Proton grouping");
+    assert_eq!(
+        completed.len(),
+        inspection::CAPACITY,
+        "overflow must keep Proton grouping"
+    );
 }
 
 #[test]
