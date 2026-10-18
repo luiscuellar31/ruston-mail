@@ -143,9 +143,50 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     let leaving = sending == Sending::InFlight;
     focus_new_draft(ui, compose);
 
-    let heading = heading(compose);
+    title_and_actions(ui, compose, leaving, send_label(&sending), messages);
+    ui.add_space(10.0);
+    if compose.confirming_discard() {
+        discard_prompt(ui, messages);
+        ui.add_space(10.0);
+    }
+    if let Some(answer) = compose.answering() {
+        answered(ui, answer, compose.asks_for_recipients());
+    }
+    if compose.asks_for_recipients() {
+        recipient_fields(ui, compose, leaving, messages);
+        ui.add_space(4.0);
+    }
+    if compose.asks_for_subject() {
+        line(
+            ui,
+            "Subject",
+            ComposeField::Subject,
+            compose,
+            leaving,
+            messages,
+        );
+    }
+    ui.add_space(6.0);
+    if !compose.attachments().is_empty() {
+        attachment_list(ui, compose, leaving, messages);
+        ui.add_space(4.0);
+    }
+    ui.add_space(6.0);
+    send_status(ui, compose, &sending);
+    ui.add_space(6.0);
+    body_editor(ui, compose, leaving, messages);
+}
+
+/// The title, with Send, Discard and Attach… beside it.
+fn title_and_actions(
+    ui: &mut egui::Ui,
+    compose: &Compose,
+    leaving: bool,
+    send_label: &str,
+    messages: &mut Vec<Message>,
+) {
     ui.horizontal_wrapped(|ui| {
-        ui.heading(egui::RichText::new(heading).size(24.0).strong());
+        ui.heading(egui::RichText::new(heading(compose)).size(24.0).strong());
         ui.with_layout(
             Layout::right_to_left(Align::Center).with_main_wrap(true),
             |ui| {
@@ -155,13 +196,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
                 if ui
                     .add_enabled(
                         ready && !leaving,
-                        theme::primary(egui::Button::new(if leaving {
-                            "Sending…"
-                        } else if sending == Sending::Failed(SendError::Unconfirmed) {
-                            "Send again"
-                        } else {
-                            "Send"
-                        })),
+                        theme::primary(egui::Button::new(send_label)),
                     )
                     .clicked()
                 {
@@ -182,121 +217,125 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             },
         );
     });
-    ui.add_space(10.0);
+}
 
-    if compose.confirming_discard() {
-        theme::card(ui)
-            .stroke(egui::Stroke::new(1.0, theme::colors(ui).danger))
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new("Discard unsaved message?")
-                            .strong()
-                            .color(theme::colors(ui).danger),
-                    );
-                    ui.with_layout(
-                        Layout::right_to_left(Align::Center).with_main_wrap(true),
-                        |ui| {
-                            if ui
-                                .add(theme::danger(egui::Button::new("Discard")))
-                                .clicked()
-                            {
-                                messages.push(Message::DiscardCompose);
-                            }
-                            if ui.button("Keep writing").clicked() {
-                                messages.push(Message::CancelDiscard);
-                            }
-                        },
-                    );
-                });
-            });
-        ui.add_space(10.0);
+/// What the Send button says for where the send stands.
+fn send_label(sending: &Sending) -> &'static str {
+    match sending {
+        Sending::InFlight => "Sending…",
+        Sending::Failed(SendError::Unconfirmed) => "Send again",
+        _ => "Send",
     }
+}
 
-    if let Some(answer) = compose.answering() {
-        answered(ui, answer, compose.asks_for_recipients());
-    }
-
-    if compose.asks_for_recipients() {
-        let mut left = line(ui, "To", ComposeField::To, compose, leaving, messages).lost_focus();
-        if compose.showing_more() {
-            left |= line(ui, "Cc", ComposeField::Cc, compose, leaving, messages).lost_focus();
-            left |= line(ui, "Bcc", ComposeField::Bcc, compose, leaving, messages).lost_focus();
-        }
-        // Addresses are looked up once typing has moved on, never per keystroke.
-        if left {
-            messages.push(Message::ComposeRecipientsLeft);
-        }
-        if let Some(notice) = compose.international_notice() {
-            ui.label(egui::RichText::new(notice).color(theme::colors(ui).danger));
-        }
-        if let Some(notice) = compose.protection_notice() {
-            if notice.is_warning() {
-                // A copy that may leave without end-to-end encryption must
-                // stand out from the field labels.
-                ui.label(egui::RichText::new(notice.message()).color(theme::colors(ui).danger));
-            } else {
-                detail(ui, &notice.message());
-            }
-        }
-        let more = if compose.showing_more() {
-            "Fewer options"
-        } else {
-            "More options"
-        };
-        if ui
-            .add_enabled(!leaving, theme::compact_button(more))
-            .clicked()
-        {
-            messages.push(Message::ToggleComposeCopies);
-        }
-        ui.add_space(4.0);
-    }
-    if compose.asks_for_subject() {
-        line(
-            ui,
-            "Subject",
-            ComposeField::Subject,
-            compose,
-            leaving,
-            messages,
-        );
-    }
-    ui.add_space(6.0);
-
-    if !compose.attachments().is_empty() {
-        detail(ui, "Attachments");
-        let sizes = attachment_sizes(ui, compose);
-        for (index, path) in compose.attachments().iter().enumerate() {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Attachment");
-            let size = sizes
-                .get(path)
-                .copied()
-                .flatten()
-                .map(|bytes| format!(" ({})", reader::size_label(bytes)))
-                .unwrap_or_default();
-            ui.horizontal(|ui| {
+/// Asks whether to throw the written message away.
+fn discard_prompt(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
+    theme::card(ui)
+        .stroke(egui::Stroke::new(1.0, theme::colors(ui).danger))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    egui::RichText::new(format!("📎 {name}{size}"))
-                        .color(ui.visuals().text_color()),
+                    egui::RichText::new("Discard unsaved message?")
+                        .strong()
+                        .color(theme::colors(ui).danger),
                 );
-                if ui
-                    .add_enabled(!leaving, theme::compact_button("Remove"))
-                    .clicked()
-                {
-                    messages.push(Message::RemoveComposeAttachment(index));
-                }
+                ui.with_layout(
+                    Layout::right_to_left(Align::Center).with_main_wrap(true),
+                    |ui| {
+                        if ui
+                            .add(theme::danger(egui::Button::new("Discard")))
+                            .clicked()
+                        {
+                            messages.push(Message::DiscardCompose);
+                        }
+                        if ui.button("Keep writing").clicked() {
+                            messages.push(Message::CancelDiscard);
+                        }
+                    },
+                );
             });
-        }
-        ui.add_space(4.0);
+        });
+}
+
+/// To, and Cc and Bcc once asked for; what the typed addresses mean for how
+/// the message is protected; and the button that shows or hides the copies.
+fn recipient_fields(
+    ui: &mut egui::Ui,
+    compose: &Compose,
+    leaving: bool,
+    messages: &mut Vec<Message>,
+) {
+    let mut left = line(ui, "To", ComposeField::To, compose, leaving, messages).lost_focus();
+    if compose.showing_more() {
+        left |= line(ui, "Cc", ComposeField::Cc, compose, leaving, messages).lost_focus();
+        left |= line(ui, "Bcc", ComposeField::Bcc, compose, leaving, messages).lost_focus();
     }
+    // Addresses are looked up once typing has moved on, never per keystroke.
+    if left {
+        messages.push(Message::ComposeRecipientsLeft);
+    }
+    if let Some(notice) = compose.international_notice() {
+        ui.label(egui::RichText::new(notice).color(theme::colors(ui).danger));
+    }
+    if let Some(notice) = compose.protection_notice() {
+        if notice.is_warning() {
+            // A copy that may leave without end-to-end encryption must
+            // stand out from the field labels.
+            ui.label(egui::RichText::new(notice.message()).color(theme::colors(ui).danger));
+        } else {
+            detail(ui, &notice.message());
+        }
+    }
+    let more = if compose.showing_more() {
+        "Fewer options"
+    } else {
+        "More options"
+    };
+    if ui
+        .add_enabled(!leaving, theme::compact_button(more))
+        .clicked()
+    {
+        messages.push(Message::ToggleComposeCopies);
+    }
+}
 
-    ui.add_space(6.0);
+/// The attached files, each with its size and a Remove button.
+fn attachment_list(
+    ui: &mut egui::Ui,
+    compose: &Compose,
+    leaving: bool,
+    messages: &mut Vec<Message>,
+) {
+    detail(ui, "Attachments");
+    let sizes = attachment_sizes(ui, compose);
+    for (index, path) in compose.attachments().iter().enumerate() {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Attachment");
+        let size = sizes
+            .get(path)
+            .copied()
+            .flatten()
+            .map(|bytes| format!(" ({})", reader::size_label(bytes)))
+            .unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("📎 {name}{size}")).color(ui.visuals().text_color()),
+            );
+            if ui
+                .add_enabled(!leaving, theme::compact_button("Remove"))
+                .clicked()
+            {
+                messages.push(Message::RemoveComposeAttachment(index));
+            }
+        });
+    }
+}
 
-    // A send result takes priority over validation hints.
+/// Why the last send failed or, failing that, what still stops this one: a
+/// send result takes priority over validation hints.
+fn send_status(ui: &mut egui::Ui, compose: &Compose, sending: &Sending) {
     match sending {
         Sending::Failed(error) => {
             ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
@@ -307,8 +346,10 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             }
         }
     }
-    ui.add_space(6.0);
+}
 
+/// The message body.
+fn body_editor(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &mut Vec<Message>) {
     let mut body = compose.field(ComposeField::Body).to_owned();
     let response = ui.add_enabled(
         !leaving,
