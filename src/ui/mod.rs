@@ -694,7 +694,7 @@ impl DesktopApp {
         // pass, so what is behind it does not close as well.
         let menu_open = egui::Popup::is_any_open(context);
         let presses = context.input(|input| {
-            let command = input.modifiers.command;
+            let command = input.modifiers.command && !ctrl_alt_types(input.modifiers);
             let plain = !command && !input.modifiers.alt && !input.modifiers.shift;
             let mut presses = Vec::new();
             if command && input.key_pressed(egui::Key::R) {
@@ -1107,7 +1107,9 @@ fn dropped_paths(context: &egui::Context) -> Vec<std::path::PathBuf> {
 fn zoom_keys(context: &egui::Context) -> Option<settings::ZoomStep> {
     use egui::gui_zoom::kb_shortcuts;
     context.input_mut(|input| {
-        if input.consume_shortcut(&kb_shortcuts::ZOOM_RESET) {
+        if ctrl_alt_types(input.modifiers) {
+            None
+        } else if input.consume_shortcut(&kb_shortcuts::ZOOM_RESET) {
             Some(settings::ZoomStep::Reset)
         } else if input.consume_shortcut(&kb_shortcuts::ZOOM_IN)
             || input.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
@@ -1119,6 +1121,12 @@ fn zoom_keys(context: &egui::Context) -> Option<settings::ZoomStep> {
             None
         }
     })
+}
+
+/// On Windows Ctrl+Alt types what AltGr types, as "ń" with N on a Polish
+/// layout, so it takes no Ctrl shortcut there.
+fn ctrl_alt_types(modifiers: egui::Modifiers) -> bool {
+    cfg!(target_os = "windows") && modifiers.command && modifiers.alt
 }
 
 fn key(key: Key, command: bool) -> KeyPress {
@@ -1667,6 +1675,48 @@ mod tests {
         assert_eq!(desktop.settings_draft.as_ref().unwrap().zoom, 1.15);
         // egui no longer zooms on its own, so no frame shows another scale.
         assert_eq!(context.zoom_factor(), 1.0);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ctrl_alt_types_on_windows_instead_of_taking_ctrl_shortcuts() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        theme::install(&context);
+        let mut press = |key, modifiers| {
+            let raw = egui::RawInput {
+                events: vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    },
+                ],
+                ..Default::default()
+            };
+            context
+                .run_ui(raw, |ui| {
+                    desktop.zoom_shortcuts(ui.ctx());
+                    desktop.keyboard_shortcuts(ui.ctx());
+                })
+                .drop_without_applying_deltas();
+            (desktop.app.compose().is_some(), desktop.app.settings().zoom)
+        };
+        let ctrl_alt = egui::Modifiers::COMMAND | egui::Modifiers::ALT;
+
+        // "ń" on a Polish layout, and "}" on a German one.
+        assert_eq!(press(egui::Key::N, ctrl_alt), (false, 1.0));
+        assert_eq!(press(egui::Key::Num0, ctrl_alt), (false, 1.0));
+        assert_eq!(press(egui::Key::Equals, ctrl_alt), (false, 1.0));
+        // Ctrl alone still takes them.
+        assert_eq!(
+            press(egui::Key::Equals, egui::Modifiers::COMMAND),
+            (false, 1.15)
+        );
+        assert_eq!(press(egui::Key::N, egui::Modifiers::COMMAND), (true, 1.15));
     }
 
     #[test]

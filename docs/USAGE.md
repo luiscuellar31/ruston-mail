@@ -386,7 +386,9 @@ always draw with OpenGL.
 
 Shortcuts do not run while a text field is using the same key. When `Tab` has
 put focus on a button or a row, which shows a violet ring, the arrows move that
-focus and `Enter` presses it; `j` and `k` still move through the list.
+focus and `Enter` presses it; `j` and `k` still move through the list. On
+Windows, `Ctrl` + `Alt` with a key runs no `Ctrl` shortcut, since Windows types
+with it what `AltGr` types.
 
 Screen readers announce each conversation row with what it shows: whether it is
 unread, who and what it is about, its date, its star, how many messages it has
