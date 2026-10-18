@@ -1,7 +1,7 @@
 //! Message commands.
 
 use crate::cli::Ctx;
-use crate::cli::{DraftArgs, LabelAction, MessagesCmd};
+use crate::cli::{DraftArgs, EmptyFolder, LabelAction, MessagesCmd, ReadFormat, SendArgs};
 use crate::commands::{read_body, resolve_all, resume};
 use crate::render;
 use crate::terminal;
@@ -137,6 +137,19 @@ fn ask_message_password(mut read: impl FnMut(&str) -> io::Result<String>) -> Res
     Ok(password)
 }
 
+/// The password that protects a message, if any. `--eo-password` without a
+/// value arrives as an empty one and means "ask for it through `read`", so
+/// the password never has to go on the command line.
+fn message_password(
+    given: Option<&str>,
+    read: impl FnMut(&str) -> io::Result<String>,
+) -> Result<Option<String>> {
+    match given {
+        Some("") => ask_message_password(read).map(Some),
+        password => Ok(password.map(str::to_owned)),
+    }
+}
+
 /// A permanent delete needs someone to agree to it: a terminal to ask on, or
 /// `--yes` given up front.
 pub(crate) fn require_consent(ctx: &Ctx, yes: bool) -> Result<()> {
@@ -233,59 +246,8 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             format,
             body_only,
             output,
-        } => {
-            let client = resume(&ctx.profile).await?;
-            let id = client.resolve_ref(&reference).await?;
-            let msg = client.read_message(&id).await?;
-            if let Some(path) = output {
-                write_private(&path, msg.body.as_bytes())?;
-                if !ctx.json {
-                    terminal::println!("Wrote {} bytes to {}", msg.body.len(), path.display());
-                }
-            } else {
-                render::full_message(ctx.json, &msg, format, body_only);
-            }
-            Ok(())
-        }
-        MessagesCmd::Send(mut args) => {
-            let client = resume(&ctx.profile).await?;
-            let message = &mut args.message;
-            if message.from.is_none() && can_prompt(ctx) {
-                let addresses = client.addresses();
-                if addresses.len() > 1 {
-                    message.from = Some(prompt_sender(
-                        &addresses,
-                        &mut io::stdin().lock(),
-                        &mut io::stderr().lock(),
-                    )?);
-                }
-            }
-            let body = read_body(&message.body)?;
-            if !message.html && can_prompt(ctx) && looks_like_html(&body) {
-                message.html = confirm_html(&mut io::stdin().lock(), &mut io::stderr().lock())?;
-            }
-            let opts = SendOptions {
-                send_at: args.send_at,
-                expires_in: args.expires,
-                ..send_options(args.message, body)
-            };
-            let eo_password = match args.eo_password.as_deref() {
-                // Asked for, so it never has to go on the command line.
-                Some("") => Some(ask_message_password(|prompt| {
-                    rpassword::prompt_password(prompt)
-                })?),
-                password => password.map(str::to_owned),
-            };
-            let id = match &eo_password {
-                Some(pw) => client.send_eo(&opts, pw, args.eo_hint.as_deref()).await?,
-                None => client.send(&opts).await?,
-            };
-            match opts.send_at {
-                Some(at) => render::scheduled(ctx.json, &id, at),
-                None => render::sent(ctx.json, &id),
-            }
-            Ok(())
-        }
+        } => read(ctx, &reference, format, body_only, output.as_deref()).await,
+        MessagesCmd::Send(args) => send(ctx, args).await,
         MessagesCmd::Reply {
             reference,
             all,
@@ -343,42 +305,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             })
             .await
         }
-        MessagesCmd::Delete { references, yes } => {
-            require_consent(ctx, yes)?;
-            let client = resume(&ctx.profile).await?;
-            let ids = if yes {
-                resolve_all(&client, &references).await?
-            } else {
-                // A reference can be search text, so show what it matched. A
-                // search hit carries what the list shows; only an ID is fetched.
-                let mut matched = Vec::with_capacity(references.len());
-                for reference in &references {
-                    matched.push(client.resolve_ref_metadata(reference).await?);
-                }
-                let doomed: Vec<String> = matched
-                    .iter()
-                    .map(|meta| {
-                        format!(
-                            "\"{}\" from {} (id {})",
-                            meta.subject, meta.sender.address, meta.id
-                        )
-                    })
-                    .collect();
-                let question = format!(
-                    "Permanently delete {} message(s)? This cannot be undone.",
-                    matched.len()
-                );
-                let mut output = io::stderr().lock();
-                if !confirm_deletion(&doomed, &question, &mut io::stdin().lock(), &mut output)? {
-                    terminal::writeln!(output, "Nothing was deleted.")?;
-                    return Ok(());
-                }
-                matched.into_iter().map(|meta| meta.id).collect()
-            };
-            client.delete_messages(&ids).await?;
-            render::action_result(ctx.json, "delete", &ids);
-            Ok(())
-        }
+        MessagesCmd::Delete { references, yes } => delete(ctx, &references, yes).await,
         MessagesCmd::Mark { state, references } => {
             let read = state.as_bool();
             organize(ctx, &references, "mark", move |c, ids| async move {
@@ -417,24 +344,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             render::action_result(ctx.json, "unsubscribed", std::slice::from_ref(&id));
             Ok(())
         }
-        MessagesCmd::Empty { folder, yes } => {
-            require_consent(ctx, yes)?;
-            if !yes {
-                let question = format!(
-                    "Permanently delete every message in {}? This cannot be undone.",
-                    folder.name()
-                );
-                let mut output = io::stderr().lock();
-                if !confirm_deletion(&[], &question, &mut io::stdin().lock(), &mut output)? {
-                    terminal::writeln!(output, "Nothing was deleted.")?;
-                    return Ok(());
-                }
-            }
-            let client = resume(&ctx.profile).await?;
-            client.empty_folder(folder.as_str()).await?;
-            render::action_result(ctx.json, "emptied", &[folder.as_str().to_owned()]);
-            Ok(())
-        }
+        MessagesCmd::Empty { folder, yes } => empty(ctx, folder, yes).await,
         MessagesCmd::Label {
             action,
             label_id,
@@ -468,6 +378,135 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
     }
 }
 
+/// Shows one message, or writes its body to `output` as a file only its
+/// owner can read.
+async fn read(
+    ctx: &Ctx,
+    reference: &str,
+    format: ReadFormat,
+    body_only: bool,
+    output: Option<&Path>,
+) -> Result<()> {
+    let client = resume(&ctx.profile).await?;
+    let id = client.resolve_ref(reference).await?;
+    let msg = client.read_message(&id).await?;
+    if let Some(path) = output {
+        write_private(path, msg.body.as_bytes())?;
+        if !ctx.json {
+            terminal::println!("Wrote {} bytes to {}", msg.body.len(), path.display());
+        }
+    } else {
+        render::full_message(ctx.json, &msg, format, body_only);
+    }
+    Ok(())
+}
+
+/// Sends a new message. On a terminal it first asks what was left out: the
+/// address to send from, whether a body that looks like HTML is HTML, and a
+/// message password asked for without a value.
+async fn send(ctx: &Ctx, mut args: SendArgs) -> Result<()> {
+    let client = resume(&ctx.profile).await?;
+    choose_sender(ctx, &client, &mut args.message)?;
+    let message = &mut args.message;
+    let body = read_body(&message.body)?;
+    if !message.html && can_prompt(ctx) && looks_like_html(&body) {
+        message.html = confirm_html(&mut io::stdin().lock(), &mut io::stderr().lock())?;
+    }
+    let opts = SendOptions {
+        send_at: args.send_at,
+        expires_in: args.expires,
+        ..send_options(args.message, body)
+    };
+    let eo_password = message_password(args.eo_password.as_deref(), |prompt| {
+        rpassword::prompt_password(prompt)
+    })?;
+    let id = match &eo_password {
+        Some(pw) => client.send_eo(&opts, pw, args.eo_hint.as_deref()).await?,
+        None => client.send(&opts).await?,
+    };
+    match opts.send_at {
+        Some(at) => render::scheduled(ctx.json, &id, at),
+        None => render::sent(ctx.json, &id),
+    }
+    Ok(())
+}
+
+/// With several addresses and a terminal to ask on, asks which one sends a
+/// message that names none.
+fn choose_sender(ctx: &Ctx, client: &Client, message: &mut DraftArgs) -> Result<()> {
+    if message.from.is_none() && can_prompt(ctx) {
+        let addresses = client.addresses();
+        if addresses.len() > 1 {
+            message.from = Some(prompt_sender(
+                &addresses,
+                &mut io::stdin().lock(),
+                &mut io::stderr().lock(),
+            )?);
+        }
+    }
+    Ok(())
+}
+
+/// Deletes messages for good. Unless `yes` was given up front, it first
+/// lists what the references matched and asks.
+async fn delete(ctx: &Ctx, references: &[String], yes: bool) -> Result<()> {
+    require_consent(ctx, yes)?;
+    let client = resume(&ctx.profile).await?;
+    let ids = if yes {
+        resolve_all(&client, references).await?
+    } else {
+        // A reference can be search text, so show what it matched. A
+        // search hit carries what the list shows; only an ID is fetched.
+        let mut matched = Vec::with_capacity(references.len());
+        for reference in references {
+            matched.push(client.resolve_ref_metadata(reference).await?);
+        }
+        let doomed: Vec<String> = matched
+            .iter()
+            .map(|meta| {
+                format!(
+                    "\"{}\" from {} (id {})",
+                    meta.subject, meta.sender.address, meta.id
+                )
+            })
+            .collect();
+        let question = format!(
+            "Permanently delete {} message(s)? This cannot be undone.",
+            matched.len()
+        );
+        let mut output = io::stderr().lock();
+        if !confirm_deletion(&doomed, &question, &mut io::stdin().lock(), &mut output)? {
+            terminal::writeln!(output, "Nothing was deleted.")?;
+            return Ok(());
+        }
+        matched.into_iter().map(|meta| meta.id).collect()
+    };
+    client.delete_messages(&ids).await?;
+    render::action_result(ctx.json, "delete", &ids);
+    Ok(())
+}
+
+/// Deletes every message in `folder` for good, after asking unless `yes`
+/// was given up front.
+async fn empty(ctx: &Ctx, folder: EmptyFolder, yes: bool) -> Result<()> {
+    require_consent(ctx, yes)?;
+    if !yes {
+        let question = format!(
+            "Permanently delete every message in {}? This cannot be undone.",
+            folder.name()
+        );
+        let mut output = io::stderr().lock();
+        if !confirm_deletion(&[], &question, &mut io::stdin().lock(), &mut output)? {
+            terminal::writeln!(output, "Nothing was deleted.")?;
+            return Ok(());
+        }
+    }
+    let client = resume(&ctx.profile).await?;
+    client.empty_folder(folder.as_str()).await?;
+    render::action_result(ctx.json, "emptied", &[folder.as_str().to_owned()]);
+    Ok(())
+}
+
 /// Resolve references, run a bulk action over the resulting IDs, and report.
 async fn organize<F, Fut>(ctx: &Ctx, refs: &[String], action: &str, op: F) -> Result<()>
 where
@@ -484,8 +523,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ask_message_password, confirm_deletion, confirm_html, looks_like_html, prompt_sender,
-        require_consent, write_private,
+        ask_message_password, confirm_deletion, confirm_html, looks_like_html, message_password,
+        prompt_sender, require_consent, write_private,
     };
     use crate::cli::Ctx;
     use ruston_core::AddressInfo;
@@ -624,6 +663,27 @@ mod tests {
         );
         assert!(ask_message_password(typed(&["s3cret", "s3creT"])).is_err());
         assert!(ask_message_password(typed(&[""])).is_err());
+    }
+
+    #[test]
+    fn only_an_empty_message_password_is_asked_for() {
+        let asked = std::cell::Cell::new(0);
+        let typed = |_prompt: &str| {
+            asked.set(asked.get() + 1);
+            Ok::<_, io::Error>("s3cret".to_owned())
+        };
+        assert_eq!(
+            message_password(Some(""), typed).unwrap().as_deref(),
+            Some("s3cret")
+        );
+        assert_eq!(asked.get(), 2);
+
+        let never = |_prompt: &str| -> io::Result<String> { panic!("nothing to ask") };
+        assert_eq!(
+            message_password(Some("given"), never).unwrap().as_deref(),
+            Some("given")
+        );
+        assert_eq!(message_password(None, never).unwrap(), None);
     }
 
     #[test]
