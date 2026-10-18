@@ -1,6 +1,6 @@
 //! Local SQLite cache of message metadata, indexed bodies, and the sync cursor.
 
-use crate::api::events::{EventBatch, action};
+use crate::api::events::{EventBatch, MessageEvent, action};
 use crate::error::{Error, Result};
 use crate::model::message::MessageMetadata;
 use crate::session::validate_profile_name;
@@ -152,6 +152,41 @@ fn delete_message(conn: &Connection, id: &str) -> Result<()> {
     }
     conn.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
         .map_err(map)?;
+    Ok(())
+}
+
+/// Applies one event of a batch, adding what it changed to `counts`.
+fn apply_message_event(
+    conn: &Connection,
+    event: &MessageEvent,
+    counts: &mut BatchCounts,
+) -> Result<()> {
+    match (event.action, &event.message) {
+        (action::DELETE, _) => {
+            delete_message(conn, &event.id)?;
+            counts.deleted += 1;
+        }
+        (action::CREATE, Some(message)) => {
+            upsert_message(conn, message)?;
+            counts.created += 1;
+        }
+        (action::UPDATE, message) => {
+            // Events carry metadata, not the decrypted body.
+            conn.execute(DELETE_INDEX_SQL, [&event.id]).map_err(map)?;
+            if let Some(message) = message {
+                upsert_message(conn, message)?;
+                counts.updated += 1;
+            }
+        }
+        (action::UPDATE_FLAGS, Some(message)) => {
+            upsert_metadata(conn, message)?;
+            counts.updated += 1;
+            counts.flags_updated += 1;
+        }
+        // Unknown actions, and events without the message they need, change
+        // nothing; the batch's cursor still moves past them.
+        _ => {}
+    }
     Ok(())
 }
 
@@ -586,35 +621,8 @@ impl Cache {
         }
 
         let mut counts = BatchCounts::default();
-        for ev in &batch.messages {
-            match ev.action {
-                action::DELETE => {
-                    delete_message(&tx, &ev.id)?;
-                    counts.deleted += 1;
-                }
-                action::CREATE | action::UPDATE => {
-                    if ev.action == action::UPDATE {
-                        // Events carry metadata, not the decrypted body.
-                        tx.execute(DELETE_INDEX_SQL, [&ev.id]).map_err(map)?;
-                    }
-                    if let Some(m) = &ev.message {
-                        upsert_message(&tx, m)?;
-                        if ev.action == action::CREATE {
-                            counts.created += 1;
-                        } else {
-                            counts.updated += 1;
-                        }
-                    }
-                }
-                action::UPDATE_FLAGS => {
-                    if let Some(m) = &ev.message {
-                        upsert_metadata(&tx, m)?;
-                        counts.updated += 1;
-                        counts.flags_updated += 1;
-                    }
-                }
-                _ => {}
-            }
+        for event in &batch.messages {
+            apply_message_event(&tx, event, &mut counts)?;
         }
         tx.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
@@ -1334,6 +1342,57 @@ mod tests {
         drop(slow);
         drop(fast);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn events_change_only_what_their_action_and_message_allow() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        cache
+            .index_message(&meta("indexed", "0", 0, 1), "privatebody")
+            .unwrap();
+        cache.upsert_message(&meta("flagged", "0", 0, 2)).unwrap();
+        let event = |id: &str, code, message| MessageEvent {
+            id: id.into(),
+            action: code,
+            message,
+        };
+        let batch = event_batch(
+            "new",
+            vec![
+                event("created", action::CREATE, Some(meta("created", "0", 1, 3))),
+                event("missing", action::CREATE, None),
+                // An update drops the indexed body even without its message.
+                event("indexed", action::UPDATE, None),
+                event("flagged", action::UPDATE_FLAGS, None),
+                event("unknown", 9, Some(meta("unknown", "0", 1, 4))),
+            ],
+        );
+
+        assert_eq!(
+            cache.apply_event_batch("old", &batch).unwrap(),
+            BatchCounts {
+                created: 1,
+                ..BatchCounts::default()
+            }
+        );
+        let listed: Vec<(String, i64)> = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.id, m.unread))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("created".to_owned(), 1),
+                ("flagged".to_owned(), 0),
+                ("indexed".to_owned(), 0)
+            ]
+        );
+        assert!(cache.search("privatebody", 10).unwrap().is_empty());
+        // The cursor moves past every event, the unknown one included.
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("new"));
     }
 
     #[test]
