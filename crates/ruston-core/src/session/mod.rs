@@ -161,9 +161,12 @@ impl Session {
         skp: &SecretString,
     ) -> Result<()> {
         let _lock = Self::lock(paths, profile)?;
+        // The previous login's secrets go before any of this one is written,
+        // so a save that fails part way leaves no earlier tokens beside this
+        // session's metadata and API address, where they would be sent.
+        store.delete(K_TOKENS)?;
+        store.delete(K_SKP)?;
         self.write_metadata(paths, profile)?;
-
-        // Bound first: tokens never sit beside an address they were not issued for.
         store.set(K_BASE_URL, &self.base_url)?;
         Self::save_tokens(
             store,
@@ -577,6 +580,52 @@ mod tests {
         let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
         assert_eq!(loaded.tokens.access.expose_secret(), "old-access");
         assert_eq!(loaded.tokens.refresh.expose_secret(), "old-refresh");
+    }
+
+    #[test]
+    fn a_login_whose_token_write_fails_leaves_no_earlier_tokens_behind() {
+        let paths = Paths::with_base(unique_base());
+        let store = RejectTokenWrites::default();
+        let session = |uid: &str, base_url: &str| Session {
+            uid: uid.into(),
+            app_version: "Other".into(),
+            base_url: base_url.into(),
+            password_mode: 1,
+            user_agent: None,
+            user_id: None,
+        };
+        let tokens = |uid: &str| Tokens {
+            uid: uid.into(),
+            access: SecretString::from(format!("{uid}-access")),
+            refresh: SecretString::from(format!("{uid}-refresh")),
+        };
+        session("UID1", "https://mail.proton.me/api")
+            .save(
+                &paths,
+                "default",
+                &store,
+                &tokens("UID1"),
+                &SecretString::from("skp1"),
+            )
+            .unwrap();
+
+        // A later login to another API address fails at the token write.
+        store.reject.store(true, Ordering::Relaxed);
+        assert!(
+            session("UID2", "https://other.example/api")
+                .save(
+                    &paths,
+                    "default",
+                    &store,
+                    &tokens("UID2"),
+                    &SecretString::from("skp2")
+                )
+                .is_err()
+        );
+        // UID1's tokens must not be resumed for, and sent to, the new address.
+        assert!(Session::load(&paths, "default", &store).unwrap().is_none());
+        assert!(store.get(K_TOKENS).unwrap().is_none());
+        assert!(store.get(K_SKP).unwrap().is_none());
     }
 
     #[test]

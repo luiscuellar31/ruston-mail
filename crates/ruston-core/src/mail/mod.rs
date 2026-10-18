@@ -652,7 +652,9 @@ mod tests {
         }
 
         fn delete(&self, key: &str) -> Result<()> {
-            if key == "auth_tokens_v1" {
+            // Saving a session clears its entries first, while they are
+            // still empty; only removing saved tokens fails.
+            if key == "auth_tokens_v1" && self.0.get(key)?.is_some() {
                 return Err(Error::Session("simulated keyring delete failure".into()));
             }
             self.0.delete(key)
@@ -701,12 +703,15 @@ mod tests {
         }
 
         fn delete(&self, key: &str) -> Result<()> {
-            if key == "auth_tokens_v1" {
+            // Saving the session clears its entries first, while they are
+            // still empty; only removing what was saved pauses and counts.
+            let saved = self.inner.get(key)?.is_some();
+            if key == "auth_tokens_v1" && saved {
                 self.entered.notify_one();
                 self.release.lock().unwrap().recv().unwrap();
             }
             self.inner.delete(key)?;
-            if key == "skp" {
+            if key == "skp" && saved {
                 self.finished.notify_one();
             }
             Ok(())

@@ -213,7 +213,9 @@ Access and refresh tokens are saved together in one credential-store entry.
 The API address the session was created for is saved beside them. A session
 file that names a different address is not resumed; sign in again to replace
 it. Sessions saved before this record existed resume only on the default
-Proton API address.
+Proton API address. Signing in removes the previous session's tokens and key
+passphrase before saving anything of the new one, so a save that fails part
+way leaves no session to resume, rather than old tokens beside a new address.
 If the credential store is locked or rejects a token refresh, the request
 reports that Ruston Mail could not access the saved session, and the desktop
 stays signed in so the next request can succeed once the store is unlocked.
