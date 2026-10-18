@@ -104,7 +104,7 @@ impl App {
                     return Effects::none();
                 };
 
-                Effects::batch([self.reveal_in_list(&next), self.select_conversation(next)])
+                self.open_row(next)
             }
             Shortcut::Open => {
                 let Some(selected) = self

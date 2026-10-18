@@ -55,7 +55,7 @@ pub struct ActionRequest {
 pub struct ReadCompletion {
     /// Whether Proton took the read, which changes its counts, whether or
     /// not the row is still listed here.
-    pub changed: bool,
+    pub read_confirmed: bool,
     /// An explicit read that waited for this one, or, when this read failed
     /// and took that read down with it, the action waiting behind them.
     pub next_action: Option<ActionRequest>,
@@ -76,7 +76,7 @@ pub struct ActionStart {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ActionFinish {
     pub result: Result<(), MailboxError>,
-    pub next: Option<ActionRequest>,
+    pub next_action: Option<ActionRequest>,
     /// The row opened in place of one a reload had brought back while its
     /// move was on the way.
     pub opened: Option<String>,
@@ -369,7 +369,7 @@ pub struct Mailbox {
     search_deferred: bool,
     /// The action on its way to Proton, or waiting for an automatic read of
     /// the same row.
-    action_request: Option<ActionRequest>,
+    action_in_flight: Option<ActionRequest>,
     /// Actions asked for while another was on its way, in the order asked.
     /// Each already shows; they are sent one at a time, so taking a move back
     /// always follows the move.
@@ -382,7 +382,7 @@ pub struct Mailbox {
     undo: Option<UndoMove>,
     /// Automatic reads in flight, by row. Explicit read mutations on the same
     /// row wait here without blocking independent rows or other action kinds.
-    pending_reads: HashMap<String, RequestId>,
+    automatic_reads: HashMap<String, RequestId>,
     /// Where rows moved without leaving the view now are. Starred and labels
     /// list mail wherever it sits, so a conversation moved to another folder
     /// stays in them, and only this says where it went.
@@ -421,12 +421,12 @@ impl Mailbox {
             search: None,
             search_request: None,
             search_deferred: false,
-            action_request: None,
+            action_in_flight: None,
             waiting_actions: VecDeque::new(),
             shown_flags: HashMap::new(),
             action_error: None,
             undo: None,
-            pending_reads: HashMap::new(),
+            automatic_reads: HashMap::new(),
             relocated: HashMap::new(),
         };
         let page = mailbox.page_request(page_request, 0);
@@ -861,7 +861,7 @@ impl Mailbox {
 
     #[cfg(test)]
     pub fn action_pending(&self) -> bool {
-        self.action_request.is_some()
+        self.action_in_flight.is_some()
     }
 
     pub fn action_error(&self) -> Option<MailboxError> {
@@ -873,15 +873,15 @@ impl Mailbox {
     }
 
     pub(super) fn auto_refresh_available(&self) -> bool {
-        !self.is_busy() && self.action_request.is_none() && self.pending_reads.is_empty()
+        !self.is_busy() && self.action_in_flight.is_none() && self.automatic_reads.is_empty()
     }
 
     /// Changes shown here that Proton has not confirmed yet: the action on its
     /// way, those waiting behind it, and automatic reads.
     pub fn unsent_changes(&self) -> usize {
-        usize::from(self.action_request.is_some())
+        usize::from(self.action_in_flight.is_some())
             + self.waiting_actions.len()
-            + self.pending_reads.len()
+            + self.automatic_reads.len()
     }
 
     pub(super) fn needs_revalidation(&self) -> bool {
@@ -1070,30 +1070,48 @@ impl Mailbox {
         };
         let row = self.row(reader.conversation_id())?;
         if !row.unread
-            || self.pending_reads.contains_key(&row.id)
-            || self
-                .action_request
-                .iter()
-                .chain(&self.waiting_actions)
-                .any(|action| {
-                    action.row_id == row.id && matches!(action.action, MailAction::SetUnread(_))
-                })
+            || self.automatic_reads.contains_key(&row.id)
+            || self.read_change_queued(&row.id)
         {
             return None;
         }
         let (row_id, kind) = (row.id.clone(), row.kind);
 
-        let request = ActionRequest {
-            id: request,
+        let request = self.new_action_request(request, row_id, kind, MailAction::SetUnread(false));
+        self.automatic_reads
+            .insert(request.row_id.clone(), request.id);
+        Some(request)
+    }
+
+    /// An action on `row_id` started from the open folder, read by Proton in
+    /// that folder while the row is listed there.
+    fn new_action_request(
+        &self,
+        id: RequestId,
+        row_id: String,
+        kind: SummaryKind,
+        action: MailAction,
+    ) -> ActionRequest {
+        ActionRequest {
+            id,
             context: self.listed_in_folder(&row_id).then(|| self.folder.clone()),
             row_id,
             kind,
             folder: self.folder.clone(),
-            action: MailAction::SetUnread(false),
-        };
-        self.pending_reads
-            .insert(request.row_id.clone(), request.id);
-        Some(request)
+            action,
+        }
+    }
+
+    /// The action on its way to Proton, then those waiting behind it, in
+    /// the order they go.
+    fn queued_actions(&self) -> impl Iterator<Item = &ActionRequest> {
+        self.action_in_flight.iter().chain(&self.waiting_actions)
+    }
+
+    /// Whether an explicit read or unread of `row_id` is on its way or waits.
+    fn read_change_queued(&self, row_id: &str) -> bool {
+        self.queued_actions()
+            .any(|action| action.row_id == row_id && action.action.changes_read())
     }
 
     /// Applies a confirmed automatic read and releases a queued explicit read
@@ -1106,22 +1124,22 @@ impl Mailbox {
         request: &ActionRequest,
         result: Result<(), MailboxError>,
     ) -> ReadCompletion {
-        if self.pending_reads.get(&request.row_id) != Some(&request.id) {
+        if self.automatic_reads.get(&request.row_id) != Some(&request.id) {
             return ReadCompletion::default();
         }
-        self.pending_reads.remove(&request.row_id);
+        self.automatic_reads.remove(&request.row_id);
+        // Only the head of the queue can be waiting for this read: anything
+        // behind it waits for the head first.
         let waiting = self
-            .action_request
+            .action_in_flight
             .as_ref()
-            .filter(|action| {
-                action.row_id == request.row_id && matches!(action.action, MailAction::SetUnread(_))
-            })
+            .filter(|action| action.row_id == request.row_id && action.action.changes_read())
             .cloned();
         if let Err(error) = result {
             let next_action =
-                waiting.and_then(|action| self.finish_action(&action, Err(error)).next);
+                waiting.and_then(|action| self.finish_action(&action, Err(error)).next_action);
             return ReadCompletion {
-                changed: false,
+                read_confirmed: false,
                 next_action,
                 error: Some(error),
             };
@@ -1136,7 +1154,7 @@ impl Mailbox {
         }
 
         ReadCompletion {
-            changed: true,
+            read_confirmed: true,
             next_action: waiting,
             error: None,
         }
@@ -1205,21 +1223,14 @@ impl Mailbox {
             return None;
         }
 
-        let request = ActionRequest {
-            id: request,
-            context: self.listed_in_folder(&row_id).then(|| self.folder.clone()),
-            row_id,
-            kind,
-            folder: self.folder.clone(),
-            action,
-        };
+        let request = self.new_action_request(request, row_id, kind, action);
         self.action_error = None;
         let opened = self.show_action(&request);
-        if self.action_request.is_some() {
+        if self.action_in_flight.is_some() {
             self.waiting_actions.push_back(request);
             return Some(ActionStart { send: None, opened });
         }
-        self.action_request = Some(request.clone());
+        self.action_in_flight = Some(request.clone());
         Some(ActionStart {
             send: self.ready_to_send(&request).then_some(request),
             opened,
@@ -1229,8 +1240,7 @@ impl Mailbox {
     /// Whether a request can go now: a read mutation waits for an automatic
     /// read of the same row already on its way.
     fn ready_to_send(&self, request: &ActionRequest) -> bool {
-        !(matches!(request.action, MailAction::SetUnread(_))
-            && self.pending_reads.contains_key(&request.row_id))
+        !(request.action.changes_read() && self.automatic_reads.contains_key(&request.row_id))
     }
 
     /// Shows an action before Proton confirms it. A move out of the view takes
@@ -1270,16 +1280,16 @@ impl Mailbox {
         request: &ActionRequest,
         result: Result<(), MailboxError>,
     ) -> ActionFinish {
-        if self.action_request.as_ref() != Some(request) {
+        if self.action_in_flight.as_ref() != Some(request) {
             return ActionFinish {
                 result: Ok(()),
-                next: None,
+                next_action: None,
                 opened: None,
             };
         }
-        self.action_request = self.waiting_actions.pop_front();
-        let next = self
-            .action_request
+        self.action_in_flight = self.waiting_actions.pop_front();
+        let next_action = self
+            .action_in_flight
             .clone()
             .filter(|next| self.ready_to_send(next));
         let before = self.shown_flags.remove(&request.id);
@@ -1289,7 +1299,7 @@ impl Mailbox {
             self.take_back(request, before);
             return ActionFinish {
                 result: Err(error),
-                next,
+                next_action,
                 opened: None,
             };
         }
@@ -1297,7 +1307,7 @@ impl Mailbox {
         if request.folder != self.folder {
             return ActionFinish {
                 result: Ok(()),
-                next,
+                next_action,
                 opened: None,
             };
         }
@@ -1322,7 +1332,7 @@ impl Mailbox {
         }
         ActionFinish {
             result: Ok(()),
-            next,
+            next_action,
             opened,
         }
     }
@@ -1356,14 +1366,10 @@ impl Mailbox {
     /// Whether an action asked for later changes the same thing on the same
     /// row, so that what it shows is what stays.
     fn superseded(&self, request: &ActionRequest) -> bool {
-        self.action_request
-            .iter()
-            .chain(&self.waiting_actions)
-            .any(|later| {
-                later.row_id == request.row_id
-                    && std::mem::discriminant(&later.action)
-                        == std::mem::discriminant(&request.action)
-            })
+        self.queued_actions().any(|later| {
+            later.row_id == request.row_id
+                && std::mem::discriminant(&later.action) == std::mem::discriminant(&request.action)
+        })
     }
 
     /// Whether a refused action had taken its row out of the view on screen,

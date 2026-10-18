@@ -1141,9 +1141,9 @@ impl App {
         let send = start.send.map_or_else(Effects::none, |request| {
             run_action(Arc::clone(service), request, Message::ActionFinished)
         });
-        let open = start.opened.map_or_else(Effects::none, |id| {
-            Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
-        });
+        let open = start
+            .opened
+            .map_or_else(Effects::none, |id| self.open_row(id));
         Effects::batch([send, open])
     }
 
@@ -1185,9 +1185,9 @@ impl App {
             } else {
                 Effects::none()
             };
-            return Effects::batch([self.send_action(finish.next), reload]);
+            return Effects::batch([self.send_action(finish.next_action), reload]);
         }
-        let send_next = self.send_action(finish.next);
+        let send_next = self.send_action(finish.next_action);
 
         // Reload only when undo returns a missing row to the visible folder.
         let arrived = self
@@ -1199,9 +1199,9 @@ impl App {
         }
 
         let counts = self.reload_counts();
-        let open_next = finish.opened.map_or_else(Effects::none, |id| {
-            Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
-        });
+        let open_next = finish
+            .opened
+            .map_or_else(Effects::none, |id| self.open_row(id));
 
         Effects::batch([send_next, counts, open_next])
     }
@@ -1290,7 +1290,7 @@ impl App {
             return self.send_action(completion.next_action);
         }
         let next = self.send_action(completion.next_action);
-        let counts = if completion.changed {
+        let counts = if completion.read_confirmed {
             self.reload_counts()
         } else {
             Effects::none()
@@ -1328,6 +1328,13 @@ impl App {
         // A new conversation starts at its top, not where the last one was
         // left; the reader pane keeps its scroll offset otherwise.
         Effects::batch([Effects::ui(UiEffect::ScrollReaderTop), content])
+    }
+
+    /// Opens a row the user did not click, such as the neighbour a list key
+    /// reaches or the one after a row a move took away, and brings it into
+    /// view.
+    fn open_row(&mut self, id: String) -> Effects {
+        Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
     }
 
     /// Brings a row the app opened on its own into view. A row the user

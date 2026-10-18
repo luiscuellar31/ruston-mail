@@ -581,7 +581,7 @@ fn a_search_result_is_marked_read_like_any_other_row() {
         .expect("opening a search result marks it read");
     assert_eq!(request.context, None);
 
-    assert!(mailbox.finish_mark_read(&request, Ok(())).changed);
+    assert!(mailbox.finish_mark_read(&request, Ok(())).read_confirmed);
     assert!(!mailbox.selected_summary().unwrap().unread);
 }
 
@@ -1701,7 +1701,7 @@ fn opened_unread_rows_are_marked_read_once_confirmed() {
     assert_eq!(mailbox.start_mark_read(4), None);
     assert!(mailbox.selected_summary().unwrap().unread);
 
-    assert!(mailbox.finish_mark_read(&request, Ok(())).changed);
+    assert!(mailbox.finish_mark_read(&request, Ok(())).read_confirmed);
     assert!(!mailbox.selected_summary().unwrap().unread);
     assert_eq!(mailbox.start_mark_read(5), None);
 }
@@ -1801,6 +1801,83 @@ fn failed_automatic_reads_fail_the_queued_action_without_sending_it() {
 }
 
 #[test]
+fn a_read_change_queued_behind_another_action_still_waits_for_the_automatic_read() {
+    let mut mailbox = opened_unread(&["a"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    // A star does not wait for the read; the explicit unread queues behind it.
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    assert_eq!(
+        mailbox.start_action(MailAction::SetUnread(true), 5),
+        Some(ActionStart::default())
+    );
+
+    // Once the star answers, the unread is next in line but still waits.
+    assert_eq!(mailbox.finish_action(&star, Ok(())).next_action, None);
+    assert!(mailbox.action_pending());
+    let completion = mailbox.finish_mark_read(&read, Ok(()));
+    assert!(completion.read_confirmed);
+    assert_eq!(completion.next_action.map(|action| action.id), Some(5));
+}
+
+#[test]
+fn a_read_change_queued_behind_another_action_waits_for_it_after_the_read() {
+    let mut mailbox = opened_unread(&["a"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    mailbox
+        .start_action(MailAction::SetUnread(true), 5)
+        .unwrap();
+
+    // The read answers first: the unread still waits for the star.
+    assert_eq!(mailbox.finish_mark_read(&read, Ok(())).next_action, None);
+    let next = mailbox.finish_action(&star, Ok(())).next_action.unwrap();
+    assert_eq!(next.id, 5);
+}
+
+#[test]
+fn a_failed_automatic_read_still_sends_the_action_behind_the_one_it_failed() {
+    let mut mailbox = opened_unread(&["a", "b"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    assert_eq!(
+        mailbox.start_action(MailAction::SetUnread(true), 4),
+        Some(ActionStart::default())
+    );
+    let star = mailbox
+        .start_action_on(
+            "b".into(),
+            SummaryKind::Conversation,
+            MailAction::SetStarred(true),
+            5,
+        )
+        .unwrap();
+    assert_eq!(star.send, None);
+
+    let completion = mailbox.finish_mark_read(&read, Err(MailboxError::Connection));
+    assert_eq!(completion.error, Some(MailboxError::Connection));
+    // The unread fails with the read, and the star of the other row goes.
+    let next = completion.next_action.unwrap();
+    assert_eq!((next.id, next.row_id.as_str()), (5, "b"));
+}
+
+#[test]
+fn a_later_change_of_the_same_flag_decides_what_the_row_shows() {
+    for result in [Ok(()), Err(MailboxError::Connection)] {
+        let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
+        let star = send(&mut mailbox, MailAction::SetStarred(true), 3);
+        // Unstarred again while the star is on its way.
+        let unstar = mailbox
+            .start_action(MailAction::SetStarred(false), 4)
+            .unwrap();
+        assert_eq!(unstar.send, None);
+
+        // Whatever Proton says to the star, the row keeps the later choice.
+        let next = mailbox.finish_action(&star, result).next_action.unwrap();
+        assert_eq!(next.id, 4);
+        assert!(!mailbox.selected_summary().unwrap().starred, "{result:?}");
+    }
+}
+
+#[test]
 fn a_failed_explicit_unread_keeps_the_confirmed_automatic_read() {
     let mut mailbox = opened_unread(&["a"], "a");
     let read = mailbox.start_mark_read(3).unwrap();
@@ -1866,7 +1943,7 @@ fn queued_read_actions_keep_their_original_folder_after_navigation() {
     mailbox.finish_page(5, page(&["b"], 1));
 
     let completion = mailbox.finish_mark_read(&read, Ok(()));
-    assert!(completion.changed, "Proton's counts changed");
+    assert!(completion.read_confirmed, "Proton's counts changed");
     let action = completion.next_action.unwrap();
     assert_eq!(action.context, Some(Folder::INBOX));
     assert_eq!(action.folder, Folder::INBOX);
@@ -1903,7 +1980,7 @@ fn explicit_unread_wins_over_an_automatic_read() {
         );
 
         let completion = mailbox.finish_mark_read(&read, Ok(()));
-        assert!(completion.changed);
+        assert!(completion.read_confirmed);
         assert!(!mailbox.selected_summary().unwrap().unread);
         let unread = completion
             .next_action
@@ -1931,7 +2008,7 @@ fn reads_after_a_folder_switch_change_only_the_counts() {
     assert_eq!(
         mailbox.finish_mark_read(&request, Ok(())),
         ReadCompletion {
-            changed: true,
+            read_confirmed: true,
             ..ReadCompletion::default()
         }
     );
@@ -1951,7 +2028,7 @@ fn automatic_refresh_waits_for_pending_mail_changes() {
 
     let read = mailbox.start_mark_read(3).unwrap();
     assert!(!mailbox.auto_refresh_available());
-    assert!(mailbox.finish_mark_read(&read, Ok(())).changed);
+    assert!(mailbox.finish_mark_read(&read, Ok(())).read_confirmed);
 
     let action = send(&mut mailbox, MailAction::SetStarred(true), 4);
     assert!(!mailbox.auto_refresh_available());
@@ -2083,11 +2160,11 @@ fn an_action_asked_for_while_another_is_on_its_way_waits_its_turn() {
         .unwrap();
     assert_eq!(trash.opened.as_deref(), Some("c"));
 
-    let next = mailbox.finish_action(&star, Ok(())).next.unwrap();
+    let next = mailbox.finish_action(&star, Ok(())).next_action.unwrap();
     assert_eq!((next.id, next.row_id.as_str()), (4, "a"));
-    let last = mailbox.finish_action(&next, Ok(())).next.unwrap();
+    let last = mailbox.finish_action(&next, Ok(())).next_action.unwrap();
     assert_eq!((last.id, last.row_id.as_str()), (5, "b"));
-    assert_eq!(mailbox.finish_action(&last, Ok(())).next, None);
+    assert_eq!(mailbox.finish_action(&last, Ok(())).next_action, None);
     assert!(!mailbox.action_pending());
 }
 
@@ -2108,7 +2185,7 @@ fn taking_a_move_back_goes_after_the_move() {
         .unwrap();
     assert_eq!(back.send, None, "the move back waits for the move");
 
-    let next = mailbox.finish_action(&archive, Ok(())).next.unwrap();
+    let next = mailbox.finish_action(&archive, Ok(())).next_action.unwrap();
     assert_eq!(next.id, 4);
     assert_eq!(next.action, MailAction::MoveTo(Folder::INBOX));
 }
@@ -2147,7 +2224,7 @@ fn stale_or_moved_action_responses_change_nothing() {
 
     let finish = mailbox.finish_action(&stale, Ok(()));
     assert_eq!(
-        (finish.result, finish.next, finish.opened),
+        (finish.result, finish.next_action, finish.opened),
         (Ok(()), None, None)
     );
     assert_eq!(ids(&mailbox), ["b"]);

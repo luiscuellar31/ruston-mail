@@ -2051,6 +2051,27 @@ fn list_keys_wait_while_the_draft_covers_the_reader() {
     );
 }
 
+#[test]
+fn the_row_a_list_key_opens_is_brought_into_view() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-0");
+
+    let effects = app.update(Message::KeyPressed(KeyPress {
+        key: Key::Character('j'),
+        command: false,
+        other_modifier: false,
+    }));
+
+    assert_eq!(
+        app.mailbox().unwrap().selected_conversation(),
+        Some("demo-1")
+    );
+    assert!(effects.into_iter().any(|effect| matches!(
+        effect,
+        Effect::Ui(UiEffect::RevealConversation(ref id)) if id == "demo-1"
+    )));
+}
+
 fn is_unread(app: &App, id: &str) -> bool {
     app.mailbox()
         .unwrap()
@@ -2146,7 +2167,7 @@ fn changes_on_their_way_to_proton_count_until_they_arrive() {
             .unwrap()
             .finish_action(&request, Ok(()))
     };
-    let next = finish(&mut app, sent).next.unwrap();
+    let next = finish(&mut app, sent).next_action.unwrap();
     assert_eq!(app.unsent_changes(), 1);
     let _ = finish(&mut app, next);
     assert_eq!(app.unsent_changes(), 0);

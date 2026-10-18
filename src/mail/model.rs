@@ -427,6 +427,12 @@ impl MailAction {
             Self::SetUnread(_) | Self::SetStarred(_) | Self::SetLabel { .. } => None,
         }
     }
+
+    /// Whether the action marks the row read or unread, as an automatic read
+    /// of the same row does.
+    pub fn changes_read(&self) -> bool {
+        matches!(self, Self::SetUnread(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
