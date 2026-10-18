@@ -541,7 +541,7 @@ fn conversation_pane(
     if !mailbox.search_query().is_empty() {
         detail(
             ui,
-            &search_scope_label(mailbox.search_results(), mailbox.loaded_count()),
+            &search_scope_label(mailbox.shown_search_query(), mailbox.loaded_count()),
         );
     }
     ui.add_space(4.0);
@@ -554,10 +554,10 @@ fn conversation_pane(
             state_message(ui, error.message(), theme::colors(ui).danger);
             try_again(ui, attempt, messages);
         }),
-        (_, true) if mailbox.search_results().is_some() => empty_state(ui, |ui| {
+        (_, true) if mailbox.shown_search_query().is_some() => empty_state(ui, |ui| {
             state_message(ui, "Proton found no mail matching that.", muted);
         }),
-        (_, true) if mailbox.is_searching() => empty_state(ui, |ui| {
+        (_, true) if mailbox.has_search_text() => empty_state(ui, |ui| {
             state_message(ui, "No matches in the conversations loaded so far.", muted);
             detail(ui, "Press Enter to search all of your mail.");
             load_more(ui, mailbox, messages);
@@ -764,7 +764,7 @@ impl ConversationScroll {
             scroll_id,
             folder: mailbox.folder().clone(),
             query: mailbox.search_query().to_owned(),
-            search: mailbox.search_results().map(str::to_owned),
+            search: mailbox.shown_search_query().map(str::to_owned),
             offset,
             anchors: std::array::from_fn(|extra| {
                 let index = first + extra;
@@ -791,7 +791,7 @@ impl ConversationScroll {
         self.scroll_id == scroll_id
             && &self.folder == mailbox.folder()
             && self.query == mailbox.search_query()
-            && self.search.as_deref() == mailbox.search_results()
+            && self.search.as_deref() == mailbox.shown_search_query()
     }
 
     fn offset_after_update(&self, mailbox: &Mailbox, scroll_id: egui::Id) -> Option<f32> {

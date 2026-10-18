@@ -141,7 +141,7 @@ impl App {
                     return Effects::none();
                 }
                 if let Some(mailbox) = self.active_mailbox() {
-                    if mailbox.is_searching() {
+                    if mailbox.has_search_text() {
                         mailbox.set_search_query(String::new());
                     } else {
                         mailbox.close_reader();

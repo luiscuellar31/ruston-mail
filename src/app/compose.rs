@@ -185,7 +185,7 @@ pub struct Compose {
     protection: HashMap<String, Checked>,
     /// Whether the copy fields are on show. They start hidden: most mail goes
     /// to one person.
-    more: bool,
+    copies_shown: bool,
     state: Sending,
     confirming_discard: bool,
 }
@@ -313,8 +313,8 @@ impl Compose {
             .retain(|address, _| typed.contains(address.as_str()));
     }
 
-    pub fn showing_more(&self) -> bool {
-        self.more
+    pub fn showing_copies(&self) -> bool {
+        self.copies_shown
     }
 
     pub fn confirming_discard(&self) -> bool {
@@ -593,7 +593,7 @@ impl App {
 
     pub(super) fn toggle_compose_copies(&mut self) {
         if let Some(compose) = self.compose.as_mut() {
-            compose.more = !compose.more;
+            compose.copies_shown = !compose.copies_shown;
         }
     }
 

@@ -1303,7 +1303,7 @@ impl App {
         let counts_request = self.next_request();
         let counts = self
             .active_mailbox()
-            .and_then(|mailbox| mailbox.refresh_counts(counts_request));
+            .map(|mailbox| mailbox.refresh_counts(counts_request));
 
         self.fetch_counts(counts)
     }
@@ -1474,7 +1474,11 @@ impl App {
             Effects::none()
         };
 
-        Effects::batch([self.fetch_page(page), self.fetch_counts(counts), folders])
+        Effects::batch([
+            self.fetch_page(page),
+            self.fetch_counts(Some(counts)),
+            folders,
+        ])
     }
 
     fn auto_refresh_mailbox(&mut self) -> Effects {
@@ -1507,7 +1511,7 @@ impl App {
         let Some(mailbox) = self.active_mailbox() else {
             return Effects::none();
         };
-        if mailbox.search_results().is_some() {
+        if mailbox.shown_search_query().is_some() {
             let search = mailbox.load_more_search(request);
             search.map_or_else(Effects::none, |search| self.fetch_search(search))
         } else {
@@ -1534,7 +1538,7 @@ impl App {
         let Some(mailbox) = self.mailbox.as_ref() else {
             return Effects::none();
         };
-        if mailbox.search_results().is_some() {
+        if mailbox.shown_search_query().is_some() {
             return Effects::none();
         }
         self.inspections.enqueue(

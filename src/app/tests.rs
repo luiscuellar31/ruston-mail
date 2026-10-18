@@ -1695,7 +1695,7 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
     };
     let result = demo_service(&app).search("Avery", demo::PAGE_SIZE, NOW);
     let _ = app.update(Message::SearchLoaded(request, result));
-    assert_eq!(app.mailbox().unwrap().search_results(), Some("Avery"));
+    assert_eq!(app.mailbox().unwrap().shown_search_query(), Some("Avery"));
 
     // Leaving the results shows the folder that loaded meanwhile.
     let _ = app.update(Message::SearchChanged(String::new()));
@@ -1714,7 +1714,7 @@ fn a_search_waiting_for_the_folder_is_dropped_when_the_query_changes() {
     let effects = app.update(Message::ConversationsLoaded(1, page));
 
     assert_eq!(effects.units(), 0, "Enter was for another query");
-    assert_eq!(app.mailbox().unwrap().search_results(), None);
+    assert_eq!(app.mailbox().unwrap().shown_search_query(), None);
 }
 
 #[test]
@@ -1883,7 +1883,7 @@ fn a_conversation_the_server_found_can_still_be_acted_on() {
 
     // The results are what is on screen, so they carry the change.
     let mailbox = app.mailbox().unwrap();
-    assert_eq!(mailbox.search_results(), Some("offsite"));
+    assert_eq!(mailbox.shown_search_query(), Some("offsite"));
     assert!(
         mailbox
             .visible_conversations()

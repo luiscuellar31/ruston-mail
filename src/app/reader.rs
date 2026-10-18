@@ -128,7 +128,8 @@ impl ConversationReader {
         }
     }
 
-    /// Whether this quoted passage differs from its configured default.
+    /// Whether this quoted passage is open: as `reading` shows quotes, unless
+    /// it was toggled.
     pub fn is_quote_expanded(&self, message_id: &str, index: usize, reading: Reading) -> bool {
         let toggled = self
             .toggled_quotes

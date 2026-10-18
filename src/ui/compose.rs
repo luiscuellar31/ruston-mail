@@ -266,7 +266,7 @@ fn recipient_fields(
     messages: &mut Vec<Message>,
 ) {
     let mut left = line(ui, "To", ComposeField::To, compose, leaving, messages).lost_focus();
-    if compose.showing_more() {
+    if compose.showing_copies() {
         left |= line(ui, "Cc", ComposeField::Cc, compose, leaving, messages).lost_focus();
         left |= line(ui, "Bcc", ComposeField::Bcc, compose, leaving, messages).lost_focus();
     }
@@ -286,7 +286,7 @@ fn recipient_fields(
             detail(ui, &notice.message());
         }
     }
-    let more = if compose.showing_more() {
+    let more = if compose.showing_copies() {
         "Fewer options"
     } else {
         "More options"

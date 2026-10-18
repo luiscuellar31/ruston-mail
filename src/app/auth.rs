@@ -331,11 +331,11 @@ impl App {
         let page_request = self.next_request();
         let counts_request = self.next_request();
         // Demo mail has no account folders, so always start it in Inbox.
-        let remembered = self.settings.start_folder();
-        let folder = if self.is_demo() && remembered.system().is_none() {
+        let start = self.settings.start_folder();
+        let folder = if self.is_demo() && start.system().is_none() {
             Folder::INBOX
         } else {
-            remembered
+            start
         };
         let (mailbox, page) = Mailbox::open(folder, page_size, page_request, counts_request);
         self.mailbox = Some(mailbox);

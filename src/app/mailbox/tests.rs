@@ -229,7 +229,7 @@ fn server_results_replace_the_folder_listing() {
     // Results stand on their own: what came back is not narrowed again.
     assert_eq!(mailbox.finish_search(&request, page(&["found"], 1)), None);
     assert_eq!(visible_ids(&mailbox), ["found"]);
-    assert_eq!(mailbox.search_results(), Some("invoice"));
+    assert_eq!(mailbox.shown_search_query(), Some("invoice"));
 
     // One match needs no next search page, even though the folder has more.
     assert_eq!(mailbox.load_more(4), None);
@@ -237,7 +237,7 @@ fn server_results_replace_the_folder_listing() {
     // Emptying the field puts the folder back.
     mailbox.set_search_query(String::new());
     assert_eq!(visible_ids(&mailbox), ["a", "b"]);
-    assert_eq!(mailbox.search_results(), None);
+    assert_eq!(mailbox.shown_search_query(), None);
 }
 
 #[test]
@@ -290,7 +290,7 @@ fn an_abandoned_search_never_lands() {
 
     assert_eq!(mailbox.finish_search(&abandoned, page(&["found"], 1)), None);
     assert_eq!(visible_ids(&mailbox), ["a"]);
-    assert!(mailbox.search_results().is_none());
+    assert!(mailbox.shown_search_query().is_none());
 }
 
 #[test]
@@ -911,8 +911,8 @@ fn a_lost_counts_response_never_blocks_later_refreshes() {
         |unread: u32| -> MailboxCounts { [(sys(MailFolder::Inbox), unread)].into_iter().collect() };
 
     // The response for the first request never arrives.
-    assert_eq!(mailbox.refresh_counts(3), Some(3));
-    assert_eq!(mailbox.refresh_counts(4), Some(4));
+    assert_eq!(mailbox.refresh_counts(3), 3);
+    assert_eq!(mailbox.refresh_counts(4), 4);
 
     // Arriving late, it is ignored in favour of the newest request.
     assert_eq!(mailbox.finish_counts(3, Ok(counts(7))), None);
@@ -1456,7 +1456,7 @@ fn counts_apply_once() {
         mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
         Some(4)
     );
-    assert_eq!(mailbox.refresh_counts(3), Some(3));
+    assert_eq!(mailbox.refresh_counts(3), 3);
 }
 
 #[test]

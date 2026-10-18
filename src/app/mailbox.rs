@@ -390,8 +390,8 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    /// Opens `folder`, which is the one last read, returning the first page
-    /// to fetch. Counts are fetched under `counts_request`.
+    /// Opens `folder`, returning the first page to fetch. Counts are fetched
+    /// under `counts_request`.
     pub fn open(
         folder: Folder,
         page_size: u32,
@@ -522,7 +522,7 @@ impl Mailbox {
     }
 
     /// The query whose results are on screen, if any.
-    pub fn search_results(&self) -> Option<&str> {
+    pub fn shown_search_query(&self) -> Option<&str> {
         self.search.as_ref().map(|search| search.query.as_str())
     }
 
@@ -530,7 +530,7 @@ impl Mailbox {
         &self.search_query
     }
 
-    pub fn is_searching(&self) -> bool {
+    pub fn has_search_text(&self) -> bool {
         !self.search_query.trim().is_empty()
     }
 
@@ -1004,8 +1004,8 @@ impl Mailbox {
     fn set_reader(&mut self, reader: ReaderState) {
         let previous = std::mem::replace(&mut self.reader, reader);
         let stamp = self.reader_stamp.take();
-        if let (ReaderState::Loaded(reader), Some(stamp)) = (previous, stamp) {
-            self.cache_reader(reader, stamp);
+        if let (ReaderState::Loaded(previous_reader), Some(stamp)) = (previous, stamp) {
+            self.cache_reader(previous_reader, stamp);
         }
     }
 
@@ -1599,9 +1599,9 @@ impl Mailbox {
     }
 
     /// Starts a counts refresh, superseding any older request.
-    pub fn refresh_counts(&mut self, request: RequestId) -> Option<RequestId> {
+    pub fn refresh_counts(&mut self, request: RequestId) -> RequestId {
         self.counts_request = Some(request);
-        Some(request)
+        request
     }
 
     pub fn loaded_conversation_limit(&self) -> u32 {
