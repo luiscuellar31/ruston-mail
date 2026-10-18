@@ -11,6 +11,7 @@ use crate::transport::{Doer, Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_srp::{SRPAuth, SRPVerifierB64};
 use serde_json::{Map, Value, json};
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -344,7 +345,7 @@ pub(crate) fn recipient_list(addrs: &[String]) -> Value {
     )
 }
 
-fn guess_mime(path: &std::path::Path) -> String {
+fn guess_mime(path: &Path) -> String {
     match path
         .extension()
         .and_then(|e| e.to_str())
@@ -507,17 +508,8 @@ impl Client {
 
     /// Reply to a message.
     pub async fn reply(&self, reference: &str, all: bool, opts: &SendOptions) -> Result<String> {
-        let parent_id = self.resolve_ref(reference).await?;
-        let parent = api::messages::get_message(self.http(), &parent_id).await?;
-        // Only the text is quoted, so the original is opened as it was
-        // fetched, without asking for its sender's keys.
-        let quoted = self
-            .open_message_with(parent.clone(), Vec::new())
-            .await
-            .ok();
-
-        let mut o = opts.clone();
-        o.from = o.from.or_else(|| self.receiving_address(&parent));
+        let (parent_id, parent) = self.fetch_parent(reference).await?;
+        let mut answer = self.answer_options(&parent, opts).await;
         let own: Vec<String> = self
             .keys()
             .addresses
@@ -525,25 +517,18 @@ impl Client {
             .map(|a| a.email.clone())
             .collect();
         let recipients = reply_recipients(&parent.meta, &parent.reply_tos, &own);
-        o.to = recipients.to;
+        answer.to = recipients.to;
         if all {
-            o.cc = recipients.cc;
+            answer.cc = recipients.cc;
         }
-        o.subject = reply_subject(&parent.meta.subject);
-        if let Some(q) = quoted {
-            o.body = format!(
-                "{}\n\n{}",
-                o.body,
-                quote_block(&parent, &q.body, &q.mime_type, o.html)
-            );
-        }
+        answer.subject = reply_subject(&parent.meta.subject);
         let action = if all {
             message_action::REPLY_ALL
         } else {
             message_action::REPLY
         };
         self.send_with_parent(
-            &o,
+            &answer,
             Some(&parent_id),
             Some(action),
             &(String::new(), Vec::new()),
@@ -554,24 +539,9 @@ impl Client {
 
     /// Forward a message (carries the original's attachments).
     pub async fn forward(&self, reference: &str, opts: &SendOptions) -> Result<String> {
-        let parent_id = self.resolve_ref(reference).await?;
-        let parent = api::messages::get_message(self.http(), &parent_id).await?;
-        // As for a reply, the quote needs the text alone.
-        let quoted = self
-            .open_message_with(parent.clone(), Vec::new())
-            .await
-            .ok();
-
-        let mut o = opts.clone();
-        o.from = o.from.or_else(|| self.receiving_address(&parent));
-        o.subject = forward_subject(&parent.meta.subject);
-        if let Some(q) = quoted {
-            o.body = format!(
-                "{}\n\n{}",
-                o.body,
-                quote_block(&parent, &q.body, &q.mime_type, o.html)
-            );
-        }
+        let (parent_id, parent) = self.fetch_parent(reference).await?;
+        let mut answer = self.answer_options(&parent, opts).await;
+        answer.subject = forward_subject(&parent.meta.subject);
         let inherited: Vec<(String, String)> = parent
             .attachments
             .iter()
@@ -579,13 +549,42 @@ impl Client {
             .collect();
         let src_addr_id = parent.meta.address_id.clone();
         self.send_with_parent(
-            &o,
+            &answer,
             Some(&parent_id),
             Some(message_action::FORWARD),
             &(src_addr_id, inherited),
             None,
         )
         .await
+    }
+
+    /// The message `reference` names, and its ID, to answer it.
+    async fn fetch_parent(&self, reference: &str) -> Result<(String, Message)> {
+        let parent_id = self.resolve_ref(reference).await?;
+        let parent = api::messages::get_message(self.http(), &parent_id).await?;
+        Ok((parent_id, parent))
+    }
+
+    /// `opts` as an answer to `parent`: sent from the address the original
+    /// reached unless another is chosen, with the original quoted under the
+    /// text. Only the text is quoted, so the original is opened as it was
+    /// fetched, without asking for its sender's keys, and one that does not
+    /// open is answered without a quote rather than not at all.
+    async fn answer_options(&self, parent: &Message, opts: &SendOptions) -> SendOptions {
+        let quoted = self
+            .open_message_with(parent.clone(), Vec::new())
+            .await
+            .ok();
+        let mut answer = opts.clone();
+        answer.from = answer.from.or_else(|| self.receiving_address(parent));
+        if let Some(original) = quoted {
+            answer.body = format!(
+                "{}\n\n{}",
+                answer.body,
+                quote_block(parent, &original.body, &original.mime_type, answer.html)
+            );
+        }
+        answer
     }
 
     /// The address `parent` reached, so an answer without a chosen sender does
@@ -897,12 +896,7 @@ fn with_prefix(subject: &str, prefix: &str, marks: &[&str]) -> String {
     }
 }
 
-fn quote_block(
-    parent: &crate::model::message::Message,
-    body: &str,
-    original_mime: &str,
-    html: bool,
-) -> String {
+fn quote_block(parent: &Message, body: &str, original_mime: &str, html: bool) -> String {
     let who = if parent.meta.sender.name.is_empty() {
         parent.meta.sender.address.clone()
     } else {
@@ -914,9 +908,9 @@ fn quote_block(
     if html {
         let who = crate::html::escape_text(&who);
         let body = if crate::html::is_html_mime(original_mime) {
-            std::borrow::Cow::Borrowed(body)
+            Cow::Borrowed(body)
         } else {
-            std::borrow::Cow::Owned(crate::html::escape_text(body))
+            Cow::Owned(crate::html::escape_text(body))
         };
         format!(
             "<div class=\"protonmail_quote\">On {who} wrote:<blockquote class=\"protonmail_quote\" type=\"cite\">{body}</blockquote></div>"
@@ -925,9 +919,9 @@ fn quote_block(
         // A plain-text answer quotes what an HTML original reads as, not its
         // markup.
         let body = if crate::html::is_html_mime(original_mime) {
-            std::borrow::Cow::Owned(crate::html::to_text(body))
+            Cow::Owned(crate::html::to_text(body))
         } else {
-            std::borrow::Cow::Borrowed(body)
+            Cow::Borrowed(body)
         };
         let quoted: String = body.lines().map(|l| format!("> {l}\n")).collect();
         format!("------- Original Message -------\nOn {who} wrote:\n{quoted}")
@@ -1947,6 +1941,98 @@ mod tests {
         let text = text.replace("\r\n", "\n");
         assert!(text.starts_with("FYI\n\n"), "{text}");
         assert!(text.contains("> Numbers attached"), "{text}");
+    }
+
+    /// The text of the draft that answering a message from the boss writes,
+    /// where `parent_body` is the original's body as Proton returns it: a
+    /// reply when `reply`, else a forward to a friend.
+    async fn answer_text(reply: bool, parent_body: impl FnOnce(&AddressKeys) -> String) -> String {
+        let server = MockServer::start().await;
+        let (me, _) = test_address("me@proton.me", "address-1");
+        let parent_id = format!("{}==", "p".repeat(60));
+        Mock::given(method("GET"))
+            .and(path(format!("/mail/v4/messages/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000,
+                "Message": {
+                    "ID": parent_id, "AddressID": "address-1", "Subject": "Report",
+                    "Sender": {"Name": "Boss", "Address": "boss@proton.me"},
+                    "Body": parent_body(&me), "MIMEType": "text/plain"
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server, vec![me.clone()]);
+        if reply {
+            let thanks = SendOptions {
+                body: "Thanks".into(),
+                ..SendOptions::default()
+            };
+            client.reply(&parent_id, false, &thanks).await.unwrap();
+        } else {
+            let forward = SendOptions {
+                to: vec!["friend@example.com".into()],
+                body: "FYI".into(),
+                ..SendOptions::default()
+            };
+            client.forward(&parent_id, &forward).await.unwrap();
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        let draft = requests
+            .iter()
+            .find(|request| request.url.path() == "/mail/v4/messages")
+            .unwrap();
+        let draft: Value = serde_json::from_slice(&draft.body).unwrap();
+        let (text, _) = crypto::decrypt_body(
+            &crypto::provider(),
+            &me,
+            &[],
+            draft["Message"]["Body"].as_str().unwrap(),
+        )
+        .unwrap();
+        // The draft is signed as text, which canonicalizes line ends.
+        text.replace("\r\n", "\n")
+    }
+
+    #[tokio::test]
+    async fn a_reply_quotes_the_original_under_its_own_text() {
+        let text = answer_text(true, |me| {
+            crypto::encrypt_self_draft(&crypto::provider(), me, "Numbers attached").unwrap()
+        })
+        .await;
+        assert!(text.starts_with("Thanks\n\n"), "{text}");
+        assert!(text.contains("> Numbers attached"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_original_that_does_not_open_is_answered_without_a_quote() {
+        for reply in [true, false] {
+            let text = answer_text(reply, |_| "not an encrypted message".to_owned()).await;
+            let own = if reply { "Thanks" } else { "FYI" };
+            assert_eq!(text, own, "the answer still goes, unquoted");
+        }
     }
 
     #[tokio::test]
