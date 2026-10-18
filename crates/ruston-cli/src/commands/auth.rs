@@ -1,7 +1,8 @@
 //! Authentication commands: login, logout, whoami.
 
 use crate::cli::{ClientPreset, Ctx};
-use crate::commands::{prompt_line, resume};
+use crate::commands::prompt::prompt_line;
+use crate::commands::resume;
 use crate::render;
 use crate::terminal;
 use ruston_core::{

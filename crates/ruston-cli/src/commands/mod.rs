@@ -9,13 +9,13 @@ pub mod export;
 pub mod filters;
 pub mod labels;
 pub mod messages;
+pub mod prompt;
 pub mod search;
 pub mod sync;
 pub mod watch;
 
-use crate::terminal;
 use ruston_core::{Client, Result};
-use std::io::{Read, Write};
+use std::io::Read;
 
 /// Resume a saved session for the given profile.
 pub async fn resume(profile: &str) -> Result<Client> {
@@ -31,15 +31,6 @@ pub fn read_body(body: &str) -> std::io::Result<String> {
     } else {
         Ok(body.to_string())
     }
-}
-
-/// Prompt on stderr (keeping stdout clean) and read a trimmed line.
-pub fn prompt_line(prompt: &str) -> std::io::Result<String> {
-    terminal::eprint!("{prompt}");
-    std::io::stderr().flush()?;
-    let mut s = String::new();
-    std::io::stdin().read_line(&mut s)?;
-    Ok(s.trim().to_string())
 }
 
 /// Resolve every free-text reference to a concrete message ID.

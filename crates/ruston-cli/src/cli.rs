@@ -1,7 +1,7 @@
 //! Command-line interface definition (clap v4 derive).
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use ruston_core::SearchOpts;
+use ruston_core::{SearchOpts, SendOptions};
 use std::path::PathBuf;
 
 /// What each exit status means, shown at the end of `--help`.
@@ -369,6 +369,24 @@ pub struct DraftArgs {
     /// Attach a file (repeatable).
     #[arg(long = "attach")]
     pub attach: Vec<PathBuf>,
+}
+
+impl DraftArgs {
+    /// The message these arguments describe, with `body` as its text: the
+    /// body argument itself may only say where to read it from.
+    pub fn into_send_options(self, body: String) -> SendOptions {
+        SendOptions {
+            to: self.to,
+            cc: self.cc,
+            bcc: self.bcc,
+            from: self.from,
+            subject: self.subject,
+            body,
+            html: self.html,
+            attachments: self.attach,
+            ..SendOptions::default()
+        }
+    }
 }
 
 /// Compose options for `send`: a message, and how it is sent.

@@ -2,6 +2,7 @@
 
 use crate::cli::Ctx;
 use crate::cli::{DraftArgs, EmptyFolder, LabelAction, MessagesCmd, ReadFormat, SendArgs};
+use crate::commands::prompt::{can_prompt, confirm, confirm_deletion, require_consent};
 use crate::commands::{read_body, resolve_all, resume};
 use crate::render;
 use crate::terminal;
@@ -11,22 +12,8 @@ use html5ever::tokenizer::{
 };
 use ruston_core::{AddressInfo, Client, Error, LocalCache, Result, SendOptions};
 use std::cell::Cell;
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, Write};
 use std::path::Path;
-
-pub(crate) fn send_options(a: DraftArgs, body: String) -> SendOptions {
-    SendOptions {
-        to: a.to,
-        cc: a.cc,
-        bcc: a.bcc,
-        from: a.from,
-        subject: a.subject,
-        body,
-        html: a.html,
-        attachments: a.attach,
-        ..SendOptions::default()
-    }
-}
 
 fn prompt_sender(
     addresses: &[AddressInfo],
@@ -62,10 +49,6 @@ fn prompt_sender(
     }
 }
 
-fn can_prompt(ctx: &Ctx) -> bool {
-    !ctx.json && io::stdin().is_terminal() && io::stderr().is_terminal()
-}
-
 #[derive(Default)]
 struct HtmlDetector(Cell<bool>);
 
@@ -93,26 +76,6 @@ fn looks_like_html(body: &str) -> bool {
     let _ = tokenizer.feed(&input);
     tokenizer.end();
     tokenizer.sink.0.get()
-}
-
-/// Asks a yes/no question; anything short of an explicit yes is a no.
-fn confirm(question: &str, input: &mut impl BufRead, output: &mut impl Write) -> io::Result<bool> {
-    loop {
-        terminal::write!(output, "{question} [y/N]: ")?;
-        output.flush()?;
-        let mut answer = String::new();
-        if input.read_line(&mut answer)? == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "confirmation cancelled",
-            ));
-        }
-        match answer.trim().to_ascii_lowercase().as_str() {
-            "y" | "yes" => return Ok(true),
-            "" | "n" | "no" => return Ok(false),
-            _ => terminal::writeln!(output, "Enter y or n.")?,
-        }
-    }
 }
 
 fn confirm_html(input: &mut impl BufRead, output: &mut impl Write) -> io::Result<bool> {
@@ -148,31 +111,6 @@ fn message_password(
         Some("") => ask_message_password(read).map(Some),
         password => Ok(password.map(str::to_owned)),
     }
-}
-
-/// A permanent delete needs someone to agree to it: a terminal to ask on, or
-/// `--yes` given up front.
-pub(crate) fn require_consent(ctx: &Ctx, yes: bool) -> Result<()> {
-    if yes || can_prompt(ctx) {
-        Ok(())
-    } else {
-        Err(Error::Other(
-            "permanent deletion cannot ask here; pass --yes to confirm it".into(),
-        ))
-    }
-}
-
-/// Lists what is about to be deleted for good, then asks.
-pub(crate) fn confirm_deletion(
-    doomed: &[String],
-    question: &str,
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-) -> io::Result<bool> {
-    for line in doomed {
-        terminal::writeln!(output, "  {line}")?;
-    }
-    confirm(question, input, output)
 }
 
 /// Writes a decrypted body to `path` as a file only its owner can read. What
@@ -415,7 +353,7 @@ async fn send(ctx: &Ctx, mut args: SendArgs) -> Result<()> {
     let opts = SendOptions {
         send_at: args.send_at,
         expires_in: args.expires,
-        ..send_options(args.message, body)
+        ..args.message.into_send_options(body)
     };
     let eo_password = message_password(args.eo_password.as_deref(), |prompt| {
         rpassword::prompt_password(prompt)
@@ -470,13 +408,7 @@ async fn delete(ctx: &Ctx, references: &[String], yes: bool) -> Result<()> {
                 )
             })
             .collect();
-        let question = format!(
-            "Permanently delete {} message(s)? This cannot be undone.",
-            matched.len()
-        );
-        let mut output = io::stderr().lock();
-        if !confirm_deletion(&doomed, &question, &mut io::stdin().lock(), &mut output)? {
-            terminal::writeln!(output, "Nothing was deleted.")?;
+        if !confirm_deletion(&doomed, &format!("{} message(s)", matched.len()))? {
             return Ok(());
         }
         matched.into_iter().map(|meta| meta.id).collect()
@@ -490,16 +422,8 @@ async fn delete(ctx: &Ctx, references: &[String], yes: bool) -> Result<()> {
 /// was given up front.
 async fn empty(ctx: &Ctx, folder: EmptyFolder, yes: bool) -> Result<()> {
     require_consent(ctx, yes)?;
-    if !yes {
-        let question = format!(
-            "Permanently delete every message in {}? This cannot be undone.",
-            folder.name()
-        );
-        let mut output = io::stderr().lock();
-        if !confirm_deletion(&[], &question, &mut io::stdin().lock(), &mut output)? {
-            terminal::writeln!(output, "Nothing was deleted.")?;
-            return Ok(());
-        }
+    if !yes && !confirm_deletion(&[], &format!("every message in {}", folder.name()))? {
+        return Ok(());
     }
     let client = resume(&ctx.profile).await?;
     client.empty_folder(folder.as_str()).await?;
@@ -523,58 +447,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ask_message_password, confirm_deletion, confirm_html, looks_like_html, message_password,
-        prompt_sender, require_consent, write_private,
+        ask_message_password, confirm_html, looks_like_html, message_password, prompt_sender,
+        write_private,
     };
-    use crate::cli::Ctx;
     use ruston_core::AddressInfo;
     use std::io::{self, Cursor};
-
-    #[test]
-    fn permanent_deletion_needs_a_terminal_or_yes() {
-        // JSON output is for scripts, so it never stops to ask.
-        let ctx = Ctx {
-            profile: "test".into(),
-            json: true,
-            demo: false,
-            api_url: None,
-            app_version: None,
-            totp: None,
-            mailbox_password: None,
-            captcha_token: None,
-            client: None,
-            user_agent: None,
-            captcha_chrome: false,
-        };
-        assert!(require_consent(&ctx, false).is_err());
-        assert!(require_consent(&ctx, true).is_ok());
-    }
-
-    #[test]
-    fn deletion_lists_messages_without_terminal_controls_and_defaults_to_no() {
-        let doomed =
-            ["\"Invoice\x1b]52;c;Y2xpcGJvYXJk\x07\" from evil@example.test (id 1)".to_owned()];
-        let mut output = Vec::new();
-        let question = "Permanently delete 1 message(s)?";
-        let agreed = confirm_deletion(&doomed, question, &mut Cursor::new("\n"), &mut output);
-        assert!(!agreed.unwrap(), "only an explicit yes deletes");
-        let shown = String::from_utf8(output).unwrap();
-        assert!(shown.contains("Invoice") && shown.contains("evil@example.test"));
-        assert!(
-            shown
-                .chars()
-                .all(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-        );
-        assert!(
-            confirm_deletion(
-                &doomed,
-                question,
-                &mut Cursor::new("yes\n"),
-                &mut Vec::new()
-            )
-            .unwrap()
-        );
-    }
 
     #[test]
     fn sender_prompt_does_not_emit_terminal_controls() {

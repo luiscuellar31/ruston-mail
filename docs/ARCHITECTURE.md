@@ -590,12 +590,15 @@ instead of an unknown outcome.
   multiple account addresses and no `--from`. Noninteractive and JSON sends
   keep the primary-address default from core. It also detects likely HTML in
   an interactive send without `--html` and asks before changing the format;
-  scripted sends keep the explicit flag behavior. Permanent deletes ask first:
-  `messages delete` lists the subject and sender each reference matched,
-  taken from the search for search text and fetched only for an exact ID,
-  `drafts delete` lists each draft, and `messages empty` accepts only Trash or
-  Spam. Without a terminal to ask on, all three need `--yes`. Core's
-  `delete_draft` refuses the whole request if any ID is not a draft.
+  scripted sends keep the explicit flag behavior. Permanent deletes ask first,
+  all with the same question and consent rule from
+  [`commands/prompt.rs`](../crates/ruston-cli/src/commands/prompt.rs), which
+  also holds the CLI's other terminal questions: `messages delete` lists the
+  subject and sender each reference matched, taken from the search for search
+  text and fetched only for an exact ID, `drafts delete` lists each draft, and
+  `messages empty` accepts only Trash or Spam. Without a terminal to ask on,
+  all three need `--yes`. Core's `delete_draft` refuses the whole request if
+  any ID is not a draft.
   `save_draft` and `update_draft` upload attached files to the draft once its
   content is written, and refuse a delivery time or an expiration, which only
   sending applies; the draft commands do not offer those, nor a message
