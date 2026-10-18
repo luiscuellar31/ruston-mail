@@ -136,9 +136,9 @@ cargo build --locked --workspace
 
 ### Fictional mailbox and native windows
 
-Open the desktop demo without a Proton account. The demo uses the desktop's
-normal preferences, so use a separate Windows user if existing preferences
-must be preserved. Restore any previous environment value when it closes:
+Open the desktop demo without a Proton account. The demo keeps its
+preferences in `settings-demo.json`, so your own are left as they are.
+Restore any previous environment value when it closes:
 
 ```powershell
 $previousRustonDemo = $env:RUSTON_DEMO
