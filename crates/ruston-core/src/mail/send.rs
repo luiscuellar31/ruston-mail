@@ -133,12 +133,12 @@ async fn prepare_attachment(
     remaining: usize,
 ) -> Result<PreparedAttachment> {
     let ((request, material, size), permit) = attachment_work(&ATTACHMENT_SLOTS, move || {
-        let (file, size) = open_attachment(&path)?;
-        let bytes = read_attachment_bytes(file, size, remaining)?;
-        let size = bytes.len();
+        let (file, metadata_len) = open_attachment(&path)?;
+        let bytes = read_attachment_bytes(file, metadata_len, remaining)?;
+        let read_len = bytes.len();
         // Instantiate the provider on this worker; its opaque types need not
         // be moved between Tokio and the blocking pool.
-        let up = crypto::encrypt_attachment(&crypto::provider(), &addr, &bytes)?;
+        let encrypted = crypto::encrypt_attachment(&crypto::provider(), &addr, &bytes)?;
         drop(bytes);
         let name = path
             .file_name()
@@ -149,11 +149,11 @@ async fn prepare_attachment(
             &message_id,
             "",
             &guess_mime(&path),
-            &up.key_packet,
-            &up.data_packet,
-            &up.signature,
+            &encrypted.key_packet,
+            &encrypted.data_packet,
+            &encrypted.signature,
         )?;
-        Ok((request, up.material, size))
+        Ok((request, encrypted.material, read_len))
     })
     .await?;
     Ok(PreparedAttachment {
@@ -171,7 +171,7 @@ pub(super) async fn upload_attachments<D: Doer>(
     addr: &AddressKeys,
     message_id: &str,
     paths: &[PathBuf],
-) -> Result<Vec<Uploaded>> {
+) -> Result<Vec<AttachmentKey>> {
     let mut uploaded = Vec::with_capacity(paths.len());
     let mut remaining = MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES;
     for path in paths {
@@ -180,9 +180,9 @@ pub(super) async fn upload_attachments<D: Doer>(
                 .await?;
         remaining -= prepared.size;
         let id = api::attachments::upload_prepared(http, prepared.request).await?;
-        uploaded.push(Uploaded {
+        uploaded.push(AttachmentKey {
             id,
-            material: prepared.material,
+            session_key: prepared.material,
         });
     }
     Ok(uploaded)
@@ -356,11 +356,34 @@ fn guess_mime(path: &std::path::Path) -> String {
     .to_string()
 }
 
-/// Carried between draft-creation and packaging.
+/// An attachment of the draft and the session key that opens it, whether it
+/// was uploaded for this message or carried over from the one being
+/// forwarded. Each package wraps the key for its recipients.
 #[derive(Clone)]
-pub(super) struct Uploaded {
+pub(super) struct AttachmentKey {
     id: String,
-    material: SessionKeyMaterial,
+    session_key: SessionKeyMaterial,
+}
+
+/// A body encrypted for transport: the data packet a package carries, and
+/// the session key that opens it, which is wrapped for each recipient.
+struct EncryptedBody {
+    session_key: SessionKeyMaterial,
+    data_packet: Vec<u8>,
+}
+
+impl EncryptedBody {
+    fn encrypt<P: proton_crypto::crypto::PGPProviderSync>(
+        provider: &P,
+        addr: &AddressKeys,
+        text: &str,
+    ) -> Result<Self> {
+        let (session_key, data_packet) = crypto::encrypt_for_transport(provider, addr, text)?;
+        Ok(Self {
+            session_key,
+            data_packet,
+        })
+    }
 }
 
 /// One password-protected (encrypted-outside) recipient's entry: an SRP
@@ -372,8 +395,8 @@ fn password_entry(
     password: &str,
     hint: &str,
     (modulus, modulus_id): &(String, String),
-    body: &SessionKeyMaterial,
-    attachments: &[Uploaded],
+    body_key: &SessionKeyMaterial,
+    attachments: &[AttachmentKey],
 ) -> Result<Value> {
     let provider = crypto::provider();
     let verifier = SRPAuth::generate_verifier_with_pgp(password, None, modulus)
@@ -381,7 +404,7 @@ fn password_entry(
     let v: SRPVerifierB64 = verifier.into();
     let (_fresh, token) = crypto::new_session_key(&provider)?;
     let enc_token = crypto::encrypt_text_with_password(&provider, password, &token)?;
-    let body_kp = crypto::wrap_session_key_with_password(&provider, password, body)?;
+    let body_kp = crypto::wrap_session_key_with_password(&provider, password, body_key)?;
     let mut entry = json!({
         "Type": package_type::EO,
         "Signature": 0,
@@ -400,13 +423,13 @@ fn password_entry(
     }
     if !attachments.is_empty() {
         let mut akp = Map::new();
-        for u in attachments {
+        for attachment in attachments {
             akp.insert(
-                u.id.clone(),
+                attachment.id.clone(),
                 json!(STANDARD.encode(crypto::wrap_session_key_with_password(
                     &provider,
                     password,
-                    &u.material
+                    &attachment.session_key
                 )?)),
             );
         }
@@ -415,8 +438,8 @@ fn password_entry(
     Ok(entry)
 }
 
-async fn submit_send<D: Doer>(http: &D, message_id: &str, body: Value) -> Result<()> {
-    api::messages::send_message(http, message_id, body)
+async fn submit_send<D: Doer>(http: &D, message_id: &str, request: Value) -> Result<()> {
+    api::messages::send_message(http, message_id, request)
         .await
         .map_err(|error| {
             // A lost or unusable response does not prove that Proton rejected
@@ -657,7 +680,7 @@ impl Client {
         let message_id = draft.meta.id.as_str();
         // 2. attachments: those the draft already carries (a forward's copies
         // of the original's) are keyed for recipients like new uploads.
-        let mut uploaded: Vec<Uploaded> = Vec::new();
+        let mut attachment_keys: Vec<AttachmentKey> = Vec::new();
         for attachment in &draft.attachments {
             let key_packets = attachment.key_packets.as_deref().ok_or_else(|| {
                 Error::Crypto(format!(
@@ -665,23 +688,24 @@ impl Client {
                     attachment.id
                 ))
             })?;
-            uploaded.push(Uploaded {
+            attachment_keys.push(AttachmentKey {
                 id: attachment.id.clone(),
-                material: crypto::decrypt_session_key(provider, addr, key_packets)?,
+                session_key: crypto::decrypt_session_key(provider, addr, key_packets)?,
             });
         }
-        let added = upload_attachments(self.http(), addr, message_id, &opts.attachments).await?;
-        uploaded.extend(added);
+        let uploaded = upload_attachments(self.http(), addr, message_id, &opts.attachments).await?;
+        attachment_keys.extend(uploaded);
 
-        if !uploaded.is_empty() {
-            tracing::debug!(target: "ruston_core::send", count = uploaded.len(), "send step 2: attachments uploaded");
+        if !attachment_keys.is_empty() {
+            tracing::debug!(target: "ruston_core::send", count = attachment_keys.len(), "send step 2: attachments uploaded");
         }
 
-        // 3. encrypt the transport body.
-        let (material, data_packet) = crypto::encrypt_for_transport(provider, addr, &opts.body)?;
-        let algo = crypto::algo_name(material.algo);
+        // 3. encrypt the transport body, then build each recipient's entry
+        // and the packages they go in.
+        let transport_body = EncryptedBody::encrypt(provider, addr, &opts.body)?;
+        let body_algorithm = crypto::algo_name(transport_body.session_key.algo);
 
-        // 4. per-recipient packaging.
+        // Each recipient's entry, by how their copy is protected.
         let recipients = dedupe(&[&opts.to, &opts.cc, &opts.bcc]);
         tracing::debug!(target: "ruston_core::send", recipients = recipients.len(), "send step 3: resolving recipient keys + building packages");
         let mut internal_addrs = Map::new();
@@ -691,27 +715,27 @@ impl Client {
         let mut modulus_cache: Option<(String, String)> = None;
         // PGP/Inline carries plain text only, so an HTML body reaches those
         // recipients as text, under a session key of its own.
-        let mut text_body: Option<(crypto::SessionKeyMaterial, Vec<u8>)> = None;
+        let mut plain_text_body: Option<EncryptedBody> = None;
 
-        // Build a per-recipient encrypted entry (Type 1 or Type 8) wrapping the
-        // session keys of `body` and of the attachments to `pubkey`.
+        // Build a per-recipient encrypted entry (Type 1 or Type 8) wrapping
+        // `body_key` and the attachments' session keys to `pubkey`.
         let entry_for =
-            |pubkey: &str, pkg_type: i64, body: &crypto::SessionKeyMaterial| -> Result<Value> {
-                let bkp = crypto::wrap_session_key(provider, pubkey, body)?;
+            |pubkey: &str, pkg_type: i64, body_key: &SessionKeyMaterial| -> Result<Value> {
+                let bkp = crypto::wrap_session_key(provider, pubkey, body_key)?;
                 let mut entry = json!({
                     "Type": pkg_type,
                     "BodyKeyPacket": STANDARD.encode(&bkp),
                     "Signature": 0,
                 });
-                if !uploaded.is_empty() {
+                if !attachment_keys.is_empty() {
                     let mut akp = Map::new();
-                    for u in &uploaded {
+                    for attachment in &attachment_keys {
                         akp.insert(
-                            u.id.clone(),
+                            attachment.id.clone(),
                             json!(STANDARD.encode(crypto::wrap_session_key(
                                 provider,
                                 pubkey,
-                                &u.material
+                                &attachment.session_key
                             )?)),
                         );
                     }
@@ -730,18 +754,26 @@ impl Client {
                 tracing::debug!(target: "ruston_core::send", recipient = %email, "internal recipient — E2E package (Type 1)");
                 internal_addrs.insert(
                     email.clone(),
-                    entry_for(&key.public_key, package_type::PM, &material)?,
+                    entry_for(
+                        &key.public_key,
+                        package_type::PM,
+                        &transport_body.session_key,
+                    )?,
                 );
             } else if let Some(key) = api::keys::pick_encryption_key(&rk.unverified) {
                 tracing::debug!(target: "ruston_core::send", recipient = %email, "external recipient with PGP key — PGP-inline (Type 8)");
-                if opts.html && text_body.is_none() {
+                if opts.html && plain_text_body.is_none() {
                     let text = crate::html::to_text(&opts.body);
-                    text_body = Some(crypto::encrypt_for_transport(provider, addr, &text)?);
+                    plain_text_body = Some(EncryptedBody::encrypt(provider, addr, &text)?);
                 }
-                let body = text_body.as_ref().map_or(&material, |(text, _)| text);
+                let text_body = plain_text_body.as_ref().unwrap_or(&transport_body);
                 pgp_addrs.insert(
                     email.clone(),
-                    entry_for(&key.public_key, package_type::PGP_INLINE, body)?,
+                    entry_for(
+                        &key.public_key,
+                        package_type::PGP_INLINE,
+                        &text_body.session_key,
+                    )?,
                 );
             } else if let Some((password, hint)) = eo {
                 // Encrypted-outside (password-protected) recipient — Type 2.
@@ -757,10 +789,10 @@ impl Client {
                 // the async workers.
                 let password = Zeroizing::new(password.clone());
                 let hint = hint.clone();
-                let body = material.clone();
-                let attachments = uploaded.clone();
+                let body_key = transport_body.session_key.clone();
+                let attachments = attachment_keys.clone();
                 let entry = tokio::task::spawn_blocking(move || {
-                    password_entry(&password, &hint, &modulus, &body, &attachments)
+                    password_entry(&password, &hint, &modulus, &body_key, &attachments)
                 })
                 .await
                 .map_err(|error| Error::Other(format!("password protection failed: {error}")))??;
@@ -775,30 +807,29 @@ impl Client {
             }
         }
 
-        // 5. build packages.
+        // The packages, one for each way a copy is protected.
         let mut packages: Vec<Value> = Vec::new();
         if !internal_addrs.is_empty() {
-            let body_kp = crypto::wrap_session_key_to_self(provider, addr, &material)?;
+            let body_kp =
+                crypto::wrap_session_key_to_self(provider, addr, &transport_body.session_key)?;
             packages.push(json!({
                 "Addresses": Value::Object(internal_addrs),
                 "MIMEType": mime_type,
                 "Type": package_type::PM,
-                "Body": STANDARD.encode(&data_packet),
+                "Body": STANDARD.encode(&transport_body.data_packet),
                 "BodyKeyPacket": STANDARD.encode(&body_kp),
             }));
         }
         if !pgp_addrs.is_empty() {
             // PGP-inline is plain text: the text version of an HTML body, or
             // the plain body itself.
-            let (body, packet) = text_body
-                .as_ref()
-                .map_or((&material, &data_packet), |(text, packet)| (text, packet));
-            let body_kp = crypto::wrap_session_key_to_self(provider, addr, body)?;
+            let text_body = plain_text_body.as_ref().unwrap_or(&transport_body);
+            let body_kp = crypto::wrap_session_key_to_self(provider, addr, &text_body.session_key)?;
             packages.push(json!({
                 "Addresses": Value::Object(pgp_addrs),
                 "MIMEType": "text/plain",
                 "Type": package_type::PGP_INLINE,
-                "Body": STANDARD.encode(packet),
+                "Body": STANDARD.encode(&text_body.data_packet),
                 "BodyKeyPacket": STANDARD.encode(&body_kp),
             }));
         }
@@ -807,7 +838,7 @@ impl Client {
                 "Addresses": Value::Object(eo_addrs),
                 "MIMEType": mime_type,
                 "Type": package_type::EO,
-                "Body": STANDARD.encode(&data_packet),
+                "Body": STANDARD.encode(&transport_body.data_packet),
             }));
         }
         if !external_addrs.is_empty() {
@@ -815,15 +846,19 @@ impl Client {
                 "Addresses": Value::Object(external_addrs),
                 "MIMEType": mime_type,
                 "Type": package_type::CLEAR,
-                "Body": STANDARD.encode(&data_packet),
-                "BodyKey": { "Key": STANDARD.encode(&material.key), "Algorithm": algo },
+                "Body": STANDARD.encode(&transport_body.data_packet),
+                "BodyKey": {
+                    "Key": STANDARD.encode(&transport_body.session_key.key),
+                    "Algorithm": body_algorithm,
+                },
             });
-            if !uploaded.is_empty() {
+            if !attachment_keys.is_empty() {
                 let mut ak = Map::new();
-                for u in &uploaded {
+                for attachment in &attachment_keys {
+                    let key = &attachment.session_key;
                     ak.insert(
-                        u.id.clone(),
-                        json!({ "Key": STANDARD.encode(&u.material.key), "Algorithm": crypto::algo_name(u.material.algo) }),
+                        attachment.id.clone(),
+                        json!({ "Key": STANDARD.encode(&key.key), "Algorithm": crypto::algo_name(key.algo) }),
                     );
                 }
                 pkg["AttachmentKeys"] = Value::Object(ak);
@@ -831,20 +866,20 @@ impl Client {
             packages.push(pkg);
         }
 
-        // 6. send.
-        let mut body = json!({
+        // 4. send.
+        let mut send_request = json!({
             "ExpirationTime": Value::Null,
             "AutoSaveContacts": 0,
             "Packages": packages,
         });
         if let Some(t) = opts.send_at {
-            body["DeliveryTime"] = json!(t);
+            send_request["DeliveryTime"] = json!(t);
         }
         if let Some(s) = opts.expires_in {
-            body["ExpiresIn"] = json!(s);
+            send_request["ExpiresIn"] = json!(s);
         }
         tracing::debug!(target: "ruston_core::send", packages = packages.len(), "send step 4: submitting (POST /mail/v4/messages/{{id}})");
-        submit_send(self.http(), message_id, body).await
+        submit_send(self.http(), message_id, send_request).await
     }
 }
 
