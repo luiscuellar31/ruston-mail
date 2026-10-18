@@ -1,3 +1,5 @@
+//! What a desktop sign-in sends, and the ways it can fail.
+
 use std::fmt;
 
 use secrecy::SecretString;

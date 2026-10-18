@@ -551,7 +551,7 @@ fn conversation_pane(
     match (mailbox.status(), empty) {
         (ListStatus::Loading(_), _) => conversation_skeleton(ui),
         (ListStatus::Failed(error, attempt), true) => empty_state(ui, |ui| {
-            state_message(ui, error.message(), theme::colors(ui).danger);
+            state_message(ui, error.folder_message(), theme::colors(ui).danger);
             try_again(ui, attempt, messages);
         }),
         (_, true) if mailbox.shown_search_query().is_some() => empty_state(ui, |ui| {
@@ -632,7 +632,7 @@ fn failure_line(
     // A password store to unlock needs its explanation; any other failure
     // keeps it for the tooltip.
     let text = if error == MailboxError::SessionUnavailable {
-        error.message()
+        error.folder_message()
     } else {
         match attempt {
             ListAttempt::Folder => "Couldn't refresh.",
@@ -649,7 +649,7 @@ fn failure_line(
             )
             .wrap(),
         )
-        .on_hover_text(error.message());
+        .on_hover_text(error.folder_message());
         try_again(ui, attempt, messages);
     });
     ui.add_space(4.0);
@@ -1758,7 +1758,7 @@ mod tests {
         theme::install(&context);
 
         let (texts, _) = pane_frame(&context, &mailbox, None);
-        let message = rect_of(&texts, MailboxError::Connection.message());
+        let message = rect_of(&texts, MailboxError::Connection.folder_message());
         let action = rect_of(&texts, "Try again");
         assert!(
             (message.center().x - action.center().x).abs() <= 1.0,

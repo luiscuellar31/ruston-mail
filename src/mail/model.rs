@@ -239,7 +239,7 @@ impl RichBody {
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
         for block in &self.blocks {
-            let line = match &block.kind {
+            let text = match &block.kind {
                 BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => join(spans),
                 BlockKind::ListItem { marker, spans, .. } if marker.is_empty() => join(spans),
                 BlockKind::ListItem { marker, spans, .. } => format!("{marker} {}", join(spans)),
@@ -248,7 +248,7 @@ impl RichBody {
                 BlockKind::Rule => "---".to_owned(),
             };
             let quote = "> ".repeat(usize::from(block.quote_depth));
-            for line in line.lines() {
+            for line in text.lines() {
                 out.push_str(&quote);
                 out.push_str(line);
                 out.push('\n');
@@ -453,7 +453,7 @@ const SESSION_UNAVAILABLE: &str = "Ruston Mail could not access the saved Proton
     Unlock your password storage and try again, or sign in again.";
 
 impl MailboxError {
-    pub fn message(self) -> &'static str {
+    pub fn folder_message(self) -> &'static str {
         match self {
             Self::Connection => "Ruston Mail could not connect to Proton.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",

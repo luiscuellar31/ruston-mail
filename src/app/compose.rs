@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::mail::{
-    BodyFormat, Domains, InternationalDomain, Kind, MailMessage, Outgoing, Protection,
+    BodyFormat, Domains, InternationalDomain, MailMessage, Outgoing, OutgoingKind, Protection,
     ProtectionCheck, Recipients, SendError, recipients,
 };
 
@@ -132,18 +132,18 @@ pub enum AnswerKind {
 
 impl AnswerKind {
     /// What core sends to answer the message `message_id` this way.
-    fn outgoing(self, message_id: &str) -> Kind {
+    fn outgoing(self, message_id: &str) -> OutgoingKind {
         let message_id = message_id.to_owned();
         match self {
-            AnswerKind::Reply => Kind::Reply {
+            AnswerKind::Reply => OutgoingKind::Reply {
                 message_id,
                 everyone: false,
             },
-            AnswerKind::ReplyAll => Kind::Reply {
+            AnswerKind::ReplyAll => OutgoingKind::Reply {
                 message_id,
                 everyone: true,
             },
-            AnswerKind::Forward => Kind::Forward { message_id },
+            AnswerKind::Forward => OutgoingKind::Forward { message_id },
         }
     }
 }
@@ -168,7 +168,7 @@ pub struct Answering {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Compose {
     id: ComposeId,
-    kind: Kind,
+    kind: OutgoingKind,
     answering: Option<Answering>,
     to: String,
     cc: String,
@@ -415,7 +415,7 @@ impl Compose {
 
     /// Whether the window asks for a subject. Core writes one for an answer.
     pub fn asks_for_subject(&self) -> bool {
-        matches!(self.kind, Kind::New)
+        matches!(self.kind, OutgoingKind::New)
     }
 
     pub fn sending(&self) -> Sending {
@@ -541,7 +541,7 @@ impl App {
 
     /// Answers or forwards a message. Core addresses replies itself; the
     /// composer shows where they go.
-    fn open_answer(&mut self, kind: Kind, answering: Answering) {
+    fn open_answer(&mut self, kind: OutgoingKind, answering: Answering) {
         if self.compose.is_some() {
             return;
         }
@@ -930,7 +930,7 @@ mod tests {
             Some(ProtectionNotice::Encrypted)
         );
 
-        compose.kind = Kind::Reply {
+        compose.kind = OutgoingKind::Reply {
             message_id: "message".into(),
             everyone: false,
         };

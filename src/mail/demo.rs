@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::outgoing::{Kind, Outgoing, SendError};
+use super::outgoing::{Outgoing, OutgoingKind, SendError};
 use super::{
     ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAddress, MailFolder,
     MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
@@ -227,10 +227,10 @@ impl DemoMailbox {
         // Mirror core's subject, quote and reply-recipient behavior.
         let answered = answered_message(&fixtures, &outgoing.kind, now);
         let (prefix, back_to) = match (&outgoing.kind, &answered) {
-            (Kind::Reply { .. }, Some(parent)) => ("Re: ", parent.reply_to.clone()),
-            (Kind::Forward { .. }, _) => ("Fw: ", Vec::new()),
-            (Kind::Reply { .. }, None) => ("Re: ", Vec::new()),
-            (Kind::New, _) => ("", Vec::new()),
+            (OutgoingKind::Reply { .. }, Some(parent)) => ("Re: ", parent.reply_to.clone()),
+            (OutgoingKind::Forward { .. }, _) => ("Fw: ", Vec::new()),
+            (OutgoingKind::Reply { .. }, None) => ("Re: ", Vec::new()),
+            (OutgoingKind::New, _) => ("", Vec::new()),
         };
 
         let mut everyone: Vec<String> = Vec::new();
@@ -913,10 +913,10 @@ struct Answered {
 }
 
 /// Finds the message being answered and works out how it is quoted.
-fn answered_message(fixtures: &[Fixture], kind: &Kind, now: i64) -> Option<Answered> {
+fn answered_message(fixtures: &[Fixture], kind: &OutgoingKind, now: i64) -> Option<Answered> {
     let message_id = match kind {
-        Kind::New => return None,
-        Kind::Reply { message_id, .. } | Kind::Forward { message_id } => message_id,
+        OutgoingKind::New => return None,
+        OutgoingKind::Reply { message_id, .. } | OutgoingKind::Forward { message_id } => message_id,
     };
     let (index, position) = message_place(message_id)?;
     let detail = detail_from(fixtures, &format!("demo-{index}"), now)?;
@@ -1355,7 +1355,7 @@ mod tests {
 
     fn outgoing(subject: &str) -> Outgoing {
         Outgoing {
-            kind: Kind::New,
+            kind: OutgoingKind::New,
             to: vec!["alex@example.com".into()],
             cc: Vec::new(),
             bcc: Vec::new(),
@@ -1412,7 +1412,7 @@ mod tests {
 
         mailbox
             .send_now(&Outgoing {
-                kind: Kind::Reply {
+                kind: OutgoingKind::Reply {
                     message_id: parent.id.clone(),
                     everyone: false,
                 },
@@ -1463,7 +1463,7 @@ mod tests {
 
         mailbox
             .send_now(&Outgoing {
-                kind: Kind::Reply {
+                kind: OutgoingKind::Reply {
                     message_id: own.id.clone(),
                     everyone: false,
                 },
@@ -1487,7 +1487,7 @@ mod tests {
 
         mailbox
             .send_now(&Outgoing {
-                kind: Kind::Forward {
+                kind: OutgoingKind::Forward {
                     message_id: answered.messages[0].id.clone(),
                 },
                 subject: String::new(),

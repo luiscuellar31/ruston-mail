@@ -16,7 +16,7 @@ use ruston_core::{
 };
 use secrecy::SecretString;
 
-use super::outgoing::{Kind, Outgoing, Protection, ProtectionCheck, SendError};
+use super::outgoing::{Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
@@ -140,7 +140,7 @@ impl ProtonMailService {
             Err(Error::Api(error)) if matches!(error.http_status, 401 | 403) => {
                 ResumeOutcome::SignedOut
             }
-            Err(error) => ResumeOutcome::Failed(map_error(error)),
+            Err(error) => ResumeOutcome::Failed(map_auth_error(error)),
         }
     }
 
@@ -325,12 +325,14 @@ impl ProtonMailService {
         // attachments for the draft; Proton threads them.
         let call = async {
             match &outgoing.kind {
-                Kind::New => self.client.send(&options).await,
-                Kind::Reply {
+                OutgoingKind::New => self.client.send(&options).await,
+                OutgoingKind::Reply {
                     message_id,
                     everyone,
                 } => self.client.reply(message_id, *everyone, &options).await,
-                Kind::Forward { message_id } => self.client.forward(message_id, &options).await,
+                OutgoingKind::Forward { message_id } => {
+                    self.client.forward(message_id, &options).await
+                }
             }
         };
 
@@ -1097,8 +1099,8 @@ fn message_without_body(
     reply_tos: &[Recipient],
     own: &OwnAddresses,
 ) -> MailMessage {
-    let own: Vec<String> = own.iter().cloned().collect();
-    let reply = ruston_core::reply_recipients(&meta, reply_tos, &own);
+    let own_list: Vec<String> = own.iter().cloned().collect();
+    let reply = ruston_core::reply_recipients(&meta, reply_tos, &own_list);
     let reply_redirected = ruston_core::reply_redirected(&meta, reply_tos);
 
     MailMessage {
@@ -1204,11 +1206,11 @@ fn map_sign_in_error(error: Error, supplied: Supplied) -> SignInOutcome {
         {
             SignInOutcome::Failed(AuthError::InvalidMailboxPassword)
         }
-        error => SignInOutcome::Failed(map_error(error)),
+        error => SignInOutcome::Failed(map_auth_error(error)),
     }
 }
 
-fn map_error(error: Error) -> AuthError {
+fn map_auth_error(error: Error) -> AuthError {
     match error {
         Error::HumanVerification(_) => AuthError::HumanVerificationRequired,
         Error::Http(_) => AuthError::Connection,
@@ -1785,9 +1787,9 @@ mod tests {
         };
         std::fs::remove_dir_all(&folder).unwrap();
 
-        assert_eq!(map_error(error), AuthError::SessionAddressMismatch);
+        assert_eq!(map_auth_error(error), AuthError::SessionAddressMismatch);
         assert_eq!(
-            map_error(Error::Session("keyring get: locked".into())),
+            map_auth_error(Error::Session("keyring get: locked".into())),
             AuthError::SessionUnavailable
         );
     }

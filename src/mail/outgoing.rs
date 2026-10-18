@@ -18,7 +18,7 @@ pub enum BodyFormat {
 /// Whether mail is new or answers an existing message.
 /// Core supplies reply recipients, subjects and forwarded attachments.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Kind {
+pub enum OutgoingKind {
     #[default]
     New,
     Reply {
@@ -48,7 +48,7 @@ pub type ProtectionCheck = (String, Result<Protection, MailboxError>);
 /// A message ready to leave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {
-    pub kind: Kind,
+    pub kind: OutgoingKind,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
@@ -73,8 +73,8 @@ impl Outgoing {
 
     /// Whether the sender has to say where this goes. A reply already knows,
     /// from the message it answers.
-    pub fn needs_recipients(kind: &Kind) -> bool {
-        !matches!(kind, Kind::Reply { .. })
+    pub fn needs_recipients(kind: &OutgoingKind) -> bool {
+        !matches!(kind, OutgoingKind::Reply { .. })
     }
 }
 
@@ -494,7 +494,7 @@ mod tests {
 
     fn html(body: &str) -> String {
         Outgoing {
-            kind: Kind::New,
+            kind: OutgoingKind::New,
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),
@@ -510,7 +510,7 @@ mod tests {
     fn plain_text_leaves_exactly_as_it_was_typed() {
         let typed = "Hi Alex,\n\nThe < sign & the rest.\n";
         let message = Outgoing {
-            kind: Kind::New,
+            kind: OutgoingKind::New,
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),
