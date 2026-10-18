@@ -569,6 +569,8 @@ enum Detected {
 /// to read its code; the caller decodes what it needs once.
 #[derive(serde::Deserialize)]
 struct Envelope {
+    /// Any JSON value, so a `Code` of another type reads as no code instead
+    /// of failing the whole envelope, and `Error` and `Details` with it.
     #[serde(rename = "Code")]
     code: Option<serde_json::Value>,
     #[serde(rename = "Error")]
@@ -579,56 +581,22 @@ struct Envelope {
 
 fn detect(status: u16, body: &[u8]) -> Detected {
     let envelope: Option<Envelope> = serde_json::from_slice(body).ok();
+    let envelope = envelope.as_ref();
     let code = envelope
-        .as_ref()
         .and_then(|envelope| envelope.code.as_ref())
         .and_then(serde_json::Value::as_i64);
 
     // Human verification (may arrive on HTTP 200 in the auth flow, or 422).
     if code == Some(response_code::HUMAN_VERIFICATION)
-        && let Some(details) = envelope
-            .as_ref()
-            .and_then(|envelope| envelope.details.as_ref())
+        && let Some(details) = envelope.and_then(|envelope| envelope.details.as_ref())
     {
-        let methods = details
-            .get("HumanVerificationMethods")
-            .and_then(|m| m.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        return Detected::Hv(HvChallenge {
-            token: details
-                .get("HumanVerificationToken")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            methods,
-            web_url: details
-                .get("WebUrl")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        });
+        return Detected::Hv(hv_challenge(details));
     }
-
-    let success = matches!(
-        code,
-        Some(response_code::SUCCESS | response_code::MULTI_SUCCESS)
-    );
-    let http_ok = (200..300).contains(&status);
-
-    if http_ok && (success || code.is_none()) {
-        return Detected::Ok;
-    }
-    if http_ok && code == Some(response_code::NONE) {
+    if is_success(status, code) {
         return Detected::Ok;
     }
 
     let message = envelope
-        .as_ref()
         .and_then(|envelope| envelope.error.as_ref())
         .and_then(serde_json::Value::as_str)
         .unwrap_or("request failed")
@@ -640,6 +608,44 @@ fn detect(status: u16, body: &[u8]) -> Detected {
         raw_body: String::from_utf8_lossy(&body[..body.len().min(MAX_ERROR_BODY_BYTES)])
             .into_owned(),
     })
+}
+
+/// Whether a response succeeded: a 2xx whose `Code`, if it has one, is a
+/// success or none.
+fn is_success(status: u16, code: Option<i64>) -> bool {
+    (200..300).contains(&status)
+        && matches!(
+            code,
+            None | Some(
+                response_code::NONE | response_code::SUCCESS | response_code::MULTI_SUCCESS
+            )
+        )
+}
+
+/// The challenge a 9001 response's `Details` describe. A field they lack
+/// reads as empty.
+fn hv_challenge(details: &serde_json::Value) -> HvChallenge {
+    let text = |key: &str| {
+        details
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    HvChallenge {
+        token: text("HumanVerificationToken"),
+        methods: details
+            .get("HumanVerificationMethods")
+            .and_then(serde_json::Value::as_array)
+            .map(|methods| {
+                methods
+                    .iter()
+                    .filter_map(|method| method.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        web_url: text("WebUrl"),
+    }
 }
 
 #[async_trait]
@@ -997,6 +1003,37 @@ mod tests {
         };
         assert_eq!(error.raw_body.len(), MAX_ERROR_BODY_BYTES);
         assert_eq!(error.message, "request failed");
+    }
+
+    #[test]
+    fn only_a_2xx_succeeds_and_only_a_detailed_challenge_asks_for_verification() {
+        // A success code does not make an error status a success.
+        for code in [1000, 1001, 0] {
+            let body = format!(r#"{{"Code": {code}}}"#);
+            let Detected::Api(error) = detect(500, body.as_bytes()) else {
+                panic!("a 500 with Code {code} succeeded");
+            };
+            assert_eq!((error.http_status, error.code), (500, code));
+        }
+        // A code that is not a number counts as no code.
+        assert!(matches!(detect(200, br#"{"Code": "1000"}"#), Detected::Ok));
+        // A challenge without its details is an ordinary error.
+        let Detected::Api(error) = detect(
+            422,
+            br#"{"Code": 9001, "Error": "human verification required"}"#,
+        ) else {
+            panic!("a challenge without details asked for verification");
+        };
+        assert_eq!(error.code, 9001);
+        // Details it lacks read as empty.
+        let Detected::Hv(challenge) = detect(422, br#"{"Code": 9001, "Details": {}}"#) else {
+            panic!("expected a challenge");
+        };
+        assert_eq!(
+            (challenge.token.as_str(), challenge.web_url.as_str()),
+            ("", "")
+        );
+        assert!(challenge.methods.is_empty());
     }
 
     #[tokio::test]
