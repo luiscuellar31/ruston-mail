@@ -243,9 +243,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   row away, offers its undo and names the row to open in its place. Starred and
   labels list mail wherever it sits, so a move to another folder keeps the row
   there and the mailbox remembers where it went, for the reader's buttons and a
-  later undo; Spam and Trash still take it out. When a confirmed move, such as
-  a move back, belongs in the view but its row is not listed, `App` reloads the
-  list. A read or
+  later undo; Spam and Trash still take it out. The undo offer keeps the row as
+  it was listed, so `Mailbox::start_move_back` lists it again at once, where its
+  date puts it, even from a page a reload would not read; a refused move back
+  takes it away again. When a confirmed move belongs in the view but its row is
+  not listed, `App` reloads the list. A read or
   star flag changes on every copy of the row, and the flag it replaced is kept
   by request. One action is on its way to Proton at a time: actions asked for
   meanwhile wait in order in the mailbox, so a move back follows its move, and

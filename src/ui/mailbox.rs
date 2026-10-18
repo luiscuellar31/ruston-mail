@@ -2794,6 +2794,7 @@ mod tests {
             kind: crate::mail::SummaryKind::Conversation,
             from: Folder::INBOX,
             to: Folder::System(MailFolder::Trash),
+            row: None,
         };
         let mut state = UiState::default();
 

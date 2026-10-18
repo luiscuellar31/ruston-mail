@@ -91,6 +91,9 @@ pub struct UndoMove {
     pub from: Folder,
     /// Where it was moved, which is what the offer says.
     pub to: Folder,
+    /// The row as it was listed, so taking the move back can list it again
+    /// even when it came from a page a reload does not read.
+    pub row: Option<ConversationSummary>,
 }
 
 /// Which way the keyboard moves through the conversation list.
@@ -387,6 +390,9 @@ pub struct Mailbox {
     /// list mail wherever it sits, so a conversation moved to another folder
     /// stays in them, and only this says where it went.
     relocated: HashMap<String, Folder>,
+    /// Rows a move back listed again before Proton confirmed it; a refused
+    /// one takes its row away again.
+    listed_again: HashSet<String>,
 }
 
 impl Mailbox {
@@ -428,6 +434,7 @@ impl Mailbox {
             undo: None,
             automatic_reads: HashMap::new(),
             relocated: HashMap::new(),
+            listed_again: HashSet::new(),
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -1164,6 +1171,7 @@ impl Mailbox {
                 kind,
                 from: from.clone(),
                 to: to.clone(),
+                row: self.row(row_id).cloned(),
             }),
             _ => None,
         };
@@ -1225,6 +1233,37 @@ impl Mailbox {
             send: self.ready_to_send(&request).then_some(request),
             opened,
         })
+    }
+
+    /// Takes a move back, as `start_action_on` starts it, and lists the row
+    /// again at once when the open view keeps it: a reload reads only the
+    /// first page, so a row from a deeper one would not come back with it.
+    /// If Proton refuses the move back, the row leaves again.
+    pub fn start_move_back(&mut self, undo: UndoMove, request: RequestId) -> Option<ActionStart> {
+        let action = MailAction::MoveTo(undo.from);
+        let start = self.start_action_on(undo.row_id, undo.kind, action.clone(), request)?;
+        if let Some(row) = undo.row
+            && !self.leaves_view(&self.folder, &action)
+            && !self.has_row(&row.id)
+        {
+            self.list_again(row);
+        }
+        Some(start)
+    }
+
+    /// Lists `row` again where its date puts it among the loaded rows, newest
+    /// first, and remembers that Proton has yet to confirm it is here.
+    fn list_again(&mut self, row: ConversationSummary) {
+        let at = self
+            .conversations
+            .iter()
+            .position(|listed| listed.time < row.time)
+            .unwrap_or(self.conversations.len());
+        self.row_ids.insert(row.id.clone());
+        self.listed_again.insert(row.id.clone());
+        self.conversations.insert(at, row);
+        self.last_dated_time = last_dated_time(&self.conversations);
+        self.recompute_visible();
     }
 
     /// Whether a request can go now: a read mutation waits for an automatic
@@ -1304,9 +1343,19 @@ impl Mailbox {
 
         // A reload while the move was on its way can have brought the row back,
         // and a confirmed automatic read can have covered an unread shown early.
+        // A later move of the same row, such as one taking it back, decides
+        // whether it stays.
         let opened = if self.leaves_view(&self.folder, &request.action) {
-            self.remove_row(&request.row_id)
+            if self.superseded(request) {
+                None
+            } else {
+                self.remove_row(&request.row_id)
+            }
         } else {
+            // A move that keeps its row here is where Proton now lists it.
+            if request.action.destination().is_some() {
+                self.listed_again.remove(&request.row_id);
+            }
             if !self.superseded(request) {
                 self.record_action(&request.row_id, &request.action);
             }
@@ -1330,6 +1379,10 @@ impl Mailbox {
     /// Undoes what a refused action showed early, where it can be undone here:
     /// `before` is the flag it replaced.
     fn take_back(&mut self, request: &ActionRequest, before: Option<MailAction>) {
+        // A move back that did not happen leaves its row where it went.
+        if self.listed_again.remove(&request.row_id) {
+            let _ = self.remove_row(&request.row_id);
+        }
         // The move did not happen, so there is nothing to take back.
         if self
             .undo
@@ -1476,6 +1529,7 @@ impl Mailbox {
         // The offer belongs to the folder it was made in.
         self.undo = None;
         self.relocated.clear();
+        self.listed_again.clear();
         // So do search results: a folder is a different question.
         self.search = None;
         self.search_request = None;

@@ -2793,3 +2793,92 @@ fn an_empty_page_offers_no_next_one_whatever_the_total_says() {
         "the results ran out before their total"
     );
 }
+
+/// A two-page Inbox with `row` archived and the archive confirmed.
+fn archived_from_a_deeper_page(row: &str) -> Mailbox {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    let more = mailbox.load_more(3).unwrap();
+    mailbox.finish_page(more.id, full_page(PAGE_SIZE, 120));
+    load_detail(&mut mailbox, row, detail(row, &[row]), 4);
+    let archive = mailbox
+        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 5)
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    assert!(!mailbox.has_row(row));
+    mailbox
+}
+
+#[test]
+fn taking_back_a_move_lists_a_row_from_a_deeper_page_again() {
+    // p60 is on the second page, which a reload does not read.
+    let mut mailbox = archived_from_a_deeper_page("p60");
+
+    let undo = mailbox.take_undo().expect("the move can be taken back");
+    let back = mailbox
+        .start_move_back(undo, 6)
+        .and_then(|start| start.send)
+        .unwrap();
+    // Listed again at once, where its date puts it.
+    let ids = visible_ids(&mailbox);
+    let at = ids
+        .iter()
+        .position(|id| *id == "p60")
+        .expect("listed again");
+    assert_eq!((ids[at - 1], ids[at + 1]), ("p59", "p61"));
+
+    let _ = mailbox.finish_action(&back, Ok(()));
+    assert!(mailbox.has_row("p60"));
+    assert!(
+        !mailbox.brought_back(&back),
+        "no reload is needed to show it"
+    );
+
+    // Confirmed, it is listed for good: a later refusal leaves it be.
+    let star = mailbox
+        .start_action_on(
+            "p60".into(),
+            SummaryKind::Conversation,
+            MailAction::SetStarred(true),
+            7,
+        )
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&star, Err(MailboxError::Service));
+    assert!(mailbox.has_row("p60"));
+}
+
+#[test]
+fn a_refused_move_back_takes_its_row_away_again() {
+    let mut mailbox = archived_from_a_deeper_page("p60");
+    let undo = mailbox.take_undo().unwrap();
+    let back = mailbox
+        .start_move_back(undo, 6)
+        .and_then(|start| start.send)
+        .unwrap();
+    assert!(mailbox.has_row("p60"));
+
+    let _ = mailbox.finish_action(&back, Err(MailboxError::Service));
+    assert!(!mailbox.has_row("p60"), "the row is still in Archive");
+}
+
+#[test]
+fn a_move_back_behind_its_move_keeps_the_row_when_the_move_ends() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+    let undo = mailbox.take_undo().unwrap();
+    let back = mailbox.start_move_back(undo, 4).unwrap();
+    assert_eq!(back.send, None, "the move back waits for the move");
+    assert!(mailbox.has_row("a"));
+
+    let next = mailbox.finish_action(&archive, Ok(())).next_action.unwrap();
+    assert!(mailbox.has_row("a"), "the move's answer took it away again");
+    // The move back, refused, leaves it in Archive after all.
+    let _ = mailbox.finish_action(&next, Err(MailboxError::Service));
+    assert!(!mailbox.has_row("a"));
+}

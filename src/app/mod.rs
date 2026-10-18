@@ -1137,8 +1137,6 @@ impl App {
         let Some(undo) = self.active_mailbox().and_then(Mailbox::take_undo) else {
             return Effects::none();
         };
-        let action = MailAction::MoveTo(undo.from.clone());
-
         match self.backend.clone() {
             Some(MailBackend::Demo(service)) => {
                 if service.move_to(&undo.row_id, &undo.from) {
@@ -1149,9 +1147,10 @@ impl App {
             }
             Some(MailBackend::Proton(service)) => {
                 let request = self.next_request();
-                let Some(start) = self.active_mailbox().and_then(|mailbox| {
-                    mailbox.start_action_on(undo.row_id, undo.kind, action, request)
-                }) else {
+                let Some(start) = self
+                    .active_mailbox()
+                    .and_then(|mailbox| mailbox.start_move_back(undo, request))
+                else {
                     return Effects::none();
                 };
                 self.show_started_action(&service, start)
