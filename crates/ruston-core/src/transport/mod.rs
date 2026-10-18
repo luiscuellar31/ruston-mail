@@ -28,6 +28,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_REDIRECTS: usize = 10;
 /// How much of an error body `ApiError::raw_body` keeps.
 const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
+/// How many times one request may renew its tokens after a 401. Tokens
+/// renewed meanwhile by another request or process may have expired too, so
+/// reusing them leaves one more refresh; a pair Proton has just issued is the
+/// last try.
+const REFRESH_ATTEMPTS: u8 = 2;
 
 /// Request body.
 #[derive(Debug, Clone)]
@@ -639,30 +644,28 @@ fn detect(status: u16, body: &[u8]) -> Detected {
 
 #[async_trait]
 impl Doer for HttpClient {
-    async fn do_raw(&self, req: Request) -> Result<Response> {
-        let mut work = req;
-        let prepared = self.prepare_request(&mut work)?;
-        // Tokens renewed meanwhile by another request or process may have
-        // expired too, so reusing them leaves one more refresh; a pair Proton
-        // has just issued is the last try.
-        let mut refreshes_left = 2u8;
+    async fn do_raw(&self, mut request: Request) -> Result<Response> {
+        // The request is sent again after renewing the tokens on a 401, up to
+        // REFRESH_ATTEMPTS times; after one wait on a 429; and after one
+        // solved human verification.
+        let prepared = self.prepare_request(&mut request)?;
+        let mut refreshes_left = REFRESH_ATTEMPTS;
         let mut rate_limited = false;
         let mut hv_tried = false;
 
         loop {
             let sent_auth = self.auth.read().await.clone();
-            let resp = Self::execute_once(&self.client, &work, &prepared, &sent_auth).await?;
+            let resp = Self::execute_once(&self.client, &request, &prepared, &sent_auth).await?;
             match detect(resp.status, &resp.body) {
                 Detected::Ok => return Ok(resp),
                 Detected::Api(e)
-                    if e.is_unauthorized() && !work.skip_refresh && refreshes_left > 0 =>
+                    if e.is_unauthorized() && !request.skip_refresh && refreshes_left > 0 =>
                 {
                     tracing::debug!(target: "ruston_core::http", "401 — refreshing access token and retrying");
                     refreshes_left = match self.refresh_tokens(&sent_auth).await? {
                         Refresh::Rotated => 0,
                         Refresh::Reused => refreshes_left - 1,
                     };
-                    continue;
                 }
                 Detected::Api(e) if e.is_unauthorized() => return Err(Error::Unauthorized),
                 Detected::Api(e) if e.is_rate_limited() && !rate_limited => {
@@ -672,18 +675,17 @@ impl Doer for HttpClient {
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                     }
                     rate_limited = true;
-                    continue;
                 }
-                Detected::Hv(chal) if self.hv.is_some() && !hv_tried => {
+                Detected::Hv(chal) => {
+                    let Some(resolver) = self.hv.as_ref().filter(|_| !hv_tried) else {
+                        return Err(Error::HumanVerification(chal));
+                    };
                     tracing::info!(target: "ruston_core::auth", methods = ?chal.methods, "9001 human verification required — invoking resolver");
-                    let resolver = self.hv.as_ref().unwrap().clone();
                     let (tok, ttype) = resolver(chal).await?;
                     tracing::info!(target: "ruston_core::auth", token_type = %ttype, "human verification token obtained — retrying");
-                    work.hv = Some((tok, ttype));
+                    request.hv = Some((tok, ttype));
                     hv_tried = true;
-                    continue;
                 }
-                Detected::Hv(chal) => return Err(Error::HumanVerification(chal)),
                 Detected::Api(e) => return Err(Error::Api(e)),
             }
         }
@@ -1915,15 +1917,7 @@ mod tests {
         // First (no HV header) → 9001 challenge.
         Mock::given(method("GET"))
             .and(path("/x"))
-            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
-                "Code": 9001,
-                "Error": "human verification required",
-                "Details": {
-                    "HumanVerificationToken": "chal",
-                    "HumanVerificationMethods": ["captcha"],
-                    "WebUrl": "https://verify.proton.me/?methods=captcha&token=chal"
-                }
-            })))
+            .respond_with(human_verification_required())
             .mount(&server)
             .await;
 
@@ -1943,5 +1937,61 @@ mod tests {
         assert_eq!(v.value, 77);
         // resolver was invoked with the challenge token from Details.
         assert_eq!(seen.read().await.as_slice(), &["chal".to_string()]);
+    }
+
+    /// Proton's 9001 answer, asking to solve the challenge `chal`.
+    fn human_verification_required() -> ResponseTemplate {
+        ResponseTemplate::new(422).set_body_json(serde_json::json!({
+            "Code": 9001,
+            "Error": "human verification required",
+            "Details": {
+                "HumanVerificationToken": "chal",
+                "HumanVerificationMethods": ["captcha"],
+                "WebUrl": "https://verify.proton.me/?methods=captcha&token=chal"
+            }
+        }))
+    }
+
+    #[tokio::test]
+    async fn human_verification_with_no_resolver_is_left_to_the_caller() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(human_verification_required())
+            .mount(&server)
+            .await;
+
+        let result = client(&server.uri()).do_raw(Request::get("/x")).await;
+        assert!(matches!(result, Err(Error::HumanVerification(ref chal)) if chal.token == "chal"));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_human_verification_is_left_to_the_caller() {
+        let server = MockServer::start().await;
+        // Even the request carrying the solved challenge is challenged again.
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(human_verification_required())
+            .mount(&server)
+            .await;
+        let mut c = client(&server.uri());
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
+        c.set_hv_resolver(Arc::new(move |chal: HvChallenge| {
+            let first = counter.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                if first {
+                    Ok((format!("{}:resp", chal.token), "captcha".to_string()))
+                } else {
+                    Err(Error::Other("asked to verify twice".into()))
+                }
+            })
+        }));
+
+        let result = c.do_raw(Request::get("/x")).await;
+        assert!(matches!(result, Err(Error::HumanVerification(_))));
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 }
