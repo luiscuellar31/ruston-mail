@@ -16,6 +16,7 @@ pub enum AuthError {
     Connection,
     TimedOut,
     HumanVerificationRequired,
+    HumanVerificationUnsupported,
     SecurityKeyUnsupported,
     SessionUnavailable,
     SessionAddressMismatch,
@@ -41,7 +42,10 @@ impl fmt::Display for AuthError {
                 "Signing in to Proton took too long. Check your connection and try again."
             }
             Self::HumanVerificationRequired => {
-                "Proton requires human verification. Ruston Mail does not support this flow yet."
+                "Proton asked to check that you are human. Sign in again to complete the check."
+            }
+            Self::HumanVerificationUnsupported => {
+                "Proton asked for a kind of human verification that Ruston Mail does not support yet."
             }
             Self::SecurityKeyUnsupported => {
                 "This account requires FIDO2/WebAuthn, which Ruston Mail does not support yet."
@@ -122,7 +126,11 @@ mod tests {
         );
         assert_eq!(
             AuthError::HumanVerificationRequired.to_string(),
-            "Proton requires human verification. Ruston Mail does not support this flow yet."
+            "Proton asked to check that you are human. Sign in again to complete the check."
+        );
+        assert_eq!(
+            AuthError::HumanVerificationUnsupported.to_string(),
+            "Proton asked for a kind of human verification that Ruston Mail does not support yet."
         );
     }
 }

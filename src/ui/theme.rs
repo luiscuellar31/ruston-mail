@@ -428,6 +428,15 @@ pub fn primary_visuals(ui: &mut egui::Ui) {
     }
 }
 
+/// Gives a button in `ui` that senses no clicks, because it only shows that
+/// something is under way, the look the same button has at rest. egui would
+/// otherwise draw it in the plain colors of text, and a disabled one at half
+/// strength, which white on the accent does not survive.
+pub fn busy_visuals(ui: &mut egui::Ui) {
+    let widgets = &mut ui.visuals_mut().widgets;
+    widgets.noninteractive = widgets.inactive;
+}
+
 fn danger_visuals(ui: &mut egui::Ui) {
     let danger = colors(ui).danger;
     let widgets = &mut ui.visuals_mut().widgets;

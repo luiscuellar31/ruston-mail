@@ -691,9 +691,7 @@ impl Prompter {
         Arc::new(move |challenge: HvChallenge| {
             let prompter = prompter.clone();
             Box::pin(async move {
-                let captcha = challenge.methods.is_empty()
-                    || challenge.methods.iter().any(|method| method == "captcha");
-                if !captcha {
+                if !offers_captcha(&challenge) {
                     return Err(Error::HumanVerification(challenge));
                 }
                 let url = verification_url(&challenge.web_url, &challenge.token);
@@ -1182,6 +1180,23 @@ fn map_mailbox_error(error: Error) -> MailboxError {
     }
 }
 
+/// Whether Ruston can answer `challenge`: its external-browser flow solves a
+/// CAPTCHA, which Proton also means when it names no method.
+fn offers_captcha(challenge: &HvChallenge) -> bool {
+    challenge.methods.is_empty() || challenge.methods.iter().any(|method| method == "captcha")
+}
+
+/// What a human verification that ended a sign-in or a session asks of the
+/// person: signing in again answers a CAPTCHA, while any other method is one
+/// Ruston cannot answer.
+fn verification_error(challenge: &HvChallenge) -> AuthError {
+    if offers_captcha(challenge) {
+        AuthError::HumanVerificationRequired
+    } else {
+        AuthError::HumanVerificationUnsupported
+    }
+}
+
 fn map_sign_in_error(error: Error, supplied: Supplied) -> SignInOutcome {
     match error {
         Error::Other(message) if message.contains(MAILBOX_PASSWORD_REQUIRED) => {
@@ -1190,7 +1205,9 @@ fn map_sign_in_error(error: Error, supplied: Supplied) -> SignInOutcome {
         Error::Other(message) if message.contains(SECURITY_KEY_REQUIRED) => {
             SignInOutcome::Failed(AuthError::SecurityKeyUnsupported)
         }
-        Error::HumanVerification(_) => SignInOutcome::Failed(AuthError::HumanVerificationRequired),
+        Error::HumanVerification(challenge) => {
+            SignInOutcome::Failed(verification_error(&challenge))
+        }
         Error::Unauthorized if supplied.totp => SignInOutcome::Failed(AuthError::InvalidTotp),
         Error::Unauthorized => SignInOutcome::Failed(AuthError::InvalidCredentials),
         Error::Api(error) if supplied.totp && mentions_totp(&error.message) => {
@@ -1212,7 +1229,7 @@ fn map_sign_in_error(error: Error, supplied: Supplied) -> SignInOutcome {
 
 fn map_auth_error(error: Error) -> AuthError {
     match error {
-        Error::HumanVerification(_) => AuthError::HumanVerificationRequired,
+        Error::HumanVerification(challenge) => verification_error(&challenge),
         Error::Http(_) => AuthError::Connection,
         Error::Session(message) if message.contains(SESSION_ADDRESS_MISMATCH) => {
             AuthError::SessionAddressMismatch
@@ -1532,6 +1549,39 @@ mod tests {
             token: "token".into(),
             methods: vec!["captcha".into()],
             web_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_verification_says_whether_signing_in_again_answers_it() {
+        let email = HvChallenge {
+            methods: vec!["email".into(), "sms".into()],
+            ..captcha_challenge()
+        };
+        let unnamed = HvChallenge {
+            methods: Vec::new(),
+            ..captcha_challenge()
+        };
+
+        for (challenge, expected) in [
+            (captcha_challenge(), AuthError::HumanVerificationRequired),
+            (unnamed, AuthError::HumanVerificationRequired),
+            (email, AuthError::HumanVerificationUnsupported),
+        ] {
+            let methods = challenge.methods.clone();
+            let outcome = map_sign_in_error(
+                Error::HumanVerification(challenge.clone()),
+                Supplied::default(),
+            );
+            assert!(
+                matches!(outcome, SignInOutcome::Failed(error) if error == expected),
+                "{methods:?}"
+            );
+            assert_eq!(
+                map_auth_error(Error::HumanVerification(challenge)),
+                expected,
+                "{methods:?}"
+            );
         }
     }
 

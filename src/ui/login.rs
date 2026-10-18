@@ -280,13 +280,20 @@ fn sign_in(
     let submit_clicked = ui
         .scope(|ui| {
             theme::primary_visuals(ui);
-            ui.add_enabled(
-                !busy,
-                egui::Button::new((egui::Atom::grow(), submit, egui::Atom::grow()))
-                    .min_size(egui::vec2(ui.available_width(), 44.0))
-                    .stroke(egui::Stroke::NONE),
-            )
-            .clicked()
+            let button = egui::Button::new((egui::Atom::grow(), submit, egui::Atom::grow()))
+                .min_size(egui::vec2(ui.available_width(), 44.0))
+                .stroke(egui::Stroke::NONE);
+            if busy {
+                // Readable while the sign-in runs, yet it takes no clicks
+                // and screen readers still hear it as unavailable.
+                theme::busy_visuals(ui);
+                ui.add(button.sense(egui::Sense::hover())).widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, false, submit)
+                });
+                false
+            } else {
+                ui.add(button).clicked()
+            }
         })
         .inner;
     if submit_clicked {
@@ -541,6 +548,134 @@ fn error(ui: &mut egui::Ui, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signing_in_is_drawn_at_full_strength_and_takes_no_clicks() {
+        fn walk(
+            shape: &egui::epaint::Shape,
+            texts: &mut Vec<egui::epaint::TextShape>,
+            rects: &mut Vec<egui::epaint::RectShape>,
+        ) {
+            match shape {
+                egui::epaint::Shape::Text(text) => texts.push(text.clone()),
+                egui::epaint::Shape::Rect(rect) => rects.push(rect.clone()),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, texts, rects);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        struct Frame {
+            label: egui::epaint::TextShape,
+            fills: Vec<egui::epaint::RectShape>,
+            unavailable: Option<bool>,
+            messages: Vec<Message>,
+        }
+
+        let mut app = App::signed_out();
+        app.set_auth_state(AuthState::SigningIn(SignInStep::Credentials));
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut messages = Vec::new();
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| sign_in(ui, app, &mut false, &mut messages),
+            );
+            let (mut texts, mut fills) = (Vec::new(), Vec::new());
+            for clipped in &output.shapes {
+                walk(&clipped.shape, &mut texts, &mut fills);
+            }
+            let unavailable = output
+                .platform_output
+                .accesskit_update
+                .iter()
+                .flat_map(|update| &update.nodes)
+                .find(|(_, node)| node.label() == Some("Signing in…"))
+                .map(|(_, node)| node.is_disabled());
+            output.drop_without_applying_deltas();
+            let label = texts
+                .into_iter()
+                .find(|text| text.galley.text() == "Signing in…")
+                .expect("the busy button");
+            Frame {
+                label,
+                fills,
+                unavailable,
+                messages,
+            }
+        };
+        let full_strength = |frame: &Frame| {
+            let label = &frame.label;
+            let bounds = egui::Rect::from_min_size(label.pos, label.galley.size());
+            let drawn: Vec<egui::Color32> = label
+                .galley
+                .rows
+                .iter()
+                .flat_map(|placed| placed.row.visuals.mesh.vertices.iter())
+                .map(|vertex| {
+                    if vertex.color == egui::Color32::PLACEHOLDER {
+                        label.fallback_color
+                    } else {
+                        vertex.color
+                    }
+                })
+                .collect();
+            assert!(
+                !drawn.is_empty() && drawn.iter().all(|color| *color == egui::Color32::WHITE),
+                "the label is faded: {:?}",
+                drawn.first()
+            );
+            assert!(
+                frame
+                    .fills
+                    .iter()
+                    .any(|rect| rect.rect.contains_rect(bounds) && rect.fill == theme::ACCENT),
+                "no accent at rest behind the label"
+            );
+            bounds.center()
+        };
+
+        let shown = frame(&mut app, Vec::new());
+        let center = full_strength(&shown);
+        assert_eq!(
+            shown.unavailable,
+            Some(true),
+            "screen readers hear it as usable"
+        );
+
+        let press = |pressed| egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let pressed = frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(center), press(true)],
+        );
+        // Under the pointer and pressed, it keeps its look: nothing to click.
+        full_strength(&pressed);
+        let released = frame(&mut app, vec![press(false)]);
+        assert!(
+            !released
+                .messages
+                .iter()
+                .any(|message| matches!(message, Message::Submit)),
+            "a sign-in under way was submitted again"
+        );
+    }
 
     #[test]
     fn version_uses_login_corner_without_reserving_a_footer() {
