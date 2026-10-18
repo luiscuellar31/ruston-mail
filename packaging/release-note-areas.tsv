@@ -1,0 +1,14 @@
+# Areas of the release notes, in the order they appear: the area name, a tab,
+# then the commit scopes it collects. A user-visible commit whose scope is not
+# listed here appears under Other. Add an area only for a new part of the app.
+Mailbox and reading	mailbox reader labels html search
+Writing and sending	compose send drafts mailto
+Attachments	attachments downloads
+Sign-in and accounts	auth login session
+Notifications	notifications
+Desktop app	app ui settings shortcuts demo
+Command line	cli
+Mail engine, in both apps	core mail proton
+Installation and platforms	packaging windows macos linux
+# Work that users do not see. Its commits go to Maintenance whatever their type.
+internal	ci build release test tests deps workspace git rust dev readme security

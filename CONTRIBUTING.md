@@ -65,10 +65,14 @@ type(scope): imperative summary
 type: imperative summary
 ```
 
-Use a scope when it clarifies the area (`cli`, `core`, `auth`, `mail`, `ui`, or
-`workspace`); it is optional. Common types here are `feat`, `fix`, `perf`,
-`refactor`, `docs`, `test`, `ci`, and `chore`. Keep each commit about one logical
-change. Examples:
+Take the scope from
+[`packaging/release-note-areas.tsv`](packaging/release-note-areas.tsv), which
+groups scopes such as `reader`, `compose`, `cli`, `core`, or `packaging` into the
+areas of the release notes. A user-visible change without a scope, or with one
+not listed there, appears under Other; add an area there only for a new part of
+the application. Common types here are `feat`, `fix`, `perf`, `refactor`,
+`docs`, `test`, `ci`, and `chore`. Keep each commit about one logical change.
+Examples:
 
 ```text
 feat(cli): add offline demo mode
@@ -79,8 +83,8 @@ docs: map the workspace architecture
 For a breaking change, use `!` after the type or scope and explain the impact
 and migration in the commit body with a `BREAKING CHANGE:` footer.
 
-The release notes list each subject line unchanged, grouped by type, so choose
-the type by who notices the change:
+The release notes list each subject line, grouped by type and by the area of
+its scope, so choose the type by who notices the change:
 
 - `feat`, `fix`, and `perf` are for changes that users notice: a new
   capability, corrected behavior, or faster work. That includes what they

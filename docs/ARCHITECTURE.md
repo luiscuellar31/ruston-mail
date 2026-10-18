@@ -919,8 +919,9 @@ architecture on a native runner:
 Only the publishing job may write to the repository. It adds `SHA256SUMS.txt`,
 build provenance attestations, and notes that
 [`release-notes.sh`](../packaging/release-notes.sh) writes from the Conventional
-Commits since the previous tag. It never replaces the files of a release that is
-already published.
+Commits since the previous tag, grouped by the areas that
+[`release-note-areas.tsv`](../packaging/release-note-areas.tsv) gives their
+scopes. It never replaces the files of a release that is already published.
 
 ## Keeping this map current
 

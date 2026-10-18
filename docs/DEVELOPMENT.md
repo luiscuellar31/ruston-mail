@@ -658,7 +658,10 @@ To publish a release:
    `main`, builds everything again, and creates a draft release with the files,
    `SHA256SUMS.txt`, build provenance attestations, and notes written by
    [`release-notes.sh`](../packaging/release-notes.sh) from the commits since the
-   previous tag. Re-running the workflow for the tag updates the draft.
+   previous tag: new features, fixes and performance work under the areas of
+   [`release-note-areas.tsv`](../packaging/release-note-areas.tsv), and the rest
+   in a short Maintenance list. Re-running the workflow for the tag updates the
+   draft.
 4. Edit the introduction at the top of the draft, check the files, and publish
    it. Once a release is published, the workflow refuses to replace its files.
 
