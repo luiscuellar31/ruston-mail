@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::mail::{
-    BodyFormat, Domains, InternationalDomain, MailMessage, Outgoing, OutgoingKind, Protection,
-    ProtectionCheck, Recipients, SendError, recipients,
+    BodyFormat, Domains, InternationalDomain, MailMessage, MessageBody, Outgoing, OutgoingKind,
+    Protection, ProtectionCheck, Recipients, SendError, recipients,
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
@@ -162,6 +162,12 @@ pub struct Answering {
     /// The sender's address when the message's Reply-To sends the reply
     /// somewhere else, so the composer can say so.
     pub redirected_from: Option<String>,
+    /// Whether core quotes the original under the text, which it does when
+    /// the original opens, as it did in the reader.
+    pub quotes_original: bool,
+    /// The files a forward carries from the original, as the reader lists
+    /// them; a reply carries none.
+    pub forwarded: Vec<String>,
 }
 
 /// A message being written.
@@ -489,6 +495,14 @@ fn answering_for(kind: AnswerKind, message: &MailMessage, subject: Option<&str>)
     let sender = message.sender.address.trim();
     let redirected_from = (!to.is_empty() && message.reply_redirected && !sender.is_empty())
         .then(|| sender.to_owned());
+    let forwarded = match kind {
+        AnswerKind::Forward => message
+            .attachments
+            .iter()
+            .map(|attachment| attachment.name.clone())
+            .collect(),
+        AnswerKind::Reply | AnswerKind::ReplyAll => Vec::new(),
+    };
     Answering {
         sender: message
             .sender
@@ -500,6 +514,8 @@ fn answering_for(kind: AnswerKind, message: &MailMessage, subject: Option<&str>)
         to,
         cc,
         redirected_from,
+        quotes_original: message.body != MessageBody::Unreadable,
+        forwarded,
     }
 }
 
@@ -991,6 +1007,29 @@ mod tests {
 
     fn answering(kind: AnswerKind, message: &MailMessage) -> Answering {
         answering_for(kind, message, Some("Invoice"))
+    }
+
+    #[test]
+    fn an_answer_says_what_goes_out_with_its_text() {
+        let mut message = answered_message("alex@corp.example");
+        message.attachments = vec![crate::mail::MailAttachment {
+            id: "a1".into(),
+            name: "invoice.pdf".into(),
+            size: 2048,
+        }];
+
+        let forward = answering(AnswerKind::Forward, &message);
+        assert_eq!(forward.forwarded, ["invoice.pdf"]);
+        assert!(forward.quotes_original);
+        for kind in [AnswerKind::Reply, AnswerKind::ReplyAll] {
+            let reply = answering(kind, &message);
+            assert!(reply.forwarded.is_empty(), "{kind:?} carries no files");
+            assert!(reply.quotes_original, "{kind:?}");
+        }
+
+        // Core quotes only an original that opens.
+        message.body = crate::mail::MessageBody::Unreadable;
+        assert!(!answering(AnswerKind::Reply, &message).quotes_original);
     }
 
     #[test]

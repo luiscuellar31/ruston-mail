@@ -405,6 +405,19 @@ fn answered(ui: &mut egui::Ui, answer: &Answering, addressed_here: bool) {
         ui,
         &format!("Answering “{}” from {}.", answer.subject, answer.sender),
     );
+    // What goes out with the text, though the composer does not show it.
+    if answer.quotes_original {
+        detail(ui, "The original is quoted under your text.");
+    }
+    if !answer.forwarded.is_empty() {
+        detail(
+            ui,
+            &format!(
+                "Its attachments go with it: {}.",
+                answer.forwarded.join(", ")
+            ),
+        );
+    }
     if !addressed_here {
         detail(ui, &format!("To: {}", answer.to.join(", ")));
         if !answer.cc.is_empty() {
@@ -783,6 +796,8 @@ mod tests {
             to: vec!["attacker@evil.example".into()],
             cc: vec!["bob@corp.example".into()],
             redirected_from: Some("alex@corp.example".into()),
+            quotes_original: true,
+            forwarded: Vec::new(),
         };
         let mut danger = egui::Color32::PLACEHOLDER;
         let mut body = 0.0;
@@ -811,6 +826,44 @@ mod tests {
         assert!(shown("Cc: bob@corp.example").is_some());
         let warning = shown("not to its sender, alex@corp.example").expect("redirect warning");
         assert!(warning.1, "the redirect warning stands out");
+    }
+
+    #[test]
+    fn a_forward_names_the_files_it_carries_and_the_quote() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let answer = Answering {
+            sender: "Alex Rivera".into(),
+            subject: "Invoice".into(),
+            kind: AnswerKind::Forward,
+            to: Vec::new(),
+            cc: Vec::new(),
+            redirected_from: None,
+            quotes_original: true,
+            forwarded: vec!["invoice.pdf".into(), "receipt.png".into()],
+        };
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            answered(ui, &answer, true);
+        });
+        let texts: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+
+        for wanted in [
+            "The original is quoted under your text.",
+            "Its attachments go with it: invoice.pdf, receipt.png.",
+        ] {
+            assert!(
+                texts.iter().any(|text| text == wanted),
+                "{wanted} in {texts:?}"
+            );
+        }
     }
 
     #[test]

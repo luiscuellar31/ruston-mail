@@ -308,7 +308,10 @@ own addresses. Replying to a message you sent continues with the people you sent
 it to. The composer lists these recipients, and warns when the
 message's Reply-To sends the reply somewhere other than its sender. The subject
 is written for you. Replies and forwards are sent from the address the original
-message reached.
+message reached. The original's text is quoted under yours when it can be
+opened, and a forward also carries the original's files, images in its body
+included; the composer says when the original is quoted and lists the
+attachments a forward sends.
 
 Messages can be sent as plain text or HTML. The editor remains plain text in
 both modes: text that looks like an HTML tag is sent as text, not executed as
