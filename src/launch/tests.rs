@@ -93,6 +93,28 @@ fn a_crashed_primarys_record_cannot_send_links_to_another_program() {
 }
 
 #[test]
+fn a_launch_while_the_primary_closes_takes_over_once_its_lock_is_free() {
+    let directory = Directory::new();
+    private_directory(&directory.0).unwrap();
+    // A primary that is closing has removed its record but still holds the
+    // lock until its process ends.
+    let closing = claim(&directory.0, &directory.0.join("endpoint"))
+        .unwrap()
+        .unwrap();
+    let ends = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        drop(closing);
+    });
+    let Start::Primary(instance) =
+        launch(&directory.0, vec!["mailto:late@example.org".into()]).unwrap()
+    else {
+        panic!("the launch should have taken over");
+    };
+    ends.join().unwrap();
+    assert!(instance.drain() == vec![mailto_event("mailto:late@example.org")]);
+}
+
+#[test]
 fn taking_the_lock_removes_the_previous_record_before_publishing_a_new_one() {
     let directory = Directory::new();
     let _foreign = stale_record(&directory.0);

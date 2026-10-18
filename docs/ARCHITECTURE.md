@@ -42,7 +42,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   long as the process, so it is not flushed to disk; if it cannot be written,
   the window still opens, a warning goes to standard error, and later launches
   cannot hand it their links. A stale record that cannot be removed still stops
-  startup, so no link reaches a reused port.
+  startup, so no link reaches a reused port. A launch that finds the lock held
+  but no instance to connect to keeps trying both for three seconds: an
+  instance that is closing has removed its record, and once its lock comes
+  free the new launch takes over with its links.
   Demo activation uses a separate directory. Windows secondary launches grant
   foreground rights to the primary when Windows permits it.
   [`launch/macos.rs`](../src/launch/macos.rs) registers a retained `GURL` Apple
