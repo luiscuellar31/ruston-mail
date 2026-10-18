@@ -38,13 +38,13 @@ pub fn escape_text(text: &str) -> String {
 static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
     let mut builder = ammonia::Builder::new();
     builder
-        .add_clean_content_tags(&[
-            "head", "title", "noscript", "template", "textarea", "iframe", "svg",
-        ])
+        // Hidden elements go with their content, as in plain text; ammonia
+        // already drops script and style that way.
+        .add_clean_content_tags(HIDDEN)
         // A link may lead to the web or to an address, and nowhere else. Every
         // output keeps this, EML exports and quoted replies included, not only
         // the readers that filter links themselves.
-        .url_schemes(HashSet::from(["http", "https", "mailto"]))
+        .url_schemes(HashSet::from(LINK_SCHEMES))
         .url_relative(ammonia::UrlRelative::Deny);
     builder
 });
@@ -60,11 +60,14 @@ pub fn sanitize(html: &str) -> String {
 const HIDDEN: &[&str] = &[
     "head", "iframe", "noscript", "script", "style", "svg", "template", "textarea", "title",
 ];
+/// Where a link may lead: the web or an address.
+const LINK_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
 /// Elements that start a block of their own.
 const BLOCKS: &[&str] = &[
     "address", "article", "aside", "div", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header",
     "main", "p", "section", "table", "tr",
 ];
+/// Elements that have no content and no end tag.
 const VOID: &[&str] = &[
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
     "wbr",
@@ -112,6 +115,7 @@ struct TextBuilder {
     space: bool,
     /// The hidden element being skipped.
     hidden: Option<String>,
+    /// How many `<blockquote>` elements are open.
     quote_depth: usize,
     /// Open lists: `None` for bullets, or the next number.
     lists: Vec<Option<u32>>,
@@ -120,6 +124,7 @@ struct TextBuilder {
     /// Whether the last block was a list item, so the next one follows it
     /// on the next line.
     after_item: bool,
+    /// How many `<pre>` elements are open: their text keeps its spacing.
     pre_depth: usize,
     /// The open link's address, and where its text starts in `block`.
     link: Option<(String, usize)>,
@@ -218,18 +223,8 @@ impl TextBuilder {
                 self.flush();
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
-            "pre" if self.pre_depth > 0 => {
-                self.pre_depth -= 1;
-                if self.pre_depth == 0 {
-                    // As in HTML, a newline right after <pre> is not content.
-                    let text = std::mem::take(&mut self.block);
-                    let text = text.strip_prefix('\n').unwrap_or(&text).trim_end();
-                    if !text.trim().is_empty() {
-                        let marker = self.item.take();
-                        self.push_block(text, marker);
-                    }
-                }
-            }
+            "pre" if self.pre_depth > 1 => self.pre_depth -= 1,
+            "pre" if self.pre_depth == 1 => self.close_pre(),
             "a" => self.end_link(),
             "br" => self.line_break(),
             _ if BLOCKS.contains(&name) => self.flush(),
@@ -264,6 +259,19 @@ impl TextBuilder {
             self.block.push(' ');
         }
         self.space = false;
+    }
+
+    /// Ends the outermost `<pre>`, writing its text, spacing kept, as one
+    /// block.
+    fn close_pre(&mut self) {
+        self.pre_depth = 0;
+        // As in HTML, a newline right after <pre> is not content.
+        let text = std::mem::take(&mut self.block);
+        let text = text.strip_prefix('\n').unwrap_or(&text).trim_end();
+        if !text.trim().is_empty() {
+            let marker = self.item.take();
+            self.push_block(text, marker);
+        }
     }
 
     fn line_break(&mut self) {
@@ -339,9 +347,10 @@ impl TextBuilder {
 
     fn finish(mut self) -> String {
         self.end_link();
-        if self.pre_depth > 0 {
-            self.pre_depth = 1;
-            self.end("pre");
+        // A <pre> still open ends with the body, unless hidden content left
+        // open swallows that end as well: flush then writes what it held.
+        if self.pre_depth > 0 && self.hidden.is_none() {
+            self.close_pre();
         }
         self.flush();
         self.out
@@ -357,7 +366,9 @@ fn link_target(tag: &Tag) -> Option<String> {
         .value
         .trim();
     let url = reqwest::Url::parse(href).ok()?;
-    matches!(url.scheme(), "http" | "https" | "mailto").then(|| url.to_string())
+    LINK_SCHEMES
+        .contains(&url.scheme())
+        .then(|| url.to_string())
 }
 
 #[cfg(test)]
@@ -402,6 +413,17 @@ mod tests {
             "</blockquote>".repeat(40)
         );
         assert_eq!(to_text(&deep), format!("{}deep", "> ".repeat(8)));
+    }
+
+    #[test]
+    fn a_pre_left_open_ends_with_the_body() {
+        assert_eq!(
+            to_text("<p>a</p><pre><pre>\n  x  \n    y  "),
+            "a\n\n  x  \n    y"
+        );
+        // Hidden content left open keeps the <pre> open too, so its text
+        // ends as an ordinary block.
+        assert_eq!(to_text("<pre>\n  x  \n  y<script>z"), "  x\n  y");
     }
 
     #[test]
