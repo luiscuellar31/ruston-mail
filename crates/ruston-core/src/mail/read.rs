@@ -104,11 +104,8 @@ fn day_end(day: chrono::NaiveDate) -> i64 {
 /// The query for one page of `folder`, of its messages or its conversations.
 fn folder_page(folder: &str, page: u32, page_size: u32, unread: bool) -> ListQuery {
     ListQuery {
-        label_id: Some(resolve_folder(folder)),
-        page: Some(page),
-        page_size: Some(page_size),
         unread,
-        ..Default::default()
+        ..ListQuery::folder_page(resolve_folder(folder), page, page_size)
     }
 }
 

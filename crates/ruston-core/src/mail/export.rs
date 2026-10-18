@@ -3,7 +3,7 @@
 use super::Client;
 use super::read::{FullMessage, UnreadableMessage};
 use crate::api;
-use crate::api::messages::ListQuery;
+use crate::api::messages::{ListQuery, is_last_page};
 use crate::error::{Error, Result};
 use crate::mail::attachments::safe_attachment_name;
 use crate::model::enums::resolve_folder;
@@ -16,6 +16,8 @@ use std::path::Path;
 /// Every part is base64, which never contains `-`, so this fixed boundary
 /// cannot turn up inside one.
 const MIME_BOUNDARY: &str = "ruston-mail-export";
+/// Messages an export lists at a time.
+const EXPORT_PAGE_SIZE: u32 = 50;
 /// Bytes per base64 line: 57 encode to 76 characters, the longest line RFC
 /// 2045 allows.
 const BASE64_LINE_BYTES: usize = 57;
@@ -88,26 +90,17 @@ impl Client {
     ) -> Result<ExportReport> {
         std::fs::create_dir_all(out_dir)?;
         let label = resolve_folder(folder);
-        let page_size = 50u32;
         let mut report = ExportReport::default();
         // Every message gone through counts, so a rerun covers the same ones.
         let mut considered = 0u32;
         let mut page = 0u32;
         while considered < max {
-            let q = ListQuery {
-                label_id: Some(label.clone()),
-                page: Some(page),
-                page_size: Some(page_size),
-                ..Default::default()
-            };
+            let q = ListQuery::folder_page(label.clone(), page, EXPORT_PAGE_SIZE);
             let (_total, msgs) = api::messages::list_messages(self.http(), &q).await?;
             if msgs.is_empty() {
                 break;
             }
-            for meta in &msgs {
-                if considered >= max {
-                    break;
-                }
+            for meta in msgs.iter().take((max - considered) as usize) {
                 match self.export_message(&meta.id, out_dir).await? {
                     Exported::Written => report.written += 1,
                     Exported::AlreadyThere => report.already_exported += 1,
@@ -115,7 +108,7 @@ impl Client {
                 }
                 considered += 1;
             }
-            if (msgs.len() as u32) < page_size {
+            if is_last_page(msgs.len(), EXPORT_PAGE_SIZE) {
                 break;
             }
             page += 1;

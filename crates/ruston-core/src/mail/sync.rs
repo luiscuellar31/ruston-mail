@@ -2,7 +2,7 @@
 
 use super::{Client, read::FullMessage};
 use crate::api;
-use crate::api::messages::ListQuery;
+use crate::api::messages::{ListQuery, is_last_page};
 use crate::cache::{BatchCounts, Cache, CacheIdentity};
 use crate::error::{Error, Result};
 use crate::model::enums::{resolve_folder, response_code};
@@ -72,7 +72,7 @@ async fn rebuild_cache<D: Doer>(
     cache.begin_rebuild()?;
     let mut expected_total = None;
     let mut page = 0;
-    loop {
+    let total = loop {
         let query = ListQuery {
             page: Some(page),
             page_size: Some(page_size),
@@ -83,18 +83,19 @@ async fn rebuild_cache<D: Doer>(
             return Err(Error::cache_changed("mailbox changed during resync"));
         }
         expected_total = Some(total);
-        if messages.is_empty() && (u64::from(page) * u64::from(page_size)) < u64::from(total) {
+        let listed_before = u64::from(page) * u64::from(page_size);
+        if messages.is_empty() && listed_before < u64::from(total) {
             return Err(Error::cache_changed(
                 "incomplete mailbox listing during resync",
             ));
         }
         cache.stage_rebuild_page(&messages)?;
-        if (u64::from(page) + 1) * u64::from(page_size) >= u64::from(total) {
-            break;
+        if listed_before + u64::from(page_size) >= u64::from(total) {
+            break total;
         }
         page += 1;
-    }
-    let rebuilt = cache.finish_rebuild(previous_cursor, &cursor, expected_total.unwrap_or(0))?;
+    };
+    let rebuilt = cache.finish_rebuild(previous_cursor, &cursor, total)?;
     Ok((cursor, rebuilt))
 }
 
@@ -177,12 +178,7 @@ async fn backfill_cache<D: Doer>(
     let cache = pin_cursor(http, cache).await?;
     let mut n = 0usize;
     for page in 0..max_pages {
-        let q = ListQuery {
-            label_id: Some(label.clone()),
-            page: Some(page),
-            page_size: Some(page_size),
-            ..Default::default()
-        };
+        let q = ListQuery::folder_page(label.clone(), page, page_size);
         let cursor = page_cursor(cache.borrow())?;
         let (_total, msgs) = api::messages::list_messages(http, &q).await?;
         if msgs.is_empty() {
@@ -190,7 +186,7 @@ async fn backfill_cache<D: Doer>(
         }
         cache.borrow().store_metadata_page(Some(&cursor), &msgs)?;
         n += msgs.len();
-        if (msgs.len() as u32) < page_size {
+        if is_last_page(msgs.len(), page_size) {
             break;
         }
     }
@@ -215,12 +211,7 @@ where
     let cache = pin_cursor(http, cache).await?;
     let mut n = 0usize;
     for page in 0..max_pages {
-        let q = ListQuery {
-            label_id: Some(label.clone()),
-            page: Some(page),
-            page_size: Some(page_size),
-            ..Default::default()
-        };
+        let q = ListQuery::folder_page(label.clone(), page, page_size);
         // Keep the page cursor for every body, including failed reads.
         let cursor = page_cursor(cache.borrow())?;
         let (_total, msgs) = api::messages::list_messages(http, &q).await?;
@@ -258,7 +249,7 @@ where
                 }
             }
         }
-        if (listed as u32) < page_size {
+        if is_last_page(listed, page_size) {
             break;
         }
     }
@@ -1338,6 +1329,103 @@ mod tests {
         assert_eq!(count, 3);
         assert_eq!(cache.count("0").unwrap(), (3, 0));
         assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("fresh"));
+    }
+
+    /// A rebuild of two-message pages: the first lists two of `totals[0]`,
+    /// the second `second_page` of `totals[1]`. Nothing serves a third.
+    async fn rebuild_with_second_page(
+        totals: [u32; 2],
+        second_page: Vec<serde_json::Value>,
+    ) -> Result<(String, usize)> {
+        let [first_total, second_total] = totals;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "fresh"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": first_total,
+                "Messages": [message("m1"), message("m2")]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": second_total, "Messages": second_page
+            })))
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2).await
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_refuses_a_listing_that_changes_or_runs_short() {
+        let changed = rebuild_with_second_page([3, 4], vec![message("m3")]).await;
+        assert!(matches!(
+            changed,
+            Err(Error::Cache(ref reason)) if reason.starts_with("mailbox changed during resync")
+        ));
+        // An empty page before the total is reached ends the rebuild there.
+        let short = rebuild_with_second_page([5, 5], Vec::new()).await;
+        assert!(matches!(
+            short,
+            Err(Error::Cache(ref reason))
+                if reason.starts_with("incomplete mailbox listing during resync")
+        ));
+    }
+
+    #[tokio::test]
+    async fn backfilling_stops_at_the_first_short_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "pinned"
+            })))
+            .mount(&server)
+            .await;
+        // Two messages of a page of three: the folder ends here.
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 2, "Messages": [message("m1"), message("m2")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 2, "Messages": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+
+        let cached = backfill_cache(
+            &HttpClient::new(server.uri(), "Other"),
+            &cache,
+            "inbox",
+            5,
+            3,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cached, 2);
     }
 
     #[tokio::test]

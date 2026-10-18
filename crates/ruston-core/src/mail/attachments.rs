@@ -741,6 +741,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_export_stops_at_its_maximum_inside_a_page() {
+        let server = MockServer::start().await;
+        let (client, attachment) = attachment_client(&server).await;
+        let address = client.keys().primary_address().unwrap();
+        let body = crypto::encrypt_self_draft(&crypto::provider(), address, "body").unwrap();
+        let message = |id: &str| {
+            let mut message = message_with_attachment(attachment.clone());
+            message.meta.id = id.into();
+            message.body = body.clone();
+            message.mime_type = "text/plain".into();
+            message
+        };
+        serve_folder(&server, &[message("first"), message("second")]).await;
+        let folder = export_directory("export-maximum");
+
+        let report = client.export_folder_report("inbox", &folder, 1).await;
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        let report = report.unwrap();
+        assert_eq!((report.written, report.already_exported), (1, 0));
+        let fetched: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| request.url.path().to_owned())
+            .filter(|path| path.starts_with("/mail/v4/messages/"))
+            .collect();
+        assert_eq!(fetched, ["/mail/v4/messages/first"]);
+    }
+
+    #[tokio::test]
     async fn a_rerun_resumes_without_fetching_exported_messages_again() {
         let server = MockServer::start().await;
         let (client, attachment) = attachment_client(&server).await;

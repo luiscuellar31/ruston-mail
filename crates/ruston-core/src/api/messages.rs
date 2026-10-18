@@ -34,6 +34,17 @@ pub struct ListQuery {
 }
 
 impl ListQuery {
+    /// One page of what is labelled `label_id`, its messages or its
+    /// conversations.
+    pub fn folder_page(label_id: String, page: u32, page_size: u32) -> Self {
+        Self {
+            label_id: Some(label_id),
+            page: Some(page),
+            page_size: Some(page_size),
+            ..Self::default()
+        }
+    }
+
     /// Apply to a request. `recipients=true` renames `To` → `Recipients`
     /// (used by the conversations endpoint).
     pub fn apply(&self, mut req: Request, recipients: bool) -> Request {
@@ -93,6 +104,12 @@ struct GetResp {
 struct DraftResp {
     #[serde(rename = "Message")]
     message: Message,
+}
+
+/// Whether a page of `listed` items is a listing's last: Proton returns a
+/// short page only at the end.
+pub(crate) fn is_last_page(listed: usize, page_size: u32) -> bool {
+    (listed as u32) < page_size
 }
 
 /// List/search messages, returning the total count and the matching metadata.
