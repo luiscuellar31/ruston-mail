@@ -459,7 +459,10 @@ separate status allocations keep queued native work and callbacks from becoming
 valid again in a later activation. Linux sends bounded D-Bus Notify requests
 with the desktop identity and escaped body text. Windows uses WinRT toasts,
 literal XML text nodes, an AUMID-bearing per-user Start menu shortcut, and an
-in-memory activation callback to restore/focus the running mailbox. Every toast
+in-memory activation callback to restore/focus the running mailbox. The toast
+on screen is kept with that callback, and the process's multithreaded
+apartment stays up from the first toast on, so a click still reaches the
+callback after the worker that showed the toast has returned. Every toast
 carries one tag, so a new one replaces the last, and when notifications stop
 for an account the history Windows keeps for the app ID is cleared on a thread
 of its own. Windows reports no notification setting for the app until its

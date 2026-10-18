@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex, Once,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -12,8 +12,8 @@ use windows::{
         Foundation::PROPERTYKEY,
         System::{
             Com::{
-                CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree, IPersistFile, STGM_READ,
-                StructuredStorage::PROPVARIANT,
+                CLSCTX_INPROC_SERVER, CoCreateInstance, CoIncrementMTAUsage, CoTaskMemFree,
+                IPersistFile, STGM_READ, StructuredStorage::PROPVARIANT,
             },
             WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
         },
@@ -37,6 +37,25 @@ const APP_ID_KEY: PROPERTYKEY = PROPERTYKEY {
 /// toast, as on macOS, instead of piling up senders and subjects.
 const TAG: &str = "new-mail";
 
+/// The toast on screen, kept with its Activated handler: once `show` returns,
+/// nothing else holds them, and a click on the toast would reach no one.
+/// The next toast replaces it, as it replaces it on screen.
+static SHOWN: Mutex<Option<ToastNotification>> = Mutex::new(None);
+
+/// Keeps the process's multithreaded apartment up from the first toast on.
+/// Each toast is shown on a worker that leaves the apartment when it
+/// returns, and with no other member the apartment would go with it, and
+/// the Activated handler with nowhere to run.
+fn keep_apartment() {
+    static KEPT: Once = Once::new();
+    KEPT.call_once(|| {
+        // SAFETY: CoIncrementMTAUsage takes no arguments beyond its cookie.
+        // The cookie is never handed back, which keeps the apartment up for
+        // the life of the process, as intended.
+        let _ = unsafe { CoIncrementMTAUsage() };
+    });
+}
+
 struct Apartment;
 impl Drop for Apartment {
     fn drop(&mut self) {
@@ -59,6 +78,7 @@ pub(super) fn show(
             RoInitialize(RO_INIT_MULTITHREADED)?;
         }
         let _apartment = Apartment;
+        keep_apartment();
         ensure_shortcut()?;
         if !enabled.load(Ordering::Acquire) {
             return Ok(Status::Off);
@@ -94,6 +114,9 @@ pub(super) fn show(
             return Ok(Status::Off);
         }
         notifier.Show(&toast)?;
+        *SHOWN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(toast);
         Ok(Status::Ready)
     };
     result().unwrap_or(Status::Unavailable)
@@ -112,6 +135,11 @@ pub(super) fn clear() {
             RoInitialize(RO_INIT_MULTITHREADED)?;
         }
         let _apartment = Apartment;
+        // Let go inside the apartment, with the toasts it stood for.
+        SHOWN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         ToastNotificationManager::History()?
             .ClearWithId(&HSTRING::from(crate::ui::identity::APP_ID))
     };
