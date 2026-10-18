@@ -574,7 +574,7 @@ impl App {
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_search(&request, result));
-                self.handle_mailbox_error(error);
+                self.end_session_if_expired(error);
             }
             Message::ToggleMessageExpanded(id) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -616,7 +616,7 @@ impl App {
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_page(request, result));
-                self.handle_mailbox_error(error);
+                self.end_session_if_expired(error);
                 if error.is_none() {
                     let revalidating = self
                         .mailbox
@@ -671,7 +671,7 @@ impl App {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        self.handle_mailbox_error(Some(error));
+                        self.end_session_if_expired(Some(error));
                     }
                 }
                 return self.start_inspections();
@@ -688,7 +688,7 @@ impl App {
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_conversation(&request, result));
-                self.handle_mailbox_error(error);
+                self.end_session_if_expired(error);
                 if awaited {
                     return self.mark_opened_read();
                 }
@@ -704,7 +704,7 @@ impl App {
                     // nothing about the open folder, which stays open.
                     Err(error) => {
                         self.refetch_folders = true;
-                        self.handle_mailbox_error(Some(error));
+                        self.end_session_if_expired(Some(error));
                         return Effects::none();
                     }
                 }
@@ -717,7 +717,7 @@ impl App {
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_counts(request, result));
-                self.handle_mailbox_error(error);
+                self.end_session_if_expired(error);
             }
             Message::NewMailLoaded(epoch, request, result) => {
                 if !self.is_current_session(epoch)
@@ -737,7 +737,9 @@ impl App {
                             });
                         }
                     }
-                    Err(error) => self.handle_mailbox_error(Some(error)),
+                    Err(error) => {
+                        self.end_session_if_expired(Some(error));
+                    }
                 }
             }
             Message::ActionFinished(request, result) => {
@@ -829,7 +831,7 @@ impl App {
                 self.saving_attachment = None;
                 // An expired session ends here as it does for any request.
                 if matches!(outcome, Err(SaveError::SessionExpired)) {
-                    self.handle_mailbox_error(Some(MailboxError::SessionExpired));
+                    self.close_mailbox(Some(AuthError::SessionExpired));
                     return Effects::none();
                 }
                 // A save that landed after the session ended has nobody left
@@ -1179,9 +1181,8 @@ impl App {
                 .mailbox
                 .as_ref()
                 .is_some_and(|mailbox| mailbox.took_out(&request));
-            self.handle_mailbox_error(Some(error));
-            // An expired session closed the mailbox, and nothing is sent.
-            if self.mailbox.is_none() {
+            // An expired session closes the mailbox, and nothing is sent.
+            if self.end_session_if_expired(Some(error)) {
                 return Effects::none();
             }
             let reload = if restore {
@@ -1288,8 +1289,7 @@ impl App {
         // The mailbox also records an error for any queued explicit action.
         // An expired session closes the mailbox, and then nothing is sent.
         if let Some(error) = completion.error {
-            self.handle_mailbox_error(Some(error));
-            if self.mailbox.is_none() {
+            if self.end_session_if_expired(Some(error)) {
                 return Effects::none();
             }
             return self.send_action(completion.next_action);
@@ -1683,13 +1683,16 @@ impl App {
         }
     }
 
-    /// Signs out when Proton ended the session. A session that could not be
-    /// read or saved only shows its message: unlocking the password storage
-    /// fixes the next request, and signing out would drop the draft.
-    fn handle_mailbox_error(&mut self, error: Option<MailboxError>) {
-        if error == Some(MailboxError::SessionExpired) {
+    /// Signs out when Proton ended the session, and says whether it did. Any
+    /// other error is left as it is. A session that could not be read or
+    /// saved only shows its message: unlocking the password storage fixes
+    /// the next request, and signing out would drop the draft.
+    fn end_session_if_expired(&mut self, error: Option<MailboxError>) -> bool {
+        let expired = error == Some(MailboxError::SessionExpired);
+        if expired {
             self.close_mailbox(Some(AuthError::SessionExpired));
         }
+        expired
     }
 }
 
