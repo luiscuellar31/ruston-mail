@@ -921,7 +921,10 @@ build provenance attestations, and notes that
 [`release-notes.sh`](../packaging/release-notes.sh) writes from the Conventional
 Commits since the previous tag, grouped by the areas that
 [`release-note-areas.tsv`](../packaging/release-note-areas.tsv) gives their
-scopes. It never replaces the files of a release that is already published.
+scopes. It never replaces files already uploaded, since builds are not
+bit-for-bit reproducible: a published release fails the job, and so does a
+draft that already has files. A draft keeps its notes, which may have been
+edited by hand.
 
 ## Keeping this map current
 

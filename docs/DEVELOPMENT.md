@@ -660,8 +660,9 @@ To publish a release:
    [`release-notes.sh`](../packaging/release-notes.sh) from the commits since the
    previous tag: new features, fixes and performance work under the areas of
    [`release-note-areas.tsv`](../packaging/release-note-areas.tsv), and the rest
-   in a short Maintenance list. Re-running the workflow for the tag updates the
-   draft.
+   in a short Maintenance list. Re-running the workflow for the tag keeps the
+   draft's notes, which may have been edited, and stops if the draft already has
+   files: delete them, or the draft, and run it again.
 4. Edit the introduction at the top of the draft, check the files, and publish
    it. Once a release is published, the workflow refuses to replace its files.
 

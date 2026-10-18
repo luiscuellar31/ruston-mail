@@ -461,20 +461,27 @@ jobs:
             exit 1
           fi
 
+          # Builds are not bit-for-bit reproducible, so files already uploaded
+          # are never replaced: their checksums may have been verified, and
+          # SHA256SUMS.txt must describe the files beside it.
           if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
-            is_draft="$(gh release view "$TAG" --repo "$REPOSITORY" \
-              --json isDraft --jq '.isDraft')"
-            if [[ "$is_draft" == "true" ]]; then
-              gh release edit "$TAG" --repo "$REPOSITORY" \
-                --title "$TAG" --notes-file "$notes_file"
-            else
-              echo "Release for ${TAG} already exists and is not a draft."
+            release_state="$(gh release view "$TAG" --repo "$REPOSITORY" \
+              --json isDraft,assets \
+              --jq '"\(.isDraft) \(.assets | length)"')"
+            read -r is_draft asset_count <<<"$release_state"
+            if [[ "$is_draft" != "true" ]]; then
+              echo "::error::Release ${TAG} is already published; its files are not replaced."
               exit 1
             fi
+            if [[ "$asset_count" -gt 0 ]]; then
+              echo "::error::Draft release ${TAG} already has ${asset_count} file(s). Delete them, or the draft, and re-run this job."
+              exit 1
+            fi
+            # The draft's notes may have been edited by hand, so they stay.
           else
             gh release create "$TAG" --repo "$REPOSITORY" \
               --target "$TAG_COMMIT" --title "$TAG" \
               --draft --notes-file "$notes_file"
           fi
 
-          gh release upload "$TAG" "${files[@]}" --clobber --repo "$REPOSITORY"
+          gh release upload "$TAG" "${files[@]}" --repo "$REPOSITORY"
