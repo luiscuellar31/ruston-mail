@@ -179,7 +179,8 @@ pub struct ConversationSummary {
     pub unread: bool,
     pub starred: bool,
     pub message_count: u32,
-    /// Whether any message carries a file. Ruston Mail never downloads them.
+    /// Whether any message carries a file: the list shows a paperclip, and
+    /// files are fetched only when someone saves one.
     pub has_attachments: bool,
 }
 

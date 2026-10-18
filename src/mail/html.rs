@@ -54,6 +54,7 @@ pub(super) fn parse(html: &str) -> RichBody {
     let tokenizer = Tokenizer::new(Sink::default(), TokenizerOpts::default());
     let input = BufferQueue::default();
     input.push_back(StrTendril::from_slice(html));
+    // The sink never pauses for a script, so one feed reads everything.
     let _ = tokenizer.feed(&input);
     tokenizer.end();
 
@@ -222,7 +223,10 @@ impl Builder {
 
         // Collapse whitespace runs like a browser does.
         for run in text.split_inclusive(char::is_whitespace) {
-            let last = run.chars().next_back().unwrap();
+            let last = run
+                .chars()
+                .next_back()
+                .expect("split_inclusive never yields an empty run");
             let whitespace = last.is_whitespace();
             let word = if whitespace {
                 &run[..run.len() - last.len_utf8()]
@@ -376,6 +380,8 @@ impl Builder {
     fn finish(mut self) -> RichBody {
         self.flush();
         if self.pre > 0 {
+            // A <pre> left open ends with the body: at depth one, end_pre
+            // closes all its levels at once.
             self.pre = 1;
             self.end_pre();
         }

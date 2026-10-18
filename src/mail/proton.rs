@@ -304,8 +304,8 @@ impl ProtonMailService {
             .collect())
     }
 
-    /// Sends a message. The reply is Proton's id for it, which nothing here
-    /// needs yet.
+    /// Sends a message. Proton answers with the sent message's ID, which
+    /// nothing here uses yet.
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
         let options = SendOptions {
             to: outgoing.to.clone(),
