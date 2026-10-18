@@ -168,6 +168,9 @@ try {
   color with Ruston behind another window: once Ruston is back in front, its
   title bar is in Ruston's appearance again. Choose **System** in Settings and
   switch the Windows app mode: Ruston follows it.
+- Turn off Animation effects under Windows Settings › Accessibility › Visual
+  effects: loading placeholders and the spinner hold still and scrolls jump.
+  Turn them back on: they move again.
 - Check the UI at Windows display scaling of 100% and 150%. If two monitors are
   available, move the window between different display scales and check text,
   pointer targets, and the file dialog position.

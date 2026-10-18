@@ -294,7 +294,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   `ThemePreference::System`, which tracks the theme winit reports, with the
   stored scheme as its fallback; settings keep that choice in a field of its
   own, so an older version still reads a scheme it knows. winit 0.30 reports
-  no system theme on Linux, so Settings offers the choice on macOS and Windows. winit gives a Windows title bar
+  no system theme on Linux, so Settings offers the choice on macOS and Windows.
+  With Windows' Animation effects off, read on every pass, `theme` sets egui's
+  animation time to zero and scrolls without gliding, so loading pulses and
+  spinners keep the still picture of an unfocused window. macOS's and Linux's
+  reduced-motion settings are not read yet. winit gives a Windows title bar
   the Windows theme again whenever Windows announces a changed setting, so
   `theme::TitleBar` repeats egui's request for the main and composer windows
   when the Windows theme changes or the window comes back to the front. A

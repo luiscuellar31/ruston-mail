@@ -932,6 +932,7 @@ impl eframe::App for DesktopApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.runtime.attach(context);
         apply_appearance(context, self.app.settings());
+        theme::reduce_motion(context, system_reduces_motion());
         self.root_title_bar.keep(context);
         self.apply_zoom(context);
         fonts::apply(context, self.app.settings().system_font);
@@ -1143,6 +1144,32 @@ fn apply_appearance(context: &egui::Context, settings: &Settings) {
     } else {
         theme::apply(context, settings.appearance);
     }
+}
+
+/// Whether Windows' "Animation effects" are off, under Accessibility ›
+/// Visual effects. Read on every pass, which costs one call, so a change
+/// shows on the next frame. Other systems' settings are not read yet.
+#[cfg(target_os = "windows")]
+fn system_reduces_motion() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    };
+    let mut animated: windows_sys::core::BOOL = 1;
+    // SAFETY: this action writes one BOOL through the pointer.
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut animated as *mut windows_sys::core::BOOL).cast(),
+            0,
+        )
+    };
+    read != 0 && animated == 0
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_reduces_motion() -> bool {
+    false
 }
 
 fn status_view(root: &mut egui::Ui, message: &str) {

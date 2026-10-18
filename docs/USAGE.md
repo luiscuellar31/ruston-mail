@@ -400,6 +400,10 @@ with it what `AltGr` types.
 Screen readers cannot read the composer when it opens in a new window yet:
 with one, keep **Settings** › **Writing** on **Reading pane**, the default.
 
+On Windows, turning off **Animation effects** (Windows Settings ›
+Accessibility › Visual effects) holds Ruston still too: no fades or gliding
+scrolls, and loading placeholders and spinners that do not move.
+
 Screen readers announce each conversation row with what it shows: whether it is
 unread, who and what it is about, its date, its star, how many messages it has
 and whether it has attachments, and whether it is the conversation open.

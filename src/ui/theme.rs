@@ -545,8 +545,7 @@ pub fn install(context: &egui::Context) {
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
         // Solid scrollbars reserve space instead of covering content.
         style.spacing.scroll = egui::style::ScrollStyle::solid();
-        style.scroll_animation =
-            egui::style::ScrollAnimation::new(1_200.0, egui::Rangef::new(0.08, 0.24));
+        style.scroll_animation = gliding_scroll();
         // Only message bodies opt into selectable labels.
         style.interaction.selectable_labels = false;
         context.set_style_of(mode, style);
@@ -571,6 +570,29 @@ pub fn follow_system(context: &egui::Context, appearance: Appearance) {
         egui::ThemePreference::System,
         egui_theme(appearance),
     );
+}
+
+/// How a scroll to a place glides there while motion is not reduced.
+fn gliding_scroll() -> egui::style::ScrollAnimation {
+    egui::style::ScrollAnimation::new(1_200.0, egui::Rangef::new(0.08, 0.24))
+}
+
+/// Holds the interface still while the system asks for less motion: no
+/// fades or gliding scrolls, and loading pulses and spinners that keep the
+/// still picture an unfocused window gets.
+pub fn reduce_motion(context: &egui::Context, reduced: bool) {
+    let (animation_time, scroll) = if reduced {
+        (0.0, egui::style::ScrollAnimation::none())
+    } else {
+        (egui::Style::default().animation_time, gliding_scroll())
+    };
+    let style = context.global_style();
+    if style.animation_time != animation_time || style.scroll_animation != scroll {
+        context.all_styles_mut(|style| {
+            style.animation_time = animation_time;
+            style.scroll_animation = scroll;
+        });
+    }
 }
 
 fn egui_theme(appearance: Appearance) -> egui::Theme {
@@ -1405,6 +1427,49 @@ mod tests {
             context.style_of(egui::Theme::Dark).visuals.panel_fill,
             DARK.panel
         );
+    }
+
+    #[test]
+    fn reduced_motion_holds_loading_still_and_gives_animations_back() {
+        let context = egui::Context::default();
+        install(&context);
+        let installed = context.style_of(egui::Theme::Dark);
+        // When the next frame of a waiting screen is asked for, if at all.
+        let next_frame = || {
+            let mut delay = Duration::MAX;
+            for _ in 0..2 {
+                let raw = egui::RawInput {
+                    focused: true,
+                    ..Default::default()
+                };
+                let mut output = context.run_ui(raw, |ui| {
+                    skeleton_fill(ui);
+                    spinner(ui);
+                });
+                delay = output
+                    .viewport_output
+                    .remove(&egui::ViewportId::ROOT)
+                    .unwrap()
+                    .repaint_delay;
+                output.drop_without_applying_deltas();
+            }
+            delay
+        };
+        assert!(next_frame() <= ANIMATION_FRAME);
+
+        reduce_motion(&context, true);
+        for mode in [egui::Theme::Dark, egui::Theme::Light] {
+            let style = context.style_of(mode);
+            assert_eq!(style.animation_time, 0.0);
+            assert_eq!(style.scroll_animation, egui::style::ScrollAnimation::none());
+        }
+        assert_eq!(next_frame(), Duration::MAX);
+
+        reduce_motion(&context, false);
+        let restored = context.style_of(egui::Theme::Dark);
+        assert_eq!(restored.animation_time, installed.animation_time);
+        assert_eq!(restored.scroll_animation, installed.scroll_animation);
+        assert!(next_frame() <= ANIMATION_FRAME);
     }
 
     #[test]
