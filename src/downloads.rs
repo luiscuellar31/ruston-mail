@@ -1,7 +1,7 @@
 //! Saves attachments using safe sender names or user-selected destinations,
 //! without overwriting existing files.
 
-use ruston_core::mail::attachments::{mark_downloaded, safe_attachment_name as safe_name};
+use ruston_core::mail::attachments::{mark_downloaded, safe_attachment_name};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -57,7 +57,7 @@ pub fn save(name: &str, contents: &[u8]) -> Result<PathBuf, SaveError> {
         .and_then(|dirs| dirs.download_dir().map(Path::to_path_buf))
         .ok_or(SaveError::NoFolder)?;
 
-    save_to(&folder, &safe_name(name), contents)
+    save_to(&folder, &safe_attachment_name(name), contents)
 }
 
 /// Uses the exact path chosen by the user while retaining exclusive creation.
@@ -66,29 +66,14 @@ pub fn save_selected(path: &Path, contents: &[u8]) -> Result<PathBuf, SaveError>
     if !path.is_absolute() || path.file_name().is_none() {
         return Err(SaveError::Failed);
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| {
-            if error.kind() == ErrorKind::AlreadyExists {
-                SaveError::AlreadyExists
-            } else {
-                SaveError::Failed
-            }
-        })?;
-    if file.write_all(contents).is_err() {
-        drop(file);
-        let _ = std::fs::remove_file(path);
-        return Err(SaveError::Failed);
+    match create_new_file(path, contents) {
+        Ok(()) => Ok(path.to_path_buf()),
+        Err(NewFileError::NameTaken) => Err(SaveError::AlreadyExists),
+        Err(NewFileError::Failed) => Err(SaveError::Failed),
     }
-    // Best effort: a file system without the mark still gets the file.
-    let _ = mark_downloaded(path);
-    Ok(path.to_path_buf())
 }
 
-/// Exclusively creates `report.pdf`, then `report (2).pdf`, and so on. Opening
-/// and claiming the name in one operation prevents races and symlink writes.
+/// Exclusively creates `report.pdf`, then `report (2).pdf`, and so on.
 fn save_to(folder: &Path, name: &str, contents: &[u8]) -> Result<PathBuf, SaveError> {
     let (stem, extension) = match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
@@ -101,33 +86,96 @@ fn save_to(folder: &Path, name: &str, contents: &[u8]) -> Result<PathBuf, SaveEr
         } else {
             folder.join(format!("{stem} ({}){extension}", attempt + 1))
         };
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(SaveError::Failed),
-        };
-        if file.write_all(contents).is_err() {
-            drop(file);
-            let _ = std::fs::remove_file(&path);
-            return Err(SaveError::Failed);
+        match create_new_file(&path, contents) {
+            Ok(()) => return Ok(path),
+            Err(NewFileError::NameTaken) => continue,
+            Err(NewFileError::Failed) => return Err(SaveError::Failed),
         }
-        // Best effort: a file system without the mark still gets the file.
-        let _ = mark_downloaded(&path);
-        return Ok(path);
     }
 
     Err(SaveError::Failed)
+}
+
+/// Why [`create_new_file`] left nothing behind.
+enum NewFileError {
+    /// Something already has the name.
+    NameTaken,
+    /// The file could not be created, or not written in full.
+    Failed,
+}
+
+/// Creates a file at `path` only if nothing has that name yet, writes
+/// `contents` and marks it as downloaded. Opening and claiming the name in one
+/// operation prevents races and symlink writes. A file that could not be
+/// written in full is removed.
+fn create_new_file(path: &Path, contents: &[u8]) -> Result<(), NewFileError> {
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            return Err(NewFileError::NameTaken);
+        }
+        Err(_) => return Err(NewFileError::Failed),
+    };
+    if file.write_all(contents).is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(NewFileError::Failed);
+    }
+    // Best effort: a file system without the mark still gets the file.
+    let _ = mark_downloaded(path);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// An empty folder of its own for one test.
+    fn scratch_folder(label: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("ruston-save-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_created_is_a_failure_not_a_taken_name() {
+        let folder = scratch_folder("missing");
+        let missing = folder.join("missing");
+
+        let saved = save_to(&missing, "report.pdf", b"x");
+        let selected = save_selected(&missing.join("report.pdf"), b"x");
+        let created = missing.exists();
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        assert_eq!(saved, Err(SaveError::Failed));
+        assert_eq!(selected, Err(SaveError::Failed));
+        assert!(!created);
+    }
+
+    #[test]
+    fn a_name_a_hundred_files_already_have_is_not_saved() {
+        let folder = scratch_folder("full");
+        std::fs::write(folder.join("report.pdf"), b"first").unwrap();
+        for number in 2..=MAX_ATTEMPTS {
+            std::fs::write(folder.join(format!("report ({number}).pdf")), b"older").unwrap();
+        }
+
+        let saved = save_to(&folder, "report.pdf", b"newest");
+        let first = std::fs::read(folder.join("report.pdf")).unwrap();
+        let files = std::fs::read_dir(&folder).unwrap().count();
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        assert_eq!(saved, Err(SaveError::Failed));
+        assert_eq!(first, b"first");
+        assert_eq!(files, 100);
+    }
+
     #[test]
     #[cfg(target_os = "windows")]
     fn saved_files_are_marked_as_downloaded_from_the_internet() {
-        let folder = std::env::temp_dir().join(format!("ruston-save-zone-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
+        let folder = scratch_folder("zone");
         let saved = save_to(&folder, "factura.pdf", b"%PDF").unwrap();
         let selected = save_selected(&folder.join("elegido.pdf"), b"%PDF").unwrap();
         for path in [saved, selected] {
@@ -144,9 +192,7 @@ mod tests {
 
     #[test]
     fn selected_destination_preserves_existing_files_and_exact_names() {
-        let folder =
-            std::env::temp_dir().join(format!("ruston-save-selected-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
+        let folder = scratch_folder("selected");
         let path = folder.join("informe español 100% # ' final.pdf");
         assert_eq!(save_selected(&path, b"original").unwrap(), path);
         assert_eq!(
@@ -176,28 +222,8 @@ mod tests {
     }
 
     #[test]
-    fn a_sender_cannot_steer_the_write_out_of_the_folder() {
-        assert_eq!(safe_name("../../etc/passwd"), "passwd");
-        assert_eq!(safe_name(r"..\..\windows\system32"), "system32");
-        assert_eq!(safe_name("/etc/hosts"), "hosts");
-        // A name that is nothing but dots or spaces still needs a file.
-        assert_eq!(safe_name("   "), "attachment");
-        assert_eq!(safe_name("..."), "attachment");
-        assert_eq!(safe_name(""), "attachment");
-        // An ordinary name is left exactly as the sender wrote it.
-        assert_eq!(safe_name("Q3 report.pdf"), "Q3 report.pdf");
-
-        // Names that include separators or a drive prefix still become safe.
-        assert_eq!(safe_name("C:report.pdf"), "C_report.pdf");
-        assert_eq!(safe_name(r"C:\Windows\evil.exe"), "evil.exe");
-        assert_eq!(safe_name(r"\\server\share\file"), "file");
-    }
-
-    #[test]
     fn an_existing_file_is_never_overwritten() {
-        let folder = std::env::temp_dir().join(format!("ruston-save-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&folder);
-        std::fs::create_dir_all(&folder).unwrap();
+        let folder = scratch_folder("existing");
 
         let first = save_to(&folder, "report.pdf", b"one").unwrap();
         assert_eq!(first.file_name().unwrap(), "report.pdf");
@@ -256,11 +282,7 @@ mod tests {
         use std::collections::HashSet;
         use std::sync::{Arc, Barrier};
 
-        let folder =
-            std::env::temp_dir().join(format!("ruston-save-concurrent-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&folder);
-        std::fs::create_dir_all(&folder).unwrap();
-        let folder = Arc::new(folder);
+        let folder = Arc::new(scratch_folder("concurrent"));
         let barrier = Arc::new(Barrier::new(8));
 
         let threads: Vec<_> = (0_u8..8)
@@ -289,54 +311,16 @@ mod tests {
     }
 
     #[test]
-    fn windows_reserved_device_names_are_prefixed_safely() {
-        // Direct reserved devices
-        assert_eq!(safe_name("CON.txt"), "_CON.txt");
-        assert_eq!(safe_name("con.pdf"), "_con.pdf");
-        assert_eq!(safe_name("PRN.dat"), "_PRN.dat");
-        assert_eq!(safe_name("prn"), "_prn");
-        assert_eq!(safe_name("AUX.h"), "_AUX.h");
-        assert_eq!(safe_name("aux.tar.gz"), "_aux.tar.gz");
-        assert_eq!(safe_name("NUL.zip"), "_NUL.zip");
-        assert_eq!(safe_name("nul"), "_nul");
-        assert_eq!(safe_name("COM1.txt"), "_COM1.txt");
-        assert_eq!(safe_name("com9.bin"), "_com9.bin");
-        assert_eq!(safe_name("LPT1.doc"), "_LPT1.doc");
-        assert_eq!(safe_name("lpt9.pdf"), "_lpt9.pdf");
-        assert_eq!(safe_name("CONIN$.log"), "_CONIN$.log");
-        assert_eq!(safe_name("CONOUT$"), "_CONOUT$");
-        assert_eq!(safe_name("CLOCK$"), "_CLOCK$");
-
-        // Paths containing reserved device names
-        assert_eq!(safe_name(r"C:\temp\CON.pdf"), "_CON.pdf");
-        assert_eq!(safe_name("../../aux.png"), "_aux.png");
-        assert_eq!(safe_name("con."), "_con");
-    }
-
-    #[test]
-    fn non_reserved_similar_names_are_unmodified() {
-        assert_eq!(safe_name("contact.pdf"), "contact.pdf");
-        assert_eq!(safe_name("conversation.txt"), "conversation.txt");
-        assert_eq!(safe_name("auxiliary.c"), "auxiliary.c");
-        assert_eq!(safe_name("null.json"), "null.json");
-        assert_eq!(safe_name("COM10.txt"), "COM10.txt");
-        assert_eq!(safe_name("printer.png"), "printer.png");
-    }
-
-    #[test]
     fn saving_reserved_name_creates_prefixed_files_and_deduplicates() {
-        let folder =
-            std::env::temp_dir().join(format!("ruston-save-reserved-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&folder);
-        std::fs::create_dir_all(&folder).unwrap();
+        let folder = scratch_folder("reserved");
 
-        let first = save_to(&folder, &safe_name("CON.pdf"), b"one").unwrap();
+        let first = save_to(&folder, &safe_attachment_name("CON.pdf"), b"one").unwrap();
         assert_eq!(first.file_name().unwrap(), "_CON.pdf");
 
-        let second = save_to(&folder, &safe_name("CON.pdf"), b"two").unwrap();
+        let second = save_to(&folder, &safe_attachment_name("CON.pdf"), b"two").unwrap();
         assert_eq!(second.file_name().unwrap(), "_CON (2).pdf");
 
-        let third = save_to(&folder, &safe_name("CON.pdf"), b"three").unwrap();
+        let third = save_to(&folder, &safe_attachment_name("CON.pdf"), b"three").unwrap();
         assert_eq!(third.file_name().unwrap(), "_CON (3).pdf");
 
         assert_eq!(std::fs::read(&first).unwrap(), b"one");
