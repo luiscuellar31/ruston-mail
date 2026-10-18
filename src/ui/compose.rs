@@ -362,6 +362,9 @@ fn body_editor(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &m
             .desired_width(f32::INFINITY)
             .desired_rows(16),
     );
+    // No label is drawn above the body, and its hint is only a placeholder.
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_label("Message"));
     if response.changed() {
         messages.push(Message::ComposeChanged(ComposeField::Body, body));
     }
@@ -430,14 +433,16 @@ fn line(
     leaving: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    ui.label(egui::RichText::new(label).color(theme::colors(ui).muted));
+    let name = ui.label(egui::RichText::new(label).color(theme::colors(ui).muted));
     let mut value = compose.field(field).to_owned();
-    let response = ui.add_enabled(
-        !leaving,
-        theme::text_field(ui, &mut value)
-            .id(field_id(field, compose.id()))
-            .desired_width(f32::INFINITY),
-    );
+    let response = ui
+        .add_enabled(
+            !leaving,
+            theme::text_field(ui, &mut value)
+                .id(field_id(field, compose.id()))
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(name.id);
     if response.changed() {
         messages.push(Message::ComposeChanged(field, value));
     }
@@ -526,6 +531,28 @@ pub(super) fn remembers_draft(context: &egui::Context, draft: ComposeId) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_readers_hear_each_field_by_its_name() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        app.update(Message::ToggleComposeCopies);
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            show(ui, app.compose().unwrap(), &mut Vec::new());
+        });
+        let names = theme::text_field_names(&output);
+        output.drop_without_applying_deltas();
+
+        for name in ["To", "Cc", "Bcc", "Subject", "Message"] {
+            assert!(
+                names.iter().any(|heard| heard == name),
+                "{name} in {names:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_small_composer_keeps_actions_visible_and_fields_scrollable() {

@@ -360,14 +360,16 @@ fn edit_field(
     busy: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    ui.label(egui::RichText::new(label).strong());
+    let name = ui.label(egui::RichText::new(label).strong());
     let mut unseen = String::new();
-    let response = ui.add_enabled(
-        !busy,
-        theme::text_field(ui, measured(ui, value, &mut unseen))
-            .hint_text(hint)
-            .desired_width(f32::INFINITY),
-    );
+    let response = ui
+        .add_enabled(
+            !busy,
+            theme::text_field(ui, measured(ui, value, &mut unseen))
+                .hint_text(hint)
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(name.id);
     keep_no_history(ui.ctx(), response.id);
     if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !busy {
         messages.push(Message::Submit);
@@ -385,20 +387,22 @@ fn edit_secret_field(
     busy: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    ui.label(egui::RichText::new(label).strong());
+    let name = ui.label(egui::RichText::new(label).strong());
     let width =
         (ui.available_width() - theme::ICON_BUTTON_MIN_SIZE.x - ui.spacing().item_spacing.x)
             .max(1.0);
     let mut unseen = String::new();
     let response = ui
         .horizontal(|ui| {
-            let response = ui.add_enabled(
-                !busy,
-                theme::text_field(ui, measured(ui, value, &mut unseen))
-                    .hint_text(hint)
-                    .password(!*show_password)
-                    .desired_width(width),
-            );
+            let response = ui
+                .add_enabled(
+                    !busy,
+                    theme::text_field(ui, measured(ui, value, &mut unseen))
+                        .hint_text(hint)
+                        .password(!*show_password)
+                        .desired_width(width),
+                )
+                .labelled_by(name.id);
             keep_no_history(ui.ctx(), response.id);
             if response.lost_focus()
                 && ui.input(|input| input.key_pressed(egui::Key::Enter))
@@ -548,6 +552,39 @@ fn error(ui: &mut egui::Ui, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_readers_hear_each_sign_in_field_by_its_name() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let mut names = Vec::new();
+        for state in [
+            AuthState::SignedOut,
+            AuthState::NeedsTotp,
+            AuthState::NeedsMailboxPassword,
+        ] {
+            let mut app = App::signed_out();
+            app.set_auth_state(state);
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                sign_in(ui, &mut app, &mut false, &mut Vec::new());
+            });
+            names.extend(theme::text_field_names(&output));
+            output.drop_without_applying_deltas();
+        }
+
+        for name in [
+            "Username or email",
+            "Password",
+            "Two-factor code",
+            "Mailbox password",
+        ] {
+            assert!(
+                names.iter().any(|heard| heard == name),
+                "{name} in {names:?}"
+            );
+        }
+    }
 
     #[test]
     fn signing_in_is_drawn_at_full_strength_and_takes_no_clicks() {

@@ -510,6 +510,9 @@ fn conversation_pane(
                 .frame(frame)
                 .desired_width(f32::INFINITY),
         );
+        // The hint is only a placeholder, so the field gets a name of its own.
+        ui.ctx()
+            .accesskit_node_builder(response.id, |node| node.set_label("Search mail"));
         if state.focus_search {
             response.request_focus();
             state.focus_search = false;
@@ -1269,6 +1272,32 @@ mod tests {
             }
             None
         })
+    }
+
+    #[test]
+    fn screen_readers_hear_the_search_field_by_its_name() {
+        let (app, _) = App::boot(true, Settings::default());
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let mut state = UiState::default();
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |root| show(root, &app, None, &mut state, &mut Vec::new()),
+        );
+        let names = theme::text_field_names(&output);
+        output.drop_without_applying_deltas();
+
+        assert!(
+            names.iter().any(|heard| heard == "Search mail"),
+            "{names:?}"
+        );
     }
 
     #[test]

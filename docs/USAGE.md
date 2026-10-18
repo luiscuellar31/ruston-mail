@@ -420,7 +420,10 @@ scrolls, and loading placeholders and spinners that do not move.
 
 Screen readers announce each conversation row with what it shows: whether it is
 unread, who and what it is about, its date, its star, how many messages it has
-and whether it has attachments, and whether it is the conversation open.
+and whether it has attachments, and whether it is the conversation open. Each
+text field is announced by its name: the label above it when signing in and
+in the composer, **Message** for the message itself and **Search mail** for the
+search.
 
 ## Command line
 

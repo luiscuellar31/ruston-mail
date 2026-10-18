@@ -362,6 +362,39 @@ pub fn text_field<'t>(ui: &egui::Ui, text: &'t mut String) -> egui::TextEdit<'t>
     egui::TextEdit::singleline(text).frame(field_frame(ui))
 }
 
+/// The names screen readers hear for the text fields in a frame: a field's
+/// own label, or the text of the labels that point at it.
+#[cfg(test)]
+pub(super) fn text_field_names(output: &egui::FullOutput) -> Vec<String> {
+    use egui::accesskit::Role;
+
+    let nodes: std::collections::HashMap<_, _> = output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| update.nodes.iter().cloned())
+        .collect();
+    nodes
+        .values()
+        .filter(|node| {
+            matches!(
+                node.role(),
+                Role::TextInput | Role::MultilineTextInput | Role::PasswordInput
+            )
+        })
+        .map(|node| match node.label() {
+            Some(label) => label.to_owned(),
+            None => node
+                .labelled_by()
+                .iter()
+                .filter_map(|id| nodes.get(id))
+                .filter_map(|label| label.label().or(label.value()))
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+        .collect()
+}
+
 /// Every text field's frame: its fill, an outline that marks it as a field
 /// at rest, and the same padding. The focus ring covers it while typing.
 pub fn field_frame(ui: &egui::Ui) -> egui::Frame {
