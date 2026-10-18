@@ -301,7 +301,10 @@ impl DesktopApp {
             } else {
                 close::Leaving::SignOut
             };
-            if self.close_once_sent.holds(leaving, self.pending()) {
+            if self
+                .close_once_sent
+                .holds(leaving, self.holding(leaving).is_some())
+            {
                 context.request_repaint();
                 return;
             }
@@ -433,12 +436,13 @@ impl DesktopApp {
             );
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
             context.request_repaint();
-        } else if self
-            .close_once_sent
-            .holds(close::Leaving::Window, self.pending())
-        {
-            // Changes still on their way to Proton would be lost; the window
-            // closes once they arrive.
+        } else if self.close_once_sent.holds(
+            close::Leaving::Window,
+            self.holding(close::Leaving::Window).is_some(),
+        ) {
+            // Changes still on their way to Proton would be lost, and a
+            // sign-out cut short could leave the session saved; the window
+            // closes once they are done.
             context
                 .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
             context.request_repaint();
@@ -455,17 +459,24 @@ impl DesktopApp {
         }
         // A close or a sign-out that waited goes ahead once nothing holds it.
         if let Some(leaving) = self.close_once_sent.waiting()
-            && !self.pending()
+            && self.holding(leaving).is_none()
         {
             self.close_once_sent.cancel();
             self.leave(leaving, context);
         }
     }
 
-    /// Whether leaving now would cut something short: changes still on their
-    /// way to Proton.
-    fn pending(&self) -> bool {
-        self.app.unsent_changes() > 0
+    /// What leaving now would cut short: a sign-out under way, for a close,
+    /// whose local cleanup could stop half done and leave the session saved;
+    /// or changes still on their way to Proton.
+    fn holding(&self, leaving: close::Leaving) -> Option<close::Holding> {
+        if leaving == close::Leaving::Window
+            && matches!(self.app.auth_state(), AuthState::SigningOut)
+        {
+            return Some(close::Holding::SigningOut);
+        }
+        let unsent = self.app.unsent_changes();
+        (unsent > 0).then_some(close::Holding::Changes(unsent))
     }
 
     /// Goes ahead with `leaving`, through the same checks as when it was
@@ -1120,7 +1131,8 @@ impl eframe::App for DesktopApp {
             .pending_discard
             .and_then(|leaving| close::confirm(&context, leaving));
         let unsent_decision = self.close_once_sent.waiting().and_then(|leaving| {
-            close::confirm_unsent(&context, leaving, self.app.unsent_changes())
+            let holding = self.holding(leaving)?;
+            close::confirm_unsent(&context, leaving, holding)
         });
         theme::paint_focus_ring(&context);
         if let Some(step) = composer_zoom {
@@ -1477,6 +1489,29 @@ mod tests {
 
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::Close));
+        assert!(desktop.window_close_approved);
+    }
+
+    #[test]
+    fn closing_while_signing_out_waits_until_the_session_is_forgotten() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.app.set_auth_state(AuthState::SigningOut);
+
+        let commands = native_close(&mut desktop, &context);
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!desktop.window_close_approved);
+
+        // The sign-out ends: this device has forgotten the session.
+        desktop.app.set_auth_state(AuthState::SignedOut);
+        let mut output = context.run_logic(&egui::RawInput::default(), |context| {
+            desktop.check_window_close(context);
+        });
+        let commands = output
+            .viewport_commands
+            .remove(&egui::ViewportId::ROOT)
+            .unwrap_or_default();
+        assert!(commands.contains(&egui::ViewportCommand::Close));
         assert!(desktop.window_close_approved);
     }
 

@@ -265,7 +265,10 @@ confirms it. Remote failures or timeouts do not prevent local cleanup. Cleanup r
 under the profile lock, attempts every removal, and continues if its caller is
 cancelled after cleanup starts. If local storage rejects a removal, the CLI
 reports an error and the desktop warns that credentials may remain on the device;
-the desktop still clears its in-memory mailbox and draft.
+the desktop still clears its in-memory mailbox and draft. Closing the desktop
+window while it signs out waits for the sign-out to finish, since quitting
+could stop the cleanup half done and leave the session saved; **Close now**
+closes at once.
 A pending logout checks the saved session identity before deleting it, protecting
 a later login in the same profile. When the CLI cannot resume the saved session
 (offline, revoked, after a password change, or bound to another API address),

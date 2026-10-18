@@ -277,7 +277,8 @@ file dialog is open. Unapplied Settings changes are resolved before the draft.
 If changes you just made, such as moves or stars, are still on their way to
 Proton, the window says so and closes once they arrive. **Close now** closes at
 once and loses them, as closing again does; **Keep open** stays. Signing out
-waits for them the same way, with **Sign out now** and **Stay signed in**.
+waits for them the same way, with **Sign out now** and **Stay signed in**. And
+closing while signing out waits until this device has forgotten the session.
 On macOS, **Quit Ruston Mail** in the application menu and `Cmd+Q` use the same
 confirmation. Direct termination, including **Quit** from the Dock or system
 shutdown, can bypass it; drafts are not saved to disk.

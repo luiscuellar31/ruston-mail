@@ -935,6 +935,13 @@ impl App {
         self.mailbox.as_mut()
     }
 
+    /// Puts the app in `state`, for tests outside this module that need one,
+    /// such as signing out, which the demo never stays in.
+    #[cfg(test)]
+    pub(crate) fn set_auth_state(&mut self, state: AuthState) {
+        self.auth_state = state;
+    }
+
     pub fn panels(&self) -> Panels {
         self.settings.panels
     }

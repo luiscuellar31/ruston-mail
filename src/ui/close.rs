@@ -64,37 +64,60 @@ impl OnceSent {
     }
 }
 
-/// What to do while a close or a sign-out waits for changes to reach Proton.
+/// What a close or a sign-out waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Holding {
+    /// This many changes on their way to Proton.
+    Changes(usize),
+    /// A sign-out under way, until this device has forgotten the session.
+    SigningOut,
+}
+
+/// What to do while a close or a sign-out waits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Unsent {
     /// Keep the window open, or stay signed in.
     Stay,
-    /// Go ahead now, losing the changes.
+    /// Go ahead now, cutting short what it waited for.
     GoNow,
 }
 
 pub(super) fn confirm_unsent(
     context: &egui::Context,
     leaving: Leaving,
-    unsent: usize,
+    holding: Holding,
 ) -> Option<Unsent> {
     let (then, going, stay, go) = match leaving {
         Leaving::Window => ("closes", "Closing", "Keep open", "Close now"),
         Leaving::SignOut => ("signs out", "Signing out", "Stay signed in", "Sign out now"),
         Leaving::Demo => ("leaves the demo", "Leaving", "Stay", "Exit now"),
     };
-    let detail = if unsent == 1 {
-        format!("Ruston Mail {then} once Proton has your last change. {going} now would lose it.")
-    } else {
-        format!(
-            "Ruston Mail {then} once Proton has your last {unsent} changes. {going} now would \
-             lose them."
-        )
+    let (heading, detail) = match holding {
+        Holding::SigningOut => (
+            "Signing out",
+            format!(
+                "Ruston Mail {then} once this device has forgotten your session. {going} now \
+                 could leave it saved here."
+            ),
+        ),
+        Holding::Changes(1) => (
+            "Finishing your changes",
+            format!(
+                "Ruston Mail {then} once Proton has your last change. {going} now would lose it."
+            ),
+        ),
+        Holding::Changes(unsent) => (
+            "Finishing your changes",
+            format!(
+                "Ruston Mail {then} once Proton has your last {unsent} changes. {going} now would \
+                 lose them."
+            ),
+        ),
     };
     theme::confirmation(
         context,
         "close-with-unsent-changes",
-        "Finishing your changes",
+        heading,
         &detail,
         &[
             (stay, Emphasis::Secondary, Unsent::Stay),
@@ -131,7 +154,7 @@ mod tests {
         let context = egui::Context::default();
         context
             .run_ui(egui::RawInput::default(), |_| {
-                assert!(confirm_unsent(&context, Leaving::Window, 2).is_none());
+                assert!(confirm_unsent(&context, Leaving::Window, Holding::Changes(2)).is_none());
             })
             .drop_without_applying_deltas();
         let raw = egui::RawInput {
@@ -147,7 +170,7 @@ mod tests {
         context
             .run_ui(raw, |_| {
                 assert_eq!(
-                    confirm_unsent(&context, Leaving::Window, 2),
+                    confirm_unsent(&context, Leaving::Window, Holding::Changes(2)),
                     Some(Unsent::Stay)
                 );
             })
