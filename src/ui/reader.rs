@@ -767,20 +767,50 @@ fn message_status(ui: &egui::Ui, message: &MailMessage) -> (theme::Icon, &'stati
     }
 }
 
+/// How a header writes its sender.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SenderLine {
+    /// `Name <address>` on one line: a collapsed card with a named sender.
+    NameAndAddress,
+    /// One text: the address, or a name when there is no address to show.
+    Alone,
+    /// The name, and under it the address beside the signature icon: an
+    /// open card with a named sender.
+    NameOverAddress,
+}
+
+impl SenderLine {
+    fn of(message: &MailMessage, expanded: bool) -> Self {
+        let named = message.sender.name.is_some() && !message.sender.address.is_empty();
+        match (named, expanded) {
+            (true, false) => Self::NameAndAddress,
+            (true, true) => Self::NameOverAddress,
+            (false, _) => Self::Alone,
+        }
+    }
+
+    /// Whether the address has a line of its own, under the name.
+    fn separate_address(self) -> bool {
+        self == Self::NameOverAddress
+    }
+}
+
 /// The whole header is one disclosure control. Copy selection is enabled only
-/// below it, so clicking a sender or preview reliably expands the message.
+/// below it, so clicking a sender or preview reliably expands the message. It
+/// toggles the card as part of the reader, not as a link, so the pointer
+/// stays an arrow, and only the chevron and the signature icon explain
+/// themselves.
 fn message_header(
     ui: &mut egui::Ui,
     message: &MailMessage,
     preview: &str,
     expanded: bool,
 ) -> egui::Response {
-    let named = message.sender.name.is_some() && !message.sender.address.is_empty();
-    let separate_address = expanded && named;
+    let line = SenderLine::of(message, expanded);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(
             ui.available_width(),
-            message_header_height(expanded, separate_address),
+            message_header_height(expanded, line.separate_address()),
         ),
         Sense::click(),
     );
@@ -801,82 +831,15 @@ fn message_header(
         (rect.width() - HEADER_TEXT_INSET) * 0.5,
     );
     let copy_rect = header_copy_rect(rect, date.size().x);
-    let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
-    let identity_top =
-        copy_rect.left_top() + egui::vec2(0.0, if separate_address { 20.0 } else { 0.0 });
-    let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
-    let (icon, status, color) = message_status(ui, message);
-    egui::Image::new(icon.source())
-        .tint(color)
-        .paint_at(ui, icon_rect);
-    let hovering_icon = ui.rect_contains_pointer(icon_rect);
-    let sender_inset = if separate_address {
-        0.0
-    } else {
-        SIGNATURE_ICON_INSET
-    };
-    let sender_origin = copy_rect.left_top() + egui::vec2(sender_inset, 0.0);
-    let sender_width = (copy_rect.width() - sender_inset).max(0.0);
-    if named && !expanded {
-        // The lock vouches for the address, never for the name the sender
-        // chose, so a collapsed card keeps the address beside that name.
-        paint_name_and_address(
-            ui,
-            &painter,
-            sender_origin,
-            sender,
-            &message.sender.address,
-            sender_width,
-        );
-    } else {
-        theme::paint_truncated_text(
-            &painter,
-            sender_origin,
-            sender,
-            FontId::proportional(14.0),
-            ui.visuals().strong_text_color(),
-            sender_width,
-        );
-    }
-    if expanded {
-        if separate_address {
-            header_detail(
-                &painter,
-                identity_top + egui::vec2(SIGNATURE_ICON_INSET, 0.0),
-                &message.sender.address,
-                theme::colors(ui).muted,
-                (copy_rect.width() - SIGNATURE_ICON_INSET).max(0.0),
-            );
-        }
-        header_detail(
-            &painter,
-            copy_rect.left_top() + egui::vec2(0.0, recipients_top(separate_address)),
-            &format!("To: {}", recipients_label(&message.recipients)),
-            theme::colors(ui).muted,
-            copy_rect.width(),
-        );
-    } else {
-        theme::paint_truncated_text(
-            &painter,
-            copy_rect.left_top() + egui::vec2(0.0, 22.0),
-            preview,
-            FontId::proportional(14.0),
-            theme::colors(ui).muted,
-            copy_rect.width(),
-        );
-    }
-
+    let (icon_rect, status) = paint_sender(ui, &painter, message, line, copy_rect);
+    paint_header_details(ui, &painter, message, preview, expanded, line, copy_rect);
     painter.galley(
         egui::pos2(rect.right() - date.size().x, rect.top() + 2.0),
         date,
         theme::colors(ui).muted,
     );
 
-    let identity = if named {
-        format!("{sender} <{}>", message.sender.address)
-    } else {
-        sender.to_owned()
-    };
+    let identity = sender_identity(message, line);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::CollapsingHeader,
@@ -884,12 +847,120 @@ fn message_header(
             format!("{identity}, {status}"),
         )
     });
-    // The whole header toggles the card, but as part of the reader, not as a
-    // link, so the pointer stays an arrow.
-    if hovering_icon {
+    header_hover(ui, response, icon_rect, expanded, status)
+}
+
+/// Paints the signature icon and the sender as `line` lays it out, and
+/// returns where the icon is and the status it stands for.
+fn paint_sender(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    message: &MailMessage,
+    line: SenderLine,
+    copy_rect: egui::Rect,
+) -> (egui::Rect, &'static str) {
+    let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
+    let identity_top =
+        copy_rect.left_top() + egui::vec2(0.0, if line.separate_address() { 20.0 } else { 0.0 });
+    let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
+    let (icon, status, color) = message_status(ui, message);
+    egui::Image::new(icon.source())
+        .tint(color)
+        .paint_at(ui, icon_rect);
+    let sender_inset = if line.separate_address() {
+        0.0
+    } else {
+        SIGNATURE_ICON_INSET
+    };
+    let sender_origin = copy_rect.left_top() + egui::vec2(sender_inset, 0.0);
+    let sender_width = (copy_rect.width() - sender_inset).max(0.0);
+    match line {
+        // The lock vouches for the address, never for the name the sender
+        // chose, so a collapsed card keeps the address beside that name.
+        SenderLine::NameAndAddress => paint_name_and_address(
+            ui,
+            painter,
+            sender_origin,
+            sender,
+            &message.sender.address,
+            sender_width,
+        ),
+        SenderLine::Alone | SenderLine::NameOverAddress => theme::paint_truncated_text(
+            painter,
+            sender_origin,
+            sender,
+            FontId::proportional(14.0),
+            ui.visuals().strong_text_color(),
+            sender_width,
+        ),
+    }
+    if line.separate_address() {
+        header_detail(
+            painter,
+            identity_top + egui::vec2(SIGNATURE_ICON_INSET, 0.0),
+            &message.sender.address,
+            theme::colors(ui).muted,
+            (copy_rect.width() - SIGNATURE_ICON_INSET).max(0.0),
+        );
+    }
+    (icon_rect, status)
+}
+
+/// Paints what follows the sender: an open card's recipients, or a
+/// collapsed card's preview.
+fn paint_header_details(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    message: &MailMessage,
+    preview: &str,
+    expanded: bool,
+    line: SenderLine,
+    copy_rect: egui::Rect,
+) {
+    if expanded {
+        header_detail(
+            painter,
+            copy_rect.left_top() + egui::vec2(0.0, recipients_top(line.separate_address())),
+            &format!("To: {}", recipients_label(&message.recipients)),
+            theme::colors(ui).muted,
+            copy_rect.width(),
+        );
+    } else {
+        theme::paint_truncated_text(
+            painter,
+            copy_rect.left_top() + egui::vec2(0.0, 22.0),
+            preview,
+            FontId::proportional(14.0),
+            theme::colors(ui).muted,
+            copy_rect.width(),
+        );
+    }
+}
+
+/// The sender as screen readers hear it: a name always comes with its
+/// address, as on screen.
+fn sender_identity(message: &MailMessage, line: SenderLine) -> String {
+    let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
+    match line {
+        SenderLine::Alone => sender.to_owned(),
+        SenderLine::NameAndAddress | SenderLine::NameOverAddress => {
+            format!("{sender} <{}>", message.sender.address)
+        }
+    }
+}
+
+/// The header's tooltip: the signature icon names its status, and the
+/// chevron the toggle. Elsewhere the header says nothing.
+fn header_hover(
+    ui: &egui::Ui,
+    response: egui::Response,
+    icon_rect: egui::Rect,
+    expanded: bool,
+    status: &str,
+) -> egui::Response {
+    if ui.rect_contains_pointer(icon_rect) {
         response.on_hover_text(status)
-    } else if ui.rect_contains_pointer(chevron_area(rect)) {
-        // The whole header toggles the card, but only the chevron explains it.
+    } else if ui.rect_contains_pointer(chevron_area(response.rect)) {
         response.on_hover_text(if expanded { "Collapse" } else { "Expand" })
     } else {
         response
@@ -2615,6 +2686,160 @@ mod tests {
                 "{width}: sender {sender:?} runs under the date {date:?}"
             );
             assert!((date.right() - rect.right()).abs() <= 0.5, "{width}");
+        }
+    }
+
+    /// What screen readers hear for the header of `message`, drawn in a
+    /// reader 420 points wide, and where the header lands.
+    fn heard_header(message: &MailMessage, expanded: bool) -> (egui::Rect, String) {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let mut rect = egui::Rect::NOTHING;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(420.0);
+            rect = message_header(ui, message, "Preview", expanded).rect;
+        });
+        let status = message_status_text(message);
+        let heard = output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| &update.nodes)
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .find(|label| label.ends_with(status))
+            .unwrap_or_default();
+        output.drop_without_applying_deltas();
+        (rect, heard)
+    }
+
+    /// The status the header of `message` names, as its icon's tooltip.
+    fn message_status_text(message: &MailMessage) -> &'static str {
+        match message.verdict {
+            Verdict::Verified => "Message text verified",
+            Verdict::Unsigned => "Message text not signed",
+            Verdict::Unverified => "Could not verify the message text",
+            Verdict::Invalid => "Message verification failed. Use caution.",
+        }
+    }
+
+    /// The texts drawn while the pointer rests at `position` over the
+    /// header of `message`, tooltips included.
+    fn texts_on_hover(message: &MailMessage, expanded: bool, position: egui::Pos2) -> Vec<String> {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.style_mut_of(context.theme(), |style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        let mut shapes = Vec::new();
+        // A tooltip shows once the pointer has rested for a few passes.
+        for _ in 0..10 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    events: vec![egui::Event::PointerMoved(position)],
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.set_width(420.0);
+                    message_header(ui, message, "Preview", expanded);
+                },
+            );
+            shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+        }
+        shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_sender_line_has_its_height_spoken_label_and_tooltips() {
+        let named = address(Some("Alex Rivera"), "alex@example.com");
+        let unnamed = address(None, "alex@example.com");
+        let without_address = address(Some("Alex Rivera"), "");
+        for (case, sender, expanded, height, identity, icon_drop) in [
+            (
+                "collapsed with a name",
+                &named,
+                false,
+                44.0,
+                "Alex Rivera <alex@example.com>",
+                0.0,
+            ),
+            (
+                "collapsed without a name",
+                &unnamed,
+                false,
+                44.0,
+                "alex@example.com",
+                0.0,
+            ),
+            // Open, the address gets a line of its own, with the icon.
+            (
+                "open with a name",
+                &named,
+                true,
+                66.0,
+                "Alex Rivera <alex@example.com>",
+                20.0,
+            ),
+            (
+                "open without a name",
+                &unnamed,
+                true,
+                47.0,
+                "alex@example.com",
+                0.0,
+            ),
+            // A name with no address is drawn alone, as an address would be.
+            (
+                "open with a name but no address",
+                &without_address,
+                true,
+                47.0,
+                "Alex Rivera",
+                0.0,
+            ),
+        ] {
+            let message = MailMessage {
+                id: "message".into(),
+                verdict: Verdict::Unverified,
+                sender: sender.clone(),
+                recipients: Vec::new(),
+                reply_to: Vec::new(),
+                reply_all_cc: Vec::new(),
+                reply_redirected: false,
+                time: None,
+                unread: false,
+                body: MessageBody::PlainText("Preview".into()),
+                attachments: Vec::new(),
+            };
+            let status = message_status_text(&message);
+
+            let (rect, heard) = heard_header(&message, expanded);
+            assert_eq!(rect.height(), height, "{case}");
+            assert_eq!(heard, format!("{identity}, {status}"), "{case}");
+
+            let icon = rect.left_top()
+                + egui::vec2(HEADER_TEXT_INSET, icon_drop)
+                + egui::Vec2::splat(SIGNATURE_ICON_SIZE / 2.0);
+            let over_icon = texts_on_hover(&message, expanded, icon);
+            assert!(
+                over_icon.iter().any(|text| text == status),
+                "{case}: the icon explains the verdict: {over_icon:?}"
+            );
+            let toggle = if expanded { "Collapse" } else { "Expand" };
+            let chevron = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
+            let over_chevron = texts_on_hover(&message, expanded, chevron);
+            assert!(
+                over_chevron.iter().any(|text| text == toggle),
+                "{case}: the chevron says it will {toggle}: {over_chevron:?}"
+            );
         }
     }
 
