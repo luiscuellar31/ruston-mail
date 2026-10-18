@@ -16,7 +16,7 @@ use crate::auth::{self, TotpPrompt};
 use crate::cache::CacheIdentity;
 use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
-use crate::model::enums::key_flag;
+use crate::model::enums::{key_flag, password_mode};
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens, validate_profile_name};
 use crate::transport::{Doer, HttpClient};
 use secrecy::{ExposeSecret, SecretString};
@@ -267,7 +267,7 @@ impl Client {
         let cache_identity = CacheIdentity::new(base_url, &user.id)?;
 
         let mut asked = None;
-        let mailbox_pw = if login.password_mode == 2 {
+        let mailbox_pw = if login.password_mode == password_mode::TWO_PASSWORDS {
             mailbox_password(
                 opts.mailbox_password.as_ref(),
                 prompts.mailbox_password.as_ref(),

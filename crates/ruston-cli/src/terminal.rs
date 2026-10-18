@@ -1,5 +1,6 @@
 //! CLI output boundary: readable text is safe even when piped into a terminal.
 
+use ruston_core::error::exit_status;
 use ruston_core::mail::attachments::is_invisible_mark;
 use std::fmt::{self, Write as _};
 use std::io::{self, IsTerminal, Write as _};
@@ -43,7 +44,7 @@ pub(crate) fn write_json<T: serde::Serialize + ?Sized>(value: &T) {
             "error: cannot write output: {}\n",
             SafeArgs(format_args!("{error}"))
         ));
-        std::process::exit(1);
+        std::process::exit(exit_status::OTHER);
     }
     let _ = output.write_all(b"\n");
 }
@@ -239,7 +240,7 @@ fn stdout_failed(error: io::Error) -> ! {
         "error: cannot write output: {}\n",
         SafeArgs(format_args!("{error}"))
     ));
-    std::process::exit(1);
+    std::process::exit(exit_status::OTHER);
 }
 
 /// Preserve explicit body formats only when stdout is not a terminal.

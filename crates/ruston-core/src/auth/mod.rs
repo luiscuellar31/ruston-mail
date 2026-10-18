@@ -3,6 +3,7 @@
 pub mod types;
 
 use crate::error::{Error, Result};
+use crate::model::enums::two_factor;
 use crate::session::Tokens;
 use crate::transport::{Doer, HttpClient, Request};
 use futures::future::BoxFuture;
@@ -29,7 +30,7 @@ pub type TotpPrompt = Arc<dyn Fn() -> BoxFuture<'static, Result<SecretString>> +
 pub struct LoginResult {
     /// Session tokens (UID, access, refresh) for the authenticated session.
     pub tokens: Tokens,
-    /// Password mode: `1` for single-password, `2` for separate mailbox password.
+    /// Password mode, one of [`password_mode`](crate::model::enums::password_mode).
     pub password_mode: u8,
 }
 
@@ -153,21 +154,21 @@ pub async fn login_with_prompt(
 }
 
 /// Submit the second factor if the account requires one. `enabled` is the 2FA
-/// bitmask: TOTP is bit 0; FIDO2/WebAuthn is bit 1.
+/// bitmask of [`two_factor`] bits.
 async fn second_factor(
     http: &HttpClient,
     enabled: u32,
     totp: Option<&str>,
     totp_prompt: Option<&TotpPrompt>,
 ) -> Result<()> {
-    if enabled & 1 == 0 && enabled & 2 != 0 {
+    if enabled & two_factor::TOTP == 0 && enabled & two_factor::SECURITY_KEY != 0 {
         return Err(Error::Other(
             "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet \
              supported — enable a TOTP authenticator app, or use an app/bridge password"
                 .into(),
         ));
     }
-    if enabled & 1 == 0 {
+    if enabled & two_factor::TOTP == 0 {
         return Ok(());
     }
     let prompted_code;
@@ -392,6 +393,14 @@ mod tests {
         assert!(err.to_string().contains("FIDO2"));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn second_factor_uses_totp_when_a_security_key_is_set_up_too() {
+        let server = MockServer::start().await;
+        expect_2fa(&server, "123456", 1).await;
+        let http = HttpClient::new(server.uri(), "Other");
+        second_factor(&http, 3, Some("123456"), None).await.unwrap();
     }
 
     #[tokio::test]

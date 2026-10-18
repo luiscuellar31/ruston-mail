@@ -64,7 +64,8 @@ pub struct Session {
     pub app_version: String,
     /// API base URL for this session.
     pub base_url: String,
-    /// Password mode (1 = single-password, 2 = two-password login).
+    /// Password mode, one of
+    /// [`password_mode`](crate::model::enums::password_mode).
     pub password_mode: u8,
     /// Optional `User-Agent` recorded for this session.
     pub user_agent: Option<String>,

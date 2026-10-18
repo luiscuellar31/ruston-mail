@@ -4,7 +4,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use ruston_core::{SearchOpts, SendOptions};
 use std::path::PathBuf;
 
-/// What each exit status means, shown at the end of `--help`.
+/// What each exit status means, shown at the end of `--help`. Statuses 1 to
+/// 5 are `ruston_core::error::exit_status`.
 const EXIT_STATUS: &str = "Exit status:
   0  Success, also when the reader of the output stops early (as `| head` does)
   1  Any other error

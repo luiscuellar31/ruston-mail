@@ -175,6 +175,23 @@ pub mod message_action {
     pub const FORWARD: u8 = 2;
 }
 
+/// The second factors an account can have, as bits of its 2FA `Enabled`
+/// mask.
+pub mod two_factor {
+    /// Codes from an authenticator app (TOTP).
+    pub const TOTP: u32 = 1;
+    /// A FIDO2/WebAuthn security key.
+    pub const SECURITY_KEY: u32 = 2;
+}
+
+/// How an account's passwords are set up, as its `PasswordMode` says.
+pub mod password_mode {
+    /// One password signs in and opens the mailbox.
+    pub const ONE_PASSWORD: u8 = 1;
+    /// A separate mailbox password opens the keys.
+    pub const TWO_PASSWORDS: u8 = 2;
+}
+
 /// Recipient type from the public-key lookup.
 pub mod recipient_type {
     /// Internal Proton recipient.

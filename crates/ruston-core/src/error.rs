@@ -13,6 +13,20 @@ pub struct HvChallenge {
     pub web_url: String,
 }
 
+/// The process exit statuses the CLI ends with, as its `--help` explains.
+pub mod exit_status {
+    /// Any other error.
+    pub const OTHER: i32 = 1;
+    /// A session that is missing, expired or refused.
+    pub const SESSION: i32 = 2;
+    /// Something the request named was not found.
+    pub const NOT_FOUND: i32 = 3;
+    /// An ambiguous reference, or a conflict Proton reports.
+    pub const CONFLICT: i32 = 4;
+    /// A Proton server error.
+    pub const SERVER: i32 = 5;
+}
+
 /// A structured Proton API error (non-success `Code`, or a non-2xx HTTP status).
 #[derive(Debug, Clone)]
 pub struct ApiError {
@@ -30,11 +44,11 @@ impl ApiError {
     /// Map to a CLI process exit code (mirrors the Go reference).
     pub fn exit_code(&self) -> i32 {
         match self.http_status {
-            401 | 403 => 2,
-            404 => 3,
-            409 | 422 => 4,
-            s if s >= 500 => 5,
-            _ => 1,
+            401 | 403 => exit_status::SESSION,
+            404 => exit_status::NOT_FOUND,
+            409 | 422 => exit_status::CONFLICT,
+            _ if self.is_server_error() => exit_status::SERVER,
+            _ => exit_status::OTHER,
         }
     }
 
@@ -201,10 +215,10 @@ impl Error {
     pub fn exit_code(&self) -> i32 {
         match self {
             Error::Api(e) => e.exit_code(),
-            Error::Unauthorized => 2,
-            Error::NotFound { .. } => 3,
-            Error::Ambiguous(_) => 4,
-            _ => 1,
+            Error::Unauthorized => exit_status::SESSION,
+            Error::NotFound { .. } => exit_status::NOT_FOUND,
+            Error::Ambiguous(_) => exit_status::CONFLICT,
+            _ => exit_status::OTHER,
         }
     }
 
