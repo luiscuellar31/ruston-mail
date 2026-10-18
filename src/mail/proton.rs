@@ -390,7 +390,6 @@ impl ProtonMailService {
             map_mailbox_error,
         )
         .await?;
-        let subject = conversation.subject.trim();
         let labels = conversation
             .labels
             .into_iter()
@@ -399,7 +398,7 @@ impl ProtonMailService {
 
         Ok(ConversationDetail {
             id: id.to_owned(),
-            subject: (!subject.is_empty()).then(|| subject.to_owned()),
+            subject: non_blank(&conversation.subject),
             labels,
             messages: messages
                 .into_iter()
@@ -907,14 +906,13 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
         .chain(&conversation.recipients)
         .map(mail_address)
         .collect();
-    let subject = conversation.subject.trim();
 
     ConversationSummary {
-        subject: (!subject.is_empty()).then(|| subject.to_owned()),
+        subject: non_blank(&conversation.subject),
         correspondents: display_names(correspondents),
         participants,
         preview: None,
-        time: (time > 0).then_some(time),
+        time: known_time(time),
         unread: unread > 0,
         starred,
         message_count: u32::try_from(conversation.num_messages).unwrap_or(0),
@@ -985,14 +983,13 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
         .chain(&message.cc_list)
         .map(mail_address)
         .collect();
-    let subject = message.subject.trim();
 
     ConversationSummary {
-        subject: (!subject.is_empty()).then(|| subject.to_owned()),
+        subject: non_blank(&message.subject),
         correspondents,
         participants,
         preview: None,
-        time: (message.time > 0).then_some(message.time),
+        time: known_time(message.time),
         unread: message.unread != 0,
         starred: message.label_ids.iter().any(|id| id == label_ids::STARRED),
         message_count: 1,
@@ -1010,9 +1007,22 @@ fn mail_attachment(attachment: Attachment) -> MailAttachment {
     }
 }
 
+/// Text Proton sends without its surrounding spaces, or `None` when nothing
+/// is left.
+fn non_blank(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// A time Proton sends, or `None` for the 0 it sends when the time is
+/// unknown.
+fn known_time(seconds: i64) -> Option<i64> {
+    (seconds > 0).then_some(seconds)
+}
+
 fn mail_address(person: &Recipient) -> MailAddress {
     MailAddress {
-        name: (!person.name.trim().is_empty()).then(|| person.name.trim().to_owned()),
+        name: non_blank(&person.name),
         address: person.address.trim().to_owned(),
     }
 }
@@ -1070,11 +1080,11 @@ fn single_message_detail(
         ConversationMessage::Opened(message) => &message.meta,
         ConversationMessage::Unreadable(message) => &message.meta,
     };
-    let subject = meta.subject.trim().to_owned();
+    let subject = non_blank(&meta.subject);
     let labels = meta.label_ids.clone();
     ConversationDetail {
         id: id.to_owned(),
-        subject: (!subject.is_empty()).then_some(subject),
+        subject,
         labels,
         messages: vec![conversation_message(message, own)],
     }
@@ -1104,7 +1114,7 @@ fn message_without_body(
         reply_to: reply.to,
         reply_all_cc: reply.cc,
         reply_redirected,
-        time: (meta.time > 0).then_some(meta.time),
+        time: known_time(meta.time),
         unread: meta.unread != 0,
         body: MessageBody::Unreadable,
         verdict: Verdict::Unverified,
@@ -2037,6 +2047,65 @@ mod tests {
         assert_eq!(summary.message_count, 0);
         assert!(!summary.unread);
         assert!(!summary.starred);
+    }
+
+    #[test]
+    fn a_message_row_trims_its_subject_and_names_and_drops_what_is_blank() {
+        let padded = MessageMetadata {
+            subject: "  Statement ready ".into(),
+            sender: person("  Bank  ", &format!(" {BANK} ")),
+            ..metadata("padded", BANK, 1_700_000_000, &[label_ids::INBOX])
+        };
+        let blank = MessageMetadata {
+            subject: " ".into(),
+            sender: person(" ", BANK),
+            ..metadata("blank", BANK, 0, &[label_ids::INBOX])
+        };
+
+        let padded = message_summary(padded);
+        let blank = message_summary(blank);
+
+        assert_eq!(padded.subject.as_deref(), Some("Statement ready"));
+        assert_eq!(padded.correspondents.as_deref(), Some("Bank"));
+        assert_eq!(
+            padded.participants,
+            [MailAddress {
+                name: Some("Bank".into()),
+                address: BANK.into(),
+            }]
+        );
+        assert_eq!(padded.time, Some(1_700_000_000));
+        assert_eq!(blank.subject, None);
+        assert_eq!(blank.correspondents.as_deref(), Some(BANK));
+        assert_eq!(
+            blank.participants,
+            [MailAddress {
+                name: None,
+                address: BANK.into(),
+            }]
+        );
+        assert_eq!(blank.time, None);
+    }
+
+    #[test]
+    fn a_message_on_its_own_with_a_blank_subject_has_none() {
+        let unreadable = UnreadableMessage {
+            meta: MessageMetadata {
+                subject: "  ".into(),
+                ..metadata("m1", BANK, 0, &[label_ids::INBOX])
+            },
+            reply_tos: Vec::new(),
+            error: Error::Crypto("no key of the account opens it".into()),
+        };
+
+        let detail = single_message_detail(
+            "m1",
+            ConversationMessage::Unreadable(unreadable),
+            &OwnAddresses::new(),
+        );
+
+        assert_eq!(detail.subject, None);
+        assert_eq!(detail.messages[0].time, None);
     }
 
     #[test]
