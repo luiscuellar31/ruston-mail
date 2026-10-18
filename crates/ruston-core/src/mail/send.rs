@@ -4,7 +4,7 @@ use super::Client;
 use crate::api;
 use crate::crypto::{self, SessionKeyMaterial, keys::AddressKeys};
 use crate::error::{Error, Result};
-use crate::model::enums::{message_flag, package_type};
+use crate::model::enums::{message_action, message_flag, package_type};
 use crate::model::message::{Message, MessageMetadata, Recipient};
 use crate::transport::{Doer, Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -493,7 +493,7 @@ impl Client {
         if all {
             o.cc = recipients.cc;
         }
-        o.subject = with_prefix(&parent.meta.subject, "Re: ");
+        o.subject = reply_subject(&parent.meta.subject);
         if let Some(q) = quoted {
             o.body = format!(
                 "{}\n\n{}",
@@ -501,10 +501,15 @@ impl Client {
                 quote_block(&parent, &q.body, &q.mime_type, o.html)
             );
         }
+        let action = if all {
+            message_action::REPLY_ALL
+        } else {
+            message_action::REPLY
+        };
         self.send_with_parent(
             &o,
             Some(&parent_id),
-            Some(0),
+            Some(action),
             &(String::new(), Vec::new()),
             None,
         )
@@ -523,7 +528,7 @@ impl Client {
 
         let mut o = opts.clone();
         o.from = o.from.or_else(|| self.receiving_address(&parent));
-        o.subject = with_prefix(&parent.meta.subject, "Fw: ");
+        o.subject = forward_subject(&parent.meta.subject);
         if let Some(q) = quoted {
             o.body = format!(
                 "{}\n\n{}",
@@ -540,7 +545,7 @@ impl Client {
         self.send_with_parent(
             &o,
             Some(&parent_id),
-            Some(2),
+            Some(message_action::FORWARD),
             &(src_addr_id, inherited),
             None,
         )
@@ -843,9 +848,23 @@ impl Client {
     }
 }
 
-fn with_prefix(subject: &str, prefix: &str) -> String {
-    let p = prefix.trim_end().trim_end_matches(':').to_ascii_lowercase();
-    if subject.to_ascii_lowercase().starts_with(&p) {
+/// The subject of a reply to a message titled `subject`.
+fn reply_subject(subject: &str) -> String {
+    with_prefix(subject, "Re: ", &["re:"])
+}
+
+/// The subject of a forward of a message titled `subject`, which may already
+/// carry the "Fwd:" other clients write.
+fn forward_subject(subject: &str) -> String {
+    with_prefix(subject, "Fw: ", &["fw:", "fwd:"])
+}
+
+/// `subject` with `prefix` in front, unless it starts with one of `marks`,
+/// given in lower case with their colon: "RE: Reunión" already answers
+/// something, while "Reunión" only begins like it.
+fn with_prefix(subject: &str, prefix: &str, marks: &[&str]) -> String {
+    let start = subject.trim_start().to_ascii_lowercase();
+    if marks.iter().any(|mark| start.starts_with(mark)) {
         subject.to_string()
     } else {
         format!("{prefix}{subject}")
@@ -877,6 +896,13 @@ fn quote_block(
             "<div class=\"protonmail_quote\">On {who} wrote:<blockquote class=\"protonmail_quote\" type=\"cite\">{body}</blockquote></div>"
         )
     } else {
+        // A plain-text answer quotes what an HTML original reads as, not its
+        // markup.
+        let body = if crate::html::is_html_mime(original_mime) {
+            std::borrow::Cow::Owned(crate::html::to_text(body))
+        } else {
+            std::borrow::Cow::Borrowed(body)
+        };
         let quoted: String = body.lines().map(|l| format!("> {l}\n")).collect();
         format!("------- Original Message -------\nOn {who} wrote:\n{quoted}")
     }
@@ -1738,6 +1764,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn answers_tell_proton_how_they_answer_and_mark_the_subject_once() {
+        let server = MockServer::start().await;
+        let (me, _) = test_address("me@proton.me", "address-1");
+        let parent_id = format!("{}==", "p".repeat(60));
+        Mock::given(method("GET"))
+            .and(path(format!("/mail/v4/messages/{parent_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000,
+                "Message": {
+                    "ID": parent_id, "AddressID": "address-1",
+                    "Subject": "Reunión del lunes",
+                    "Sender": {"Name": "Boss", "Address": "boss@corp.example"},
+                    "ToList": [{"Name": "Me", "Address": "me@proton.me"}],
+                    "CCList": [{"Name": "Team", "Address": "team@corp.example"}]
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/mail/v4/messages/draft-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server, vec![me]);
+        let answer = SendOptions {
+            body: "Thanks".into(),
+            ..SendOptions::default()
+        };
+        client.reply(&parent_id, false, &answer).await.unwrap();
+        client.reply(&parent_id, true, &answer).await.unwrap();
+        let forward = SendOptions {
+            to: vec!["friend@example.com".into()],
+            ..answer
+        };
+        client.forward(&parent_id, &forward).await.unwrap();
+
+        let drafts: Vec<(Value, Value)> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.url.path() == "/mail/v4/messages")
+            .map(|request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                (body["Action"].clone(), body["Message"]["Subject"].clone())
+            })
+            .collect();
+        // Proton's actions: 0 replies, 1 replies to all, 2 forwards.
+        assert_eq!(
+            drafts,
+            [
+                (json!(0), json!("Re: Reunión del lunes")),
+                (json!(1), json!("Re: Reunión del lunes")),
+                (json!(2), json!("Fw: Reunión del lunes")),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn an_answer_quotes_the_original_it_already_fetched() {
         use wiremock::matchers::query_param;
 
@@ -2005,9 +2106,17 @@ mod tests {
 
     #[test]
     fn subject_prefix() {
-        assert_eq!(with_prefix("Hello", "Re: "), "Re: Hello");
-        assert_eq!(with_prefix("Re: Hello", "Re: "), "Re: Hello");
-        assert_eq!(with_prefix("RE: Hello", "Re: "), "RE: Hello");
+        assert_eq!(reply_subject("Hello"), "Re: Hello");
+        assert_eq!(reply_subject("Re: Hello"), "Re: Hello");
+        assert_eq!(reply_subject("RE: Hello"), "RE: Hello");
+        // Words that only begin like a prefix answer nothing yet.
+        for subject in ["Reunión", "Resumen", "Recordatorio", "Request"] {
+            assert_eq!(reply_subject(subject), format!("Re: {subject}"));
+        }
+        assert_eq!(forward_subject("Report"), "Fw: Report");
+        assert_eq!(forward_subject("FW: Report"), "FW: Report");
+        assert_eq!(forward_subject("Fwd: Report"), "Fwd: Report");
+        assert_eq!(forward_subject("Fwiw, it works"), "Fw: Fwiw, it works");
     }
 
     #[test]
@@ -2041,6 +2150,20 @@ mod tests {
         let parent = crate::model::message::Message::default();
         let quoted = quote_block(&parent, "<b>Original</b>", "text/plain", false);
         assert!(quoted.contains("> <b>Original</b>\n"));
+    }
+
+    #[test]
+    fn plain_quote_of_an_html_original_reads_as_text() {
+        let parent = crate::model::message::Message::default();
+        let quoted = quote_block(
+            &parent,
+            "<p><b>Numbers</b> attached</p><p>Second line</p>",
+            "text/html; charset=UTF-8",
+            false,
+        );
+        assert!(quoted.contains("> Numbers attached\n"), "{quoted}");
+        assert!(quoted.contains("> Second line\n"), "{quoted}");
+        assert!(!quoted.contains('<'), "{quoted}");
     }
 
     #[test]

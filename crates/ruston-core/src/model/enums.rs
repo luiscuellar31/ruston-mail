@@ -163,6 +163,18 @@ pub mod message_flag {
     }
 }
 
+/// How a draft answers its parent, which Proton records on the parent once
+/// the draft is sent ([`message_flag::REPLIED`], [`message_flag::REPLIED_ALL`]
+/// or [`message_flag::FORWARDED`]).
+pub mod message_action {
+    /// A reply to the sender.
+    pub const REPLY: u8 = 0;
+    /// A reply to everyone the parent reached.
+    pub const REPLY_ALL: u8 = 1;
+    /// A forward.
+    pub const FORWARD: u8 = 2;
+}
+
 /// Recipient type from the public-key lookup.
 pub mod recipient_type {
     /// Internal Proton recipient.

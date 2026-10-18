@@ -590,7 +590,10 @@ instead of an unknown outcome.
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
   HTML replies and forwards escape sender details and quoted plain text; quoted
-  HTML retains the sanitized markup produced by the read path. The original is
+  HTML retains the sanitized markup produced by the read path. Plain-text ones
+  quote an HTML original as its text. An answer's subject gains "Re: " or
+  "Fw: " unless it already starts with "Re:", "Fw:" or "Fwd:", and the draft
+  tells Proton whether it replies, replies to all, or forwards. The original is
   fetched once and decrypted for its text alone, so quoting looks up no sender
   keys. One function,
   `reply_recipients`, decides where `Client::reply` sends an answer; mail the
