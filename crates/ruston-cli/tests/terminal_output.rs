@@ -16,19 +16,37 @@ fn run(args: &[&str]) -> Output {
 
 fn assert_safe(bytes: &[u8]) -> String {
     let text = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(
-        text.chars()
-            .all(|c| (!c.is_control() || matches!(c, '\n' | '\t')) && !is_invisible_mark(c))
-    );
+    let unsafe_character = text
+        .chars()
+        .find(|&c| (c.is_control() && !matches!(c, '\n' | '\t')) || is_invisible_mark(c));
+    if let Some(c) = unsafe_character {
+        panic!("{c:?} in {text:?}");
+    }
     text
+}
+
+/// Runs the CLI and expects it to succeed, showing what it said if not.
+fn run_ok(args: &[&str]) -> Output {
+    let output = run(args);
+    assert!(
+        output.status.success(),
+        "{args:?} ended with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+/// The attack as a process argument, which cannot contain NUL; writers'
+/// unit tests cover that.
+fn attack_argument() -> &'static str {
+    ATTACK.trim_end_matches('\0')
 }
 
 #[test]
 fn human_output_filters_untrusted_label_names() {
-    // Process arguments cannot contain NUL; it is covered by writer unit tests.
-    let attack = ATTACK.trim_end_matches('\0');
-    let output = run(&["--demo", "labels", "create", "--name", attack]);
-    assert!(output.status.success());
+    let attack = attack_argument();
+    let output = run_ok(&["--demo", "labels", "create", "--name", attack]);
     let text = assert_safe(&output.stdout);
     assert!(text.contains("Created"));
     assert!(text.contains("mail"));
@@ -37,9 +55,8 @@ fn human_output_filters_untrusted_label_names() {
 
 #[test]
 fn json_output_filters_controls_without_changing_label_data() {
-    let attack = ATTACK.trim_end_matches('\0');
-    let output = run(&["--demo", "--json", "labels", "create", "--name", attack]);
-    assert!(output.status.success());
+    let attack = attack_argument();
+    let output = run_ok(&["--demo", "--json", "labels", "create", "--name", attack]);
     let text = assert_safe(&output.stdout);
     let value: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(value["Name"], attack);
@@ -77,7 +94,7 @@ fn a_reader_that_stops_early_ends_the_command_quietly() {
 
 #[test]
 fn runtime_and_argument_errors_filter_controls_on_stderr() {
-    let attack = ATTACK.trim_end_matches('\0');
+    let attack = attack_argument();
     for args in [vec!["--demo", "messages", "read", attack], vec![attack]] {
         let output = run(&args);
         assert!(!output.status.success());
@@ -102,12 +119,13 @@ fn a_second_demo_export_into_the_same_folder_resumes() {
     let second = run(&args);
     std::fs::remove_dir_all(&folder).unwrap();
 
-    assert!(first.status.success());
-    assert!(
-        second.status.success(),
-        "{}",
-        String::from_utf8_lossy(&second.stderr)
-    );
+    for output in [&first, &second] {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let text = assert_safe(&second.stdout);
     assert!(text.contains("Exported 0 demo message(s)"), "{text}");
     assert!(
@@ -129,15 +147,13 @@ fn a_saved_draft_is_reported_as_saved_not_sent() {
         "--body",
         "Hi",
     ];
-    let text = run(&args);
-    assert!(text.status.success());
+    let human = run_ok(&args);
     assert_eq!(
-        assert_safe(&text.stdout),
+        assert_safe(&human.stdout),
         "Draft saved (id draft-demo-saved-01)\n"
     );
 
-    let json = run(&[&["--json"][..], &args].concat());
-    assert!(json.status.success());
+    let json = run_ok(&[&["--json"][..], &args].concat());
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(
         value,

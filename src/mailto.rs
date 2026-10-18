@@ -7,6 +7,7 @@ pub const MAX_PENDING: usize = 16;
 const MAX_RECIPIENTS: usize = 100;
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
 pub struct Request {
     to: String,
     subject: String,

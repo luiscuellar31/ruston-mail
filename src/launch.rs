@@ -47,6 +47,7 @@ pub struct Argument {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
 pub enum Event {
     Activate,
     Mailto(Request),
