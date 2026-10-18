@@ -244,7 +244,10 @@ pub enum Command {
         #[arg(long, default_value_t = 100)]
         max: u32,
     },
-    /// Continuously sync the cache (event stream) until interrupted.
+    /// Continuously sync the cache (event stream) until interrupted. Network
+    /// errors, Proton being busy or down, and the cache changing during a sync
+    /// are tried again after a wait that doubles, up to 10 minutes; a refused
+    /// session, or any other error, stops it.
     Watch {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         interval: u64,
