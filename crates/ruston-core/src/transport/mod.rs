@@ -1635,13 +1635,17 @@ mod tests {
     async fn client_behind_its_saved_session(
         server: &MockServer,
     ) -> (HttpClient, Paths, Arc<dyn SecretStore>, std::path::PathBuf) {
+        // Tests run in parallel and the clock can read the same for two of
+        // them, so a counter keeps each directory to itself.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let base = std::env::temp_dir().join(format!(
-            "ruston-adopted-refresh-{}-{unique}",
-            std::process::id()
+            "ruston-adopted-refresh-{}-{unique}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let paths = Paths::with_base(&base);
         let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
