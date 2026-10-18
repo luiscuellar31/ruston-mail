@@ -9,7 +9,7 @@ use crate::cli::ReadFormat;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Filter,
-    FullMessage, Label, LabelCount, MessageMetadata, Recipient,
+    FullMessage, Label, LabelCount, MessageMetadata, Recipient, Verdict,
 };
 use serde_json::json;
 
@@ -186,6 +186,16 @@ pub fn conversations_list(json: bool, total: u32, convs: &[Conversation]) {
     }
 }
 
+/// A verdict's name, as `--json` writes it.
+fn verdict_name(verdict: Verdict) -> &'static str {
+    match verdict {
+        Verdict::Verified => "verified",
+        Verdict::Unsigned => "unsigned",
+        Verdict::Unverified => "unverified",
+        Verdict::Invalid => "invalid",
+    }
+}
+
 fn print_message_header(m: &MessageMetadata, verdict: &str, mime_type: &str) {
     terminal::println!("Subject: {}", subject_or_empty(&m.subject));
     terminal::println!("From:    {}", fmt_addr(&m.sender));
@@ -213,17 +223,13 @@ pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only
         }
         return;
     }
-    let verdict = serde_json::to_string(&msg.verdict)
-        .ok()
-        .map(|s| s.trim_matches('"').to_string())
-        .unwrap_or_else(|| "unknown".to_string());
     let body = displayed_body(&msg.body, &msg.mime_type, format);
     let explicit_format = matches!(format, ReadFormat::Raw | ReadFormat::Html);
     if body_only || matches!(format, ReadFormat::Raw) {
         terminal::print_body(&body, explicit_format);
         return;
     }
-    print_message_header(&msg.meta, &verdict, &msg.mime_type);
+    print_message_header(&msg.meta, verdict_name(msg.verdict), &msg.mime_type);
     if !msg.attachments.is_empty() {
         terminal::println!("Attachments:");
         for a in &msg.attachments {
@@ -309,16 +315,9 @@ pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[ConversationMe
                 continue;
             }
         };
-        let verdict = serde_json::to_string(&m.verdict)
-            .ok()
-            .map(|s| s.trim_matches('"').to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        print_message_header(&m.meta, &verdict, &m.mime_type);
+        print_message_header(&m.meta, verdict_name(m.verdict), &m.mime_type);
         terminal::println!();
-        terminal::print!("{}", m.body);
-        if !m.body.ends_with('\n') {
-            terminal::println!();
-        }
+        terminal::print_body(&m.body, false);
     }
 }
 
@@ -403,6 +402,21 @@ pub fn draft_saved(json: bool, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_verdict_is_named_as_json_writes_it() {
+        for verdict in [
+            Verdict::Verified,
+            Verdict::Unsigned,
+            Verdict::Unverified,
+            Verdict::Invalid,
+        ] {
+            assert_eq!(
+                serde_json::to_value(verdict).unwrap(),
+                verdict_name(verdict)
+            );
+        }
+    }
 
     #[test]
     fn text_format_converts_html_without_changing_explicit_formats() {

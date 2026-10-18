@@ -160,3 +160,25 @@ fn a_saved_draft_is_reported_as_saved_not_sent() {
         serde_json::json!({"status": "ok", "id": "draft-demo-saved-01"})
     );
 }
+
+#[test]
+fn reading_a_message_or_a_thread_names_its_verdict_and_ends_each_body_once() {
+    let message = run_ok(&["--demo", "messages", "read", "msg-demo-01"]);
+    let message = assert_safe(&message.stdout);
+    let thread = run_ok(&["--demo", "conversations", "read", "conv-demo-01"]);
+    let thread = assert_safe(&thread.stdout);
+
+    assert!(message.contains("\nVerdict: verified\n"), "{message}");
+    assert!(message.contains("\n\nHi Demo,\n"), "{message}");
+    assert!(message.ends_with("Thanks,\nAlex\n"), "{message}");
+    assert_eq!(
+        thread.matches("\nVerdict: verified\n").count(),
+        2,
+        "{thread}"
+    );
+    assert!(
+        thread.contains("Thanks,\nAlex\n\n--- message 2/2 ---\n"),
+        "{thread}"
+    );
+    assert!(thread.ends_with("Thanks,\nDemo\n"), "{thread}");
+}
