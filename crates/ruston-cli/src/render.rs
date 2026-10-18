@@ -378,6 +378,19 @@ pub fn sent(json: bool, id: &str) {
     terminal::println!("Sent (id {id})");
 }
 
+/// Report a message Proton holds until `at` (Unix time): it has not left yet.
+pub fn scheduled(json: bool, id: &str, at: i64) {
+    if json {
+        json_out(&json!({ "status": "ok", "id": id, "scheduled_at": at }));
+        return;
+    }
+    terminal::println!("{}", scheduled_text(id, at));
+}
+
+fn scheduled_text(id: &str, at: i64) -> String {
+    format!("Scheduled (id {id}) to be sent at {}", fmt_time(at))
+}
+
 /// Report a saved draft, which was not sent (returns its message ID).
 pub fn draft_saved(json: bool, id: &str) {
     if json {
@@ -426,6 +439,14 @@ mod tests {
         assert_eq!(fmt_time(1), "1970-01-01 00:00:01 UTC");
         // A well-known timestamp: 1_700_000_000 = 2023-11-14 22:13:20 UTC.
         assert_eq!(fmt_time(1_700_000_000), "2023-11-14 22:13:20 UTC");
+    }
+
+    #[test]
+    fn a_scheduled_message_says_when_it_leaves_not_that_it_was_sent() {
+        assert_eq!(
+            scheduled_text("m1", 1_900_000_000),
+            "Scheduled (id m1) to be sent at 2030-03-17 17:46:40 UTC"
+        );
     }
 
     #[test]

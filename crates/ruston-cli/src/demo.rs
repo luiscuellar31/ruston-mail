@@ -794,7 +794,9 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             }
             MessagesCmd::Send(args) => {
                 let id = "msg-demo-sent-101";
-                if ctx.json {
+                if let Some(at) = args.send_at {
+                    render::scheduled(ctx.json, id, at);
+                } else if ctx.json {
                     render::sent(true, id);
                 } else {
                     terminal::println!("Sent (id {id}) to {}", args.message.to.join(", "));

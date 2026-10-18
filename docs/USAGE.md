@@ -456,7 +456,9 @@ mailbox password when the account needs them, without showing what you type.
 Give them as `PROTON_PASSWORD`, `PROTON_TOTP` and `PROTON_MAILBOX_PASSWORD` in
 scripts rather than as options, which other programs can read. Likewise,
 `messages send --eo-password` without a value asks twice for the password that
-protects the message.
+protects the message. `messages send --send-at` reports the message as
+scheduled, with the time Proton sends it, since it has not left yet; its JSON
+carries that time as `scheduled_at`.
 
 `drafts save` and `drafts edit` upload `--attach` files to the draft. If one
 cannot be uploaded, `drafts save` deletes the draft it made, while `drafts

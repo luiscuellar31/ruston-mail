@@ -280,7 +280,10 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 Some(pw) => client.send_eo(&opts, pw, args.eo_hint.as_deref()).await?,
                 None => client.send(&opts).await?,
             };
-            render::sent(ctx.json, &id);
+            match opts.send_at {
+                Some(at) => render::scheduled(ctx.json, &id, at),
+                None => render::sent(ctx.json, &id),
+            }
             Ok(())
         }
         MessagesCmd::Reply {
