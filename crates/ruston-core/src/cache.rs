@@ -328,6 +328,15 @@ pub(crate) struct BatchCounts {
     pub(crate) deleted: usize,
 }
 
+impl std::ops::AddAssign for BatchCounts {
+    fn add_assign(&mut self, other: Self) {
+        self.created += other.created;
+        self.updated += other.updated;
+        self.flags_updated += other.flags_updated;
+        self.deleted += other.deleted;
+    }
+}
+
 /// A local metadata cache. Client operations use an account-specific database.
 pub struct Cache {
     conn: Connection,
@@ -491,6 +500,8 @@ impl Cache {
     }
 
     /// Claim an uninitialized cursor without replacing another sync's cursor.
+    /// Returns whether this call stored `id`: `false` means another sync had
+    /// already stored one.
     pub(crate) fn initialize_cursor(&self, id: &str) -> Result<bool> {
         Ok(self
             .conn

@@ -3,7 +3,7 @@
 use super::{Client, read::FullMessage};
 use crate::api;
 use crate::api::messages::ListQuery;
-use crate::cache::{Cache, CacheIdentity};
+use crate::cache::{BatchCounts, Cache, CacheIdentity};
 use crate::error::{Error, Result};
 use crate::model::enums::{resolve_folder, response_code};
 use crate::model::message::MessageMetadata;
@@ -36,6 +36,30 @@ pub struct SyncReport {
     pub initialized: bool,
     /// Number of messages rebuilt after a server-requested full resync.
     pub rebuilt: Option<usize>,
+}
+
+impl SyncReport {
+    /// A first sync, which only stored the cursor `event_id`.
+    fn initialized(event_id: String) -> Self {
+        Self {
+            initialized: true,
+            ..Self::from_counts(BatchCounts::default(), event_id, None)
+        }
+    }
+
+    /// A sync that applied `counts` and left the cursor at `event_id`, after
+    /// rebuilding the cache when the server asked for it.
+    fn from_counts(counts: BatchCounts, event_id: String, rebuilt: Option<usize>) -> Self {
+        Self {
+            created: counts.created,
+            updated: counts.updated,
+            flags_updated: counts.flags_updated,
+            deleted: counts.deleted,
+            event_id,
+            initialized: false,
+            rebuilt,
+        }
+    }
 }
 
 async fn rebuild_cache<D: Doer>(
@@ -75,22 +99,14 @@ async fn rebuild_cache<D: Doer>(
 }
 
 async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
-    let mut id = match cache.last_event_id()? {
-        Some(i) => i,
+    let mut cursor = match cache.last_event_id()? {
+        Some(cursor) => cursor,
         None => {
             // Bootstrap: record the current cursor; deltas flow from here.
             let latest = api::events::get_latest_event_id(http).await?;
             if cache.initialize_cursor(&latest)? {
                 tracing::info!(target: "ruston_core::sync", event_id = %latest, "sync initialized cursor");
-                return Ok(SyncReport {
-                    created: 0,
-                    updated: 0,
-                    flags_updated: 0,
-                    deleted: 0,
-                    event_id: latest,
-                    initialized: true,
-                    rebuilt: None,
-                });
+                return Ok(SyncReport::initialized(latest));
             }
             cache.last_event_id()?.ok_or_else(|| {
                 Error::cache_changed("sync cursor disappeared during initialization")
@@ -98,44 +114,32 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
         }
     };
 
-    let (mut created, mut updated, mut flags_updated, mut deleted) = (0, 0, 0, 0);
+    let mut counts = BatchCounts::default();
     let mut rebuilt = None;
     loop {
-        let batch = api::events::get_events(http, &id).await?;
+        let batch = api::events::get_events(http, &cursor).await?;
         if batch.refresh {
             if rebuilt.is_some() {
                 return Err(Error::cache_changed("server requested another resync"));
             }
-            let (cursor, count) = rebuild_cache(http, cache, &id, RESYNC_PAGE_SIZE).await?;
+            let (rebuilt_cursor, count) =
+                rebuild_cache(http, cache, &cursor, RESYNC_PAGE_SIZE).await?;
             tracing::warn!(target: "ruston_core::sync", rebuilt = count, "server requested full resync — cache rebuilt");
-            id = cursor;
+            cursor = rebuilt_cursor;
             rebuilt = Some(count);
-            created = 0;
-            updated = 0;
-            flags_updated = 0;
-            deleted = 0;
+            // What earlier batches changed is part of the rebuild, which
+            // `rebuilt` reports.
+            counts = BatchCounts::default();
             continue;
         }
-        let counts = cache.apply_event_batch(&id, &batch)?;
-        created += counts.created;
-        updated += counts.updated;
-        flags_updated += counts.flags_updated;
-        deleted += counts.deleted;
-        id = batch.event_id;
+        counts += cache.apply_event_batch(&cursor, &batch)?;
+        cursor = batch.event_id;
         if !batch.more {
             break;
         }
     }
-    tracing::info!(target: "ruston_core::sync", created, updated, deleted, event_id = %id, "sync complete");
-    Ok(SyncReport {
-        created,
-        updated,
-        flags_updated,
-        deleted,
-        event_id: id,
-        initialized: false,
-        rebuilt,
-    })
+    tracing::info!(target: "ruston_core::sync", created = counts.created, updated = counts.updated, deleted = counts.deleted, event_id = %cursor, "sync complete");
+    Ok(SyncReport::from_counts(counts, cursor, rebuilt))
 }
 
 /// Pins the event cursor before a cache's first listing. Rows stored without
@@ -1038,6 +1042,39 @@ mod tests {
         assert!(!report.initialized);
         assert_eq!(report.deleted, 1);
         assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("caught-up"));
+    }
+
+    #[tokio::test]
+    async fn a_first_sync_with_no_cursor_only_stores_the_newest_one() {
+        let server = MockServer::start().await;
+        // Any request for events would fail: there is none to apply yet.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "newest"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+
+        let report = sync_cache(&HttpClient::new(server.uri(), "Other"), &cache)
+            .await
+            .unwrap();
+
+        assert!(report.initialized);
+        assert_eq!(report.event_id, "newest");
+        assert_eq!(
+            (
+                report.created,
+                report.updated,
+                report.flags_updated,
+                report.deleted,
+                report.rebuilt
+            ),
+            (0, 0, 0, 0, None)
+        );
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("newest"));
     }
 
     #[tokio::test]
