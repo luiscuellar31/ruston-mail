@@ -241,7 +241,10 @@ whether it was maximized, and pane widths. When a
 session ends, a remembered folder or label you created is replaced by the
 Inbox, so its name never reaches the next account to sign in. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged
-settings file falls back to defaults.
+settings file falls back to defaults. One that is there but cannot be read is
+first renamed with `.unreadable` added, such as `settings.json.unreadable`, so
+the defaults saved instead replace nothing; if it cannot be renamed, it is left
+as it is and that run saves no preferences.
 
 Signing out first removes local session metadata and credentials, then tries
 to revoke the server session for up to 30 seconds. If the access token has

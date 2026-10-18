@@ -212,14 +212,7 @@ impl Settings {
     /// Reads the settings, using defaults if the file is absent or invalid.
     /// The demo reads, and later writes, a file of its own.
     pub fn load(demo: bool) -> Self {
-        let mut settings = path(demo)
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|text| serde_json::from_str::<Self>(&text).ok())
-            .unwrap_or_default()
-            .sanitized();
-        // Even defaults are worth storing once the app is running: it is the
-        // first run that has nothing on disk yet.
-        settings.stored = true;
+        let mut settings = path(demo).map_or_else(Self::default, |path| read(&path));
         settings.demo = demo;
 
         settings
@@ -304,6 +297,33 @@ fn path(demo: bool) -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "Ruston Mail")?;
 
     Some(dirs.config_dir().join(if demo { DEMO_FILE } else { FILE }))
+}
+
+/// Reads the settings kept at `path`, to be written back there. A file that
+/// is there but cannot be used is first moved aside, to [`unreadable`], so
+/// the defaults written instead destroy nothing; one that cannot be moved is
+/// never written over.
+fn read(path: &Path) -> Settings {
+    let found = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Settings>(&bytes).ok(),
+        // Even defaults are worth storing once the app is running: it is
+        // the first run that has nothing on disk yet.
+        Err(error) if error.kind() == ErrorKind::NotFound => Some(Settings::default()),
+        Err(_) => None,
+    };
+    let usable = found.is_some();
+    let mut settings = found.unwrap_or_default().sanitized();
+    settings.stored = usable || fs::rename(path, unreadable(path)).is_ok();
+
+    settings
+}
+
+/// Where a settings file that could not be used is kept: beside it, with
+/// `.unreadable` after its name. A later one replaces it.
+fn unreadable(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or(FILE.as_ref()).to_os_string();
+    name.push(".unreadable");
+    path.with_file_name(name)
 }
 
 /// Replaces complete settings in one rename, leaving the previous file intact
@@ -536,6 +556,132 @@ mod tests {
 
         assert_eq!(fs::read(&path).unwrap(), b"new settings");
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    /// What 0.7.1, the latest release, writes once every choice is changed.
+    const RELEASED: &str = r#"{
+  "window": {
+    "width": 1280.0,
+    "height": 800.0,
+    "maximized": true,
+    "position": [
+      40.0,
+      60.0
+    ]
+  },
+  "panels": {
+    "sidebar": 0.25,
+    "conversations": 0.5
+  },
+  "folder": {
+    "id": "kZ9",
+    "name": "Invoices",
+    "kind": "Folder"
+  },
+  "start": {
+    "Always": "Archive"
+  },
+  "mark_read_on_open": false,
+  "confirm_links": false,
+  "expand_all_messages": true,
+  "show_quoted_text": true,
+  "compose_format": "Html",
+  "compose_placement": "Window",
+  "check_recipient_protection": false,
+  "accept_international_domains": true,
+  "appearance": "Light",
+  "system_font": true,
+  "zoom": 1.25,
+  "show_unread_badge": false,
+  "desktop_notifications": false
+}"#;
+
+    fn empty_folder(name: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("ruston-settings-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    #[test]
+    fn settings_written_by_the_latest_release_still_load() {
+        let folder = empty_folder("released");
+        let path = folder.join(FILE);
+        fs::write(&path, RELEASED).unwrap();
+
+        let expected = Settings {
+            window: Window {
+                width: 1_280.0,
+                height: 800.0,
+                maximized: true,
+                position: Some([40.0, 60.0]),
+            },
+            panels: Panels {
+                sidebar: 0.25,
+                conversations: 0.5,
+            },
+            folder: Folder::custom("kZ9", "Invoices"),
+            start: StartFolder::Always(MailFolder::Archive),
+            mark_read_on_open: false,
+            confirm_links: false,
+            expand_all_messages: true,
+            show_quoted_text: true,
+            compose_format: BodyFormat::Html,
+            compose_placement: ComposePlacement::Window,
+            check_recipient_protection: false,
+            accept_international_domains: true,
+            appearance: Appearance::Light,
+            system_font: true,
+            zoom: 1.25,
+            show_unread_badge: false,
+            desktop_notifications: false,
+            stored: true,
+            // A field added since keeps its default.
+            ..Settings::default()
+        };
+        assert_eq!(read(&path), expected);
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_damaged_file_is_kept_aside_before_defaults_replace_it() {
+        let folder = empty_folder("damaged");
+        let path = folder.join(FILE);
+        let writable_defaults = Settings {
+            stored: true,
+            ..Settings::default()
+        };
+        // A first run has nothing to keep.
+        assert_eq!(read(&path), writable_defaults);
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
+
+        // A hand edit that lost a comma.
+        let damaged = RELEASED.replacen(',', "", 1);
+        fs::write(&path, &damaged).unwrap();
+
+        assert_eq!(read(&path), writable_defaults);
+        assert!(!path.exists());
+        let kept = folder.join("settings.json.unreadable");
+        assert_eq!(fs::read_to_string(kept).unwrap(), damaged);
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_damaged_file_that_cannot_be_kept_aside_is_not_written_over() {
+        let folder = empty_folder("unmovable");
+        let path = folder.join(FILE);
+        fs::write(&path, b"{").unwrap();
+        // Something already holds the name it would be kept under.
+        fs::create_dir_all(folder.join("settings.json.unreadable").join("taken")).unwrap();
+
+        let settings = read(&path);
+
+        assert!(!settings.stored);
+        assert_eq!(settings, Settings::default());
+        assert_eq!(fs::read(&path).unwrap(), b"{");
         let _ = fs::remove_dir_all(folder);
     }
 

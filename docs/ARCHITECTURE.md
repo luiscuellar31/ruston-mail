@@ -272,7 +272,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   request each: a move, a star or a custom label applies to every message in
   the conversation, as in Proton's web client.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
-  process in a file of its own;
+  process in a file of its own, and moves a file it cannot read aside before
+  saving defaults in its place;
   [`src/downloads.rs`](../src/downloads.rs) writes downloaded attachments.
   Incoming attachment saves have a session and unique request ID. **Save as**
   chooses a destination before downloading; cancellation starts no download,
