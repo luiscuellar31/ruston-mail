@@ -182,6 +182,9 @@ Indexing drops a message's older body when Proton says the message is gone or
 its body cannot be decrypted. Any other failed body download, such as a lost
 connection or rate limiting, stops `index` with an error and keeps what was
 indexed for that message.
+On a cache that has never synchronized, backfill and indexing first record
+Proton's latest event as the sync cursor, so the next `sync` also removes a
+message deleted after they listed it, instead of leaving it searchable.
 Backfill and indexing also check the cursor before saving downloaded data,
 including when they drop a body. If sync changes the cursor while a page
 or body is being downloaded, the operation stops with a retry error and does

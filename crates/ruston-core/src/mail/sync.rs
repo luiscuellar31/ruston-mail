@@ -140,6 +140,28 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
     })
 }
 
+/// Pins the event cursor before a cache's first listing. Rows stored without
+/// one were never reconciled: the first sync only set the cursor to the newest
+/// event, so a message deleted since the listing stayed searchable.
+/// The cache passes through by value, so no reference to it lives across the
+/// request and the callers' futures stay `Send`.
+async fn pin_cursor<D: Doer, C: Borrow<Cache>>(http: &D, cache: C) -> Result<C> {
+    if cache.borrow().last_event_id()?.is_none() {
+        let latest = api::events::get_latest_event_id(http).await?;
+        // Another process may have pinned one meanwhile; either predates the
+        // listing.
+        cache.borrow().initialize_cursor(&latest)?;
+    }
+    Ok(cache)
+}
+
+/// The cursor a page's rows are stored under, which `pin_cursor` set.
+fn page_cursor(cache: &Cache) -> Result<String> {
+    cache
+        .last_event_id()?
+        .ok_or_else(|| Error::Cache("sync cursor disappeared during cache download; retry".into()))
+}
+
 // Client passes an owned Cache to keep its future Send: SQLite connections are
 // not Sync. Tests can borrow a cache to apply events while requests are paused.
 async fn backfill_cache<D: Doer>(
@@ -150,6 +172,7 @@ async fn backfill_cache<D: Doer>(
     page_size: u32,
 ) -> Result<usize> {
     let label = resolve_folder(folder);
+    let cache = pin_cursor(http, cache).await?;
     let mut n = 0usize;
     for page in 0..max_pages {
         let q = ListQuery {
@@ -158,14 +181,12 @@ async fn backfill_cache<D: Doer>(
             page_size: Some(page_size),
             ..Default::default()
         };
-        let cursor = cache.borrow().last_event_id()?;
+        let cursor = page_cursor(cache.borrow())?;
         let (_total, msgs) = api::messages::list_messages(http, &q).await?;
         if msgs.is_empty() {
             break;
         }
-        cache
-            .borrow()
-            .store_metadata_page(cursor.as_deref(), &msgs)?;
+        cache.borrow().store_metadata_page(Some(&cursor), &msgs)?;
         n += msgs.len();
         if (msgs.len() as u32) < page_size {
             break;
@@ -189,6 +210,7 @@ where
     Fut: Future<Output = Result<FullMessage>>,
 {
     let label = resolve_folder(folder);
+    let cache = pin_cursor(http, cache).await?;
     let mut n = 0usize;
     for page in 0..max_pages {
         let q = ListQuery {
@@ -198,7 +220,7 @@ where
             ..Default::default()
         };
         // Keep the page cursor for every body, including failed reads.
-        let cursor = cache.borrow().last_event_id()?;
+        let cursor = page_cursor(cache.borrow())?;
         let (_total, msgs) = api::messages::list_messages(http, &q).await?;
         if msgs.is_empty() {
             break;
@@ -213,7 +235,7 @@ where
             match read {
                 Ok(full) => {
                     cache.borrow().store_index_result(
-                        cursor.as_deref(),
+                        Some(&cursor),
                         &full.meta,
                         Some(&full.body),
                     )?;
@@ -224,7 +246,7 @@ where
                 Err(error) if is_definitive_read_failure(&error) => {
                     cache
                         .borrow()
-                        .store_index_result(cursor.as_deref(), &meta, None)?;
+                        .store_index_result(Some(&cursor), &meta, None)?;
                 }
                 // Anything else says nothing about the body, and would most
                 // likely fail the next read too: keep what is indexed and stop.
@@ -482,6 +504,12 @@ mod tests {
         }
 
         async fn decode<T: DeserializeOwned>(&self, req: Request) -> Result<T> {
+            // A cache's first listing pins the cursor first.
+            if req.path == "/core/v4/events/latest" {
+                return Ok(serde_json::from_value(serde_json::json!({
+                    "EventID": "pinned"
+                }))?);
+            }
             assert_eq!(req.path, "/mail/v4/messages");
             let page: usize = req
                 .query
@@ -573,6 +601,15 @@ mod tests {
                 "Code": 1000, "Address": { "Keys": [] }
             })))
             .expect(0)
+            .mount(&server)
+            .await;
+        // A fresh cache pins its sync cursor before listing.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "pinned"
+            })))
+            .expect(1)
             .mount(&server)
             .await;
         let client = Client {
@@ -945,8 +982,61 @@ mod tests {
                 2
             );
             assert_eq!(cache.search("downloadedbody", 10).unwrap().len(), 2);
-            assert_eq!(cache.last_event_id().unwrap().as_deref(), cursor);
+            // A cache without a cursor gets one before its first listing.
+            assert_eq!(
+                cache.last_event_id().unwrap().as_deref(),
+                Some(cursor.unwrap_or("pinned"))
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn the_first_sync_applies_what_changed_after_an_earlier_listing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "before-listing"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 2, "Messages": [message("m1"), message("m2")]
+            })))
+            .mount(&server)
+            .await;
+        // m1 is deleted after the listing and before the first sync.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/before-listing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "caught-up", "More": 0,
+                "Messages": [{"ID": "m1", "Action": 0}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+
+        assert_eq!(
+            backfill_cache(&http, &cache, "inbox", 1, 10).await.unwrap(),
+            2
+        );
+        let report = sync_cache(&http, &cache).await.unwrap();
+
+        let ids: Vec<String> = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["m2"]);
+        assert!(!report.initialized);
+        assert_eq!(report.deleted, 1);
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("caught-up"));
     }
 
     #[tokio::test]

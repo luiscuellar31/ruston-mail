@@ -829,11 +829,13 @@ recreates it, and the next newer open drops it again. The event stream in
 invalidates an indexed body on a full message update. Each incremental event
 batch and its cursor commit together only if the stored cursor still matches
 the one used to fetch the batch; a competing sync causes a retry error without
-applying stale data. Backfill and indexing capture the local cursor before each
-page request and retain it for all body downloads from that page. Before writing,
-SQLite's immediate transaction checks that cursor, including an uninitialized
-cursor. A competing sync or resync causes a retry error without applying the
-stale result. Backfill commits each page atomically; indexing commits metadata
+applying stale data. On a cache with no cursor yet, backfill and indexing first
+pin one to Proton's latest event, so the next sync applies every change made
+after their listing; rows stored without a cursor were never reconciled before.
+They capture that cursor before each page request and retain it for all body
+downloads from that page. Before writing, SQLite's immediate transaction checks
+that cursor. A competing sync or resync causes a retry error without applying
+the stale result. Backfill commits each page atomically; indexing commits metadata
 and the body together, or metadata and body invalidation when the message is
 gone or its body cannot be opened. Any other failed read stops indexing with
 its error and writes nothing for that message.
