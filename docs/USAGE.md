@@ -259,7 +259,9 @@ stay visible. Settings can open it in a separate window instead. The same choice
 applies to new messages, replies, and forwards. It opens with the cursor in
 **To** for a new message or a forward, and in the message for a reply. While it
 fills the reading pane, the list keys (`j`, `k`, the arrows and `Enter`) wait,
-so they never open a conversation out of sight.
+so they never open a conversation out of sight. A conversation clicked in the
+list meanwhile opens behind the draft and stays unread until the reader shows
+it.
 The composer scrolls vertically when its fields or attachments exceed the
 available height, in either placement.
 

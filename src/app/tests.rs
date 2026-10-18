@@ -2111,6 +2111,97 @@ fn list_keys_wait_while_the_draft_covers_the_reader() {
     );
 }
 
+fn is_unread(app: &App, id: &str) -> bool {
+    app.mailbox()
+        .unwrap()
+        .conversations()
+        .iter()
+        .find(|row| row.id == id)
+        .is_some_and(|row| row.unread)
+}
+
+fn unread_rows(app: &App) -> Vec<String> {
+    app.mailbox()
+        .unwrap()
+        .conversations()
+        .iter()
+        .filter(|row| row.unread)
+        .map(|row| row.id.clone())
+        .collect()
+}
+
+fn open_conversation(app: &mut App, id: &str) {
+    let _ = app.update(Message::SelectConversation(id.to_owned()));
+    deliver_selected_demo_detail(app);
+}
+
+#[test]
+fn a_conversation_opened_behind_a_draft_stays_unread_until_it_shows() {
+    let mut app = loaded_demo_app();
+    let id = unread_rows(&app).remove(0);
+    let _ = app.update(Message::OpenCompose);
+
+    // A click in the list opens it behind the draft, where nobody reads it.
+    open_conversation(&mut app, &id);
+    assert_eq!(app.mailbox().unwrap().selected_conversation(), Some(&*id));
+    assert!(is_unread(&app, &id), "marked read behind the draft");
+
+    // Putting the untouched draft away shows it, and so reads it.
+    let _ = app.update(Message::CloseCompose);
+    assert!(app.compose().is_none());
+    assert!(!is_unread(&app, &id));
+}
+
+#[test]
+fn only_the_conversation_the_reader_shows_after_a_draft_is_read() {
+    let mut app = loaded_demo_app();
+    let unread = unread_rows(&app);
+    let (passed, kept) = (&unread[0], &unread[1]);
+    let _ = app.update(Message::OpenCompose);
+
+    open_conversation(&mut app, passed);
+    open_conversation(&mut app, kept);
+    let _ = app.update(Message::CloseCompose);
+
+    assert!(is_unread(&app, passed), "never shown, yet marked read");
+    assert!(!is_unread(&app, kept));
+}
+
+#[test]
+fn a_conversation_left_behind_a_draft_is_never_marked_read() {
+    let mut app = loaded_demo_app();
+    let inbox_unread = |app: &App| demo_service(app).counts().unread(&Folder::INBOX);
+    let before = inbox_unread(&app);
+    let id = unread_rows(&app).remove(0);
+    let _ = app.update(Message::OpenCompose);
+    open_conversation(&mut app, &id);
+
+    // Another folder replaces it before the draft is put away.
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
+    deliver_latest_demo_page(&mut app, 0);
+    let _ = app.update(Message::CloseCompose);
+
+    assert_eq!(inbox_unread(&app), before);
+}
+
+#[test]
+fn moving_the_draft_to_its_own_window_shows_what_it_covered() {
+    let mut app = loaded_demo_app();
+    let id = unread_rows(&app).remove(0);
+    let _ = app.update(Message::OpenCompose);
+    open_conversation(&mut app, &id);
+    assert!(is_unread(&app, &id));
+
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
+
+    assert!(app.compose().is_some(), "the draft is still being written");
+    assert!(!is_unread(&app, &id));
+    // With the reader in view, what opens is read at once.
+    let next = unread_rows(&app).remove(0);
+    open_conversation(&mut app, &next);
+    assert!(!is_unread(&app, &next));
+}
+
 #[test]
 fn demo_mail_marked_not_spam_goes_back_to_the_inbox() {
     let mut app = loaded_demo_app();

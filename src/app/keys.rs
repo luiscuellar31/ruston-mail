@@ -67,7 +67,7 @@ pub struct KeyPress {
 }
 
 impl App {
-    fn draft_covers_reader(&self) -> bool {
+    pub(super) fn draft_covers_reader(&self) -> bool {
         self.compose.is_some() && self.settings.compose_placement == ComposePlacement::ReadingPane
     }
 
@@ -89,8 +89,8 @@ impl App {
             return Effects::none();
         }
 
-        // The draft covers the reader, so a step through the list would open,
-        // and could mark read, a conversation nobody sees.
+        // The draft covers the reader, so a step through the list would open
+        // a conversation nobody sees.
         if matches!(shortcut, Shortcut::Move(_) | Shortcut::Open) && self.draft_covers_reader() {
             return Effects::none();
         }
