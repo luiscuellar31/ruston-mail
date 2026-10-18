@@ -101,8 +101,19 @@ fn day_end(day: chrono::NaiveDate) -> i64 {
     day_start(day) + 86_399
 }
 
-fn looks_like_id(r: &str) -> bool {
-    r.len() >= 60 && r.ends_with("==") && !r.contains(' ')
+/// The query for one page of `folder`, of its messages or its conversations.
+fn folder_page(folder: &str, page: u32, page_size: u32, unread: bool) -> ListQuery {
+    ListQuery {
+        label_id: Some(resolve_folder(folder)),
+        page: Some(page),
+        page_size: Some(page_size),
+        unread,
+        ..Default::default()
+    }
+}
+
+fn looks_like_id(reference: &str) -> bool {
+    reference.len() >= 60 && reference.ends_with("==") && !reference.contains(' ')
 }
 
 /// Extract the display part from a decrypted MIME body: every part of its HTML
@@ -136,13 +147,7 @@ impl Client {
         page_size: u32,
         unread: bool,
     ) -> Result<(u32, Vec<MessageMetadata>)> {
-        let q = ListQuery {
-            label_id: Some(resolve_folder(folder)),
-            page: Some(page),
-            page_size: Some(page_size),
-            unread,
-            ..Default::default()
-        };
+        let q = folder_page(folder, page, page_size, unread);
         api::messages::list_messages(self.http(), &q).await
     }
 
@@ -154,13 +159,7 @@ impl Client {
         page_size: u32,
         unread: bool,
     ) -> Result<(u32, Vec<Conversation>)> {
-        let q = ListQuery {
-            label_id: Some(resolve_folder(folder)),
-            page: Some(page),
-            page_size: Some(page_size),
-            unread,
-            ..Default::default()
-        };
+        let q = folder_page(folder, page, page_size, unread);
         api::conversations::list_conversations(self.http(), &q).await
     }
 
@@ -217,28 +216,28 @@ impl Client {
     }
 
     /// Resolve a free-text reference to a message ID (exact ID, or unique search hit).
-    pub async fn resolve_ref(&self, r: &str) -> Result<String> {
-        if looks_like_id(r) {
-            return Ok(r.to_string());
+    pub async fn resolve_ref(&self, reference: &str) -> Result<String> {
+        if looks_like_id(reference) {
+            return Ok(reference.to_string());
         }
-        Ok(self.search_ref(r).await?.id)
+        Ok(self.search_ref(reference).await?.id)
     }
 
     /// Resolve a reference as [`resolve_ref`](Self::resolve_ref) does, to the
     /// message's metadata. A search hit already carries it, so only an exact
     /// ID is fetched.
-    pub async fn resolve_ref_metadata(&self, r: &str) -> Result<MessageMetadata> {
-        if looks_like_id(r) {
-            return self.message_metadata(r).await;
+    pub async fn resolve_ref_metadata(&self, reference: &str) -> Result<MessageMetadata> {
+        if looks_like_id(reference) {
+            return self.message_metadata(reference).await;
         }
-        self.search_ref(r).await
+        self.search_ref(reference).await
     }
 
-    /// The one message a search of all mail for `r` finds.
-    async fn search_ref(&self, r: &str) -> Result<MessageMetadata> {
+    /// The one message a search of all mail for `reference` finds.
+    async fn search_ref(&self, reference: &str) -> Result<MessageMetadata> {
         let mut hits = self
             .search_messages(&SearchOpts {
-                keyword: Some(r.to_string()),
+                keyword: Some(reference.to_string()),
                 folder: Some("all".into()),
                 limit: Some(20),
                 ..Default::default()
@@ -253,14 +252,10 @@ impl Client {
         }
     }
 
-    pub(super) async fn decrypt_message(&self, m: &Message) -> Result<FullMessage> {
-        self.open_message(m.clone()).await
-    }
-
-    /// Decrypts `m`, checking its signature against its sender's keys. A
-    /// failed lookup leaves the body unverified.
-    async fn open_message(&self, m: Message) -> Result<FullMessage> {
-        let sender_pubs = match self.sender_pubkeys(&m.meta.sender.address).await {
+    /// Decrypts `message`, checking its signature against its sender's keys.
+    /// A failed lookup leaves the body unverified.
+    pub(super) async fn open_message(&self, message: Message) -> Result<FullMessage> {
+        let sender_pubs = match self.sender_pubkeys(&message.meta.sender.address).await {
             Ok(keys) => keys,
             // The body still opens, without claiming a verified signature.
             Err(e) => {
@@ -268,24 +263,51 @@ impl Client {
                 Vec::new()
             }
         };
-        self.open_message_with(m, sender_pubs).await
+        self.open_message_with(message, sender_pubs).await
     }
 
-    /// Decrypts `m`, checking its signature against `sender_pubs`; with none,
-    /// the body opens as unverified. Decrypting, parsing and sanitizing run
-    /// off the async workers.
+    /// Decrypts `message`, checking its signature against `sender_pubs`; with
+    /// none, the body opens as unverified. Decrypting, parsing and
+    /// sanitizing run off the async workers.
     pub(super) async fn open_message_with(
         &self,
-        m: Message,
+        message: Message,
         sender_pubs: Vec<String>,
     ) -> Result<FullMessage> {
         let addr = self
-            .keys()
-            .address(&m.meta.address_id)
-            .or_else(|| self.keys().primary_address())
+            .keys_for_message(&message.meta.address_id)
             .ok_or_else(|| Error::Crypto("no address key for message".into()))?
             .clone();
-        super::off_thread(move || open_body(&addr, m, &sender_pubs)).await
+        super::off_thread(move || open_body(&addr, message, &sender_pubs)).await
+    }
+
+    /// Opens `message` or, when it cannot be opened, returns its headers and
+    /// the reason as [`ConversationMessage::Unreadable`]. A failed key lookup
+    /// only leaves a body unverified, so a failure to open is about this
+    /// message alone.
+    async fn open_or_unreadable(&self, message: Message) -> ConversationMessage {
+        let meta = message.meta.clone();
+        let reply_tos = message.reply_tos.clone();
+        match self.open_message(message).await {
+            Ok(message) => ConversationMessage::Opened(message),
+            Err(error) => {
+                tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message could not be opened");
+                ConversationMessage::Unreadable(UnreadableMessage {
+                    meta,
+                    reply_tos,
+                    error,
+                })
+            }
+        }
+    }
+
+    /// The keys a message that reached `address_id` opens with: that
+    /// address's, or the primary address's when the account holds none for
+    /// it. Each caller says what it could not open without them.
+    pub(super) fn keys_for_message(&self, address_id: &str) -> Option<&crypto::keys::AddressKeys> {
+        self.keys()
+            .address(address_id)
+            .or_else(|| self.keys().primary_address())
     }
 
     /// Asks for the keys of every distinct sender at once, a few at a time,
@@ -330,19 +352,7 @@ impl Client {
     /// as an error. A failed download still fails.
     pub async fn read_message_or_unreadable(&self, id: &str) -> Result<ConversationMessage> {
         let msg = api::messages::get_message(self.http(), id).await?;
-        let meta = msg.meta.clone();
-        let reply_tos = msg.reply_tos.clone();
-        Ok(match self.open_message(msg).await {
-            Ok(message) => ConversationMessage::Opened(message),
-            Err(error) => {
-                tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message could not be opened");
-                ConversationMessage::Unreadable(UnreadableMessage {
-                    meta,
-                    reply_tos,
-                    error,
-                })
-            }
-        })
+        Ok(self.open_or_unreadable(msg).await)
     }
 
     /// Fetch and decrypt a message for a caller that keeps only its text: the
@@ -382,23 +392,7 @@ impl Client {
         // Bodies download and decrypt at the same time, three of each at
         // most, and still come out in conversation order.
         let out = fetch_conversation_bodies(self.http(), msgs)
-            .map_ok(|message| async move {
-                let meta = message.meta.clone();
-                let reply_tos = message.reply_tos.clone();
-                Ok::<_, Error>(match self.open_message(message).await {
-                    Ok(message) => ConversationMessage::Opened(message),
-                    // A failed key lookup only leaves a body unverified, so a
-                    // failure to open is about this message alone.
-                    Err(error) => {
-                        tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message could not be opened");
-                        ConversationMessage::Unreadable(UnreadableMessage {
-                            meta,
-                            reply_tos,
-                            error,
-                        })
-                    }
-                })
-            })
+            .map_ok(|message| async move { Ok::<_, Error>(self.open_or_unreadable(message).await) })
             .try_buffered(CONVERSATION_BODY_FETCH_CONCURRENCY)
             .try_collect()
             .await?;

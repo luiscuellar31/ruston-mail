@@ -191,9 +191,7 @@ impl Client {
             .as_deref()
             .ok_or_else(|| Error::Crypto("attachment has no key packets".into()))?;
         let addr = self
-            .keys()
-            .address(&msg.meta.address_id)
-            .or_else(|| self.keys().primary_address())
+            .keys_for_message(&msg.meta.address_id)
             .ok_or_else(|| Error::Crypto("no address key for attachment".into()))?;
 
         // Resolve verifier keys before allocating and decrypting attachment data.
@@ -533,7 +531,7 @@ mod tests {
         let address = client.keys().primary_address().unwrap();
         message.body = crypto::encrypt_self_draft(&provider, address, "body").unwrap();
         message.mime_type = "text/plain".into();
-        let read = client.decrypt_message(&message).await.unwrap();
+        let read = client.open_message(message).await.unwrap();
         assert_eq!(read.body, "body");
         assert_eq!(read.verdict, crypto::Verdict::Unverified);
     }
@@ -571,7 +569,7 @@ mod tests {
         let address = client.keys().primary_address().unwrap();
         message.body = crypto::encrypt_self_draft(&provider, address, "body").unwrap();
         message.mime_type = "text/plain".into();
-        let read = client.decrypt_message(&message).await.unwrap();
+        let read = client.open_message(message).await.unwrap();
         assert_eq!(read.body, "body");
         assert_eq!(read.verdict, crypto::Verdict::Unverified);
     }

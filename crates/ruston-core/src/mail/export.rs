@@ -113,7 +113,7 @@ impl Client {
             return Ok(Exported::AlreadyThere);
         }
         let message = api::messages::get_message(self.http(), message_id).await?;
-        let full = match self.decrypt_message(&message).await {
+        let full = match self.open_message(message.clone()).await {
             Ok(full) => full,
             Err(error) => return Ok(skipped(message, error)),
         };
