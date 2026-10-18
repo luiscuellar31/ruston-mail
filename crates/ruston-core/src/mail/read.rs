@@ -105,15 +105,23 @@ fn looks_like_id(r: &str) -> bool {
     r.len() >= 60 && r.ends_with("==") && !r.contains(' ')
 }
 
-/// Extract the display part from a decrypted MIME body.
+/// Extract the display part from a decrypted MIME body: every part of its HTML
+/// version, in order, or of its text version when it has no HTML one. A body
+/// of several parts, such as text, an image and more text, is all of them.
 fn extract_mime(raw: &str) -> (String, String) {
     let parsed = mail_parser::MessageParser::default().parse(raw.as_bytes());
     if let Some(msg) = parsed {
-        if let Some(html) = msg.body_html(0) {
-            return (html.into_owned(), "text/html".to_string());
+        let html: Vec<_> = (0..msg.html_body_count())
+            .filter_map(|part| msg.body_html(part))
+            .collect();
+        if !html.is_empty() {
+            return (html.join("\n"), "text/html".to_string());
         }
-        if let Some(text) = msg.body_text(0) {
-            return (text.into_owned(), "text/plain".to_string());
+        let text: Vec<_> = (0..msg.text_body_count())
+            .filter_map(|part| msg.body_text(part))
+            .collect();
+        if !text.is_empty() {
+            return (text.join("\n"), "text/plain".to_string());
         }
     }
     (raw.to_string(), "text/plain".to_string())
@@ -932,6 +940,26 @@ mod tests {
             assert!(validate_search_date(invalid).is_err(), "{invalid}");
         }
         assert!(validate_search_date("2024-01-15").is_ok());
+    }
+
+    #[test]
+    fn every_part_of_a_mixed_body_shows_and_an_alternative_shows_once() {
+        let mixed = "Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nFirst part\r\n\
+            --b\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\
+            Content-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nSecond part\r\n--b--\r\n";
+        let (body, _) = extract_mime(mixed);
+        assert!(body.contains("First part"), "{body}");
+        assert!(body.contains("Second part"), "{body}");
+
+        let alternative = "Content-Type: multipart/alternative; boundary=a\r\n\r\n\
+            --a\r\nContent-Type: text/plain\r\n\r\nPlain version\r\n\
+            --a\r\nContent-Type: text/html\r\n\r\n<p>Rich version</p>\r\n--a--\r\n";
+        let (body, mime_type) = extract_mime(alternative);
+        assert_eq!(mime_type, "text/html");
+        assert!(body.contains("Rich version"), "{body}");
+        assert!(!body.contains("Plain version"), "{body}");
     }
 
     #[test]

@@ -595,7 +595,10 @@ instead of an unknown outcome.
   to either frontend. The keys of every distinct sender are asked for together
   first, so each sender is looked up once and no body waits for another's
   lookup. Decrypting, MIME parsing and sanitizing run on the blocking pool, up
-  to three bodies at a time while the next ones download; attachment
+  to three bodies at a time while the next ones download. A decrypted MIME body
+  reads as every part of its HTML version, in order, or of its text version
+  when it has none, so text around an image is not cut after the first part;
+  attachment
   decryption and signature checks run there too. Both frontends read threads
   through `read_conversation_each`: a message that downloads but cannot be
   opened comes back as `ConversationMessage::Unreadable`, with its headers,
