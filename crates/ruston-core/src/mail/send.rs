@@ -424,7 +424,7 @@ async fn submit_send<D: Doer>(http: &D, message_id: &str, body: Value) -> Result
             let uncertain = matches!(
                 &error,
                 Error::Http(_) | Error::Json(_) | Error::ResponseTooLarge { .. }
-            ) || matches!(&error, Error::Api(api) if api.http_status >= 500);
+            ) || matches!(&error, Error::Api(api) if api.is_server_error());
             if uncertain {
                 Error::SendUnconfirmed {
                     message_id: message_id.to_owned(),

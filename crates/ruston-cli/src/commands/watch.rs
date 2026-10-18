@@ -32,7 +32,7 @@ fn needs_index(report: &SyncReport, forced: bool) -> bool {
 fn is_transient(error: &Error) -> bool {
     match error {
         Error::Http(_) => true,
-        Error::Api(api) => api.http_status == 429 || api.http_status >= 500,
+        Error::Api(api) => api.may_pass(),
         Error::Cache(_) => error.is_retryable_cache_error(),
         _ => false,
     }

@@ -5,7 +5,7 @@ use crate::api;
 use crate::api::messages::ListQuery;
 use crate::cache::{Cache, CacheIdentity};
 use crate::error::{Error, Result};
-use crate::model::enums::resolve_folder;
+use crate::model::enums::{resolve_folder, response_code};
 use crate::model::message::MessageMetadata;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
 use crate::transport::Doer;
@@ -262,13 +262,6 @@ where
     Ok(n)
 }
 
-/// Proton's code for a message that does not exist.
-const MESSAGE_DOES_NOT_EXIST: i64 = 2501;
-/// Proton's code for an ID it does not accept.
-const INVALID_ID: i64 = 2061;
-/// Proton's code for a request that needs human verification.
-const HUMAN_VERIFICATION_REQUIRED: i64 = 9001;
-
 /// Whether reading a body failed because of the message itself: it is gone,
 /// or its body cannot be decrypted or parsed, so reading it again would fail
 /// the same way. A lost connection, an expired session or rate limiting says
@@ -277,8 +270,10 @@ fn is_definitive_read_failure(error: &Error) -> bool {
     match error {
         // Proton's own clients take a 422 for a full message as "gone".
         Error::Api(api) => {
-            matches!(api.code, MESSAGE_DOES_NOT_EXIST | INVALID_ID)
-                || (api.http_status == 422 && api.code != HUMAN_VERIFICATION_REQUIRED)
+            matches!(
+                api.code,
+                response_code::MESSAGE_DOES_NOT_EXIST | response_code::INVALID_ID
+            ) || (api.http_status == 422 && api.code != response_code::HUMAN_VERIFICATION)
         }
         Error::NotFound { .. }
         | Error::Crypto(_)

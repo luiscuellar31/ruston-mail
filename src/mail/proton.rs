@@ -1156,7 +1156,7 @@ fn custom_places(labels: Vec<Label>, make: fn(String, String) -> Folder) -> Vec<
 fn map_mailbox_error(error: Error) -> MailboxError {
     match error {
         Error::Unauthorized => MailboxError::SessionExpired,
-        Error::Api(error) if error.http_status == 401 => MailboxError::SessionExpired,
+        Error::Api(error) if error.is_unauthorized() => MailboxError::SessionExpired,
         Error::Http(_) => MailboxError::Connection,
         Error::AttachmentVerificationFailed => MailboxError::AttachmentVerificationFailed,
         Error::Api(_) | Error::HumanVerification(_) => MailboxError::Service,

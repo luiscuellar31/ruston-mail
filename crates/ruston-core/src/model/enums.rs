@@ -195,6 +195,22 @@ pub mod label_type {
     pub const SYSTEM_FOLDER: i64 = 4;
 }
 
+/// The `Code` of a Proton response, for the codes the client acts on.
+pub(crate) mod response_code {
+    /// The request succeeded.
+    pub(crate) const SUCCESS: i64 = 1000;
+    /// A request about several items succeeded for each of them.
+    pub(crate) const MULTI_SUCCESS: i64 = 1001;
+    /// The code some endpoints send with a successful HTTP status.
+    pub(crate) const NONE: i64 = 0;
+    /// Proton does not accept the ID.
+    pub(crate) const INVALID_ID: i64 = 2061;
+    /// The message does not exist.
+    pub(crate) const MESSAGE_DOES_NOT_EXIST: i64 = 2501;
+    /// The request needs human verification first.
+    pub(crate) const HUMAN_VERIFICATION: i64 = 9001;
+}
+
 /// MIME body types used by mail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MimeType {

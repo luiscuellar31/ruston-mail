@@ -14,6 +14,7 @@ pub use keys::{ApiPublicKey, RecipientKeys};
 pub use messages::ListQuery;
 
 use crate::error::{ApiError, Error, Result};
+use crate::model::enums::response_code;
 
 /// Proton's answer to a request about several IDs: `Code` 1001 with one
 /// response per ID, which can refuse some while the request succeeds.
@@ -43,14 +44,13 @@ impl EachResponse {
     /// `Ok` when Proton took every ID, or an error naming those it refused.
     /// Only a response that gives another code than success refuses one.
     pub(crate) fn into_result(self) -> Result<()> {
-        const SUCCESS: i64 = 1000;
         let total = self.responses.len();
         let refused: Vec<_> = self
             .responses
             .into_iter()
             .filter_map(|item| {
                 item.response
-                    .filter(|response| response.code != SUCCESS)
+                    .filter(|response| response.code != response_code::SUCCESS)
                     .map(|response| (item.id, response))
             })
             .collect();

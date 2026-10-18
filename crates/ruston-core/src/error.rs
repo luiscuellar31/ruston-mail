@@ -37,6 +37,27 @@ impl ApiError {
             _ => 1,
         }
     }
+
+    /// Whether Proton refused the session's access token (HTTP 401).
+    pub fn is_unauthorized(&self) -> bool {
+        self.http_status == 401
+    }
+
+    /// Whether Proton is asking the client to slow down (HTTP 429).
+    pub fn is_rate_limited(&self) -> bool {
+        self.http_status == 429
+    }
+
+    /// Whether the failure was on Proton's side (HTTP 5xx).
+    pub fn is_server_error(&self) -> bool {
+        self.http_status >= 500
+    }
+
+    /// Whether the same request may succeed later: Proton was busy or down,
+    /// rather than refusing the request or the session.
+    pub fn may_pass(&self) -> bool {
+        self.is_rate_limited() || self.is_server_error()
+    }
 }
 
 impl fmt::Display for ApiError {
@@ -264,6 +285,18 @@ mod tests {
         assert_eq!(api(500).exit_code(), 5);
         assert_eq!(api(503).exit_code(), 5);
         assert_eq!(api(400).exit_code(), 1);
+    }
+
+    #[test]
+    fn only_a_busy_or_failing_proton_may_pass() {
+        for status in [429, 500, 503] {
+            assert!(api(status).may_pass(), "{status}");
+        }
+        for status in [400, 401, 403, 404, 409, 422] {
+            assert!(!api(status).may_pass(), "{status}");
+        }
+        assert!(api(401).is_unauthorized());
+        assert!(!api(403).is_unauthorized());
     }
 
     #[test]

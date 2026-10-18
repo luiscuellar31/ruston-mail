@@ -5,6 +5,7 @@ mod headers;
 mod retry;
 
 use crate::error::{ApiError, Error, HvChallenge, Result};
+use crate::model::enums::response_code;
 use crate::session::Tokens;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -25,14 +26,6 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Redirects one request may follow, as many as reqwest allows by default.
 const MAX_REDIRECTS: usize = 10;
-/// Proton's `Code` for a request that succeeded.
-const CODE_SUCCESS: i64 = 1000;
-/// Proton's `Code` for a request on several items that succeeded for each.
-const CODE_MULTI_SUCCESS: i64 = 1001;
-/// The `Code` some endpoints send with a successful HTTP status.
-const CODE_NONE: i64 = 0;
-/// Proton's `Code` asking for human verification.
-const CODE_HUMAN_VERIFICATION: i64 = 9001;
 /// How much of an error body `ApiError::raw_body` keeps.
 const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 
@@ -513,7 +506,7 @@ impl Rotation {
             Detected::Ok => {}
             // An outage, a rate limit or a challenge leaves the saved session
             // valid; only Proton refusing the refresh token ends it.
-            Detected::Api(error) if error.http_status == 429 || error.http_status >= 500 => {
+            Detected::Api(error) if error.may_pass() => {
                 return Err(Error::Api(error));
             }
             Detected::Hv(challenge) => return Err(Error::HumanVerification(challenge)),
@@ -587,7 +580,7 @@ fn detect(status: u16, body: &[u8]) -> Detected {
         .and_then(serde_json::Value::as_i64);
 
     // Human verification (may arrive on HTTP 200 in the auth flow, or 422).
-    if code == Some(CODE_HUMAN_VERIFICATION)
+    if code == Some(response_code::HUMAN_VERIFICATION)
         && let Some(details) = envelope
             .as_ref()
             .and_then(|envelope| envelope.details.as_ref())
@@ -616,13 +609,16 @@ fn detect(status: u16, body: &[u8]) -> Detected {
         });
     }
 
-    let success = matches!(code, Some(CODE_SUCCESS | CODE_MULTI_SUCCESS));
+    let success = matches!(
+        code,
+        Some(response_code::SUCCESS | response_code::MULTI_SUCCESS)
+    );
     let http_ok = (200..300).contains(&status);
 
     if http_ok && (success || code.is_none()) {
         return Detected::Ok;
     }
-    if http_ok && code == Some(CODE_NONE) {
+    if http_ok && code == Some(response_code::NONE) {
         return Detected::Ok;
     }
 
@@ -634,7 +630,7 @@ fn detect(status: u16, body: &[u8]) -> Detected {
         .to_string();
     Detected::Api(ApiError {
         http_status: status,
-        code: code.unwrap_or(CODE_NONE),
+        code: code.unwrap_or(response_code::NONE),
         message,
         raw_body: String::from_utf8_lossy(&body[..body.len().min(MAX_ERROR_BODY_BYTES)])
             .into_owned(),
@@ -659,7 +655,7 @@ impl Doer for HttpClient {
             match detect(resp.status, &resp.body) {
                 Detected::Ok => return Ok(resp),
                 Detected::Api(e)
-                    if e.http_status == 401 && !work.skip_refresh && refreshes_left > 0 =>
+                    if e.is_unauthorized() && !work.skip_refresh && refreshes_left > 0 =>
                 {
                     tracing::debug!(target: "ruston_core::http", "401 — refreshing access token and retrying");
                     refreshes_left = match self.refresh_tokens(&sent_auth).await? {
@@ -668,8 +664,8 @@ impl Doer for HttpClient {
                     };
                     continue;
                 }
-                Detected::Api(e) if e.http_status == 401 => return Err(Error::Unauthorized),
-                Detected::Api(e) if e.http_status == 429 && !rate_limited => {
+                Detected::Api(e) if e.is_unauthorized() => return Err(Error::Unauthorized),
+                Detected::Api(e) if e.is_rate_limited() && !rate_limited => {
                     let wait = resp.retry_after.unwrap_or(0);
                     tracing::debug!(target: "ruston_core::http", wait_s = wait, "429 rate-limited — backing off then retrying");
                     if wait > 0 {
