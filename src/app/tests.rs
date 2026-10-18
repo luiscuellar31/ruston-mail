@@ -2414,7 +2414,7 @@ fn signing_in_app() -> App {
 #[test]
 fn totp_prompt_is_answered_within_the_same_sign_in() {
     let mut app = signing_in_app();
-    let (reply, mut answer) = crate::mail::Reply::channel();
+    let (reply, mut answer) = crate::mail::PromptAnswer::channel();
 
     let _ = app.update(Message::SignInPrompt(
         app.auth_attempt,
@@ -2441,7 +2441,7 @@ fn totp_prompt_is_answered_within_the_same_sign_in() {
 fn mailbox_password_prompt_is_answered_within_the_same_sign_in() {
     let mut app = signing_in_app();
     let attempt = app.auth_attempt;
-    let (reply, mut answer) = crate::mail::Reply::channel();
+    let (reply, mut answer) = crate::mail::PromptAnswer::channel();
 
     let _ = app.update(Message::SignInPrompt(
         attempt,
@@ -2473,7 +2473,7 @@ fn mailbox_password_prompt_is_answered_within_the_same_sign_in() {
 #[test]
 fn human_verification_waits_for_confirmation() {
     let mut app = signing_in_app();
-    let (done, mut answer) = crate::mail::Reply::channel();
+    let (done, mut answer) = crate::mail::PromptAnswer::channel();
     let url = "https://verify.proton.me/?methods=captcha&token=t".to_owned();
 
     let _ = app.update(Message::SignInPrompt(
@@ -2495,7 +2495,7 @@ fn human_verification_waits_for_confirmation() {
 fn going_back_cancels_the_pending_prompt() {
     let mut app = signing_in_app();
     let attempt = app.auth_attempt;
-    let (reply, mut answer) = crate::mail::Reply::<SecretString>::channel();
+    let (reply, mut answer) = crate::mail::PromptAnswer::<SecretString>::channel();
     let _ = app.update(Message::SignInPrompt(attempt, SignInPrompt::Totp(reply)));
 
     let effects = app.update(Message::CancelChallenge);
@@ -2523,7 +2523,7 @@ fn going_back_cancels_the_pending_prompt() {
 #[test]
 fn prompts_without_a_running_sign_in_are_cancelled() {
     let mut app = App::signed_out();
-    let (reply, mut answer) = crate::mail::Reply::<SecretString>::channel();
+    let (reply, mut answer) = crate::mail::PromptAnswer::<SecretString>::channel();
 
     let _ = app.update(Message::SignInPrompt(
         app.auth_attempt,

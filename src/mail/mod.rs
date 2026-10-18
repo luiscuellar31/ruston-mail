@@ -22,7 +22,7 @@ pub use outgoing::{
     Recipients, SendError, recipients, validate_attachments,
 };
 #[cfg(test)]
-pub use proton::Reply;
+pub use proton::PromptAnswer;
 pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
 pub use service::{AuthError, LoginRequest};
 
