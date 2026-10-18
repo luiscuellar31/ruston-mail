@@ -52,12 +52,20 @@ fn searchable_summary(
     }
 }
 
-fn page(ids: &[&str], total: u32) -> Result<ConversationPage, MailboxError> {
+/// A page of `conversations` out of `total`, with nothing to inspect.
+fn page_of(
+    conversations: Vec<ConversationSummary>,
+    total: u32,
+) -> Result<ConversationPage, MailboxError> {
     Ok(ConversationPage {
-        conversations: ids.iter().map(|id| summary(id)).collect(),
+        conversations,
         total,
         inspect_candidates: Vec::new(),
     })
+}
+
+fn page(ids: &[&str], total: u32) -> Result<ConversationPage, MailboxError> {
+    page_of(ids.iter().map(|id| summary(id)).collect(), total)
 }
 
 fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
@@ -151,14 +159,8 @@ fn searchable_mailbox() -> Mailbox {
             "Launch checklist is complete",
         ),
     ];
-    mailbox.finish_page(
-        request.id,
-        Ok(ConversationPage {
-            total: conversations.len() as u32,
-            conversations,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    let total = conversations.len() as u32;
+    mailbox.finish_page(request.id, page_of(conversations, total));
     mailbox
 }
 
@@ -176,12 +178,32 @@ fn dated(id: &str, time: i64) -> ConversationSummary {
     }
 }
 
+fn unread(id: &str) -> ConversationSummary {
+    ConversationSummary {
+        unread: true,
+        ..summary(id)
+    }
+}
+
+fn split_message(id: &str, time: i64) -> ConversationSummary {
+    ConversationSummary {
+        kind: SummaryKind::Message,
+        ..dated(id, time)
+    }
+}
+
+fn message_row(id: &str) -> ConversationSummary {
+    ConversationSummary {
+        kind: SummaryKind::Message,
+        ..searchable_summary(id, "Bank", "bank@example.com", "Statement", "")
+    }
+}
+
 fn dated_page(rows: &[(&str, i64)], total: u32) -> Result<ConversationPage, MailboxError> {
-    Ok(ConversationPage {
-        conversations: rows.iter().map(|(id, time)| dated(id, *time)).collect(),
+    page_of(
+        rows.iter().map(|(id, time)| dated(id, *time)).collect(),
         total,
-        inspect_candidates: Vec::new(),
-    })
+    )
 }
 
 /// A full page of dated rows named `p<n>`, newest first.
@@ -193,11 +215,7 @@ fn full_page(start: u32, total: u32) -> Result<ConversationPage, MailboxError> {
         })
         .collect();
 
-    Ok(ConversationPage {
-        conversations,
-        total,
-        inspect_candidates: Vec::new(),
-    })
+    page_of(conversations, total)
 }
 
 #[test]
@@ -346,10 +364,7 @@ fn a_move_out_of_a_folder_can_be_taken_back() {
 
 #[test]
 fn archived_mail_can_go_back_to_the_inbox_and_that_can_be_taken_back_too() {
-    let mut mailbox = loaded_inbox(&["x"], 1);
-    let request = mailbox.select_folder(sys(MailFolder::Archive), 2).unwrap();
-    mailbox.finish_page(request.id, page(&["a", "b"], 2));
-    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+    let mut mailbox = viewing(sys(MailFolder::Archive));
 
     let start = mailbox
         .start_action(MailAction::MoveTo(Folder::INBOX), 4)
@@ -518,42 +533,16 @@ fn an_expired_offer_cannot_dismiss_the_move_after_it() {
 /// returned `found`, with `opened` open in the reader.
 fn searched(listed: &[&str], found: &[&str], opened: &str) -> Mailbox {
     let (mut mailbox, request) = open();
-    let rows: Vec<ConversationSummary> = listed
-        .iter()
-        .map(|id| ConversationSummary {
-            unread: true,
-            ..summary(id)
-        })
-        .collect();
+    let rows: Vec<ConversationSummary> = listed.iter().map(|id| unread(id)).collect();
     let total = rows.len() as u32;
-    mailbox.finish_page(
-        request.id,
-        Ok(ConversationPage {
-            conversations: rows,
-            total,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(request.id, page_of(rows, total));
 
     mailbox.set_search_query("report".to_owned());
     let search = mailbox.start_search(90).unwrap();
-    let results: Vec<ConversationSummary> = found
-        .iter()
-        .map(|id| ConversationSummary {
-            unread: true,
-            ..summary(id)
-        })
-        .collect();
+    let results: Vec<ConversationSummary> = found.iter().map(|id| unread(id)).collect();
     let total = results.len() as u32;
     assert_eq!(
-        mailbox.finish_search(
-            &search,
-            Ok(ConversationPage {
-                conversations: results,
-                total,
-                inspect_candidates: Vec::new(),
-            }),
-        ),
+        mailbox.finish_search(&search, page_of(results, total)),
         None
     );
     load_detail(&mut mailbox, opened, detail(opened, &["message"]), 91);
@@ -1113,14 +1102,7 @@ fn changed_list_metadata_makes_a_cached_reader_reload() {
     let refresh = mailbox.refresh(4).unwrap();
     let mut changed = summary("a");
     changed.message_count = 2;
-    mailbox.finish_page(
-        refresh.id,
-        Ok(ConversationPage {
-            conversations: vec![changed, summary("b")],
-            total: 2,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(refresh.id, page_of(vec![changed, summary("b")], 2));
     load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
 
     let request = mailbox.start_conversation_load("a".into(), 6).unwrap();
@@ -1235,14 +1217,10 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
     mailbox.finish_page(first.id, full_page(0, 120));
     let split = vec![
         ConversationSummary {
-            kind: SummaryKind::Message,
             unread: true,
-            ..dated("m40-a", 999_960)
+            ..split_message("m40-a", 999_960)
         },
-        ConversationSummary {
-            kind: SummaryKind::Message,
-            ..dated("m40-b", 999_950)
-        },
+        split_message("m40-b", 999_950),
     ];
     mailbox.split_conversation(&Folder::INBOX, "p40", split.clone());
     load_detail(&mut mailbox, "m40-a", detail("m40-a", &["m40-a"]), 9);
@@ -1286,21 +1264,19 @@ fn interleaved_pages_keep_undated_rows_with_their_neighbours() {
     let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
     mailbox.finish_page(
         first.id,
-        Ok(ConversationPage {
-            conversations: vec![dated("a", 100), summary("undated-a"), dated("b", 50)],
-            total: 6,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(
+            vec![dated("a", 100), summary("undated-a"), dated("b", 50)],
+            6,
+        ),
     );
 
     let next = mailbox.load_more(3).unwrap();
     mailbox.finish_page(
         next.id,
-        Ok(ConversationPage {
-            conversations: vec![dated("c", 75), summary("undated-c"), dated("d", 40)],
-            total: 6,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(
+            vec![dated("c", 75), summary("undated-c"), dated("d", 40)],
+            6,
+        ),
     );
 
     assert_eq!(
@@ -1318,22 +1294,14 @@ fn older_pages_preserve_undated_rows_and_extend_local_filter() {
     match_b.subject = Some("receipt".into());
     mailbox.finish_page(
         first.id,
-        Ok(ConversationPage {
-            conversations: vec![match_a, summary("undated-a"), dated("other", 80)],
-            total: 6,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![match_a, summary("undated-a"), dated("other", 80)], 6),
     );
     mailbox.set_search_query("receipt".into());
 
     let next = mailbox.load_more(3).unwrap();
     mailbox.finish_page(
         next.id,
-        Ok(ConversationPage {
-            conversations: vec![summary("undated-b"), match_b, dated("last", 60)],
-            total: 6,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![summary("undated-b"), match_b, dated("last", 60)], 6),
     );
 
     assert_eq!(
@@ -1628,14 +1596,13 @@ fn a_load_knows_how_long_its_conversation_is() {
     let (mut mailbox, request) = open();
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![ConversationSummary {
+        page_of(
+            vec![ConversationSummary {
                 message_count: 12,
                 ..summary("long")
             }],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
+            1,
+        ),
     );
 
     // The desktop gives the load time for every message the row lists.
@@ -1645,23 +1612,12 @@ fn a_load_knows_how_long_its_conversation_is() {
     assert_eq!(mailbox.retry_conversation(4).unwrap().messages, 12);
 }
 
-fn message_row(id: &str) -> ConversationSummary {
-    ConversationSummary {
-        kind: SummaryKind::Message,
-        ..searchable_summary(id, "Bank", "bank@example.com", "Statement", "")
-    }
-}
-
 #[test]
 fn message_rows_load_as_single_messages() {
     let (mut mailbox, request) = open();
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![message_row("m1"), summary("c1")],
-            total: 2,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![message_row("m1"), summary("c1")], 2),
     );
 
     let message = mailbox.start_conversation_load("m1".into(), 3).unwrap();
@@ -1683,11 +1639,7 @@ fn stale_classified_page_cannot_replace_newer_folder() {
 
     let stale = mailbox.finish_page(
         inbox.id,
-        Ok(ConversationPage {
-            conversations: vec![message_row("m1"), message_row("m2")],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![message_row("m1"), message_row("m2")], 1),
     );
 
     assert_eq!(stale, None);
@@ -1702,11 +1654,7 @@ fn split_rows_are_searchable_and_leave_counts_alone() {
     mailbox.finish_counts(2, Ok(counts.clone()));
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![message_row("m1"), message_row("m2"), summary("c1")],
-            total: 2,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![message_row("m1"), message_row("m2"), summary("c1")], 2),
     );
 
     mailbox.set_search_query("bank".into());
@@ -1721,36 +1669,23 @@ fn split_rows_are_searchable_and_leave_counts_alone() {
 
 fn selected_in(folder: MailFolder, ids: &[&str], selected: &str) -> Mailbox {
     let (mut mailbox, inbox) = open();
-    let request = if folder == MailFolder::Inbox {
+    let listing = if folder == MailFolder::Inbox {
         inbox.id
     } else {
         mailbox.select_folder(sys(folder), 80).unwrap().id
     };
-    mailbox.finish_page(request, page(ids, ids.len() as u32));
-    let request = mailbox
+    mailbox.finish_page(listing, page(ids, ids.len() as u32));
+    let load = mailbox
         .start_conversation_load(selected.into(), 82)
         .unwrap();
-    mailbox.finish_conversation(&request, Ok(detail(selected, &["message"])));
+    mailbox.finish_conversation(&load, Ok(detail(selected, &["message"])));
     mailbox
 }
 
 fn opened_unread(ids: &[&str], opened: &str) -> Mailbox {
     let (mut mailbox, request) = open();
-    let rows = ids
-        .iter()
-        .map(|id| ConversationSummary {
-            unread: true,
-            ..summary(id)
-        })
-        .collect();
-    mailbox.finish_page(
-        request.id,
-        Ok(ConversationPage {
-            conversations: rows,
-            total: ids.len() as u32,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    let rows = ids.iter().map(|id| unread(id)).collect();
+    mailbox.finish_page(request.id, page_of(rows, ids.len() as u32));
     let load = mailbox.start_conversation_load(opened.into(), 82).unwrap();
     mailbox.finish_conversation(&load, Ok(detail(opened, &["message"])));
     mailbox
@@ -1774,17 +1709,7 @@ fn opened_unread_rows_are_marked_read_once_confirmed() {
 #[test]
 fn reads_wait_for_the_content_to_load() {
     let (mut mailbox, request) = open();
-    mailbox.finish_page(
-        request.id,
-        Ok(ConversationPage {
-            conversations: vec![ConversationSummary {
-                unread: true,
-                ..summary("a")
-            }],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(request.id, page_of(vec![unread("a")], 1));
     let load = mailbox.start_conversation_load("a".into(), 3).unwrap();
 
     assert_eq!(mailbox.start_mark_read(4), None);
@@ -1999,17 +1924,7 @@ fn reads_after_a_folder_switch_change_only_the_counts() {
     let mut mailbox = opened_unread(&["a"], "a");
     let request = mailbox.start_mark_read(3).unwrap();
     mailbox.select_folder(sys(MailFolder::Sent), 4);
-    mailbox.finish_page(
-        4,
-        Ok(ConversationPage {
-            conversations: vec![ConversationSummary {
-                unread: true,
-                ..summary("a")
-            }],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(4, page_of(vec![unread("a")], 1));
 
     // The rows of the folder now open stay as Proton listed them, but the
     // counts the read changed are reloaded.
@@ -2246,24 +2161,19 @@ fn stale_or_moved_action_responses_change_nothing() {
 
 #[test]
 fn rows_without_a_time_keep_their_place() {
-    let timed = |id: &str, time| ConversationSummary {
-        time: Some(time),
-        ..summary(id)
-    };
     let (mut mailbox, request) = open();
 
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![
-                timed("c1", 50),
+        page_of(
+            vec![
+                dated("c1", 50),
                 summary("undated"),
-                timed("m1", 10),
-                timed("c2", 30),
+                dated("m1", 10),
+                dated("c2", 30),
             ],
-            total: 4,
-            inspect_candidates: Vec::new(),
-        }),
+            4,
+        ),
     );
 
     assert_eq!(ids(&mailbox), ["c1", "undated", "c2", "m1"]);
@@ -2271,35 +2181,23 @@ fn rows_without_a_time_keep_their_place() {
 
 #[test]
 fn rows_stay_newest_first_across_pages() {
-    let timed = |id: &str, time| ConversationSummary {
-        time: Some(time),
-        ..summary(id)
-    };
     let (mut mailbox, request) = open();
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![
-                timed("c1", 50),
-                timed("m1", 40),
-                timed("m2", 10),
-                timed("c2", 30),
+        page_of(
+            vec![
+                dated("c1", 50),
+                dated("m1", 40),
+                dated("m2", 10),
+                dated("c2", 30),
             ],
-            total: 120,
-            inspect_candidates: Vec::new(),
-        }),
+            120,
+        ),
     );
     assert_eq!(ids(&mailbox), ["c1", "m1", "c2", "m2"]);
 
     let more = mailbox.load_more(3).unwrap();
-    mailbox.finish_page(
-        more.id,
-        Ok(ConversationPage {
-            conversations: vec![timed("c3", 20)],
-            total: 120,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(more.id, page_of(vec![dated("c3", 20)], 120));
 
     assert_eq!(ids(&mailbox), ["c1", "m1", "c2", "c3", "m2"]);
 }
@@ -2394,17 +2292,16 @@ fn search_applies_to_the_selected_folder() {
     let request = mailbox.select_folder(sys(MailFolder::Archive), 3).unwrap();
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![searchable_summary(
+        page_of(
+            vec![searchable_summary(
                 "archived",
                 "Archived Sender",
                 "archive@example.com",
                 "Archived Rust notes",
                 "Old project",
             )],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
+            1,
+        ),
     );
 
     assert_eq!(mailbox.folder(), &sys(MailFolder::Archive));
@@ -2528,16 +2425,7 @@ fn split_conversation_replaces_conversation_with_message_rows_and_updates_visibl
     mailbox.finish_page(
         request.id,
         Ok(ConversationPage {
-            conversations: vec![
-                ConversationSummary {
-                    time: Some(50),
-                    ..summary("c1")
-                },
-                ConversationSummary {
-                    time: Some(20),
-                    ..summary("c2")
-                },
-            ],
+            conversations: vec![dated("c1", 50), dated("c2", 20)],
             total: 2,
             inspect_candidates: vec!["c1".into()],
         }),
@@ -2545,18 +2433,7 @@ fn split_conversation_replaces_conversation_with_message_rows_and_updates_visibl
 
     assert_eq!(visible_ids(&mailbox), ["c1", "c2"]);
 
-    let split_rows = vec![
-        ConversationSummary {
-            time: Some(60),
-            kind: SummaryKind::Message,
-            ..summary("m1")
-        },
-        ConversationSummary {
-            time: Some(40),
-            kind: SummaryKind::Message,
-            ..summary("m2")
-        },
-    ];
+    let split_rows = vec![split_message("m1", 60), split_message("m2", 40)];
 
     mailbox.split_conversation(&Folder::INBOX, "c1", split_rows);
 
@@ -2607,18 +2484,7 @@ fn split_conversation_updates_cached_listing_when_folder_not_active() {
     assert_eq!(visible_ids(&mailbox), ["s1"]);
 
     // Background inspection finishes for Inbox while Sent is active
-    let split_rows = vec![
-        ConversationSummary {
-            time: Some(60),
-            kind: SummaryKind::Message,
-            ..summary("m1")
-        },
-        ConversationSummary {
-            time: Some(40),
-            kind: SummaryKind::Message,
-            ..summary("m2")
-        },
-    ];
+    let split_rows = vec![split_message("m1", 60), split_message("m2", 40)];
     mailbox.split_conversation(&Folder::INBOX, "c1", split_rows);
 
     // Sent is still visible and unaffected
@@ -2641,13 +2507,6 @@ fn cached_split_rows_are_not_added_again_by_the_next_page() {
     mailbox.finish_page(next.id, page(&["m1", "c3"], 120));
 
     assert_eq!(ids(&mailbox), ["m1", "m2", "c2", "c3"]);
-}
-
-fn split_message(id: &str, time: i64) -> ConversationSummary {
-    ConversationSummary {
-        kind: SummaryKind::Message,
-        ..dated(id, time)
-    }
 }
 
 fn inspected_last_inbox() -> (Mailbox, Vec<ConversationSummary>) {
