@@ -10,7 +10,7 @@ mod notifications;
 mod reader;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::future::{AbortHandle, Abortable};
 use inspection::Inspections;
@@ -128,6 +128,9 @@ pub enum Message {
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
+    /// A settings write finished: the revision it wrote, and whether the file
+    /// holds it now.
+    SettingsWritten(u64, bool),
     /// Restores the default window size and mailbox pane widths.
     ResetLayout,
     /// A key the focused widget did not take.
@@ -260,6 +263,11 @@ pub struct App {
     /// The revision whose write failed, tried again with a later change or on
     /// quitting rather than on every frame.
     settings_failed: Option<u64>,
+    /// A write runs off the interface's thread; the next waits for it.
+    settings_writing: bool,
+    /// The newest revision the file holds, shared with the write running, so
+    /// one that finishes late never undoes a newer one.
+    settings_on_disk: Arc<Mutex<u64>>,
     /// Whether Settings replaces the conversation list and reader.
     showing_settings: bool,
     /// The message being written, if there is one.
@@ -317,6 +325,8 @@ impl App {
             settings_revision: 0,
             settings_written: 0,
             settings_failed: None,
+            settings_writing: false,
+            settings_on_disk: Arc::new(Mutex::new(0)),
             showing_settings: false,
             compose: None,
             read_once_shown: None,
@@ -501,25 +511,51 @@ impl App {
         self.settings_written != self.settings_revision
     }
 
-    /// Writes changed settings best-effort; in-memory changes always remain.
-    /// A write that failed stays to be done, tried again with the next change.
-    pub fn save_settings(&mut self) {
-        self.write_settings(false, Settings::save);
+    /// Starts writing changed settings, best-effort, off the interface's
+    /// thread: the write waits for the disk, longer while something scans the
+    /// file. One write runs at a time; a change made meanwhile is written
+    /// once it ends. A write that failed stays to be done, tried again with
+    /// the next change. In-memory changes always remain.
+    pub fn save_settings(&mut self) -> Effects {
+        let revision = self.settings_revision;
+        if !self.settings_unsaved()
+            || self.settings_writing
+            || self.settings_failed == Some(revision)
+        {
+            return Effects::none();
+        }
+        self.settings_writing = true;
+        let settings = self.settings.clone();
+        let on_disk = Arc::clone(&self.settings_on_disk);
+        Effects::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    write_settings_revision(&on_disk, revision, || settings.save())
+                })
+                .await
+                .unwrap_or(false)
+            },
+            move |written| Message::SettingsWritten(revision, written),
+        )
     }
 
     /// Writes changed settings before quitting, trying again even a write
-    /// that failed: there is no later.
+    /// that failed: there is no later. A write still running finishes first,
+    /// and this newer one is the last to reach the file.
     pub fn save_settings_before_quitting(&mut self) {
-        self.write_settings(true, Settings::save);
-    }
-
-    fn write_settings(&mut self, again: bool, write: impl FnOnce(&Settings) -> bool) {
         let revision = self.settings_revision;
-        if !self.settings_unsaved() || (!again && self.settings_failed == Some(revision)) {
+        if !self.settings_unsaved() {
             return;
         }
-        if write(&self.settings) {
-            self.settings_written = revision;
+        let settings = &self.settings;
+        let written = write_settings_revision(&self.settings_on_disk, revision, || settings.save());
+        self.finish_settings_write(revision, written);
+    }
+
+    fn finish_settings_write(&mut self, revision: u64, written: bool) {
+        self.settings_writing = false;
+        if written {
+            self.settings_written = self.settings_written.max(revision);
             self.settings_failed = None;
         } else {
             self.settings_failed = Some(revision);
@@ -791,6 +827,9 @@ impl App {
             Message::DismissMailtoError => self.mailto_error = None,
             Message::PanelsResized(panels) => {
                 self.remember(|settings| settings.panels = panels);
+            }
+            Message::SettingsWritten(revision, written) => {
+                self.finish_settings_write(revision, written);
             }
             Message::ResetLayout => {
                 self.remember(|settings| {
@@ -1839,6 +1878,28 @@ fn reveal_in_file_manager(path: PathBuf) -> Effects {
     Effects::background(async move {
         let _ = crate::file_manager::reveal(&path).await;
     })
+}
+
+/// Writes revision `revision` of the settings with `write`, unless the file
+/// already holds it or a newer one. The lock keeps writes in turn, and the
+/// check keeps one that started early and finishes late, such as the last
+/// write running when the app quits, from undoing a newer one.
+fn write_settings_revision(
+    on_disk: &Mutex<u64>,
+    revision: u64,
+    write: impl FnOnce() -> bool,
+) -> bool {
+    let mut newest = on_disk
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *newest >= revision {
+        return true;
+    }
+    let written = write();
+    if written {
+        *newest = revision;
+    }
+    written
 }
 
 #[cfg(test)]

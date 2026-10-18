@@ -293,9 +293,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   applied.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
   process in a file of its own, and moves a file it cannot read aside before
-  saving defaults in its place. `App` counts a write only once it succeeds: one
-  that fails is tried again with the next change and on quitting, not on every
-  frame;
+  saving defaults in its place. `App` writes settled settings off the
+  interface's thread, one write at a time, and counts a write only once it
+  succeeds: one that fails is tried again with the next change and on
+  quitting, not on every frame. The write on quitting waits for one still
+  running, and the file keeps the newest revision written, so a write that
+  finishes late never undoes a newer one;
   [`src/downloads.rs`](../src/downloads.rs) writes downloaded attachments.
   Incoming attachment saves have a session and unique request ID. **Save as**
   chooses a destination before downloading; cancellation starts no download,

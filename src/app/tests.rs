@@ -122,32 +122,38 @@ fn only_a_real_change_counts_as_one() {
     assert_eq!(app.settings_revision(), 2);
 }
 
+/// Runs a settings write as the runtime does, off the interface's thread,
+/// and hands the app its result.
+async fn finish_settings_write(app: &mut App, write: Effects) {
+    for effect in write.into_iter() {
+        let Effect::Future(future) = effect else {
+            panic!("a settings write runs as a future");
+        };
+        let _ = app.update(future.await);
+    }
+}
+
 #[test]
 fn a_failed_settings_write_is_tried_again_with_the_next_change_or_on_quitting() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SetConfirmLinks(false));
-    let writes = std::cell::Cell::new(0);
-    let failing = |_: &Settings| {
-        writes.set(writes.get() + 1);
-        false
-    };
-
-    app.write_settings(false, failing);
+    assert_eq!(app.save_settings().units(), 1);
+    let _ = app.update(Message::SettingsWritten(app.settings_revision(), false));
     assert!(app.settings_unsaved(), "nothing reached the file");
+
     // Not again on every frame...
-    app.write_settings(false, failing);
-    assert_eq!(writes.get(), 1);
-    // ...but on quitting, the last chance,
-    app.write_settings(true, failing);
-    assert_eq!(writes.get(), 2);
-    // and with the next change, which is then done with.
+    assert_eq!(app.save_settings().units(), 0);
+    // ...but with the next change,
     let _ = app.update(Message::SetConfirmLinks(true));
-    app.write_settings(false, |_| true);
+    assert_eq!(app.save_settings().units(), 1);
+    let _ = app.update(Message::SettingsWritten(app.settings_revision(), false));
+    // and on quitting, the last chance, which writes here and now.
+    app.save_settings_before_quitting();
     assert!(!app.settings_unsaved());
 }
 
-#[test]
-fn a_change_waits_to_be_written_and_is_written_once() {
+#[tokio::test]
+async fn a_change_is_written_off_the_interface_once() {
     let mut app = loaded_demo_app();
 
     let _ = app.update(Message::SetConfirmLinks(false));
@@ -155,13 +161,75 @@ fn a_change_waits_to_be_written_and_is_written_once() {
     assert!(!app.settings().confirm_links);
     assert!(app.settings_unsaved());
 
-    app.save_settings();
+    let write = app.save_settings();
+    assert_eq!(write.units(), 1);
+    // One write at a time: asking again while it runs starts nothing.
+    assert_eq!(app.save_settings().units(), 0);
+    finish_settings_write(&mut app, write).await;
     assert!(!app.settings_unsaved());
 
     // Nothing further to write until something changes again.
-    app.save_settings();
-    assert!(!app.settings_unsaved());
+    assert_eq!(app.save_settings().units(), 0);
     assert_eq!(app.settings_revision(), 1);
+}
+
+#[tokio::test]
+async fn a_change_made_while_a_write_runs_is_written_after_it() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetConfirmLinks(false));
+    let first = app.save_settings();
+
+    let _ = app.update(Message::SetConfirmLinks(true));
+    finish_settings_write(&mut app, first).await;
+    assert!(
+        app.settings_unsaved(),
+        "the second change is still to write"
+    );
+
+    let second = app.save_settings();
+    assert_eq!(second.units(), 1);
+    finish_settings_write(&mut app, second).await;
+    assert!(!app.settings_unsaved());
+}
+
+#[tokio::test]
+async fn quitting_while_a_write_runs_keeps_the_newest_revision_counted() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetConfirmLinks(false));
+    let first = app.save_settings();
+    let _ = app.update(Message::SetConfirmLinks(true));
+
+    app.save_settings_before_quitting();
+    assert!(!app.settings_unsaved());
+    // The first write ends after quitting wrote the newer revision.
+    finish_settings_write(&mut app, first).await;
+    assert!(!app.settings_unsaved(), "the late write undid the count");
+}
+
+#[test]
+fn a_settings_write_that_ends_late_never_undoes_a_newer_one() {
+    let on_disk = Mutex::new(0);
+    let mut written = Vec::new();
+
+    // Quitting writes revision 2 while the write of revision 1 waits.
+    assert!(super::write_settings_revision(&on_disk, 2, || {
+        written.push(2);
+        true
+    }));
+    // Revision 1 then finds the file newer and leaves it, reporting it done.
+    assert!(super::write_settings_revision(&on_disk, 1, || {
+        written.push(1);
+        true
+    }));
+    assert_eq!(written, [2]);
+
+    // A failed write leaves the file's revision where it was.
+    assert!(!super::write_settings_revision(&on_disk, 3, || false));
+    assert!(super::write_settings_revision(&on_disk, 3, || {
+        written.push(3);
+        true
+    }));
+    assert_eq!(written, [2, 3]);
 }
 
 #[test]

@@ -895,7 +895,8 @@ impl DesktopApp {
             return;
         }
         if now - self.settings_seen_at >= f64::from(SETTINGS_QUIET) {
-            self.app.save_settings();
+            let write = self.app.save_settings();
+            self.execute(write, context);
         } else {
             context.request_repaint_after(std::time::Duration::from_secs_f32(SETTINGS_QUIET));
         }
@@ -1485,6 +1486,34 @@ mod tests {
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::Close));
         assert!(desktop.window_close_approved);
+    }
+
+    #[test]
+    fn settled_settings_are_written_off_the_interface() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::SetConfirmLinks(false), &context);
+        assert!(desktop.app.settings_unsaved());
+
+        // The change settles, and the frame after the quiet time writes it.
+        for time in [0.0, f64::from(SETTINGS_QUIET) + 0.1] {
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            context
+                .run_ui(input, |ui| desktop.save_settled_settings(ui.ctx()))
+                .drop_without_applying_deltas();
+        }
+        // The write's result comes back through the runtime.
+        for _ in 0..200 {
+            desktop.drain_runtime(&context);
+            if !desktop.app.settings_unsaved() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the settled change was never written");
     }
 
     #[test]
