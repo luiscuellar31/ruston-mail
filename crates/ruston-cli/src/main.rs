@@ -250,6 +250,41 @@ mod tests {
     }
 
     #[test]
+    fn a_message_password_can_be_asked_for_instead_of_given() {
+        let eo_password = |extra: &[&str]| {
+            let mut args = vec![
+                "ruston-cli",
+                "messages",
+                "send",
+                "--to",
+                "a@b.com",
+                "--subject",
+                "hi",
+                "--body",
+                "hello",
+            ];
+            args.extend(extra);
+            match parse(&args).command {
+                Command::Messages {
+                    cmd: MessagesCmd::Send(a),
+                } => a.eo_password,
+                _ => panic!("wrong command"),
+            }
+        };
+        assert_eq!(eo_password(&[]), None);
+        assert_eq!(
+            eo_password(&["--eo-password", "s3cret"]),
+            Some("s3cret".into())
+        );
+        // Without a value it is asked for, even with an option after it.
+        assert_eq!(eo_password(&["--eo-password"]), Some(String::new()));
+        assert_eq!(
+            eo_password(&["--eo-password", "--eo-hint", "our pet"]),
+            Some(String::new())
+        );
+    }
+
+    #[test]
     fn drafts_take_attachments_but_no_sending_options() {
         let draft = [
             "ruston-cli",

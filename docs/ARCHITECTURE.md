@@ -709,7 +709,10 @@ instead of an unknown outcome.
   execution and response-body failures, so both frontends receive the same
   sanitized HTTP errors. Paths can still contain resource IDs; other logging
   targets and server-provided errors keep their existing behavior.
-- [`auth/`](../crates/ruston-core/src/auth/) handles sign-in;
+- [`auth/`](../crates/ruston-core/src/auth/) handles sign-in. `Client::login_with_prompts`
+  asks through `LoginPrompts` for what the account needs and the options do not
+  carry: a TOTP code once any human verification is done, and a separate mailbox
+  password once the account password is accepted, so neither repeats the other.
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
   message cryptography. Each address key is unlocked once per session and kept
   as an unlocked export in zeroized memory, so later operations skip its

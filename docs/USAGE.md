@@ -446,6 +446,13 @@ When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached
 through a published PGP key get an HTML body as plain text.
 
+`login` asks for the account password, and for a TOTP code or a separate
+mailbox password when the account needs them, without showing what you type.
+Give them as `PROTON_PASSWORD`, `PROTON_TOTP` and `PROTON_MAILBOX_PASSWORD` in
+scripts rather than as options, which other programs can read. Likewise,
+`messages send --eo-password` without a value asks twice for the password that
+protects the message.
+
 `drafts save` and `drafts edit` upload `--attach` files to the draft. If one
 cannot be uploaded, `drafts save` deletes the draft it made, while `drafts
 edit` keeps the files attached before it. An edited draft stays written from

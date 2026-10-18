@@ -95,6 +95,44 @@ pub struct LoginOptions {
     pub hv: Option<crate::transport::HvResolver>,
 }
 
+/// Asks for the separate mailbox password of a two-password account during
+/// login.
+///
+/// Called only when the account has one and none was supplied up front,
+/// after the account password and any TOTP code are accepted, so neither is
+/// asked for again. Obtain it interactively and do not persist it.
+pub type MailboxPasswordPrompt =
+    Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<SecretString>> + Send + Sync>;
+
+/// What a login may ask the person signing in for, when the account needs
+/// it and [`LoginOptions`] does not carry it.
+#[derive(Clone, Default)]
+pub struct LoginPrompts {
+    /// Asks for the TOTP code; see [`TotpPrompt`].
+    pub totp: Option<TotpPrompt>,
+    /// Asks for the mailbox password; see [`MailboxPasswordPrompt`].
+    pub mailbox_password: Option<MailboxPasswordPrompt>,
+}
+
+/// The mailbox password of an account that has a separate one: the one
+/// `given`, or else what `prompt` asks for now, kept in `asked`. Without
+/// either, the error says how to give it, in words the desktop recognizes.
+async fn mailbox_password<'a>(
+    given: Option<&'a SecretString>,
+    prompt: Option<&MailboxPasswordPrompt>,
+    asked: &'a mut Option<SecretString>,
+) -> Result<&'a SecretString> {
+    if let Some(password) = given {
+        return Ok(password);
+    }
+    let Some(prompt) = prompt else {
+        return Err(Error::Other(
+            "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password".into(),
+        ));
+    };
+    Ok(asked.insert(prompt().await?))
+}
+
 /// The Proton Mail client.
 pub struct Client {
     http: HttpClient,
@@ -135,7 +173,7 @@ impl Client {
 
     /// Interactive login: SRP + 2FA, unlock keys, persist session.
     pub async fn login(opts: LoginOptions) -> Result<Client> {
-        Self::login_inner(opts, None).await
+        Self::login_inner(opts, LoginPrompts::default()).await
     }
 
     /// Like [`Client::login`], but calls `totp_prompt` for the code when the
@@ -146,10 +184,22 @@ impl Client {
         opts: LoginOptions,
         totp_prompt: TotpPrompt,
     ) -> Result<Client> {
-        Self::login_inner(opts, Some(totp_prompt)).await
+        let prompts = LoginPrompts {
+            totp: Some(totp_prompt),
+            ..LoginPrompts::default()
+        };
+        Self::login_inner(opts, prompts).await
     }
 
-    async fn login_inner(opts: LoginOptions, totp_prompt: Option<TotpPrompt>) -> Result<Client> {
+    /// Like [`Client::login`], asking through `prompts` for what the account
+    /// needs and `opts` does not carry: a TOTP code, as
+    /// [`Client::login_with_totp_prompt`] does, and a separate mailbox
+    /// password once the account password is accepted.
+    pub async fn login_with_prompts(opts: LoginOptions, prompts: LoginPrompts) -> Result<Client> {
+        Self::login_inner(opts, prompts).await
+    }
+
+    async fn login_inner(opts: LoginOptions, prompts: LoginPrompts) -> Result<Client> {
         validate_profile_name(&opts.profile)?;
         let base_url = opts
             .base_url
@@ -173,7 +223,7 @@ impl Client {
             &opts.username,
             &opts.password,
             opts.totp.as_ref().map(ExposeSecret::expose_secret),
-            totp_prompt.as_ref(),
+            prompts.totp.as_ref(),
         )
         .await?;
 
@@ -182,12 +232,14 @@ impl Client {
             tokio::try_join!(api::keys::get_key_salts(&http), account(&http))?;
         let cache_identity = CacheIdentity::new(&base_url, &user.id)?;
 
+        let mut asked = None;
         let mailbox_pw = if login.password_mode == 2 {
-            opts.mailbox_password.as_ref().ok_or_else(|| {
-                Error::Other(
-                    "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password".into(),
-                )
-            })?
+            mailbox_password(
+                opts.mailbox_password.as_ref(),
+                prompts.mailbox_password.as_ref(),
+                &mut asked,
+            )
+            .await?
         } else {
             &opts.password
         };
@@ -809,6 +861,49 @@ mod tests {
         };
         let prompt: TotpPrompt = Arc::new(|| Box::pin(async { Ok(SecretString::from("000000")) }));
         drop(Client::login(opts()));
-        drop(Client::login_with_totp_prompt(opts(), prompt));
+        drop(Client::login_with_totp_prompt(opts(), prompt.clone()));
+        let mailbox_password: MailboxPasswordPrompt =
+            Arc::new(|| Box::pin(async { Ok(SecretString::from("not-a-real-password")) }));
+        let prompts = LoginPrompts {
+            totp: Some(prompt),
+            mailbox_password: Some(mailbox_password),
+        };
+        drop(Client::login_with_prompts(opts(), prompts));
+    }
+
+    #[tokio::test]
+    async fn a_separate_mailbox_password_is_asked_for_only_when_not_given() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let asks = Arc::new(AtomicUsize::new(0));
+        let counted = asks.clone();
+        let prompt: MailboxPasswordPrompt = Arc::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Ok(SecretString::from("asked")) })
+        });
+        let given = SecretString::from("given");
+
+        let mut asked = None;
+        let used = mailbox_password(Some(&given), Some(&prompt), &mut asked)
+            .await
+            .unwrap();
+        assert_eq!(used.expose_secret(), "given");
+        assert_eq!(asks.load(Ordering::Relaxed), 0);
+
+        let mut asked = None;
+        let used = mailbox_password(None, Some(&prompt), &mut asked)
+            .await
+            .unwrap();
+        assert_eq!(used.expose_secret(), "asked");
+        assert_eq!(asks.load(Ordering::Relaxed), 1);
+
+        // With no way to ask, the error is the one the desktop recognizes.
+        let mut asked = None;
+        let error = mailbox_password(None, None, &mut asked).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("this account uses a separate mailbox password")
+        );
     }
 }

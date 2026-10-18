@@ -57,7 +57,8 @@ pub struct Cli {
     #[arg(long, global = true, env = "PROTON_TOTP", hide_env_values = true)]
     pub totp: Option<String>,
 
-    /// Separate mailbox password (two-password accounts).
+    /// Separate mailbox password (two-password accounts). On a terminal it is
+    /// asked for, hidden, when the account has one and it is not given.
     #[arg(
         long,
         global = true,
@@ -379,7 +380,8 @@ pub struct SendArgs {
     #[arg(long = "expires")]
     pub expires: Option<i64>,
     /// Encrypted-outside: password-protect the message for keyless external recipients.
-    #[arg(long = "eo-password")]
+    /// Without a value, the password is asked for twice, hidden, on the terminal.
+    #[arg(long = "eo-password", num_args = 0..=1, default_missing_value = "")]
     pub eo_password: Option<String>,
     /// Password hint shown to encrypted-outside recipients.
     #[arg(long = "eo-hint")]

@@ -198,7 +198,11 @@ cache; run `sync` to receive remote changes.
 The Proton password is not saved. The CLI can read sign-in secrets from
 `PROTON_PASSWORD`, `PROTON_MAILBOX_PASSWORD`, `PROTON_TOTP` and
 `PROTON_HV_TOKEN`; a browser it opens for human verification does not inherit
-them. While it waits for a CAPTCHA, the CLI listens on a loopback port and takes
+them. On a terminal it asks, hidden, for the account password, a TOTP code and
+a separate mailbox password when they are needed and not given, and
+`messages send --eo-password` without a value asks for the message password.
+None of them then goes on the command line, where process listings and shell
+history would show it. While it waits for a CAPTCHA, the CLI listens on a loopback port and takes
 a token only with the random code the captcha page it opened carries at the end
 of its address, so no other web page can hand it one. The address's fragment
 never reaches Proton. A capture bookmarklet saved by an earlier version is

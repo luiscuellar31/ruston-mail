@@ -92,7 +92,7 @@ pub use mail::send::{
     RecipientProtection, ReplyRecipients, SendOptions, reply_recipients, reply_redirected,
 };
 pub use mail::sync::{LocalCache, SyncReport};
-pub use mail::{Client, LoginOptions};
+pub use mail::{Client, LoginOptions, LoginPrompts, MailboxPasswordPrompt};
 pub use model::{Attachment, Conversation, Label, Message, MessageMetadata, Recipient};
 pub use transport::{AuthState, Body, Doer, HttpClient, HvResolver, Request, Response};
 

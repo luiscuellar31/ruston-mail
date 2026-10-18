@@ -119,6 +119,24 @@ fn confirm_html(input: &mut impl BufRead, output: &mut impl Write) -> io::Result
     confirm("Body looks like HTML. Send as HTML?", input, output)
 }
 
+/// Asks twice through `read`, as `rpassword::prompt_password` asks, for the
+/// password that will protect a message, so a typo cannot lock its
+/// recipients out.
+fn ask_message_password(mut read: impl FnMut(&str) -> io::Result<String>) -> Result<String> {
+    let password = read("Message password: ")?;
+    if password.is_empty() {
+        return Err(Error::Other(
+            "a message password cannot be empty; nothing was sent".into(),
+        ));
+    }
+    if read("Repeat the message password: ")? != password {
+        return Err(Error::Other(
+            "the two message passwords differ; nothing was sent".into(),
+        ));
+    }
+    Ok(password)
+}
+
 /// A permanent delete needs someone to agree to it: a terminal to ask on, or
 /// `--yes` given up front.
 pub(crate) fn require_consent(ctx: &Ctx, yes: bool) -> Result<()> {
@@ -251,7 +269,14 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 expires_in: args.expires,
                 ..send_options(args.message, body)
             };
-            let id = match &args.eo_password {
+            let eo_password = match args.eo_password.as_deref() {
+                // Asked for, so it never has to go on the command line.
+                Some("") => Some(ask_message_password(|prompt| {
+                    rpassword::prompt_password(prompt)
+                })?),
+                password => password.map(str::to_owned),
+            };
+            let id = match &eo_password {
                 Some(pw) => client.send_eo(&opts, pw, args.eo_hint.as_deref()).await?,
                 None => client.send(&opts).await?,
             };
@@ -456,8 +481,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        confirm_deletion, confirm_html, looks_like_html, prompt_sender, require_consent,
-        write_private,
+        ask_message_password, confirm_deletion, confirm_html, looks_like_html, prompt_sender,
+        require_consent, write_private,
     };
     use crate::cli::Ctx;
     use ruston_core::AddressInfo;
@@ -582,6 +607,20 @@ mod tests {
         }
         let error = confirm_html(&mut Cursor::new(""), &mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn a_message_password_is_asked_for_twice_and_both_must_match() {
+        let typed = |answers: &'static [&'static str]| {
+            let mut answers = answers.iter();
+            move |_prompt: &str| Ok::<_, io::Error>(answers.next().unwrap().to_string())
+        };
+        assert_eq!(
+            ask_message_password(typed(&["s3cret", "s3cret"])).unwrap(),
+            "s3cret"
+        );
+        assert!(ask_message_password(typed(&["s3cret", "s3creT"])).is_err());
+        assert!(ask_message_password(typed(&[""])).is_err());
     }
 
     #[test]
