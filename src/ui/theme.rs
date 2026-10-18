@@ -622,8 +622,15 @@ fn prefer(context: &egui::Context, preference: egui::ThemePreference, fallback: 
 /// Never every pass, since each request repaints the window's frame.
 #[derive(Default)]
 pub struct TitleBar {
-    /// The Windows theme and whether the window had focus, at the last pass.
-    seen: Option<(Option<egui::Theme>, bool)>,
+    /// What the window was like at the last pass.
+    seen: Option<Seen>,
+}
+
+/// The Windows theme and whether the window had focus, at one pass.
+#[derive(Clone, Copy)]
+struct Seen {
+    system_theme: Option<egui::Theme>,
+    focused: bool,
 }
 
 impl TitleBar {
@@ -634,12 +641,15 @@ impl TitleBar {
             return;
         }
         // `raw` holds the focus even when only the app's logic runs.
-        let now = context.input(|input| (input.raw.system_theme, input.raw.focused));
-        let lost = self
-            .seen
-            .is_some_and(|(system, focused)| system != now.0 || (now.1 && !focused));
+        let now = context.input(|input| Seen {
+            system_theme: input.raw.system_theme,
+            focused: input.raw.focused,
+        });
+        let may_need_theme = self.seen.is_some_and(|seen| {
+            seen.system_theme != now.system_theme || (now.focused && !seen.focused)
+        });
         self.seen = Some(now);
-        if lost {
+        if may_need_theme {
             // As egui itself sends it.
             let theme = match context.options(|options| options.theme_preference) {
                 egui::ThemePreference::System => egui::SystemTheme::SystemDefault,

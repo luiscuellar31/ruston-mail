@@ -186,15 +186,7 @@ fn conversation_skeleton(ui: &mut egui::Ui, view: &ReaderView<'_>, state: &mut U
                         summary.message_count as usize,
                     );
                     if view.actions_available {
-                        action_toolbar(
-                            ui,
-                            summary,
-                            view.mailbox,
-                            &[],
-                            view.places,
-                            false,
-                            &mut Vec::new(),
-                        );
+                        disabled_action_toolbar(ui, summary, view.mailbox, view.places);
                     }
                 } else {
                     skeleton_label(
@@ -395,6 +387,17 @@ fn conversation_heading(ui: &mut egui::Ui, subject: Option<&str>, count: usize) 
     ui.add_space(8.0);
 }
 
+/// The toolbar with every action disabled, holding its place while the
+/// conversation loads.
+fn disabled_action_toolbar(
+    ui: &mut egui::Ui,
+    summary: &ConversationSummary,
+    mailbox: &Mailbox,
+    places: &[Folder],
+) {
+    action_toolbar(ui, summary, mailbox, &[], places, false, &mut Vec::new());
+}
+
 fn action_toolbar(
     ui: &mut egui::Ui,
     summary: &ConversationSummary,
@@ -406,9 +409,15 @@ fn action_toolbar(
 ) {
     let location = mailbox.selected_location();
     ui.horizontal_wrapped(|ui| {
-        for (icon, label, destination, danger) in moves(location) {
+        for MoveButton {
+            icon,
+            label,
+            destination,
+            risky,
+        } in moves(location)
+        {
             let mut button = theme::IconButton::new(icon, label);
-            if danger {
+            if risky {
                 button = button.danger();
             }
             let response = ui.add_enabled(enabled, button);
@@ -424,12 +433,15 @@ fn action_toolbar(
         );
 
         ui.separator();
-        for (icon, label, selected, action) in flags(summary) {
+        for FlagButton {
+            icon,
+            label,
+            on,
+            action,
+        } in flags(summary)
+        {
             if ui
-                .add_enabled(
-                    enabled,
-                    theme::IconButton::new(icon, label).selected(selected),
-                )
+                .add_enabled(enabled, theme::IconButton::new(icon, label).selected(on))
                 .clicked()
             {
                 messages.push(Message::ApplyAction(action));
@@ -440,14 +452,37 @@ fn action_toolbar(
     });
 }
 
+/// A move out of where a conversation is, as a button and a menu item.
+struct MoveButton {
+    icon: theme::Icon,
+    label: &'static str,
+    destination: Folder,
+    /// The move that deletes, drawn as a warning.
+    risky: bool,
+}
+
+/// A flag a conversation can be switched to, as a button and a menu item.
+struct FlagButton {
+    icon: theme::Icon,
+    label: &'static str,
+    /// Whether the flag is on now.
+    on: bool,
+    /// The action that switches it.
+    action: MailAction,
+}
+
+/// The Move to and label menus: wide enough for a folder's name, and they
+/// scroll past this height.
+const MENU_MIN_WIDTH: f32 = 180.0;
+const MENU_MAX_HEIGHT: f32 = 240.0;
+
 /// Proton's Inbox, which the Move to menu lists beside the account's folders.
 static INBOX: Folder = Folder::INBOX;
 
 /// The moves out of where a conversation is, as its buttons in the reader and
 /// its menu in the list offer them: the way back to the Inbox from Archive,
 /// Spam or Trash, then Archive, Spam and Trash, except where it already is.
-/// Each is an icon, a name, the destination and whether it is the risky one.
-fn moves(location: Option<&Folder>) -> Vec<(theme::Icon, &'static str, Folder, bool)> {
+fn moves(location: Option<&Folder>) -> Vec<MoveButton> {
     let back =
         back_to_inbox(location).map(|label| (theme::Icon::Inbox, label, MailFolder::Inbox, false));
     let away = [
@@ -462,35 +497,39 @@ fn moves(location: Option<&Folder>) -> Vec<(theme::Icon, &'static str, Folder, b
     ];
     back.into_iter()
         .chain(away)
-        .map(|(icon, label, folder, danger)| (icon, label, Folder::System(folder), danger))
-        .filter(|(_, _, destination, _)| location != Some(destination))
+        .map(|(icon, label, folder, risky)| MoveButton {
+            icon,
+            label,
+            destination: Folder::System(folder),
+            risky,
+        })
+        .filter(|button| location != Some(&button.destination))
         .collect()
 }
 
-/// The read and star flags a conversation can be switched to, each with its
-/// icon, its name, whether it is on now, and the action that switches it.
-fn flags(summary: &ConversationSummary) -> [(theme::Icon, &'static str, bool, MailAction); 2] {
+/// The read and star flags a conversation can be switched to.
+fn flags(summary: &ConversationSummary) -> [FlagButton; 2] {
     [
-        (
-            theme::Icon::Mail,
-            if summary.unread {
+        FlagButton {
+            icon: theme::Icon::Mail,
+            label: if summary.unread {
                 "Mark as read"
             } else {
                 "Mark as unread"
             },
-            summary.unread,
-            MailAction::SetUnread(!summary.unread),
-        ),
-        (
-            theme::Icon::Star,
-            if summary.starred {
+            on: summary.unread,
+            action: MailAction::SetUnread(!summary.unread),
+        },
+        FlagButton {
+            icon: theme::Icon::Star,
+            label: if summary.starred {
                 "Remove star"
             } else {
                 "Add star"
             },
-            summary.starred,
-            MailAction::SetStarred(!summary.starred),
-        ),
+            on: summary.starred,
+            action: MailAction::SetStarred(!summary.starred),
+        },
     ]
 }
 
@@ -515,11 +554,23 @@ pub(super) fn conversation_menu(
             ui.close();
         }
     };
-    for (icon, label, destination, _) in moves(mailbox.location_of(&row.id)) {
+    for MoveButton {
+        icon,
+        label,
+        destination,
+        ..
+    } in moves(mailbox.location_of(&row.id))
+    {
         item(ui, icon, label, MailAction::MoveTo(destination));
     }
     ui.separator();
-    for (icon, label, _, action) in flags(row) {
+    for FlagButton {
+        icon,
+        label,
+        action,
+        ..
+    } in flags(row)
+    {
         item(ui, icon, label, action);
     }
 }
@@ -567,9 +618,9 @@ fn move_menu(
     wrap_for(ui, button_width(ui, title));
     ui.add_enabled_ui(enabled, |ui| {
         egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-            ui.set_min_width(180.0);
+            ui.set_min_width(MENU_MIN_WIDTH);
             egui::ScrollArea::vertical()
-                .max_height(240.0)
+                .max_height(MENU_MAX_HEIGHT)
                 .show(ui, |ui| {
                     for destination in destinations {
                         if destination_item(ui, destination).clicked() {
@@ -652,9 +703,9 @@ fn label_menu(
 
     ui.separator();
     theme::icon_menu(ui, enabled, button, |ui| {
-        ui.set_min_width(180.0);
+        ui.set_min_width(MENU_MIN_WIDTH);
         egui::ScrollArea::vertical()
-            .max_height(240.0)
+            .max_height(MENU_MAX_HEIGHT)
             .show(ui, |ui| {
                 for label in labels {
                     let carried = label.custom_id().is_some_and(|id| carried_ids.contains(id));
@@ -2841,6 +2892,51 @@ mod tests {
                 "{case}: the chevron says it will {toggle}: {over_chevron:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_reader_actions_say_which_move_is_risky_and_which_flags_are_on() {
+        let inbox_moves: Vec<(&str, Folder, bool)> = moves(Some(&INBOX))
+            .into_iter()
+            .map(|button| (button.label, button.destination, button.risky))
+            .collect();
+        assert_eq!(
+            inbox_moves,
+            [
+                ("Archive", Folder::System(MailFolder::Archive), false),
+                ("Move to Spam", Folder::System(MailFolder::Spam), false),
+                (
+                    "Delete (move to Trash)",
+                    Folder::System(MailFolder::Trash),
+                    true
+                ),
+            ]
+        );
+
+        let row = ConversationSummary {
+            id: "conversation".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: None,
+            correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: None,
+            unread: true,
+            starred: true,
+            message_count: 1,
+            has_attachments: false,
+        };
+        let row_flags: Vec<(&str, bool, MailAction)> = flags(&row)
+            .into_iter()
+            .map(|button| (button.label, button.on, button.action))
+            .collect();
+        assert_eq!(
+            row_flags,
+            [
+                ("Mark as read", true, MailAction::SetUnread(false)),
+                ("Remove star", true, MailAction::SetStarred(false)),
+            ]
+        );
     }
 
     #[test]
