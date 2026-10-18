@@ -11,7 +11,7 @@ use super::{App, Effects, Message, ReaderState, UiEffect};
 pub type ComposeId = u64;
 
 /// One of the fields being typed into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ComposeField {
     To,
     Cc,

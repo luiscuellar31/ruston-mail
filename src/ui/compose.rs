@@ -378,7 +378,7 @@ fn focus_new_draft(ui: &egui::Ui, compose: &Compose) {
     }
     ui.data_mut(|data| data.insert_temp(shown, draft));
     let field = if compose.asks_for_recipients() {
-        field_id("To", draft)
+        field_id(ComposeField::To, draft)
     } else {
         body_id(draft)
     };
@@ -435,7 +435,7 @@ fn line(
     let response = ui.add_enabled(
         !leaving,
         theme::text_field(ui, &mut value)
-            .id(field_id(label, compose.id()))
+            .id(field_id(field, compose.id()))
             .desired_width(f32::INFINITY),
     );
     if response.changed() {
@@ -444,17 +444,25 @@ fn line(
     response
 }
 
-/// The labelled fields a draft can show.
-const FIELDS: [&str; 4] = ["To", "Cc", "Bcc", "Subject"];
+/// Every field a draft has an editor for, so forgetting a draft reaches them
+/// all.
+const FIELDS: [ComposeField; 5] = [
+    ComposeField::To,
+    ComposeField::Cc,
+    ComposeField::Bcc,
+    ComposeField::Subject,
+    ComposeField::Body,
+];
 
 /// Every draft gets its own editors: their undo history holds what was typed,
-/// and must never reach into another draft or account.
-fn body_id(draft: ComposeId) -> egui::Id {
-    egui::Id::new(("compose-body", draft))
+/// and must never reach into another draft or account. An editor is known by
+/// its field, never by the label it shows.
+fn field_id(field: ComposeField, draft: ComposeId) -> egui::Id {
+    egui::Id::new(("compose", field, draft))
 }
 
-fn field_id(label: &str, draft: ComposeId) -> egui::Id {
-    egui::Id::new(("compose", label, draft))
+fn body_id(draft: ComposeId) -> egui::Id {
+    field_id(ComposeField::Body, draft)
 }
 
 /// The size of each of a draft's attachments, as read when it first showed.
@@ -498,7 +506,7 @@ pub(super) fn forget_draft(context: &egui::Context, draft: ComposeId) {
 }
 
 fn draft_editors(draft: ComposeId) -> impl Iterator<Item = egui::Id> {
-    std::iter::once(body_id(draft)).chain(FIELDS.map(|label| field_id(label, draft)))
+    FIELDS.into_iter().map(move |field| field_id(field, draft))
 }
 
 /// Gives every editor of `draft` some memory, as typing would.
@@ -717,6 +725,27 @@ mod tests {
     }
 
     #[test]
+    fn forgetting_a_draft_drops_what_every_field_it_showed_kept() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        app.update(Message::OpenCompose);
+        app.update(Message::ToggleComposeCopies);
+        let draft = app.compose().unwrap().id();
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                show(ui, app.compose().unwrap(), &mut Vec::new());
+            })
+            .drop_without_applying_deltas();
+        let kept = || context.data(|data| data.count::<egui::text_edit::TextEditState>());
+        // To, Cc, Bcc, Subject and the body each keep their own memory.
+        assert_eq!(kept(), 5);
+
+        forget_draft(&context, draft);
+        assert_eq!(kept(), 0, "a field of the draft kept what was typed");
+    }
+
+    #[test]
     fn a_reply_lists_its_recipients_and_warns_when_reply_to_redirects_it() {
         let context = egui::Context::default();
         theme::install(&context);
@@ -857,9 +886,12 @@ mod tests {
         let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
         app.update(Message::OpenCompose);
         let draft = app.compose().unwrap().id();
-        assert_eq!(focused_after_showing(&app), Some(field_id("To", draft)));
+        assert_eq!(
+            focused_after_showing(&app),
+            Some(field_id(ComposeField::To, draft))
+        );
         // Given once: after that the cursor stays wherever the writer puts it.
-        context.memory_mut(|memory| memory.surrender_focus(field_id("To", draft)));
+        context.memory_mut(|memory| memory.surrender_focus(field_id(ComposeField::To, draft)));
         assert_eq!(focused_after_showing(&app), None);
 
         // A reply knows its recipients, so it starts in the body.
@@ -952,7 +984,7 @@ mod tests {
         };
 
         frame(Vec::new());
-        let to = field_id("To", app.compose().unwrap().id());
+        let to = field_id(ComposeField::To, app.compose().unwrap().id());
         context.memory_mut(|memory| memory.request_focus(to));
         assert!(!frame(Vec::new()), "entering the field looks nothing up");
         assert!(!frame(Vec::new()), "staying in the field looks nothing up");
