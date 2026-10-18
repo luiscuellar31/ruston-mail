@@ -36,54 +36,58 @@ pub(super) fn confirm(context: &egui::Context, leaving: Leaving) -> Option<Messa
     )
 }
 
-/// Holds the main window open, once asked to close, while changes are still
-/// on their way to Proton, since closing would lose them. It closes once they
-/// arrive, or at once when asked again.
+/// Holds a close or a sign-out, once asked for, while changes are still on
+/// their way to Proton, since going ahead would lose them. It goes ahead once
+/// they arrive, or at once when asked again.
 #[derive(Debug, Default)]
 pub(super) struct OnceSent {
-    waiting: bool,
+    waiting: Option<Leaving>,
 }
 
 impl OnceSent {
-    /// Whether a request to close, with `unsent` changes on their way, waits
-    /// for them. A second request while waiting does not.
-    pub(super) fn holds(&mut self, unsent: usize) -> bool {
-        self.waiting = unsent > 0 && !self.waiting;
+    /// Whether `leaving`, asked for while something it would cut short is
+    /// `pending`, waits for it. Asking again while it waits does not.
+    pub(super) fn holds(&mut self, leaving: Leaving, pending: bool) -> bool {
+        let again = self.waiting == Some(leaving);
+        self.waiting = (pending && !again).then_some(leaving);
+        self.waiting.is_some()
+    }
+
+    /// What waits, if anything.
+    pub(super) fn waiting(&self) -> Option<Leaving> {
         self.waiting
     }
 
-    /// Whether the close that waited can go ahead, everything having arrived.
-    pub(super) fn arrived(&mut self, unsent: usize) -> bool {
-        let arrived = self.waiting && unsent == 0;
-        if arrived {
-            self.waiting = false;
-        }
-        arrived
-    }
-
-    pub(super) fn waiting(&self) -> bool {
-        self.waiting
-    }
-
-    /// Keeps the window open after all.
+    /// Stops waiting, for what waited to go ahead or to be called off.
     pub(super) fn cancel(&mut self) {
-        self.waiting = false;
+        self.waiting = None;
     }
 }
 
-/// What to do while the window waits for changes to reach Proton.
+/// What to do while a close or a sign-out waits for changes to reach Proton.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Unsent {
-    KeepOpen,
-    CloseNow,
+    /// Keep the window open, or stay signed in.
+    Stay,
+    /// Go ahead now, losing the changes.
+    GoNow,
 }
 
-pub(super) fn confirm_unsent(context: &egui::Context, unsent: usize) -> Option<Unsent> {
+pub(super) fn confirm_unsent(
+    context: &egui::Context,
+    leaving: Leaving,
+    unsent: usize,
+) -> Option<Unsent> {
+    let (then, going, stay, go) = match leaving {
+        Leaving::Window => ("closes", "Closing", "Keep open", "Close now"),
+        Leaving::SignOut => ("signs out", "Signing out", "Stay signed in", "Sign out now"),
+        Leaving::Demo => ("leaves the demo", "Leaving", "Stay", "Exit now"),
+    };
     let detail = if unsent == 1 {
-        "Ruston Mail closes once Proton has your last change. Closing now would lose it.".to_owned()
+        format!("Ruston Mail {then} once Proton has your last change. {going} now would lose it.")
     } else {
         format!(
-            "Ruston Mail closes once Proton has your last {unsent} changes. Closing now would \
+            "Ruston Mail {then} once Proton has your last {unsent} changes. {going} now would \
              lose them."
         )
     };
@@ -93,10 +97,10 @@ pub(super) fn confirm_unsent(context: &egui::Context, unsent: usize) -> Option<U
         "Finishing your changes",
         &detail,
         &[
-            ("Keep open", Emphasis::Secondary, Unsent::KeepOpen),
-            ("Close now", Emphasis::Danger, Unsent::CloseNow),
+            (stay, Emphasis::Secondary, Unsent::Stay),
+            (go, Emphasis::Danger, Unsent::GoNow),
         ],
-        Unsent::KeepOpen,
+        Unsent::Stay,
     )
 }
 
@@ -105,24 +109,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn closing_waits_once_for_changes_on_their_way() {
+    fn leaving_waits_once_for_changes_on_their_way() {
         let mut close = OnceSent::default();
-        assert!(!close.holds(0), "nothing to wait for");
+        assert!(!close.holds(Leaving::Window, false), "nothing to wait for");
 
-        assert!(close.holds(2));
-        assert!(!close.arrived(1));
-        assert!(close.arrived(0), "everything arrived, so it closes");
-        assert!(!close.waiting());
+        assert!(close.holds(Leaving::Window, true));
+        assert_eq!(close.waiting(), Some(Leaving::Window));
+        // Asking again while it waits goes ahead at once.
+        assert!(!close.holds(Leaving::Window, true));
+        assert_eq!(close.waiting(), None);
 
-        // Asking again while it waits closes at once.
-        assert!(close.holds(1));
-        assert!(!close.holds(1));
-        assert!(!close.waiting());
-
-        // Keeping the window open forgets the close it waited for.
-        assert!(close.holds(1));
+        // Signing out waits the same way, and staying forgets it.
+        assert!(close.holds(Leaving::SignOut, true));
+        assert_eq!(close.waiting(), Some(Leaving::SignOut));
         close.cancel();
-        assert!(!close.arrived(0));
+        assert_eq!(close.waiting(), None);
     }
 
     #[test]
@@ -130,7 +131,7 @@ mod tests {
         let context = egui::Context::default();
         context
             .run_ui(egui::RawInput::default(), |_| {
-                assert!(confirm_unsent(&context, 2).is_none());
+                assert!(confirm_unsent(&context, Leaving::Window, 2).is_none());
             })
             .drop_without_applying_deltas();
         let raw = egui::RawInput {
@@ -145,7 +146,10 @@ mod tests {
         };
         context
             .run_ui(raw, |_| {
-                assert_eq!(confirm_unsent(&context, 2), Some(Unsent::KeepOpen));
+                assert_eq!(
+                    confirm_unsent(&context, Leaving::Window, 2),
+                    Some(Unsent::Stay)
+                );
             })
             .drop_without_applying_deltas();
     }

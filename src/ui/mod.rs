@@ -294,6 +294,18 @@ impl DesktopApp {
             context.request_repaint();
             return;
         }
+        // Signing out drops what has not reached Proton yet, so it waits.
+        if matches!(message, Message::Logout) {
+            let leaving = if self.app.is_demo() {
+                close::Leaving::Demo
+            } else {
+                close::Leaving::SignOut
+            };
+            if self.close_once_sent.holds(leaving, self.pending()) {
+                context.request_repaint();
+                return;
+            }
+        }
         // The reset click was drawn with the previous pane widths.
         if self.layout_reset_at.is_some() && matches!(message, Message::PanelsResized(_)) {
             return;
@@ -421,7 +433,10 @@ impl DesktopApp {
             );
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
             context.request_repaint();
-        } else if self.close_once_sent.holds(self.app.unsent_changes()) {
+        } else if self
+            .close_once_sent
+            .holds(close::Leaving::Window, self.pending())
+        {
             // Changes still on their way to Proton would be lost; the window
             // closes once they arrive.
             context
@@ -435,10 +450,32 @@ impl DesktopApp {
 
     fn check_window_close(&mut self, context: &egui::Context) {
         // eframe also calls logic while minimized, so cancellation belongs here.
-        if context.input(|input| input.viewport().close_requested())
-            || self.close_once_sent.arrived(self.app.unsent_changes())
-        {
+        if context.input(|input| input.viewport().close_requested()) {
             self.request_window_close(context);
+        }
+        // A close or a sign-out that waited goes ahead once nothing holds it.
+        if let Some(leaving) = self.close_once_sent.waiting()
+            && !self.pending()
+        {
+            self.close_once_sent.cancel();
+            self.leave(leaving, context);
+        }
+    }
+
+    /// Whether leaving now would cut something short: changes still on their
+    /// way to Proton.
+    fn pending(&self) -> bool {
+        self.app.unsent_changes() > 0
+    }
+
+    /// Goes ahead with `leaving`, through the same checks as when it was
+    /// first asked for.
+    fn leave(&mut self, leaving: close::Leaving, context: &egui::Context) {
+        match leaving {
+            close::Leaving::Window => self.request_window_close(context),
+            close::Leaving::SignOut | close::Leaving::Demo => {
+                self.dispatch(Message::Logout, context);
+            }
         }
     }
 
@@ -694,7 +731,7 @@ impl DesktopApp {
         if !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
             || self.pending_discard.is_some()
             || self.pending_settings_exit.is_some()
-            || self.close_once_sent.waiting()
+            || self.close_once_sent.waiting().is_some()
         {
             return;
         }
@@ -1082,11 +1119,9 @@ impl eframe::App for DesktopApp {
         let discard_decision = self
             .pending_discard
             .and_then(|leaving| close::confirm(&context, leaving));
-        let unsent_decision = if self.close_once_sent.waiting() {
-            close::confirm_unsent(&context, self.app.unsent_changes())
-        } else {
-            None
-        };
+        let unsent_decision = self.close_once_sent.waiting().and_then(|leaving| {
+            close::confirm_unsent(&context, leaving, self.app.unsent_changes())
+        });
         theme::paint_focus_ring(&context);
         if let Some(step) = composer_zoom {
             self.step_zoom(step, &context);
@@ -1103,9 +1138,13 @@ impl eframe::App for DesktopApp {
             self.resolve_discard(decision, &context);
         }
         match unsent_decision {
-            Some(close::Unsent::KeepOpen) => self.close_once_sent.cancel(),
-            // Asking again while it waits closes at once.
-            Some(close::Unsent::CloseNow) => self.request_window_close(&context),
+            Some(close::Unsent::Stay) => self.close_once_sent.cancel(),
+            // Asking again while it waits goes ahead at once.
+            Some(close::Unsent::GoNow) => {
+                if let Some(leaving) = self.close_once_sent.waiting() {
+                    self.leave(leaving, &context);
+                }
+            }
             None => {}
         }
         if has_messages {
@@ -1439,6 +1478,47 @@ mod tests {
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
         assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::Close));
         assert!(desktop.window_close_approved);
+    }
+
+    fn signed_in(desktop: &DesktopApp) -> bool {
+        matches!(desktop.app.auth_state(), AuthState::Authenticated { .. })
+    }
+
+    #[test]
+    fn signing_out_waits_for_changes_on_their_way_to_proton() {
+        let context = egui::Context::default();
+        let (mut desktop, sent) = window_with_a_change_on_its_way(&context);
+
+        // In the demo, signing out is leaving it; it waits the same way.
+        desktop.dispatch(Message::Logout, &context);
+        assert!(signed_in(&desktop));
+        assert_eq!(
+            desktop.close_once_sent.waiting(),
+            Some(close::Leaving::Demo)
+        );
+
+        // Once Proton has the change, the sign-out goes ahead by itself.
+        let _ = desktop
+            .app
+            .mailbox_mut()
+            .unwrap()
+            .finish_action(&sent, Ok(()));
+        let _ = context.run_logic(&egui::RawInput::default(), |context| {
+            desktop.check_window_close(context);
+        });
+        assert!(!signed_in(&desktop));
+        assert_eq!(desktop.close_once_sent.waiting(), None);
+    }
+
+    #[test]
+    fn signing_out_again_while_changes_are_on_their_way_signs_out_at_once() {
+        let context = egui::Context::default();
+        let (mut desktop, _) = window_with_a_change_on_its_way(&context);
+
+        desktop.dispatch(Message::Logout, &context);
+        assert!(signed_in(&desktop));
+        desktop.dispatch(Message::Logout, &context);
+        assert!(!signed_in(&desktop));
     }
 
     #[test]
