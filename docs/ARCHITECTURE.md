@@ -274,7 +274,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   [`model.rs`](../src/mail/model.rs) defines the types the desktop uses.
   Actions on a conversation row use Proton's conversation endpoints, one
   request each: a move, a star or a custom label applies to every message in
-  the conversation, as in Proton's web client.
+  the conversation, as in Proton's web client. A sign-in has two minutes of
+  its own time: `PromptTime` sets aside how long its CAPTCHA and code prompts
+  wait for the person, and running out is a timeout of its own, not a failed
+  connection.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
   process in a file of its own, and moves a file it cannot read aside before
   saving defaults in its place;

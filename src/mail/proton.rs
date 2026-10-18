@@ -35,8 +35,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// file itself, which may take core's whole transfer deadline.
 const ATTACHMENT_SAVE_TIMEOUT: Duration = ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT
     .saturating_add(REQUEST_TIMEOUT.saturating_mul(2));
-/// A complete authentication attempt, including interactive challenges, must
-/// eventually release its credentials even when the server stops responding.
+/// A complete authentication attempt must eventually release its credentials
+/// even when the server stops responding. The time a person spends on a
+/// prompt, solving a CAPTCHA or finding a code, does not count.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(120);
 /// Sending is several requests: a draft, a key for every recipient, then the
 /// message. It is given longer than a request that only reads; uploads add
@@ -147,6 +148,7 @@ impl ProtonMailService {
         let has_mailbox_password = request.mailbox_password.is_some();
         let prompted_totp = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
+        let prompts = Arc::new(PromptTime::default());
         let options = LoginOptions {
             username: request.username,
             password: request.password,
@@ -156,23 +158,33 @@ impl ProtonMailService {
             base_url: None,
             app_version: None,
             user_agent: Some(user_agent()),
-            hv: Some(human_verification(events.clone(), cancelled.clone())),
+            hv: Some(human_verification(
+                events.clone(),
+                cancelled.clone(),
+                prompts.clone(),
+            )),
         };
-        let totp_prompt = totp_prompt(events.clone(), prompted_totp.clone(), cancelled.clone());
+        let totp_prompt = totp_prompt(
+            events.clone(),
+            prompted_totp.clone(),
+            cancelled.clone(),
+            prompts.clone(),
+        );
 
-        let outcome = match tokio::time::timeout(
+        let outcome = match within(
             SIGN_IN_TIMEOUT,
+            &prompts,
             Client::login_with_totp_prompt(options, totp_prompt),
         )
         .await
         {
-            Ok(Ok(client)) => SignInOutcome::Authenticated(Arc::new(Self::from_client(client))),
-            Ok(Err(_)) if cancelled.load(Ordering::Relaxed) => SignInOutcome::Cancelled,
-            Ok(Err(error)) => {
+            Some(Ok(client)) => SignInOutcome::Authenticated(Arc::new(Self::from_client(client))),
+            Some(Err(_)) if cancelled.load(Ordering::Relaxed) => SignInOutcome::Cancelled,
+            Some(Err(error)) => {
                 let has_totp = has_totp || prompted_totp.load(Ordering::Relaxed);
                 map_sign_in_error(error, has_totp, has_mailbox_password)
             }
-            Err(_) => SignInOutcome::Failed(AuthError::Connection),
+            None => SignInOutcome::Failed(AuthError::TimedOut),
         };
         let _ = events.send(SignInEvent::Finished(outcome)).await;
         // The client keeps the verification resolver; closing the channel ends
@@ -612,17 +624,21 @@ fn totp_prompt(
     events: mpsc::Sender<SignInEvent>,
     prompted: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
+    prompts: Arc<PromptTime>,
 ) -> TotpPrompt {
     Arc::new(move || {
         let events = events.clone();
         let prompted = prompted.clone();
         let cancelled = cancelled.clone();
+        let prompts = prompts.clone();
         Box::pin(async move {
             // Only a sign-in asks for a code, so a code nobody gives ends it.
-            let code = ask(events, SignInPrompt::Totp).await.map_err(|_| {
-                cancelled.store(true, Ordering::Relaxed);
-                Error::Other("no TOTP code was given".to_owned())
-            })?;
+            let code = ask(events, &prompts, SignInPrompt::Totp)
+                .await
+                .map_err(|_| {
+                    cancelled.store(true, Ordering::Relaxed);
+                    Error::Other("no TOTP code was given".to_owned())
+                })?;
             prompted.store(true, Ordering::Relaxed);
             Ok(code)
         })
@@ -631,10 +647,15 @@ fn totp_prompt(
 
 /// Proton Bridge's external-browser flow: the verification page attaches the
 /// solved captcha to the challenge, so the retry echoes the challenge token.
-fn human_verification(events: mpsc::Sender<SignInEvent>, cancelled: Arc<AtomicBool>) -> HvResolver {
+fn human_verification(
+    events: mpsc::Sender<SignInEvent>,
+    cancelled: Arc<AtomicBool>,
+    prompts: Arc<PromptTime>,
+) -> HvResolver {
     Arc::new(move |challenge: HvChallenge| {
         let events = events.clone();
         let cancelled = cancelled.clone();
+        let prompts = prompts.clone();
         Box::pin(async move {
             let captcha = challenge.methods.is_empty()
                 || challenge.methods.iter().any(|method| method == "captcha");
@@ -642,7 +663,8 @@ fn human_verification(events: mpsc::Sender<SignInEvent>, cancelled: Arc<AtomicBo
                 return Err(Error::HumanVerification(challenge));
             }
             let url = verification_url(&challenge.web_url, &challenge.token);
-            match ask(events, |done| SignInPrompt::HumanVerification { url, done }).await {
+            let prompt = |done| SignInPrompt::HumanVerification { url, done };
+            match ask(events, &prompts, prompt).await {
                 Ok(()) => Ok((challenge.token, "captcha".to_owned())),
                 // The client keeps this resolver after its sign-in. A challenge
                 // then is Proton's requirement, as for a resumed session.
@@ -664,17 +686,81 @@ enum Unanswered {
     Dismissed,
 }
 
-/// Sends a prompt to the UI and waits for the answer.
+/// Sends a prompt to the UI and waits for the answer, on the time `prompts`
+/// sets aside.
 async fn ask<T: Send + 'static>(
     mut events: mpsc::Sender<SignInEvent>,
+    prompts: &PromptTime,
     prompt: impl FnOnce(Reply<T>) -> SignInPrompt,
 ) -> Result<T, Unanswered> {
+    let _answering = prompts.start();
     let (reply, answer) = Reply::channel();
     events
         .send(SignInEvent::Prompt(prompt(reply)))
         .await
         .map_err(|_| Unanswered::Closed)?;
     answer.await.map_err(|_| Unanswered::Dismissed)
+}
+
+/// How long the person signing in has spent on prompts, which the sign-in
+/// deadline leaves out.
+#[derive(Default)]
+struct PromptTime(Mutex<PromptClock>);
+
+#[derive(Default)]
+struct PromptClock {
+    spent: Duration,
+    /// When the prompt being answered now was shown.
+    since: Option<tokio::time::Instant>,
+}
+
+impl PromptTime {
+    /// Counts the time until the returned guard is dropped, as a prompt's.
+    fn start(&self) -> Answering<'_> {
+        self.0.lock().expect("prompt time lock poisoned").since = Some(tokio::time::Instant::now());
+        Answering(self)
+    }
+
+    /// The time set aside by `now`, a prompt still open included.
+    fn spent(&self, now: tokio::time::Instant) -> Duration {
+        let clock = self.0.lock().expect("prompt time lock poisoned");
+        clock.spent
+            + clock
+                .since
+                .map_or(Duration::ZERO, |since| now.saturating_duration_since(since))
+    }
+}
+
+/// A prompt being answered; dropping it stops counting its time.
+struct Answering<'a>(&'a PromptTime);
+
+impl Drop for Answering<'_> {
+    fn drop(&mut self) {
+        let mut clock = self.0.0.lock().expect("prompt time lock poisoned");
+        if let Some(since) = clock.since.take() {
+            clock.spent += since.elapsed();
+        }
+    }
+}
+
+/// Runs `sign_in` for at most `limit` of its own time: what `prompts` sets
+/// aside does not count. `None` when that time runs out first.
+async fn within<F: Future>(limit: Duration, prompts: &PromptTime, sign_in: F) -> Option<F::Output> {
+    let started = tokio::time::Instant::now();
+    let mut deadline = started + limit;
+    tokio::pin!(sign_in);
+    loop {
+        if let Ok(output) = tokio::time::timeout_at(deadline, &mut sign_in).await {
+            return Some(output);
+        }
+        let now = tokio::time::Instant::now();
+        let elapsed = now.duration_since(started);
+        let worked = elapsed.saturating_sub(prompts.spent(now));
+        if worked >= limit {
+            return None;
+        }
+        deadline = now + (limit - worked);
+    }
 }
 
 /// The verification page for a challenge. The server's `WebUrl` host is kept
@@ -1081,6 +1167,55 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test(start_paused = true)]
+    async fn the_sign_in_deadline_leaves_out_the_time_spent_on_prompts() {
+        let prompts = PromptTime::default();
+        // A CAPTCHA that takes ten minutes between two quick requests.
+        let sign_in = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            {
+                let _answering = prompts.start();
+                tokio::time::sleep(Duration::from_secs(600)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            "signed in"
+        };
+
+        assert_eq!(
+            within(SIGN_IN_TIMEOUT, &prompts, sign_in).await,
+            Some("signed in")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sign_in_runs_out_of_time_once_its_own_time_is_used_up() {
+        let prompts = PromptTime::default();
+        let sign_in = async {
+            {
+                let _answering = prompts.start();
+                tokio::time::sleep(Duration::from_secs(600)).await;
+            }
+            // Proton stops answering once the prompt is solved.
+            std::future::pending::<()>().await;
+        };
+        let started = tokio::time::Instant::now();
+
+        assert_eq!(within(SIGN_IN_TIMEOUT, &prompts, sign_in).await, None);
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_secs(600) + SIGN_IN_TIMEOUT
+        );
+
+        // Without a prompt, the whole deadline is the sign-in's own.
+        let started = tokio::time::Instant::now();
+        let silent = std::future::pending::<()>();
+        assert_eq!(
+            within(SIGN_IN_TIMEOUT, &PromptTime::default(), silent).await,
+            None
+        );
+        assert_eq!(started.elapsed(), SIGN_IN_TIMEOUT);
+    }
+
     #[tokio::test]
     async fn inspection_deadline_includes_waiting_for_a_permit() {
         let limiter = Semaphore::new(1);
@@ -1298,7 +1433,8 @@ mod tests {
         let (events, receiver) = mpsc::channel(1);
         drop(receiver);
         let cancelled = Arc::new(AtomicBool::new(false));
-        let error = human_verification(events, cancelled.clone())(captcha_challenge())
+        let prompts = Arc::new(PromptTime::default());
+        let error = human_verification(events, cancelled.clone(), prompts)(captcha_challenge())
             .await
             .unwrap_err();
         assert!(matches!(error, Error::HumanVerification(_)), "{error}");
@@ -1312,19 +1448,33 @@ mod tests {
 
         let (events, mut shown) = mpsc::channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
-        let verification = tokio::spawn(human_verification(events.clone(), cancelled.clone())(
-            captcha_challenge(),
-        ));
+        let prompts = Arc::new(PromptTime::default());
+        let verification = tokio::spawn(human_verification(
+            events.clone(),
+            cancelled.clone(),
+            prompts.clone(),
+        )(captcha_challenge()));
         let Some(SignInEvent::Prompt(prompt)) = shown.next().await else {
             panic!("no verification prompt");
         };
         prompt.cancel();
         assert!(verification.await.unwrap().is_err());
         assert!(cancelled.load(Ordering::Relaxed));
+        // An abandoned prompt stops counting as one.
+        let now = tokio::time::Instant::now();
+        assert_eq!(
+            prompts.spent(now),
+            prompts.spent(now + Duration::from_secs(60))
+        );
 
         let cancelled = Arc::new(AtomicBool::new(false));
         let prompted = Arc::new(AtomicBool::new(false));
-        let code = tokio::spawn(totp_prompt(events, prompted.clone(), cancelled.clone())());
+        let code = tokio::spawn(totp_prompt(
+            events,
+            prompted.clone(),
+            cancelled.clone(),
+            prompts,
+        )());
         let Some(SignInEvent::Prompt(prompt)) = shown.next().await else {
             panic!("no TOTP prompt");
         };

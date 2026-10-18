@@ -12,6 +12,7 @@ pub enum AuthError {
     InvalidTotp,
     InvalidMailboxPassword,
     Connection,
+    TimedOut,
     HumanVerificationRequired,
     SecurityKeyUnsupported,
     SessionUnavailable,
@@ -34,6 +35,9 @@ impl fmt::Display for AuthError {
             Self::InvalidTotp => "The authentication code is invalid.",
             Self::InvalidMailboxPassword => "The mailbox password is incorrect.",
             Self::Connection => "Ruston Mail could not connect to Proton.",
+            Self::TimedOut => {
+                "Signing in to Proton took too long. Check your connection and try again."
+            }
             Self::HumanVerificationRequired => {
                 "Proton requires human verification. Ruston Mail does not support this flow yet."
             }

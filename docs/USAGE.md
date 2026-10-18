@@ -20,7 +20,9 @@ Switching panes keeps the open conversation, draft, and list position.
 Enter your Proton username or email and password. Ruston Mail asks for a TOTP
 code, a separate mailbox password, or Proton's browser-based human verification
 when the account needs one. Each step opens with the cursor in its first empty
-field, so you can type right away.
+field, so you can type right away. A sign-in that waits more than two minutes
+for Proton stops and says it took too long; the time you spend solving the
+verification or finding a code does not count.
 
 A saved session opens automatically on later runs. Signing out asks Proton to
 revoke that session and removes its local copy. If you were reading one of your
