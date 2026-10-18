@@ -13,7 +13,32 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+/// Every part is base64, which never contains `-`, so this fixed boundary
+/// cannot turn up inside one.
 const MIME_BOUNDARY: &str = "ruston-mail-export";
+/// Bytes per base64 line: 57 encode to 76 characters, the longest line RFC
+/// 2045 allows.
+const BASE64_LINE_BYTES: usize = 57;
+/// Text bytes per RFC 2047 encoded word, so a word, 60 characters once
+/// encoded, fits on a 76-character line after a header's name.
+const ENCODED_WORD_BYTES: usize = 36;
+/// Percent-encoded characters per RFC 2231 filename section, each on a short
+/// folded line of its own.
+const FILENAME_SECTION_BYTES: usize = 40;
+/// The longest address an export writes; a longer one is refused.
+const MAX_ADDRESS_LEN: usize = 512;
+/// The longest MIME type an export trusts: RFC 6838 allows 127 characters on
+/// each side of the slash.
+const MAX_MIME_TYPE_LEN: usize = 255;
+/// The symbols a MIME type's names may hold besides letters and digits: RFC
+/// 6838's restricted-name-chars.
+const MIME_TOKEN_SYMBOLS: &[u8] = b"!#$&^_.+-";
+/// The symbols an RFC 5987 attr-char may be besides letters and digits; any
+/// other byte of a filename is percent-encoded.
+const ATTR_CHAR_SYMBOLS: &[u8] = b"!#$&+-.^_`|~";
+/// What an exported message's file name starts and ends with.
+const EXPORT_FILE_PREFIX: &str = "message-";
+const EXPORT_FILE_SUFFIX: &str = ".eml";
 
 /// What an export did with the messages it went through.
 #[derive(Debug, Default)]
@@ -210,13 +235,14 @@ fn place_export(temp: &Path, path: &Path) -> Result<bool> {
 /// Hex preserves every ID byte and stays distinct on case-insensitive filesystems.
 fn export_filename(id: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut name = String::with_capacity(12 + id.len() * 2);
-    name.push_str("message-");
+    let mut name =
+        String::with_capacity(EXPORT_FILE_PREFIX.len() + id.len() * 2 + EXPORT_FILE_SUFFIX.len());
+    name.push_str(EXPORT_FILE_PREFIX);
     for byte in id.bytes() {
         name.push(HEX[(byte >> 4) as usize] as char);
         name.push(HEX[(byte & 0x0f) as usize] as char);
     }
-    name.push_str(".eml");
+    name.push_str(EXPORT_FILE_SUFFIX);
     name
 }
 
@@ -341,6 +367,8 @@ struct EmlWriter<W: Write> {
 }
 
 impl<W: Write> EmlWriter<W> {
+    /// Starts the export of `message`: writes its headers and its body, so
+    /// only its attachments and the end are left to write.
     fn new(mut out: W, message: &FullMessage) -> Result<Self> {
         write_address_header(&mut out, "From", std::slice::from_ref(&message.meta.sender))?;
         write_address_header(&mut out, "To", &message.meta.to_list)?;
@@ -402,7 +430,7 @@ impl<W: Write> EmlWriter<W> {
 
 fn checked_address(address: &str) -> Result<&str> {
     if address.is_empty()
-        || address.len() > 512
+        || address.len() > MAX_ADDRESS_LEN
         || address
             .chars()
             .any(|c| c.is_control() || c == '<' || c == '>')
@@ -452,7 +480,7 @@ fn write_encoded_words<W: Write>(out: &mut W, value: &str) -> Result<()> {
         } else {
             character
         };
-        if chunk.len() + character.len_utf8() > 36 {
+        if chunk.len() + character.len_utf8() > ENCODED_WORD_BYTES {
             write_encoded_word(out, &chunk, first)?;
             chunk.clear();
             first = false;
@@ -480,7 +508,7 @@ fn attachment_content_type(attachment: &Attachment) -> &str {
         .mime_type
         .as_deref()
         .filter(|value| {
-            value.len() <= 255
+            value.len() <= MAX_MIME_TYPE_LEN
                 && value.split_once('/').is_some_and(|(kind, subtype)| {
                     !subtype.contains('/') && is_mime_token(kind) && is_mime_token(subtype)
                 })
@@ -492,21 +520,21 @@ fn is_mime_token(value: &str) -> bool {
     !value.is_empty()
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(&byte))
+            .all(|byte| byte.is_ascii_alphanumeric() || MIME_TOKEN_SYMBOLS.contains(&byte))
 }
 
 /// RFC 2231 extended filename parameter, continued on short folded lines.
 fn write_filename_parameter<W: Write>(out: &mut W, filename: &str) -> Result<()> {
     let mut chunks = vec![String::new()];
     for byte in filename.bytes() {
-        let piece = if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+        let piece = if byte.is_ascii_alphanumeric() || ATTR_CHAR_SYMBOLS.contains(&byte) {
             (byte as char).to_string()
         } else {
             format!("%{byte:02X}")
         };
         if chunks
             .last()
-            .is_some_and(|chunk| chunk.len() + piece.len() > 40)
+            .is_some_and(|chunk| chunk.len() + piece.len() > FILENAME_SECTION_BYTES)
         {
             chunks.push(String::new());
         }
@@ -525,7 +553,7 @@ fn write_filename_parameter<W: Write>(out: &mut W, filename: &str) -> Result<()>
 
 struct Base64Lines<'a, W: Write> {
     out: &'a mut W,
-    line: [u8; 57],
+    line: [u8; BASE64_LINE_BYTES],
     len: usize,
 }
 
@@ -533,18 +561,18 @@ impl<'a, W: Write> Base64Lines<'a, W> {
     fn new(out: &'a mut W) -> Self {
         Self {
             out,
-            line: [0; 57],
+            line: [0; BASE64_LINE_BYTES],
             len: 0,
         }
     }
 
     fn write_bytes(&mut self, mut bytes: &[u8]) -> Result<()> {
         while !bytes.is_empty() {
-            let count = (57 - self.len).min(bytes.len());
+            let count = (BASE64_LINE_BYTES - self.len).min(bytes.len());
             self.line[self.len..self.len + count].copy_from_slice(&bytes[..count]);
             self.len += count;
             bytes = &bytes[count..];
-            if self.len == 57 {
+            if self.len == BASE64_LINE_BYTES {
                 self.flush_line()?;
             }
         }
@@ -571,6 +599,8 @@ fn write_base64_bytes<W: Write>(out: &mut W, bytes: &[u8]) -> Result<()> {
     encoder.finish()
 }
 
+/// Writes `text` as base64 lines, its line ends, CR, LF or CRLF, all made
+/// CRLF, as MIME text must have them.
 fn write_base64_text<W: Write>(out: &mut W, text: &str) -> Result<()> {
     let mut encoder = Base64Lines::new(out);
     let bytes = text.as_bytes();
@@ -668,6 +698,25 @@ mod tests {
             Some("résumé très long 2026.pdf")
         );
         assert_eq!(attached.contents(), bytes);
+    }
+
+    #[test]
+    fn base64_lines_hold_76_characters_and_text_ends_lines_with_crlf() {
+        let mut bytes = Vec::new();
+        write_base64_bytes(&mut bytes, &[0u8; 200]).unwrap();
+        let lines: Vec<usize> = String::from_utf8(bytes)
+            .unwrap()
+            .split_terminator("\r\n")
+            .map(str::len)
+            .collect();
+        // 200 bytes: three lines of 57, then 29.
+        assert_eq!(lines, [76, 76, 76, 40]);
+
+        let mut text = Vec::new();
+        write_base64_text(&mut text, "a\rb\nc\r\nd").unwrap();
+        let encoded = String::from_utf8(text).unwrap();
+        let decoded = STANDARD.decode(encoded.trim_end()).unwrap();
+        assert_eq!(decoded, b"a\r\nb\r\nc\r\nd");
     }
 
     #[test]
