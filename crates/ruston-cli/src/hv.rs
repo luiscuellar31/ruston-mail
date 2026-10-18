@@ -133,7 +133,7 @@ fn verify_url(chal: &HvChallenge) -> String {
 /// and wait (bounded) for the user to confirm completion with ENTER.
 fn run_external_flow(url: &str) -> Result<()> {
     terminal::eprintln!("\n── Human verification (CAPTCHA) ──");
-    let mut chrome = match launch_chrome(url, &std::process::id().to_string()) {
+    let mut chrome = match launch_chrome(url) {
         Ok(c) => {
             terminal::eprintln!("Opened the verification page in an isolated Chrome window.");
             Some(c)
@@ -509,24 +509,64 @@ fn without_secrets(command: &mut std::process::Command) {
     }
 }
 
-/// Throwaway Chrome profile used only by ruston-cli (never a user profile).
-fn chrome_profile_dir(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("ruston-cli-hv-{tag}"))
+/// Names a new Chrome profile tries; each has 64 random bits, so only
+/// directories made on purpose under every one of them would use them all.
+const PROFILE_NAME_ATTEMPTS: u32 = 8;
+
+/// A new, empty Chrome profile for this verification only (never a user's).
+/// It is created here, exclusively and on Unix for this user alone, under a
+/// name with a random part: a name another user of a shared temporary
+/// directory could guess, and prepare with a profile of theirs, is never used.
+fn new_chrome_profile_dir() -> std::io::Result<PathBuf> {
+    create_private_dir(&std::env::temp_dir(), || {
+        let mut random = [0_u8; 8];
+        getrandom::fill(&mut random).map_err(|e| std::io::Error::other(e.to_string()))?;
+        let random: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        Ok(format!("ruston-cli-hv-{}-{random}", std::process::id()))
+    })
 }
 
-/// Open `url` in an isolated Chrome window (throwaway profile named by `tag`).
+/// Creates a directory in `parent` under the first name from `next_name` that
+/// nothing holds yet, so it is always a new one.
+fn create_private_dir(
+    parent: &std::path::Path,
+    mut next_name: impl FnMut() -> std::io::Result<String>,
+) -> std::io::Result<PathBuf> {
+    for _ in 0..PROFILE_NAME_ATTEMPTS {
+        let dir = parent.join(next_name()?);
+        let builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        let mut builder = builder;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no free name for a Chrome profile",
+    ))
+}
+
+/// Open `url` in an isolated Chrome window with a new throwaway profile.
 /// Returns the child process and its profile dir so both can be cleaned up
 /// once verification completes.
-fn launch_chrome(
-    url: &str,
-    tag: &str,
-) -> std::result::Result<(std::process::Child, PathBuf), String> {
+fn launch_chrome(url: &str) -> std::result::Result<(std::process::Child, PathBuf), String> {
     let chrome = find_chrome().ok_or_else(|| "no Chrome/Chromium binary found".to_string())?;
-    let profile = chrome_profile_dir(tag);
-    chrome_command(&chrome, &profile, url)
-        .spawn()
-        .map(|child| (child, profile))
-        .map_err(|e| format!("spawn {chrome}: {e}"))
+    let profile = new_chrome_profile_dir().map_err(|e| format!("Chrome profile: {e}"))?;
+    match chrome_command(&chrome, &profile, url).spawn() {
+        Ok(child) => Ok((child, profile)),
+        Err(e) => {
+            let _ = std::fs::remove_dir(&profile);
+            Err(format!("spawn {chrome}: {e}"))
+        }
+    }
 }
 
 fn chrome_command(chrome: &str, profile: &std::path::Path, url: &str) -> std::process::Command {
@@ -903,10 +943,38 @@ mod tests {
     }
 
     #[test]
-    fn chrome_profile_dir_is_a_dedicated_temp_dir() {
-        let dir = chrome_profile_dir("123");
-        assert_eq!(dir.parent(), Some(std::env::temp_dir().as_path()));
-        assert_eq!(dir.file_name().unwrap(), "ruston-cli-hv-123");
+    fn a_chrome_profile_is_always_a_new_private_directory() {
+        let parent =
+            std::env::temp_dir().join(format!("ruston-hv-profiles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(parent.join("taken")).unwrap();
+        std::fs::write(parent.join("taken").join("Preferences"), b"someone else's").unwrap();
+
+        // A name already held, with a profile in it, is passed over.
+        let mut names = ["taken", "fresh"].into_iter();
+        let dir = create_private_dir(&parent, || Ok(names.next().unwrap().to_owned())).unwrap();
+        assert_eq!(dir, parent.join("fresh"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        // With every name held, none is borrowed.
+        let held = create_private_dir(&parent, || Ok("taken".to_owned())).unwrap_err();
+        assert_eq!(held.kind(), std::io::ErrorKind::AlreadyExists);
+        std::fs::remove_dir_all(&parent).unwrap();
+
+        // A real profile has a name of its own each time.
+        let first = new_chrome_profile_dir().unwrap();
+        let second = new_chrome_profile_dir().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(std::env::temp_dir().as_path()));
+        std::fs::remove_dir(first).unwrap();
+        std::fs::remove_dir(second).unwrap();
     }
 
     fn chal(token: &str, web_url: &str) -> HvChallenge {
