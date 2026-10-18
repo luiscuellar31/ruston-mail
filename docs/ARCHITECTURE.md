@@ -507,7 +507,8 @@ Inherited forwarded attachments remain on Proton and are outside this local
 file budget; their session keys are recovered from the draft's key packets and
 wrapped for every recipient like new uploads, and a draft attachment without a
 key packet stops the send. Reading, encryption, and multipart construction run together on a
-blocking worker. Plaintext is zeroized and dropped before constructing multipart;
+blocking worker. Each upload has a random boundary, and a line break in a text
+part, such as the file's name, refuses it. Plaintext is zeroized and dropped before constructing multipart;
 the encrypted intermediate is dropped before network upload. A process-wide
 semaphore admits at most two preparations or uploads across clients and sends.
 The worker owns its permit, and a prepared upload retains it until completion
