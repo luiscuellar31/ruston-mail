@@ -828,7 +828,9 @@ separately in `Ruston Mail`'s config directory. Core
 [`session/`](../crates/ruston-core/src/session/) stores access and refresh
 tokens as one keychain entry and the session's API address as another; loading
 rejects metadata whose address differs from it. Session writes and token refresh use a per-profile
-file lock. On a 401, another process's rotated tokens are reloaded before
+file lock. Sign-in and resume read and save the session on Tokio's blocking
+pool, since the keychain may wait for the person to unlock it and the lock for
+another process; a deadline around them still ends on time. On a 401, another process's rotated tokens are reloaded before
 refreshing again. Tokens reloaded that way, or renewed meanwhile by another
 request, may have expired too: a 401 with them refreshes once more, so a
 request asks Proton for new tokens at most once. Persistence errors still

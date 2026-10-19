@@ -233,7 +233,7 @@ impl Client {
             &prompts,
             &base_url,
             app_version,
-            store.as_ref(),
+            store.clone(),
         );
         let (keys, paths, cache_identity) = auth::or_end_session(&http, opened).await?;
 
@@ -259,7 +259,7 @@ impl Client {
         prompts: &LoginPrompts,
         base_url: &str,
         app_version: String,
-        store: &dyn SecretStore,
+        store: Arc<dyn SecretStore>,
     ) -> Result<(KeyStore, Paths, CacheIdentity)> {
         let provider = crypto::provider();
         let (salts, (user, addresses)) =
@@ -290,17 +290,34 @@ impl Client {
             user_id: Some(user.id.clone()),
         };
         let paths = Paths::system()?;
-        session.save(&paths, &opts.profile, store, &login.tokens, &skp)?;
+        let (saved_in, profile, tokens) =
+            (paths.clone(), opts.profile.clone(), login.tokens.clone());
+        off_thread(move || session.save(&saved_in, &profile, store.as_ref(), &tokens, &skp))
+            .await?;
         Ok((keys, paths, cache_identity))
     }
 
     /// Resume a saved session and unlock keys using the stored `skp`.
     pub async fn resume(profile: &str) -> Result<Client> {
         validate_profile_name(profile)?;
-        tracing::info!(target: "ruston_core::mail", profile, "resume: loading saved session");
         let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(profile.to_string()));
-        let paths = Paths::system()?;
-        let loaded = Session::load(&paths, profile, store.as_ref())?.ok_or(Error::Unauthorized)?;
+        Self::resume_from(profile, Paths::system()?, store).await
+    }
+
+    /// `resume`, with the session's files and secrets where the caller says.
+    async fn resume_from(
+        profile: &str,
+        paths: Paths,
+        store: Arc<dyn SecretStore>,
+    ) -> Result<Client> {
+        tracing::info!(target: "ruston_core::mail", profile, "resume: loading saved session");
+        // The credential store may wait for the person to unlock it, and the
+        // profile lock for another process.
+        let loaded = {
+            let (paths, profile, store) = (paths.clone(), profile.to_owned(), store.clone());
+            off_thread(move || Session::load(&paths, &profile, store.as_ref())).await?
+        }
+        .ok_or(Error::Unauthorized)?;
         tracing::debug!(target: "ruston_core::mail", uid = %loaded.session.uid, "resume: session found; fetching user + addresses, unlocking keys");
 
         let mut http = HttpClient::try_new(
@@ -325,9 +342,11 @@ impl Client {
         if loaded.session.user_id.as_deref() != Some(user.id.as_str()) {
             // A session saved without its account ID records it now, so its
             // cache opens offline next time. Nothing else depends on it.
-            if let Err(error) =
-                Session::record_user_id(&paths, profile, &loaded.session.uid, &user.id)
-            {
+            let (paths, profile) = (paths.clone(), profile.to_owned());
+            let (uid, user_id) = (loaded.session.uid.clone(), user.id.clone());
+            let recorded =
+                off_thread(move || Session::record_user_id(&paths, &profile, &uid, &user_id)).await;
+            if let Err(error) = recorded {
                 tracing::debug!(target: "ruston_core::mail", %error, "resume: account ID not recorded");
             }
         }
@@ -417,15 +436,16 @@ impl Client {
     }
 }
 
-/// Runs CPU work, such as decrypting, on Tokio's blocking pool so it holds
-/// no async worker; without a runtime it runs where it is.
+/// Runs blocking work, such as decrypting or reaching the credential store,
+/// on Tokio's blocking pool so it holds no async worker; without a runtime it
+/// runs where it is.
 pub(crate) async fn off_thread<T: Send + 'static>(
     work: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
     if tokio::runtime::Handle::try_current().is_ok() {
         tokio::task::spawn_blocking(work)
             .await
-            .map_err(|error| Error::Other(format!("decryption worker failed: {error}")))?
+            .map_err(|error| Error::Other(format!("blocking worker failed: {error}")))?
     } else {
         work()
     }
@@ -577,6 +597,60 @@ mod tests {
             saved_logout_client("http://127.0.0.1:9", Arc::new(MemoryStore::new())).await;
         assert_eq!(client.user_id(), "logout-account");
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A credential store that answers late, as one waiting for the person
+    /// to unlock it does.
+    struct SlowStore {
+        inner: Arc<dyn SecretStore>,
+        delay: Duration,
+    }
+
+    impl SecretStore for SlowStore {
+        fn set(&self, key: &str, value: &str) -> Result<()> {
+            std::thread::sleep(self.delay);
+            self.inner.set(key, value)
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>> {
+            std::thread::sleep(self.delay);
+            self.inner.get(key)
+        }
+
+        fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_slow_credential_store_leaves_the_async_runtime_free() {
+        let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
+        let (client, base) = saved_logout_client("http://127.0.0.1:9", store.clone()).await;
+        let slow = Arc::new(SlowStore {
+            inner: store,
+            delay: Duration::from_millis(400),
+        });
+
+        // On one thread, a store read inline would hold the timer as well.
+        let started = Instant::now();
+        let resumed = tokio::time::timeout(
+            Duration::from_millis(50),
+            Client::resume_from("test", client.paths.clone(), slow),
+        )
+        .await;
+        assert!(resumed.is_err(), "the resume should still be waiting");
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "the timer waited {:?}",
+            started.elapsed()
+        );
+
+        // The read goes on in the background; the files go once it is done.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::fs::remove_dir_all(&base).is_err() {
+            assert!(Instant::now() < deadline, "the session files stayed in use");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[tokio::test]
