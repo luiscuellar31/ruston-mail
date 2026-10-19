@@ -162,6 +162,19 @@ fn a_saved_draft_is_reported_as_saved_not_sent() {
 }
 
 #[test]
+fn labels_and_folders_are_listed_apart() {
+    let labels = run_ok(&["--demo", "labels", "list"]);
+    let labels = assert_safe(&labels.stdout);
+    assert!(labels.starts_with("2 label(s)\n"), "{labels}");
+    assert!(labels.contains(" Work ") && !labels.contains(" Projects "));
+
+    let folders = run_ok(&["--demo", "labels", "list", "--folders"]);
+    let folders = assert_safe(&folders.stdout);
+    assert!(folders.starts_with("1 folder(s)\n"), "{folders}");
+    assert!(folders.contains(" Projects ") && !folders.contains(" Work "));
+}
+
+#[test]
 fn reading_a_message_or_a_thread_names_its_verdict_and_ends_each_body_once() {
     let message = run_ok(&["--demo", "messages", "read", "msg-demo-01"]);
     let message = assert_safe(&message.stdout);

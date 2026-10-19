@@ -18,8 +18,19 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(10 * 60);
 /// rewritten mail, or a rebuilt cache, is worth indexing again. A `forced`
 /// tick indexes anyway: the first, and any after an error, which may have
 /// come after its sync took in changes it did not index.
-fn needs_index(report: &SyncReport, forced: bool) -> bool {
-    forced
+/// A round of the watch, which decides what it refreshes besides the sync.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Round {
+    /// The first, until one succeeds: it also caches the folder.
+    First,
+    /// One after errors: it indexes the folder even if no mail changed.
+    AfterErrors,
+    /// Any other.
+    Steady,
+}
+
+fn needs_index(report: &SyncReport, round: Round) -> bool {
+    round != Round::Steady
         || report.created > 0
         || report.updated > report.flags_updated
         || report.rebuilt.is_some()
@@ -50,13 +61,12 @@ pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()>
     let client = resume(&ctx.profile).await?;
     terminal::eprintln!("watching (every {interval}s; Ctrl-C to stop)…");
     let interval = Duration::from_secs(interval);
-    let mut first_tick = true;
+    let mut round = Round::First;
     let mut failures = 0;
     loop {
-        let forced = first_tick || failures > 0;
-        match tick(&client, folder.as_deref(), first_tick, forced).await {
+        match tick(&client, folder.as_deref(), round).await {
             Ok(r) => {
-                first_tick = false;
+                round = Round::Steady;
                 failures = 0;
                 let tag = if r.initialized {
                     " (initialized)".to_string()
@@ -70,6 +80,9 @@ pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()>
             }
             Err(error) if is_transient(&error) => {
                 failures += 1;
+                if round == Round::Steady {
+                    round = Round::AfterErrors;
+                }
                 let delay = retry_delay(interval, failures);
                 terminal::eprintln!("[sync] {error}; trying again in {}s", delay.as_secs());
                 tokio::time::sleep(delay).await;
@@ -80,19 +93,14 @@ pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()>
 }
 
 /// One round: a sync, then for a folder its cache on the first round, and
-/// its index when mail changed or the round is `forced`.
-async fn tick(
-    client: &Client,
-    folder: Option<&str>,
-    first_tick: bool,
-    forced: bool,
-) -> Result<SyncReport> {
+/// its index when mail changed or the round is not a steady one.
+async fn tick(client: &Client, folder: Option<&str>, round: Round) -> Result<SyncReport> {
     let report = client.sync().await?;
     if let Some(folder) = folder {
-        if first_tick {
+        if round == Round::First {
             client.cache_folder(folder, CACHE_PAGES, PAGE_SIZE).await?;
         }
-        if needs_index(&report, forced) {
+        if needs_index(&report, round) {
             client.index_folder(folder, INDEX_PAGES, PAGE_SIZE).await?;
         }
     }
@@ -154,23 +162,27 @@ mod tests {
             initialized: false,
             rebuilt: None,
         };
-        assert!(needs_index(&report, true));
-        assert!(!needs_index(&report, false));
+        assert!(needs_index(&report, Round::First));
+        assert!(needs_index(&report, Round::AfterErrors));
+        assert!(!needs_index(&report, Round::Steady));
         report.deleted = 1;
-        assert!(!needs_index(&report, false));
+        assert!(!needs_index(&report, Round::Steady));
         report.created = 1;
-        assert!(needs_index(&report, false));
+        assert!(needs_index(&report, Round::Steady));
         report.created = 0;
         report.updated = 1;
-        assert!(needs_index(&report, false));
+        assert!(needs_index(&report, Round::Steady));
         // Read, starred or moved elsewhere: the indexed bodies still match.
         report.flags_updated = 1;
-        assert!(!needs_index(&report, false));
+        assert!(!needs_index(&report, Round::Steady));
         report.updated = 2;
-        assert!(needs_index(&report, false), "one message was rewritten");
+        assert!(
+            needs_index(&report, Round::Steady),
+            "one message was rewritten"
+        );
         report.updated = 0;
         report.flags_updated = 0;
         report.rebuilt = Some(0);
-        assert!(needs_index(&report, false));
+        assert!(needs_index(&report, Round::Steady));
     }
 }

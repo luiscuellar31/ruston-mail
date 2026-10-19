@@ -334,7 +334,12 @@ async fn read(
             terminal::println!("Wrote {} bytes to {}", msg.body.len(), path.display());
         }
     } else {
-        render::full_message(ctx.json, &msg, format, body_only);
+        render::full_message(
+            ctx.json,
+            &msg,
+            format,
+            render::MessageView::chosen(body_only),
+        );
     }
     Ok(())
 }

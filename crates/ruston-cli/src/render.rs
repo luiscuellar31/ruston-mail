@@ -2,7 +2,7 @@
 
 mod html;
 
-use crate::terminal;
+use crate::terminal::{self, BodyFormat};
 use std::borrow::Cow;
 
 use crate::cli::ReadFormat;
@@ -213,9 +213,45 @@ fn print_message_header(m: &MessageMetadata, verdict: &str, mime_type: &str) {
     terminal::println!("Id:      {}", m.id);
 }
 
-pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only: bool) {
-    if json {
+/// How much of a message [`full_message`] writes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MessageView {
+    /// Its headers, attachments and body.
+    Whole,
+    /// Only its body.
+    BodyOnly,
+}
+
+impl MessageView {
+    /// The view the `--body-only` flag asks for.
+    pub fn chosen(body_only: bool) -> Self {
         if body_only {
+            Self::BodyOnly
+        } else {
+            Self::Whole
+        }
+    }
+}
+
+/// Which of the account's labels a listing holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LabelKind {
+    /// Labels, which a message can carry several of.
+    Labels,
+    /// Folders, which a message is in one at a time.
+    Folders,
+}
+
+impl LabelKind {
+    /// The kind the `--folders` flag asks for.
+    pub fn chosen(folders: bool) -> Self {
+        if folders { Self::Folders } else { Self::Labels }
+    }
+}
+
+pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, view: MessageView) {
+    if json {
+        if view == MessageView::BodyOnly {
             // Borrowed, not copied into a `json!` value: bodies can be large.
             #[derive(serde::Serialize)]
             struct Body<'a> {
@@ -228,9 +264,13 @@ pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only
         return;
     }
     let body = displayed_body(&msg.body, &msg.mime_type, format);
-    let explicit_format = matches!(format, ReadFormat::Raw | ReadFormat::Html);
-    if body_only || matches!(format, ReadFormat::Raw) {
-        terminal::print_body(&body, explicit_format);
+    let body_format = if matches!(format, ReadFormat::Raw | ReadFormat::Html) {
+        BodyFormat::Named
+    } else {
+        BodyFormat::Readable
+    };
+    if view == MessageView::BodyOnly || matches!(format, ReadFormat::Raw) {
+        terminal::print_body(&body, body_format);
         return;
     }
     print_message_header(&msg.meta, verdict_name(msg.verdict), &msg.mime_type);
@@ -241,7 +281,7 @@ pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only
         }
     }
     terminal::println!();
-    terminal::print_body(&body, explicit_format);
+    terminal::print_body(&body, body_format);
 }
 
 fn displayed_body<'a>(body: &'a str, mime_type: &str, format: ReadFormat) -> Cow<'a, str> {
@@ -321,17 +361,20 @@ pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[ConversationMe
         };
         print_message_header(&m.meta, verdict_name(m.verdict), &m.mime_type);
         terminal::println!();
-        terminal::print_body(&m.body, false);
+        terminal::print_body(&m.body, BodyFormat::Readable);
     }
 }
 
-pub fn labels_list(json: bool, labels: &[Label], folders: bool) {
+pub fn labels_list(json: bool, labels: &[Label], kind: LabelKind) {
     if json {
         json_out(labels);
         return;
     }
-    let kind = if folders { "folder" } else { "label" };
-    terminal::println!("{} {kind}(s)", labels.len());
+    let noun = match kind {
+        LabelKind::Labels => "label",
+        LabelKind::Folders => "folder",
+    };
+    terminal::println!("{} {noun}(s)", labels.len());
     for l in labels {
         let parent = l
             .parent_id

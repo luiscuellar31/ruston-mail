@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use ruston_core::mail::attachments::safe_attachment_name;
 use ruston_core::model::ConversationLabel;
-use ruston_core::model::enums::{filter, label_ids, resolve_folder};
+use ruston_core::model::enums::{filter, label_ids, label_type, resolve_folder};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
     Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
@@ -788,7 +788,12 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                         terminal::println!("Wrote {} bytes to {}", full.body.len(), path.display());
                     }
                 } else {
-                    render::full_message(ctx.json, &full, format, body_only);
+                    render::full_message(
+                        ctx.json,
+                        &full,
+                        format,
+                        render::MessageView::chosen(body_only),
+                    );
                 }
                 Ok(())
             }
@@ -1225,17 +1230,16 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
         }
         Command::Labels { cmd } => match cmd {
             LabelsCmd::List { folders } => {
+                let kind = render::LabelKind::chosen(folders);
+                let listed = match kind {
+                    render::LabelKind::Labels => label_type::MESSAGE_LABEL,
+                    render::LabelKind::Folders => label_type::MESSAGE_FOLDER,
+                };
                 let labels: Vec<Label> = demo_labels()
                     .into_iter()
-                    .filter(|l| {
-                        if folders {
-                            l.label_type == 3
-                        } else {
-                            l.label_type == 1
-                        }
-                    })
+                    .filter(|l| l.label_type == listed)
                     .collect();
-                render::labels_list(ctx.json, &labels, folders);
+                render::labels_list(ctx.json, &labels, kind);
                 Ok(())
             }
             LabelsCmd::Create {
