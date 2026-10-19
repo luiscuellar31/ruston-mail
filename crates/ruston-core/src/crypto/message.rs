@@ -73,6 +73,75 @@ fn import_privs<P: PGPProviderSync>(
     Ok(out)
 }
 
+/// The key that signs, and whose public half receives the sender's own
+/// copies: the first key [`import_privs`] could open, which is the primary
+/// key when it opens (see [`AddressKeys::keys`]). That list is never empty.
+fn signing_key<K>(privs: &[K]) -> &K {
+    &privs[0]
+}
+
+/// The public half of the [`signing_key`].
+fn own_public_key<P: PGPProviderSync>(
+    provider: &P,
+    privs: &[P::PrivateKey],
+) -> Result<P::PublicKey> {
+    provider
+        .private_key_to_public_key(signing_key(privs))
+        .map_err(|e| Error::Crypto(format!("derive pubkey: {e}")))
+}
+
+/// The armored public keys that import, skipping any that do not.
+fn import_public_keys<P: PGPProviderSync>(provider: &P, armored: &[String]) -> Vec<P::PublicKey> {
+    armored
+        .iter()
+        .filter_map(|key| {
+            provider
+                .public_key_import(key.as_bytes(), DataEncoding::Armor)
+                .ok()
+        })
+        .collect()
+}
+
+/// A session key copied out of the provider, so it outlives this step.
+fn export_session_key<P: PGPProviderSync>(
+    provider: &P,
+    session_key: &P::SessionKey,
+) -> Result<SessionKeyMaterial> {
+    let (bytes, algo) = provider
+        .session_key_export(session_key)
+        .map_err(|e| Error::Crypto(format!("sk export: {e}")))?;
+    Ok(SessionKeyMaterial {
+        key: Zeroizing::new(bytes.as_ref().to_vec()),
+        algo,
+    })
+}
+
+/// A copied session key turned back into the provider's own.
+fn import_session_key<P: PGPProviderSync>(
+    provider: &P,
+    material: &SessionKeyMaterial,
+) -> Result<P::SessionKey> {
+    provider
+        .session_key_import(&material.key, material.algo)
+        .map_err(|e| Error::Crypto(format!("sk import: {e}")))
+}
+
+/// The session key an attachment's base64 key packets carry.
+fn decrypt_attachment_key_packets<P: PGPProviderSync>(
+    provider: &P,
+    privs: &[P::PrivateKey],
+    key_packets_b64: &str,
+) -> Result<P::SessionKey> {
+    let kp = STANDARD
+        .decode(key_packets_b64)
+        .map_err(|e| Error::Crypto(format!("bad attachment key packet: {e}")))?;
+    provider
+        .new_decryptor()
+        .with_decryption_keys(privs.iter())
+        .decrypt_session_key(&kp)
+        .map_err(|e| Error::Crypto(format!("attachment session key decrypt failed: {e}")))
+}
+
 /// Decrypt a message body; signature failures are non-fatal (returned as a verdict).
 pub fn decrypt_body<P: PGPProviderSync>(
     provider: &P,
@@ -81,14 +150,7 @@ pub fn decrypt_body<P: PGPProviderSync>(
     armored_body: &str,
 ) -> Result<(String, Verdict)> {
     let privs = import_privs(provider, addr)?;
-    let pubs: Vec<P::PublicKey> = verify_pubs_armored
-        .iter()
-        .filter_map(|a| {
-            provider
-                .public_key_import(a.as_bytes(), DataEncoding::Armor)
-                .ok()
-        })
-        .collect();
+    let pubs = import_public_keys(provider, verify_pubs_armored);
     tracing::debug!(target: "ruston_core::crypto", address = %addr.email, decrypt_keys = privs.len(), verify_keys = pubs.len(), armored_len = armored_body.len(), "decrypting message body");
 
     let mut dec = provider.new_decryptor().with_decryption_keys(privs.iter());
@@ -100,15 +162,15 @@ pub fn decrypt_body<P: PGPProviderSync>(
         .decrypt(armored_body.as_bytes(), DataEncoding::Armor)
         .map_err(|e| Error::Crypto(format!("body decrypt failed: {e}")))?;
 
-    let verdict = if !have_verifier {
-        Verdict::Unverified
-    } else {
+    let verdict = if have_verifier {
         match verified.verification_result() {
             Ok(_) => Verdict::Verified,
             Err(VerificationError::NotSigned(_)) => Verdict::Unsigned,
             Err(VerificationError::NoVerifier(_)) => Verdict::Unverified,
             Err(_) => Verdict::Invalid,
         }
+    } else {
+        Verdict::Unverified
     };
     let body = String::from_utf8_lossy(verified.as_bytes()).into_owned();
     tracing::debug!(target: "ruston_core::crypto", verdict = ?verdict, plaintext_len = body.len(), "message body decrypted");
@@ -128,14 +190,7 @@ pub fn decrypt_attachment<P: PGPProviderSync>(
 ) -> Result<Vec<u8>> {
     let privs = import_privs(provider, addr)?;
     tracing::debug!(target: "ruston_core::crypto", address = %addr.email, data_packet = data_packet.len(), "decrypting attachment (unwrap session key → decrypt data packet)");
-    let kp = STANDARD
-        .decode(key_packets_b64)
-        .map_err(|e| Error::Crypto(format!("bad attachment key packet: {e}")))?;
-    let sk = provider
-        .new_decryptor()
-        .with_decryption_keys(privs.iter())
-        .decrypt_session_key(&kp)
-        .map_err(|e| Error::Crypto(format!("attachment session key decrypt failed: {e}")))?;
+    let sk = decrypt_attachment_key_packets(provider, &privs, key_packets_b64)?;
     let out = provider
         .new_decryptor()
         .with_session_key(sk)
@@ -152,14 +207,7 @@ pub fn verify_attachment_signature<P: PGPProviderSync>(
     plaintext: &[u8],
     signature: &str,
 ) -> Result<()> {
-    let pubs: Vec<P::PublicKey> = verify_pubs_armored
-        .iter()
-        .filter_map(|key| {
-            provider
-                .public_key_import(key.as_bytes(), DataEncoding::Armor)
-                .ok()
-        })
-        .collect();
+    let pubs = import_public_keys(provider, verify_pubs_armored);
     if pubs.is_empty() {
         return Err(Error::AttachmentVerificationFailed);
     }
@@ -179,13 +227,11 @@ pub fn encrypt_self_draft<P: PGPProviderSync>(
 ) -> Result<String> {
     let privs = import_privs(provider, addr)?;
     tracing::debug!(target: "ruston_core::crypto", address = %addr.email, body_len = body.len(), "encrypting + signing draft body to self");
-    let pubk = provider
-        .private_key_to_public_key(&privs[0])
-        .map_err(|e| Error::Crypto(format!("derive pubkey: {e}")))?;
+    let pubk = own_public_key(provider, &privs)?;
     let msg = provider
         .new_encryptor()
         .with_encryption_key(&pubk)
-        .with_signing_key(&privs[0])
+        .with_signing_key(signing_key(&privs))
         .with_utf8()
         .encrypt(body.as_bytes())
         .map_err(|e| Error::Crypto(format!("draft encrypt failed: {e}")))?;
@@ -207,19 +253,11 @@ pub fn encrypt_for_transport<P: PGPProviderSync>(
     let sk = provider
         .session_key_generate(SessionKeyAlgorithm::Aes256)
         .map_err(|e| Error::Crypto(format!("session key gen: {e}")))?;
-    let material = {
-        let (bytes, algo) = provider
-            .session_key_export(&sk)
-            .map_err(|e| Error::Crypto(format!("sk export: {e}")))?;
-        SessionKeyMaterial {
-            key: Zeroizing::new(bytes.as_ref().to_vec()),
-            algo,
-        }
-    };
+    let material = export_session_key(provider, &sk)?;
     let data_packet = provider
         .new_encryptor()
         .with_session_key(sk)
-        .with_signing_key(&privs[0])
+        .with_signing_key(signing_key(&privs))
         .with_utf8()
         .encrypt_raw(body.as_bytes(), DataEncoding::Bytes)
         .map_err(|e| Error::Crypto(format!("transport body encrypt failed: {e}")))?;
@@ -234,21 +272,11 @@ pub fn encrypt_attachment<P: PGPProviderSync>(
 ) -> Result<UploadedAttachment> {
     let privs = import_privs(provider, addr)?;
     tracing::debug!(target: "ruston_core::crypto", address = %addr.email, bytes = bytes.len(), "encrypting attachment (session key + data packet + detached signature)");
-    let selfpub = provider
-        .private_key_to_public_key(&privs[0])
-        .map_err(|e| Error::Crypto(format!("derive pubkey: {e}")))?;
+    let selfpub = own_public_key(provider, &privs)?;
     let sk = provider
         .session_key_generate(SessionKeyAlgorithm::Aes256)
         .map_err(|e| Error::Crypto(format!("session key gen: {e}")))?;
-    let material = {
-        let (skb, algo) = provider
-            .session_key_export(&sk)
-            .map_err(|e| Error::Crypto(format!("sk export: {e}")))?;
-        SessionKeyMaterial {
-            key: Zeroizing::new(skb.as_ref().to_vec()),
-            algo,
-        }
-    };
+    let material = export_session_key(provider, &sk)?;
     let data_packet = provider
         .new_encryptor()
         .with_session_key(sk)
@@ -256,13 +284,11 @@ pub fn encrypt_attachment<P: PGPProviderSync>(
         .map_err(|e| Error::Crypto(format!("attachment encrypt failed: {e}")))?;
     let signature = provider
         .new_signer()
-        .with_signing_key(&privs[0])
+        .with_signing_key(signing_key(&privs))
         .sign_detached(bytes, DataEncoding::Bytes)
         .map_err(|e| Error::Crypto(format!("attachment sign failed: {e}")))?;
     let key_packet = {
-        let imported = provider
-            .session_key_import(&material.key, material.algo)
-            .map_err(|e| Error::Crypto(format!("sk import: {e}")))?;
+        let imported = import_session_key(provider, &material)?;
         provider
             .new_encryptor()
             .with_encryption_key(&selfpub)
@@ -284,9 +310,7 @@ pub fn wrap_session_key<P: PGPProviderSync>(
     mat: &SessionKeyMaterial,
 ) -> Result<Vec<u8>> {
     tracing::trace!(target: "ruston_core::crypto", "wrapping session key to a recipient public key");
-    let sk = provider
-        .session_key_import(&mat.key, mat.algo)
-        .map_err(|e| Error::Crypto(format!("sk import: {e}")))?;
+    let sk = import_session_key(provider, mat)?;
     let pubk = provider
         .public_key_import(recipient_pub_armored.as_bytes(), DataEncoding::Armor)
         .map_err(|e| Error::Crypto(format!("recipient pubkey import: {e}")))?;
@@ -304,12 +328,8 @@ pub fn wrap_session_key_to_self<P: PGPProviderSync>(
     mat: &SessionKeyMaterial,
 ) -> Result<Vec<u8>> {
     let privs = import_privs(provider, addr)?;
-    let selfpub = provider
-        .private_key_to_public_key(&privs[0])
-        .map_err(|e| Error::Crypto(format!("derive pubkey: {e}")))?;
-    let sk = provider
-        .session_key_import(&mat.key, mat.algo)
-        .map_err(|e| Error::Crypto(format!("sk import: {e}")))?;
+    let selfpub = own_public_key(provider, &privs)?;
+    let sk = import_session_key(provider, mat)?;
     provider
         .new_encryptor()
         .with_encryption_key(&selfpub)
@@ -327,9 +347,7 @@ pub fn rewrap_attachment_session_key<P: PGPProviderSync>(
 ) -> Result<Vec<u8>> {
     let src_privs = import_privs(provider, src)?;
     let dst_privs = import_privs(provider, dst)?;
-    let dstpub = provider
-        .private_key_to_public_key(&dst_privs[0])
-        .map_err(|e| Error::Crypto(format!("derive pubkey: {e}")))?;
+    let dstpub = own_public_key(provider, &dst_privs)?;
     let kp = STANDARD
         .decode(key_packets_b64)
         .map_err(|e| Error::Crypto(format!("bad key packet: {e}")))?;
@@ -353,27 +371,15 @@ pub fn decrypt_session_key<P: PGPProviderSync>(
     key_packets_b64: &str,
 ) -> Result<SessionKeyMaterial> {
     let privs = import_privs(provider, addr)?;
-    let kp = STANDARD
-        .decode(key_packets_b64)
-        .map_err(|e| Error::Crypto(format!("bad attachment key packet: {e}")))?;
-    let sk = provider
-        .new_decryptor()
-        .with_decryption_keys(privs.iter())
-        .decrypt_session_key(&kp)
-        .map_err(|e| Error::Crypto(format!("attachment session key decrypt failed: {e}")))?;
-    let (bytes, algo) = provider
-        .session_key_export(&sk)
-        .map_err(|e| Error::Crypto(format!("sk export: {e}")))?;
+    let sk = decrypt_attachment_key_packets(provider, &privs, key_packets_b64)?;
+    let material = export_session_key(provider, &sk)?;
     // Packages name the algorithm, and an unknown one cannot be named.
-    if matches!(algo, SessionKeyAlgorithm::Unknown) {
+    if matches!(material.algo, SessionKeyAlgorithm::Unknown) {
         return Err(Error::Crypto(
             "attachment session key uses an unsupported algorithm".into(),
         ));
     }
-    Ok(SessionKeyMaterial {
-        key: Zeroizing::new(bytes.as_ref().to_vec()),
-        algo,
-    })
+    Ok(material)
 }
 
 /// Generate a fresh AES-256 session key; return its material + base64 token.
@@ -381,17 +387,9 @@ pub fn new_session_key<P: PGPProviderSync>(provider: &P) -> Result<(SessionKeyMa
     let sk = provider
         .session_key_generate(SessionKeyAlgorithm::Aes256)
         .map_err(|e| Error::Crypto(format!("session key gen: {e}")))?;
-    let (bytes, algo) = provider
-        .session_key_export(&sk)
-        .map_err(|e| Error::Crypto(format!("sk export: {e}")))?;
-    let token = STANDARD.encode(bytes.as_ref());
-    Ok((
-        SessionKeyMaterial {
-            key: Zeroizing::new(bytes.as_ref().to_vec()),
-            algo,
-        },
-        token,
-    ))
+    let material = export_session_key(provider, &sk)?;
+    let token = STANDARD.encode(material.key.as_slice());
+    Ok((material, token))
 }
 
 /// Symmetric-encrypt text under a password (armored) — the EO `EncToken`.
@@ -419,9 +417,7 @@ pub fn wrap_session_key_with_password<P: PGPProviderSync>(
     password: &str,
     mat: &SessionKeyMaterial,
 ) -> Result<Vec<u8>> {
-    let sk = provider
-        .session_key_import(&mat.key, mat.algo)
-        .map_err(|e| Error::Crypto(format!("sk import: {e}")))?;
+    let sk = import_session_key(provider, mat)?;
     provider
         .new_encryptor()
         .with_passphrase(password)
@@ -434,7 +430,9 @@ pub fn algo_name(algo: SessionKeyAlgorithm) -> &'static str {
     match algo {
         SessionKeyAlgorithm::Aes256 => "aes256",
         SessionKeyAlgorithm::Aes128 => "aes128",
-        _ => "aes256",
+        // No package of this crate names one: fresh keys are AES-256, and
+        // `decrypt_session_key` refuses an unknown algorithm.
+        SessionKeyAlgorithm::Unknown => "aes256",
     }
 }
 

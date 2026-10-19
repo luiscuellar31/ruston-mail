@@ -19,14 +19,30 @@ Switching panes keeps the open conversation, draft, and list position.
 
 Enter your Proton username or email and password. Ruston Mail asks for a TOTP
 code, a separate mailbox password, or Proton's browser-based human verification
-when the account needs one. Each step opens with the cursor in its first empty
-field, so you can type right away.
+when the account needs one. That verification is a CAPTCHA; if Proton asks for
+another kind, such as a code by email or text message, Ruston Mail says it does
+not support it yet. A mailbox password is asked for once the password
+and code are accepted, in the same sign-in, so you do not enter them again.
+Each step opens with the cursor in its first empty field, so you can type right
+away. A sign-in that waits more than two minutes
+for Proton stops and says it took too long; the time you spend solving the
+verification or finding a code does not count.
 
-A saved session opens automatically on later runs. Signing out asks Proton to
+A saved session opens automatically on later runs. If it cannot open for a
+reason that may pass, such as no network, Proton being unavailable, or locked
+password storage, the session stays saved: the sign-in screen shows why, with
+**Try again**, so you do not have to sign in again. Opening it also stops after
+two minutes. Signing out asks Proton to
 revoke that session and removes its local copy. If you were reading one of your
 own folders or labels, the next sign-in opens the Inbox instead. If you are writing a message,
 Ruston asks before discarding it. While a message is being sent, **Sign out**
 is unavailable until the send finishes.
+
+If Proton ends the session while you are writing, the message waits in memory,
+never on disk, and comes back when you sign in again to the same account. The
+sign-in screen says so; signing in to another account discards it, and closing
+Ruston asks first. A message that was being sent comes back asking you to check
+Sent before sending it again.
 
 FIDO2 and WebAuthn security keys are not supported yet.
 
@@ -89,7 +105,9 @@ search it searches again rather than reloading the folder.
 Messages in a conversation appear oldest first. The newest message and any you
 have not read start open; older messages and quoted replies start folded. These
 defaults can be changed in Settings. A long conversation opens scrolled to its
-first unread message, or to its newest one.
+first unread message, or to its newest one. An open message lists the people
+it was sent to under **To**, and those copied under **Cc** and **Bcc** on
+lines of their own; Bcc is known only for mail you sent.
 
 Ruston checks some grouped conversations in the background to separate repeated
 incoming messages. These checks are limited and cancelled when you change
@@ -104,12 +122,15 @@ treat that message's contents with caution. The status applies to the body,
 not to its attachments. Verification uses available sender keys, never one
 Proton marks as compromised, and does not establish the sender's identity
 independently. If the sender's keys cannot be fetched, the message shows as not
-verified.
+verified. Signatures are checked, and yours are dated, by Proton's clock once
+Proton has answered, so a computer clock that is set wrong does not make good
+signatures look invalid.
 
 A message that cannot be decrypted, for example because it was encrypted to a
-key your account no longer has, shows a notice instead of its text. The rest of
-the conversation still opens, and you can still reply to it or forward it,
-without its text quoted.
+key your account no longer has, shows a notice instead of its text, whether it
+is part of a conversation or listed on its own. The rest of the conversation
+still opens, and you can still reply to it or forward it, without its text
+quoted.
 
 HTML mail is converted to native text and layout. Headings, lists, links, basic
 formatting, and quotes remain, but scripts and remote content do not run. Remote
@@ -140,8 +161,11 @@ Actions show at once, without waiting for Proton: a moved conversation leaves
 the list and the next one opens, and its undo is offered right away. Under
 Starred or a label, a conversation moved to another folder keeps its star and
 labels, so it stays in the list; a move to Spam or Trash still takes it out.
-Actions taken in quick succession go to Proton one after another, in order. If
-Proton refuses one, the reader says so and the change is taken back; a moved
+Actions taken in quick succession go to Proton one after another, in order.
+They also work while the list refreshes, on its own or after **Refresh**, and
+the refreshed list keeps what they changed. Only a folder's first load, a
+search on its way and **Load more** hold them back for a moment. If Proton
+refuses one, the reader says so and the change is taken back; a moved
 conversation comes back when the folder reloads.
 
 If an automatic read is still pending, **Mark unread** waits for it to succeed
@@ -157,7 +181,9 @@ click does, or **Copy link**, which copies its address without opening it.
 Web links open in the system browser. A confirmation dialog over the window
 shows the destination first by default; a long address scrolls inside it, and
 `Esc` dismisses it before anything else. Email (`mailto:`) links use Ruston's
-composer after the same confirmation.
+composer after the same confirmation, which names every recipient the new
+message would get, those a `?to=` adds included; past three it names the
+first three and how many more.
 
 ## Opening email links
 
@@ -182,13 +208,17 @@ Launching Ruston again activates the existing instance for that user; the demo
 has its own instance. The system can restrict bringing a window to the front,
 especially on Wayland, where it can show an attention indicator instead.
 See the [setup instructions](DEVELOPMENT.md#email-link-handlers-and-activation)
-to enable email-link handling on your platform.
+to enable email-link handling on your platform. On Windows, the installer's
+email-link option registers Ruston; then choose it for MAILTO in Settings >
+Apps > Default apps.
 
 ## Attachments
 
 Choose **Save** to save an attachment in the system Downloads folder. Ruston Mail
 uses a safe file name and never replaces an existing file; it adds a number to
-the new name instead.
+the new name instead. On Windows, saved attachments are marked as downloaded
+from the internet, like a browser's downloads, so SmartScreen checks a program
+before it runs and Office opens documents in Protected View.
 
 Choose **Save as…** to select another folder or filename in the native save
 dialog. Cancelling does not download or write the attachment. Choose a new
@@ -197,7 +227,9 @@ dialog offers replacement. If the destination exists, Ruston shows an error
 and you can choose another name.
 
 The app can reveal a saved attachment in the file manager. Use **Attach…**
-beside **Send** in the composer to add local files to an outgoing message.
+beside **Send** in the composer to add local files to an outgoing message, or
+drop files on the window that shows the message being written. Dropping files
+is not available on Wayland.
 On Linux, **Show in folder** asks the file manager to select the saved file;
 if the desktop does not support selection, it opens the containing folder.
 
@@ -251,7 +283,9 @@ stay visible. Settings can open it in a separate window instead. The same choice
 applies to new messages, replies, and forwards. It opens with the cursor in
 **To** for a new message or a forward, and in the message for a reply. While it
 fills the reading pane, the list keys (`j`, `k`, the arrows and `Enter`) wait,
-so they never open a conversation out of sight.
+so they never open a conversation out of sight. A conversation clicked in the
+list meanwhile opens behind the draft and stays unread until the reader shows
+it.
 The composer scrolls vertically when its fields or attachments exceed the
 available height, in either placement.
 
@@ -260,6 +294,11 @@ composer is in the reading pane or a separate window. Choose **Keep writing**
 to cancel or **Discard and close** to exit. Repeating the close request does not
 discard the draft. Closing is blocked while a message is being sent or a native
 file dialog is open. Unapplied Settings changes are resolved before the draft.
+If changes you just made, such as moves or stars, are still on their way to
+Proton, the window says so and closes once they arrive. **Close now** closes at
+once and loses them, as closing again does; **Keep open** stays. Signing out
+waits for them the same way, with **Sign out now** and **Stay signed in**. And
+closing while signing out waits until this device has forgotten the session.
 On macOS, **Quit Ruston Mail** in the application menu and `Cmd+Q` use the same
 confirmation. Direct termination, including **Quit** from the Dock or system
 shutdown, can bypass it; drafts are not saved to disk.
@@ -284,7 +323,10 @@ own addresses. Replying to a message you sent continues with the people you sent
 it to. The composer lists these recipients, and warns when the
 message's Reply-To sends the reply somewhere other than its sender. The subject
 is written for you. Replies and forwards are sent from the address the original
-message reached.
+message reached. The original's text is quoted under yours when it can be
+opened, and a forward also carries the original's files, images in its body
+included; the composer says when the original is quoted and lists the
+attachments a forward sends.
 
 Messages can be sent as plain text or HTML. The editor remains plain text in
 both modes: text that looks like an HTML tag is sent as text, not executed as
@@ -319,19 +361,27 @@ Settings control:
 - Whether the composer checks recipient encryption while you write (Advanced).
 - Whether recipient fields accept international domain names (Advanced).
 - The folder shown at startup.
-- Dark or light appearance. Dark remains the default for existing settings.
+- Dark or light appearance, or on macOS and Windows the system's. Dark remains
+  the default.
 - Interface scale.
 - Optional system interface font, with Ruston's fonts retained as fallback.
 - A button to reset the window and pane sizes to their defaults immediately.
-- On macOS, whether the Dock icon shows the unread inbox count.
+- On macOS, whether the Dock icon shows the unread inbox count; on Windows,
+  whether the taskbar button does. Windows shows it only while badges are on
+  in its taskbar settings (Settings › Personalization › Taskbar › Taskbar
+  behaviors).
 
 Window size and pane widths are remembered automatically. Use **Reset window and
 pane sizes** under Settings → Interface to restore the defaults; this action
 takes effect immediately and does not apply other pending preference changes.
-Choose Dark or Light under Settings → Interface and press Apply. The selection
-is saved for the next run; the app does not follow the system theme.
-The sign-in screen also has a theme button in its header and a control beside
-each password field to show or hide what you type.
+Choose Dark or Light, or on macOS and Windows System, under Settings →
+Interface and press Apply. The selection is saved for the next run. System
+follows the light or dark mode of macOS or Windows as it changes and keeps the
+last scheme you chose, which an older version of Ruston opens with. Linux has
+no System choice yet, since its windowing library reports no system mode. The
+sign-in screen also has a theme button in its header, which switches to the
+other scheme from the one on screen, and a control beside each password field
+to show or hide what you type.
 
 **Use system interface font** under Settings → Interface is optional and takes
 effect after Apply, without changing text sizes. The default keeps Ruston's
@@ -342,6 +392,22 @@ load in the background after the window opens, so text in other scripts can
 show placeholder boxes for a moment at startup.
 Coverage depends on local fonts; there are no font downloads. This expands
 glyph coverage but does not provide complete bidirectional/RTL text layout.
+
+## Graphics on Windows
+
+On Windows, Ruston Mail draws with DirectX 12 on the graphics processor that
+uses the least power, or with Windows' software renderer where there is none,
+as in many virtual machines. If DirectX 12 cannot draw the window, Ruston uses
+OpenGL instead. To use OpenGL from the start, for example when a graphics
+driver draws the window wrongly, set `RUSTON_RENDERER` to `opengl` for your
+user in PowerShell and start Ruston again:
+
+```powershell
+[Environment]::SetEnvironmentVariable('RUSTON_RENDERER', 'opengl', 'User')
+```
+
+Pass `$null` instead of `'opengl'` to go back to DirectX 12. macOS and Linux
+always draw with OpenGL.
 
 ## Keyboard shortcuts
 
@@ -356,16 +422,28 @@ glyph coverage but does not provide complete bidirectional/RTL text layout.
 | `Cmd`/`Ctrl` + `,` | Open Settings on macOS; open or close Settings on Linux/Windows |
 | `Cmd`/`Ctrl` + `N` | Write a new message |
 | `Cmd`/`Ctrl` + `Enter` | Send the message being written |
-| `Cmd` + `Backspace` / `Delete` | Move the selected conversation to Trash |
+| `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move the selected conversation to Trash |
 | `Cmd`/`Ctrl` + `+` (or `=`), `-`, `0` | Zoom in, zoom out, or back to 100%, in the interface scale's steps |
 
 Shortcuts do not run while a text field is using the same key. When `Tab` has
 put focus on a button or a row, which shows a violet ring, the arrows move that
-focus and `Enter` presses it; `j` and `k` still move through the list.
+focus and `Enter` presses it; `j` and `k` still move through the list. On
+Windows, `Ctrl` + `Alt` with a key runs no `Ctrl` shortcut, since Windows types
+with it what `AltGr` types.
+
+Screen readers cannot read the composer when it opens in a new window yet:
+with one, keep **Settings** › **Writing** on **Reading pane**, the default.
+
+On Windows, turning off **Animation effects** (Windows Settings ›
+Accessibility › Visual effects) holds Ruston still too: no fades or gliding
+scrolls, and loading placeholders and spinners that do not move.
 
 Screen readers announce each conversation row with what it shows: whether it is
 unread, who and what it is about, its date, its star, how many messages it has
-and whether it has attachments, and whether it is the conversation open.
+and whether it has attachments, and whether it is the conversation open. Each
+text field is announced by its name: the label above it when signing in and
+in the composer, **Message** for the message itself and **Search mail** for the
+search.
 
 ## Command line
 
@@ -381,6 +459,11 @@ inside the app:
 
 - **Linux:** pass `--cli` as the AppImage's first argument, or start the
   AppImage through a link named `ruston-cli`.
+- **Windows:** `ruston-cli.exe` sits beside `ruston.exe`, in
+  `%LOCALAPPDATA%\Programs\Ruston Mail` after installing. Select *Add
+  ruston-cli to the PATH* in the installer to run it as `ruston-cli` from any
+  terminal; with the portable ZIP, run it from its folder or add the folder to
+  your `PATH`.
 
 From source, run `cargo run -p ruston-cli -- --help`. `ruston-cli --help` lists
 every command, and `ruston-cli <command> --help` its options.
@@ -392,6 +475,23 @@ want a separate login; an existing CLI `default` session remains available with
 When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached
 through a published PGP key get an HTML body as plain text.
+
+`login` asks for the account password, and for a TOTP code or a separate
+mailbox password when the account needs them, without showing what you type.
+Give them as `PROTON_PASSWORD`, `PROTON_TOTP` and `PROTON_MAILBOX_PASSWORD` in
+scripts rather than as options, which other programs can read. Likewise,
+`messages send --eo-password` without a value asks twice for the password that
+protects the message. `messages send --send-at` reports the message as
+scheduled, with the time Proton sends it, since it has not left yet; its JSON
+carries that time as `scheduled_at`.
+
+`drafts save` and `drafts edit` upload `--attach` files to the draft. If one
+cannot be uploaded, `drafts save` deletes the draft it made, while `drafts
+edit` keeps the files attached before it. An edited draft stays written from
+its own address unless `--from` names another; one with attachments keeps its
+address, since they are encrypted to it. A draft keeps no delivery time,
+expiration, or message password: `--send-at`, `--expires`, and
+`--eo-password` are options of `messages send`.
 
 Output can be piped into tools that stop reading early, such as `head`: the
 CLI then ends quietly with exit status 0.

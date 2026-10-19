@@ -18,12 +18,12 @@ impl NewMail {
     /// First success establishes a baseline. Unread changes on a known ID are
     /// never arrivals. Keep IDs at the watermark to handle equal timestamps.
     pub(super) fn observe<'a>(&mut self, messages: &'a [IncomingMail]) -> Option<&'a IncomingMail> {
+        let recent = &messages[..messages.len().min(RECENT_LIMIT as usize)];
         let arrival = self
             .initialized
             .then(|| {
-                messages
+                recent
                     .iter()
-                    .take(RECENT_LIMIT as usize)
                     .filter(|mail| {
                         mail.unread
                             && mail.time > 0
@@ -34,29 +34,19 @@ impl NewMail {
             })
             .flatten();
         self.initialized = true;
-        if let Some(newest) = messages
-            .iter()
-            .take(RECENT_LIMIT as usize)
-            .map(|mail| mail.time)
-            .max()
-        {
+        if let Some(newest) = recent.iter().map(|mail| mail.time).max() {
             if newest > self.newest_time {
                 self.newest_time = newest;
                 self.seen.clear();
             }
-            for mail in messages
-                .iter()
-                .take(RECENT_LIMIT as usize)
-                .filter(|mail| mail.time == self.newest_time)
-            {
+            for mail in recent.iter().filter(|mail| mail.time == self.newest_time) {
                 self.seen.insert(mail.id.clone());
             }
             // Bound IDs even if a server returns arbitrarily many equal timestamps.
             // Retaining the last sample is enough for the supported recent page.
             if self.seen.len() > RECENT_LIMIT as usize {
-                self.seen = messages
+                self.seen = recent
                     .iter()
-                    .take(RECENT_LIMIT as usize)
                     .filter(|mail| mail.time == self.newest_time)
                     .map(|mail| mail.id.clone())
                     .collect();

@@ -1,4 +1,4 @@
-use crate::settings::Panels;
+use crate::settings::{MAX_RATIO, MIN_RATIO, Panels};
 
 /// Width of the draggable divider between panels.
 pub const DIVIDER_WIDTH: f32 = 1.0;
@@ -6,9 +6,12 @@ pub const DIVIDER_WIDTH: f32 = 1.0;
 /// Narrowest width a panel can be dragged or squeezed to.
 pub const MIN_PANEL_WIDTH: f32 = 200.0;
 
+/// The narrowest window that shows the three panes side by side.
+pub const MIN_COLUMNS_WIDTH: f32 = 3.0 * MIN_PANEL_WIDTH + 2.0 * DIVIDER_WIDTH;
+
 /// Switch to one pane when the three usable columns and dividers cannot fit.
 pub fn compact(window_width: f32) -> bool {
-    window_width < 3.0 * MIN_PANEL_WIDTH + 2.0 * DIVIDER_WIDTH
+    window_width < MIN_COLUMNS_WIDTH
 }
 
 /// Sidebar, conversation list and reader widths for a window.
@@ -41,12 +44,12 @@ pub fn widths(ratios: Panels, window_width: f32) -> PanelWidths {
 /// existing settings file.
 pub fn ratios(sidebar: f32, conversations: f32, window_width: f32) -> Panels {
     let available = (window_width - 2.0 * DIVIDER_WIDTH).max(1.0);
-    let sidebar_ratio = (sidebar / available).clamp(0.1, 0.9);
+    let sidebar_ratio = (sidebar / available).clamp(MIN_RATIO, MAX_RATIO);
     let remaining = (available - sidebar).max(1.0);
 
     Panels {
         sidebar: sidebar_ratio,
-        conversations: (conversations / remaining).clamp(0.1, 0.9),
+        conversations: (conversations / remaining).clamp(MIN_RATIO, MAX_RATIO),
     }
 }
 
@@ -55,7 +58,6 @@ mod tests {
     use super::*;
 
     const DEFAULT_WINDOW: f32 = 1_100.0;
-    const TIGHTEST_WINDOW: f32 = 3.0 * MIN_PANEL_WIDTH + 2.0 * DIVIDER_WIDTH;
 
     #[test]
     fn default_layout_matches_previous_proportions() {
@@ -85,7 +87,7 @@ mod tests {
                 conversations: 1.0,
             },
         ] {
-            for window in [TIGHTEST_WINDOW, DEFAULT_WINDOW, 2_560.0] {
+            for window in [MIN_COLUMNS_WIDTH, DEFAULT_WINDOW, 2_560.0] {
                 let widths = widths(ratios, window);
                 for width in [widths.sidebar, widths.conversations, widths.reader] {
                     assert!(width >= MIN_PANEL_WIDTH, "{width} px in {window} px");
@@ -116,9 +118,9 @@ mod tests {
     fn compact_layout_tracks_usable_points_at_every_supported_zoom() {
         for zoom in [1.0, 1.15, 1.3, 1.5, 1.75, 2.0] {
             let available = 820.0 / zoom;
-            assert_eq!(compact(available), available < TIGHTEST_WINDOW);
+            assert_eq!(compact(available), available < MIN_COLUMNS_WIDTH);
         }
-        assert!(compact(TIGHTEST_WINDOW - 1.0));
-        assert!(!compact(TIGHTEST_WINDOW));
+        assert!(compact(MIN_COLUMNS_WIDTH - 1.0));
+        assert!(!compact(MIN_COLUMNS_WIDTH));
     }
 }

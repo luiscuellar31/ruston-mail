@@ -10,12 +10,12 @@ pub async fn run(ctx: &Ctx, cmd: LabelsCmd) -> Result<()> {
     let client = resume(&ctx.profile).await?;
     match cmd {
         LabelsCmd::List { folders } => {
-            let labels = if folders {
-                client.list_folders().await?
-            } else {
-                client.list_labels().await?
+            let kind = render::LabelKind::chosen(folders);
+            let labels = match kind {
+                render::LabelKind::Labels => client.list_labels().await?,
+                render::LabelKind::Folders => client.list_folders().await?,
             };
-            render::labels_list(ctx.json, &labels, folders);
+            render::labels_list(ctx.json, &labels, kind);
         }
         LabelsCmd::Create {
             name,

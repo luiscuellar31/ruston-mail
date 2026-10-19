@@ -137,6 +137,11 @@ fn page(
             }
         });
         description(ui, "Where Write, Reply and Forward open.");
+        // eframe gives only the main window an accessibility tree.
+        description(
+            ui,
+            "Screen readers cannot read a new window yet, so with one, keep the reading pane.",
+        );
         ui.add_space(10.0);
 
         ui.horizontal_wrapped(|ui| {
@@ -179,10 +184,30 @@ fn page(
     ui.add_space(14.0);
     section(ui, "Interface", |ui| {
         ui.label("Appearance");
+        // winit tells the system's mode on macOS and Windows, not on Linux.
+        let offer_system = !cfg!(target_os = "linux");
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut settings.appearance, Appearance::Dark, "Dark");
-            ui.selectable_value(&mut settings.appearance, Appearance::Light, "Light");
+            // Following the system keeps the scheme last chosen, for where
+            // the system tells none.
+            if offer_system
+                && ui
+                    .selectable_label(settings.follow_system_appearance, "System")
+                    .clicked()
+            {
+                settings.follow_system_appearance = true;
+            }
+            for (appearance, label) in [(Appearance::Dark, "Dark"), (Appearance::Light, "Light")] {
+                let chosen =
+                    !settings.follow_system_appearance && settings.appearance == appearance;
+                if ui.selectable_label(chosen, label).clicked() {
+                    settings.follow_system_appearance = false;
+                    settings.appearance = appearance;
+                }
+            }
         });
+        if offer_system {
+            description(ui, "System follows your computer's light or dark mode.");
+        }
         ui.add_space(8.0);
         ui.add(theme::Checkbox::new(
             &mut settings.system_font,
@@ -212,6 +237,19 @@ fn page(
             description(
                 ui,
                 "Updates the Dock icon with the number of unread messages in your inbox.",
+            );
+            ui.add_space(8.0);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            ui.add(theme::Checkbox::new(
+                &mut settings.show_unread_badge,
+                "Show unread count on the taskbar button",
+            ));
+            description(
+                ui,
+                "Marks the taskbar button with the number of unread messages in your inbox, \
+                 while badges are on in Windows' taskbar settings.",
             );
             ui.add_space(8.0);
         }
@@ -352,8 +390,13 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     if (draft.zoom - current.zoom).abs() > f32::EPSILON {
         messages.push(Message::SetZoom(draft.zoom));
     }
-    if draft.appearance != current.appearance {
+    let scheme_changed = draft.appearance != current.appearance;
+    if scheme_changed || (current.follow_system_appearance && !draft.follow_system_appearance) {
         messages.push(Message::SetAppearance(draft.appearance));
+    }
+    // Choosing a scheme stops following the system, so following comes after.
+    if draft.follow_system_appearance && (scheme_changed || !current.follow_system_appearance) {
+        messages.push(Message::SetFollowSystemAppearance(true));
     }
     if draft.system_font != current.system_font {
         messages.push(Message::SetSystemFont(draft.system_font));
@@ -518,18 +561,7 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn text_rect(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Rect> {
-        match shape {
-            egui::epaint::Shape::Text(text) if text.galley.text() == label => {
-                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-            }
-            egui::epaint::Shape::Vec(shapes) => {
-                shapes.iter().find_map(|shape| text_rect(shape, label))
-            }
-            _ => None,
-        }
-    }
+    use crate::ui::test_support::shape_text_rect;
 
     #[test]
     fn every_shortcut_key_stays_inside_its_section() {
@@ -559,7 +591,7 @@ mod tests {
                 let rect = output
                     .shapes
                     .iter()
-                    .find_map(|shape| text_rect(&shape.shape, label))
+                    .find_map(|shape| shape_text_rect(&shape.shape, label))
                     .unwrap_or(egui::Rect::NOTHING);
                 (label.to_string(), rect.left())
             })
@@ -567,7 +599,7 @@ mod tests {
         let keyboard = output
             .shapes
             .iter()
-            .find_map(|shape| text_rect(&shape.shape, "Keyboard"))
+            .find_map(|shape| shape_text_rect(&shape.shape, "Keyboard"))
             .map(|rect| rect.left());
         output.drop_without_applying_deltas();
 
@@ -605,7 +637,7 @@ mod tests {
             output
                 .shapes
                 .iter()
-                .find_map(|shape| text_rect(&shape.shape, label))
+                .find_map(|shape| shape_text_rect(&shape.shape, label))
                 .unwrap()
         };
         assert!(find("About").top() > find("Keyboard").bottom());
@@ -641,7 +673,7 @@ mod tests {
             output
                 .shapes
                 .iter()
-                .find_map(|shape| text_rect(&shape.shape, label))
+                .find_map(|shape| shape_text_rect(&shape.shape, label))
                 .unwrap_or_else(|| panic!("missing {label}"))
         };
         let advanced = find("Advanced");
@@ -685,7 +717,7 @@ mod tests {
                 let button = output
                     .shapes
                     .iter()
-                    .find_map(|shape| text_rect(&shape.shape, "Source code"))
+                    .find_map(|shape| shape_text_rect(&shape.shape, "Source code"))
                     .unwrap();
                 assert!(viewport.contains_rect(button));
                 for clipped in &output.shapes {
@@ -856,6 +888,38 @@ mod tests {
                 .iter()
                 .any(|message| matches!(message, Message::SetSystemFont(true)))
         );
+    }
+
+    #[test]
+    fn following_the_system_and_choosing_a_scheme_again_reach_apply() {
+        let dark = Settings::default();
+        let mut light = Settings::default();
+        light.appearance = Appearance::Light;
+        let mut following = Settings::default();
+        following.follow_system_appearance = true;
+        assert!(matches!(
+            preference_changes(&dark, &following)[..],
+            [Message::SetFollowSystemAppearance(true)]
+        ));
+        assert!(matches!(
+            preference_changes(&following, &dark)[..],
+            [Message::SetAppearance(Appearance::Dark)]
+        ));
+        assert!(matches!(
+            preference_changes(&following, &light)[..],
+            [Message::SetAppearance(Appearance::Light)]
+        ));
+        assert!(preference_changes(&following, &following).is_empty());
+        // A scheme changed while following still keeps following.
+        let mut following_light = light.clone();
+        following_light.follow_system_appearance = true;
+        assert!(matches!(
+            preference_changes(&dark, &following_light)[..],
+            [
+                Message::SetAppearance(Appearance::Light),
+                Message::SetFollowSystemAppearance(true)
+            ]
+        ));
     }
 
     #[test]

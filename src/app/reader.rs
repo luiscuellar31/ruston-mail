@@ -128,7 +128,8 @@ impl ConversationReader {
         }
     }
 
-    /// Whether this quoted passage differs from its configured default.
+    /// Whether this quoted passage is open: as `reading` shows quotes, unless
+    /// it was toggled.
     pub fn is_quote_expanded(&self, message_id: &str, index: usize, reading: Reading) -> bool {
         let toggled = self
             .toggled_quotes
@@ -180,7 +181,9 @@ mod tests {
             id: id.to_owned(),
             verdict: crate::mail::Verdict::Unverified,
             sender: MailAddress::default(),
-            recipients: Vec::new(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
             reply_to: Vec::new(),
             reply_all_cc: Vec::new(),
             reply_redirected: false,

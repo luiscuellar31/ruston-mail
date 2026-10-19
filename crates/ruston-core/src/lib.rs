@@ -76,6 +76,19 @@ pub(crate) const STORAGE_NAME: &str = "ruston-mail";
 /// Session profile used by both frontends unless the CLI selects another.
 pub const DEFAULT_SESSION_PROFILE: &str = "ruston";
 
+/// The environment variable that opens either frontend's fictional mailbox
+/// instead of Proton.
+pub const DEMO_ENV: &str = "RUSTON_DEMO";
+
+/// Whether a [`DEMO_ENV`] value asks for the fictional mailbox: `1`, `true`,
+/// `yes` or `on`, in any case.
+pub fn demo_requested(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 /// Proton API address used unless a login selects another.
 pub(crate) const DEFAULT_BASE_URL: &str = "https://mail.proton.me/api";
 
@@ -92,7 +105,7 @@ pub use mail::send::{
     RecipientProtection, ReplyRecipients, SendOptions, reply_recipients, reply_redirected,
 };
 pub use mail::sync::{LocalCache, SyncReport};
-pub use mail::{Client, LoginOptions};
+pub use mail::{Client, LoginOptions, LoginPrompts, MailboxPasswordPrompt};
 pub use model::{Attachment, Conversation, Label, Message, MessageMetadata, Recipient};
 pub use transport::{AuthState, Body, Doer, HttpClient, HvResolver, Request, Response};
 
@@ -121,4 +134,19 @@ pub fn init_tracing(verbose: u8) {
         .with_writer(std::io::stderr)
         .with_target(true)
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_demo_opens_for_one_true_yes_or_on_in_any_case() {
+        for value in ["1", "true", "yes", "on", " TRUE ", "On"] {
+            assert!(demo_requested(value), "{value:?}");
+        }
+        for value in ["", "0", "false", "no", "off", "01", "demo"] {
+            assert!(!demo_requested(value), "{value:?}");
+        }
+    }
 }

@@ -3,6 +3,7 @@ mod close;
 mod compose;
 mod dialogs;
 mod fonts;
+mod graphics;
 mod identity;
 mod login;
 #[cfg(target_os = "macos")]
@@ -11,6 +12,10 @@ mod mailbox;
 mod notifications;
 mod reader;
 mod settings;
+#[cfg(target_os = "windows")]
+mod taskbar;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod window_place;
 
@@ -19,11 +24,9 @@ use eframe::egui;
 use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect, UndoMove};
 use crate::mail::Folder;
 use crate::runtime::Runtime;
-use crate::settings::{ComposePlacement, Settings, Window};
+use crate::settings::{ComposePlacement, MIN_WINDOW_SIZE, Settings, Window};
 use auto_refresh::AutoRefresh;
 
-/// Narrow enough for half a laptop screen, where the panes show one at a time.
-const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 /// Debounces settings writes while a window or divider is dragged.
 const SETTINGS_QUIET: f32 = 0.75;
 const LAYOUT_RESET_WAIT: f64 = 2.0;
@@ -67,9 +70,32 @@ pub fn run(demo: bool, activation: crate::launch::Instance) -> eframe::Result {
     #[cfg(target_os = "windows")]
     identity::set_process_app_id()?;
 
+    // The app takes the activation once its window draws. A renderer that
+    // fails before then leaves it for the next one.
+    let activation = std::cell::Cell::new(Some(activation));
+    let result = open(demo, &activation, graphics::preferred_renderer());
+    #[cfg(target_os = "windows")]
+    if let Err(eframe::Error::Wgpu(error)) = &result
+        && let Some(instance) = activation.take()
+    {
+        eprintln!("Ruston Mail: DirectX 12 cannot draw the window ({error}); using OpenGL");
+        activation.set(Some(instance));
+        return open(demo, &activation, eframe::Renderer::Glow);
+    }
+    result
+}
+
+fn open(
+    demo: bool,
+    activation: &std::cell::Cell<Option<crate::launch::Instance>>,
+    renderer: eframe::Renderer,
+) -> eframe::Result {
     let settings = Settings::load(demo);
     let options = eframe::NativeOptions {
         viewport: main_viewport(&settings),
+        renderer,
+        #[cfg(target_os = "windows")]
+        wgpu_options: graphics::wgpu_options(),
         ..Default::default()
     };
 
@@ -78,8 +104,10 @@ pub fn run(demo: bool, activation: crate::launch::Instance) -> eframe::Result {
         options,
         Box::new(move |creation| {
             let mut desktop = DesktopApp::new(creation, demo, settings);
-            activation.attach(&creation.egui_ctx);
-            desktop.activation = Some(activation);
+            if let Some(activation) = activation.take() {
+                activation.attach(&creation.egui_ctx);
+                desktop.activation = Some(activation);
+            }
             Ok(Box::new(desktop))
         }),
     )
@@ -89,9 +117,11 @@ struct DesktopApp {
     app: App,
     runtime: Runtime,
     ui: UiState,
-    demo: bool,
+    /// Whether the process started as the demo. It stays so after Exit demo,
+    /// while `app.is_demo()` follows the backend that is open.
+    demo_process: bool,
     title: String,
-    dock_badge: Option<u32>,
+    unread_badge: Option<u32>,
     auto_refresh: AutoRefresh,
     /// Preferences being edited in the settings pane until Apply is pressed.
     settings_draft: Option<Settings>,
@@ -101,6 +131,9 @@ struct DesktopApp {
     /// and what discarding it makes way for.
     pending_discard: Option<close::Leaving>,
     window_close_approved: bool,
+    /// Holds a close or a sign-out asked for while changes were still on
+    /// their way to Proton, or while a sign-out was under way.
+    deferred_leave: close::DeferredLeave,
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
@@ -109,9 +142,9 @@ struct DesktopApp {
     /// Waits for the requested window size before resetting egui's cached pane widths.
     layout_reset_at: Option<f64>,
     /// The main window: the parent of native dialogs, retained until each
-    /// completes, including portal export, and the window whose place is
-    /// remembered.
-    dialog_parent: Option<std::sync::Arc<winit::window::Window>>,
+    /// completes, including portal export, the window whose place is
+    /// remembered, and on Windows the taskbar button with the unread count.
+    main_window: Option<std::sync::Arc<winit::window::Window>>,
     /// Native dialog completion, including cancellation, releases this slot.
     file_dialog_open: bool,
     notifications: notifications::Notifications,
@@ -122,6 +155,9 @@ struct DesktopApp {
     /// Edit menu commands for the composer's own window, which only macOS
     /// sends. They reach its text as input on the window's next pass.
     composer_edits: Vec<egui::Event>,
+    /// Keep each window's title bar in the app's theme on Windows.
+    root_title_bar: theme::TitleBar,
+    composer_title_bar: theme::TitleBar,
     #[cfg(target_os = "macos")]
     native_menu: Option<macos::Menu>,
 }
@@ -134,8 +170,8 @@ enum SettingsExit {
 impl DesktopApp {
     fn new(creation: &eframe::CreationContext<'_>, demo: bool, settings: Settings) -> Self {
         let mut app = Self::with_context(&creation.egui_ctx, demo, settings);
-        app.dialog_parent = creation.winit_window().cloned();
-        if let Some(window) = &app.dialog_parent {
+        app.main_window = creation.winit_window().cloned();
+        if let Some(window) = &app.main_window {
             window_place::restore(window, app.app.settings().window);
         }
         #[cfg(target_os = "macos")]
@@ -147,8 +183,8 @@ impl DesktopApp {
 
     fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
         theme::install(context);
-        theme::apply(context, settings.appearance);
-        fonts::apply(context, settings.system_font);
+        apply_appearance(context, &settings);
+        fonts::apply(context, fonts::Typeface::chosen(settings.system_font));
         let runtime = Runtime::new().expect("failed to start background runtime");
         runtime.attach(context);
         let (app, effects) = App::boot(demo, settings);
@@ -156,25 +192,28 @@ impl DesktopApp {
             app,
             runtime,
             ui: UiState::default(),
-            demo,
+            demo_process: demo,
             title: String::new(),
-            dock_badge: None,
+            unread_badge: None,
             auto_refresh: AutoRefresh::default(),
             settings_draft: None,
             pending_settings_exit: None,
             pending_discard: None,
             window_close_approved: false,
+            deferred_leave: close::DeferredLeave::default(),
             settings_seen: 0,
             settings_seen_at: 0.0,
             last_window_size: None,
             layout_reset_at: None,
-            dialog_parent: None,
+            main_window: None,
             file_dialog_open: false,
             notifications: notifications::Notifications::default(),
             activation: None,
             focus_after_activation: false,
             shown_draft: None,
             composer_edits: Vec::new(),
+            root_title_bar: theme::TitleBar::default(),
+            composer_title_bar: theme::TitleBar::default(),
             #[cfg(target_os = "macos")]
             native_menu: None,
         };
@@ -234,28 +273,32 @@ impl DesktopApp {
             if self.pending_settings_exit.is_some() {
                 return;
             }
-            if self.settings_draft.as_ref().is_some_and(|draft| {
-                !settings::preference_changes(self.app.settings(), draft).is_empty()
-            }) {
+            if self.has_unapplied_settings() {
                 self.pending_settings_exit = Some(SettingsExit::Navigate(Box::new(message)));
                 context.request_repaint();
                 return;
             }
         }
-        // Signing out discards a written message only once the user says so.
-        if matches!(message, Message::Logout)
-            && self
+        if matches!(message, Message::Logout) {
+            let leaving = self.sign_out_leaving();
+            // Signing out discards a written message only once the user says so.
+            if self
                 .app
                 .compose()
                 .is_some_and(|draft| !draft.in_flight() && !draft.is_untouched())
-        {
-            self.pending_discard = Some(if self.app.is_demo() {
-                close::Leaving::Demo
-            } else {
-                close::Leaving::SignOut
-            });
-            context.request_repaint();
-            return;
+            {
+                self.pending_discard = Some(leaving);
+                context.request_repaint();
+                return;
+            }
+            // Signing out drops what has not reached Proton yet, so it waits.
+            if self
+                .deferred_leave
+                .defer(leaving, self.holding(leaving).is_some())
+            {
+                context.request_repaint();
+                return;
+            }
         }
         // The reset click was drawn with the previous pane widths.
         if self.layout_reset_at.is_some() && matches!(message, Message::PanelsResized(_)) {
@@ -306,9 +349,7 @@ impl DesktopApp {
         {
             self.ui.show_password = false;
         }
-        if submitted_or_cancelled
-            || matches!(self.app.auth_state(), AuthState::Authenticated { .. })
-        {
+        if submitted_or_cancelled || self.app.auth_state().is_authenticated() {
             login::forget_focus(context);
         }
         self.update_notifications(context);
@@ -347,46 +388,79 @@ impl DesktopApp {
         if self.window_close_approved {
             return;
         }
+        // A send, a native file dialog or a settings prompt already open keeps
+        // the window open without asking anything more.
         let sending = self
             .app
             .compose()
             .is_some_and(crate::app::Compose::in_flight);
-        let unsaved_message = self
+        if sending || self.file_dialog_open || self.pending_settings_exit.is_some() {
+            Self::cancel_root_close(context);
+            return;
+        }
+        if self.has_unapplied_settings() {
+            Self::cancel_root_close(context);
+            self.pending_settings_exit = Some(SettingsExit::CloseWindow);
+            Self::bring_main_window_forward(context);
+            return;
+        }
+        // A written draft is discarded only once asked, and so is one kept
+        // for its account to sign in again.
+        if self
             .app
             .compose()
-            .is_some_and(|draft| !draft.is_untouched());
-        let unsaved_settings = self.app.showing_settings()
+            .is_some_and(|draft| !draft.is_untouched())
+            || self.app.has_parked_draft()
+        {
+            Self::cancel_root_close(context);
+            self.pending_discard = Some(close::Leaving::Window);
+            Self::bring_main_window_forward(context);
+            return;
+        }
+        if self.deferred_leave.defer(
+            close::Leaving::Window,
+            self.holding(close::Leaving::Window).is_some(),
+        ) {
+            // Changes still on their way to Proton would be lost, and a
+            // sign-out cut short could leave the session saved; the window
+            // closes once they are done.
+            Self::cancel_root_close(context);
+            context.request_repaint();
+            return;
+        }
+        self.window_close_approved = true;
+        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+    }
+
+    /// Keeps the main window open after a close was asked for.
+    fn cancel_root_close(context: &egui::Context) {
+        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
+    }
+
+    /// Shows the main window, so the question it now asks is seen.
+    fn bring_main_window_forward(context: &egui::Context) {
+        context.send_viewport_cmd_to(
+            egui::ViewportId::ROOT,
+            egui::ViewportCommand::Minimized(false),
+        );
+        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+        context.request_repaint();
+    }
+
+    /// Whether the open settings page has changes that are not applied yet.
+    fn has_unapplied_settings(&self) -> bool {
+        self.app.showing_settings()
             && self.settings_draft.as_ref().is_some_and(|draft| {
                 !settings::preference_changes(self.app.settings(), draft).is_empty()
-            });
-        if sending
-            || self.file_dialog_open
-            || unsaved_message
-            || unsaved_settings
-            || self.pending_settings_exit.is_some()
-        {
-            context
-                .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
-            if sending || self.file_dialog_open {
-                return;
-            }
-            if self.pending_settings_exit.is_some() {
-                return;
-            }
-            if unsaved_settings {
-                self.pending_settings_exit = Some(SettingsExit::CloseWindow);
-            } else {
-                self.pending_discard = Some(close::Leaving::Window);
-            }
-            context.send_viewport_cmd_to(
-                egui::ViewportId::ROOT,
-                egui::ViewportCommand::Minimized(false),
-            );
-            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
-            context.request_repaint();
+            })
+    }
+
+    /// What signing out leaves: the demo mailbox, or the account.
+    fn sign_out_leaving(&self) -> close::Leaving {
+        if self.app.is_demo() {
+            close::Leaving::Demo
         } else {
-            self.window_close_approved = true;
-            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+            close::Leaving::SignOut
         }
     }
 
@@ -395,21 +469,46 @@ impl DesktopApp {
         if context.input(|input| input.viewport().close_requested()) {
             self.request_window_close(context);
         }
+        // A close or a sign-out that waited goes ahead once nothing holds it.
+        if let Some(leaving) = self.deferred_leave.waiting()
+            && self.holding(leaving).is_none()
+        {
+            self.deferred_leave.cancel();
+            self.leave(leaving, context);
+        }
+    }
+
+    /// What leaving now would cut short: a sign-out under way, for a close,
+    /// whose local cleanup could stop half done and leave the session saved;
+    /// or changes still on their way to Proton.
+    fn holding(&self, leaving: close::Leaving) -> Option<close::Holding> {
+        if leaving == close::Leaving::Window
+            && matches!(self.app.auth_state(), AuthState::SigningOut)
+        {
+            return Some(close::Holding::SigningOut);
+        }
+        let unsent = self.app.unsent_changes();
+        (unsent > 0).then_some(close::Holding::Changes(unsent))
+    }
+
+    /// Goes ahead with `leaving`, through the same checks as when it was
+    /// first asked for.
+    fn leave(&mut self, leaving: close::Leaving, context: &egui::Context) {
+        match leaving {
+            close::Leaving::Window => self.request_window_close(context),
+            close::Leaving::SignOut | close::Leaving::Demo => {
+                self.dispatch(Message::Logout, context);
+            }
+        }
     }
 
     fn resolve_discard(&mut self, decision: Message, context: &egui::Context) {
         let leaving = self.pending_discard.take();
         let discard = matches!(decision, Message::DiscardCompose);
         self.dispatch(decision, context);
-        if discard {
-            // App refuses to discard an in-flight send; recheck before leaving.
-            match leaving {
-                Some(close::Leaving::Window) => self.request_window_close(context),
-                Some(close::Leaving::SignOut | close::Leaving::Demo) => {
-                    self.dispatch(Message::Logout, context);
-                }
-                None => {}
-            }
+        // App refuses to discard an in-flight send, so leaving checks again.
+        if discard && let Some(leaving) = leaving {
+            self.leave(leaving, context);
         }
         context.request_repaint();
     }
@@ -419,7 +518,7 @@ impl DesktopApp {
         match action {
             macos::Action::Quit => self.request_window_close(context),
             macos::Action::Settings | macos::Action::NewMessage
-                if matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+                if self.app.auth_state().is_authenticated()
                     && self.pending_discard.is_none()
                     && self.pending_settings_exit.is_none()
                     && !self.file_dialog_open =>
@@ -498,7 +597,7 @@ impl DesktopApp {
                 }
                 UiEffect::PickComposeAttachments(id) => {
                     self.file_dialog_open = true;
-                    let parent = self.dialog_parent.clone();
+                    let parent = self.main_window.clone();
                     let task = dialogs::open(
                         parent.as_ref(),
                         self.app.settings().compose_placement == ComposePlacement::Window,
@@ -520,7 +619,7 @@ impl DesktopApp {
                     suggested_name,
                 } => {
                     self.file_dialog_open = true;
-                    let parent = self.dialog_parent.clone();
+                    let parent = self.main_window.clone();
                     let task = dialogs::open(parent.as_ref(), false, |dialog| {
                         dialog
                             .set_title("Save attachment as (choose a new filename)")
@@ -560,8 +659,10 @@ impl DesktopApp {
             )
         });
         // Full screen and the Dock or taskbar are passing states: the window
-        // to come back to is the one already remembered.
+        // to come back to is the one already remembered, and a reset can only
+        // run out of time.
         let Some(size) = size.filter(|_| !passing) else {
+            self.settle_layout_reset(None, context);
             return;
         };
         let saved = self.app.settings().window;
@@ -579,23 +680,14 @@ impl DesktopApp {
                 height: unscaled.y,
                 maximized: false,
                 position: self
-                    .dialog_parent
+                    .main_window
                     .as_deref()
                     .and_then(window_place::position)
                     .or(saved.position),
             }
         };
-        if let Some(started_at) = self.layout_reset_at {
-            let target = Window::default();
-            let reached = (current.width - target.width).abs() <= 1.0
-                && (current.height - target.height).abs() <= 1.0;
-            let timed_out = context.input(|input| input.time) - started_at >= LAYOUT_RESET_WAIT;
-            if !reached && !timed_out {
-                return;
-            }
-            self.layout_reset_at = None;
-            self.last_window_size = None;
-            mailbox::reset_panel_sizes(context);
+        if self.settle_layout_reset(Some(&current), context) {
+            return;
         }
         if let Some(last) = self.last_window_size
             && (last.width - current.width).abs() < f32::EPSILON
@@ -609,25 +701,50 @@ impl DesktopApp {
         self.dispatch(Message::WindowResized(current), context);
     }
 
+    /// Ends a layout reset once the window has its default size or the reset
+    /// has waited long enough, and puts the panes back to their default sizes
+    /// too. Returns whether the reset still waits. `current` is the window's
+    /// size, or `None` while it is full screen or minimized.
+    fn settle_layout_reset(&mut self, current: Option<&Window>, context: &egui::Context) -> bool {
+        let Some(started_at) = self.layout_reset_at else {
+            return false;
+        };
+        let target = Window::default();
+        let reached = current.is_some_and(|current| {
+            (current.width - target.width).abs() <= 1.0
+                && (current.height - target.height).abs() <= 1.0
+        });
+        let timed_out = context.input(|input| input.time) - started_at >= LAYOUT_RESET_WAIT;
+        if !reached && !timed_out {
+            return true;
+        }
+        self.layout_reset_at = None;
+        self.last_window_size = None;
+        mailbox::reset_panel_sizes(context);
+        false
+    }
+
     /// Command with plus, equals, minus or zero steps the zoom on every
     /// screen, as Settings would. On macOS the View menu takes all but equals.
     fn zoom_shortcuts(&mut self, context: &egui::Context) {
-        use egui::gui_zoom::kb_shortcuts;
-        let step = context.input_mut(|input| {
-            if input.consume_shortcut(&kb_shortcuts::ZOOM_RESET) {
-                Some(settings::ZoomStep::Reset)
-            } else if input.consume_shortcut(&kb_shortcuts::ZOOM_IN)
-                || input.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
-            {
-                Some(settings::ZoomStep::In)
-            } else if input.consume_shortcut(&kb_shortcuts::ZOOM_OUT) {
-                Some(settings::ZoomStep::Out)
-            } else {
-                None
-            }
-        });
-        if let Some(step) = step {
+        if let Some(step) = zoom_keys(context) {
             self.step_zoom(step, context);
+        }
+    }
+
+    /// Files dropped on the window that shows the draft join it, unless a
+    /// file dialog or a confirmation owns the window: a dialog's own result
+    /// is what releases its slot.
+    fn attach_dropped(&mut self, paths: Vec<std::path::PathBuf>, context: &egui::Context) {
+        if paths.is_empty()
+            || self.file_dialog_open
+            || self.pending_discard.is_some()
+            || self.pending_settings_exit.is_some()
+        {
+            return;
+        }
+        if let Some(draft) = self.app.compose().map(crate::app::Compose::id) {
+            self.dispatch(Message::AddComposeAttachments(draft, paths), context);
         }
     }
 
@@ -644,9 +761,10 @@ impl DesktopApp {
     }
 
     fn keyboard_shortcuts(&mut self, context: &egui::Context) {
-        if !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+        if !self.app.auth_state().is_authenticated()
             || self.pending_discard.is_some()
             || self.pending_settings_exit.is_some()
+            || self.deferred_leave.waiting().is_some()
         {
             return;
         }
@@ -659,38 +777,38 @@ impl DesktopApp {
         // pass, so what is behind it does not close as well.
         let menu_open = egui::Popup::is_any_open(context);
         let presses = context.input(|input| {
-            let command = input.modifiers.command;
+            let command = input.modifiers.command && !ctrl_alt_types(input.modifiers);
             let plain = !command && !input.modifiers.alt && !input.modifiers.shift;
             let mut presses = Vec::new();
             if command && input.key_pressed(egui::Key::R) {
-                presses.push(key(Key::Character('r'), true));
+                presses.push(KeyPress::with_command(Key::Character('r')));
             }
             if command && input.key_pressed(egui::Key::F) {
-                presses.push(key(Key::Character('f'), true));
+                presses.push(KeyPress::with_command(Key::Character('f')));
             }
             if command && input.key_pressed(egui::Key::Comma) {
-                presses.push(key(Key::Character(','), true));
+                presses.push(KeyPress::with_command(Key::Character(',')));
             }
             if command && input.key_pressed(egui::Key::N) {
-                presses.push(key(Key::Character('n'), true));
+                presses.push(KeyPress::with_command(Key::Character('n')));
             }
             if command && input.key_pressed(egui::Key::Enter) {
-                presses.push(key(Key::Enter, true));
+                presses.push(KeyPress::with_command(Key::Enter));
             }
             if !menu_open && input.key_pressed(egui::Key::Escape) {
-                presses.push(key(Key::Escape, false));
+                presses.push(KeyPress::plain(Key::Escape));
             }
             // A focused widget keeps the arrows and Enter: egui moves focus
             // with the arrows and presses a focused button with Enter. Delete
             // waits too, as a focused row need not be the selected one.
             if plain && !wants_text && input.key_pressed(egui::Key::ArrowDown) {
-                presses.push(key(Key::ArrowDown, false));
+                presses.push(KeyPress::plain(Key::ArrowDown));
             } else if plain && !wants_text && input.key_pressed(egui::Key::ArrowUp) {
-                presses.push(key(Key::ArrowUp, false));
+                presses.push(KeyPress::plain(Key::ArrowUp));
             } else if plain && !wants_text && input.key_pressed(egui::Key::Enter) {
-                presses.push(key(Key::Enter, false));
+                presses.push(KeyPress::plain(Key::Enter));
             } else if plain && !wants_text && input.key_pressed(egui::Key::Delete) {
-                presses.push(key(Key::Delete, false));
+                presses.push(KeyPress::plain(Key::Delete));
             } else if plain && !typing {
                 let letter = input.events.iter().find_map(|event| match event {
                     egui::Event::Text(text) => text
@@ -699,12 +817,12 @@ impl DesktopApp {
                         .filter(|first| matches!(first, 'j' | 'k')),
                     _ => None,
                 });
-                presses.extend(letter.map(|letter| key(Key::Character(letter), false)));
+                presses.extend(letter.map(|letter| KeyPress::plain(Key::Character(letter))));
             } else if !wants_text && command && !input.modifiers.alt && !input.modifiers.shift {
                 if input.key_pressed(egui::Key::Backspace) {
-                    presses.push(key(Key::Backspace, true));
+                    presses.push(KeyPress::with_command(Key::Backspace));
                 } else if input.key_pressed(egui::Key::Delete) {
-                    presses.push(key(Key::Delete, true));
+                    presses.push(KeyPress::with_command(Key::Delete));
                 }
             }
             presses
@@ -741,15 +859,19 @@ impl DesktopApp {
     fn refresh_automatically(&mut self, context: &egui::Context) {
         let now = context.input(|input| input.time);
         let focused = self.app_has_focus(context);
-        let active = matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+        let active = self.app.auth_state().is_authenticated()
             && self.app.mailbox().is_some()
             && !self.app.is_demo();
         let available = self.app.auto_refresh_available();
 
-        if self
-            .auto_refresh
-            .should_start(now, focused, active, available)
-        {
+        if self.auto_refresh.should_start(
+            now,
+            auto_refresh::Conditions {
+                focused,
+                active,
+                available,
+            },
+        ) {
             self.dispatch(Message::AutoRefreshMailbox, context);
             let request = self
                 .app
@@ -794,30 +916,30 @@ impl DesktopApp {
             return;
         }
         if now - self.settings_seen_at >= f64::from(SETTINGS_QUIET) {
-            self.app.save_settings();
+            let write = self.app.save_settings();
+            self.execute(write, context);
         } else {
             context.request_repaint_after(std::time::Duration::from_secs_f32(SETTINGS_QUIET));
         }
     }
 
     fn update_title(&mut self, context: &egui::Context) {
-        let title = window_title(&self.app, self.demo);
+        let title = window_title(&self.app, self.demo_process);
         if title != self.title {
             self.title.clone_from(&title);
             context.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
     }
 
-    fn update_dock_badge(&mut self) {
-        let badge = dock_badge_count(&self.app);
-        if badge != self.dock_badge {
-            self.dock_badge = badge;
-            set_dock_badge(badge);
+    fn update_unread_badge(&mut self) {
+        let badge = unread_badge_count(&self.app);
+        if badge != self.unread_badge && set_unread_badge(self.main_window.as_deref(), badge) {
+            self.unread_badge = badge;
         }
     }
 
     fn update_notifications(&mut self, context: &egui::Context) {
-        let enabled = matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+        let enabled = self.app.auth_state().is_authenticated()
             && self.app.settings().desktop_notifications
             && !self.app.is_demo();
         self.notifications.set_enabled(enabled, context);
@@ -897,9 +1019,14 @@ impl DesktopApp {
 impl eframe::App for DesktopApp {
     fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.runtime.attach(context);
-        theme::apply(context, self.app.settings().appearance);
+        apply_appearance(context, self.app.settings());
+        theme::reduce_motion(context, system_reduces_motion());
+        self.root_title_bar.keep(context);
         self.apply_zoom(context);
-        fonts::apply(context, self.app.settings().system_font);
+        fonts::apply(
+            context,
+            fonts::Typeface::chosen(self.app.settings().system_font),
+        );
         self.drain_runtime(context);
         #[cfg(target_os = "macos")]
         {
@@ -915,7 +1042,7 @@ impl eframe::App for DesktopApp {
             if let Some(menu) = &self.native_menu {
                 menu.adopt_windows();
                 menu.set_enabled(
-                    matches!(self.app.auth_state(), AuthState::Authenticated { .. })
+                    self.app.auth_state().is_authenticated()
                         && self.pending_discard.is_none()
                         && self.pending_settings_exit.is_none()
                         && !self.file_dialog_open,
@@ -933,15 +1060,15 @@ impl eframe::App for DesktopApp {
         self.refresh_automatically(context);
         self.save_settled_settings(context);
         self.update_title(context);
-        self.update_dock_badge();
+        self.update_unread_badge();
     }
 
     /// Closing is the one moment the settings must reach the file whether or
     /// not they have settled.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.notifications.stop();
-        self.app.save_settings();
-        set_dock_badge(None);
+        self.app.save_settings_before_quitting();
+        set_unread_badge(self.main_window.as_deref(), None);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -950,10 +1077,10 @@ impl eframe::App for DesktopApp {
         }
         let context = ui.ctx().clone();
         let mut messages = Vec::new();
+        let mut composer_zoom = None;
+        let mut dropped = Vec::new();
         email_link_notice(ui, &self.app, &mut messages);
-        if !self.app.showing_settings()
-            || !matches!(self.app.auth_state(), AuthState::Authenticated { .. })
-        {
+        if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
             self.settings_draft = None;
             self.pending_settings_exit = None;
         }
@@ -966,7 +1093,7 @@ impl eframe::App for DesktopApp {
             | AuthState::NeedsHumanVerification { .. } => {
                 login::show(ui, &mut self.app, &mut self.ui.show_password, &mut messages);
             }
-            AuthState::Authenticated { email } => {
+            AuthState::Authenticated { .. } => {
                 if self.app.mailbox().is_some() {
                     let draft = if self.app.showing_settings() {
                         Some(
@@ -976,15 +1103,7 @@ impl eframe::App for DesktopApp {
                     } else {
                         None
                     };
-                    mailbox::show(
-                        ui,
-                        &self.app,
-                        email.as_deref(),
-                        false,
-                        draft,
-                        &mut self.ui,
-                        &mut messages,
-                    );
+                    mailbox::show(ui, &self.app, draft, &mut self.ui, &mut messages);
                 } else {
                     status_view(ui, "Opening mailbox…");
                 }
@@ -992,17 +1111,24 @@ impl eframe::App for DesktopApp {
                 if self.app.settings().compose_placement == ComposePlacement::Window
                     && let Some(writing) = self.app.compose()
                 {
-                    messages.extend(compose::show_window(
+                    let window = compose::show_window(
                         &context,
                         writing,
                         self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
                         std::mem::take(&mut self.composer_edits),
-                    ));
+                        &mut self.composer_title_bar,
+                    );
+                    messages.extend(window.messages);
+                    composer_zoom = window.zoom;
+                    dropped = window.dropped;
+                } else if self.app.compose().is_some() && !self.app.showing_settings() {
+                    // The draft is in this window's reading pane.
+                    dropped = dropped_paths(&context);
                 }
             }
             AuthState::SigningOut => {
                 if self.app.mailbox().is_some() {
-                    mailbox::show(ui, &self.app, None, true, None, &mut self.ui, &mut messages);
+                    mailbox::show(ui, &self.app, None, &mut self.ui, &mut messages);
                 } else {
                     status_view(ui, "Signing out…");
                 }
@@ -1023,8 +1149,16 @@ impl eframe::App for DesktopApp {
             .and_then(|_| settings::confirm_exit(&context));
         let discard_decision = self
             .pending_discard
-            .and_then(|leaving| close::confirm(&context, leaving));
+            .and_then(|leaving| close::confirm_discard(&context, leaving));
+        let wait_decision = self.deferred_leave.waiting().and_then(|leaving| {
+            let holding = self.holding(leaving)?;
+            close::confirm_wait(&context, leaving, holding)
+        });
         theme::paint_focus_ring(&context);
+        if let Some(step) = composer_zoom {
+            self.step_zoom(step, &context);
+        }
+        self.attach_dropped(dropped, &context);
         let has_messages = !messages.is_empty();
         for message in messages {
             self.dispatch(message, &context);
@@ -1035,18 +1169,94 @@ impl eframe::App for DesktopApp {
         if let Some(decision) = discard_decision {
             self.resolve_discard(decision, &context);
         }
+        match wait_decision {
+            Some(close::WaitDecision::Stay) => self.deferred_leave.cancel(),
+            // Asking again while it waits goes ahead at once.
+            Some(close::WaitDecision::GoNow) => {
+                if let Some(leaving) = self.deferred_leave.waiting() {
+                    self.leave(leaving, &context);
+                }
+            }
+            None => {}
+        }
         if has_messages {
             context.request_repaint();
         }
     }
 }
 
-fn key(key: Key, command: bool) -> KeyPress {
-    KeyPress {
-        key,
-        command,
-        other_modifier: false,
+/// The local files dropped on the window being drawn in this pass. Wayland
+/// delivers none: winit does not support dropping files there.
+fn dropped_paths(context: &egui::Context) -> Vec<std::path::PathBuf> {
+    context.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_path_buf())
+            .collect()
+    })
+}
+
+/// Takes the zoom keys pressed in the window being drawn, the mailbox's or
+/// the composer's, and returns the step they ask for.
+fn zoom_keys(context: &egui::Context) -> Option<settings::ZoomStep> {
+    use egui::gui_zoom::kb_shortcuts;
+    context.input_mut(|input| {
+        if ctrl_alt_types(input.modifiers) {
+            None
+        } else if input.consume_shortcut(&kb_shortcuts::ZOOM_RESET) {
+            Some(settings::ZoomStep::Reset)
+        } else if input.consume_shortcut(&kb_shortcuts::ZOOM_IN)
+            || input.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY)
+        {
+            Some(settings::ZoomStep::In)
+        } else if input.consume_shortcut(&kb_shortcuts::ZOOM_OUT) {
+            Some(settings::ZoomStep::Out)
+        } else {
+            None
+        }
+    })
+}
+
+/// On Windows Ctrl+Alt types what AltGr types, as "ń" with N on a Polish
+/// layout, so it takes no Ctrl shortcut there.
+fn ctrl_alt_types(modifiers: egui::Modifiers) -> bool {
+    cfg!(target_os = "windows") && modifiers.command && modifiers.alt
+}
+
+fn apply_appearance(context: &egui::Context, settings: &Settings) {
+    if settings.follow_system_appearance {
+        theme::follow_system(context, settings.appearance);
+    } else {
+        theme::apply(context, settings.appearance);
     }
+}
+
+/// Whether Windows' "Animation effects" are off, under Accessibility ›
+/// Visual effects. Read on every pass, which costs one call, so a change
+/// shows on the next frame. Other systems' settings are not read yet.
+#[cfg(target_os = "windows")]
+fn system_reduces_motion() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    };
+    let mut animated: windows_sys::core::BOOL = 1;
+    // SAFETY: this action writes one BOOL through the pointer.
+    let read = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut animated as *mut windows_sys::core::BOOL).cast(),
+            0,
+        )
+    };
+    read != 0 && animated == 0
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_reduces_motion() -> bool {
+    false
 }
 
 fn status_view(root: &mut egui::Ui, message: &str) {
@@ -1066,7 +1276,7 @@ fn email_link_notice(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>
     if count == 0 && app.mailto_error().is_none() {
         return;
     }
-    let reason = if !matches!(app.auth_state(), AuthState::Authenticated { .. }) {
+    let reason = if !app.auth_state().is_authenticated() {
         "Sign in to write the message."
     } else if app.compose().is_some() {
         "Finish or close your current draft to open it."
@@ -1112,10 +1322,13 @@ fn version_label(ui: &mut egui::Ui) -> egui::Response {
 }
 
 fn window_title(app: &App, demo: bool) -> String {
-    let unread = app
-        .mailbox()
-        .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX));
-    title_label(unread, demo)
+    title_label(inbox_unread(app), demo)
+}
+
+/// The Inbox's unread count, once the mailbox has its counts.
+fn inbox_unread(app: &App) -> Option<u32> {
+    app.mailbox()
+        .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX))
 }
 
 fn title_label(unread: Option<u32>, demo: bool) -> String {
@@ -1130,17 +1343,18 @@ fn title_label(unread: Option<u32>, demo: bool) -> String {
     }
 }
 
-pub(crate) fn dock_badge_count(app: &App) -> Option<u32> {
+pub(crate) fn unread_badge_count(app: &App) -> Option<u32> {
     if !app.settings().show_unread_badge {
         return None;
     }
-    app.mailbox()
-        .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX))
-        .filter(|&count| count > 0)
+    inbox_unread(app).filter(|&count| count > 0)
 }
 
+/// Shows the unread count on the Dock icon, or on Windows the taskbar
+/// button. Returns false while the window cannot show it yet, so the next
+/// pass tries again.
 #[cfg(target_os = "macos")]
-fn set_dock_badge(count: Option<u32>) {
+fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
     use objc2_app_kit::NSApplication;
     use objc2_foundation::{MainThreadMarker, NSString};
 
@@ -1150,10 +1364,18 @@ fn set_dock_badge(count: Option<u32>) {
         let label = count.map(|c| NSString::from_str(&c.to_string()));
         dock_tile.setBadgeLabel(label.as_deref());
     }
+    true
 }
 
-#[cfg(not(target_os = "macos"))]
-fn set_dock_badge(_count: Option<u32>) {}
+#[cfg(target_os = "windows")]
+fn set_unread_badge(window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
+    window.is_none_or(|window| taskbar::show_unread(window, count))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn set_unread_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> bool {
+    true
+}
 
 #[cfg(test)]
 mod tests {
@@ -1218,6 +1440,160 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// A demo window whose mailbox has one change on its way, as Proton's
+    /// would be, and that change.
+    fn window_with_a_change_on_its_way(
+        context: &egui::Context,
+    ) -> (DesktopApp, crate::app::ActionRequest) {
+        let mut desktop = DesktopApp::with_context(context, true, Settings::default());
+        let page = crate::mail::demo::DemoMailbox::new().list_conversations(
+            &Folder::INBOX,
+            0,
+            crate::mail::demo::PAGE_SIZE,
+            crate::mail::demo::now(),
+        );
+        desktop.dispatch(Message::ConversationsLoaded(1, page), context);
+        let sent = desktop
+            .app
+            .mailbox_mut()
+            .unwrap()
+            .start_action_on(
+                "demo-0".into(),
+                crate::mail::SummaryKind::Conversation,
+                crate::mail::MailAction::SetStarred(true),
+                900,
+            )
+            .unwrap()
+            .send
+            .unwrap();
+        (desktop, sent)
+    }
+
+    #[test]
+    fn closing_waits_for_changes_on_their_way_to_proton() {
+        let context = egui::Context::default();
+        let (mut desktop, sent) = window_with_a_change_on_its_way(&context);
+
+        let commands = native_close(&mut desktop, &context);
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!desktop.window_close_approved);
+
+        // Once Proton has it, the close goes ahead by itself.
+        let _ = desktop
+            .app
+            .mailbox_mut()
+            .unwrap()
+            .finish_action(&sent, Ok(()));
+        let mut output = context.run_logic(&egui::RawInput::default(), |context| {
+            desktop.check_window_close(context);
+        });
+        let commands = output
+            .viewport_commands
+            .remove(&egui::ViewportId::ROOT)
+            .unwrap_or_default();
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(desktop.window_close_approved);
+    }
+
+    #[test]
+    fn closing_again_while_changes_are_on_their_way_closes_at_once() {
+        let context = egui::Context::default();
+        let (mut desktop, _) = window_with_a_change_on_its_way(&context);
+
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::Close));
+        assert!(desktop.window_close_approved);
+    }
+
+    #[test]
+    fn settled_settings_are_written_off_the_interface() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::SetConfirmLinks(false), &context);
+        assert!(desktop.app.settings_unsaved());
+
+        // The change settles, and the frame after the quiet time writes it.
+        for time in [0.0, f64::from(SETTINGS_QUIET) + 0.1] {
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            context
+                .run_ui(input, |ui| desktop.save_settled_settings(ui.ctx()))
+                .drop_without_applying_deltas();
+        }
+        // The write's result comes back through the runtime.
+        for _ in 0..200 {
+            desktop.drain_runtime(&context);
+            if !desktop.app.settings_unsaved() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the settled change was never written");
+    }
+
+    #[test]
+    fn closing_while_signing_out_waits_until_the_session_is_forgotten() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.app.set_auth_state(AuthState::SigningOut);
+
+        let commands = native_close(&mut desktop, &context);
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(!desktop.window_close_approved);
+
+        // The sign-out ends: this device has forgotten the session.
+        desktop.app.set_auth_state(AuthState::SignedOut);
+        let mut output = context.run_logic(&egui::RawInput::default(), |context| {
+            desktop.check_window_close(context);
+        });
+        let commands = output
+            .viewport_commands
+            .remove(&egui::ViewportId::ROOT)
+            .unwrap_or_default();
+        assert!(commands.contains(&egui::ViewportCommand::Close));
+        assert!(desktop.window_close_approved);
+    }
+
+    fn signed_in(desktop: &DesktopApp) -> bool {
+        desktop.app.auth_state().is_authenticated()
+    }
+
+    #[test]
+    fn signing_out_waits_for_changes_on_their_way_to_proton() {
+        let context = egui::Context::default();
+        let (mut desktop, sent) = window_with_a_change_on_its_way(&context);
+
+        // In the demo, signing out is leaving it; it waits the same way.
+        desktop.dispatch(Message::Logout, &context);
+        assert!(signed_in(&desktop));
+        assert_eq!(desktop.deferred_leave.waiting(), Some(close::Leaving::Demo));
+
+        // Once Proton has the change, the sign-out goes ahead by itself.
+        let _ = desktop
+            .app
+            .mailbox_mut()
+            .unwrap()
+            .finish_action(&sent, Ok(()));
+        let _ = context.run_logic(&egui::RawInput::default(), |context| {
+            desktop.check_window_close(context);
+        });
+        assert!(!signed_in(&desktop));
+        assert_eq!(desktop.deferred_leave.waiting(), None);
+    }
+
+    #[test]
+    fn signing_out_again_while_changes_are_on_their_way_signs_out_at_once() {
+        let context = egui::Context::default();
+        let (mut desktop, _) = window_with_a_change_on_its_way(&context);
+
+        desktop.dispatch(Message::Logout, &context);
+        assert!(signed_in(&desktop));
+        desktop.dispatch(Message::Logout, &context);
+        assert!(!signed_in(&desktop));
+    }
+
     #[test]
     fn main_window_close_requires_explicit_discard_in_both_composer_placements() {
         for placement in [ComposePlacement::ReadingPane, ComposePlacement::Window] {
@@ -1253,6 +1629,33 @@ mod tests {
             assert!(desktop.app.compose().is_none());
             assert!(desktop.window_close_approved);
         }
+    }
+
+    #[test]
+    fn closing_asks_before_dropping_a_draft_kept_for_its_account() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.app = App::signed_in_as("user-1", "alex@proton.me");
+        desktop.dispatch(Message::OpenCompose, &context);
+        desktop.dispatch(
+            Message::ComposeChanged(crate::app::ComposeField::Body, "Keep this draft".into()),
+            &context,
+        );
+        desktop.dispatch(
+            Message::ConversationsLoaded(1, Err(crate::mail::MailboxError::SessionExpired)),
+            &context,
+        );
+        assert!(desktop.app.has_parked_draft());
+
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(desktop.pending_discard, Some(close::Leaving::Window));
+        desktop.resolve_discard(Message::CancelDiscard, &context);
+        assert!(desktop.app.has_parked_draft());
+
+        native_close(&mut desktop, &context);
+        desktop.resolve_discard(Message::DiscardCompose, &context);
+        assert!(!desktop.app.has_parked_draft());
+        assert!(desktop.window_close_approved);
     }
 
     #[test]
@@ -1301,10 +1704,7 @@ mod tests {
         assert_eq!(desktop.pending_discard, Some(close::Leaving::Demo));
         desktop.resolve_discard(Message::CancelDiscard, &context);
         assert!(desktop.app.compose().is_some());
-        assert!(matches!(
-            desktop.app.auth_state(),
-            AuthState::Authenticated { .. }
-        ));
+        assert!(desktop.app.auth_state().is_authenticated());
 
         desktop.dispatch(Message::Logout, &context);
         desktop.resolve_discard(Message::DiscardCompose, &context);
@@ -1326,10 +1726,7 @@ mod tests {
         desktop.dispatch(Message::Logout, &context);
         assert_eq!(desktop.pending_discard, None, "a send cannot be discarded");
         assert!(desktop.app.compose().unwrap().in_flight());
-        assert!(matches!(
-            desktop.app.auth_state(),
-            AuthState::Authenticated { .. }
-        ));
+        assert!(desktop.app.auth_state().is_authenticated());
     }
 
     #[test]
@@ -1431,7 +1828,11 @@ mod tests {
             ),
             &context,
         );
-        assert!(!desktop.auto_refresh.should_start(0.0, true, true, true));
+        assert!(
+            !desktop
+                .auto_refresh
+                .should_start(0.0, auto_refresh::FOREGROUND)
+        );
         desktop.dispatch(Message::AutoRefreshMailbox, &context);
         let crate::app::ListStatus::Refreshing(request) = desktop.app.mailbox().unwrap().status()
         else {
@@ -1443,15 +1844,27 @@ mod tests {
         desktop.dispatch(Message::SelectFolder(sent), &context);
         // The old result need never arrive for the scheduler to recover.
         assert!(desktop.auto_refresh.repaint_after(0.0, true).is_some());
-        assert!(desktop.auto_refresh.should_start(60.0, true, true, true));
+        assert!(
+            desktop
+                .auto_refresh
+                .should_start(60.0, auto_refresh::FOREGROUND)
+        );
     }
 
     #[test]
     fn stale_pages_do_not_reset_polling_backoff() {
         let context = egui::Context::default();
         let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
-        assert!(!desktop.auto_refresh.should_start(0.0, true, true, true));
-        assert!(desktop.auto_refresh.should_start(60.0, true, true, true));
+        assert!(
+            !desktop
+                .auto_refresh
+                .should_start(0.0, auto_refresh::FOREGROUND)
+        );
+        assert!(
+            desktop
+                .auto_refresh
+                .should_start(60.0, auto_refresh::FOREGROUND)
+        );
         desktop.auto_refresh.started(7);
         desktop.auto_refresh.page_finished(7, false, 61.0);
         let page = crate::mail::demo::DemoMailbox::new().list_conversations(
@@ -1461,8 +1874,16 @@ mod tests {
             crate::mail::demo::now(),
         );
         desktop.dispatch(Message::ConversationsLoaded(99, page), &context);
-        assert!(!desktop.auto_refresh.should_start(100.0, true, true, true));
-        assert!(desktop.auto_refresh.should_start(181.0, true, true, true));
+        assert!(
+            !desktop
+                .auto_refresh
+                .should_start(100.0, auto_refresh::FOREGROUND)
+        );
+        assert!(
+            desktop
+                .auto_refresh
+                .should_start(181.0, auto_refresh::FOREGROUND)
+        );
     }
 
     #[test]
@@ -1505,13 +1926,13 @@ mod tests {
         desktop.dispatch(Message::SelectConversation(id), &context);
         assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Reader);
         desktop.dispatch(
-            Message::KeyPressed(key(Key::Character('f'), true)),
+            Message::KeyPressed(KeyPress::with_command(Key::Character('f'))),
             &context,
         );
         assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Mail);
         assert!(desktop.ui.focus_search);
         desktop.dispatch(
-            Message::KeyPressed(key(Key::Character('n'), true)),
+            Message::KeyPressed(KeyPress::with_command(Key::Character('n'))),
             &context,
         );
         assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Reader);
@@ -1578,6 +1999,164 @@ mod tests {
         assert_eq!(context.zoom_factor(), 1.0);
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ctrl_alt_types_on_windows_instead_of_taking_ctrl_shortcuts() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        theme::install(&context);
+        let mut press = |key, modifiers| {
+            let raw = egui::RawInput {
+                events: vec![
+                    egui::Event::ModifiersChanged(modifiers),
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    },
+                ],
+                ..Default::default()
+            };
+            context
+                .run_ui(raw, |ui| {
+                    desktop.zoom_shortcuts(ui.ctx());
+                    desktop.keyboard_shortcuts(ui.ctx());
+                })
+                .drop_without_applying_deltas();
+            (desktop.app.compose().is_some(), desktop.app.settings().zoom)
+        };
+        let ctrl_alt = egui::Modifiers::COMMAND | egui::Modifiers::ALT;
+
+        // "ń" on a Polish layout, and "}" on a German one.
+        assert_eq!(press(egui::Key::N, ctrl_alt), (false, 1.0));
+        assert_eq!(press(egui::Key::Num0, ctrl_alt), (false, 1.0));
+        assert_eq!(press(egui::Key::Equals, ctrl_alt), (false, 1.0));
+        // Ctrl alone still takes them.
+        assert_eq!(
+            press(egui::Key::Equals, egui::Modifiers::COMMAND),
+            (false, 1.15)
+        );
+        assert_eq!(press(egui::Key::N, egui::Modifiers::COMMAND), (true, 1.15));
+    }
+
+    #[test]
+    fn zoom_keys_in_the_composer_window_reach_the_shell() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        let zoom_out = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Minus,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        };
+        // Without a backend the window is drawn inside this one, with its keys.
+        let mut zoom = None;
+        let output = context.run_ui(zoom_out, |ui| {
+            let compose = desktop.app.compose().unwrap();
+            zoom = compose::show_window(
+                ui.ctx(),
+                compose,
+                false,
+                Vec::new(),
+                &mut theme::TitleBar::default(),
+            )
+            .zoom;
+        });
+        output.drop_without_applying_deltas();
+
+        assert_eq!(zoom, Some(settings::ZoomStep::Out));
+    }
+
+    #[derive(Debug)]
+    struct DroppedFile(std::path::PathBuf);
+
+    impl egui::DroppedFile for DroppedFile {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn files_dropped_on_the_composer_window_reach_the_shell() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        let path = std::env::temp_dir().join("agenda, ñ.pdf");
+        let drop = egui::RawInput {
+            dropped_files: vec![std::sync::Arc::new(DroppedFile(path.clone()))],
+            ..Default::default()
+        };
+        let mut dropped = Vec::new();
+        let output = context.run_ui(drop, |ui| {
+            let compose = desktop.app.compose().unwrap();
+            dropped = compose::show_window(
+                ui.ctx(),
+                compose,
+                false,
+                Vec::new(),
+                &mut theme::TitleBar::default(),
+            )
+            .dropped;
+        });
+        output.drop_without_applying_deltas();
+
+        assert_eq!(dropped, [path]);
+    }
+
+    #[test]
+    fn dropped_files_join_the_draft_unless_a_file_dialog_is_open() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::OpenCompose, &context);
+        let first = std::path::PathBuf::from("/tmp/first.pdf");
+        let second = std::path::PathBuf::from("/tmp/second.pdf");
+
+        // The picker is choosing: a drop must not join, nor free its slot.
+        desktop.file_dialog_open = true;
+        desktop.attach_dropped(vec![first.clone()], &context);
+        assert!(desktop.app.compose().unwrap().attachments().is_empty());
+        assert!(desktop.file_dialog_open);
+
+        desktop.file_dialog_open = false;
+        desktop.attach_dropped(vec![first.clone(), second.clone()], &context);
+        assert_eq!(
+            desktop.app.compose().unwrap().attachments(),
+            [first, second]
+        );
+    }
+
+    #[test]
+    fn files_dragged_over_the_draft_show_where_they_go() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::OpenCompose);
+        let hovering = egui::RawInput {
+            hovered_files: vec![egui::HoveredFile::default()],
+            ..Default::default()
+        };
+        let output = context.run_ui(hovering, |ui| {
+            compose::show_in_pane(ui, app.compose().unwrap(), &mut Vec::new());
+        });
+        let shows_hint = output.shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::epaint::Shape::Text(text)
+                if text.galley.text() == "Drop files to attach")
+        });
+        output.drop_without_applying_deltas();
+        assert!(shows_hint);
+    }
+
     #[test]
     fn sign_out_clears_the_saved_conversation_viewport() {
         let context = egui::Context::default();
@@ -1591,15 +2170,7 @@ mod tests {
         desktop.dispatch(Message::ConversationsLoaded(1, page), &context);
         context
             .run_ui(egui::RawInput::default(), |root| {
-                mailbox::show(
-                    root,
-                    &desktop.app,
-                    None,
-                    false,
-                    None,
-                    &mut desktop.ui,
-                    &mut Vec::new(),
-                );
+                mailbox::show(root, &desktop.app, None, &mut desktop.ui, &mut Vec::new());
             })
             .drop_without_applying_deltas();
         assert!(desktop.ui.conversation_scroll.is_some());
@@ -1726,7 +2297,7 @@ mod tests {
     #[test]
     fn unchanged_settings_close_with_escape_or_a_folder() {
         let (mut desktop, context) = demo_with_settings();
-        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        desktop.dispatch(Message::KeyPressed(KeyPress::plain(Key::Escape)), &context);
         assert!(!desktop.app.showing_settings());
         assert!(desktop.pending_settings_exit.is_none());
 
@@ -1742,7 +2313,7 @@ mod tests {
         let (mut desktop, context) = demo_with_settings();
         desktop.settings_draft.as_mut().unwrap().confirm_links = false;
 
-        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        desktop.dispatch(Message::KeyPressed(KeyPress::plain(Key::Escape)), &context);
         assert!(desktop.app.showing_settings());
         assert!(matches!(
             desktop.pending_settings_exit,
@@ -1751,7 +2322,7 @@ mod tests {
         desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
 
         desktop.dispatch(
-            Message::KeyPressed(key(Key::Character(','), true)),
+            Message::KeyPressed(KeyPress::with_command(Key::Character(','))),
             &context,
         );
         assert!(matches!(
@@ -1777,7 +2348,7 @@ mod tests {
         assert!(desktop.app.showing_settings());
         assert!(!desktop.app.settings().confirm_links);
 
-        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        desktop.dispatch(Message::KeyPressed(KeyPress::plain(Key::Escape)), &context);
         assert!(!desktop.app.showing_settings());
         assert!(desktop.pending_settings_exit.is_none());
     }
@@ -1797,7 +2368,7 @@ mod tests {
             Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::SelectFolder(_))
         ));
 
-        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        desktop.dispatch(Message::KeyPressed(KeyPress::plain(Key::Escape)), &context);
         assert!(matches!(
             desktop.pending_settings_exit,
             Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::SelectFolder(_)),
@@ -1831,10 +2402,7 @@ mod tests {
         let (mut desktop, context) = demo_with_settings();
         desktop.settings_draft.as_mut().unwrap().confirm_links = false;
         desktop.dispatch(Message::Logout, &context);
-        assert!(matches!(
-            desktop.app.auth_state(),
-            AuthState::Authenticated { .. }
-        ));
+        assert!(desktop.app.auth_state().is_authenticated());
         desktop.resolve_settings_exit(settings::ExitDecision::Discard, &context);
         assert!(matches!(desktop.app.auth_state(), AuthState::SignedOut));
         assert!(desktop.app.settings().confirm_links);
@@ -1849,15 +2417,15 @@ mod tests {
     }
 
     #[test]
-    fn dock_badge_count_returns_none_when_unauthenticated() {
+    fn unread_badge_count_returns_none_when_unauthenticated() {
         let (app, _) = App::boot(false, crate::settings::Settings::default());
-        assert_eq!(dock_badge_count(&app), None);
+        assert_eq!(unread_badge_count(&app), None);
     }
 
     #[test]
-    fn set_dock_badge_does_not_panic() {
-        set_dock_badge(Some(5));
-        set_dock_badge(None);
+    fn set_unread_badge_does_not_panic() {
+        assert!(set_unread_badge(None, Some(5)));
+        assert!(set_unread_badge(None, None));
     }
 
     #[test]
@@ -2205,6 +2773,37 @@ mod tests {
         desktop.remember_window_size(&context);
         assert_eq!(desktop.layout_reset_at, None);
         assert_eq!(desktop.app.settings().window, old);
+    }
+
+    #[test]
+    fn a_layout_reset_in_full_screen_ends_when_its_wait_does() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::ResetLayout, &context);
+        let started = desktop
+            .layout_reset_at
+            .expect("a reset waits for the window");
+
+        // Full screen keeps the window from ever reaching the default size.
+        let mut full_screen = egui::RawInput {
+            time: Some(started + LAYOUT_RESET_WAIT + 1.0),
+            ..Default::default()
+        };
+        let viewport = full_screen
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default();
+        viewport.inner_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1920.0, 1080.0),
+        ));
+        viewport.fullscreen = Some(true);
+        context
+            .run_ui(full_screen, |_| {})
+            .drop_without_applying_deltas();
+        desktop.remember_window_size(&context);
+
+        assert_eq!(desktop.layout_reset_at, None);
     }
 
     #[test]

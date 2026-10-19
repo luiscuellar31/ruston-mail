@@ -1,9 +1,9 @@
+mod auth;
 pub mod demo;
 mod html;
 mod model;
 mod outgoing;
 mod proton;
-mod service;
 mod threading;
 
 pub use ruston_core::Verdict;
@@ -12,19 +12,19 @@ use std::sync::Arc;
 /// Shared bound for scheduled inspections and their backend requests.
 pub(crate) const INSPECTION_CONCURRENCY: usize = 4;
 
+pub use auth::{AuthError, LoginRequest};
 pub use model::{
     BlockKind, ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder,
     IncomingMail, MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
     MailboxError, MessageBody, RichBlock, RichBody, RichSpan, SummaryKind, UNREADABLE_NOTICE,
 };
 pub use outgoing::{
-    BodyFormat, Domains, InternationalDomain, Kind, Outgoing, Protection, ProtectionCheck,
+    BodyFormat, Domains, InternationalDomain, Outgoing, OutgoingKind, Protection, ProtectionCheck,
     Recipients, SendError, recipients, validate_attachments,
 };
 #[cfg(test)]
-pub use proton::Reply;
+pub use proton::PromptAnswer;
 pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
-pub use service::{AuthError, LoginRequest};
 
 /// The source of mailbox data for an open mailbox.
 #[derive(Clone)]

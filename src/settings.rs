@@ -14,11 +14,13 @@ const FILE: &str = "settings.json";
 const DEMO_FILE: &str = "settings-demo.json";
 const TEMP_ATTEMPTS: u32 = 100;
 
-/// Ratios are clamped on load: a damaged file must not produce a layout with
-/// no room to read in.
-const MIN_RATIO: f32 = 0.1;
-const MAX_RATIO: f32 = 0.9;
-const MIN_WINDOW: (f32, f32) = (480.0, 420.0);
+/// Panel ratios stay within this range, on load and when a divider moves: a
+/// damaged file must not produce a layout with no room to read in.
+pub const MIN_RATIO: f32 = 0.1;
+pub const MAX_RATIO: f32 = 0.9;
+/// The smallest a window may be: narrow enough for half a laptop screen,
+/// where the panes show one at a time.
+pub const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 /// Zoom is a scale on every length in the interface, so it has to stay within
 /// what a window can still show something useful at.
 pub const MIN_ZOOM: f32 = 0.8;
@@ -51,19 +53,27 @@ pub struct Settings {
     #[serde(default = "enabled")]
     pub check_recipient_protection: bool,
     /// Take recipient domains written in another script, sent in their ASCII
-    /// `xn--` form. Off, only ASCII domains are taken, as before this choice.
+    /// `xn--` form. Off, only ASCII domains are taken, and settings saved
+    /// before this choice existed keep it off.
     #[serde(default)]
     pub accept_international_domains: bool,
     /// Color scheme of the desktop interface.
     #[serde(default)]
     pub appearance: Appearance,
+    /// Follow the system's light or dark mode instead. `appearance` stays the
+    /// last scheme chosen, used where the system tells none. A field of its
+    /// own, not a third `Appearance`: an older version would not read that
+    /// and would put every setting back to its default.
+    #[serde(default)]
+    pub follow_system_appearance: bool,
     /// Opt-in native UI face; bundled fonts remain the default and fallback.
     #[serde(default)]
     pub system_font: bool,
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
-    /// Show the unread inbox count on the macOS Dock icon.
+    /// Show the unread inbox count on the macOS Dock icon or the Windows
+    /// taskbar button.
     pub show_unread_badge: bool,
     /// Show desktop notification when new mail arrives in inbox.
     pub desktop_notifications: bool,
@@ -92,6 +102,7 @@ impl Default for Settings {
             check_recipient_protection: true,
             accept_international_domains: false,
             appearance: Appearance::Dark,
+            follow_system_appearance: false,
             system_font: false,
             zoom: 1.0,
             show_unread_badge: true,
@@ -205,32 +216,27 @@ impl Settings {
     /// Reads the settings, using defaults if the file is absent or invalid.
     /// The demo reads, and later writes, a file of its own.
     pub fn load(demo: bool) -> Self {
-        let mut settings = path(demo)
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|text| serde_json::from_str::<Self>(&text).ok())
-            .unwrap_or_default()
-            .sanitized();
-        // Even defaults are worth storing once the app is running: it is the
-        // first run that has nothing on disk yet.
-        settings.stored = true;
+        let mut settings = path(demo).map_or_else(Self::default, |path| read(&path));
         settings.demo = demo;
 
         settings
     }
 
-    /// Writes the settings. Failures are ignored: this is a convenience, and
-    /// a read-only disk is not a reason to interrupt someone's mail.
-    pub fn save(&self) {
+    /// Writes the settings, and says whether they are where they should be:
+    /// written, or settings no file takes, such as those built in memory. A
+    /// failure interrupts nothing: this is a convenience, and a read-only disk
+    /// is not a reason to interrupt someone's mail.
+    pub fn save(&self) -> bool {
         if !self.stored {
-            return;
+            return true;
         }
         let Some(path) = path(self.demo) else {
-            return;
+            return true;
         };
         let Ok(text) = serde_json::to_string_pretty(self) else {
-            return;
+            return false;
         };
-        let _ = write_atomically(&path, text.as_bytes());
+        write_atomically(&path, text.as_bytes()).is_ok()
     }
 
     /// In-memory settings that open a given folder without becoming writable.
@@ -262,8 +268,13 @@ impl Settings {
         self.panels.sidebar = clamp_ratio(self.panels.sidebar, defaults.panels.sidebar);
         self.panels.conversations =
             clamp_ratio(self.panels.conversations, defaults.panels.conversations);
-        self.window.width = clamp_size(self.window.width, MIN_WINDOW.0, defaults.window.width);
-        self.window.height = clamp_size(self.window.height, MIN_WINDOW.1, defaults.window.height);
+        self.window.width =
+            clamp_size(self.window.width, MIN_WINDOW_SIZE[0], defaults.window.width);
+        self.window.height = clamp_size(
+            self.window.height,
+            MIN_WINDOW_SIZE[1],
+            defaults.window.height,
+        );
         self.window.position = self
             .window
             .position
@@ -297,6 +308,33 @@ fn path(demo: bool) -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "Ruston Mail")?;
 
     Some(dirs.config_dir().join(if demo { DEMO_FILE } else { FILE }))
+}
+
+/// Reads the settings kept at `path`, to be written back there. A file that
+/// is there but cannot be used is first moved aside, to [`unreadable`], so
+/// the defaults written instead destroy nothing; one that cannot be moved is
+/// never written over.
+fn read(path: &Path) -> Settings {
+    let found = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice::<Settings>(&bytes).ok(),
+        // Even defaults are worth storing once the app is running: it is
+        // the first run that has nothing on disk yet.
+        Err(error) if error.kind() == ErrorKind::NotFound => Some(Settings::default()),
+        Err(_) => None,
+    };
+    let usable = found.is_some();
+    let mut settings = found.unwrap_or_default().sanitized();
+    settings.stored = usable || fs::rename(path, unreadable(path)).is_ok();
+
+    settings
+}
+
+/// Where a settings file that could not be used is kept: beside it, with
+/// `.unreadable` after its name. A later one replaces it.
+fn unreadable(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or(FILE.as_ref()).to_os_string();
+    name.push(".unreadable");
+    path.with_file_name(name)
 }
 
 /// Replaces complete settings in one rename, leaving the previous file intact
@@ -363,10 +401,33 @@ mod tests {
     fn older_settings_keep_the_dark_appearance() {
         let mut old = serde_json::to_value(Settings::default()).unwrap();
         old.as_object_mut().unwrap().remove("appearance");
+        old.as_object_mut()
+            .unwrap()
+            .remove("follow_system_appearance");
         old.as_object_mut().unwrap().remove("system_font");
         let restored: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(restored.appearance, Appearance::Dark);
+        assert!(!restored.follow_system_appearance);
         assert!(!restored.system_font);
+    }
+
+    #[test]
+    fn following_the_system_leaves_older_versions_a_scheme_they_read() {
+        let following = Settings {
+            appearance: Appearance::Light,
+            follow_system_appearance: true,
+            ..Settings::default()
+        };
+        let mut written = serde_json::to_value(&following).unwrap();
+        // A version before this choice finds a scheme it knows...
+        assert_eq!(written["appearance"], "Light");
+        // ...and skips the field it does not, as this one skips a later one's.
+        written
+            .as_object_mut()
+            .unwrap()
+            .insert("from_a_later_version".into(), true.into());
+        let read: Settings = serde_json::from_value(written).unwrap();
+        assert_eq!(read, following);
     }
 
     #[test]
@@ -506,6 +567,138 @@ mod tests {
 
         assert_eq!(fs::read(&path).unwrap(), b"new settings");
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    /// What 0.7.1, the latest release, writes once every choice is changed.
+    const RELEASED: &str = r#"{
+  "window": {
+    "width": 1280.0,
+    "height": 800.0,
+    "maximized": true,
+    "position": [
+      40.0,
+      60.0
+    ]
+  },
+  "panels": {
+    "sidebar": 0.25,
+    "conversations": 0.5
+  },
+  "folder": {
+    "id": "kZ9",
+    "name": "Invoices",
+    "kind": "Folder"
+  },
+  "start": {
+    "Always": "Archive"
+  },
+  "mark_read_on_open": false,
+  "confirm_links": false,
+  "expand_all_messages": true,
+  "show_quoted_text": true,
+  "compose_format": "Html",
+  "compose_placement": "Window",
+  "check_recipient_protection": false,
+  "accept_international_domains": true,
+  "appearance": "Light",
+  "system_font": true,
+  "zoom": 1.25,
+  "show_unread_badge": false,
+  "desktop_notifications": false
+}"#;
+
+    fn empty_folder(name: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("ruston-settings-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    #[test]
+    fn settings_written_by_the_latest_release_still_load() {
+        let folder = empty_folder("released");
+        let path = folder.join(FILE);
+        fs::write(&path, RELEASED).unwrap();
+
+        let expected = Settings {
+            window: Window {
+                width: 1_280.0,
+                height: 800.0,
+                maximized: true,
+                position: Some([40.0, 60.0]),
+            },
+            panels: Panels {
+                sidebar: 0.25,
+                conversations: 0.5,
+            },
+            folder: Folder::custom("kZ9", "Invoices"),
+            start: StartFolder::Always(MailFolder::Archive),
+            mark_read_on_open: false,
+            confirm_links: false,
+            expand_all_messages: true,
+            show_quoted_text: true,
+            compose_format: BodyFormat::Html,
+            compose_placement: ComposePlacement::Window,
+            check_recipient_protection: false,
+            accept_international_domains: true,
+            appearance: Appearance::Light,
+            system_font: true,
+            zoom: 1.25,
+            show_unread_badge: false,
+            desktop_notifications: false,
+            stored: true,
+            // A field added since keeps its default.
+            ..Settings::default()
+        };
+        assert_eq!(read(&path), expected);
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_damaged_file_is_kept_aside_before_defaults_replace_it() {
+        let folder = empty_folder("damaged");
+        let path = folder.join(FILE);
+        let writable_defaults = Settings {
+            stored: true,
+            ..Settings::default()
+        };
+        // A first run has nothing to keep.
+        assert_eq!(read(&path), writable_defaults);
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
+
+        // A hand edit that lost a comma.
+        let damaged = RELEASED.replacen(',', "", 1);
+        fs::write(&path, &damaged).unwrap();
+
+        assert_eq!(read(&path), writable_defaults);
+        assert!(!path.exists());
+        let kept = folder.join("settings.json.unreadable");
+        assert_eq!(fs::read_to_string(kept).unwrap(), damaged);
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn settings_no_file_takes_count_as_saved() {
+        // Built in memory, as every test does: nothing is written, nothing waits.
+        assert!(Settings::default().save());
+    }
+
+    #[test]
+    fn a_damaged_file_that_cannot_be_kept_aside_is_not_written_over() {
+        let folder = empty_folder("unmovable");
+        let path = folder.join(FILE);
+        fs::write(&path, b"{").unwrap();
+        // Something already holds the name it would be kept under.
+        fs::create_dir_all(folder.join("settings.json.unreadable").join("taken")).unwrap();
+
+        let settings = read(&path);
+
+        assert!(!settings.stored);
+        assert_eq!(settings, Settings::default());
+        assert_eq!(fs::read(&path).unwrap(), b"{");
         let _ = fs::remove_dir_all(folder);
     }
 

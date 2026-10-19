@@ -2,10 +2,10 @@
 
 use super::{Client, read::FullMessage};
 use crate::api;
-use crate::api::messages::ListQuery;
-use crate::cache::{Cache, CacheIdentity};
+use crate::api::messages::{ListQuery, is_last_page};
+use crate::cache::{BatchCounts, Cache, CacheIdentity};
 use crate::error::{Error, Result};
-use crate::model::enums::resolve_folder;
+use crate::model::enums::{resolve_folder, response_code};
 use crate::model::message::MessageMetadata;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
 use crate::transport::Doer;
@@ -38,6 +38,30 @@ pub struct SyncReport {
     pub rebuilt: Option<usize>,
 }
 
+impl SyncReport {
+    /// A first sync, which only stored the cursor `event_id`.
+    fn initialized(event_id: String) -> Self {
+        Self {
+            initialized: true,
+            ..Self::from_counts(BatchCounts::default(), event_id, None)
+        }
+    }
+
+    /// A sync that applied `counts` and left the cursor at `event_id`, after
+    /// rebuilding the cache when the server asked for it.
+    fn from_counts(counts: BatchCounts, event_id: String, rebuilt: Option<usize>) -> Self {
+        Self {
+            created: counts.created,
+            updated: counts.updated,
+            flags_updated: counts.flags_updated,
+            deleted: counts.deleted,
+            event_id,
+            initialized: false,
+            rebuilt,
+        }
+    }
+}
+
 async fn rebuild_cache<D: Doer>(
     http: &D,
     cache: &Cache,
@@ -48,7 +72,7 @@ async fn rebuild_cache<D: Doer>(
     cache.begin_rebuild()?;
     let mut expected_total = None;
     let mut page = 0;
-    loop {
+    let total = loop {
         let query = ListQuery {
             page: Some(page),
             page_size: Some(page_size),
@@ -56,88 +80,89 @@ async fn rebuild_cache<D: Doer>(
         };
         let (total, messages) = api::messages::list_messages(http, &query).await?;
         if expected_total.is_some_and(|expected| expected != total) {
-            return Err(Error::Cache("mailbox changed during resync; retry".into()));
+            return Err(Error::cache_changed("mailbox changed during resync"));
         }
         expected_total = Some(total);
-        if messages.is_empty() && (u64::from(page) * u64::from(page_size)) < u64::from(total) {
-            return Err(Error::Cache(
-                "incomplete mailbox listing during resync; retry".into(),
+        let listed_before = u64::from(page) * u64::from(page_size);
+        if messages.is_empty() && listed_before < u64::from(total) {
+            return Err(Error::cache_changed(
+                "incomplete mailbox listing during resync",
             ));
         }
         cache.stage_rebuild_page(&messages)?;
-        if (u64::from(page) + 1) * u64::from(page_size) >= u64::from(total) {
-            break;
+        if listed_before + u64::from(page_size) >= u64::from(total) {
+            break total;
         }
         page += 1;
-    }
-    let rebuilt = cache.finish_rebuild(previous_cursor, &cursor, expected_total.unwrap_or(0))?;
+    };
+    let rebuilt = cache.finish_rebuild(previous_cursor, &cursor, total)?;
     Ok((cursor, rebuilt))
 }
 
 async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
-    let mut id = match cache.last_event_id()? {
-        Some(i) => i,
+    let mut cursor = match cache.last_event_id()? {
+        Some(cursor) => cursor,
         None => {
             // Bootstrap: record the current cursor; deltas flow from here.
             let latest = api::events::get_latest_event_id(http).await?;
             if cache.initialize_cursor(&latest)? {
                 tracing::info!(target: "ruston_core::sync", event_id = %latest, "sync initialized cursor");
-                return Ok(SyncReport {
-                    created: 0,
-                    updated: 0,
-                    flags_updated: 0,
-                    deleted: 0,
-                    event_id: latest,
-                    initialized: true,
-                    rebuilt: None,
-                });
+                return Ok(SyncReport::initialized(latest));
             }
             cache.last_event_id()?.ok_or_else(|| {
-                Error::Cache("sync cursor disappeared during initialization; retry".into())
+                Error::cache_changed("sync cursor disappeared during initialization")
             })?
         }
     };
 
-    let (mut created, mut updated, mut flags_updated, mut deleted) = (0, 0, 0, 0);
+    let mut counts = BatchCounts::default();
     let mut rebuilt = None;
     loop {
-        let batch = api::events::get_events(http, &id).await?;
+        let batch = api::events::get_events(http, &cursor).await?;
         if batch.refresh {
             if rebuilt.is_some() {
-                return Err(Error::Cache(
-                    "server requested another resync; retry".into(),
-                ));
+                return Err(Error::cache_changed("server requested another resync"));
             }
-            let (cursor, count) = rebuild_cache(http, cache, &id, RESYNC_PAGE_SIZE).await?;
+            let (rebuilt_cursor, count) =
+                rebuild_cache(http, cache, &cursor, RESYNC_PAGE_SIZE).await?;
             tracing::warn!(target: "ruston_core::sync", rebuilt = count, "server requested full resync — cache rebuilt");
-            id = cursor;
+            cursor = rebuilt_cursor;
             rebuilt = Some(count);
-            created = 0;
-            updated = 0;
-            flags_updated = 0;
-            deleted = 0;
+            // What earlier batches changed is part of the rebuild, which
+            // `rebuilt` reports.
+            counts = BatchCounts::default();
             continue;
         }
-        let counts = cache.apply_event_batch(&id, &batch)?;
-        created += counts.created;
-        updated += counts.updated;
-        flags_updated += counts.flags_updated;
-        deleted += counts.deleted;
-        id = batch.event_id;
+        counts += cache.apply_event_batch(&cursor, &batch)?;
+        cursor = batch.event_id;
         if !batch.more {
             break;
         }
     }
-    tracing::info!(target: "ruston_core::sync", created, updated, deleted, event_id = %id, "sync complete");
-    Ok(SyncReport {
-        created,
-        updated,
-        flags_updated,
-        deleted,
-        event_id: id,
-        initialized: false,
-        rebuilt,
-    })
+    tracing::info!(target: "ruston_core::sync", created = counts.created, updated = counts.updated, deleted = counts.deleted, event_id = %cursor, "sync complete");
+    Ok(SyncReport::from_counts(counts, cursor, rebuilt))
+}
+
+/// Pins the event cursor before a cache's first listing. Rows stored without
+/// one were never reconciled: the first sync only set the cursor to the newest
+/// event, so a message deleted since the listing stayed searchable.
+/// The cache passes through by value, so no reference to it lives across the
+/// request and the callers' futures stay `Send`.
+async fn pin_cursor<D: Doer, C: Borrow<Cache>>(http: &D, cache: C) -> Result<C> {
+    if cache.borrow().last_event_id()?.is_none() {
+        let latest = api::events::get_latest_event_id(http).await?;
+        // Another process may have pinned one meanwhile; either predates the
+        // listing.
+        cache.borrow().initialize_cursor(&latest)?;
+    }
+    Ok(cache)
+}
+
+/// The cursor a page's rows are stored under, which `pin_cursor` set.
+fn page_cursor(cache: &Cache) -> Result<String> {
+    cache
+        .last_event_id()?
+        .ok_or_else(|| Error::cache_changed("sync cursor disappeared during cache download"))
 }
 
 // Client passes an owned Cache to keep its future Send: SQLite connections are
@@ -150,24 +175,18 @@ async fn backfill_cache<D: Doer>(
     page_size: u32,
 ) -> Result<usize> {
     let label = resolve_folder(folder);
+    let cache = pin_cursor(http, cache).await?;
     let mut n = 0usize;
     for page in 0..max_pages {
-        let q = ListQuery {
-            label_id: Some(label.clone()),
-            page: Some(page),
-            page_size: Some(page_size),
-            ..Default::default()
-        };
-        let cursor = cache.borrow().last_event_id()?;
+        let q = ListQuery::folder_page(label.clone(), page, page_size);
+        let cursor = page_cursor(cache.borrow())?;
         let (_total, msgs) = api::messages::list_messages(http, &q).await?;
         if msgs.is_empty() {
             break;
         }
-        cache
-            .borrow()
-            .store_metadata_page(cursor.as_deref(), &msgs)?;
+        cache.borrow().store_metadata_page(Some(&cursor), &msgs)?;
         n += msgs.len();
-        if (msgs.len() as u32) < page_size {
+        if is_last_page(msgs.len(), page_size) {
             break;
         }
     }
@@ -189,16 +208,12 @@ where
     Fut: Future<Output = Result<FullMessage>>,
 {
     let label = resolve_folder(folder);
+    let cache = pin_cursor(http, cache).await?;
     let mut n = 0usize;
     for page in 0..max_pages {
-        let q = ListQuery {
-            label_id: Some(label.clone()),
-            page: Some(page),
-            page_size: Some(page_size),
-            ..Default::default()
-        };
+        let q = ListQuery::folder_page(label.clone(), page, page_size);
         // Keep the page cursor for every body, including failed reads.
-        let cursor = cache.borrow().last_event_id()?;
+        let cursor = page_cursor(cache.borrow())?;
         let (_total, msgs) = api::messages::list_messages(http, &q).await?;
         if msgs.is_empty() {
             break;
@@ -213,7 +228,7 @@ where
             match read {
                 Ok(full) => {
                     cache.borrow().store_index_result(
-                        cursor.as_deref(),
+                        Some(&cursor),
                         &full.meta,
                         Some(&full.body),
                     )?;
@@ -224,7 +239,7 @@ where
                 Err(error) if is_definitive_read_failure(&error) => {
                     cache
                         .borrow()
-                        .store_index_result(cursor.as_deref(), &meta, None)?;
+                        .store_index_result(Some(&cursor), &meta, None)?;
                 }
                 // Anything else says nothing about the body, and would most
                 // likely fail the next read too: keep what is indexed and stop.
@@ -234,20 +249,13 @@ where
                 }
             }
         }
-        if (listed as u32) < page_size {
+        if is_last_page(listed, page_size) {
             break;
         }
     }
     tracing::info!(target: "ruston_core::sync", folder, indexed = n, "local search index built");
     Ok(n)
 }
-
-/// Proton's code for a message that does not exist.
-const MESSAGE_DOES_NOT_EXIST: i64 = 2501;
-/// Proton's code for an ID it does not accept.
-const INVALID_ID: i64 = 2061;
-/// Proton's code for a request that needs human verification.
-const HUMAN_VERIFICATION_REQUIRED: i64 = 9001;
 
 /// Whether reading a body failed because of the message itself: it is gone,
 /// or its body cannot be decrypted or parsed, so reading it again would fail
@@ -257,8 +265,10 @@ fn is_definitive_read_failure(error: &Error) -> bool {
     match error {
         // Proton's own clients take a 422 for a full message as "gone".
         Error::Api(api) => {
-            matches!(api.code, MESSAGE_DOES_NOT_EXIST | INVALID_ID)
-                || (api.http_status == 422 && api.code != HUMAN_VERIFICATION_REQUIRED)
+            matches!(
+                api.code,
+                response_code::MESSAGE_DOES_NOT_EXIST | response_code::INVALID_ID
+            ) || (api.http_status == 422 && api.code != response_code::HUMAN_VERIFICATION)
         }
         Error::NotFound { .. }
         | Error::Crypto(_)
@@ -447,6 +457,7 @@ mod tests {
     use super::*;
     use crate::api::events::{EventBatch, MessageEvent, action};
     use crate::crypto::Verdict;
+    use crate::mail::test_support;
     use crate::transport::{HttpClient, Request, Response};
     use serde::de::DeserializeOwned;
     use std::path::Path;
@@ -482,6 +493,12 @@ mod tests {
         }
 
         async fn decode<T: DeserializeOwned>(&self, req: Request) -> Result<T> {
+            // A cache's first listing pins the cursor first.
+            if req.path == "/core/v4/events/latest" {
+                return Ok(serde_json::from_value(serde_json::json!({
+                    "EventID": "pinned"
+                }))?);
+            }
             assert_eq!(req.path, "/mail/v4/messages");
             let page: usize = req
                 .query
@@ -513,14 +530,11 @@ mod tests {
 
     #[tokio::test]
     async fn indexing_reads_bodies_without_looking_up_sender_keys() {
-        use crate::cache::CacheIdentity;
-        use crate::crypto::{AddressKeys, KeyStore, StoredKey};
-        use crate::session::{MemoryStore, Paths};
+        use crate::crypto::{AddressKeys, StoredKey};
         use proton_crypto::crypto::{
             DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
         };
         use secrecy::SecretString;
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let provider = crate::crypto::provider();
@@ -575,19 +589,16 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        let client = Client {
-            http: HttpClient::new(server.uri(), "Other"),
-            keys: KeyStore {
-                user_keys: Vec::new(),
-                addresses: vec![address],
-            },
-            paths: Paths::with_base(std::env::temp_dir()),
-            profile: "test".into(),
-            session_uid: "test".into(),
-            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
-            store: Arc::new(MemoryStore::default()),
-            sender_cache: tokio::sync::Mutex::new(super::super::SenderKeyCache::default()),
-        };
+        // A fresh cache pins its sync cursor before listing.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "pinned"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = test_support::client(&server, vec![address]);
         let cache = Cache::open(Path::new(":memory:")).unwrap();
 
         assert_eq!(client.index_into(&cache, "inbox", 1, 10).await.unwrap(), 1);
@@ -786,7 +797,9 @@ mod tests {
                         body_gate.add_permits(1);
                     }
                     assert!(
-                        matches!(index.await, Err(Error::Cache(message)) if message.contains("retry"))
+                        index
+                            .await
+                            .is_err_and(|error| error.is_retryable_cache_error())
                     );
                     assert_competing_event_preserved(&cache, event_action);
                 }
@@ -823,7 +836,11 @@ mod tests {
         assert_eq!(cache.search("downloadedbody", 10).unwrap()[0].id, "m0");
         apply_competing_event(&cache, action::DELETE);
         body_gate.add_permits(1);
-        assert!(matches!(index.await, Err(Error::Cache(message)) if message.contains("retry")));
+        assert!(
+            index
+                .await
+                .is_err_and(|error| error.is_retryable_cache_error())
+        );
         let remaining = cache.list("0", false, 10, 0).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, "m0");
@@ -834,16 +851,6 @@ mod tests {
     #[tokio::test]
     async fn index_reads_three_bodies_at_once_and_stores_them_in_listing_order() {
         use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-
-        async fn wait_for(counter: &AtomicUsize, count: usize) {
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                while counter.load(SeqCst) < count {
-                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                }
-            })
-            .await
-            .expect("body reads did not make progress");
-        }
 
         let cache = Cache::open(Path::new(":memory:")).unwrap();
         cache.set_last_event_id("old").unwrap();
@@ -876,15 +883,15 @@ mod tests {
             }
         });
         let release = async {
-            wait_for(&started, 3).await;
+            test_support::wait_for(&started, 3, "body reads").await;
             // Later bodies arrive first, but wait for the first one.
             gates[2].add_permits(1);
             gates[1].add_permits(1);
-            wait_for(&finished, 2).await;
+            test_support::wait_for(&finished, 2, "body reads").await;
             assert!(cache.search("downloadedbody", 10).unwrap().is_empty());
             assert_eq!(started.load(SeqCst), 3);
             gates[0].add_permits(1);
-            wait_for(&started, 5).await;
+            test_support::wait_for(&started, 5, "body reads").await;
             gates[3].add_permits(1);
             gates[4].add_permits(1);
         };
@@ -914,7 +921,9 @@ mod tests {
             apply_competing_event(&cache, event_action);
             http.gate.add_permits(1);
             assert!(
-                matches!(backfill.await, Err(Error::Cache(message)) if message.contains("retry"))
+                backfill
+                    .await
+                    .is_err_and(|error| error.is_retryable_cache_error())
             );
             assert_competing_event_preserved(&cache, event_action);
         }
@@ -945,8 +954,94 @@ mod tests {
                 2
             );
             assert_eq!(cache.search("downloadedbody", 10).unwrap().len(), 2);
-            assert_eq!(cache.last_event_id().unwrap().as_deref(), cursor);
+            // A cache without a cursor gets one before its first listing.
+            assert_eq!(
+                cache.last_event_id().unwrap().as_deref(),
+                Some(cursor.unwrap_or("pinned"))
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn the_first_sync_applies_what_changed_after_an_earlier_listing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "before-listing"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 2, "Messages": [message("m1"), message("m2")]
+            })))
+            .mount(&server)
+            .await;
+        // m1 is deleted after the listing and before the first sync.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/before-listing"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "caught-up", "More": 0,
+                "Messages": [{"ID": "m1", "Action": 0}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+
+        assert_eq!(
+            backfill_cache(&http, &cache, "inbox", 1, 10).await.unwrap(),
+            2
+        );
+        let report = sync_cache(&http, &cache).await.unwrap();
+
+        let ids: Vec<String> = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, ["m2"]);
+        assert!(!report.initialized);
+        assert_eq!(report.deleted, 1);
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("caught-up"));
+    }
+
+    #[tokio::test]
+    async fn a_first_sync_with_no_cursor_only_stores_the_newest_one() {
+        let server = MockServer::start().await;
+        // Any request for events would fail: there is none to apply yet.
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "newest"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+
+        let report = sync_cache(&HttpClient::new(server.uri(), "Other"), &cache)
+            .await
+            .unwrap();
+
+        assert!(report.initialized);
+        assert_eq!(report.event_id, "newest");
+        assert_eq!(
+            (
+                report.created,
+                report.updated,
+                report.flags_updated,
+                report.deleted,
+                report.rebuilt
+            ),
+            (0, 0, 0, 0, None)
+        );
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("newest"));
     }
 
     #[tokio::test]
@@ -1210,6 +1305,103 @@ mod tests {
         assert_eq!(count, 3);
         assert_eq!(cache.count("0").unwrap(), (3, 0));
         assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("fresh"));
+    }
+
+    /// A rebuild of two-message pages: the first lists two of `totals[0]`,
+    /// the second `second_page` of `totals[1]`. Nothing serves a third.
+    async fn rebuild_with_second_page(
+        totals: [u32; 2],
+        second_page: Vec<serde_json::Value>,
+    ) -> Result<(String, usize)> {
+        let [first_total, second_total] = totals;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "fresh"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": first_total,
+                "Messages": [message("m1"), message("m2")]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": second_total, "Messages": second_page
+            })))
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2).await
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_refuses_a_listing_that_changes_or_runs_short() {
+        let changed = rebuild_with_second_page([3, 4], vec![message("m3")]).await;
+        assert!(matches!(
+            changed,
+            Err(Error::Cache(ref reason)) if reason.starts_with("mailbox changed during resync")
+        ));
+        // An empty page before the total is reached ends the rebuild there.
+        let short = rebuild_with_second_page([5, 5], Vec::new()).await;
+        assert!(matches!(
+            short,
+            Err(Error::Cache(ref reason))
+                if reason.starts_with("incomplete mailbox listing during resync")
+        ));
+    }
+
+    #[tokio::test]
+    async fn backfilling_stops_at_the_first_short_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "pinned"
+            })))
+            .mount(&server)
+            .await;
+        // Two messages of a page of three: the folder ends here.
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 2, "Messages": [message("m1"), message("m2")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 2, "Messages": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+
+        let cached = backfill_cache(
+            &HttpClient::new(server.uri(), "Other"),
+            &cache,
+            "inbox",
+            5,
+            3,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cached, 2);
     }
 
     #[tokio::test]

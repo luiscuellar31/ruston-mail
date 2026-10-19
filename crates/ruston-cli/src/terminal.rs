@@ -1,5 +1,6 @@
 //! CLI output boundary: readable text is safe even when piped into a terminal.
 
+use ruston_core::error::exit_status;
 use ruston_core::mail::attachments::is_invisible_mark;
 use std::fmt::{self, Write as _};
 use std::io::{self, IsTerminal, Write as _};
@@ -43,7 +44,7 @@ pub(crate) fn write_json<T: serde::Serialize + ?Sized>(value: &T) {
             "error: cannot write output: {}\n",
             SafeArgs(format_args!("{error}"))
         ));
-        std::process::exit(1);
+        std::process::exit(exit_status::OTHER);
     }
     let _ = output.write_all(b"\n");
 }
@@ -239,14 +240,24 @@ fn stdout_failed(error: io::Error) -> ! {
         "error: cannot write output: {}\n",
         SafeArgs(format_args!("{error}"))
     ));
-    std::process::exit(1);
+    std::process::exit(exit_status::OTHER);
 }
 
-/// Preserve explicit body formats only when stdout is not a terminal.
-pub(crate) fn print_body(body: &str, explicit_format: bool) {
+/// How a body is written to stdout.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyFormat {
+    /// Readable text, with terminal controls filtered wherever it goes.
+    Readable,
+    /// A format the user named, raw or HTML: written as it is unless stdout
+    /// is a terminal.
+    Named,
+}
+
+/// Preserve named body formats only when stdout is not a terminal.
+pub(crate) fn print_body(body: &str, format: BodyFormat) {
     let stdout = io::stdout();
     let is_terminal = stdout.is_terminal();
-    if let Err(error) = write_body(&mut stdout.lock(), body, explicit_format, is_terminal) {
+    if let Err(error) = write_body(&mut stdout.lock(), body, format, is_terminal) {
         stdout_failed(error);
     }
 }
@@ -254,10 +265,10 @@ pub(crate) fn print_body(body: &str, explicit_format: bool) {
 fn write_body(
     output: &mut impl io::Write,
     body: &str,
-    explicit_format: bool,
+    format: BodyFormat,
     is_terminal: bool,
 ) -> io::Result<()> {
-    if explicit_format && !is_terminal {
+    if format == BodyFormat::Named && !is_terminal {
         output.write_all(body.as_bytes())?;
     } else {
         std::write!(output, "{}", SafeArgs(format_args!("{body}")))?;
@@ -377,11 +388,16 @@ mod tests {
     #[test]
     fn explicit_body_formats_preserve_data_only_outside_a_terminal() {
         let body = format!("{ATTACK}\n");
-        for (explicit, terminal) in [(false, false), (false, true), (true, true), (true, false)] {
+        for (format, terminal) in [
+            (BodyFormat::Readable, false),
+            (BodyFormat::Readable, true),
+            (BodyFormat::Named, true),
+            (BodyFormat::Named, false),
+        ] {
             let mut output = Vec::new();
-            write_body(&mut output, &body, explicit, terminal).unwrap();
+            write_body(&mut output, &body, format, terminal).unwrap();
             let text = String::from_utf8(output).unwrap();
-            if explicit && !terminal {
+            if format == BodyFormat::Named && !terminal {
                 assert_eq!(text, body);
             } else {
                 assert_safe(&text);

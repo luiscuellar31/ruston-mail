@@ -1,11 +1,10 @@
 //! Draft commands: list, save, edit, delete.
 
 use crate::cli::{Ctx, DraftsCmd};
-use crate::commands::messages::{confirm_deletion, require_consent, send_options};
+use crate::commands::prompt::{confirm_deletion, require_consent};
 use crate::commands::{read_body, resume};
-use crate::{render, terminal};
+use crate::render;
 use ruston_core::Result;
-use std::io::{self, Write};
 
 pub async fn run(ctx: &Ctx, cmd: DraftsCmd) -> Result<()> {
     if let DraftsCmd::Delete { yes, .. } = &cmd {
@@ -20,13 +19,13 @@ pub async fn run(ctx: &Ctx, cmd: DraftsCmd) -> Result<()> {
         }
         DraftsCmd::Save(args) => {
             let body = read_body(&args.body)?;
-            let opts = send_options(args, body);
+            let opts = args.into_send_options(body);
             let id = client.save_draft(&opts).await?;
             render::draft_saved(ctx.json, &id);
         }
         DraftsCmd::Edit { id, args } => {
             let body = read_body(&args.body)?;
-            let opts = send_options(args, body);
+            let opts = args.into_send_options(body);
             client.update_draft(&id, &opts).await?;
             render::action_result(ctx.json, "draft updated", &[id]);
         }
@@ -43,13 +42,7 @@ pub async fn run(ctx: &Ctx, cmd: DraftsCmd) -> Result<()> {
                     };
                     doomed.push(format!("\"{}\" {recipients} (id {id})", draft.subject));
                 }
-                let question = format!(
-                    "Permanently delete {} draft(s)? This cannot be undone.",
-                    ids.len()
-                );
-                let mut output = io::stderr().lock();
-                if !confirm_deletion(&doomed, &question, &mut io::stdin().lock(), &mut output)? {
-                    terminal::writeln!(output, "Nothing was deleted.")?;
+                if !confirm_deletion(&doomed, &format!("{} draft(s)", ids.len()))? {
                     return Ok(());
                 }
             }

@@ -9,8 +9,17 @@ use eframe::egui::{
 pub const ACCENT: Color32 = Color32::from_rgb(109, 92, 245);
 pub const ACCENT_HOVER: Color32 = Color32::from_rgb(100, 83, 226);
 pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(86, 69, 198);
+/// Text and marks drawn on the accent color.
+pub const ON_ACCENT: Color32 = Color32::WHITE;
 pub const PANEL_PADDING: i8 = 16;
 pub const FOOTNOTE_SIZE: f32 = 11.0;
+/// Text in a conversation row and a message header: names, subjects and
+/// previews.
+pub const ROW_TEXT_SIZE: f32 = 14.0;
+/// A message's body, in the reader and the composer.
+pub const BODY_SIZE: f32 = 15.0;
+/// The app's name heading the sign-in screen and the mailbox's sidebar.
+pub const APP_NAME_SIZE: f32 = 23.0;
 pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
 /// How long a looping animation waits before asking for its next frame.
@@ -218,7 +227,7 @@ impl Widget for IconButton<'_> {
         } else if self.danger {
             colors(ui).danger
         } else if self.selected == Some(true) {
-            Color32::WHITE
+            ON_ACCENT
         } else {
             ui.style().interact(&layout.response).fg_stroke.color
         };
@@ -353,13 +362,46 @@ fn paint_check_box(ui: &egui::Ui, square: egui::Rect, checked: bool, response: &
             egui::pos2(mark.center().x, mark.bottom()),
             egui::pos2(mark.right(), mark.top()),
         ],
-        Stroke::new(CHECK_MARK_WIDTH, Color32::WHITE),
+        Stroke::new(CHECK_MARK_WIDTH, ON_ACCENT),
     ));
 }
 
 /// A single-line field with enough vertical room for comfortable reading and clicking.
 pub fn text_field<'t>(ui: &egui::Ui, text: &'t mut String) -> egui::TextEdit<'t> {
     egui::TextEdit::singleline(text).frame(field_frame(ui))
+}
+
+/// The names screen readers hear for the text fields in a frame: a field's
+/// own label, or the text of the labels that point at it.
+#[cfg(test)]
+pub(super) fn text_field_names(output: &egui::FullOutput) -> Vec<String> {
+    use egui::accesskit::Role;
+
+    let nodes: std::collections::HashMap<_, _> = output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| update.nodes.iter().cloned())
+        .collect();
+    nodes
+        .values()
+        .filter(|node| {
+            matches!(
+                node.role(),
+                Role::TextInput | Role::MultilineTextInput | Role::PasswordInput
+            )
+        })
+        .map(|node| match node.label() {
+            Some(label) => label.to_owned(),
+            None => node
+                .labelled_by()
+                .iter()
+                .filter_map(|id| nodes.get(id))
+                .filter_map(|label| label.label().or(label.value()))
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+        .collect()
 }
 
 /// Every text field's frame: its fill, an outline that marks it as a field
@@ -424,8 +466,17 @@ pub fn primary_visuals(ui: &mut egui::Ui) {
     ] {
         state.weak_bg_fill = fill;
         state.bg_stroke = Stroke::NONE;
-        state.fg_stroke.color = Color32::WHITE;
+        state.fg_stroke.color = ON_ACCENT;
     }
+}
+
+/// Gives a button in `ui` that senses no clicks, because it only shows that
+/// something is under way, the look the same button has at rest. egui would
+/// otherwise draw it in the plain colors of text, and a disabled one at half
+/// strength, which white on the accent does not survive.
+pub fn busy_visuals(ui: &mut egui::Ui) {
+    let widgets = &mut ui.visuals_mut().widgets;
+    widgets.noninteractive = widgets.inactive;
 }
 
 fn danger_visuals(ui: &mut egui::Ui) {
@@ -509,7 +560,7 @@ pub const STAR: &str = "★";
 pub const DOT: &str = "·";
 
 pub fn install(context: &egui::Context) {
-    super::fonts::apply(context, false);
+    super::fonts::apply(context, super::fonts::Typeface::Bundled);
     egui_extras::install_image_loaders(context);
     for mode in [egui::Theme::Dark, egui::Theme::Light] {
         let colors = colors_for(mode);
@@ -523,7 +574,7 @@ pub fn install(context: &egui::Context) {
         // Only its color shows, on selected text and selected buttons. egui
         // would also draw it as a focused field's border, which
         // `paint_focus_ring` replaces.
-        style.visuals.selection.stroke = Stroke::new(0.0, Color32::WHITE);
+        style.visuals.selection.stroke = Stroke::new(0.0, ON_ACCENT);
         style.visuals.hyperlink_color = colors.hyperlink;
         // egui draws only hint text with it in this app.
         style.visuals.weak_text_color = Some(colors.placeholder);
@@ -545,8 +596,7 @@ pub fn install(context: &egui::Context) {
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
         // Solid scrollbars reserve space instead of covering content.
         style.spacing.scroll = egui::style::ScrollStyle::solid();
-        style.scroll_animation =
-            egui::style::ScrollAnimation::new(1_200.0, egui::Rangef::new(0.08, 0.24));
+        style.scroll_animation = gliding_scroll();
         // Only message bodies opt into selectable labels.
         style.interaction.selectable_labels = false;
         context.set_style_of(mode, style);
@@ -557,13 +607,108 @@ pub fn install(context: &egui::Context) {
     context.options_mut(|options| options.zoom_with_keyboard = false);
 }
 
+/// Draws in `appearance`.
 pub fn apply(context: &egui::Context, appearance: Appearance) {
-    let mode = match appearance {
+    let mode = egui_theme(appearance);
+    prefer(context, mode.into(), mode);
+}
+
+/// Draws in the system's light or dark mode, which egui follows as it
+/// changes, and in `appearance` where the system tells none.
+pub fn follow_system(context: &egui::Context, appearance: Appearance) {
+    prefer(
+        context,
+        egui::ThemePreference::System,
+        egui_theme(appearance),
+    );
+}
+
+/// How a scroll to a place glides there while motion is not reduced.
+fn gliding_scroll() -> egui::style::ScrollAnimation {
+    egui::style::ScrollAnimation::new(1_200.0, egui::Rangef::new(0.08, 0.24))
+}
+
+/// Holds the interface still while the system asks for less motion: no
+/// fades or gliding scrolls, and loading pulses and spinners that keep the
+/// still picture an unfocused window gets.
+pub fn reduce_motion(context: &egui::Context, reduced: bool) {
+    let (animation_time, scroll) = if reduced {
+        (0.0, egui::style::ScrollAnimation::none())
+    } else {
+        (egui::Style::default().animation_time, gliding_scroll())
+    };
+    let style = context.global_style();
+    if style.animation_time != animation_time || style.scroll_animation != scroll {
+        context.all_styles_mut(|style| {
+            style.animation_time = animation_time;
+            style.scroll_animation = scroll;
+        });
+    }
+}
+
+fn egui_theme(appearance: Appearance) -> egui::Theme {
+    match appearance {
         Appearance::Dark => egui::Theme::Dark,
         Appearance::Light => egui::Theme::Light,
-    };
-    if context.theme() != mode {
-        context.set_theme(mode);
+    }
+}
+
+fn prefer(context: &egui::Context, preference: egui::ThemePreference, fallback: egui::Theme) {
+    let current = context.options(|options| (options.theme_preference, options.fallback_theme));
+    if current != (preference, fallback) {
+        context.options_mut(|options| {
+            options.theme_preference = preference;
+            options.fallback_theme = fallback;
+        });
+    }
+}
+
+/// Gives a window's title bar back the theme egui gave it, when Windows may
+/// have taken it away. egui tells a window its title bar's theme when the
+/// app's theme changes, but winit 0.30 gives the bar the Windows theme again
+/// whenever Windows announces a changed setting, which can leave a dark bar
+/// over a light window. That announcement does not reach the app, so the
+/// request is repeated when the Windows theme changes and when the window
+/// comes back to the front, which usually follows a change made elsewhere.
+/// Never every pass, since each request repaints the window's frame.
+#[derive(Default)]
+pub struct TitleBar {
+    /// What the window was like at the last pass.
+    seen: Option<Seen>,
+}
+
+/// The Windows theme and whether the window had focus, at one pass.
+#[derive(Clone, Copy)]
+struct Seen {
+    system_theme: Option<egui::Theme>,
+    focused: bool,
+}
+
+impl TitleBar {
+    /// Repeats egui's title bar theme for the window `context` is drawing,
+    /// when it may need it. Other systems keep their title bars.
+    pub fn keep(&mut self, context: &egui::Context) {
+        if !cfg!(target_os = "windows") {
+            return;
+        }
+        // `raw` holds the focus even when only the app's logic runs.
+        let now = context.input(|input| Seen {
+            system_theme: input.raw.system_theme,
+            focused: input.raw.focused,
+        });
+        let may_need_theme = self.seen.is_some_and(|seen| {
+            seen.system_theme != now.system_theme || (now.focused && !seen.focused)
+        });
+        self.seen = Some(now);
+        if may_need_theme {
+            // As egui itself sends it.
+            let theme = match context.options(|options| options.theme_preference) {
+                egui::ThemePreference::System => egui::SystemTheme::SystemDefault,
+                egui::ThemePreference::Dark => egui::SystemTheme::Dark,
+                egui::ThemePreference::Light => egui::SystemTheme::Light,
+            };
+            context.send_viewport_cmd(egui::ViewportCommand::SetTheme(theme));
+        }
     }
 }
 
@@ -1031,7 +1176,7 @@ mod tests {
             let (fill, stroke) = frame.expect("a button frame");
             let danger = DARK.danger;
             let expected = match emphasis {
-                Emphasis::Primary => (ACCENT, Stroke::NONE, Color32::WHITE),
+                Emphasis::Primary => (ACCENT, Stroke::NONE, ON_ACCENT),
                 Emphasis::Secondary => (neutral, Stroke::NONE, DARK.text),
                 Emphasis::Danger => (Color32::TRANSPARENT, Stroke::new(1.0, danger), danger),
             };
@@ -1057,10 +1202,10 @@ mod tests {
     }
 
     #[test]
-    fn white_text_on_accent_buttons_keeps_adequate_contrast() {
+    fn text_on_accent_buttons_keeps_adequate_contrast() {
         for fill in [ACCENT, ACCENT_HOVER, ACCENT_PRESSED] {
-            let ratio = contrast(Color32::WHITE, fill);
-            assert!(ratio >= 4.5, "white on {fill:?} has {ratio:.2}:1 contrast");
+            let ratio = contrast(ON_ACCENT, fill);
+            assert!(ratio >= 4.5, "text on {fill:?} has {ratio:.2}:1 contrast");
         }
     }
 
@@ -1164,13 +1309,13 @@ mod tests {
         assert!(group.height() > 0.0, "the group was never laid out");
         assert!(group.height() < available.height(), "it filled the height");
         assert!(group.width() < available.width(), "it filled the width");
-        for (axis, group, available) in [
+        for (axis, group_center, available_center) in [
             ("vertically", group.center().y, available.center().y),
             ("horizontally", group.center().x, available.center().x),
         ] {
             assert!(
-                (group - available).abs() <= 1.0,
-                "the group is not centered {axis}: {group} against {available}"
+                (group_center - available_center).abs() <= 1.0,
+                "the group is not centered {axis}: {group_center} against {available_center}"
             );
         }
     }
@@ -1343,6 +1488,120 @@ mod tests {
             context.style_of(egui::Theme::Dark).visuals.panel_fill,
             DARK.panel
         );
+    }
+
+    #[test]
+    fn reduced_motion_holds_loading_still_and_gives_animations_back() {
+        let context = egui::Context::default();
+        install(&context);
+        let installed = context.style_of(egui::Theme::Dark);
+        // When the next frame of a waiting screen is asked for, if at all.
+        let next_frame = || {
+            let mut delay = Duration::MAX;
+            for _ in 0..2 {
+                let raw = egui::RawInput {
+                    focused: true,
+                    ..Default::default()
+                };
+                let mut output = context.run_ui(raw, |ui| {
+                    skeleton_fill(ui);
+                    spinner(ui);
+                });
+                delay = output
+                    .viewport_output
+                    .remove(&egui::ViewportId::ROOT)
+                    .unwrap()
+                    .repaint_delay;
+                output.drop_without_applying_deltas();
+            }
+            delay
+        };
+        assert!(next_frame() <= ANIMATION_FRAME);
+
+        reduce_motion(&context, true);
+        for mode in [egui::Theme::Dark, egui::Theme::Light] {
+            let style = context.style_of(mode);
+            assert_eq!(style.animation_time, 0.0);
+            assert_eq!(style.scroll_animation, egui::style::ScrollAnimation::none());
+        }
+        assert_eq!(next_frame(), Duration::MAX);
+
+        reduce_motion(&context, false);
+        let restored = context.style_of(egui::Theme::Dark);
+        assert_eq!(restored.animation_time, installed.animation_time);
+        assert_eq!(restored.scroll_animation, installed.scroll_animation);
+        assert!(next_frame() <= ANIMATION_FRAME);
+    }
+
+    #[test]
+    fn following_the_system_draws_in_its_mode_and_otherwise_in_the_chosen_one() {
+        let context = egui::Context::default();
+        install(&context);
+        let drawn = |system_theme| {
+            let raw = egui::RawInput {
+                system_theme,
+                ..Default::default()
+            };
+            context.run_ui(raw, |_| {}).drop_without_applying_deltas();
+            context.theme()
+        };
+
+        follow_system(&context, Appearance::Dark);
+        assert_eq!(drawn(Some(egui::Theme::Light)), egui::Theme::Light);
+        assert_eq!(drawn(Some(egui::Theme::Dark)), egui::Theme::Dark);
+        // Where the system tells none, the scheme last chosen.
+        follow_system(&context, Appearance::Light);
+        assert_eq!(drawn(None), egui::Theme::Light);
+        apply(&context, Appearance::Dark);
+        assert_eq!(drawn(Some(egui::Theme::Light)), egui::Theme::Dark);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_title_bar_gets_its_theme_again_when_windows_may_have_taken_it() {
+        let context = egui::Context::default();
+        install(&context);
+        let mut title_bar = TitleBar::default();
+        let mut pass = |focused, system_theme| {
+            let raw = egui::RawInput {
+                focused,
+                system_theme,
+                ..Default::default()
+            };
+            let mut output = context.run_ui(raw, |ui| title_bar.keep(ui.ctx()));
+            let commands = output
+                .viewport_output
+                .remove(&egui::ViewportId::ROOT)
+                .map(|viewport| viewport.commands)
+                .unwrap_or_default();
+            output.drop_without_applying_deltas();
+            commands
+        };
+        let dark = vec![egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark)];
+        let light = vec![egui::ViewportCommand::SetTheme(egui::SystemTheme::Light)];
+        let windows_light = Some(egui::Theme::Light);
+        let windows_dark = Some(egui::Theme::Dark);
+
+        // egui's own request, which the bar keeps until something changes.
+        assert_eq!(pass(true, windows_light), dark);
+        assert!(pass(true, windows_light).is_empty());
+        // Windows changed theme, which winit gave the title bar too.
+        assert_eq!(pass(true, windows_dark), dark);
+        // Back in front: a setting may have changed meanwhile.
+        assert!(pass(false, windows_dark).is_empty());
+        assert_eq!(pass(true, windows_dark), dark);
+        // egui's request for the new theme, not repeated.
+        apply(&context, Appearance::Light);
+        assert_eq!(pass(true, windows_dark), light);
+        assert!(pass(true, windows_dark).is_empty());
+        // Following the system hands the bar back to Windows' own theme.
+        let system = vec![egui::ViewportCommand::SetTheme(
+            egui::SystemTheme::SystemDefault,
+        )];
+        follow_system(&context, Appearance::Light);
+        assert_eq!(pass(true, windows_dark), system);
+        assert!(pass(false, windows_dark).is_empty());
+        assert_eq!(pass(true, windows_dark), system);
     }
 
     #[test]

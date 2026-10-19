@@ -101,19 +101,35 @@ fn day_end(day: chrono::NaiveDate) -> i64 {
     day_start(day) + 86_399
 }
 
-fn looks_like_id(r: &str) -> bool {
-    r.len() >= 60 && r.ends_with("==") && !r.contains(' ')
+/// The query for one page of `folder`, of its messages or its conversations.
+fn folder_page(folder: &str, page: u32, page_size: u32, unread: bool) -> ListQuery {
+    ListQuery {
+        unread,
+        ..ListQuery::folder_page(resolve_folder(folder), page, page_size)
+    }
 }
 
-/// Extract the display part from a decrypted MIME body.
+fn looks_like_id(reference: &str) -> bool {
+    reference.len() >= 60 && reference.ends_with("==") && !reference.contains(' ')
+}
+
+/// Extract the display part from a decrypted MIME body: every part of its HTML
+/// version, in order, or of its text version when it has no HTML one. A body
+/// of several parts, such as text, an image and more text, is all of them.
 fn extract_mime(raw: &str) -> (String, String) {
     let parsed = mail_parser::MessageParser::default().parse(raw.as_bytes());
     if let Some(msg) = parsed {
-        if let Some(html) = msg.body_html(0) {
-            return (html.into_owned(), "text/html".to_string());
+        let html: Vec<_> = (0..msg.html_body_count())
+            .filter_map(|part| msg.body_html(part))
+            .collect();
+        if !html.is_empty() {
+            return (html.join("\n"), "text/html".to_string());
         }
-        if let Some(text) = msg.body_text(0) {
-            return (text.into_owned(), "text/plain".to_string());
+        let text: Vec<_> = (0..msg.text_body_count())
+            .filter_map(|part| msg.body_text(part))
+            .collect();
+        if !text.is_empty() {
+            return (text.join("\n"), "text/plain".to_string());
         }
     }
     (raw.to_string(), "text/plain".to_string())
@@ -128,13 +144,7 @@ impl Client {
         page_size: u32,
         unread: bool,
     ) -> Result<(u32, Vec<MessageMetadata>)> {
-        let q = ListQuery {
-            label_id: Some(resolve_folder(folder)),
-            page: Some(page),
-            page_size: Some(page_size),
-            unread,
-            ..Default::default()
-        };
+        let q = folder_page(folder, page, page_size, unread);
         api::messages::list_messages(self.http(), &q).await
     }
 
@@ -146,13 +156,7 @@ impl Client {
         page_size: u32,
         unread: bool,
     ) -> Result<(u32, Vec<Conversation>)> {
-        let q = ListQuery {
-            label_id: Some(resolve_folder(folder)),
-            page: Some(page),
-            page_size: Some(page_size),
-            unread,
-            ..Default::default()
-        };
+        let q = folder_page(folder, page, page_size, unread);
         api::conversations::list_conversations(self.http(), &q).await
     }
 
@@ -209,28 +213,28 @@ impl Client {
     }
 
     /// Resolve a free-text reference to a message ID (exact ID, or unique search hit).
-    pub async fn resolve_ref(&self, r: &str) -> Result<String> {
-        if looks_like_id(r) {
-            return Ok(r.to_string());
+    pub async fn resolve_ref(&self, reference: &str) -> Result<String> {
+        if looks_like_id(reference) {
+            return Ok(reference.to_string());
         }
-        Ok(self.search_ref(r).await?.id)
+        Ok(self.search_ref(reference).await?.id)
     }
 
     /// Resolve a reference as [`resolve_ref`](Self::resolve_ref) does, to the
     /// message's metadata. A search hit already carries it, so only an exact
     /// ID is fetched.
-    pub async fn resolve_ref_metadata(&self, r: &str) -> Result<MessageMetadata> {
-        if looks_like_id(r) {
-            return self.message_metadata(r).await;
+    pub async fn resolve_ref_metadata(&self, reference: &str) -> Result<MessageMetadata> {
+        if looks_like_id(reference) {
+            return self.message_metadata(reference).await;
         }
-        self.search_ref(r).await
+        self.search_ref(reference).await
     }
 
-    /// The one message a search of all mail for `r` finds.
-    async fn search_ref(&self, r: &str) -> Result<MessageMetadata> {
+    /// The one message a search of all mail for `reference` finds.
+    async fn search_ref(&self, reference: &str) -> Result<MessageMetadata> {
         let mut hits = self
             .search_messages(&SearchOpts {
-                keyword: Some(r.to_string()),
+                keyword: Some(reference.to_string()),
                 folder: Some("all".into()),
                 limit: Some(20),
                 ..Default::default()
@@ -245,14 +249,10 @@ impl Client {
         }
     }
 
-    pub(super) async fn decrypt_message(&self, m: &Message) -> Result<FullMessage> {
-        self.open_message(m.clone()).await
-    }
-
-    /// Decrypts `m`, checking its signature against its sender's keys. A
-    /// failed lookup leaves the body unverified.
-    async fn open_message(&self, m: Message) -> Result<FullMessage> {
-        let sender_pubs = match self.sender_pubkeys(&m.meta.sender.address).await {
+    /// Decrypts `message`, checking its signature against its sender's keys.
+    /// A failed lookup leaves the body unverified.
+    pub(super) async fn open_message(&self, message: Message) -> Result<FullMessage> {
+        let sender_pubs = match self.sender_pubkeys(&message.meta.sender.address).await {
             Ok(keys) => keys,
             // The body still opens, without claiming a verified signature.
             Err(e) => {
@@ -260,24 +260,51 @@ impl Client {
                 Vec::new()
             }
         };
-        self.open_message_with(m, sender_pubs).await
+        self.open_message_with(message, sender_pubs).await
     }
 
-    /// Decrypts `m`, checking its signature against `sender_pubs`; with none,
-    /// the body opens as unverified. Decrypting, parsing and sanitizing run
-    /// off the async workers.
+    /// Decrypts `message`, checking its signature against `sender_pubs`; with
+    /// none, the body opens as unverified. Decrypting, parsing and
+    /// sanitizing run off the async workers.
     pub(super) async fn open_message_with(
         &self,
-        m: Message,
+        message: Message,
         sender_pubs: Vec<String>,
     ) -> Result<FullMessage> {
         let addr = self
-            .keys()
-            .address(&m.meta.address_id)
-            .or_else(|| self.keys().primary_address())
+            .keys_for_message(&message.meta.address_id)
             .ok_or_else(|| Error::Crypto("no address key for message".into()))?
             .clone();
-        super::off_thread(move || open_body(&addr, m, &sender_pubs)).await
+        super::off_thread(move || open_body(&addr, message, &sender_pubs)).await
+    }
+
+    /// Opens `message` or, when it cannot be opened, returns its headers and
+    /// the reason as [`ConversationMessage::Unreadable`]. A failed key lookup
+    /// only leaves a body unverified, so a failure to open is about this
+    /// message alone.
+    async fn open_or_unreadable(&self, message: Message) -> ConversationMessage {
+        let meta = message.meta.clone();
+        let reply_tos = message.reply_tos.clone();
+        match self.open_message(message).await {
+            Ok(message) => ConversationMessage::Opened(message),
+            Err(error) => {
+                tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message could not be opened");
+                ConversationMessage::Unreadable(UnreadableMessage {
+                    meta,
+                    reply_tos,
+                    error,
+                })
+            }
+        }
+    }
+
+    /// The keys a message that reached `address_id` opens with: that
+    /// address's, or the primary address's when the account holds none for
+    /// it. Each caller says what it could not open without them.
+    pub(super) fn keys_for_message(&self, address_id: &str) -> Option<&crypto::keys::AddressKeys> {
+        self.keys()
+            .address(address_id)
+            .or_else(|| self.keys().primary_address())
     }
 
     /// Asks for the keys of every distinct sender at once, a few at a time,
@@ -313,6 +340,16 @@ impl Client {
         tracing::debug!(target: "ruston_core::mail", message_id = %id, "read_message: fetching + decrypting");
         let msg = api::messages::get_message(self.http(), id).await?;
         self.open_message(msg).await
+    }
+
+    /// Fetch and open one message, as
+    /// [`read_conversation_each`](Self::read_conversation_each) does each of
+    /// a conversation's: one that downloads but cannot be opened comes back
+    /// as [`ConversationMessage::Unreadable`], with its headers, rather than
+    /// as an error. A failed download still fails.
+    pub async fn read_message_or_unreadable(&self, id: &str) -> Result<ConversationMessage> {
+        let msg = api::messages::get_message(self.http(), id).await?;
+        Ok(self.open_or_unreadable(msg).await)
     }
 
     /// Fetch and decrypt a message for a caller that keeps only its text: the
@@ -352,23 +389,7 @@ impl Client {
         // Bodies download and decrypt at the same time, three of each at
         // most, and still come out in conversation order.
         let out = fetch_conversation_bodies(self.http(), msgs)
-            .map_ok(|message| async move {
-                let meta = message.meta.clone();
-                let reply_tos = message.reply_tos.clone();
-                Ok::<_, Error>(match self.open_message(message).await {
-                    Ok(message) => ConversationMessage::Opened(message),
-                    // A failed key lookup only leaves a body unverified, so a
-                    // failure to open is about this message alone.
-                    Err(error) => {
-                        tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message could not be opened");
-                        ConversationMessage::Unreadable(UnreadableMessage {
-                            meta,
-                            reply_tos,
-                            error,
-                        })
-                    }
-                })
-            })
+            .map_ok(|message| async move { Ok::<_, Error>(self.open_or_unreadable(message).await) })
             .try_buffered(CONVERSATION_BODY_FETCH_CONCURRENCY)
             .try_collect()
             .await?;
@@ -443,6 +464,7 @@ fn metadata_oldest_first(mut messages: Vec<Message>) -> Vec<MessageMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail::test_support;
     use crate::transport::{Request, Response};
     use serde::de::DeserializeOwned;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -468,16 +490,6 @@ mod tests {
                 gates: (0..gate_count).map(|_| Semaphore::new(0)).collect(),
                 fail_on,
             }
-        }
-
-        async fn wait_for(counter: &AtomicUsize, count: usize) {
-            tokio::time::timeout(Duration::from_secs(2), async {
-                while counter.load(Ordering::SeqCst) < count {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            })
-            .await
-            .expect("body fetches did not make progress");
         }
     }
 
@@ -533,10 +545,7 @@ mod tests {
     fn conversation_client(
         server: &wiremock::MockServer,
     ) -> (Client, crypto::keys::AddressKeys, String) {
-        use crate::cache::CacheIdentity;
-        use crate::crypto::{KeyStore, StoredKey};
-        use crate::session::{MemoryStore, Paths};
-        use crate::transport::HttpClient;
+        use crate::crypto::StoredKey;
         use proton_crypto::crypto::{
             DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
         };
@@ -575,19 +584,7 @@ mod tests {
                 unlocked: None,
             }],
         };
-        let client = Client {
-            http: HttpClient::new(server.uri(), "Other"),
-            keys: KeyStore {
-                user_keys: Vec::new(),
-                addresses: vec![address.clone()],
-            },
-            paths: Paths::with_base(std::env::temp_dir()),
-            profile: "test".into(),
-            session_uid: "test".into(),
-            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
-            store: std::sync::Arc::new(MemoryStore::default()),
-            sender_cache: tokio::sync::Mutex::new(super::super::SenderKeyCache::default()),
-        };
+        let client = test_support::client(server, vec![address.clone()]);
         (client, address, public)
     }
 
@@ -770,6 +767,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_message_on_its_own_that_cannot_be_opened_comes_back_unreadable() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let server = wiremock::MockServer::start().await;
+        let (client, address, _) = conversation_client(&server);
+        let (_, stranger, _) = conversation_client(&server);
+        let provider = crypto::provider();
+        for (id, key) in [("own", &address), ("stranger", &stranger)] {
+            let body = crypto::encrypt_self_draft(&provider, key, "secret").unwrap();
+            Mock::given(method("GET"))
+                .and(path(format!("/mail/v4/messages/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Code": 1000,
+                    "Message": {
+                        "ID": id, "Time": 20, "AddressID": "address",
+                        "Sender": {"Address": "bob@example.org"}, "LabelIDs": ["0"],
+                        "Body": body, "MIMEType": "text/plain"
+                    }
+                })))
+                .mount(&server)
+                .await;
+        }
+
+        let ConversationMessage::Opened(opened) =
+            client.read_message_or_unreadable("own").await.unwrap()
+        else {
+            panic!("the account's own key opens it");
+        };
+        assert_eq!(opened.body, "secret");
+
+        let ConversationMessage::Unreadable(unreadable) =
+            client.read_message_or_unreadable("stranger").await.unwrap()
+        else {
+            panic!("no key of the account opens it");
+        };
+        assert_eq!(unreadable.meta.id, "stranger");
+        assert_eq!(unreadable.meta.sender.address, "bob@example.org");
+        assert!(
+            matches!(unreadable.error, Error::Crypto(_)),
+            "{:?}",
+            unreadable.error
+        );
+        // Read on its own, it is still an error.
+        assert!(matches!(
+            client.read_message("stranger").await,
+            Err(Error::Crypto(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn a_failed_body_download_still_fails_the_whole_thread() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, ResponseTemplate};
@@ -935,6 +983,26 @@ mod tests {
     }
 
     #[test]
+    fn every_part_of_a_mixed_body_shows_and_an_alternative_shows_once() {
+        let mixed = "Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nFirst part\r\n\
+            --b\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\
+            Content-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nSecond part\r\n--b--\r\n";
+        let (body, _) = extract_mime(mixed);
+        assert!(body.contains("First part"), "{body}");
+        assert!(body.contains("Second part"), "{body}");
+
+        let alternative = "Content-Type: multipart/alternative; boundary=a\r\n\r\n\
+            --a\r\nContent-Type: text/plain\r\n\r\nPlain version\r\n\
+            --a\r\nContent-Type: text/html\r\n\r\n<p>Rich version</p>\r\n--a--\r\n";
+        let (body, mime_type) = extract_mime(alternative);
+        assert_eq!(mime_type, "text/html");
+        assert!(body.contains("Rich version"), "{body}");
+        assert!(!body.contains("Plain version"), "{body}");
+    }
+
+    #[test]
     fn id_detection() {
         assert!(looks_like_id(&format!("{}==", "a".repeat(70))));
         assert!(!looks_like_id("hello world"));
@@ -971,20 +1039,20 @@ mod tests {
             ids
         };
         let release = async {
-            GatedDoer::wait_for(&http.started, 3).await;
+            test_support::wait_for(&http.started, 3, "body fetches").await;
             assert_eq!(http.active.load(Ordering::SeqCst), 3);
 
             // Complete newer responses first. The oldest is still awaited,
             // so no fourth request should begin yet.
             http.gates[2].add_permits(1);
-            GatedDoer::wait_for(&http.completed, 1).await;
+            test_support::wait_for(&http.completed, 1, "body fetches").await;
             assert_eq!(http.started.load(Ordering::SeqCst), 3);
             http.gates[1].add_permits(1);
-            GatedDoer::wait_for(&http.completed, 2).await;
+            test_support::wait_for(&http.completed, 2, "body fetches").await;
             assert_eq!(http.started.load(Ordering::SeqCst), 3);
 
             http.gates[0].add_permits(1);
-            GatedDoer::wait_for(&http.started, 4).await;
+            test_support::wait_for(&http.started, 4, "body fetches").await;
             http.gates[3].add_permits(1);
         };
 

@@ -1,5 +1,6 @@
 //! Crypto facade over `proton-crypto` (rustpgp backend) + `proton-srp`.
 
+pub(crate) mod clock;
 pub mod kdf;
 pub mod keys;
 pub mod message;

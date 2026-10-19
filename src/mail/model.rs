@@ -179,7 +179,8 @@ pub struct ConversationSummary {
     pub unread: bool,
     pub starred: bool,
     pub message_count: u32,
-    /// Whether any message carries a file. Ruston Mail never downloads them.
+    /// Whether any message carries a file: the list shows a paperclip, and
+    /// files are fetched only when someone saves one.
     pub has_attachments: bool,
 }
 
@@ -238,7 +239,7 @@ impl RichBody {
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
         for block in &self.blocks {
-            let line = match &block.kind {
+            let text = match &block.kind {
                 BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => join(spans),
                 BlockKind::ListItem { marker, spans, .. } if marker.is_empty() => join(spans),
                 BlockKind::ListItem { marker, spans, .. } => format!("{marker} {}", join(spans)),
@@ -247,7 +248,7 @@ impl RichBody {
                 BlockKind::Rule => "---".to_owned(),
             };
             let quote = "> ".repeat(usize::from(block.quote_depth));
-            for line in line.lines() {
+            for line in text.lines() {
                 out.push_str(&quote);
                 out.push_str(line);
                 out.push('\n');
@@ -309,7 +310,10 @@ pub struct RichSpan {
 pub struct MailMessage {
     pub id: String,
     pub sender: MailAddress,
-    pub recipients: Vec<MailAddress>,
+    pub to: Vec<MailAddress>,
+    pub cc: Vec<MailAddress>,
+    /// Known only for mail the account sent itself.
+    pub bcc: Vec<MailAddress>,
     /// Where a reply goes, as core sends it: the Reply-To addresses the
     /// message asks for, or its sender.
     pub reply_to: Vec<String>,
@@ -426,6 +430,12 @@ impl MailAction {
             Self::SetUnread(_) | Self::SetStarred(_) | Self::SetLabel { .. } => None,
         }
     }
+
+    /// Whether the action marks the row read or unread, as an automatic read
+    /// of the same row does.
+    pub fn changes_read(&self) -> bool {
+        matches!(self, Self::SetUnread(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -446,7 +456,7 @@ const SESSION_UNAVAILABLE: &str = "Ruston Mail could not access the saved Proton
     Unlock your password storage and try again, or sign in again.";
 
 impl MailboxError {
-    pub fn message(self) -> &'static str {
+    pub fn folder_message(self) -> &'static str {
         match self {
             Self::Connection => "Ruston Mail could not connect to Proton.",
             Self::SessionExpired => "Your Proton session has expired. Sign in again.",

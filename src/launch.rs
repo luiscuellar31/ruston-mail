@@ -47,6 +47,7 @@ pub struct Argument {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
 pub enum Event {
     Activate,
     Mailto(Request),
@@ -93,8 +94,15 @@ impl Instance {
             directories::ProjectDirs::from("", "", "Ruston Mail").ok_or_else(|| {
                 io::Error::other("could not find the desktop configuration directory")
             })?;
+        // Windows roams the configuration directory with the user's profile,
+        // sometimes to a network share, where another computer would find the
+        // lock held. The lock and endpoint belong to this computer.
+        #[cfg(target_os = "windows")]
+        let base = directories.data_local_dir();
+        #[cfg(not(target_os = "windows"))]
+        let base = directories.config_dir();
         // A demo process must never forward an email link to a real account.
-        let folder = directories.config_dir().join(if demo {
+        let folder = base.join(if demo {
             "activation-demo"
         } else {
             "activation"
@@ -120,9 +128,12 @@ impl Instance {
         }
         private_directory(folder)?;
         let endpoint = folder.join("endpoint");
-        let Some(lock) = claim(folder, &endpoint)? else {
-            forward_to_primary(&endpoint, urls)?;
-            return Ok(Start::Forwarded);
+        let lock = match find_primary(folder, &endpoint)? {
+            Found::Lock(lock) => lock,
+            Found::Primary(stream) => {
+                forward_to_primary(stream, urls)?;
+                return Ok(Start::Forwarded);
+            }
         };
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
@@ -325,18 +336,33 @@ fn claim(folder: &Path, endpoint: &Path) -> io::Result<Option<File>> {
     Ok(Some(lock))
 }
 
-/// Hands this launch's links, or a plain activation, to the running instance.
-fn forward_to_primary(endpoint: &Path, urls: Vec<Argument>) -> io::Result<()> {
-    // The primary may still be publishing its endpoint. Retry only
-    // discovery/connect, never a request after bytes have been sent.
+/// What a launch found: the instance lock, now its own, or the running
+/// instance to hand its links to.
+enum Found {
+    Lock(File),
+    Primary(TcpStream),
+}
+
+/// Takes the instance lock, or connects to the instance that holds it. That
+/// instance may still be publishing its endpoint, or be closing, when its
+/// lock comes free and this launch takes over. Only discovery and connect are
+/// retried, never a request after bytes have been sent.
+fn find_primary(folder: &Path, endpoint: &Path) -> io::Result<Found> {
     let deadline = Instant::now() + TIMEOUT * 3;
-    let mut stream = loop {
+    loop {
+        if let Some(lock) = claim(folder, endpoint)? {
+            return Ok(Found::Lock(lock));
+        }
         match connect(endpoint) {
-            Ok(stream) => break stream,
+            Ok(stream) => return Ok(Found::Primary(stream)),
             Err(error) if Instant::now() >= deadline => return Err(error),
             Err(_) => thread::sleep(Duration::from_millis(25)),
         }
-    };
+    }
+}
+
+/// Hands this launch's links, or a plain activation, to the running instance.
+fn forward_to_primary(mut stream: TcpStream, urls: Vec<Argument>) -> io::Result<()> {
     if urls.is_empty() {
         return forward(&mut stream, "");
     }

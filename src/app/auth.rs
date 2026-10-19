@@ -36,6 +36,27 @@ pub enum AuthState {
     SigningOut,
 }
 
+impl AuthState {
+    pub fn is_authenticated(&self) -> bool {
+        matches!(self, Self::Authenticated { .. })
+    }
+
+    /// Whether a sign-in is under way: running, or waiting for the person.
+    /// Only then can it be cancelled, or its outcome be applied.
+    pub(super) fn sign_in_running(&self) -> bool {
+        match self {
+            Self::SigningIn(_)
+            | Self::NeedsTotp
+            | Self::NeedsMailboxPassword
+            | Self::NeedsHumanVerification { .. } => true,
+            Self::CheckingSession
+            | Self::SignedOut
+            | Self::Authenticated { .. }
+            | Self::SigningOut => false,
+        }
+    }
+}
+
 pub(super) struct LoginForm {
     pub(super) username: String,
     pub(super) password: Zeroizing<String>,
@@ -145,6 +166,8 @@ impl App {
             non_empty_secret(&self.login_form.mailbox_password),
         );
         self.auth_error = None;
+        // Signing in replaces the saved session; there is nothing to retry.
+        self.resume_may_retry = false;
         self.auth_state = AuthState::SigningIn(step);
         let attempt = self.advance_auth_attempt();
 
@@ -168,6 +191,11 @@ impl App {
             SignInPrompt::Totp(_) => {
                 self.login_form.totp.zeroize();
                 self.auth_state = AuthState::NeedsTotp;
+                Effects::none()
+            }
+            SignInPrompt::MailboxPassword(_) => {
+                self.login_form.mailbox_password.zeroize();
+                self.auth_state = AuthState::NeedsMailboxPassword;
                 Effects::none()
             }
             SignInPrompt::HumanVerification { url, .. } => {
@@ -196,6 +224,18 @@ impl App {
                 reply.send(code);
                 self.auth_state = AuthState::SigningIn(SignInStep::Totp);
             }
+            SignInPrompt::MailboxPassword(reply) => {
+                if self.login_form.mailbox_password.is_empty() {
+                    self.auth_error = Some(AuthError::MailboxPasswordRequired);
+                    self.pending_prompt = Some(SignInPrompt::MailboxPassword(reply));
+                    return Effects::none();
+                }
+                // Taken exactly as typed, and kept no longer than the answer.
+                let password = SecretString::from(self.login_form.mailbox_password.as_str());
+                self.login_form.mailbox_password.zeroize();
+                reply.send(password);
+                self.auth_state = AuthState::SigningIn(SignInStep::MailboxPassword);
+            }
             SignInPrompt::HumanVerification { done, .. } => {
                 done.send(());
                 self.auth_state = AuthState::SigningIn(SignInStep::Credentials);
@@ -207,10 +247,15 @@ impl App {
     }
 
     pub(super) fn finish_session_check(&mut self, outcome: ResumeOutcome) -> Effects {
+        // Only the check the startup screen waits for decides anything.
+        if self.auth_state != AuthState::CheckingSession {
+            return Effects::none();
+        }
         match outcome {
             ResumeOutcome::Authenticated(service) => return self.set_authenticated(service),
             ResumeOutcome::SignedOut => self.auth_state = AuthState::SignedOut,
             ResumeOutcome::Failed(error) => {
+                self.resume_may_retry = error.may_pass();
                 self.auth_error = Some(error);
                 self.auth_state = AuthState::SignedOut;
             }
@@ -219,20 +264,29 @@ impl App {
         Effects::none()
     }
 
+    /// Whether the sign-in screen offers to try the saved session again.
+    pub fn can_retry_saved_session(&self) -> bool {
+        self.resume_may_retry && self.auth_state == AuthState::SignedOut
+    }
+
+    /// Goes back to the startup check with the session still saved, as when
+    /// Ruston starts.
+    pub(super) fn retry_saved_session(&mut self) -> Effects {
+        if !self.can_retry_saved_session() {
+            return Effects::none();
+        }
+        self.resume_may_retry = false;
+        self.auth_error = None;
+        self.auth_state = AuthState::CheckingSession;
+        Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
+    }
+
     pub(super) fn finish_sign_in(
         &mut self,
         attempt: super::AuthAttempt,
         outcome: SignInOutcome,
     ) -> Effects {
-        if attempt != self.auth_attempt
-            || matches!(
-                self.auth_state,
-                AuthState::CheckingSession
-                    | AuthState::SignedOut
-                    | AuthState::Authenticated { .. }
-                    | AuthState::SigningOut
-            )
-        {
+        if attempt != self.auth_attempt || !self.auth_state.sign_in_running() {
             return Effects::none();
         }
         if let Some(prompt) = self.pending_prompt.take() {
@@ -271,13 +325,7 @@ impl App {
     }
 
     pub(super) fn cancel_sign_in(&mut self) -> Effects {
-        if !matches!(
-            self.auth_state,
-            AuthState::SigningIn(_)
-                | AuthState::NeedsTotp
-                | AuthState::NeedsMailboxPassword
-                | AuthState::NeedsHumanVerification { .. }
-        ) {
+        if !self.auth_state.sign_in_running() {
             return Effects::none();
         }
         if let Some(prompt) = self.pending_prompt.take() {
@@ -292,26 +340,36 @@ impl App {
 
     pub(super) fn set_authenticated(&mut self, service: Arc<ProtonMailService>) -> Effects {
         let email = service.email().map(str::to_owned);
-        self.open_mailbox(MailBackend::Proton(service), email)
+        let account = Some(service.user_id().to_owned());
+        self.open_mailbox(MailBackend::Proton(service), email, account)
     }
 
-    pub(super) fn open_mailbox(&mut self, backend: MailBackend, email: Option<String>) -> Effects {
+    /// Opens a session's mailbox. `account` is the Proton account signed in,
+    /// which a draft its last session ended under comes back to.
+    pub(super) fn open_mailbox(
+        &mut self,
+        backend: MailBackend,
+        email: Option<String>,
+        account: Option<String>,
+    ) -> Effects {
         self.advance_session_epoch();
         self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
         self.auth_error = None;
         let page_size = backend.page_size();
         self.backend = Some(backend);
+        self.account = account;
         self.auth_state = AuthState::Authenticated { email };
+        let draft = self.restore_parked_draft();
 
         let page_request = self.next_request();
         let counts_request = self.next_request();
         // Demo mail has no account folders, so always start it in Inbox.
-        let remembered = self.settings.start_folder();
-        let folder = if self.is_demo() && remembered.system().is_none() {
+        let start = self.settings.start_folder();
+        let folder = if self.is_demo() && start.system().is_none() {
             Folder::INBOX
         } else {
-            remembered
+            start
         };
         let (mailbox, page) = Mailbox::open(folder, page_size, page_request, counts_request);
         self.mailbox = Some(mailbox);
@@ -325,11 +383,12 @@ impl App {
             } else {
                 self.fetch_new_mail_notification()
             },
+            draft,
         ])
     }
 
     pub(super) fn logout(&mut self) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+        if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
         // Signing out never takes a message with it: the outcome of a send
@@ -388,7 +447,8 @@ impl App {
         self.close_mailbox(result.err());
     }
 
-    /// Drops all session state and returns to the login screen.
+    /// Returns to the login screen, dropping the session's state. Only a draft
+    /// whose session Proton ended stays, in memory, for its own account.
     pub(super) fn close_mailbox(&mut self, error: Option<AuthError>) {
         // A folder the account made belongs to it: the next account must not
         // see its name or have its ID asked for. Proton's own folders stay
@@ -400,8 +460,10 @@ impl App {
         self.backend = None;
         self.mailbox = None;
         // A draft belongs to the account that created it and must never cross
-        // into a later session.
-        self.compose = None;
+        // into another account's session. One Proton ended the session under
+        // waits in memory for its own account to sign in again.
+        let account = self.account.take();
+        self.park_draft(account.filter(|_| error == Some(AuthError::SessionExpired)));
         self.pending_link = None;
         // Pending email requests accepted in a session must not cross accounts.
         self.pending_mailto.clear();

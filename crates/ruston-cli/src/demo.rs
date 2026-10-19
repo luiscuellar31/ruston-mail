@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use ruston_core::mail::attachments::safe_attachment_name;
 use ruston_core::model::ConversationLabel;
-use ruston_core::model::enums::{label_ids, resolve_folder};
+use ruston_core::model::enums::{filter, label_ids, label_type, resolve_folder};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
     Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
@@ -633,8 +633,8 @@ fn demo_filters() -> Vec<Filter> {
     vec![Filter {
         id: "filter-demo-01".to_string(),
         name: "Auto-label Work".to_string(),
-        status: 1,
-        version: 1,
+        status: filter::ENABLED,
+        version: filter::SIEVE_VERSION,
     }]
 }
 
@@ -788,16 +788,23 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                         terminal::println!("Wrote {} bytes to {}", full.body.len(), path.display());
                     }
                 } else {
-                    render::full_message(ctx.json, &full, format, body_only);
+                    render::full_message(
+                        ctx.json,
+                        &full,
+                        format,
+                        render::MessageView::chosen(body_only),
+                    );
                 }
                 Ok(())
             }
             MessagesCmd::Send(args) => {
                 let id = "msg-demo-sent-101";
-                if ctx.json {
+                if let Some(at) = args.send_at {
+                    render::scheduled(ctx.json, id, at);
+                } else if ctx.json {
                     render::sent(true, id);
                 } else {
-                    terminal::println!("Sent (id {id}) to {}", args.to.join(", "));
+                    terminal::println!("Sent (id {id}) to {}", args.message.to.join(", "));
                 }
                 Ok(())
             }
@@ -1119,8 +1126,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let f = Filter {
                     id: "filter-demo-02".to_string(),
                     name,
-                    status: 1,
-                    version: 1,
+                    status: filter::ENABLED,
+                    version: filter::SIEVE_VERSION,
                 };
                 render::filter_created(ctx.json, &f);
                 Ok(())
@@ -1223,17 +1230,16 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
         }
         Command::Labels { cmd } => match cmd {
             LabelsCmd::List { folders } => {
+                let kind = render::LabelKind::chosen(folders);
+                let listed = match kind {
+                    render::LabelKind::Labels => label_type::MESSAGE_LABEL,
+                    render::LabelKind::Folders => label_type::MESSAGE_FOLDER,
+                };
                 let labels: Vec<Label> = demo_labels()
                     .into_iter()
-                    .filter(|l| {
-                        if folders {
-                            l.label_type == 3
-                        } else {
-                            l.label_type == 1
-                        }
-                    })
+                    .filter(|l| l.label_type == listed)
                     .collect();
-                render::labels_list(ctx.json, &labels, folders);
+                render::labels_list(ctx.json, &labels, kind);
                 Ok(())
             }
             LabelsCmd::Create {
@@ -1293,14 +1299,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     m.meta.id,
                     m.body
                 );
-                let mut options = fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                let mut file = match options.open(&eml_path) {
+                let mut file = match ruston_core::mail::export::create_private(&eml_path) {
                     Ok(file) => file,
                     // As in the live command, running again keeps what is there.
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {

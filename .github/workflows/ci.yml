@@ -49,6 +49,9 @@ jobs:
           - name: Windows (x86_64)
             os: windows-2025
             cache-key: windows-x86_64
+          - name: Windows (arm64)
+            os: windows-11-arm
+            cache-key: windows-arm64
 
     steps:
       # Actions are pinned to a commit SHA so CI builds remain deterministic.
@@ -61,6 +64,18 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
           rustc --version
+
+      # aws-lc-sys builds its ARM64 code with clang-cl from LLVM.
+      - name: Put clang-cl on the PATH
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue)) {
+            $llvm = Join-Path $env:ProgramFiles 'LLVM\bin'
+            $env:PATH = "$llvm;$env:PATH"
+            $llvm >> $env:GITHUB_PATH
+          }
+          clang-cl --version
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -89,9 +104,9 @@ jobs:
           # Warnings fail validation too; --no-net keeps CI off the network.
           appstreamcli validate --no-net packaging/linux/com.luiscuellar.ruston-mail.appdata.xml
 
-      - name: Build Windows desktop executable
+      - name: Build Windows executables
         if: runner.os == 'Windows'
-        run: cargo build --locked --bin ruston
+        run: cargo build --locked -p ruston-mail -p ruston-cli --bins
 
       - name: Validate Windows mailto registration
         if: runner.os == 'Windows'
@@ -105,31 +120,41 @@ jobs:
           Copy-Item -LiteralPath 'target/debug/ruston.exe' -Destination $executable
           $choice = 'HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\mailto\UserChoice'
           $before = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
+          # Other apps' registrations share this key and must survive.
+          $apps = 'HKCU:\Software\RegisteredApplications'
+          if (-not (Test-Path $apps)) { New-Item -Path $apps | Out-Null }
+          New-ItemProperty -Path $apps -Name 'Other app' -Value 'Software\Other\Capabilities' -PropertyType String -Force | Out-Null
+          # Twice, as a reinstall would.
+          & ./packaging/windows/register-mailto.ps1 -ExecutablePath $executable
           & ./packaging/windows/register-mailto.ps1 -ExecutablePath $executable
           $command = (Get-Item 'HKCU:\Software\Classes\com.luiscuellar.ruston-mail.mailto\shell\open\command').GetValue('')
           if ($command -ne ('"{0}" "%1"' -f $executable)) { throw 'Executable path was not quoted correctly.' }
           $handler = Get-ItemPropertyValue 'HKCU:\Software\Ruston Mail\Capabilities\UrlAssociations' -Name mailto
           if ($handler -ne 'com.luiscuellar.ruston-mail.mailto') { throw 'MAILTO capability was not registered.' }
-          $registered = Get-ItemPropertyValue 'HKCU:\Software\RegisteredApplications' -Name 'Ruston Mail'
+          $registered = Get-ItemPropertyValue $apps -Name 'Ruston Mail'
           if ($registered -ne 'Software\Ruston Mail\Capabilities') { throw 'Application registration is missing.' }
+          if ((Get-ItemPropertyValue $apps -Name 'Other app') -ne 'Software\Other\Capabilities') { throw 'Registration removed another app.' }
           $after = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
           if ($after -ne $before) { throw 'Registration changed the default MAILTO association.' }
 
-      - name: Verify Windows executable metadata
+          & ./packaging/windows/unregister-mailto.ps1
+          if (Test-Path 'HKCU:\Software\Classes\com.luiscuellar.ruston-mail.mailto') { throw 'The mailto handler is still registered.' }
+          if (Test-Path 'HKCU:\Software\Ruston Mail') { throw 'The capabilities are still registered.' }
+          if ((Get-Item $apps).Property -contains 'Ruston Mail') { throw 'The application is still registered.' }
+          if ((Get-ItemPropertyValue $apps -Name 'Other app') -ne 'Software\Other\Capabilities') { throw 'Unregistration removed another app.' }
+          $after = if (Test-Path $choice) { Get-ItemProperty $choice | ConvertTo-Json } else { '' }
+          if ($after -ne $before) { throw 'Unregistration changed the default MAILTO association.' }
+
+      - name: Verify Windows executables
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw 'Could not read Cargo metadata' }
-          $package = $metadata.packages | Where-Object { $_.name -eq 'ruston-mail' }
-          $version = (Get-Item target/debug/ruston.exe).VersionInfo
-          if ($version.ProductName -ne 'Ruston Mail' -or
-              $version.ProductVersion -ne $package.version -or
-              $version.FileDescription -ne 'Ruston Mail' -or
-              $version.Comments -ne $package.description -or
-              $version.OriginalFilename -ne 'ruston.exe') {
-              throw 'Windows executable metadata does not match the desktop package'
-          }
+        run: ./packaging/windows/verify-windows.ps1 -Directory target/debug -Architecture ${{ runner.arch == 'ARM64' && 'arm64' || 'x86_64' }}
+
+      # Runners have no GPU, so the window draws with WARP, as in a virtual machine.
+      - name: Start the Windows desktop app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/windows/smoke-test.ps1 -Executable target/debug/ruston.exe
 
       - name: Ensure clean workspace
         run: git diff --exit-code

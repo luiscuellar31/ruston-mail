@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex, Once,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -12,8 +12,8 @@ use windows::{
         Foundation::PROPERTYKEY,
         System::{
             Com::{
-                CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree, IPersistFile, STGM_READ,
-                StructuredStorage::PROPVARIANT,
+                CLSCTX_INPROC_SERVER, CoCreateInstance, CoIncrementMTAUsage, CoTaskMemFree,
+                IPersistFile, STGM_READ, StructuredStorage::PROPVARIANT,
             },
             WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
         },
@@ -32,6 +32,29 @@ const APP_ID_KEY: PROPERTYKEY = PROPERTYKEY {
     fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
     pid: 5,
 };
+
+/// Every toast carries this tag, so a new message replaces the last one's
+/// toast, as on macOS, instead of piling up senders and subjects.
+const TAG: &str = "new-mail";
+
+/// The toast on screen, kept with its Activated handler: once `show` returns,
+/// nothing else holds them, and a click on the toast would reach no one.
+/// The next toast replaces it, as it replaces it on screen.
+static SHOWN: Mutex<Option<ToastNotification>> = Mutex::new(None);
+
+/// Keeps the process's multithreaded apartment up from the first toast on.
+/// Each toast is shown on a worker that leaves the apartment when it
+/// returns, and with no other member the apartment would go with it, and
+/// the Activated handler with nowhere to run.
+fn keep_apartment() {
+    static KEPT: Once = Once::new();
+    KEPT.call_once(|| {
+        // SAFETY: CoIncrementMTAUsage takes no arguments beyond its cookie.
+        // The cookie is never handed back, which keeps the apartment up for
+        // the life of the process, as intended.
+        let _ = unsafe { CoIncrementMTAUsage() };
+    });
+}
 
 struct Apartment;
 impl Drop for Apartment {
@@ -55,6 +78,7 @@ pub(super) fn show(
             RoInitialize(RO_INIT_MULTITHREADED)?;
         }
         let _apartment = Apartment;
+        keep_apartment();
         ensure_shortcut()?;
         if !enabled.load(Ordering::Acquire) {
             return Ok(Status::Off);
@@ -62,7 +86,7 @@ pub(super) fn show(
         let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(
             crate::ui::identity::APP_ID,
         ))?;
-        if notifier.Setting()? != NotificationSetting::Enabled {
+        if turned_away(notifier.Setting()) {
             return Ok(Status::Denied);
         }
         let document =
@@ -73,6 +97,7 @@ pub(super) fn show(
             texts.Item(index as u32)?.AppendChild(&text)?;
         }
         let toast = ToastNotification::CreateToastNotification(&document)?;
+        toast.SetTag(&HSTRING::from(TAG))?;
         let activation_enabled = enabled.clone();
         toast.Activated(&TypedEventHandler::new(move |_, _| {
             if activation_enabled.load(Ordering::Acquire) {
@@ -89,9 +114,43 @@ pub(super) fn show(
             return Ok(Status::Off);
         }
         notifier.Show(&toast)?;
+        *SHOWN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(toast);
         Ok(Status::Ready)
     };
     result().unwrap_or(Status::Unavailable)
+}
+
+/// Removes Ruston's toasts from the notification center, so the senders and
+/// subjects of an account that signed out, or turned notifications off, do
+/// not stay there. Best effort: a failure leaves them to the user. Tests never
+/// call it, so they leave the toasts of the Ruston Mail the machine runs.
+#[cfg_attr(test, allow(dead_code))]
+pub(super) fn clear() {
+    let result = || -> windows::core::Result<()> {
+        // SAFETY: the call initializes this thread's WinRT apartment; the
+        // guard balances initialization on all return paths.
+        unsafe {
+            RoInitialize(RO_INIT_MULTITHREADED)?;
+        }
+        let _apartment = Apartment;
+        // Let go inside the apartment, with the toasts it stood for.
+        SHOWN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        ToastNotificationManager::History()?
+            .ClearWithId(&HSTRING::from(crate::ui::identity::APP_ID))
+    };
+    let _ = result();
+}
+
+/// Whether Windows turns toasts away. It keeps no setting for an app until the
+/// app's first toast shows, and answers "element not found" until then, so
+/// only a setting it does report can say no.
+fn turned_away(setting: windows::core::Result<NotificationSetting>) -> bool {
+    setting.is_ok_and(|setting| setting != NotificationSetting::Enabled)
 }
 
 /// Win32 toasts need an AUMID-bearing Start menu shortcut. Registration stays
@@ -138,4 +197,20 @@ fn ensure_shortcut() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_setting_windows_reports_turns_toasts_away() {
+        // What Windows answers before an app's first toast: element not found.
+        let first =
+            windows::core::Error::from_hresult(windows::core::HRESULT(0x8007_0490_u32 as i32));
+        assert!(!turned_away(Err(first)));
+        assert!(!turned_away(Ok(NotificationSetting::Enabled)));
+        assert!(turned_away(Ok(NotificationSetting::DisabledForUser)));
+        assert!(turned_away(Ok(NotificationSetting::DisabledByGroupPolicy)));
+    }
 }

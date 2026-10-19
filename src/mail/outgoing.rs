@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use ruston_core::html::escape_text;
+
 use super::MailboxError;
 
 /// How the body is sent.
@@ -18,7 +20,7 @@ pub enum BodyFormat {
 /// Whether mail is new or answers an existing message.
 /// Core supplies reply recipients, subjects and forwarded attachments.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Kind {
+pub enum OutgoingKind {
     #[default]
     New,
     Reply {
@@ -48,7 +50,7 @@ pub type ProtectionCheck = (String, Result<Protection, MailboxError>);
 /// A message ready to leave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {
-    pub kind: Kind,
+    pub kind: OutgoingKind,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
@@ -73,8 +75,8 @@ impl Outgoing {
 
     /// Whether the sender has to say where this goes. A reply already knows,
     /// from the message it answers.
-    pub fn needs_recipients(kind: &Kind) -> bool {
-        !matches!(kind, Kind::Reply { .. })
+    pub fn needs_recipients(kind: &OutgoingKind) -> bool {
+        !matches!(kind, OutgoingKind::Reply { .. })
     }
 }
 
@@ -205,28 +207,12 @@ fn as_html(body: &str) -> String {
         .map(|paragraph| paragraph.trim_matches('\n'))
         .filter(|paragraph| !paragraph.trim().is_empty())
         .map(|paragraph| {
-            let lines: Vec<String> = paragraph.split('\n').map(escape).collect();
+            let lines: Vec<String> = paragraph.split('\n').map(escape_text).collect();
             format!("<p>{}</p>", lines.join("<br>"))
         })
         .collect();
 
     paragraphs.join("\n")
-}
-
-fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(character),
-        }
-    }
-
-    out
 }
 
 /// What can stop a message from leaving.
@@ -438,7 +424,7 @@ mod tests {
 
         assert_eq!(read.accepted, ["ivan@xn--80a1acny.xn--p1ai"]);
         assert_eq!(read.international.len(), 1);
-        // ASCII domains are sent exactly as typed, as before.
+        // ASCII domains are sent exactly as typed.
         let read = recipients("Alex@Example.com", Domains::International);
         assert_eq!(read.accepted, ["Alex@Example.com"]);
         assert!(read.international.is_empty());
@@ -494,7 +480,7 @@ mod tests {
 
     fn html(body: &str) -> String {
         Outgoing {
-            kind: Kind::New,
+            kind: OutgoingKind::New,
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),
@@ -510,7 +496,7 @@ mod tests {
     fn plain_text_leaves_exactly_as_it_was_typed() {
         let typed = "Hi Alex,\n\nThe < sign & the rest.\n";
         let message = Outgoing {
-            kind: Kind::New,
+            kind: OutgoingKind::New,
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),

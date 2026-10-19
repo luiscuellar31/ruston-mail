@@ -22,7 +22,8 @@ cargo run -p ruston-cli -- --help
 
 ## Demo mailbox
 
-Demo mode uses fictional mail and never contacts Proton or saves a session:
+Demo mode uses fictional mail and never contacts Proton or saves a session.
+`RUSTON_DEMO` turns it on in both apps with `1`, `true`, `yes`, or `on`:
 
 ```sh
 RUSTON_DEMO=1 cargo run
@@ -61,15 +62,23 @@ cargo test --locked --workspace --all-features
 CI uses Bash on all runners, including Git Bash on Windows, and sets
 `RUSTDOCFLAGS` through the workflow's `env` field. Linux jobs run on
 `ubuntu-24.04` and `ubuntu-24.04-arm`, named rather than `ubuntu-latest` so a
-new Ubuntu reaches CI only through a workflow change. The Windows job uses the
-`windows-2025` x86_64 runner and the native MSVC toolchain. Its cache is separate
-from the Linux and macOS caches. All platforms run the same checks; a failure
-on one platform does not cancel the other jobs.
+new Ubuntu reaches CI only through a workflow change. The Windows jobs use the
+`windows-2025` x86_64 and `windows-11-arm` ARM64 runners with the native MSVC
+toolchain; on ARM64, aws-lc-sys also needs LLVM's clang-cl, which the job puts
+on the `PATH`. Their caches are separate from the Linux and macOS caches. All
+platforms run the same checks; a failure on one platform does not cancel the
+other jobs.
 
 Linux also validates the desktop entry with `desktop-file-validate` and its
-AppStream metadata with `appstreamcli validate`. Windows
-builds `ruston.exe` and checks its version information against the desktop
-package; this catches missing resources without requiring a graphical session.
+AppStream metadata with `appstreamcli validate`. Windows builds `ruston.exe`
+and `ruston-cli.exe` and checks them with
+[`verify-windows.ps1`](../packaging/windows/verify-windows.ps1): their
+architecture, that the desktop is a window app and the CLI a console program,
+that they load only DLLs Windows includes, their manifest, and their version
+information against each package. This catches a missing resource or C
+runtime. Then [`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) starts
+the desktop once: runners have no GPU, so its window must open and draw with
+WARP, as in a virtual machine.
 A Windows-only test also sets and reads back the process AppUserModelID through
 the native APIs.
 
@@ -128,9 +137,9 @@ cargo build --locked --workspace
 
 ### Fictional mailbox and native windows
 
-Open the desktop demo without a Proton account. The demo uses the desktop's
-normal preferences, so use a separate Windows user if existing preferences
-must be preserved. Restore any previous environment value when it closes:
+Open the desktop demo without a Proton account. The demo keeps its
+preferences in `settings-demo.json`, so your own are left as they are.
+Restore any previous environment value when it closes:
 
 ```powershell
 $previousRustonDemo = $env:RUSTON_DEMO
@@ -148,8 +157,21 @@ try {
 
 - Minimize, restore, maximize, and resize the main window. Verify that Windows
   decorations work and the panels remain usable at the default interface scale.
+- Repeat with `$env:RUSTON_RENDERER = "opengl"`: Windows draws with DirectX 12
+  by default and with OpenGL when DirectX 12 fails or this variable asks for
+  it. Check the separate composer with both. Where available, check a virtual
+  machine or Remote Desktop session without a GPU, where DirectX 12 runs on
+  WARP, Windows' software renderer.
 - Switch between light and dark appearance, resize the panes, close the app,
   and reopen it. Verify that applied appearance and settled sizes are restored.
+- With Windows in the other app mode, verify that the title bars of the main
+  and composer windows take Ruston's appearance. Change the Windows accent
+  color with Ruston behind another window: once Ruston is back in front, its
+  title bar is in Ruston's appearance again. Choose **System** in Settings and
+  switch the Windows app mode: Ruston follows it.
+- Turn off Animation effects under Windows Settings › Accessibility › Visual
+  effects: loading placeholders and the spinner hold still and scrolls jump.
+  Turn them back on: they move again.
 - Check the UI at Windows display scaling of 100% and 150%. If two monitors are
   available, move the window between different display scales and check text,
   pointer targets, and the file dialog position.
@@ -199,13 +221,15 @@ that signing out also prevents the default CLI from resuming it. Download a
 fictional test attachment twice: both copies must reach the system Downloads
 folder with distinct names and unchanged contents. Use **Show in Explorer**
 to verify that Explorer selects the saved file, including a filename with
-spaces and non-ASCII characters.
+spaces, commas and non-ASCII characters.
 
 Record the commit, Windows version, Rust host/version, display scaling, and
 pass/fail result for each check in the PR or release notes. Mark unavailable
 checks as **not run**. Record failures with reproduction steps; do not include
-passwords, tokens, or personal message contents. Unread icon badges are not
-implemented on Windows yet; notification checks are described below.
+passwords, tokens, or personal message contents. Notification checks are
+described below. The unread count appears over the taskbar button only while
+badges are on in Windows' taskbar settings; check it at 100% and 200% display
+scaling, and that turning the Settings option off takes it away.
 
 ## macOS menus, window chrome, and safe closing
 
@@ -251,7 +275,8 @@ harmless messages; the demo deliberately sends no notifications.
   available. Verify Ruston's name/icon, literal `<`, `>`, `&` in the subject,
   and a graceful unavailable status when there is no notification service.
 - On Windows, verify the per-user `Ruston Mail.lnk` shortcut carries
-  `com.luiscuellar.ruston-mail` and toasts appear as Ruston. Minimize the mailbox
+  `com.luiscuellar.ruston-mail` and toasts appear as Ruston, the first one on
+  a profile that never showed a Ruston toast included. Minimize the mailbox
   and verify clicking a transient toast restores/focuses it while running.
   An existing foreign shortcut must be preserved. This implementation uses an
   in-memory activation handler; reopening the app through notification history
@@ -268,7 +293,9 @@ harmless messages; the demo deliberately sends no notifications.
   and recovery. Returning soon after a background success must not duplicate it.
 - Disable the option, sign out, and switch accounts while a request is pending.
   Its later result must not notify. Closing the app stops polling. Test Do Not
-  Disturb and confirm delivered history follows system preferences.
+  Disturb and confirm delivered history follows system preferences. On
+  Windows, a second message must replace the first toast, and signing out
+  must leave no Ruston toast in the notification center.
 
 Record OS/build, desktop/compositor, session type, package/commit, permission
 state, and observations. Mark untested combinations as **not run**. Reference
@@ -282,8 +309,10 @@ when changing adapters.
 Use the fictional mailbox to check **Attach…** in both composer placements
 (reading pane and separate window). Verify the picker stays associated with
 Ruston, cancelling leaves the draft unchanged, and repeated clicks do not open
-multiple dialogs. On macOS, verify an attached sheet on the owning window; on
-Windows, check ownership and focus after closing the dialog. On Linux, check
+multiple dialogs. Drag files from the file manager over the draft in both
+placements: the drop hint shows, and dropping attaches them. On macOS, verify
+an attached sheet on the owning window; on Windows, check ownership and focus
+after closing the dialog. On Linux, check
 the portal under Wayland and X11 where available. eframe exposes only the root
 native window, so a Linux picker opened from the separate composer is currently
 associated with the mailbox window. A late result after closing/replacing the
@@ -315,10 +344,20 @@ not prove real sheet, portal, or file-manager behavior.
 Native windows use `com.luiscuellar.ruston-mail`, matching the existing macOS
 bundle identifier. Both the mailbox and separate composer use the existing
 Ruston logo. On Windows, the process sets this AppUserModelID before opening
-windows, and the build embeds a multi-resolution icon and version metadata in
-`ruston.exe`. Native Windows builds require the Windows SDK resource compiler
-alongside the MSVC toolchain described above; failure to embed resources fails
-the build. The version comes from Cargo rather than a second version setting.
+windows, and the build embeds a multi-resolution icon, version metadata and an
+application manifest in `ruston.exe`, and version metadata and a manifest in
+`ruston-cli.exe`. The manifests declare Windows 10 and 11, long paths and
+UTF-8 as the ANSI code page; the desktop's also declares per-monitor DPI and
+the themed common controls its error boxes use. Native Windows builds require
+the Windows SDK resource compiler alongside the MSVC toolchain described
+above; failure to embed resources fails the build. The version comes from
+Cargo rather than a second version setting.
+
+[`.cargo/config.toml`](../.cargo/config.toml) links the C runtime statically
+for MSVC targets, since Windows does not include the Visual C++ runtime: the
+executables start on a clean system, and a per-user install needs no
+administrator to add the redistributable. A `RUSTFLAGS` environment variable
+replaces that setting, so leave it unset for release builds.
 
 Linux's launcher filename and icon name match the Wayland app ID. On X11, the
 window's class is the same ID: egui-winit names windows after the app ID, and
@@ -330,7 +369,9 @@ The artwork is drawn by
 which writes the source logo,
 [`assets/macos/ruston-mail-1024.png`](../assets/macos/ruston-mail-1024.png), in
 sRGB. The PNGs, ICNS, and ICO derived from it are committed, so ordinary builds
-do not need image tools. After changing the artwork, regenerate them on macOS
+do not need image tools. Besides the desktop PNG sizes, the ICO carries 20, 30,
+36 and 40 px frames, which Windows draws at 125% and 150% scaling instead of
+shrinking a larger one. After changing the artwork, regenerate them on macOS
 with Swift, Python 3, and the system `sips` tool:
 
 ```sh
@@ -399,8 +440,9 @@ report a false negative when a real glyph uses the replacement glyph's face.
 Native visual checks should compare long Spanish subjects, accented names,
 Cyrillic and CJK names, email addresses, Reply controls, login, Settings, and
 monospace body passages. Check truncation, wrapping, and clipped ascenders at
-100% and 175% zoom. On Windows test Segoe UI and installed language packs;
-on Linux test Fontconfig, missing `fc-match`, and minimal/font-poor installs.
+100% and 175% zoom. On Windows test Segoe UI, installed language packs, and
+Thai and Devanagari names, which Leelawadee UI and Nirmala UI cover; on Linux
+test Fontconfig, missing `fc-match`, and minimal/font-poor installs.
 Missing fonts must preserve usability through the bundled chain. Coverage does
 not establish complete RTL/bidirectional support in the current layout engine.
 
@@ -428,23 +470,33 @@ set `$env:RUSTON_DEMO = '1'` before `cargo run -- 'mailto:...'`.
   `Info.plist`. Select Ruston in Mail > Settings > General > Default email
   reader. Test both cold and warm reception with
   `open -a '/path/to/Ruston Mail.app' 'mailto:team@example.org?subject=Hello'`.
-- Windows: keep `ruston.exe` in its installed location, then run
-  `./packaging/windows/register-mailto.ps1 -ExecutablePath 'C:\path with spaces\ruston.exe'`
-  from PowerShell. The script registers current-user capabilities and a quoted
-  command; it neither changes the default app nor modifies `UserChoice`.
-  Select Ruston for `MAILTO` in Settings > Apps > Default apps. Test a link
-  using `Start-Process 'mailto:team@example.org?subject=Hello'`.
+- Windows: keep `ruston.exe` in its installed location, then run this from
+  PowerShell. Windows PowerShell does not run downloaded or unsigned scripts
+  by default, so `-ExecutionPolicy Bypass` allows this one script only:
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\packaging\windows\register-mailto.ps1 -ExecutablePath 'C:\path with spaces\ruston.exe'
+  ```
+
+  The script registers current-user capabilities and a quoted command; it
+  neither changes the default app nor modifies `UserChoice`, and it keeps the
+  other apps listed under `HKCU\Software\RegisteredApplications`. Select
+  Ruston for `MAILTO` in Settings > Apps > Default apps. Test a link using
+  `Start-Process 'mailto:team@example.org?subject=Hello'`.
 
 To undo default selection, choose the previous email app in the same settings.
-For manual Windows uninstall, remove only Ruston's registered-application
-value, `HKCU\Software\Classes\com.luiscuellar.ruston-mail.mailto`, and
-`HKCU\Software\Ruston Mail\Capabilities`; do not edit `UserChoice`.
+To remove the registration, run
+`powershell -ExecutionPolicy Bypass -File .\packaging\windows\unregister-mailto.ps1`.
+It deletes Ruston's handler and capabilities and only Ruston's value under
+`RegisteredApplications`, and leaves `UserChoice` alone: if Ruston was the
+default, Windows asks for another app at the next link.
 
 Automated tests cover URI decoding/injection, login/draft/modal guards, real
 loopback forwarding, lock takeover, overflow, private Unix permissions, idle
-and slow peers. Windows CI additionally exercises the registration script with an
-executable path containing spaces and verifies that the default association
-is unchanged. Native desktop smoke checks still require each platform:
+and slow peers. Windows CI additionally runs the registration script twice
+with an executable path containing spaces, then the removal script, and
+verifies that another app's registration and the default association are
+unchanged. Native desktop smoke checks still require each platform:
 
 1. Open a link with Ruston stopped, then with it running/minimized. Confirm one
    instance and the correct recipients, Unicode subject, and multi-line body.
@@ -528,6 +580,51 @@ AppImage runs through a link named `ruston-cli`. Release builds run on Ubuntu
 22.04, the oldest LTS in standard support and the system the AppImage catalog
 tests on, so the AppImage needs glibc 2.35 or newer.
 
+## Packaging (Windows)
+
+On Windows, build `ruston.exe` and `ruston-cli.exe` from the lockfile, check
+them, and write an installer and a portable ZIP to `dist/`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\windows\package.ps1
+```
+
+The script needs [Inno Setup 6](https://jrsoftware.org/isinfo.php) (pass
+`-InnoSetup <path to ISCC.exe>` if it is not in a usual place). Options:
+- `-Architecture x86_64` or `arm64`: the default is the machine's. An ARM64
+  build on an x64 machine needs Visual Studio's ARM64 build tools and its
+  C++ Clang compiler (clang-cl on the `PATH`), which aws-lc-sys uses for ARM64.
+- `-SkipBuild`: package the existing `target/<triple>/release` binaries.
+- `-Dist <folder>`: write somewhere other than `dist/`.
+
+It checks the binaries with
+[`verify-windows.ps1`](../packaging/windows/verify-windows.ps1) and writes:
+- `ruston-mail-<version>-<arch>-setup-UNSIGNED.exe`, built from
+  [`ruston-mail.iss`](../packaging/windows/ruston-mail.iss). It installs for the
+  current user only, without administrator rights, in
+  `%LOCALAPPDATA%\Programs\Ruston Mail`, and adds the `Ruston Mail` Start menu
+  shortcut with the app's AppUserModelID, which toast notifications need.
+  Optional tasks register the email-link handler, as `register-mailto.ps1`
+  does, and add the folder to the user's `PATH`. Uninstalling removes them and
+  keeps settings, the session and caches. A later version upgrades it in place
+  and closes a running copy first.
+- `ruston-mail-<version>-<arch>-windows-UNSIGNED.zip`: the same executables in
+  one folder with the license, the mailto scripts and a
+  [`README.txt`](../packaging/windows/README.txt).
+- a `.sha256` file beside each, holding its hash.
+
+`-UNSIGNED` marks files without an Authenticode signature: SmartScreen warns
+about them, and Smart App Control does not run them.
+
+[`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) starts `ruston.exe`
+and fails unless its window opens and draws without an error box, then closes
+it. [`test-installer.ps1`](../packaging/windows/test-installer.ps1) installs
+silently, checks the files, shortcut and registration, starts the installed
+app, uninstalls, and checks that another app's registration survived. It
+installs into the real user profile, so run it on a disposable machine, or
+with `$env:RUSTON_DEMO = "1"` set so the app it starts opens the fictional
+mailbox.
+
 ## Releases
 
 The [release workflow](../.github/workflows/release-artifacts.yml) builds every
@@ -540,9 +637,12 @@ packaging break shows up before a release:
 | `ruston-mail-<version>-x86_64-UNSIGNED.dmg` | macOS 15 Intel runner | `verify-bundle.sh`, then started once |
 | `ruston-mail-<version>-x86_64.AppImage` and its `.zsync` | Ubuntu 22.04 runner | `appdir-lint.sh`, glibc 2.35 floor, started once under Xvfb |
 | `ruston-mail-<version>-aarch64.AppImage` and its `.zsync` | Ubuntu 22.04 ARM runner | as for x86_64 |
+| `ruston-mail-<version>-x86_64-setup-UNSIGNED.exe` and `ruston-mail-<version>-x86_64-windows-UNSIGNED.zip` | Windows Server 2025 runner | `verify-windows.ps1`, the ZIP's app started once, the installer installed, started and uninstalled |
+| `ruston-mail-<version>-arm64-setup-UNSIGNED.exe` and `ruston-mail-<version>-arm64-windows-UNSIGNED.zip` | Windows 11 ARM runner | as for x86_64 |
 
 The builds use pinned, digest-checked tools and no cache, so each release comes
-from the lockfile alone.
+from the lockfile alone. Windows runners have no GPU, so the started app draws
+with WARP, as a virtual machine would.
 
 To publish a release:
 
@@ -559,7 +659,11 @@ To publish a release:
    `main`, builds everything again, and creates a draft release with the files,
    `SHA256SUMS.txt`, build provenance attestations, and notes written by
    [`release-notes.sh`](../packaging/release-notes.sh) from the commits since the
-   previous tag. Re-running the workflow for the tag updates the draft.
+   previous tag: new features, fixes and performance work under the areas of
+   [`release-note-areas.tsv`](../packaging/release-note-areas.tsv), and the rest
+   in a short Maintenance list. Re-running the workflow for the tag keeps the
+   draft's notes, which may have been edited, and stops if the draft already has
+   files: delete them, or the draft, and run it again.
 4. Edit the introduction at the top of the draft, check the files, and publish
    it. Once a release is published, the workflow refuses to replace its files.
 
@@ -572,6 +676,18 @@ To inspect Proton request results without logging message bodies or secrets:
 
 ```sh
 RUSTON_DEBUG_HTTP=1 cargo run
+```
+
+On Windows the desktop is a window app without a console of its own, so its
+standard error goes where the caller hands it, as `cargo run` and redirects
+do. Started from a terminal any other way, it writes to that terminal, which
+takes its prompt back at once; Ctrl+C there leaves the window open. To keep
+the output in a file instead:
+
+```powershell
+$env:RUSTON_DEBUG_HTTP = "1"
+Start-Process .\target\debug\ruston.exe -Wait -RedirectStandardError http.log
+Remove-Item Env:RUSTON_DEBUG_HTTP
 ```
 
 See [Privacy and local data](PRIVACY.md#http-diagnostics) for exactly what this

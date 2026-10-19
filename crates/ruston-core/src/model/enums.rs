@@ -163,6 +163,35 @@ pub mod message_flag {
     }
 }
 
+/// How a draft answers its parent, which Proton records on the parent once
+/// the draft is sent ([`message_flag::REPLIED`], [`message_flag::REPLIED_ALL`]
+/// or [`message_flag::FORWARDED`]).
+pub mod message_action {
+    /// A reply to the sender.
+    pub const REPLY: u8 = 0;
+    /// A reply to everyone the parent reached.
+    pub const REPLY_ALL: u8 = 1;
+    /// A forward.
+    pub const FORWARD: u8 = 2;
+}
+
+/// The second factors an account can have, as bits of its 2FA `Enabled`
+/// mask.
+pub mod two_factor {
+    /// Codes from an authenticator app (TOTP).
+    pub const TOTP: u32 = 1;
+    /// A FIDO2/WebAuthn security key.
+    pub const SECURITY_KEY: u32 = 2;
+}
+
+/// How an account's passwords are set up, as its `PasswordMode` says.
+pub mod password_mode {
+    /// One password signs in and opens the mailbox.
+    pub const ONE_PASSWORD: u8 = 1;
+    /// A separate mailbox password opens the keys.
+    pub const TWO_PASSWORDS: u8 = 2;
+}
+
 /// Recipient type from the public-key lookup.
 pub mod recipient_type {
     /// Internal Proton recipient.
@@ -181,6 +210,42 @@ pub mod label_type {
     pub const MESSAGE_FOLDER: i64 = 3;
     /// System folder.
     pub const SYSTEM_FOLDER: i64 = 4;
+}
+
+/// Human verification: where a person solves a challenge, and how.
+pub mod human_verification {
+    /// Proton's verification page, for a challenge that names no host of its
+    /// own.
+    pub const PAGE: &str = "https://verify.proton.me";
+    /// The domain of Proton's own verification hosts.
+    pub const DOMAIN: &str = "proton.me";
+    /// The method a browser outside the app can complete, named again with
+    /// the token that answers it.
+    pub const CAPTCHA: &str = "captcha";
+}
+
+/// Server-side Sieve filters.
+pub mod filter {
+    /// The Sieve version filters are written in.
+    pub const SIEVE_VERSION: i64 = 2;
+    /// The status of a filter that applies to new mail.
+    pub const ENABLED: i64 = 1;
+}
+
+/// The `Code` of a Proton response, for the codes the client acts on.
+pub(crate) mod response_code {
+    /// The request succeeded.
+    pub(crate) const SUCCESS: i64 = 1000;
+    /// A request about several items succeeded for each of them.
+    pub(crate) const MULTI_SUCCESS: i64 = 1001;
+    /// The code some endpoints send with a successful HTTP status.
+    pub(crate) const NONE: i64 = 0;
+    /// Proton does not accept the ID.
+    pub(crate) const INVALID_ID: i64 = 2061;
+    /// The message does not exist.
+    pub(crate) const MESSAGE_DOES_NOT_EXIST: i64 = 2501;
+    /// The request needs human verification first.
+    pub(crate) const HUMAN_VERIFICATION: i64 = 9001;
 }
 
 /// MIME body types used by mail.

@@ -5,7 +5,9 @@ use crate::api;
 use crate::crypto;
 use crate::error::{Error, Result};
 use crate::model::message::{Attachment, Message};
-use std::path::{Component, Path};
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
+use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
 
 /// Maximum combined plaintext returned by `download_all_attachments` (128 MiB).
@@ -15,29 +17,41 @@ pub const MAX_BULK_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
 /// reading limit, which proton-crypto applies to every decrypted plaintext.
 pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: usize = 50 * 1024 * 1024;
 
+/// The longest name kept, in UTF-8 bytes. NTFS allows 255 UTF-16 units and
+/// Linux and macOS file systems 255 bytes; this leaves room for the number
+/// [`save_under_free_name`] adds to a copy, " (9999)" at most.
+const MAX_NAME_BYTES: usize = 240;
+
+/// How many names a saved attachment tries: its own and 9,999 numbered ones.
+const FREE_NAME_ATTEMPTS: usize = 10_000;
+
 /// Return a portable plain filename for an untrusted attachment name.
 /// Invisible direction marks are dropped; path components are removed;
-/// invalid characters and empty names become `attachment`, and Windows device
-/// names are prefixed with an underscore.
+/// characters no file system accepts become `_`; a long name is cut, keeping
+/// its extension; empty names become `attachment`, and Windows device names
+/// are prefixed with an underscore.
 pub fn safe_attachment_name(name: &str) -> String {
     let name: String = name.chars().filter(|&c| !is_invisible_mark(c)).collect();
-    let name = name
+    let name: String = name
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or("")
-        .trim()
-        .trim_start_matches('.')
-        .trim_end_matches('.');
+        .chars()
+        .map(|c| {
+            if c.is_control() || "<>:\"|?*".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = shorten(trim_name(&name));
+    let name = trim_name(&name);
     let mut components = Path::new(name).components();
     let plain_name =
         matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
 
-    if name.is_empty()
-        || name
-            .chars()
-            .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c))
-        || !plain_name
-    {
+    if name.is_empty() || !plain_name {
         return "attachment".to_owned();
     }
 
@@ -46,6 +60,32 @@ pub fn safe_attachment_name(name: &str) -> String {
     } else {
         name.to_owned()
     }
+}
+
+/// Leading dots would hide the file on Linux and macOS, and Windows drops
+/// trailing dots and spaces, so a name ending in them would be saved under
+/// another one than the frontend reports.
+fn trim_name(name: &str) -> &str {
+    name.trim_start_matches(|c: char| c == '.' || c.is_whitespace())
+        .trim_end_matches(|c: char| c == '.' || c.is_whitespace())
+}
+
+/// Cuts a name longer than [`MAX_NAME_BYTES`] at a character boundary,
+/// keeping a short extension.
+fn shorten(name: &str) -> String {
+    if name.len() <= MAX_NAME_BYTES {
+        return name.to_owned();
+    }
+    let extension = match name.rfind('.') {
+        Some(dot) if dot > 0 && name.len() - dot <= 16 => &name[dot..],
+        _ => "",
+    };
+    let stem = &name[..name.len() - extension.len()];
+    let mut end = MAX_NAME_BYTES - extension.len();
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{extension}", &stem[..end])
 }
 
 /// Characters a file manager, terminal or notification draws as nothing.
@@ -68,6 +108,76 @@ pub fn is_invisible_mark(c: char) -> bool {
     )
 }
 
+/// Marks a saved attachment as downloaded from the internet, as browsers mark
+/// their downloads: on Windows, SmartScreen then checks the file before it
+/// runs and Office opens it in Protected View. Elsewhere this does nothing.
+/// The mark is an NTFS alternate data stream, so on a file system without
+/// them, such as FAT32, the file stays unmarked and this returns the error.
+pub fn mark_downloaded(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        // Zone 3 is the Internet zone.
+        std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+/// Saves an attachment's `contents` in `folder` under its name made safe,
+/// or as `name (1)`, `name (2)` and so on when that is taken, and returns
+/// where it landed. Each name is claimed by creating the file exclusively,
+/// so a file or symlink that appears meanwhile is never written through.
+pub fn save_under_free_name(
+    folder: &Path,
+    name: &str,
+    contents: &[u8],
+) -> std::io::Result<PathBuf> {
+    let name = safe_attachment_name(name);
+    for candidate in free_names(&name).take(FREE_NAME_ATTEMPTS) {
+        let path = folder.join(candidate);
+        match write_new_file(&path, contents) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "no free name for the attachment",
+    ))
+}
+
+/// Writes `contents` to a new file at `path` and marks it as downloaded.
+/// Creating it exclusively fails on anything already there, a dangling
+/// symlink included; a file that could not be written in full is removed.
+pub fn write_new_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    if let Err(error) = file.write_all(contents) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    // Best effort: a file system without the mark still gets the file.
+    let _ = mark_downloaded(path);
+    Ok(())
+}
+
+/// `name`, then `name (1)`, `name (2)` and so on, numbered before the
+/// extension.
+fn free_names(name: &str) -> impl Iterator<Item = String> + '_ {
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
+        _ => (name, String::new()),
+    };
+    std::iter::once(name.to_owned())
+        .chain((1..).map(move |number| format!("{stem} ({number}){extension}")))
+}
+
 fn is_windows_reserved(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or(name).trim_end();
     if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"]
@@ -76,10 +186,13 @@ fn is_windows_reserved(name: &str) -> bool {
     {
         return true;
     }
-    let bytes = stem.as_bytes();
-    bytes.len() == 4
-        && (bytes[..3].eq_ignore_ascii_case(b"COM") || bytes[..3].eq_ignore_ascii_case(b"LPT"))
-        && bytes[3].is_ascii_digit()
+    // COM and LPT with one digit, the superscripts ¹, ² and ³ included.
+    let mut chars = stem.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    let digit = chars.next();
+    chars.next().is_none()
+        && (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+        && digit.is_some_and(|c| c.is_ascii_digit() || matches!(c, '¹' | '²' | '³'))
 }
 
 impl Client {
@@ -133,9 +246,7 @@ impl Client {
             .as_deref()
             .ok_or_else(|| Error::Crypto("attachment has no key packets".into()))?;
         let addr = self
-            .keys()
-            .address(&msg.meta.address_id)
-            .or_else(|| self.keys().primary_address())
+            .keys_for_message(&msg.meta.address_id)
             .ok_or_else(|| Error::Crypto("no address key for attachment".into()))?;
 
         // Resolve verifier keys before allocating and decrypting attachment data.
@@ -225,19 +336,15 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::CacheIdentity;
-    use crate::crypto::{AddressKeys, KeyStore, StoredKey};
+    use crate::crypto::{AddressKeys, StoredKey};
+    use crate::mail::test_support;
     use crate::model::enums::key_flag;
-    use crate::session::{MemoryStore, Paths};
-    use crate::transport::HttpClient;
     use base64::{Engine, engine::general_purpose::STANDARD};
     use proton_crypto::crypto::{
         ArmorerSync, DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync,
         PGPProviderSync,
     };
     use secrecy::SecretString;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -307,19 +414,7 @@ mod tests {
             })))
             .mount(server)
             .await;
-        let client = Client {
-            http: HttpClient::new(server.uri(), "Other"),
-            keys: KeyStore {
-                user_keys: Vec::new(),
-                addresses: vec![address],
-            },
-            paths: Paths::with_base(std::env::temp_dir()),
-            profile: "test".into(),
-            session_uid: "test".into(),
-            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
-            store: Arc::new(MemoryStore::default()),
-            sender_cache: Mutex::new(super::super::SenderKeyCache::default()),
-        };
+        let client = test_support::client(server, vec![address]);
         (
             client,
             Attachment {
@@ -475,7 +570,7 @@ mod tests {
         let address = client.keys().primary_address().unwrap();
         message.body = crypto::encrypt_self_draft(&provider, address, "body").unwrap();
         message.mime_type = "text/plain".into();
-        let read = client.decrypt_message(&message).await.unwrap();
+        let read = client.open_message(message).await.unwrap();
         assert_eq!(read.body, "body");
         assert_eq!(read.verdict, crypto::Verdict::Unverified);
     }
@@ -513,7 +608,7 @@ mod tests {
         let address = client.keys().primary_address().unwrap();
         message.body = crypto::encrypt_self_draft(&provider, address, "body").unwrap();
         message.mime_type = "text/plain".into();
-        let read = client.decrypt_message(&message).await.unwrap();
+        let read = client.open_message(message).await.unwrap();
         assert_eq!(read.body, "body");
         assert_eq!(read.verdict, crypto::Verdict::Unverified);
     }
@@ -685,6 +780,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_export_stops_at_its_maximum_inside_a_page() {
+        let server = MockServer::start().await;
+        let (client, attachment) = attachment_client(&server).await;
+        let address = client.keys().primary_address().unwrap();
+        let body = crypto::encrypt_self_draft(&crypto::provider(), address, "body").unwrap();
+        let message = |id: &str| {
+            let mut message = message_with_attachment(attachment.clone());
+            message.meta.id = id.into();
+            message.body = body.clone();
+            message.mime_type = "text/plain".into();
+            message
+        };
+        serve_folder(&server, &[message("first"), message("second")]).await;
+        let folder = export_directory("export-maximum");
+
+        let report = client.export_folder_report("inbox", &folder, 1).await;
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        let report = report.unwrap();
+        assert_eq!((report.written, report.already_exported), (1, 0));
+        let fetched: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| request.url.path().to_owned())
+            .filter(|path| path.starts_with("/mail/v4/messages/"))
+            .collect();
+        assert_eq!(fetched, ["/mail/v4/messages/first"]);
+    }
+
+    #[tokio::test]
     async fn a_rerun_resumes_without_fetching_exported_messages_again() {
         let server = MockServer::start().await;
         let (client, attachment) = attachment_client(&server).await;
@@ -732,16 +859,56 @@ mod tests {
             ("../../etc/passwd", "passwd"),
             (r"..\windows\file.txt", "file.txt"),
             ("/tmp/report.pdf", "report.pdf"),
-            ("C:report.pdf", "attachment"),
-            ("bad\nname.txt", "attachment"),
-            ("bad\0name.txt", "attachment"),
-            ("bad?name.txt", "attachment"),
+            ("C:report.pdf", "C_report.pdf"),
+            (r"C:\Windows\evil.exe", "evil.exe"),
+            (r"\\server\share\file", "file"),
+            ("bad\nname.txt", "bad_name.txt"),
+            ("bad\0name.txt", "bad_name.txt"),
+            ("bad?name.txt", "bad_name.txt"),
+            ("Reunión 10:30.ics", "Reunión 10_30.ics"),
+            ("notes.txt:hidden", "notes.txt_hidden"),
+            (r#"<"a"|b*>.txt"#, "__a__b__.txt"),
             ("...", "attachment"),
+            ("   ", "attachment"),
             ("", "attachment"),
             ("Q3 report.pdf", "Q3 report.pdf"),
         ] {
             assert_eq!(safe_attachment_name(input), expected);
         }
+    }
+
+    #[test]
+    fn names_end_where_windows_would_end_them() {
+        // Windows drops trailing dots and spaces when it creates a file.
+        for (input, expected) in [
+            ("report.pdf .", "report.pdf"),
+            ("report.pdf. . ", "report.pdf"),
+            (" . report.pdf", "report.pdf"),
+        ] {
+            assert_eq!(safe_attachment_name(input), expected, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn long_names_are_cut_keeping_their_extension() {
+        let long = format!("{}.pdf", "a".repeat(300));
+        let name = safe_attachment_name(&long);
+        assert_eq!(name.len(), MAX_NAME_BYTES);
+        assert!(name.ends_with("aaa.pdf"));
+
+        // A cut never splits a character.
+        let accented = format!("{}.docx", "ñ".repeat(200));
+        let name = safe_attachment_name(&accented);
+        assert!(name.len() <= MAX_NAME_BYTES && name.ends_with("ñ.docx"));
+
+        // Without a short extension, the end of the name goes.
+        let name = safe_attachment_name(&format!("{}.{}", "b".repeat(10), "c".repeat(300)));
+        assert_eq!(name.len(), MAX_NAME_BYTES);
+        assert!(name.starts_with("bbbbbbbbbb.ccc"));
+
+        // A cut that lands on spaces does not leave them at the end.
+        let spaced = format!("{}{}", "d".repeat(239), " ".repeat(20));
+        assert_eq!(safe_attachment_name(&spaced), "d".repeat(239));
     }
 
     #[test]
@@ -778,9 +945,193 @@ mod tests {
             ("CONIN$.log", "_CONIN$.log"),
             ("CONOUT$", "_CONOUT$"),
             ("CLOCK$", "_CLOCK$"),
+            ("aux.tar.gz", "_aux.tar.gz"),
+            ("nul", "_nul"),
+            ("con.", "_con"),
+            (r"C:\temp\CON.pdf", "_CON.pdf"),
+            ("../../aux.png", "_aux.png"),
+            ("COM¹.txt", "_COM¹.txt"),
+            ("com².log", "_com².log"),
+            ("LPT³", "_LPT³"),
             ("COM10.txt", "COM10.txt"),
+            ("COM.txt", "COM.txt"),
+            ("COM⁴.txt", "COM⁴.txt"),
+            ("contact.pdf", "contact.pdf"),
+            ("conversation.txt", "conversation.txt"),
+            ("auxiliary.c", "auxiliary.c"),
+            ("null.json", "null.json"),
+            ("printer.png", "printer.png"),
         ] {
             assert_eq!(safe_attachment_name(input), expected);
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_marked_download_carries_the_internet_zone() {
+        let path = std::env::temp_dir().join(format!(
+            "ruston-zone-{} informe ñ, 100%.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"%PDF").unwrap();
+        mark_downloaded(&path).unwrap();
+        let mut stream = path.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        assert_eq!(
+            std::fs::read_to_string(stream).unwrap(),
+            "[ZoneTransfer]\r\nZoneId=3\r\n"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// An empty directory of its own for one test.
+    fn save_folder(label: &str) -> PathBuf {
+        let folder = export_directory(label);
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    fn file_name(path: &Path) -> &str {
+        path.file_name().unwrap().to_str().unwrap()
+    }
+
+    #[test]
+    fn a_saved_attachment_takes_the_first_free_name() {
+        let folder = save_folder("free-name");
+        let saved: Vec<_> = [b"one", b"two", b"red"]
+            .iter()
+            .map(|contents| save_under_free_name(&folder, "report.pdf", *contents).unwrap())
+            .collect();
+        let names: Vec<_> = saved.iter().map(|path| file_name(path)).collect();
+        assert_eq!(names, ["report.pdf", "report (1).pdf", "report (2).pdf"]);
+        // An earlier file keeps what it held.
+        assert_eq!(std::fs::read(&saved[0]).unwrap(), b"one");
+
+        // A name with no extension, or a device name made safe, is numbered
+        // the same way.
+        for (name, first, copy) in [
+            ("notes", "notes", "notes (1)"),
+            ("CON.pdf", "_CON.pdf", "_CON (1).pdf"),
+        ] {
+            let saved_first = save_under_free_name(&folder, name, b"x").unwrap();
+            let saved_copy = save_under_free_name(&folder, name, b"y").unwrap();
+            assert_eq!(file_name(&saved_first), first);
+            assert_eq!(file_name(&saved_copy), copy);
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn untrusted_attachment_names_stay_inside_the_folder() {
+        let folder = save_folder("untrusted-names");
+        for (untrusted, expected) in [
+            ("../../outside.txt", "outside.txt"),
+            ("/tmp/absolute.txt", "absolute.txt"),
+            (r"..\windows\file.txt", "file.txt"),
+            ("C:drive.txt", "C_drive.txt"),
+            ("CON .txt", "_CON .txt"),
+            ("...", "attachment"),
+        ] {
+            let path = save_under_free_name(&folder, untrusted, b"mail").unwrap();
+            assert_eq!(path.parent(), Some(folder.as_path()));
+            assert_eq!(file_name(&path), expected);
+            assert_eq!(std::fs::read(path).unwrap(), b"mail");
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_long_name_and_its_numbered_copy_can_both_be_saved() {
+        let folder = save_folder("long-name");
+        let long = format!("{}.pdf", "informe ".repeat(40));
+        let first = save_under_free_name(&folder, &long, b"one").unwrap();
+        let second = save_under_free_name(&folder, &long, b"two").unwrap();
+        assert_ne!(first, second);
+        for path in [&first, &second] {
+            let name = file_name(path);
+            assert!(name.len() <= 255 && name.ends_with(".pdf"), "{name}");
+        }
+        assert_eq!(std::fs::read(second).unwrap(), b"two");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn the_last_copy_of_a_long_name_still_fits_a_file_system() {
+        let name = safe_attachment_name(&format!("{}.pdf", "informe ".repeat(40)));
+        let last = free_names(&name).take(FREE_NAME_ATTEMPTS).last().unwrap();
+        assert!(last.ends_with(" (9999).pdf"), "{last}");
+        assert!(last.len() <= 255, "{} bytes", last.len());
+    }
+
+    #[test]
+    fn concurrent_saves_claim_different_names_without_overwriting() {
+        let folder = save_folder("concurrent-saves");
+        std::fs::write(folder.join("report.txt"), b"existing").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let saves: Vec<_> = (0_u8..8)
+            .map(|contents| {
+                let (folder, barrier) = (folder.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    save_under_free_name(&folder, "report.txt", &[contents]).unwrap()
+                })
+            })
+            .collect();
+        let mut paths = std::collections::HashSet::new();
+        let mut contents = std::collections::HashSet::new();
+        for save in saves {
+            let path = save.join().unwrap();
+            contents.insert(std::fs::read(&path).unwrap()[0]);
+            assert!(paths.insert(path));
+        }
+        assert_eq!(contents.len(), 8);
+        assert_eq!(
+            std::fs::read(folder.join("report.txt")).unwrap(),
+            b"existing"
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_missing_folder_is_a_failure_not_a_taken_name() {
+        let folder = save_folder("missing-folder");
+        let missing = folder.join("missing");
+        let error = save_under_free_name(&missing, "report.pdf", b"x").unwrap_err();
+        let created = missing.exists();
+        std::fs::remove_dir_all(folder).unwrap();
+        assert_ne!(error.kind(), ErrorKind::AlreadyExists);
+        assert!(!created);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_is_never_followed() {
+        let folder = save_folder("dangling-symlink");
+        let outside = folder.with_extension("outside");
+        let _ = std::fs::remove_file(&outside);
+        std::os::unix::fs::symlink(&outside, folder.join("report.txt")).unwrap();
+        let path = save_under_free_name(&folder, "report.txt", b"mail").unwrap();
+        let escaped = outside.exists();
+        std::fs::remove_dir_all(&folder).unwrap();
+        let _ = std::fs::remove_file(&outside);
+        assert!(!escaped, "the write followed a dangling symlink");
+        assert_eq!(file_name(&path), "report (1).txt");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_saved_attachment_is_marked_as_downloaded_from_the_internet() {
+        let folder = save_folder("saved-zone");
+        let mut stream = save_under_free_name(&folder, "factura.pdf", b"%PDF")
+            .unwrap()
+            .into_os_string();
+        stream.push(":Zone.Identifier");
+        assert!(
+            std::fs::read_to_string(stream)
+                .unwrap()
+                .contains("ZoneId=3")
+        );
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

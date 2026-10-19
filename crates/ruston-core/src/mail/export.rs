@@ -3,17 +3,44 @@
 use super::Client;
 use super::read::{FullMessage, UnreadableMessage};
 use crate::api;
-use crate::api::messages::ListQuery;
+use crate::api::messages::{ListQuery, is_last_page};
 use crate::error::{Error, Result};
 use crate::mail::attachments::safe_attachment_name;
 use crate::model::enums::resolve_folder;
 use crate::model::message::{Attachment, Message, Recipient};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+/// Every part is base64, which never contains `-`, so this fixed boundary
+/// cannot turn up inside one.
 const MIME_BOUNDARY: &str = "ruston-mail-export";
+/// Messages an export lists at a time.
+const EXPORT_PAGE_SIZE: u32 = 50;
+/// Bytes per base64 line: 57 encode to 76 characters, the longest line RFC
+/// 2045 allows.
+const BASE64_LINE_BYTES: usize = 57;
+/// Text bytes per RFC 2047 encoded word, so a word, 60 characters once
+/// encoded, fits on a 76-character line after a header's name.
+const ENCODED_WORD_BYTES: usize = 36;
+/// Percent-encoded characters per RFC 2231 filename section, each on a short
+/// folded line of its own.
+const FILENAME_SECTION_BYTES: usize = 40;
+/// The longest address an export writes; a longer one is refused.
+const MAX_ADDRESS_LEN: usize = 512;
+/// The longest MIME type an export trusts: RFC 6838 allows 127 characters on
+/// each side of the slash.
+const MAX_MIME_TYPE_LEN: usize = 255;
+/// The symbols a MIME type's names may hold besides letters and digits: RFC
+/// 6838's restricted-name-chars.
+const MIME_TOKEN_SYMBOLS: &[u8] = b"!#$&^_.+-";
+/// The symbols an RFC 5987 attr-char may be besides letters and digits; any
+/// other byte of a filename is percent-encoded.
+const ATTR_CHAR_SYMBOLS: &[u8] = b"!#$&+-.^_`|~";
+/// What an exported message's file name starts and ends with.
+const EXPORT_FILE_PREFIX: &str = "message-";
+const EXPORT_FILE_SUFFIX: &str = ".eml";
 
 /// What an export did with the messages it went through.
 #[derive(Debug, Default)]
@@ -63,26 +90,17 @@ impl Client {
     ) -> Result<ExportReport> {
         std::fs::create_dir_all(out_dir)?;
         let label = resolve_folder(folder);
-        let page_size = 50u32;
         let mut report = ExportReport::default();
         // Every message gone through counts, so a rerun covers the same ones.
         let mut considered = 0u32;
         let mut page = 0u32;
         while considered < max {
-            let q = ListQuery {
-                label_id: Some(label.clone()),
-                page: Some(page),
-                page_size: Some(page_size),
-                ..Default::default()
-            };
+            let q = ListQuery::folder_page(label.clone(), page, EXPORT_PAGE_SIZE);
             let (_total, msgs) = api::messages::list_messages(self.http(), &q).await?;
             if msgs.is_empty() {
                 break;
             }
-            for meta in &msgs {
-                if considered >= max {
-                    break;
-                }
+            for meta in msgs.iter().take((max - considered) as usize) {
                 match self.export_message(&meta.id, out_dir).await? {
                     Exported::Written => report.written += 1,
                     Exported::AlreadyThere => report.already_exported += 1,
@@ -90,7 +108,7 @@ impl Client {
                 }
                 considered += 1;
             }
-            if (msgs.len() as u32) < page_size {
+            if is_last_page(msgs.len(), EXPORT_PAGE_SIZE) {
                 break;
             }
             page += 1;
@@ -113,7 +131,7 @@ impl Client {
             return Ok(Exported::AlreadyThere);
         }
         let message = api::messages::get_message(self.http(), message_id).await?;
-        let full = match self.decrypt_message(&message).await {
+        let full = match self.open_message(message.clone()).await {
             Ok(full) => full,
             Err(error) => return Ok(skipped(message, error)),
         };
@@ -210,25 +228,130 @@ fn place_export(temp: &Path, path: &Path) -> Result<bool> {
 /// Hex preserves every ID byte and stays distinct on case-insensitive filesystems.
 fn export_filename(id: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut name = String::with_capacity(12 + id.len() * 2);
-    name.push_str("message-");
+    let mut name =
+        String::with_capacity(EXPORT_FILE_PREFIX.len() + id.len() * 2 + EXPORT_FILE_SUFFIX.len());
+    name.push_str(EXPORT_FILE_PREFIX);
     for byte in id.bytes() {
         name.push(HEX[(byte >> 4) as usize] as char);
         name.push(HEX[(byte & 0x0f) as usize] as char);
     }
-    name.push_str(".eml");
+    name.push_str(EXPORT_FILE_SUFFIX);
     name
 }
 
 fn create_export_file(path: &Path) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
+    Ok(create_private(path)?)
+}
+
+/// Creates a new file at `path` for writing that only its owner can open,
+/// for decrypted mail: mode `0600` on Unix, and on Windows an access list
+/// for the owner, the system and administrators, as a user's profile
+/// folders have, that takes nothing from the folder it is in. Otherwise a
+/// file in a shared folder would let every user who can read there read it
+/// too. Fails if `path` exists.
+pub fn create_private(path: &Path) -> io::Result<File> {
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        create_private_on_windows(path)
     }
-    Ok(options.open(path)?)
+    #[cfg(not(windows))]
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path)
+    }
+}
+
+/// Full access for the owner, the system and administrators, in a protected
+/// list that inherits nothing.
+#[cfg(windows)]
+const PRIVATE_FILE_ACCESS: &str = "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)";
+
+/// Creates the file with its access list already in place, so no other user
+/// can open it, and keep it open, before it is restricted.
+#[cfg(windows)]
+fn create_private_on_windows(path: &Path) -> io::Result<File> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    let name = verbatim(path)?;
+    let access: Vec<u16> = PRIVATE_FILE_ACCESS.encode_utf16().chain([0]).collect();
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: `access` is NUL-terminated, and on success the descriptor is
+    // this function's to free with LocalFree.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            access.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor,
+        bInheritHandle: 0,
+    };
+    // SAFETY: `name` is NUL-terminated and `attributes` points at the live
+    // descriptor. Sharing is std's, so the file can be renamed while open.
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    let created = if handle == INVALID_HANDLE_VALUE {
+        Err(io::Error::last_os_error())
+    } else {
+        // SAFETY: the handle was just opened, and nothing else owns it.
+        Ok(unsafe { File::from_raw_handle(handle) })
+    };
+    // SAFETY: the descriptor came from the conversion above, and the file
+    // holds its own copy.
+    unsafe { LocalFree(descriptor) };
+    created
+}
+
+/// `path` as CreateFileW takes it at any length: absolute and verbatim, the
+/// form std's own file functions use for long names.
+#[cfg(windows)]
+fn verbatim(path: &Path) -> io::Result<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    let absolute: Vec<u16> = std::path::absolute(path)?
+        .as_os_str()
+        .encode_wide()
+        .collect();
+    let mut name = if absolute.starts_with(&wide(r"\\?\")) || absolute.starts_with(&wide(r"\\.\")) {
+        absolute
+    } else if let Some(share) = absolute.strip_prefix(wide(r"\\").as_slice()) {
+        [wide(r"\\?\UNC\").as_slice(), share].concat()
+    } else {
+        [wide(r"\\?\"), absolute].concat()
+    };
+    name.push(0);
+    Ok(name)
 }
 
 struct EmlWriter<W: Write> {
@@ -237,6 +360,8 @@ struct EmlWriter<W: Write> {
 }
 
 impl<W: Write> EmlWriter<W> {
+    /// Starts the export of `message`: writes its headers and its body, so
+    /// only its attachments and the end are left to write.
     fn new(mut out: W, message: &FullMessage) -> Result<Self> {
         write_address_header(&mut out, "From", std::slice::from_ref(&message.meta.sender))?;
         write_address_header(&mut out, "To", &message.meta.to_list)?;
@@ -298,7 +423,7 @@ impl<W: Write> EmlWriter<W> {
 
 fn checked_address(address: &str) -> Result<&str> {
     if address.is_empty()
-        || address.len() > 512
+        || address.len() > MAX_ADDRESS_LEN
         || address
             .chars()
             .any(|c| c.is_control() || c == '<' || c == '>')
@@ -348,7 +473,7 @@ fn write_encoded_words<W: Write>(out: &mut W, value: &str) -> Result<()> {
         } else {
             character
         };
-        if chunk.len() + character.len_utf8() > 36 {
+        if chunk.len() + character.len_utf8() > ENCODED_WORD_BYTES {
             write_encoded_word(out, &chunk, first)?;
             chunk.clear();
             first = false;
@@ -376,7 +501,7 @@ fn attachment_content_type(attachment: &Attachment) -> &str {
         .mime_type
         .as_deref()
         .filter(|value| {
-            value.len() <= 255
+            value.len() <= MAX_MIME_TYPE_LEN
                 && value.split_once('/').is_some_and(|(kind, subtype)| {
                     !subtype.contains('/') && is_mime_token(kind) && is_mime_token(subtype)
                 })
@@ -388,21 +513,21 @@ fn is_mime_token(value: &str) -> bool {
     !value.is_empty()
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(&byte))
+            .all(|byte| byte.is_ascii_alphanumeric() || MIME_TOKEN_SYMBOLS.contains(&byte))
 }
 
 /// RFC 2231 extended filename parameter, continued on short folded lines.
 fn write_filename_parameter<W: Write>(out: &mut W, filename: &str) -> Result<()> {
     let mut chunks = vec![String::new()];
     for byte in filename.bytes() {
-        let piece = if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+        let piece = if byte.is_ascii_alphanumeric() || ATTR_CHAR_SYMBOLS.contains(&byte) {
             (byte as char).to_string()
         } else {
             format!("%{byte:02X}")
         };
         if chunks
             .last()
-            .is_some_and(|chunk| chunk.len() + piece.len() > 40)
+            .is_some_and(|chunk| chunk.len() + piece.len() > FILENAME_SECTION_BYTES)
         {
             chunks.push(String::new());
         }
@@ -421,7 +546,7 @@ fn write_filename_parameter<W: Write>(out: &mut W, filename: &str) -> Result<()>
 
 struct Base64Lines<'a, W: Write> {
     out: &'a mut W,
-    line: [u8; 57],
+    line: [u8; BASE64_LINE_BYTES],
     len: usize,
 }
 
@@ -429,18 +554,18 @@ impl<'a, W: Write> Base64Lines<'a, W> {
     fn new(out: &'a mut W) -> Self {
         Self {
             out,
-            line: [0; 57],
+            line: [0; BASE64_LINE_BYTES],
             len: 0,
         }
     }
 
     fn write_bytes(&mut self, mut bytes: &[u8]) -> Result<()> {
         while !bytes.is_empty() {
-            let count = (57 - self.len).min(bytes.len());
+            let count = (BASE64_LINE_BYTES - self.len).min(bytes.len());
             self.line[self.len..self.len + count].copy_from_slice(&bytes[..count]);
             self.len += count;
             bytes = &bytes[count..];
-            if self.len == 57 {
+            if self.len == BASE64_LINE_BYTES {
                 self.flush_line()?;
             }
         }
@@ -467,6 +592,8 @@ fn write_base64_bytes<W: Write>(out: &mut W, bytes: &[u8]) -> Result<()> {
     encoder.finish()
 }
 
+/// Writes `text` as base64 lines, its line ends, CR, LF or CRLF, all made
+/// CRLF, as MIME text must have them.
 fn write_base64_text<W: Write>(out: &mut W, text: &str) -> Result<()> {
     let mut encoder = Base64Lines::new(out);
     let bytes = text.as_bytes();
@@ -567,6 +694,25 @@ mod tests {
     }
 
     #[test]
+    fn base64_lines_hold_76_characters_and_text_ends_lines_with_crlf() {
+        let mut bytes = Vec::new();
+        write_base64_bytes(&mut bytes, &[0u8; 200]).unwrap();
+        let lines: Vec<usize> = String::from_utf8(bytes)
+            .unwrap()
+            .split_terminator("\r\n")
+            .map(str::len)
+            .collect();
+        // 200 bytes: three lines of 57, then 29.
+        assert_eq!(lines, [76, 76, 76, 40]);
+
+        let mut text = Vec::new();
+        write_base64_text(&mut text, "a\rb\nc\r\nd").unwrap();
+        let encoded = String::from_utf8(text).unwrap();
+        let decoded = STANDARD.decode(encoded.trim_end()).unwrap();
+        assert_eq!(decoded, b"a\r\nb\r\nc\r\nd");
+    }
+
+    #[test]
     fn eml_without_attachments_has_a_single_text_part() {
         let eml = EmlWriter::new(Vec::new(), &message())
             .unwrap()
@@ -595,6 +741,118 @@ mod tests {
             Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
         ));
         assert_eq!(std::fs::read(&path).unwrap(), b"existing");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The access list of `path` in SDDL, as icacls would read it.
+    #[cfg(windows)]
+    fn access_list(path: &Path) -> String {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            SDDL_REVISION_1, SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+
+        let name = verbatim(path).unwrap();
+        let mut descriptor = std::ptr::null_mut();
+        let mut text = std::ptr::null_mut();
+        let mut length = 0;
+        // SAFETY: `name` is NUL-terminated; both outputs are freed below.
+        unsafe {
+            assert_eq!(
+                GetNamedSecurityInfoW(
+                    name.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut descriptor,
+                ),
+                0
+            );
+            assert_ne!(
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    descriptor,
+                    SDDL_REVISION_1,
+                    DACL_SECURITY_INFORMATION,
+                    &mut text,
+                    &mut length,
+                ),
+                0
+            );
+            let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(text, length as usize));
+            LocalFree(text.cast());
+            LocalFree(descriptor);
+            sddl.trim_end_matches('\0').to_owned()
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_private_file_on_windows_takes_nothing_from_its_folder() {
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+        use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+
+        // A folder that lets everyone read what it holds, as a shared one can.
+        let dir = std::env::temp_dir().join(format!(
+            "ruston-private-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let shared: Vec<u16> = "D:(A;OICI;FA;;;WD)".encode_utf16().chain([0]).collect();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: both strings are NUL-terminated; the descriptor lives until
+        // the folder is created and is left to the test process to reclaim.
+        unsafe {
+            assert_ne!(
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    shared.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    std::ptr::null_mut(),
+                ),
+                0
+            );
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor,
+                bInheritHandle: 0,
+            };
+            assert_ne!(
+                CreateDirectoryW(verbatim(&dir).unwrap().as_ptr(), &attributes),
+                0
+            );
+        }
+
+        let ordinary = dir.join("ordinary.eml");
+        std::fs::write(&ordinary, b"").unwrap();
+        assert!(access_list(&ordinary).contains(";WD)"));
+
+        let private = dir.join("private.eml");
+        drop(create_private(&private).unwrap());
+        assert_eq!(access_list(&private), PRIVATE_FILE_ACCESS);
+        assert_eq!(
+            create_private(&private).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+
+        // Past MAX_PATH, as std allows.
+        let deep = dir.join("a".repeat(120)).join("b".repeat(120));
+        std::fs::create_dir_all(&deep).unwrap();
+        let long = deep.join("private.eml");
+        assert!(long.as_os_str().len() > 260);
+        drop(create_private(&long).unwrap());
+        assert_eq!(access_list(&long), PRIVATE_FILE_ACCESS);
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 

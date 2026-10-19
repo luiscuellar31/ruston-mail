@@ -7,23 +7,24 @@ use crate::mail::INSPECTION_CONCURRENCY;
 
 /// One Proton page of best-effort work, including running inspections. Overflow
 /// keeps the server's conversation grouping instead of retaining more tasks.
-const CAPACITY: usize = 50;
+pub(super) const CAPACITY: usize = 50;
 
 /// Waiting candidates are only IDs: they hold neither a task nor a client.
 #[derive(Default)]
 pub(super) struct Inspections {
     queued: VecDeque<String>,
-    candidates: HashSet<String>,
+    /// Every ID admitted, whether queued or running.
+    admitted: HashSet<String>,
     running: HashMap<String, (RequestId, AbortHandle)>,
 }
 
 impl Inspections {
     pub fn enqueue(&mut self, candidates: impl IntoIterator<Item = String>) {
         for id in candidates {
-            if self.candidates.len() == CAPACITY {
+            if self.admitted.len() == CAPACITY {
                 break;
             }
-            if self.candidates.insert(id.clone()) {
+            if self.admitted.insert(id.clone()) {
                 self.queued.push_back(id);
             }
         }
@@ -49,7 +50,7 @@ impl Inspections {
             return false;
         }
         self.running.remove(id);
-        self.candidates.remove(id);
+        self.admitted.remove(id);
         true
     }
 
@@ -58,7 +59,7 @@ impl Inspections {
             handle.abort();
         }
         self.queued.clear();
-        self.candidates.clear();
+        self.admitted.clear();
     }
 }
 
@@ -79,20 +80,20 @@ mod tests {
     fn bounds_and_deduplicates_work_across_pages() {
         let mut inspections = Inspections::default();
         inspections.enqueue((0..200).flat_map(|i| [i.to_string(), i.to_string()]));
-        assert_eq!(inspections.candidates.len(), CAPACITY);
+        assert_eq!(inspections.admitted.len(), CAPACITY);
         for request in 1..=4 {
             assert!(inspections.start(request).is_some());
         }
         assert!(inspections.start(5).is_none());
         inspections.enqueue(["0".into(), "extra".into()]);
-        assert_eq!(inspections.candidates.len(), CAPACITY);
+        assert_eq!(inspections.admitted.len(), CAPACITY);
         assert!(!inspections.finish(99, "0"));
         assert!(inspections.finish(1, "0"));
         assert!(!inspections.finish(1, "0"));
         let (id, _) = inspections.start(5).unwrap();
         assert_eq!(id, "4");
         inspections.enqueue(["4".into(), "extra".into()]);
-        assert_eq!(inspections.candidates.len(), CAPACITY);
+        assert_eq!(inspections.admitted.len(), CAPACITY);
         assert_eq!(inspections.queued.back().unwrap(), "extra");
     }
 

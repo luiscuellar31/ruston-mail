@@ -2,9 +2,10 @@
 //! automatic 401-refresh / 429-rate-limit / 9001-human-verification retries.
 
 mod headers;
-mod retry;
+mod retry_after;
 
 use crate::error::{ApiError, Error, HvChallenge, Result};
+use crate::model::enums::response_code;
 use crate::session::Tokens;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -25,16 +26,13 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Redirects one request may follow, as many as reqwest allows by default.
 const MAX_REDIRECTS: usize = 10;
-/// Proton's `Code` for a request that succeeded.
-const CODE_SUCCESS: i64 = 1000;
-/// Proton's `Code` for a request on several items that succeeded for each.
-const CODE_MULTI_SUCCESS: i64 = 1001;
-/// The `Code` some endpoints send with a successful HTTP status.
-const CODE_NONE: i64 = 0;
-/// Proton's `Code` asking for human verification.
-const CODE_HUMAN_VERIFICATION: i64 = 9001;
 /// How much of an error body `ApiError::raw_body` keeps.
 const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
+/// How many times one request may renew its tokens after a 401. Tokens
+/// renewed meanwhile by another request or process may have expired too, so
+/// reusing them leaves one more refresh; a pair Proton has just issued is the
+/// last try.
+const REFRESH_ATTEMPTS: u8 = 2;
 
 /// Request body.
 #[derive(Debug, Clone)]
@@ -62,7 +60,8 @@ pub struct Request {
     pub content_type: Option<String>,
     /// Human-verification token and its type, if attached.
     pub hv: Option<(String, String)>,
-    /// Skip the 401→refresh retry (auth-flow endpoints).
+    /// Skip the 401→refresh retry (auth-flow endpoints). Set by
+    /// [`Request::no_refresh`].
     pub skip_refresh: bool,
     /// Do not attach `Authorization` (refresh endpoint).
     pub omit_auth: bool,
@@ -128,7 +127,8 @@ impl Request {
         self.hv = Some((token.into(), ttype.into()));
         self
     }
-    /// Skip the automatic 401→refresh retry (for auth-flow endpoints).
+    /// Skip the automatic 401→refresh retry (for auth-flow endpoints), by
+    /// setting [`Request::skip_refresh`].
     pub fn no_refresh(mut self) -> Self {
         self.skip_refresh = true;
         self
@@ -162,7 +162,8 @@ pub struct Response {
     pub status: u16,
     /// Raw response body bytes.
     pub body: Vec<u8>,
-    /// `Retry-After` delay in seconds, if the server sent one.
+    /// `Retry-After` delay in seconds, if the server sent one, cut to the
+    /// longest wait the transport honors.
     pub retry_after: Option<u64>,
 }
 
@@ -392,13 +393,22 @@ impl HttpClient {
             .ok_or_else(|| Error::Other("request body cannot be replayed".into()))?;
         *attempt.headers_mut() = hdrs;
         let started = std::time::Instant::now();
+        let sent = std::time::SystemTime::now();
         let resp = client.execute(attempt).await?;
+        // Every response comes from the API, whose clock OpenPGP keeps to.
+        if let Some(date) = resp
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|v| v.to_str().ok())
+        {
+            crate::crypto::clock::note_proton_date(date, sent, std::time::SystemTime::now());
+        }
         let status = resp.status().as_u16();
         let retry_after = resp
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| retry::parse_retry_after(Some(s)));
+            .and_then(retry_after::parse);
         let body = read_bounded_body(resp, req.max_response_bytes).await?;
         tracing::debug!(target: "ruston_core::http", status, bytes = body.len(), ms = started.elapsed().as_millis() as u64, "← response");
         Ok(Response {
@@ -513,7 +523,7 @@ impl Rotation {
             Detected::Ok => {}
             // An outage, a rate limit or a challenge leaves the saved session
             // valid; only Proton refusing the refresh token ends it.
-            Detected::Api(error) if error.http_status == 429 || error.http_status >= 500 => {
+            Detected::Api(error) if error.may_pass() => {
                 return Err(Error::Api(error));
             }
             Detected::Hv(challenge) => return Err(Error::HumanVerification(challenge)),
@@ -571,6 +581,8 @@ enum Detected {
 /// to read its code; the caller decodes what it needs once.
 #[derive(serde::Deserialize)]
 struct Envelope {
+    /// Any JSON value, so a `Code` of another type reads as no code instead
+    /// of failing the whole envelope, and `Error` and `Details` with it.
     #[serde(rename = "Code")]
     code: Option<serde_json::Value>,
     #[serde(rename = "Error")]
@@ -581,113 +593,117 @@ struct Envelope {
 
 fn detect(status: u16, body: &[u8]) -> Detected {
     let envelope: Option<Envelope> = serde_json::from_slice(body).ok();
+    let envelope = envelope.as_ref();
     let code = envelope
-        .as_ref()
         .and_then(|envelope| envelope.code.as_ref())
         .and_then(serde_json::Value::as_i64);
 
     // Human verification (may arrive on HTTP 200 in the auth flow, or 422).
-    if code == Some(CODE_HUMAN_VERIFICATION)
-        && let Some(details) = envelope
-            .as_ref()
-            .and_then(|envelope| envelope.details.as_ref())
+    if code == Some(response_code::HUMAN_VERIFICATION)
+        && let Some(details) = envelope.and_then(|envelope| envelope.details.as_ref())
     {
-        let methods = details
-            .get("HumanVerificationMethods")
-            .and_then(|m| m.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        return Detected::Hv(HvChallenge {
-            token: details
-                .get("HumanVerificationToken")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            methods,
-            web_url: details
-                .get("WebUrl")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        });
+        return Detected::Hv(hv_challenge(details));
     }
-
-    let success = matches!(code, Some(CODE_SUCCESS | CODE_MULTI_SUCCESS));
-    let http_ok = (200..300).contains(&status);
-
-    if http_ok && (success || code.is_none()) {
-        return Detected::Ok;
-    }
-    if http_ok && code == Some(CODE_NONE) {
+    if is_success(status, code) {
         return Detected::Ok;
     }
 
     let message = envelope
-        .as_ref()
         .and_then(|envelope| envelope.error.as_ref())
         .and_then(serde_json::Value::as_str)
         .unwrap_or("request failed")
         .to_string();
     Detected::Api(ApiError {
         http_status: status,
-        code: code.unwrap_or(CODE_NONE),
+        code: code.unwrap_or(response_code::NONE),
         message,
         raw_body: String::from_utf8_lossy(&body[..body.len().min(MAX_ERROR_BODY_BYTES)])
             .into_owned(),
     })
 }
 
+/// Whether a response succeeded: a 2xx whose `Code`, if it has one, is a
+/// success or none.
+fn is_success(status: u16, code: Option<i64>) -> bool {
+    (200..300).contains(&status)
+        && matches!(
+            code,
+            None | Some(
+                response_code::NONE | response_code::SUCCESS | response_code::MULTI_SUCCESS
+            )
+        )
+}
+
+/// The challenge a 9001 response's `Details` describe. A field they lack
+/// reads as empty.
+fn hv_challenge(details: &serde_json::Value) -> HvChallenge {
+    let text = |key: &str| {
+        details
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    HvChallenge {
+        token: text("HumanVerificationToken"),
+        methods: details
+            .get("HumanVerificationMethods")
+            .and_then(serde_json::Value::as_array)
+            .map(|methods| {
+                methods
+                    .iter()
+                    .filter_map(|method| method.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        web_url: text("WebUrl"),
+    }
+}
+
 #[async_trait]
 impl Doer for HttpClient {
-    async fn do_raw(&self, req: Request) -> Result<Response> {
-        let mut work = req;
-        let prepared = self.prepare_request(&mut work)?;
-        // Tokens renewed meanwhile by another request or process may have
-        // expired too, so reusing them leaves one more refresh; a pair Proton
-        // has just issued is the last try.
-        let mut refreshes_left = 2u8;
+    async fn do_raw(&self, mut request: Request) -> Result<Response> {
+        // The request is sent again after renewing the tokens on a 401, up to
+        // REFRESH_ATTEMPTS times; after one wait on a 429; and after one
+        // solved human verification.
+        let prepared = self.prepare_request(&mut request)?;
+        let mut refreshes_left = REFRESH_ATTEMPTS;
         let mut rate_limited = false;
         let mut hv_tried = false;
 
         loop {
             let sent_auth = self.auth.read().await.clone();
-            let resp = Self::execute_once(&self.client, &work, &prepared, &sent_auth).await?;
+            let resp = Self::execute_once(&self.client, &request, &prepared, &sent_auth).await?;
             match detect(resp.status, &resp.body) {
                 Detected::Ok => return Ok(resp),
                 Detected::Api(e)
-                    if e.http_status == 401 && !work.skip_refresh && refreshes_left > 0 =>
+                    if e.is_unauthorized() && !request.skip_refresh && refreshes_left > 0 =>
                 {
                     tracing::debug!(target: "ruston_core::http", "401 — refreshing access token and retrying");
                     refreshes_left = match self.refresh_tokens(&sent_auth).await? {
                         Refresh::Rotated => 0,
                         Refresh::Reused => refreshes_left - 1,
                     };
-                    continue;
                 }
-                Detected::Api(e) if e.http_status == 401 => return Err(Error::Unauthorized),
-                Detected::Api(e) if e.http_status == 429 && !rate_limited => {
+                Detected::Api(e) if e.is_unauthorized() => return Err(Error::Unauthorized),
+                Detected::Api(e) if e.is_rate_limited() && !rate_limited => {
                     let wait = resp.retry_after.unwrap_or(0);
                     tracing::debug!(target: "ruston_core::http", wait_s = wait, "429 rate-limited — backing off then retrying");
                     if wait > 0 {
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                     }
                     rate_limited = true;
-                    continue;
                 }
-                Detected::Hv(chal) if self.hv.is_some() && !hv_tried => {
+                Detected::Hv(chal) => {
+                    let Some(resolver) = self.hv.as_ref().filter(|_| !hv_tried) else {
+                        return Err(Error::HumanVerification(chal));
+                    };
                     tracing::info!(target: "ruston_core::auth", methods = ?chal.methods, "9001 human verification required — invoking resolver");
-                    let resolver = self.hv.as_ref().unwrap().clone();
                     let (tok, ttype) = resolver(chal).await?;
                     tracing::info!(target: "ruston_core::auth", token_type = %ttype, "human verification token obtained — retrying");
-                    work.hv = Some((tok, ttype));
+                    request.hv = Some((tok, ttype));
                     hv_tried = true;
-                    continue;
                 }
-                Detected::Hv(chal) => return Err(Error::HumanVerification(chal)),
                 Detected::Api(e) => return Err(Error::Api(e)),
             }
         }
@@ -999,6 +1015,37 @@ mod tests {
         };
         assert_eq!(error.raw_body.len(), MAX_ERROR_BODY_BYTES);
         assert_eq!(error.message, "request failed");
+    }
+
+    #[test]
+    fn only_a_2xx_succeeds_and_only_a_detailed_challenge_asks_for_verification() {
+        // A success code does not make an error status a success.
+        for code in [1000, 1001, 0] {
+            let body = format!(r#"{{"Code": {code}}}"#);
+            let Detected::Api(error) = detect(500, body.as_bytes()) else {
+                panic!("a 500 with Code {code} succeeded");
+            };
+            assert_eq!((error.http_status, error.code), (500, code));
+        }
+        // A code that is not a number counts as no code.
+        assert!(matches!(detect(200, br#"{"Code": "1000"}"#), Detected::Ok));
+        // A challenge without its details is an ordinary error.
+        let Detected::Api(error) = detect(
+            422,
+            br#"{"Code": 9001, "Error": "human verification required"}"#,
+        ) else {
+            panic!("a challenge without details asked for verification");
+        };
+        assert_eq!(error.code, 9001);
+        // Details it lacks read as empty.
+        let Detected::Hv(challenge) = detect(422, br#"{"Code": 9001, "Details": {}}"#) else {
+            panic!("expected a challenge");
+        };
+        assert_eq!(
+            (challenge.token.as_str(), challenge.web_url.as_str()),
+            ("", "")
+        );
+        assert!(challenge.methods.is_empty());
     }
 
     #[tokio::test]
@@ -1635,13 +1682,17 @@ mod tests {
     async fn client_behind_its_saved_session(
         server: &MockServer,
     ) -> (HttpClient, Paths, Arc<dyn SecretStore>, std::path::PathBuf) {
+        // Tests run in parallel and the clock can read the same for two of
+        // them, so a counter keeps each directory to itself.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let base = std::env::temp_dir().join(format!(
-            "ruston-adopted-refresh-{}-{unique}",
-            std::process::id()
+            "ruston-adopted-refresh-{}-{unique}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let paths = Paths::with_base(&base);
         let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
@@ -1915,15 +1966,7 @@ mod tests {
         // First (no HV header) → 9001 challenge.
         Mock::given(method("GET"))
             .and(path("/x"))
-            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
-                "Code": 9001,
-                "Error": "human verification required",
-                "Details": {
-                    "HumanVerificationToken": "chal",
-                    "HumanVerificationMethods": ["captcha"],
-                    "WebUrl": "https://verify.proton.me/?methods=captcha&token=chal"
-                }
-            })))
+            .respond_with(human_verification_required())
             .mount(&server)
             .await;
 
@@ -1943,5 +1986,61 @@ mod tests {
         assert_eq!(v.value, 77);
         // resolver was invoked with the challenge token from Details.
         assert_eq!(seen.read().await.as_slice(), &["chal".to_string()]);
+    }
+
+    /// Proton's 9001 answer, asking to solve the challenge `chal`.
+    fn human_verification_required() -> ResponseTemplate {
+        ResponseTemplate::new(422).set_body_json(serde_json::json!({
+            "Code": 9001,
+            "Error": "human verification required",
+            "Details": {
+                "HumanVerificationToken": "chal",
+                "HumanVerificationMethods": ["captcha"],
+                "WebUrl": "https://verify.proton.me/?methods=captcha&token=chal"
+            }
+        }))
+    }
+
+    #[tokio::test]
+    async fn human_verification_with_no_resolver_is_left_to_the_caller() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(human_verification_required())
+            .mount(&server)
+            .await;
+
+        let result = client(&server.uri()).do_raw(Request::get("/x")).await;
+        assert!(matches!(result, Err(Error::HumanVerification(ref chal)) if chal.token == "chal"));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_human_verification_is_left_to_the_caller() {
+        let server = MockServer::start().await;
+        // Even the request carrying the solved challenge is challenged again.
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(human_verification_required())
+            .mount(&server)
+            .await;
+        let mut c = client(&server.uri());
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = asked.clone();
+        c.set_hv_resolver(Arc::new(move |chal: HvChallenge| {
+            let first = counter.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                if first {
+                    Ok((format!("{}:resp", chal.token), "captcha".to_string()))
+                } else {
+                    Err(Error::Other("asked to verify twice".into()))
+                }
+            })
+        }));
+
+        let result = c.do_raw(Request::get("/x")).await;
+        assert!(matches!(result, Err(Error::HumanVerification(_))));
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 }

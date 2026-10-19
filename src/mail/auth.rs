@@ -1,5 +1,8 @@
+//! What a desktop sign-in sends, and the ways it can fail.
+
 use std::fmt;
 
+use ruston_core::ApiError;
 use secrecy::SecretString;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,7 +15,9 @@ pub enum AuthError {
     InvalidTotp,
     InvalidMailboxPassword,
     Connection,
+    TimedOut,
     HumanVerificationRequired,
+    HumanVerificationUnsupported,
     SecurityKeyUnsupported,
     SessionUnavailable,
     SessionAddressMismatch,
@@ -21,6 +26,18 @@ pub enum AuthError {
     Service { http_status: u16, code: i64 },
     AuthenticationUnavailable,
     DemoSignInUnavailable,
+}
+
+impl AuthError {
+    /// Whether trying again later may succeed with nothing changed in Ruston:
+    /// the network or Proton came back, or the password storage was unlocked.
+    pub fn may_pass(self) -> bool {
+        match self {
+            Self::Connection | Self::TimedOut | Self::SessionUnavailable => true,
+            Self::Service { http_status, .. } => ApiError::status_may_pass(http_status),
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for AuthError {
@@ -34,8 +51,14 @@ impl fmt::Display for AuthError {
             Self::InvalidTotp => "The authentication code is invalid.",
             Self::InvalidMailboxPassword => "The mailbox password is incorrect.",
             Self::Connection => "Ruston Mail could not connect to Proton.",
+            Self::TimedOut => {
+                "Signing in to Proton took too long. Check your connection and try again."
+            }
             Self::HumanVerificationRequired => {
-                "Proton requires human verification. Ruston Mail does not support this flow yet."
+                "Proton asked to check that you are human. Sign in again to complete the check."
+            }
+            Self::HumanVerificationUnsupported => {
+                "Proton asked for a kind of human verification that Ruston Mail does not support yet."
             }
             Self::SecurityKeyUnsupported => {
                 "This account requires FIDO2/WebAuthn, which Ruston Mail does not support yet."
@@ -116,7 +139,11 @@ mod tests {
         );
         assert_eq!(
             AuthError::HumanVerificationRequired.to_string(),
-            "Proton requires human verification. Ruston Mail does not support this flow yet."
+            "Proton asked to check that you are human. Sign in again to complete the check."
+        );
+        assert_eq!(
+            AuthError::HumanVerificationUnsupported.to_string(),
+            "Proton asked for a kind of human verification that Ruston Mail does not support yet."
         );
     }
 }

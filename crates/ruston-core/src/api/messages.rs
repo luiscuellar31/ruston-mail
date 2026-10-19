@@ -34,6 +34,17 @@ pub struct ListQuery {
 }
 
 impl ListQuery {
+    /// One page of what is labelled `label_id`, its messages or its
+    /// conversations.
+    pub fn folder_page(label_id: String, page: u32, page_size: u32) -> Self {
+        Self {
+            label_id: Some(label_id),
+            page: Some(page),
+            page_size: Some(page_size),
+            ..Self::default()
+        }
+    }
+
     /// Apply to a request. `recipients=true` renames `To` → `Recipients`
     /// (used by the conversations endpoint).
     pub fn apply(&self, mut req: Request, recipients: bool) -> Request {
@@ -95,6 +106,12 @@ struct DraftResp {
     message: Message,
 }
 
+/// Whether a page of `listed` items is a listing's last: Proton returns a
+/// short page only at the end.
+pub(crate) fn is_last_page(listed: usize, page_size: u32) -> bool {
+    (listed as u32) < page_size
+}
+
 /// List/search messages, returning the total count and the matching metadata.
 pub async fn list_messages<D: Doer>(d: &D, q: &ListQuery) -> Result<(u32, Vec<MessageMetadata>)> {
     let req = q.apply(Request::get("/mail/v4/messages"), false);
@@ -136,10 +153,10 @@ pub async fn send_message<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> 
 
 async fn label_op<D: Doer>(d: &D, op: &str, label_id: &str, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "LabelID": label_id, "IDs": ids });
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put(format!("/mail/v4/messages/{op}")).json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 /// Add a label (or move to a folder) for the given messages.
@@ -153,10 +170,10 @@ pub async fn unlabel<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<(
 
 async fn ids_op<D: Doer>(d: &D, op: &str, ids: &[String]) -> Result<()> {
     let body = serde_json::json!({ "IDs": ids });
-    let _: IgnoredAny = d
+    let each: super::EachResponse = d
         .decode(Request::put(format!("/mail/v4/messages/{op}")).json(body))
         .await?;
-    Ok(())
+    each.into_result()
 }
 
 #[derive(serde::Deserialize)]

@@ -117,16 +117,22 @@ async fn live_send_read_trash_roundtrip() {
             })
             .await?;
 
-        // Give the backend a moment, then find it via search.
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        let hits = client
-            .search_messages(&ruston_core::SearchOpts {
-                keyword: Some(token.clone()),
-                folder: Some("all".into()),
-                limit: Some(5),
-                ..Default::default()
-            })
-            .await?;
+        // The backend finds a message shortly after it is sent: search until
+        // it does, or until a deadline.
+        let search = ruston_core::SearchOpts {
+            keyword: Some(token.clone()),
+            folder: Some("all".into()),
+            limit: Some(5),
+            ..Default::default()
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let hits = loop {
+            let hits = client.search_messages(&search).await?;
+            if !hits.is_empty() || tokio::time::Instant::now() >= deadline {
+                break hits;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        };
         let body = match hits.first() {
             Some(hit) => Some(client.read_message(&hit.id).await?.body),
             None => None,

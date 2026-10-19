@@ -7,6 +7,8 @@ use crate::settings::Appearance;
 const CARD_WIDTH: f32 = 480.0;
 const CARD_PADDING: i8 = 36;
 const LOGO_SIZE: f32 = 44.0;
+/// The heading of each sign-in step.
+const HEADING_SIZE: f32 = 28.0;
 
 pub(super) fn show(
     root: &mut egui::Ui,
@@ -34,7 +36,14 @@ pub(super) fn show(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(theme::titlebar_inset(ui.ctx()) + 12.0);
-                    header(ui, app.settings().appearance, messages);
+                    // The toggle offers the other scheme from the one on
+                    // screen, which is the system's while following it.
+                    let showing = if ui.visuals().dark_mode {
+                        Appearance::Dark
+                    } else {
+                        Appearance::Light
+                    };
+                    header(ui, showing, messages);
                     // The invisible sizing pass disables interaction and measures whichever
                     // authentication step is currently visible before placing the group.
                     let mut measure = ui.new_child(
@@ -124,26 +133,21 @@ fn theme_toggle(
             Appearance::Dark,
         ),
     };
-    let response = icon_button(ui, icon, label, true);
+    let response = icon_button(ui, icon, label);
     if response.clicked() {
         messages.push(Message::SetAppearance(next));
     }
     response
 }
 
-fn icon_button(
-    ui: &mut egui::Ui,
-    icon: egui::ImageSource<'static>,
-    label: &str,
-    enabled: bool,
-) -> egui::Response {
+/// A button that shows an icon and is announced by `label`; it is disabled
+/// inside a disabled `ui`.
+fn icon_button(ui: &mut egui::Ui, icon: egui::ImageSource<'static>, label: &str) -> egui::Response {
     let image = egui::Image::new(icon)
         .fit_to_exact_size(egui::Vec2::splat(16.0))
         .tint(theme::colors(ui).muted);
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::image(image).min_size(theme::ICON_BUTTON_MIN_SIZE),
-    );
+    let enabled = ui.is_enabled();
+    let response = ui.add(egui::Button::image(image).min_size(theme::ICON_BUTTON_MIN_SIZE));
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     response.on_hover_text(label)
 }
@@ -185,7 +189,7 @@ fn sign_in(
         _ => (SignInStep::Credentials, false),
     };
 
-    ui.heading(egui::RichText::new("Sign in").size(28.0).strong());
+    ui.heading(egui::RichText::new("Sign in").size(HEADING_SIZE).strong());
     ui.label(
         egui::RichText::new("Continue to Ruston Mail with your Proton account.")
             .color(theme::colors(ui).muted),
@@ -260,6 +264,11 @@ fn sign_in(
     }
 
     error(ui, app);
+    parked_draft(ui, app);
+    // The saved session is still there, and may open now.
+    if app.can_retry_saved_session() && ui.button("Try again").clicked() {
+        messages.push(Message::RetrySavedSession);
+    }
     ui.add_space(12.0);
     let submit = if busy {
         "Signing in…"
@@ -273,13 +282,20 @@ fn sign_in(
     let submit_clicked = ui
         .scope(|ui| {
             theme::primary_visuals(ui);
-            ui.add_enabled(
-                !busy,
-                egui::Button::new((egui::Atom::grow(), submit, egui::Atom::grow()))
-                    .min_size(egui::vec2(ui.available_width(), 44.0))
-                    .stroke(egui::Stroke::NONE),
-            )
-            .clicked()
+            let button = egui::Button::new((egui::Atom::grow(), submit, egui::Atom::grow()))
+                .min_size(egui::vec2(ui.available_width(), 44.0))
+                .stroke(egui::Stroke::NONE);
+            if busy {
+                // Readable while the sign-in runs, yet it takes no clicks
+                // and screen readers still hear it as unavailable.
+                theme::busy_visuals(ui);
+                ui.add(button.sense(egui::Sense::hover())).widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, false, submit)
+                });
+                false
+            } else {
+                ui.add(button).clicked()
+            }
         })
         .inner;
     if submit_clicked {
@@ -302,7 +318,7 @@ fn sign_in(
 fn verification(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
     ui.heading(
         egui::RichText::new("Verify you are human")
-            .size(28.0)
+            .size(HEADING_SIZE)
             .strong(),
     );
     ui.add_space(12.0);
@@ -346,14 +362,16 @@ fn edit_field(
     busy: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    ui.label(egui::RichText::new(label).strong());
+    let name = ui.label(egui::RichText::new(label).strong());
     let mut unseen = String::new();
-    let response = ui.add_enabled(
-        !busy,
-        theme::text_field(ui, measured(ui, value, &mut unseen))
-            .hint_text(hint)
-            .desired_width(f32::INFINITY),
-    );
+    let response = ui
+        .add_enabled(
+            !busy,
+            theme::text_field(ui, measured(ui, value, &mut unseen))
+                .hint_text(hint)
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(name.id);
     keep_no_history(ui.ctx(), response.id);
     if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !busy {
         messages.push(Message::Submit);
@@ -371,20 +389,22 @@ fn edit_secret_field(
     busy: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    ui.label(egui::RichText::new(label).strong());
+    let name = ui.label(egui::RichText::new(label).strong());
     let width =
         (ui.available_width() - theme::ICON_BUTTON_MIN_SIZE.x - ui.spacing().item_spacing.x)
             .max(1.0);
     let mut unseen = String::new();
     let response = ui
         .horizontal(|ui| {
-            let response = ui.add_enabled(
-                !busy,
-                theme::text_field(ui, measured(ui, value, &mut unseen))
-                    .hint_text(hint)
-                    .password(!*show_password)
-                    .desired_width(width),
-            );
+            let response = ui
+                .add_enabled(
+                    !busy,
+                    theme::text_field(ui, measured(ui, value, &mut unseen))
+                        .hint_text(hint)
+                        .password(!*show_password)
+                        .desired_width(width),
+                )
+                .labelled_by(name.id);
             keep_no_history(ui.ctx(), response.id);
             if response.lost_focus()
                 && ui.input(|input| input.key_pressed(egui::Key::Enter))
@@ -452,7 +472,9 @@ fn password_toggle(ui: &mut egui::Ui, show_password: &mut bool, busy: bool) -> e
             "Show password",
         )
     };
-    let response = icon_button(ui, icon, label, !busy);
+    let response = ui
+        .add_enabled_ui(!busy, |ui| icon_button(ui, icon, label))
+        .inner;
     if response.clicked() {
         *show_password = !*show_password;
     }
@@ -491,7 +513,11 @@ fn brand(ui: &mut egui::Ui) {
                 .fit_to_exact_size(egui::Vec2::splat(LOGO_SIZE))
                 .alt_text("Ruston Mail logo"),
         );
-        ui.label(egui::RichText::new("Ruston Mail").size(23.0).strong());
+        ui.label(
+            egui::RichText::new("Ruston Mail")
+                .size(theme::APP_NAME_SIZE)
+                .strong(),
+        );
     });
 }
 
@@ -531,9 +557,269 @@ fn error(ui: &mut egui::Ui, app: &App) {
     }
 }
 
+/// Says that the message being written when Proton ended the session waits
+/// for its own account, and that another account's sign-in drops it.
+fn parked_draft(ui: &mut egui::Ui, app: &App) {
+    if !app.has_parked_draft() {
+        return;
+    }
+    let whom = app.parked_draft_address().map_or_else(
+        || "to the same account".to_owned(),
+        |address| format!("as {address}"),
+    );
+    ui.label(format!(
+        "Your unsent message comes back when you sign in again {whom}; \
+         signing in to another account discards it."
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sign_in_screen_says_who_gets_a_kept_draft_back() {
+        let mut app = App::signed_in_as("user-1", "alex@proton.me");
+        let _ = app.update(Message::OpenCompose);
+        let _ = app.update(Message::ComposeChanged(
+            crate::app::ComposeField::Body,
+            "Keep this draft".into(),
+        ));
+        let _ = app.update(Message::ConversationsLoaded(
+            1,
+            Err(crate::mail::MailboxError::SessionExpired),
+        ));
+        let context = egui::Context::default();
+        theme::install(&context);
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            sign_in(ui, &mut app, &mut false, &mut Vec::new());
+        });
+        let shown: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+
+        assert!(
+            shown
+                .iter()
+                .any(|text| text.contains("sign in again as alex@proton.me")),
+            "{shown:?}"
+        );
+    }
+
+    #[test]
+    fn the_sign_in_screen_offers_to_try_a_saved_session_again() {
+        let (mut app, _) = App::boot(false, crate::settings::Settings::default());
+        let _ = app.update(Message::SessionChecked(crate::mail::ResumeOutcome::Failed(
+            crate::mail::AuthError::Connection,
+        )));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut messages = Vec::new();
+            let output = context.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| sign_in(ui, app, &mut false, &mut messages),
+            );
+            let button = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "Try again" => {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()).center())
+                    }
+                    _ => None,
+                });
+            output.drop_without_applying_deltas();
+            (button, messages)
+        };
+
+        let (button, _) = frame(&mut app, Vec::new());
+        let center = button.expect("the saved session can be tried again");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(center)]);
+        let (_, messages) = frame(&mut app, vec![press(true), press(false)]);
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message, Message::RetrySavedSession))
+        );
+    }
+
+    #[test]
+    fn screen_readers_hear_each_sign_in_field_by_its_name() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let mut names = Vec::new();
+        for state in [
+            AuthState::SignedOut,
+            AuthState::NeedsTotp,
+            AuthState::NeedsMailboxPassword,
+        ] {
+            let mut app = App::signed_out();
+            app.set_auth_state(state);
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                sign_in(ui, &mut app, &mut false, &mut Vec::new());
+            });
+            names.extend(theme::text_field_names(&output));
+            output.drop_without_applying_deltas();
+        }
+
+        for name in [
+            "Username or email",
+            "Password",
+            "Two-factor code",
+            "Mailbox password",
+        ] {
+            assert!(
+                names.iter().any(|heard| heard == name),
+                "{name} in {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signing_in_is_drawn_at_full_strength_and_takes_no_clicks() {
+        fn walk(
+            shape: &egui::epaint::Shape,
+            texts: &mut Vec<egui::epaint::TextShape>,
+            rects: &mut Vec<egui::epaint::RectShape>,
+        ) {
+            match shape {
+                egui::epaint::Shape::Text(text) => texts.push(text.clone()),
+                egui::epaint::Shape::Rect(rect) => rects.push(rect.clone()),
+                egui::epaint::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, texts, rects);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        struct Frame {
+            label: egui::epaint::TextShape,
+            fills: Vec<egui::epaint::RectShape>,
+            unavailable: Option<bool>,
+            messages: Vec<Message>,
+        }
+
+        let mut app = App::signed_out();
+        app.set_auth_state(AuthState::SigningIn(SignInStep::Credentials));
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut messages = Vec::new();
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| sign_in(ui, app, &mut false, &mut messages),
+            );
+            let (mut texts, mut fills) = (Vec::new(), Vec::new());
+            for clipped in &output.shapes {
+                walk(&clipped.shape, &mut texts, &mut fills);
+            }
+            let unavailable = output
+                .platform_output
+                .accesskit_update
+                .iter()
+                .flat_map(|update| &update.nodes)
+                .find(|(_, node)| node.label() == Some("Signing in…"))
+                .map(|(_, node)| node.is_disabled());
+            output.drop_without_applying_deltas();
+            let label = texts
+                .into_iter()
+                .find(|text| text.galley.text() == "Signing in…")
+                .expect("the busy button");
+            Frame {
+                label,
+                fills,
+                unavailable,
+                messages,
+            }
+        };
+        let full_strength = |frame: &Frame| {
+            let label = &frame.label;
+            let bounds = egui::Rect::from_min_size(label.pos, label.galley.size());
+            let drawn: Vec<egui::Color32> = label
+                .galley
+                .rows
+                .iter()
+                .flat_map(|placed| placed.row.visuals.mesh.vertices.iter())
+                .map(|vertex| {
+                    if vertex.color == egui::Color32::PLACEHOLDER {
+                        label.fallback_color
+                    } else {
+                        vertex.color
+                    }
+                })
+                .collect();
+            assert!(
+                !drawn.is_empty() && drawn.iter().all(|color| *color == theme::ON_ACCENT),
+                "the label is faded: {:?}",
+                drawn.first()
+            );
+            assert!(
+                frame
+                    .fills
+                    .iter()
+                    .any(|rect| rect.rect.contains_rect(bounds) && rect.fill == theme::ACCENT),
+                "no accent at rest behind the label"
+            );
+            bounds.center()
+        };
+
+        let shown = frame(&mut app, Vec::new());
+        let center = full_strength(&shown);
+        assert_eq!(
+            shown.unavailable,
+            Some(true),
+            "screen readers hear it as usable"
+        );
+
+        let press = |pressed| egui::Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let pressed = frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(center), press(true)],
+        );
+        // Under the pointer and pressed, it keeps its look: nothing to click.
+        full_strength(&pressed);
+        let released = frame(&mut app, vec![press(false)]);
+        assert!(
+            !released
+                .messages
+                .iter()
+                .any(|message| matches!(message, Message::Submit)),
+            "a sign-in under way was submitted again"
+        );
+    }
 
     #[test]
     fn version_uses_login_corner_without_reserving_a_footer() {
@@ -572,13 +858,15 @@ mod tests {
         }
     }
 
-    /// Lays out a physical window at the requested zoom and returns the
-    /// card-and-footer group's rectangle and the window in egui points.
-    fn laid_out(
-        physical_size: egui::Vec2,
-        appearance: Appearance,
-        zoom: f32,
-    ) -> (egui::Rect, egui::Rect) {
+    /// Where the card-and-footer group of the login screen lands, and the
+    /// window it was laid out in, in egui points.
+    struct Layout {
+        group: egui::Rect,
+        window: egui::Rect,
+    }
+
+    /// Lays out a physical window at the requested zoom.
+    fn laid_out(physical_size: egui::Vec2, appearance: Appearance, zoom: f32) -> Layout {
         let mut app = App::signed_out();
         let _ = app.update(Message::SetAppearance(appearance));
         let _ = app.update(Message::SetZoom(zoom));
@@ -623,54 +911,65 @@ mod tests {
             .drop_without_applying_deltas();
         assert_eq!(context.zoom_factor(), zoom);
 
-        (card, window)
+        Layout {
+            group: card,
+            window,
+        }
     }
 
     #[test]
     fn the_login_group_is_centered_vertically_and_scrolls_when_space_is_short() {
-        let (group, window) = laid_out(egui::vec2(1200.0, 800.0), Appearance::Dark, 1.0);
-        let (taller, tall_window) = laid_out(egui::vec2(1200.0, 1400.0), Appearance::Dark, 1.0);
-        let (small, minimum) = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 1.0);
-        let (zoomed, zoomed_window) = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 2.0);
-        let (light, _) = laid_out(egui::vec2(820.0, 480.0), Appearance::Light, 1.0);
+        let regular = laid_out(egui::vec2(1200.0, 800.0), Appearance::Dark, 1.0);
+        let taller = laid_out(egui::vec2(1200.0, 1400.0), Appearance::Dark, 1.0);
+        let small = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 1.0);
+        let zoomed = laid_out(egui::vec2(820.0, 480.0), Appearance::Dark, 2.0);
+        let light = laid_out(egui::vec2(820.0, 480.0), Appearance::Light, 1.0);
 
-        assert!(group.height() > 0.0, "the login group was never laid out");
         assert!(
-            (group.height() - taller.height()).abs() <= 1.0,
-            "the login group grew with the window: {} against {}",
-            group.height(),
-            taller.height()
+            regular.group.height() > 0.0,
+            "the login group was never laid out"
         );
-        for (group, window) in [(group, window), (taller, tall_window)] {
+        assert!(
+            (regular.group.height() - taller.group.height()).abs() <= 1.0,
+            "the login group grew with the window: {} against {}",
+            regular.group.height(),
+            taller.group.height()
+        );
+        for (case, Layout { group, window }) in [("regular", &regular), ("taller", &taller)] {
             assert!(
                 (group.center().y - window.center().y).abs() <= 12.0,
-                "login group {group:?} is not centered vertically in {window:?}"
+                "{case}: login group {group:?} is not centered vertically in {window:?}"
             );
         }
-        for (group, window) in [
-            (group, window),
-            (small, minimum),
-            (zoomed, zoomed_window),
-            (light, minimum),
+        for (case, Layout { group, window }) in [
+            ("regular", &regular),
+            ("small", &small),
+            ("zoomed", &zoomed),
+            ("light", &light),
         ] {
             assert!(
                 group.left() >= window.left(),
-                "login group overflows left: {group:?}"
+                "{case}: login group overflows left: {group:?}"
             );
             assert!(
                 group.right() <= window.right(),
-                "login group overflows right: {group:?}"
+                "{case}: login group overflows right: {group:?}"
             );
             assert!(
                 (group.center().x - window.center().x).abs() <= 12.0,
-                "login group is not horizontally centered: {group:?} in {window:?}"
+                "{case}: login group is not horizontally centered: {group:?} in {window:?}"
             );
         }
-        for (group, window) in [(small, minimum), (zoomed, zoomed_window), (light, minimum)] {
-            assert!(group.top() >= window.top());
+        for (case, Layout { group, window }) in
+            [("small", &small), ("zoomed", &zoomed), ("light", &light)]
+        {
+            assert!(
+                group.top() >= window.top(),
+                "{case}: login group overflows the top"
+            );
             assert!(
                 group.bottom() > window.bottom(),
-                "the login group should scroll when available height is short"
+                "{case}: the login group should scroll when available height is short"
             );
         }
     }
@@ -823,6 +1122,27 @@ mod tests {
             );
             assert!(button.right() <= available.right());
             assert!(available.right() - button.right() <= spacing);
+        }
+    }
+
+    #[test]
+    fn a_busy_password_toggle_is_announced_as_unavailable() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        for busy in [false, true] {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                password_toggle(ui, &mut false, busy);
+            });
+            let unavailable = output
+                .platform_output
+                .accesskit_update
+                .iter()
+                .flat_map(|update| &update.nodes)
+                .find(|(_, node)| node.label() == Some("Show password"))
+                .map(|(_, node)| node.is_disabled());
+            output.drop_without_applying_deltas();
+            assert_eq!(unavailable, Some(busy), "busy: {busy}");
         }
     }
 

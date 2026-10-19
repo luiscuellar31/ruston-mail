@@ -1,12 +1,16 @@
 //! Authentication commands: login, logout, whoami.
 
 use crate::cli::{ClientPreset, Ctx};
-use crate::commands::{prompt_line, resume};
+use crate::commands::prompt::prompt_line;
+use crate::commands::resume;
 use crate::render;
 use crate::terminal;
-use ruston_core::{Client, Error, LoginOptions, Result, TotpPrompt};
+use ruston_core::{
+    Client, Error, LoginOptions, LoginPrompts, MailboxPasswordPrompt, Result, TotpPrompt,
+};
 use secrecy::SecretString;
 use serde_json::json;
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 fn env_nonempty(key: &str) -> Option<String> {
@@ -48,7 +52,12 @@ pub async fn login(ctx: &Ctx) -> Result<()> {
         )),
     };
 
-    let client = Client::login_with_totp_prompt(opts, totp_prompt()).await?;
+    let prompts = LoginPrompts {
+        totp: Some(totp_prompt()),
+        // Without a terminal, core's error asks for --mailbox-password.
+        mailbox_password: std::io::stdin().is_terminal().then(mailbox_password_prompt),
+    };
+    let client = Client::login_with_prompts(opts, prompts).await?;
     let email = client.primary_email().unwrap_or("(unknown)");
     if ctx.json {
         render::json_out(&json!({ "status": "ok", "email": email }));
@@ -82,6 +91,20 @@ fn totp_prompt() -> TotpPrompt {
                     .await
                     .map_err(|e| Error::Other(format!("2FA prompt: {e}")))??;
             Ok(SecretString::from(code))
+        })
+    })
+}
+
+/// Ask for a separate mailbox password only when the account has one, and
+/// hidden, so it never has to go on the command line.
+fn mailbox_password_prompt() -> MailboxPasswordPrompt {
+    Arc::new(|| {
+        Box::pin(async {
+            let password =
+                tokio::task::spawn_blocking(|| rpassword::prompt_password("Mailbox password: "))
+                    .await
+                    .map_err(|e| Error::Other(format!("mailbox password prompt: {e}")))??;
+            Ok(SecretString::from(password))
         })
     })
 }

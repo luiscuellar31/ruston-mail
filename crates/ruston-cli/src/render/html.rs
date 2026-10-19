@@ -8,17 +8,8 @@ use html5ever::tokenizer::states::RawKind;
 use html5ever::tokenizer::{
     BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
+use ruston_core::html::{BLOCK_ELEMENTS, HIDDEN_ELEMENTS, VOID_ELEMENTS};
 
-const HIDDEN: &[&str] = &[
-    "head", "iframe", "noscript", "script", "style", "svg", "template", "textarea", "title",
-];
-const BLOCKS: &[&str] = &[
-    "address", "article", "aside", "div", "footer", "header", "main", "p", "section", "table", "tr",
-];
-const VOID: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
-    "wbr",
-];
 const MAX_RENDER_DEPTH: usize = 8;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const TRUNCATION_NOTICE: &str =
@@ -148,7 +139,7 @@ impl Builder {
         match tag.kind {
             TagKind::StartTag => {
                 self.start(name, tag);
-                if tag.self_closing && !VOID.contains(&name) {
+                if tag.self_closing && !VOID_ELEMENTS.contains(&name) {
                     self.end(name);
                 }
                 raw_content(name)
@@ -164,7 +155,7 @@ impl Builder {
         if self.hidden.is_some() {
             return;
         }
-        if HIDDEN.contains(&name) {
+        if HIDDEN_ELEMENTS.contains(&name) {
             self.hidden = Some(name.to_owned());
             return;
         }
@@ -219,7 +210,7 @@ impl Builder {
                 self.link = link_target(tag);
             }
             "td" | "th" => self.pending_space = !self.spans.is_empty(),
-            _ if BLOCKS.contains(&name) => self.flush(),
+            _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
     }
@@ -259,7 +250,7 @@ impl Builder {
             "code" | "kbd" | "samp" => self.code = self.code.saturating_sub(1),
             "a" => self.link = None,
             "br" => self.line_break(),
-            _ if BLOCKS.contains(&name) => self.flush(),
+            _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
     }
@@ -600,6 +591,14 @@ mod tests {
                 .collect();
             assert_eq!(visible, expected);
         }
+    }
+
+    #[test]
+    fn blocks_start_where_the_desktop_reader_starts_them() {
+        assert_eq!(
+            to_markdown("<dl><dt>Term</dt><dd>One</dd><dd>Two</dd></dl><nav>Menu</nav>After"),
+            "Term\n\nOne\n\nTwo\n\nMenu\n\nAfter"
+        );
     }
 
     #[test]

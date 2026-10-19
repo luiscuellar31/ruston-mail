@@ -1,15 +1,23 @@
-//! SRP login, 2FA, refresh, and logout.
+//! SRP login, the second factor, and logout. Renewing tokens is the
+//! transport's.
 
 pub mod types;
 
 use crate::error::{Error, Result};
+use crate::model::enums::two_factor;
 use crate::session::Tokens;
 use crate::transport::{Doer, HttpClient, Request};
 use futures::future::BoxFuture;
 use proton_srp::{RPGPVerifier, SRPAuth, SRPProofB64, SrpHashVersion};
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::IgnoredAny;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// How long a failed login waits for Proton to end the session it opened,
+/// before reporting its own error.
+const UNUSED_SESSION_REVOCATION_TIMEOUT: Duration = Duration::from_secs(10);
 use types::{AuthInfo, AuthResponse, SessionResp};
 
 /// Asks the user for a TOTP code during login.
@@ -23,7 +31,7 @@ pub type TotpPrompt = Arc<dyn Fn() -> BoxFuture<'static, Result<SecretString>> +
 pub struct LoginResult {
     /// Session tokens (UID, access, refresh) for the authenticated session.
     pub tokens: Tokens,
-    /// Password mode: `1` for single-password, `2` for separate mailbox password.
+    /// Password mode, one of [`password_mode`](crate::model::enums::password_mode).
     pub password_mode: u8,
 }
 
@@ -49,8 +57,8 @@ pub async fn login_with_prompt(
     tracing::info!(target: "ruston_core::auth", username, "login: starting SRP flow");
 
     // 1. Unauthenticated session.
-    tracing::debug!(target: "ruston_core::auth", "login step 1/4: creating unauthenticated session (POST /auth/v4/sessions)");
-    let sess: SessionResp = http
+    tracing::debug!(target: "ruston_core::auth", "login step 1/6: creating unauthenticated session (POST /auth/v4/sessions)");
+    let session: SessionResp = http
         .decode(
             Request::post("/auth/v4/sessions")
                 .json(serde_json::json!({}))
@@ -58,16 +66,16 @@ pub async fn login_with_prompt(
                 .no_refresh(),
         )
         .await?;
-    tracing::debug!(target: "ruston_core::auth", uid = %sess.uid, "login: got unauth session");
+    tracing::debug!(target: "ruston_core::auth", uid = %session.uid, "login: got unauth session");
     http.set_tokens(
-        sess.uid,
-        SecretString::from(sess.access_token),
-        SecretString::from(sess.refresh_token),
+        session.uid,
+        SecretString::from(session.access_token),
+        SecretString::from(session.refresh_token),
     )
     .await;
 
     // 2. SRP challenge.
-    tracing::debug!(target: "ruston_core::auth", "login step 2/4: fetching SRP challenge (POST /core/v4/auth/info)");
+    tracing::debug!(target: "ruston_core::auth", "login step 2/6: fetching SRP challenge (POST /core/v4/auth/info)");
     let info: AuthInfo = http
         .decode(
             Request::post("/core/v4/auth/info")
@@ -80,7 +88,7 @@ pub async fn login_with_prompt(
     // 3. Compute SRP proofs (modulus signature verified internally by RPGPVerifier).
     let version = SrpHashVersion::try_from(info.version)
         .map_err(|e| Error::Srp(format!("unsupported SRP version {}: {e}", info.version)))?;
-    tracing::debug!(target: "ruston_core::auth", "login step 3/4: verifying signed modulus + generating client proof (proton-srp)");
+    tracing::debug!(target: "ruston_core::auth", "login step 3/6: verifying signed modulus + generating client proof (proton-srp)");
     let verifier = RPGPVerifier::default();
     let srp = SRPAuth::new(
         &verifier,
@@ -96,31 +104,31 @@ pub async fn login_with_prompt(
         .generate_proofs()
         .map_err(|e| Error::Srp(format!("SRP proof failed: {e}")))?;
     tracing::debug!(target: "ruston_core::auth", "login: client proof + ephemeral generated; modulus signature verified");
-    let b64: SRPProofB64 = proof.into();
+    let proofs: SRPProofB64 = proof.into();
 
     // 4. Submit proof.
-    tracing::debug!(target: "ruston_core::auth", "login step 4/4: submitting client proof (POST /core/v4/auth)");
+    tracing::debug!(target: "ruston_core::auth", "login step 4/6: submitting client proof (POST /core/v4/auth)");
     let resp: AuthResponse = http
         .decode(
             Request::post("/core/v4/auth")
                 .json(serde_json::json!({
                     "Username": username,
-                    "ClientProof": b64.client_proof,
-                    "ClientEphemeral": b64.client_ephemeral,
+                    "ClientProof": proofs.client_proof,
+                    "ClientEphemeral": proofs.client_ephemeral,
                     "SRPSession": info.srp_session,
                 }))
                 .no_refresh(),
         )
         .await?;
 
-    // 5. Verify the server proof (MITM guard).
-    if !b64.compare_server_proof(&resp.server_proof) {
+    // 5. Verify the server proof (MITM guard), then use the authenticated
+    // session.
+    if !proofs.compare_server_proof(&resp.server_proof) {
         tracing::error!(target: "ruston_core::auth", "login: SERVER PROOF MISMATCH — aborting (possible MITM)");
         return Err(Error::Srp("server proof verification failed".into()));
     }
-    tracing::info!(target: "ruston_core::auth", uid = %resp.uid, password_mode = resp.password_mode, two_fa = resp.two_fa.enabled, "login: server proof verified; authenticated");
+    tracing::info!(target: "ruston_core::auth", uid = %resp.uid, password_mode = resp.password_mode, two_fa = resp.two_fa.enabled, "login step 5/6: server proof verified; authenticated");
 
-    // Promote to the authenticated session.
     http.set_tokens(
         resp.uid.clone(),
         SecretString::from(resp.access_token.clone()),
@@ -128,8 +136,13 @@ pub async fn login_with_prompt(
     )
     .await;
 
-    // 6. 2FA if required.
-    second_factor(http, resp.two_fa.enabled, totp, totp_prompt).await?;
+    // 6. The second factor, if the account has one.
+    tracing::debug!(target: "ruston_core::auth", "login step 6/6: second factor, if the account has one");
+    or_end_session(
+        http,
+        second_factor(http, resp.two_fa.enabled, totp, totp_prompt),
+    )
+    .await?;
     tracing::info!(target: "ruston_core::auth", "login: complete");
 
     Ok(LoginResult {
@@ -143,21 +156,21 @@ pub async fn login_with_prompt(
 }
 
 /// Submit the second factor if the account requires one. `enabled` is the 2FA
-/// bitmask: TOTP is bit 0; FIDO2/WebAuthn is bit 1.
+/// bitmask of [`two_factor`] bits.
 async fn second_factor(
     http: &HttpClient,
     enabled: u32,
     totp: Option<&str>,
     totp_prompt: Option<&TotpPrompt>,
 ) -> Result<()> {
-    if enabled & 1 == 0 && enabled & 2 != 0 {
+    if enabled & two_factor::TOTP == 0 && enabled & two_factor::SECURITY_KEY != 0 {
         return Err(Error::Other(
             "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet \
              supported — enable a TOTP authenticator app, or use an app/bridge password"
                 .into(),
         ));
     }
-    if enabled & 1 == 0 {
+    if enabled & two_factor::TOTP == 0 {
         return Ok(());
     }
     let prompted_code;
@@ -193,12 +206,60 @@ pub async fn logout(http: &HttpClient) -> Result<()> {
     Ok(())
 }
 
+/// Runs `work`, the rest of a login once Proton has accepted the password.
+/// If it fails, the session Proton opened is ended, best effort and briefly:
+/// nothing would use or save it, yet it would stay valid on the account. A
+/// login cancelled meanwhile leaves the session to expire.
+pub(crate) async fn or_end_session<T>(
+    http: &HttpClient,
+    work: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let result = work.await;
+    if result.is_err() {
+        let ended = tokio::time::timeout(UNUSED_SESSION_REVOCATION_TIMEOUT, logout(http)).await;
+        tracing::debug!(target: "ruston_core::auth", ended = matches!(ended, Ok(Ok(()))), "login failed after the password was accepted; ending its session");
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn a_login_that_fails_after_the_password_ends_its_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/core/v4/auth"))
+            .and(header("authorization", "Bearer opened-access"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let http = HttpClient::new(server.uri(), "Other");
+        http.set_tokens(
+            "opened-uid".into(),
+            SecretString::from("opened-access"),
+            SecretString::from("opened-refresh"),
+        )
+        .await;
+
+        // An account whose only second factor is a security key cannot go on.
+        let failed = or_end_session(&http, second_factor(&http, 2, None, None))
+            .await
+            .unwrap_err();
+        // The login's own error is what comes back.
+        assert!(failed.to_string().contains("FIDO2"), "{failed}");
+
+        // A login that goes on keeps its session.
+        or_end_session(&http, async { Ok(()) }).await.unwrap();
+        server.verify().await;
+    }
 
     #[tokio::test]
     async fn logout_calls_revoke() {
@@ -334,6 +395,14 @@ mod tests {
         assert!(err.to_string().contains("FIDO2"));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn second_factor_uses_totp_when_a_security_key_is_set_up_too() {
+        let server = MockServer::start().await;
+        expect_2fa(&server, "123456", 1).await;
+        let http = HttpClient::new(server.uri(), "Other");
+        second_factor(&http, 3, Some("123456"), None).await.unwrap();
     }
 
     #[tokio::test]

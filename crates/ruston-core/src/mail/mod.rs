@@ -9,6 +9,8 @@ pub mod organize;
 pub mod read;
 pub mod send;
 pub mod sync;
+#[cfg(test)]
+mod test_support;
 
 use crate::DEFAULT_BASE_URL;
 use crate::api;
@@ -16,7 +18,7 @@ use crate::auth::{self, TotpPrompt};
 use crate::cache::CacheIdentity;
 use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
-use crate::model::enums::key_flag;
+use crate::model::enums::{key_flag, password_mode};
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens, validate_profile_name};
 use crate::transport::{Doer, HttpClient};
 use secrecy::{ExposeSecret, SecretString};
@@ -95,6 +97,44 @@ pub struct LoginOptions {
     pub hv: Option<crate::transport::HvResolver>,
 }
 
+/// Asks for the separate mailbox password of a two-password account during
+/// login.
+///
+/// Called only when the account has one and none was supplied up front,
+/// after the account password and any TOTP code are accepted, so neither is
+/// asked for again. Obtain it interactively and do not persist it.
+pub type MailboxPasswordPrompt =
+    Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<SecretString>> + Send + Sync>;
+
+/// What a login may ask the person signing in for, when the account needs
+/// it and [`LoginOptions`] does not carry it.
+#[derive(Clone, Default)]
+pub struct LoginPrompts {
+    /// Asks for the TOTP code; see [`TotpPrompt`].
+    pub totp: Option<TotpPrompt>,
+    /// Asks for the mailbox password; see [`MailboxPasswordPrompt`].
+    pub mailbox_password: Option<MailboxPasswordPrompt>,
+}
+
+/// The mailbox password of an account that has a separate one: the one
+/// `given`, or else what `prompt` asks for now, kept in `asked`. Without
+/// either, the error says how to give it, in words the desktop recognizes.
+async fn mailbox_password<'a>(
+    given: Option<&'a SecretString>,
+    prompt: Option<&MailboxPasswordPrompt>,
+    asked: &'a mut Option<SecretString>,
+) -> Result<&'a SecretString> {
+    if let Some(password) = given {
+        return Ok(password);
+    }
+    let Some(prompt) = prompt else {
+        return Err(Error::Other(
+            "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password".into(),
+        ));
+    };
+    Ok(asked.insert(prompt().await?))
+}
+
 /// The Proton Mail client.
 pub struct Client {
     http: HttpClient,
@@ -135,7 +175,7 @@ impl Client {
 
     /// Interactive login: SRP + 2FA, unlock keys, persist session.
     pub async fn login(opts: LoginOptions) -> Result<Client> {
-        Self::login_inner(opts, None).await
+        Self::login_inner(opts, LoginPrompts::default()).await
     }
 
     /// Like [`Client::login`], but calls `totp_prompt` for the code when the
@@ -146,10 +186,22 @@ impl Client {
         opts: LoginOptions,
         totp_prompt: TotpPrompt,
     ) -> Result<Client> {
-        Self::login_inner(opts, Some(totp_prompt)).await
+        let prompts = LoginPrompts {
+            totp: Some(totp_prompt),
+            ..LoginPrompts::default()
+        };
+        Self::login_inner(opts, prompts).await
     }
 
-    async fn login_inner(opts: LoginOptions, totp_prompt: Option<TotpPrompt>) -> Result<Client> {
+    /// Like [`Client::login`], asking through `prompts` for what the account
+    /// needs and `opts` does not carry: a TOTP code, as
+    /// [`Client::login_with_totp_prompt`] does, and a separate mailbox
+    /// password once the account password is accepted.
+    pub async fn login_with_prompts(opts: LoginOptions, prompts: LoginPrompts) -> Result<Client> {
+        Self::login_inner(opts, prompts).await
+    }
+
+    async fn login_inner(opts: LoginOptions, prompts: LoginPrompts) -> Result<Client> {
         validate_profile_name(&opts.profile)?;
         let base_url = opts
             .base_url
@@ -173,21 +225,57 @@ impl Client {
             &opts.username,
             &opts.password,
             opts.totp.as_ref().map(ExposeSecret::expose_secret),
-            totp_prompt.as_ref(),
+            prompts.totp.as_ref(),
         )
         .await?;
+        let opened = Self::open_logged_in(
+            &http,
+            &login,
+            &opts,
+            &prompts,
+            &base_url,
+            app_version,
+            store.clone(),
+        );
+        let (keys, paths, cache_identity) = auth::or_end_session(&http, opened).await?;
 
+        Self::wire_refresh(&mut http, store.clone(), paths.clone(), &opts.profile);
+        Ok(Client {
+            http,
+            keys,
+            paths,
+            profile: opts.profile,
+            session_uid: login.tokens.uid,
+            cache_identity,
+            store,
+            sender_cache: Mutex::new(SenderKeyCache::default()),
+        })
+    }
+
+    /// The rest of a login once Proton has accepted the password: unlocks the
+    /// account's keys and saves the session.
+    async fn open_logged_in(
+        http: &HttpClient,
+        login: &auth::LoginResult,
+        opts: &LoginOptions,
+        prompts: &LoginPrompts,
+        base_url: &str,
+        app_version: String,
+        store: Arc<dyn SecretStore>,
+    ) -> Result<(KeyStore, Paths, CacheIdentity)> {
         let provider = crypto::provider();
         let (salts, (user, addresses)) =
-            tokio::try_join!(api::keys::get_key_salts(&http), account(&http))?;
-        let cache_identity = CacheIdentity::new(&base_url, &user.id)?;
+            tokio::try_join!(api::keys::get_key_salts(http), account(http))?;
+        let cache_identity = CacheIdentity::new(base_url, &user.id)?;
 
-        let mailbox_pw = if login.password_mode == 2 {
-            opts.mailbox_password.as_ref().ok_or_else(|| {
-                Error::Other(
-                    "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password".into(),
-                )
-            })?
+        let mut asked = None;
+        let mailbox_pw = if login.password_mode == password_mode::TWO_PASSWORDS {
+            mailbox_password(
+                opts.mailbox_password.as_ref(),
+                prompts.mailbox_password.as_ref(),
+                &mut asked,
+            )
+            .await?
         } else {
             &opts.password
         };
@@ -198,34 +286,40 @@ impl Client {
         let session = Session {
             uid: login.tokens.uid.clone(),
             app_version,
-            base_url: base_url.clone(),
+            base_url: base_url.to_owned(),
             password_mode: login.password_mode,
             user_agent: opts.user_agent.clone(),
             user_id: Some(user.id.clone()),
         };
         let paths = Paths::system()?;
-        session.save(&paths, &opts.profile, store.as_ref(), &login.tokens, &skp)?;
-
-        Self::wire_refresh(&mut http, store.clone(), paths.clone(), &opts.profile);
-        Ok(Client {
-            http,
-            keys,
-            paths,
-            profile: opts.profile,
-            session_uid: session.uid,
-            cache_identity,
-            store,
-            sender_cache: Mutex::new(SenderKeyCache::default()),
-        })
+        let (saved_in, profile, tokens) =
+            (paths.clone(), opts.profile.clone(), login.tokens.clone());
+        off_thread(move || session.save(&saved_in, &profile, store.as_ref(), &tokens, &skp))
+            .await?;
+        Ok((keys, paths, cache_identity))
     }
 
     /// Resume a saved session and unlock keys using the stored `skp`.
     pub async fn resume(profile: &str) -> Result<Client> {
         validate_profile_name(profile)?;
-        tracing::info!(target: "ruston_core::mail", profile, "resume: loading saved session");
         let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(profile.to_string()));
-        let paths = Paths::system()?;
-        let loaded = Session::load(&paths, profile, store.as_ref())?.ok_or(Error::Unauthorized)?;
+        Self::resume_from(profile, Paths::system()?, store).await
+    }
+
+    /// `resume`, with the session's files and secrets where the caller says.
+    async fn resume_from(
+        profile: &str,
+        paths: Paths,
+        store: Arc<dyn SecretStore>,
+    ) -> Result<Client> {
+        tracing::info!(target: "ruston_core::mail", profile, "resume: loading saved session");
+        // The credential store may wait for the person to unlock it, and the
+        // profile lock for another process.
+        let loaded = {
+            let (paths, profile, store) = (paths.clone(), profile.to_owned(), store.clone());
+            off_thread(move || Session::load(&paths, &profile, store.as_ref())).await?
+        }
+        .ok_or(Error::Unauthorized)?;
         tracing::debug!(target: "ruston_core::mail", uid = %loaded.session.uid, "resume: session found; fetching user + addresses, unlocking keys");
 
         let mut http = HttpClient::try_new(
@@ -250,9 +344,11 @@ impl Client {
         if loaded.session.user_id.as_deref() != Some(user.id.as_str()) {
             // A session saved without its account ID records it now, so its
             // cache opens offline next time. Nothing else depends on it.
-            if let Err(error) =
-                Session::record_user_id(&paths, profile, &loaded.session.uid, &user.id)
-            {
+            let (paths, profile) = (paths.clone(), profile.to_owned());
+            let (uid, user_id) = (loaded.session.uid.clone(), user.id.clone());
+            let recorded =
+                off_thread(move || Session::record_user_id(&paths, &profile, &uid, &user_id)).await;
+            if let Err(error) = recorded {
                 tracing::debug!(target: "ruston_core::mail", %error, "resume: account ID not recorded");
             }
         }
@@ -313,6 +409,13 @@ impl Client {
         self.keys.primary_address().map(|a| a.email.as_str())
     }
 
+    /// The ID of the Proton account this client is signed in to. It stays the
+    /// same from one session to the next, so it tells a later sign-in to the
+    /// same account from one to another.
+    pub fn user_id(&self) -> &str {
+        self.cache_identity.user_id()
+    }
+
     /// Fetch (and cache for a while) a sender's armored public keys for
     /// verification, leaving out keys Proton marks as compromised.
     pub(crate) async fn sender_pubkeys(&self, email: &str) -> Result<Vec<String>> {
@@ -335,15 +438,16 @@ impl Client {
     }
 }
 
-/// Runs CPU work, such as decrypting, on Tokio's blocking pool so it holds
-/// no async worker; without a runtime it runs where it is.
+/// Runs blocking work, such as decrypting or reaching the credential store,
+/// on Tokio's blocking pool so it holds no async worker; without a runtime it
+/// runs where it is.
 pub(crate) async fn off_thread<T: Send + 'static>(
     work: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
     if tokio::runtime::Handle::try_current().is_ok() {
         tokio::task::spawn_blocking(work)
             .await
-            .map_err(|error| Error::Other(format!("decryption worker failed: {error}")))?
+            .map_err(|error| Error::Other(format!("blocking worker failed: {error}")))?
     } else {
         work()
     }
@@ -403,12 +507,18 @@ mod tests {
     }
 
     async fn saved_logout_client(base_url: &str, store: Arc<dyn SecretStore>) -> (Client, PathBuf) {
+        // Tests run in parallel and the clock can read the same for two of
+        // them, so a counter keeps each directory to itself.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let base =
-            std::env::temp_dir().join(format!("ruston-logout-{}-{unique}", std::process::id()));
+        let base = std::env::temp_dir().join(format!(
+            "ruston-logout-{}-{unique}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let paths = Paths::with_base(&base);
         let tokens = Tokens {
             uid: "logout-uid".into(),
@@ -481,6 +591,68 @@ mod tests {
             .mount(&server)
             .await;
         (server, requested)
+    }
+
+    #[tokio::test]
+    async fn a_client_names_the_account_it_is_signed_in_to() {
+        let (client, base) =
+            saved_logout_client("http://127.0.0.1:9", Arc::new(MemoryStore::new())).await;
+        assert_eq!(client.user_id(), "logout-account");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A credential store that answers late, as one waiting for the person
+    /// to unlock it does.
+    struct SlowStore {
+        inner: Arc<dyn SecretStore>,
+        delay: Duration,
+    }
+
+    impl SecretStore for SlowStore {
+        fn set(&self, key: &str, value: &str) -> Result<()> {
+            std::thread::sleep(self.delay);
+            self.inner.set(key, value)
+        }
+
+        fn get(&self, key: &str) -> Result<Option<String>> {
+            std::thread::sleep(self.delay);
+            self.inner.get(key)
+        }
+
+        fn delete(&self, key: &str) -> Result<()> {
+            self.inner.delete(key)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_slow_credential_store_leaves_the_async_runtime_free() {
+        let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
+        let (client, base) = saved_logout_client("http://127.0.0.1:9", store.clone()).await;
+        let slow = Arc::new(SlowStore {
+            inner: store,
+            delay: Duration::from_millis(400),
+        });
+
+        // On one thread, a store read inline would hold the timer as well.
+        let started = Instant::now();
+        let resumed = tokio::time::timeout(
+            Duration::from_millis(50),
+            Client::resume_from("test", client.paths.clone(), slow),
+        )
+        .await;
+        assert!(resumed.is_err(), "the resume should still be waiting");
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "the timer waited {:?}",
+            started.elapsed()
+        );
+
+        // The read goes on in the background; the files go once it is done.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::fs::remove_dir_all(&base).is_err() {
+            assert!(Instant::now() < deadline, "the session files stayed in use");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     #[tokio::test]
@@ -652,7 +824,9 @@ mod tests {
         }
 
         fn delete(&self, key: &str) -> Result<()> {
-            if key == "auth_tokens_v1" {
+            // Saving a session clears its entries first, while they are
+            // still empty; only removing saved tokens fails.
+            if key == "auth_tokens_v1" && self.0.get(key)?.is_some() {
                 return Err(Error::Session("simulated keyring delete failure".into()));
             }
             self.0.delete(key)
@@ -701,12 +875,19 @@ mod tests {
         }
 
         fn delete(&self, key: &str) -> Result<()> {
-            if key == "auth_tokens_v1" {
+            // Saving the session clears its entries first, while they are
+            // still empty; only removing what was saved pauses and counts.
+            let saved = self.inner.get(key)?.is_some();
+            if key == "auth_tokens_v1" && saved {
                 self.entered.notify_one();
-                self.release.lock().unwrap().recv().unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the test never let the delete go on");
             }
             self.inner.delete(key)?;
-            if key == "skp" {
+            if key == "skp" && saved {
                 self.finished.notify_one();
             }
             Ok(())
@@ -798,6 +979,49 @@ mod tests {
         };
         let prompt: TotpPrompt = Arc::new(|| Box::pin(async { Ok(SecretString::from("000000")) }));
         drop(Client::login(opts()));
-        drop(Client::login_with_totp_prompt(opts(), prompt));
+        drop(Client::login_with_totp_prompt(opts(), prompt.clone()));
+        let mailbox_password: MailboxPasswordPrompt =
+            Arc::new(|| Box::pin(async { Ok(SecretString::from("not-a-real-password")) }));
+        let prompts = LoginPrompts {
+            totp: Some(prompt),
+            mailbox_password: Some(mailbox_password),
+        };
+        drop(Client::login_with_prompts(opts(), prompts));
+    }
+
+    #[tokio::test]
+    async fn a_separate_mailbox_password_is_asked_for_only_when_not_given() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let asks = Arc::new(AtomicUsize::new(0));
+        let counted = asks.clone();
+        let prompt: MailboxPasswordPrompt = Arc::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Ok(SecretString::from("asked")) })
+        });
+        let given = SecretString::from("given");
+
+        let mut asked = None;
+        let used = mailbox_password(Some(&given), Some(&prompt), &mut asked)
+            .await
+            .unwrap();
+        assert_eq!(used.expose_secret(), "given");
+        assert_eq!(asks.load(Ordering::Relaxed), 0);
+
+        let mut asked = None;
+        let used = mailbox_password(None, Some(&prompt), &mut asked)
+            .await
+            .unwrap();
+        assert_eq!(used.expose_secret(), "asked");
+        assert_eq!(asks.load(Ordering::Relaxed), 1);
+
+        // With no way to ask, the error is the one the desktop recognizes.
+        let mut asked = None;
+        let error = mailbox_password(None, None, &mut asked).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("this account uses a separate mailbox password")
+        );
     }
 }

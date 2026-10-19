@@ -43,17 +43,23 @@ fn a_second_launch_forwards_urls_and_activation_then_a_new_primary_can_take_over
         "mailto:bob@example.org?subject=Second".into(),
     ];
     let instance = primary(&directory.0, vec!["mailto:cold@example.org".into()]);
-    assert!(instance.drain() == vec![mailto_event("mailto:cold@example.org")]);
+    assert_eq!(
+        instance.drain(),
+        vec![mailto_event("mailto:cold@example.org")]
+    );
     assert!(matches!(
         launch(&directory.0, urls.clone()).unwrap(),
         Start::Forwarded
     ));
-    assert!(instance.drain() == urls.iter().map(|url| mailto_event(url)).collect::<Vec<_>>());
+    assert_eq!(
+        instance.drain(),
+        urls.iter().map(|url| mailto_event(url)).collect::<Vec<_>>()
+    );
     assert!(matches!(
         launch(&directory.0, Vec::new()).unwrap(),
         Start::Forwarded
     ));
-    assert!(instance.drain() == vec![Event::Activate]);
+    assert_eq!(instance.drain(), vec![Event::Activate]);
     drop(instance);
     assert!(!directory.0.join("endpoint").exists());
     let replacement = primary(&directory.0, Vec::new());
@@ -84,11 +90,39 @@ fn a_crashed_primarys_record_cannot_send_links_to_another_program() {
         launch(&directory.0, vec!["mailto:team@example.org".into()]).unwrap(),
         Start::Forwarded
     ));
-    assert!(instance.drain() == vec![mailto_event("mailto:team@example.org")]);
+    assert_eq!(
+        instance.drain(),
+        vec![mailto_event("mailto:team@example.org")]
+    );
     assert_eq!(
         foreign.accept().unwrap_err().kind(),
         io::ErrorKind::WouldBlock,
         "a launch connected to the old port"
+    );
+}
+
+#[test]
+fn a_launch_while_the_primary_closes_takes_over_once_its_lock_is_free() {
+    let directory = Directory::new();
+    private_directory(&directory.0).unwrap();
+    // A primary that is closing has removed its record but still holds the
+    // lock until its process ends.
+    let closing = claim(&directory.0, &directory.0.join("endpoint"))
+        .unwrap()
+        .unwrap();
+    let ends = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        drop(closing);
+    });
+    let Start::Primary(instance) =
+        launch(&directory.0, vec!["mailto:late@example.org".into()]).unwrap()
+    else {
+        panic!("the launch should have taken over");
+    };
+    ends.join().unwrap();
+    assert_eq!(
+        instance.drain(),
+        vec![mailto_event("mailto:late@example.org")]
     );
 }
 
@@ -144,7 +178,7 @@ fn unauthenticated_and_oversized_requests_are_rejected_before_delivery() {
     // A mailto link this version cannot open is reported, never delivered.
     let mut invalid = connect(&instance.endpoint).unwrap();
     assert!(forward(&mut invalid, "mailto:a@example.org?subject=%0AInjected").is_ok());
-    assert!(instance.drain() == vec![Event::Rejected]);
+    assert_eq!(instance.drain(), vec![Event::Rejected]);
     drop(invalid);
     // Anything else is refused.
     let mut foreign = connect(&instance.endpoint).unwrap();
@@ -160,7 +194,7 @@ fn an_email_link_this_version_cannot_open_still_reaches_the_window() {
         &directory.0,
         vec!["mailto:Jane%20Doe%20%3Cjane@example.org%3E".into()],
     );
-    assert!(instance.drain() == vec![Event::Rejected]);
+    assert_eq!(instance.drain(), vec![Event::Rejected]);
     // A later launch hands such links over too, even one over the size limit.
     let oversized = format!("mailto:a@example.org?body={}", "x".repeat(MAX_URL_BYTES));
     assert!(matches!(
@@ -175,13 +209,13 @@ fn an_email_link_this_version_cannot_open_still_reaches_the_window() {
         .unwrap(),
         Start::Forwarded
     ));
-    assert!(
-        instance.drain()
-            == vec![
-                Event::Rejected,
-                Event::Rejected,
-                mailto_event("mailto:ok@example.org"),
-            ]
+    assert_eq!(
+        instance.drain(),
+        vec![
+            Event::Rejected,
+            Event::Rejected,
+            mailto_event("mailto:ok@example.org"),
+        ]
     );
     // The stand-in for an oversized link is one no version opens.
     assert!(Request::parse(OVERSIZED_LINK).is_none());
@@ -206,7 +240,7 @@ fn queue_overflow_is_reported_and_does_not_replace_accepted_requests() {
             .iter()
             .all(|event| *event == mailto_event("mailto:accepted@example.org"))
     );
-    assert!(events[MAX_PENDING] == Event::Rejected);
+    assert_eq!(events[MAX_PENDING], Event::Rejected);
 }
 
 #[test]
@@ -218,7 +252,7 @@ fn arguments_cannot_be_used_as_command_options_or_arbitrary_urls() {
         "--profile=other",
         "file:///etc/passwd",
     ] {
-        assert!(arguments([arg.into()]).is_err());
+        assert!(arguments([arg.into()]).is_err(), "{arg}");
     }
 }
 
@@ -260,7 +294,10 @@ fn idle_connections_from_another_local_user_cannot_block_a_later_launch() {
         launch(&directory.0, vec!["mailto:team@example.org".into()]).unwrap(),
         Start::Forwarded
     ));
-    assert!(instance.drain() == vec![mailto_event("mailto:team@example.org")]);
+    assert_eq!(
+        instance.drain(),
+        vec![mailto_event("mailto:team@example.org")]
+    );
     drop(idle);
 }
 
@@ -271,7 +308,7 @@ fn the_token_comparison_checks_every_byte() {
     for position in [0, 15, 31] {
         let mut guess = token;
         guess[position] ^= 1;
-        assert!(!same_token(&guess, &token));
+        assert!(!same_token(&guess, &token), "{position}");
     }
 }
 

@@ -81,6 +81,15 @@ impl Notifications {
         self.enabled.store(false, Ordering::Release);
         self.enabled = Arc::new(AtomicBool::new(enabled));
         self.status = Arc::new(AtomicU8::new(Status::Off as u8));
+        // Windows keeps delivered toasts in its notification center; take
+        // them away with the account, on a thread of their own for COM. Tests
+        // must not clear the toasts of the Ruston Mail the machine runs.
+        #[cfg(all(target_os = "windows", not(test)))]
+        if !enabled {
+            let _ = std::thread::Builder::new()
+                .name("ruston-toast-clear".into())
+                .spawn(windows::clear);
+        }
         if enabled {
             #[cfg(target_os = "macos")]
             macos::request_permission(self.status.clone(), context.clone());

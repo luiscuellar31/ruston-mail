@@ -3,14 +3,9 @@
 use super::*;
 use crate::mail::{MailAddress, MailMessage, MessageBody};
 use crate::settings::Reading;
+use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, sys};
 
 const PAGE_SIZE: u32 = 50;
-
-/// One of Proton's own folders, as a place to list from.
-fn sys(folder: MailFolder) -> Folder {
-    Folder::System(folder)
-}
-
 fn summary(id: &str) -> ConversationSummary {
     ConversationSummary {
         id: id.to_owned(),
@@ -52,12 +47,20 @@ fn searchable_summary(
     }
 }
 
-fn page(ids: &[&str], total: u32) -> Result<ConversationPage, MailboxError> {
+/// A page of `conversations` out of `total`, with nothing to inspect.
+fn page_of(
+    conversations: Vec<ConversationSummary>,
+    total: u32,
+) -> Result<ConversationPage, MailboxError> {
     Ok(ConversationPage {
-        conversations: ids.iter().map(|id| summary(id)).collect(),
+        conversations,
         total,
         inspect_candidates: Vec::new(),
     })
+}
+
+fn page(ids: &[&str], total: u32) -> Result<ConversationPage, MailboxError> {
+    page_of(ids.iter().map(|id| summary(id)).collect(), total)
 }
 
 fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
@@ -72,7 +75,9 @@ fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
                 id: (*message_id).to_owned(),
                 verdict: crate::mail::Verdict::Unverified,
                 sender: MailAddress::default(),
-                recipients: Vec::new(),
+                to: Vec::new(),
+                cc: Vec::new(),
+                bcc: Vec::new(),
                 reply_to: Vec::new(),
                 reply_all_cc: Vec::new(),
                 reply_redirected: false,
@@ -94,7 +99,12 @@ fn ids(mailbox: &Mailbox) -> Vec<&str> {
 }
 
 fn open() -> (Mailbox, PageRequest) {
-    Mailbox::open(Folder::INBOX, PAGE_SIZE, 1, 2)
+    open_with_page_size(PAGE_SIZE)
+}
+
+/// The Inbox, opened to list `page_size` rows a page.
+fn open_with_page_size(page_size: u32) -> (Mailbox, PageRequest) {
+    Mailbox::open(Folder::INBOX, page_size, OPENING_PAGE, OPENING_COUNTS)
 }
 
 fn loaded_inbox(ids: &[&str], total: u32) -> Mailbox {
@@ -151,14 +161,8 @@ fn searchable_mailbox() -> Mailbox {
             "Launch checklist is complete",
         ),
     ];
-    mailbox.finish_page(
-        request.id,
-        Ok(ConversationPage {
-            total: conversations.len() as u32,
-            conversations,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    let total = conversations.len() as u32;
+    mailbox.finish_page(request.id, page_of(conversations, total));
     mailbox
 }
 
@@ -176,12 +180,38 @@ fn dated(id: &str, time: i64) -> ConversationSummary {
     }
 }
 
+fn unread(id: &str) -> ConversationSummary {
+    ConversationSummary {
+        unread: true,
+        ..summary(id)
+    }
+}
+
+fn split_message(id: &str, time: i64) -> ConversationSummary {
+    ConversationSummary {
+        kind: SummaryKind::Message,
+        ..dated(id, time)
+    }
+}
+
+fn message_row(id: &str) -> ConversationSummary {
+    ConversationSummary {
+        kind: SummaryKind::Message,
+        ..searchable_summary(id, "Bank", "bank@example.com", "Statement", "")
+    }
+}
+
 fn dated_page(rows: &[(&str, i64)], total: u32) -> Result<ConversationPage, MailboxError> {
-    Ok(ConversationPage {
-        conversations: rows.iter().map(|(id, time)| dated(id, *time)).collect(),
+    page_of(
+        rows.iter().map(|(id, time)| dated(id, *time)).collect(),
         total,
-        inspect_candidates: Vec::new(),
-    })
+    )
+}
+
+/// The date `full_page` gives the row `p<number>`: a second older per row,
+/// so a row's place in the folder is its age.
+fn page_time(number: u32) -> i64 {
+    i64::from(1_000_000 - number)
 }
 
 /// A full page of dated rows named `p<n>`, newest first.
@@ -189,15 +219,11 @@ fn full_page(start: u32, total: u32) -> Result<ConversationPage, MailboxError> {
     let conversations = (0..PAGE_SIZE)
         .map(|index| {
             let number = start + index;
-            dated(&format!("p{number}"), i64::from(1_000_000 - number))
+            dated(&format!("p{number}"), page_time(number))
         })
         .collect();
 
-    Ok(ConversationPage {
-        conversations,
-        total,
-        inspect_candidates: Vec::new(),
-    })
+    page_of(conversations, total)
 }
 
 #[test]
@@ -211,7 +237,7 @@ fn server_results_replace_the_folder_listing() {
     // Results stand on their own: what came back is not narrowed again.
     assert_eq!(mailbox.finish_search(&request, page(&["found"], 1)), None);
     assert_eq!(visible_ids(&mailbox), ["found"]);
-    assert_eq!(mailbox.search_results(), Some("invoice"));
+    assert_eq!(mailbox.shown_search_query(), Some("invoice"));
 
     // One match needs no next search page, even though the folder has more.
     assert_eq!(mailbox.load_more(4), None);
@@ -219,7 +245,7 @@ fn server_results_replace_the_folder_listing() {
     // Emptying the field puts the folder back.
     mailbox.set_search_query(String::new());
     assert_eq!(visible_ids(&mailbox), ["a", "b"]);
-    assert_eq!(mailbox.search_results(), None);
+    assert_eq!(mailbox.shown_search_query(), None);
 }
 
 #[test]
@@ -228,8 +254,11 @@ fn search_loads_more_than_fifty_results_without_losing_the_first_page() {
     mailbox.set_search_query("invoice".into());
     let first = mailbox.start_search(3).unwrap();
     assert_eq!(first.page, 0);
-    assert_eq!(mailbox.finish_search(&first, full_page(0, 51)), None);
-    assert_eq!(visible_ids(&mailbox).len(), 50);
+    assert_eq!(
+        mailbox.finish_search(&first, full_page(0, PAGE_SIZE + 1)),
+        None
+    );
+    assert_eq!(visible_ids(&mailbox).len(), PAGE_SIZE as usize);
     assert!(mailbox.has_more());
     assert_eq!(mailbox.load_more(4), None);
 
@@ -238,9 +267,12 @@ fn search_loads_more_than_fifty_results_without_losing_the_first_page() {
     assert_eq!(next.page_size, PAGE_SIZE);
     assert!(mailbox.load_more_search(5).is_none());
     assert_eq!(mailbox.finish_search(&first, page(&["stale"], 1)), None);
-    assert_eq!(mailbox.finish_search(&next, page(&["p50"], 51)), None);
+    assert_eq!(
+        mailbox.finish_search(&next, page(&["p50"], PAGE_SIZE + 1)),
+        None
+    );
 
-    assert_eq!(visible_ids(&mailbox).len(), 51);
+    assert_eq!(visible_ids(&mailbox).len(), PAGE_SIZE as usize + 1);
     assert_eq!(visible_ids(&mailbox).last(), Some(&"p50"));
     assert!(!mailbox.has_more());
     assert!(mailbox.load_more_search(6).is_none());
@@ -248,7 +280,7 @@ fn search_loads_more_than_fifty_results_without_losing_the_first_page() {
 
 #[test]
 fn search_pages_reuse_the_id_index_after_a_row_leaves_the_results() {
-    let (mut mailbox, inbox) = Mailbox::open(Folder::INBOX, 2, 1, 2);
+    let (mut mailbox, inbox) = open_with_page_size(2);
     mailbox.finish_page(inbox.id, page(&["inbox"], 1));
     mailbox.set_search_query("invoice".into());
     let first = mailbox.start_search(3).unwrap();
@@ -272,7 +304,7 @@ fn an_abandoned_search_never_lands() {
 
     assert_eq!(mailbox.finish_search(&abandoned, page(&["found"], 1)), None);
     assert_eq!(visible_ids(&mailbox), ["a"]);
-    assert!(mailbox.search_results().is_none());
+    assert!(mailbox.shown_search_query().is_none());
 }
 
 #[test]
@@ -302,9 +334,6 @@ fn a_refresh_keeps_the_offer_to_undo() {
     // The moved row is already gone, so a reload changes nothing the offer
     // describes.
     let refresh = mailbox.refresh(5).unwrap();
-    assert!(mailbox.undo().is_some());
-    // The move back cannot start while the list loads, so the offer waits.
-    assert!(mailbox.take_undo().is_none());
     assert!(mailbox.undo().is_some());
 
     mailbox.finish_page(refresh.id, page(&["b"], 1));
@@ -346,10 +375,7 @@ fn a_move_out_of_a_folder_can_be_taken_back() {
 
 #[test]
 fn archived_mail_can_go_back_to_the_inbox_and_that_can_be_taken_back_too() {
-    let mut mailbox = loaded_inbox(&["x"], 1);
-    let request = mailbox.select_folder(sys(MailFolder::Archive), 2).unwrap();
-    mailbox.finish_page(request.id, page(&["a", "b"], 2));
-    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+    let mut mailbox = viewing(sys(MailFolder::Archive));
 
     let start = mailbox
         .start_action(MailAction::MoveTo(Folder::INBOX), 4)
@@ -518,42 +544,17 @@ fn an_expired_offer_cannot_dismiss_the_move_after_it() {
 /// returned `found`, with `opened` open in the reader.
 fn searched(listed: &[&str], found: &[&str], opened: &str) -> Mailbox {
     let (mut mailbox, request) = open();
-    let rows: Vec<ConversationSummary> = listed
-        .iter()
-        .map(|id| ConversationSummary {
-            unread: true,
-            ..summary(id)
-        })
-        .collect();
+    let rows: Vec<ConversationSummary> = listed.iter().map(|id| unread(id)).collect();
     let total = rows.len() as u32;
-    mailbox.finish_page(
-        request.id,
-        Ok(ConversationPage {
-            conversations: rows,
-            total,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(request.id, page_of(rows, total));
 
     mailbox.set_search_query("report".to_owned());
+    // Fixtures issue IDs from 80, clear of the 3, 4 and on that tests issue.
     let search = mailbox.start_search(90).unwrap();
-    let results: Vec<ConversationSummary> = found
-        .iter()
-        .map(|id| ConversationSummary {
-            unread: true,
-            ..summary(id)
-        })
-        .collect();
+    let results: Vec<ConversationSummary> = found.iter().map(|id| unread(id)).collect();
     let total = results.len() as u32;
     assert_eq!(
-        mailbox.finish_search(
-            &search,
-            Ok(ConversationPage {
-                conversations: results,
-                total,
-                inspect_candidates: Vec::new(),
-            }),
-        ),
+        mailbox.finish_search(&search, page_of(results, total)),
         None
     );
     load_detail(&mut mailbox, opened, detail(opened, &["message"]), 91);
@@ -592,7 +593,7 @@ fn a_search_result_is_marked_read_like_any_other_row() {
         .expect("opening a search result marks it read");
     assert_eq!(request.context, None);
 
-    assert!(mailbox.finish_mark_read(&request, Ok(())).changed);
+    assert!(mailbox.finish_mark_read(&request, Ok(())).read_confirmed);
     assert!(!mailbox.selected_summary().unwrap().unread);
 }
 
@@ -904,14 +905,14 @@ fn refreshing_keeps_the_pages_already_loaded() {
     let more = mailbox.load_more(7).unwrap();
     mailbox.finish_page(
         more.id,
-        dated_page(&[("p99", 999_901), ("p100", 999_900)], 120),
+        dated_page(&[("p99", page_time(99)), ("p100", page_time(100))], 120),
     );
-    assert_eq!(mailbox.conversations().len(), 101);
+    assert_eq!(mailbox.conversations().len(), 2 * PAGE_SIZE as usize + 1);
     assert_eq!(mailbox.conversations().last().unwrap().id, "p100");
 
     // A short reload means the folder itself is short now.
     let refresh = mailbox.refresh(8).unwrap();
-    mailbox.finish_page(refresh.id, dated_page(&[("p0", 1_000_000)], 1));
+    mailbox.finish_page(refresh.id, dated_page(&[("p0", page_time(0))], 1));
     assert_eq!(visible_ids(&mailbox), ["p0"]);
 }
 
@@ -922,8 +923,8 @@ fn a_lost_counts_response_never_blocks_later_refreshes() {
         |unread: u32| -> MailboxCounts { [(sys(MailFolder::Inbox), unread)].into_iter().collect() };
 
     // The response for the first request never arrives.
-    assert_eq!(mailbox.refresh_counts(3), Some(3));
-    assert_eq!(mailbox.refresh_counts(4), Some(4));
+    assert_eq!(mailbox.refresh_counts(3), 3);
+    assert_eq!(mailbox.refresh_counts(4), 4);
 
     // Arriving late, it is ignored in favour of the newest request.
     assert_eq!(mailbox.finish_counts(3, Ok(counts(7))), None);
@@ -1113,14 +1114,7 @@ fn changed_list_metadata_makes_a_cached_reader_reload() {
     let refresh = mailbox.refresh(4).unwrap();
     let mut changed = summary("a");
     changed.message_count = 2;
-    mailbox.finish_page(
-        refresh.id,
-        Ok(ConversationPage {
-            conversations: vec![changed, summary("b")],
-            total: 2,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(refresh.id, page_of(vec![changed, summary("b")], 2));
     load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
 
     let request = mailbox.start_conversation_load("a".into(), 6).unwrap();
@@ -1215,7 +1209,10 @@ fn load_more_appends_without_duplicates() {
 
 #[test]
 fn load_more_preserves_the_open_reader_on_success_and_failure() {
-    for result in [page(&["c"], 3), Err(MailboxError::Connection)] {
+    for (case, result) in [
+        ("a page", page(&["c"], 3)),
+        ("a failure", Err(MailboxError::Connection)),
+    ] {
         let mut mailbox = loaded_inbox(&["a", "b"], 120);
         load_detail(&mut mailbox, "b", detail("b", &["b1", "b2"]), 9);
         mailbox.toggle_message("b1");
@@ -1223,9 +1220,9 @@ fn load_more_preserves_the_open_reader_on_success_and_failure() {
         let reader = mailbox.reader_state().clone();
 
         let request = mailbox.load_more(10).unwrap();
-        assert_eq!(mailbox.reader_state(), &reader);
+        assert_eq!(mailbox.reader_state(), &reader, "{case}");
         mailbox.finish_page(request.id, result);
-        assert_eq!(mailbox.reader_state(), &reader);
+        assert_eq!(mailbox.reader_state(), &reader, "{case}");
     }
 }
 
@@ -1235,14 +1232,10 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
     mailbox.finish_page(first.id, full_page(0, 120));
     let split = vec![
         ConversationSummary {
-            kind: SummaryKind::Message,
             unread: true,
-            ..dated("m40-a", 999_960)
+            ..split_message("m40-a", page_time(40))
         },
-        ConversationSummary {
-            kind: SummaryKind::Message,
-            ..dated("m40-b", 999_950)
-        },
+        split_message("m40-b", page_time(50)),
     ];
     mailbox.split_conversation(&Folder::INBOX, "p40", split.clone());
     load_detail(&mut mailbox, "m40-a", detail("m40-a", &["m40-a"]), 9);
@@ -1252,7 +1245,7 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
     let next = mailbox.load_more(11).unwrap();
 
     mailbox.finish_mark_read(&read, Ok(()));
-    mailbox.finish_page(next.id, full_page(50, 120));
+    mailbox.finish_page(next.id, full_page(PAGE_SIZE, 120));
     assert!(mailbox.needs_revalidation());
     let refresh = mailbox.refresh(12).unwrap();
     mailbox.finish_page(refresh.id, full_page(0, 120));
@@ -1268,7 +1261,7 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
 
 #[test]
 fn later_pages_merge_interleaved_dates_and_keep_earlier_rows_first_on_ties() {
-    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    let (mut mailbox, first) = open_with_page_size(3);
     mailbox.finish_page(first.id, dated_page(&[("a", 100), ("b", 80), ("c", 50)], 7));
 
     let next = mailbox.load_more(3).unwrap();
@@ -1283,24 +1276,22 @@ fn later_pages_merge_interleaved_dates_and_keep_earlier_rows_first_on_ties() {
 
 #[test]
 fn interleaved_pages_keep_undated_rows_with_their_neighbours() {
-    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    let (mut mailbox, first) = open_with_page_size(3);
     mailbox.finish_page(
         first.id,
-        Ok(ConversationPage {
-            conversations: vec![dated("a", 100), summary("undated-a"), dated("b", 50)],
-            total: 6,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(
+            vec![dated("a", 100), summary("undated-a"), dated("b", 50)],
+            6,
+        ),
     );
 
     let next = mailbox.load_more(3).unwrap();
     mailbox.finish_page(
         next.id,
-        Ok(ConversationPage {
-            conversations: vec![dated("c", 75), summary("undated-c"), dated("d", 40)],
-            total: 6,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(
+            vec![dated("c", 75), summary("undated-c"), dated("d", 40)],
+            6,
+        ),
     );
 
     assert_eq!(
@@ -1311,29 +1302,21 @@ fn interleaved_pages_keep_undated_rows_with_their_neighbours() {
 
 #[test]
 fn older_pages_preserve_undated_rows_and_extend_local_filter() {
-    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    let (mut mailbox, first) = open_with_page_size(3);
     let mut match_a = dated("a", 100);
     match_a.subject = Some("receipt".into());
     let mut match_b = dated("b", 70);
     match_b.subject = Some("receipt".into());
     mailbox.finish_page(
         first.id,
-        Ok(ConversationPage {
-            conversations: vec![match_a, summary("undated-a"), dated("other", 80)],
-            total: 6,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![match_a, summary("undated-a"), dated("other", 80)], 6),
     );
     mailbox.set_search_query("receipt".into());
 
     let next = mailbox.load_more(3).unwrap();
     mailbox.finish_page(
         next.id,
-        Ok(ConversationPage {
-            conversations: vec![summary("undated-b"), match_b, dated("last", 60)],
-            total: 6,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![summary("undated-b"), match_b, dated("last", 60)], 6),
     );
 
     assert_eq!(
@@ -1345,7 +1328,7 @@ fn older_pages_preserve_undated_rows_and_extend_local_filter() {
 
 #[test]
 fn page_size_controls_whether_more_pages_exist() {
-    let (mut mailbox, request) = Mailbox::open(Folder::INBOX, 2, 1, 2);
+    let (mut mailbox, request) = open_with_page_size(2);
     mailbox.finish_page(request.id, page(&["a", "b"], 3));
     assert!(mailbox.has_more());
 
@@ -1471,9 +1454,10 @@ fn failed_refresh_keeps_previous_list() {
 fn counts_apply_once() {
     let (mut mailbox, _) = open();
 
-    // `open` left request 2 in flight; its response is the one that counts.
+    // `open` left its counts request in flight; its response is the one that
+    // counts.
     let counts: MailboxCounts = [(sys(MailFolder::Inbox), 4)].into_iter().collect();
-    mailbox.finish_counts(2, Ok(counts));
+    mailbox.finish_counts(OPENING_COUNTS, Ok(counts));
     assert_eq!(
         mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
         Some(4)
@@ -1483,12 +1467,15 @@ fn counts_apply_once() {
         None
     );
 
-    assert_eq!(mailbox.finish_counts(2, Ok(MailboxCounts::default())), None);
+    assert_eq!(
+        mailbox.finish_counts(OPENING_COUNTS, Ok(MailboxCounts::default())),
+        None
+    );
     assert_eq!(
         mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
         Some(4)
     );
-    assert_eq!(mailbox.refresh_counts(3), Some(3));
+    assert_eq!(mailbox.refresh_counts(3), 3);
 }
 
 #[test]
@@ -1628,14 +1615,13 @@ fn a_load_knows_how_long_its_conversation_is() {
     let (mut mailbox, request) = open();
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![ConversationSummary {
+        page_of(
+            vec![ConversationSummary {
                 message_count: 12,
                 ..summary("long")
             }],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
+            1,
+        ),
     );
 
     // The desktop gives the load time for every message the row lists.
@@ -1645,23 +1631,12 @@ fn a_load_knows_how_long_its_conversation_is() {
     assert_eq!(mailbox.retry_conversation(4).unwrap().messages, 12);
 }
 
-fn message_row(id: &str) -> ConversationSummary {
-    ConversationSummary {
-        kind: SummaryKind::Message,
-        ..searchable_summary(id, "Bank", "bank@example.com", "Statement", "")
-    }
-}
-
 #[test]
 fn message_rows_load_as_single_messages() {
     let (mut mailbox, request) = open();
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![message_row("m1"), summary("c1")],
-            total: 2,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![message_row("m1"), summary("c1")], 2),
     );
 
     let message = mailbox.start_conversation_load("m1".into(), 3).unwrap();
@@ -1683,11 +1658,7 @@ fn stale_classified_page_cannot_replace_newer_folder() {
 
     let stale = mailbox.finish_page(
         inbox.id,
-        Ok(ConversationPage {
-            conversations: vec![message_row("m1"), message_row("m2")],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![message_row("m1"), message_row("m2")], 1),
     );
 
     assert_eq!(stale, None);
@@ -1699,14 +1670,10 @@ fn stale_classified_page_cannot_replace_newer_folder() {
 fn split_rows_are_searchable_and_leave_counts_alone() {
     let (mut mailbox, request) = open();
     let counts: MailboxCounts = [(sys(MailFolder::Inbox), 2)].into_iter().collect();
-    mailbox.finish_counts(2, Ok(counts.clone()));
+    mailbox.finish_counts(OPENING_COUNTS, Ok(counts.clone()));
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![message_row("m1"), message_row("m2"), summary("c1")],
-            total: 2,
-            inspect_candidates: Vec::new(),
-        }),
+        page_of(vec![message_row("m1"), message_row("m2"), summary("c1")], 2),
     );
 
     mailbox.set_search_query("bank".into());
@@ -1721,36 +1688,25 @@ fn split_rows_are_searchable_and_leave_counts_alone() {
 
 fn selected_in(folder: MailFolder, ids: &[&str], selected: &str) -> Mailbox {
     let (mut mailbox, inbox) = open();
-    let request = if folder == MailFolder::Inbox {
+    // Fixtures issue IDs from 80, clear of the 3, 4 and on that tests issue.
+    let listing = if folder == MailFolder::Inbox {
         inbox.id
     } else {
         mailbox.select_folder(sys(folder), 80).unwrap().id
     };
-    mailbox.finish_page(request, page(ids, ids.len() as u32));
-    let request = mailbox
+    mailbox.finish_page(listing, page(ids, ids.len() as u32));
+    let load = mailbox
         .start_conversation_load(selected.into(), 82)
         .unwrap();
-    mailbox.finish_conversation(&request, Ok(detail(selected, &["message"])));
+    mailbox.finish_conversation(&load, Ok(detail(selected, &["message"])));
     mailbox
 }
 
 fn opened_unread(ids: &[&str], opened: &str) -> Mailbox {
     let (mut mailbox, request) = open();
-    let rows = ids
-        .iter()
-        .map(|id| ConversationSummary {
-            unread: true,
-            ..summary(id)
-        })
-        .collect();
-    mailbox.finish_page(
-        request.id,
-        Ok(ConversationPage {
-            conversations: rows,
-            total: ids.len() as u32,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    // Fixtures issue IDs from 80, clear of the 3, 4 and on that tests issue.
+    let rows = ids.iter().map(|id| unread(id)).collect();
+    mailbox.finish_page(request.id, page_of(rows, ids.len() as u32));
     let load = mailbox.start_conversation_load(opened.into(), 82).unwrap();
     mailbox.finish_conversation(&load, Ok(detail(opened, &["message"])));
     mailbox
@@ -1766,7 +1722,7 @@ fn opened_unread_rows_are_marked_read_once_confirmed() {
     assert_eq!(mailbox.start_mark_read(4), None);
     assert!(mailbox.selected_summary().unwrap().unread);
 
-    assert!(mailbox.finish_mark_read(&request, Ok(())).changed);
+    assert!(mailbox.finish_mark_read(&request, Ok(())).read_confirmed);
     assert!(!mailbox.selected_summary().unwrap().unread);
     assert_eq!(mailbox.start_mark_read(5), None);
 }
@@ -1774,17 +1730,7 @@ fn opened_unread_rows_are_marked_read_once_confirmed() {
 #[test]
 fn reads_wait_for_the_content_to_load() {
     let (mut mailbox, request) = open();
-    mailbox.finish_page(
-        request.id,
-        Ok(ConversationPage {
-            conversations: vec![ConversationSummary {
-                unread: true,
-                ..summary("a")
-            }],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(request.id, page_of(vec![unread("a")], 1));
     let load = mailbox.start_conversation_load("a".into(), 3).unwrap();
 
     assert_eq!(mailbox.start_mark_read(4), None);
@@ -1798,7 +1744,7 @@ fn failed_or_stale_reads_leave_the_row_unread() {
     let mut mailbox = opened_unread(&["a"], "a");
     let request = mailbox.start_mark_read(3).unwrap();
     let stale = ActionRequest {
-        id: 99,
+        id: NEVER_ISSUED,
         ..request.clone()
     };
 
@@ -1824,10 +1770,14 @@ fn explicit_read_mutations_wait_for_the_automatic_read() {
 
         assert_eq!(
             mailbox.start_action(MailAction::SetUnread(unread), 4),
-            Some(ActionStart::default())
+            Some(ActionStart::default()),
+            "{unread}"
         );
-        assert!(mailbox.action_pending(), "the user's action stays queued");
-        assert_eq!(mailbox.start_mark_read(5), None);
+        assert!(
+            mailbox.action_pending(),
+            "the user's action stays queued: {unread}"
+        );
+        assert_eq!(mailbox.start_mark_read(5), None, "{unread}");
     }
 }
 
@@ -1865,13 +1815,91 @@ fn failed_automatic_reads_fail_the_queued_action_without_sending_it() {
             mailbox.finish_mark_read(&read, Err(error)).error,
             Some(error)
         );
-        assert!(!mailbox.action_pending());
+        assert!(!mailbox.action_pending(), "{error:?}");
         assert_eq!(mailbox.action_error(), Some(error));
-        assert!(mailbox.selected_summary().unwrap().unread);
+        assert!(mailbox.selected_summary().unwrap().unread, "{error:?}");
         assert_eq!(
             mailbox.finish_mark_read(&read, Ok(())),
-            ReadCompletion::default()
+            ReadCompletion::default(),
+            "{error:?}"
         );
+    }
+}
+
+#[test]
+fn a_read_change_queued_behind_another_action_still_waits_for_the_automatic_read() {
+    let mut mailbox = opened_unread(&["a"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    // A star does not wait for the read; the explicit unread queues behind it.
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    assert_eq!(
+        mailbox.start_action(MailAction::SetUnread(true), 5),
+        Some(ActionStart::default())
+    );
+
+    // Once the star answers, the unread is next in line but still waits.
+    assert_eq!(mailbox.finish_action(&star, Ok(())).next_action, None);
+    assert!(mailbox.action_pending());
+    let completion = mailbox.finish_mark_read(&read, Ok(()));
+    assert!(completion.read_confirmed);
+    assert_eq!(completion.next_action.map(|action| action.id), Some(5));
+}
+
+#[test]
+fn a_read_change_queued_behind_another_action_waits_for_it_after_the_read() {
+    let mut mailbox = opened_unread(&["a"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    mailbox
+        .start_action(MailAction::SetUnread(true), 5)
+        .unwrap();
+
+    // The read answers first: the unread still waits for the star.
+    assert_eq!(mailbox.finish_mark_read(&read, Ok(())).next_action, None);
+    let next = mailbox.finish_action(&star, Ok(())).next_action.unwrap();
+    assert_eq!(next.id, 5);
+}
+
+#[test]
+fn a_failed_automatic_read_still_sends_the_action_behind_the_one_it_failed() {
+    let mut mailbox = opened_unread(&["a", "b"], "a");
+    let read = mailbox.start_mark_read(3).unwrap();
+    assert_eq!(
+        mailbox.start_action(MailAction::SetUnread(true), 4),
+        Some(ActionStart::default())
+    );
+    let star = mailbox
+        .start_action_on(
+            "b".into(),
+            SummaryKind::Conversation,
+            MailAction::SetStarred(true),
+            5,
+        )
+        .unwrap();
+    assert_eq!(star.send, None);
+
+    let completion = mailbox.finish_mark_read(&read, Err(MailboxError::Connection));
+    assert_eq!(completion.error, Some(MailboxError::Connection));
+    // The unread fails with the read, and the star of the other row goes.
+    let next = completion.next_action.unwrap();
+    assert_eq!((next.id, next.row_id.as_str()), (5, "b"));
+}
+
+#[test]
+fn a_later_change_of_the_same_flag_decides_what_the_row_shows() {
+    for result in [Ok(()), Err(MailboxError::Connection)] {
+        let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
+        let star = send(&mut mailbox, MailAction::SetStarred(true), 3);
+        // Unstarred again while the star is on its way.
+        let unstar = mailbox
+            .start_action(MailAction::SetStarred(false), 4)
+            .unwrap();
+        assert_eq!(unstar.send, None, "{result:?}");
+
+        // Whatever Proton says to the star, the row keeps the later choice.
+        let next = mailbox.finish_action(&star, result).next_action.unwrap();
+        assert_eq!(next.id, 4, "{result:?}");
+        assert!(!mailbox.selected_summary().unwrap().starred, "{result:?}");
     }
 }
 
@@ -1908,7 +1936,7 @@ fn only_the_current_read_of_the_same_row_releases_a_queued_action() {
     );
 
     let stale = ActionRequest {
-        id: 99,
+        id: NEVER_ISSUED,
         ..second.clone()
     };
     assert_eq!(
@@ -1941,7 +1969,7 @@ fn queued_read_actions_keep_their_original_folder_after_navigation() {
     mailbox.finish_page(5, page(&["b"], 1));
 
     let completion = mailbox.finish_mark_read(&read, Ok(()));
-    assert!(!completion.changed);
+    assert!(completion.read_confirmed, "Proton's counts changed");
     let action = completion.next_action.unwrap();
     assert_eq!(action.context, Some(Folder::INBOX));
     assert_eq!(action.folder, Folder::INBOX);
@@ -1978,42 +2006,42 @@ fn explicit_unread_wins_over_an_automatic_read() {
         );
 
         let completion = mailbox.finish_mark_read(&read, Ok(()));
-        assert!(completion.changed);
-        assert!(!mailbox.selected_summary().unwrap().unread);
+        assert!(completion.read_confirmed, "{kind:?}");
+        assert!(!mailbox.selected_summary().unwrap().unread, "{kind:?}");
         let unread = completion
             .next_action
             .expect("the explicit action is now ready");
-        assert_eq!(unread.id, 4);
-        assert_eq!(unread.action, MailAction::SetUnread(true));
-        assert_eq!(mailbox.finish_action(&unread, Ok(())).result, Ok(()));
-        assert!(mailbox.selected_summary().unwrap().unread);
+        assert_eq!(unread.id, 4, "{kind:?}");
+        assert_eq!(unread.action, MailAction::SetUnread(true), "{kind:?}");
+        assert_eq!(
+            mailbox.finish_action(&unread, Ok(())).result,
+            Ok(()),
+            "{kind:?}"
+        );
+        assert!(mailbox.selected_summary().unwrap().unread, "{kind:?}");
         assert_eq!(
             mailbox.finish_mark_read(&read, Ok(())),
-            ReadCompletion::default()
+            ReadCompletion::default(),
+            "{kind:?}"
         );
     }
 }
 
 #[test]
-fn reads_after_a_folder_switch_change_nothing() {
+fn reads_after_a_folder_switch_change_only_the_counts() {
     let mut mailbox = opened_unread(&["a"], "a");
     let request = mailbox.start_mark_read(3).unwrap();
     mailbox.select_folder(sys(MailFolder::Sent), 4);
-    mailbox.finish_page(
-        4,
-        Ok(ConversationPage {
-            conversations: vec![ConversationSummary {
-                unread: true,
-                ..summary("a")
-            }],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(4, page_of(vec![unread("a")], 1));
 
+    // The rows of the folder now open stay as Proton listed them, but the
+    // counts the read changed are reloaded.
     assert_eq!(
         mailbox.finish_mark_read(&request, Ok(())),
-        ReadCompletion::default()
+        ReadCompletion {
+            read_confirmed: true,
+            ..ReadCompletion::default()
+        }
     );
     assert!(mailbox.conversations()[0].unread);
 
@@ -2031,7 +2059,7 @@ fn automatic_refresh_waits_for_pending_mail_changes() {
 
     let read = mailbox.start_mark_read(3).unwrap();
     assert!(!mailbox.auto_refresh_available());
-    assert!(mailbox.finish_mark_read(&read, Ok(())).changed);
+    assert!(mailbox.finish_mark_read(&read, Ok(())).read_confirmed);
 
     let action = send(&mut mailbox, MailAction::SetStarred(true), 4);
     assert!(!mailbox.auto_refresh_available());
@@ -2040,15 +2068,152 @@ fn automatic_refresh_waits_for_pending_mail_changes() {
 }
 
 #[test]
-fn actions_wait_for_the_list_to_load() {
-    let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
-    mailbox.refresh(3);
+fn actions_wait_for_rows_still_to_come_but_not_for_a_refresh() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    load_detail(&mut mailbox, "p0", detail("p0", &["m"]), 3);
 
-    assert_eq!(
-        mailbox.start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4),
-        None
+    // Load more asks Proton by position, which a move meanwhile would shift.
+    let more = mailbox.load_more(4).unwrap();
+    assert_eq!(mailbox.start_action(MailAction::SetStarred(true), 5), None);
+    mailbox.finish_page(more.id, full_page(50, 120));
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        6,
     );
-    assert!(!mailbox.action_pending());
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    load_detail(&mut mailbox, "p1", detail("p1", &["m"]), 7);
+    // A search's answer replaces the rows on screen. The offer to undo
+    // waits for it, since the move back could not start.
+    mailbox.set_search_query("invoice".into());
+    let _ = mailbox.start_search(8).unwrap();
+    assert_eq!(mailbox.start_action(MailAction::SetStarred(true), 9), None);
+    assert!(mailbox.take_undo().is_none());
+    assert!(mailbox.undo().is_some());
+    mailbox.set_search_query(String::new());
+
+    // A refresh leaves the rows on screen, and they take actions meanwhile.
+    let _ = mailbox.refresh(10).unwrap();
+    assert!(
+        mailbox
+            .start_action(MailAction::SetStarred(true), 11)
+            .is_some()
+    );
+    assert!(mailbox.action_pending());
+}
+
+#[test]
+fn a_page_read_before_proton_applied_an_action_still_shows_it() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b", "c"], "a");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+    let refresh = mailbox.refresh(4).unwrap();
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    let star = mailbox
+        .start_action_on(
+            "c".into(),
+            SummaryKind::Conversation,
+            MailAction::SetStarred(true),
+            5,
+        )
+        .and_then(|start| start.send)
+        .unwrap();
+
+    // Proton read the page before it archived "a" or starred "c": the move
+    // was confirmed meanwhile, and the star is still on its way.
+    mailbox.finish_page(refresh.id, page(&["a", "b", "c"], 3));
+    assert_eq!(ids(&mailbox), ["b", "c"]);
+    assert!(mailbox.row("c").unwrap().starred);
+    let _ = mailbox.finish_action(&star, Ok(()));
+    assert_eq!(ids(&mailbox), ["b", "c"]);
+    assert!(mailbox.row("c").unwrap().starred);
+    // The app asks once more for what Proton has now.
+    assert!(mailbox.needs_revalidation());
+}
+
+#[test]
+fn a_move_confirmed_while_an_emptied_folder_loads_again_stays_shown() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+    // Nothing is left to show, so the folder loads from scratch.
+    let reload = mailbox.refresh(4).unwrap();
+    assert!(matches!(mailbox.status(), ListStatus::Loading(_)));
+    let _ = mailbox.finish_action(&archive, Ok(()));
+
+    mailbox.finish_page(reload.id, page(&["a"], 1));
+    assert!(ids(&mailbox).is_empty());
+}
+
+#[test]
+fn a_move_taken_back_while_the_list_refreshes_keeps_its_row() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, dated_page(&[("a", 30), ("b", 20)], 2));
+    load_detail(&mut mailbox, "a", detail("a", &["m"]), 3);
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        4,
+    );
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    let refresh = mailbox.refresh(5).unwrap();
+
+    let undo = mailbox
+        .take_undo()
+        .expect("a refresh does not hold Undo back");
+    let back = mailbox.start_move_back(undo, 6).unwrap().send.unwrap();
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+
+    // Proton read the page while "a" was still archived.
+    mailbox.finish_page(refresh.id, dated_page(&[("b", 20)], 1));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    // It read the next one after moving "a" back, before saying so.
+    let refresh = mailbox.refresh(7).unwrap();
+    mailbox.finish_page(refresh.id, dated_page(&[("a", 30), ("b", 20)], 2));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    let _ = mailbox.finish_action(&back, Ok(()));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    assert!(!mailbox.brought_back(&back));
+}
+
+#[test]
+fn an_action_proton_refused_during_a_refresh_is_not_shown_again() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+    let refresh = mailbox.refresh(3).unwrap();
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    let _ = mailbox.finish_action(&star, Err(MailboxError::Connection));
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        5,
+    );
+    let _ = mailbox.finish_action(&archive, Err(MailboxError::Connection));
+
+    mailbox.finish_page(refresh.id, page(&["a", "b"], 2));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    assert!(!mailbox.row("a").unwrap().starred);
+}
+
+#[test]
+fn a_page_asked_for_after_an_action_was_confirmed_shows_what_proton_says() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+    let failed = mailbox.refresh(3).unwrap();
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    let _ = mailbox.finish_action(&star, Ok(()));
+    mailbox.finish_page(failed.id, Err(MailboxError::Connection));
+
+    // Asked for once Proton had starred it, this page knows better: the star
+    // was taken off elsewhere since.
+    let refresh = mailbox.refresh(5).unwrap();
+    mailbox.finish_page(refresh.id, page(&["a", "b"], 2));
+    assert!(!mailbox.row("a").unwrap().starred);
 }
 
 #[test]
@@ -2163,11 +2328,11 @@ fn an_action_asked_for_while_another_is_on_its_way_waits_its_turn() {
         .unwrap();
     assert_eq!(trash.opened.as_deref(), Some("c"));
 
-    let next = mailbox.finish_action(&star, Ok(())).next.unwrap();
+    let next = mailbox.finish_action(&star, Ok(())).next_action.unwrap();
     assert_eq!((next.id, next.row_id.as_str()), (4, "a"));
-    let last = mailbox.finish_action(&next, Ok(())).next.unwrap();
+    let last = mailbox.finish_action(&next, Ok(())).next_action.unwrap();
     assert_eq!((last.id, last.row_id.as_str()), (5, "b"));
-    assert_eq!(mailbox.finish_action(&last, Ok(())).next, None);
+    assert_eq!(mailbox.finish_action(&last, Ok(())).next_action, None);
     assert!(!mailbox.action_pending());
 }
 
@@ -2188,7 +2353,7 @@ fn taking_a_move_back_goes_after_the_move() {
         .unwrap();
     assert_eq!(back.send, None, "the move back waits for the move");
 
-    let next = mailbox.finish_action(&archive, Ok(())).next.unwrap();
+    let next = mailbox.finish_action(&archive, Ok(())).next_action.unwrap();
     assert_eq!(next.id, 4);
     assert_eq!(next.action, MailAction::MoveTo(Folder::INBOX));
 }
@@ -2206,7 +2371,7 @@ fn a_reload_while_a_move_is_on_its_way_cannot_bring_the_row_back() {
     // Proton had not moved it yet when the page was read.
     let refresh = mailbox.refresh(4).unwrap();
     mailbox.finish_page(refresh.id, page(&["a", "b"], 2));
-    assert_eq!(ids(&mailbox), ["a", "b"]);
+    assert_eq!(ids(&mailbox), ["a"]);
 
     let _ = mailbox.finish_action(&archive, Ok(()));
     assert_eq!(ids(&mailbox), ["a"]);
@@ -2221,13 +2386,13 @@ fn stale_or_moved_action_responses_change_nothing() {
         3,
     );
     let stale = ActionRequest {
-        id: 99,
+        id: NEVER_ISSUED,
         ..request.clone()
     };
 
     let finish = mailbox.finish_action(&stale, Ok(()));
     assert_eq!(
-        (finish.result, finish.next, finish.opened),
+        (finish.result, finish.next_action, finish.opened),
         (Ok(()), None, None)
     );
     assert_eq!(ids(&mailbox), ["b"]);
@@ -2241,24 +2406,19 @@ fn stale_or_moved_action_responses_change_nothing() {
 
 #[test]
 fn rows_without_a_time_keep_their_place() {
-    let timed = |id: &str, time| ConversationSummary {
-        time: Some(time),
-        ..summary(id)
-    };
     let (mut mailbox, request) = open();
 
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![
-                timed("c1", 50),
+        page_of(
+            vec![
+                dated("c1", 50),
                 summary("undated"),
-                timed("m1", 10),
-                timed("c2", 30),
+                dated("m1", 10),
+                dated("c2", 30),
             ],
-            total: 4,
-            inspect_candidates: Vec::new(),
-        }),
+            4,
+        ),
     );
 
     assert_eq!(ids(&mailbox), ["c1", "undated", "c2", "m1"]);
@@ -2266,35 +2426,23 @@ fn rows_without_a_time_keep_their_place() {
 
 #[test]
 fn rows_stay_newest_first_across_pages() {
-    let timed = |id: &str, time| ConversationSummary {
-        time: Some(time),
-        ..summary(id)
-    };
     let (mut mailbox, request) = open();
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![
-                timed("c1", 50),
-                timed("m1", 40),
-                timed("m2", 10),
-                timed("c2", 30),
+        page_of(
+            vec![
+                dated("c1", 50),
+                dated("m1", 40),
+                dated("m2", 10),
+                dated("c2", 30),
             ],
-            total: 120,
-            inspect_candidates: Vec::new(),
-        }),
+            120,
+        ),
     );
     assert_eq!(ids(&mailbox), ["c1", "m1", "c2", "m2"]);
 
     let more = mailbox.load_more(3).unwrap();
-    mailbox.finish_page(
-        more.id,
-        Ok(ConversationPage {
-            conversations: vec![timed("c3", 20)],
-            total: 120,
-            inspect_candidates: Vec::new(),
-        }),
-    );
+    mailbox.finish_page(more.id, page_of(vec![dated("c3", 20)], 120));
 
     assert_eq!(ids(&mailbox), ["c1", "m1", "c2", "c3", "m2"]);
 }
@@ -2389,21 +2537,41 @@ fn search_applies_to_the_selected_folder() {
     let request = mailbox.select_folder(sys(MailFolder::Archive), 3).unwrap();
     mailbox.finish_page(
         request.id,
-        Ok(ConversationPage {
-            conversations: vec![searchable_summary(
+        page_of(
+            vec![searchable_summary(
                 "archived",
                 "Archived Sender",
                 "archive@example.com",
                 "Archived Rust notes",
                 "Old project",
             )],
-            total: 1,
-            inspect_candidates: Vec::new(),
-        }),
+            1,
+        ),
     );
 
     assert_eq!(mailbox.folder(), &sys(MailFolder::Archive));
     assert_eq!(visible_ids(&mailbox), ["archived"]);
+}
+
+#[test]
+fn clearing_a_search_keeps_a_failure_of_the_folder_itself() {
+    let mut mailbox = searchable_mailbox();
+    let refresh = mailbox.refresh(9).unwrap();
+    mailbox.finish_page(refresh.id, Err(MailboxError::Connection));
+    mailbox.set_search_query("rust".into());
+    mailbox.set_search_query(String::new());
+    assert_eq!(
+        mailbox.status(),
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Folder)
+    );
+
+    // The search's own failure goes with it.
+    let mut mailbox = searchable_mailbox();
+    mailbox.set_search_query("rust".into());
+    let search = mailbox.start_search(3).unwrap();
+    mailbox.finish_search(&search, Err(MailboxError::Connection));
+    mailbox.set_search_query(String::new());
+    assert_eq!(mailbox.status(), ListStatus::Loaded);
 }
 
 #[test]
@@ -2431,7 +2599,7 @@ fn typing_keeps_a_conversation_that_is_still_loading() {
 fn search_does_not_change_mailbox_counts() {
     let mut mailbox = searchable_mailbox();
     let counts: MailboxCounts = [(sys(MailFolder::Inbox), 7)].into_iter().collect();
-    mailbox.finish_counts(2, Ok(counts.clone()));
+    mailbox.finish_counts(OPENING_COUNTS, Ok(counts.clone()));
 
     mailbox.set_search_query("rust".into());
     mailbox.set_search_query("missing".into());
@@ -2502,16 +2670,7 @@ fn split_conversation_replaces_conversation_with_message_rows_and_updates_visibl
     mailbox.finish_page(
         request.id,
         Ok(ConversationPage {
-            conversations: vec![
-                ConversationSummary {
-                    time: Some(50),
-                    ..summary("c1")
-                },
-                ConversationSummary {
-                    time: Some(20),
-                    ..summary("c2")
-                },
-            ],
+            conversations: vec![dated("c1", 50), dated("c2", 20)],
             total: 2,
             inspect_candidates: vec!["c1".into()],
         }),
@@ -2519,18 +2678,7 @@ fn split_conversation_replaces_conversation_with_message_rows_and_updates_visibl
 
     assert_eq!(visible_ids(&mailbox), ["c1", "c2"]);
 
-    let split_rows = vec![
-        ConversationSummary {
-            time: Some(60),
-            kind: SummaryKind::Message,
-            ..summary("m1")
-        },
-        ConversationSummary {
-            time: Some(40),
-            kind: SummaryKind::Message,
-            ..summary("m2")
-        },
-    ];
+    let split_rows = vec![split_message("m1", 60), split_message("m2", 40)];
 
     mailbox.split_conversation(&Folder::INBOX, "c1", split_rows);
 
@@ -2581,18 +2729,7 @@ fn split_conversation_updates_cached_listing_when_folder_not_active() {
     assert_eq!(visible_ids(&mailbox), ["s1"]);
 
     // Background inspection finishes for Inbox while Sent is active
-    let split_rows = vec![
-        ConversationSummary {
-            time: Some(60),
-            kind: SummaryKind::Message,
-            ..summary("m1")
-        },
-        ConversationSummary {
-            time: Some(40),
-            kind: SummaryKind::Message,
-            ..summary("m2")
-        },
-    ];
+    let split_rows = vec![split_message("m1", 60), split_message("m2", 40)];
     mailbox.split_conversation(&Folder::INBOX, "c1", split_rows);
 
     // Sent is still visible and unaffected
@@ -2617,19 +2754,14 @@ fn cached_split_rows_are_not_added_again_by_the_next_page() {
     assert_eq!(ids(&mailbox), ["m1", "m2", "c2", "c3"]);
 }
 
-fn split_message(id: &str, time: i64) -> ConversationSummary {
-    ConversationSummary {
-        kind: SummaryKind::Message,
-        ..dated(id, time)
-    }
-}
-
+/// The first inbox page with its last row, p49, split into two messages:
+/// the inbox then shows one row more than a page.
 fn inspected_last_inbox() -> (Mailbox, Vec<ConversationSummary>) {
     let (mut mailbox, first) = open();
     mailbox.finish_page(first.id, full_page(0, 120));
     let members = vec![
-        split_message("m49-a", 999_951),
-        split_message("m49-b", 999_940),
+        split_message("m49-a", page_time(49)),
+        split_message("m49-b", page_time(60)),
     ];
     mailbox.split_conversation(&Folder::INBOX, "p49", members.clone());
     (mailbox, members)
@@ -2651,8 +2783,8 @@ fn repeated_refresh_reuses_split_rows_and_reinspection_updates_without_duplicate
         updated[1].subject = Some(format!("fresh {request}"));
         mailbox.split_conversation(&Folder::INBOX, "p49", updated);
         assert_eq!(visible_ids(&mailbox), original);
-        assert_eq!(mailbox.visible_count(), 51);
-        assert_eq!(mailbox.row_ids.len(), 51);
+        assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize + 1);
+        assert_eq!(mailbox.row_ids.len(), PAGE_SIZE as usize + 1);
         assert_eq!(
             mailbox.row("m49-b").unwrap().subject.as_deref(),
             Some(format!("fresh {request}").as_str())
@@ -2665,9 +2797,9 @@ fn changed_conversation_invalidates_its_split_members_even_below_the_page_bounda
     let (mut mailbox, _) = inspected_last_inbox();
     let refresh = mailbox.refresh(10).unwrap();
     let mut changed = full_page(0, 120).unwrap();
-    changed.conversations[49].message_count += 1;
+    changed.conversations.last_mut().unwrap().message_count += 1;
     mailbox.finish_page(refresh.id, Ok(changed));
-    assert_eq!(mailbox.visible_count(), 50);
+    assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize);
     assert!(mailbox.has_row("p49"));
     assert!(!mailbox.has_row("m49-a"));
     assert!(!mailbox.has_row("m49-b"));
@@ -2680,10 +2812,11 @@ fn refreshed_read_and_star_flags_keep_grouping_until_fresh_inspection_updates_me
     let (mut mailbox, mut split) = inspected_last_inbox();
     let refresh = mailbox.refresh(10).unwrap();
     let mut page = full_page(0, 120).unwrap();
-    page.conversations[49].unread = true;
-    page.conversations[49].starred = true;
+    let last = page.conversations.last_mut().unwrap();
+    last.unread = true;
+    last.starred = true;
     mailbox.finish_page(refresh.id, Ok(page));
-    assert_eq!(mailbox.visible_count(), 51);
+    assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize + 1);
     assert!(!mailbox.has_row("p49"));
     assert!(mailbox.groups.splits["p49"].source.unread);
     assert!(mailbox.groups.splits["p49"].source.starred);
@@ -2692,19 +2825,19 @@ fn refreshed_read_and_star_flags_keep_grouping_until_fresh_inspection_updates_me
     mailbox.split_conversation(&Folder::INBOX, "p49", split);
     assert!(mailbox.row("m49-b").unwrap().unread);
     assert!(mailbox.row("m49-b").unwrap().starred);
-    assert_eq!(mailbox.row_ids.len(), 51);
+    assert_eq!(mailbox.row_ids.len(), PAGE_SIZE as usize + 1);
 }
 
 #[test]
 fn overlapping_pages_keep_verified_groups_and_deduplicate_new_rows() {
     let (mut mailbox, _) = inspected_last_inbox();
     let next = mailbox.load_more(10).unwrap();
-    let mut page = full_page(50, 120).unwrap();
-    page.conversations.insert(0, dated("p49", 999_951));
-    page.conversations.push(dated("p50", 999_950));
+    let mut page = full_page(PAGE_SIZE, 120).unwrap();
+    page.conversations.insert(0, dated("p49", page_time(49)));
+    page.conversations.push(dated("p50", page_time(50)));
     mailbox.finish_page(next.id, Ok(page));
-    assert_eq!(mailbox.visible_count(), 101);
-    assert_eq!(mailbox.row_ids.len(), 101);
+    assert_eq!(mailbox.visible_count(), 2 * PAGE_SIZE as usize + 1);
+    assert_eq!(mailbox.row_ids.len(), 2 * PAGE_SIZE as usize + 1);
     assert!(!mailbox.has_row("p49"));
     assert!(mailbox.has_row("m49-b"));
 }
@@ -2731,20 +2864,20 @@ fn deeper_split_conversations_keep_all_members_by_parent_time() {
     let (mut mailbox, first) = open();
     mailbox.finish_page(first.id, full_page(0, 120));
     let next = mailbox.load_more(10).unwrap();
-    mailbox.finish_page(next.id, full_page(50, 120));
+    mailbox.finish_page(next.id, full_page(PAGE_SIZE, 120));
     mailbox.split_conversation(
         &Folder::INBOX,
         "p60",
         vec![
-            split_message("m60-a", 999_940),
-            split_message("m60-b", 999_800),
+            split_message("m60-a", page_time(60)),
+            split_message("m60-b", page_time(200)),
         ],
     );
     let refresh = mailbox.refresh(11).unwrap();
     mailbox.finish_page(refresh.id, full_page(0, 120));
     assert!(mailbox.has_row("m60-a") && mailbox.has_row("m60-b"));
     assert!(mailbox.has_inspection_target("p60"));
-    assert_eq!(mailbox.visible_count(), 101);
+    assert_eq!(mailbox.visible_count(), 2 * PAGE_SIZE as usize + 1);
 }
 
 #[test]
@@ -2781,4 +2914,190 @@ fn a_locally_removed_member_cannot_be_restored_from_a_cached_group() {
     mailbox.finish_page(refresh.id, page(&["c1"], 1));
     assert_eq!(ids(&mailbox), ["c1"]);
     assert!(mailbox.groups.splits.is_empty());
+}
+
+#[test]
+fn an_empty_page_offers_no_next_one_whatever_the_total_says() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(request.id, page_of(Vec::new(), 120));
+    assert!(!mailbox.has_more(), "the folder ran out before its total");
+
+    let mut mailbox = loaded_inbox(&["a"], 120);
+    mailbox.set_search_query("invoice".into());
+    let search = mailbox.start_search(3).unwrap();
+    assert_eq!(
+        mailbox.finish_search(&search, page_of(Vec::new(), 40)),
+        None
+    );
+    assert!(
+        !mailbox.has_more(),
+        "the results ran out before their total"
+    );
+}
+
+/// Confirms moving each of `rows` to Archive, from the open Inbox.
+fn archive_confirmed(mailbox: &mut Mailbox, rows: &[&str], first_request: u64) {
+    for (request, row) in (first_request..).zip(rows) {
+        let moved = mailbox
+            .start_action_on(
+                (*row).into(),
+                SummaryKind::Conversation,
+                MailAction::MoveTo(sys(MailFolder::Archive)),
+                request,
+            )
+            .and_then(|start| start.send)
+            .unwrap();
+        let _ = mailbox.finish_action(&moved, Ok(()));
+    }
+}
+
+#[test]
+fn loading_more_after_moves_out_does_not_skip_the_rows_that_moved_up() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    archive_confirmed(&mut mailbox, &["p10", "p20", "p30"], 3);
+
+    // Proton's first page now reaches three rows further, to p52.
+    let more = mailbox.load_more(10).unwrap();
+    assert_eq!(more.page, 0);
+    let rows = (0..53)
+        .filter(|number| ![10, 20, 30].contains(number))
+        .map(|number| dated(&format!("p{number}"), page_time(number)))
+        .collect();
+    mailbox.finish_page(more.id, page_of(rows, 117));
+    let ids = visible_ids(&mailbox);
+    assert_eq!(ids.len(), PAGE_SIZE as usize);
+    assert_eq!(&ids[47..], ["p50", "p51", "p52"]);
+
+    // The next page follows the one just loaded.
+    assert_eq!(mailbox.load_more(11).unwrap().page, 1);
+}
+
+#[test]
+fn a_move_of_a_row_only_a_search_found_leaves_the_pages_as_they_were() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    mailbox.set_search_query("invoice".into());
+    let search = mailbox.start_search(3).unwrap();
+    mailbox.finish_search(&search, page(&["found"], 1));
+    archive_confirmed(&mut mailbox, &["found"], 4);
+
+    // The loaded pages never held it, so Proton's later pages did not move.
+    mailbox.set_search_query(String::new());
+    assert_eq!(mailbox.load_more(6).unwrap().page, 1);
+}
+
+#[test]
+fn moves_that_did_not_leave_keep_load_more_on_the_next_page() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    let refused = mailbox
+        .start_action_on(
+            "p10".into(),
+            SummaryKind::Conversation,
+            MailAction::MoveTo(sys(MailFolder::Archive)),
+            3,
+        )
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&refused, Err(MailboxError::Service));
+    archive_confirmed(&mut mailbox, &["p20"], 4);
+    let undo = mailbox.take_undo().unwrap();
+    let back = mailbox
+        .start_move_back(undo, 5)
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&back, Ok(()));
+
+    // One move was refused and the other taken back: nothing left the pages.
+    assert_eq!(mailbox.load_more(6).unwrap().page, 1);
+}
+
+/// A two-page Inbox with `row` archived and the archive confirmed.
+fn archived_from_a_deeper_page(row: &str) -> Mailbox {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    let more = mailbox.load_more(3).unwrap();
+    mailbox.finish_page(more.id, full_page(PAGE_SIZE, 120));
+    load_detail(&mut mailbox, row, detail(row, &[row]), 4);
+    let archive = mailbox
+        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 5)
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    assert!(!mailbox.has_row(row));
+    mailbox
+}
+
+#[test]
+fn taking_back_a_move_lists_a_row_from_a_deeper_page_again() {
+    // p60 is on the second page, which a reload does not read.
+    let mut mailbox = archived_from_a_deeper_page("p60");
+
+    let undo = mailbox.take_undo().expect("the move can be taken back");
+    let back = mailbox
+        .start_move_back(undo, 6)
+        .and_then(|start| start.send)
+        .unwrap();
+    // Listed again at once, where its date puts it.
+    let ids = visible_ids(&mailbox);
+    let at = ids
+        .iter()
+        .position(|id| *id == "p60")
+        .expect("listed again");
+    assert_eq!((ids[at - 1], ids[at + 1]), ("p59", "p61"));
+
+    let _ = mailbox.finish_action(&back, Ok(()));
+    assert!(mailbox.has_row("p60"));
+    assert!(
+        !mailbox.brought_back(&back),
+        "no reload is needed to show it"
+    );
+
+    // Confirmed, it is listed for good: a later refusal leaves it be.
+    let star = mailbox
+        .start_action_on(
+            "p60".into(),
+            SummaryKind::Conversation,
+            MailAction::SetStarred(true),
+            7,
+        )
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&star, Err(MailboxError::Service));
+    assert!(mailbox.has_row("p60"));
+}
+
+#[test]
+fn a_refused_move_back_takes_its_row_away_again() {
+    let mut mailbox = archived_from_a_deeper_page("p60");
+    let undo = mailbox.take_undo().unwrap();
+    let back = mailbox
+        .start_move_back(undo, 6)
+        .and_then(|start| start.send)
+        .unwrap();
+    assert!(mailbox.has_row("p60"));
+
+    let _ = mailbox.finish_action(&back, Err(MailboxError::Service));
+    assert!(!mailbox.has_row("p60"), "the row is still in Archive");
+}
+
+#[test]
+fn a_move_back_behind_its_move_keeps_the_row_when_the_move_ends() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+    let undo = mailbox.take_undo().unwrap();
+    let back = mailbox.start_move_back(undo, 4).unwrap();
+    assert_eq!(back.send, None, "the move back waits for the move");
+    assert!(mailbox.has_row("a"));
+
+    let next = mailbox.finish_action(&archive, Ok(())).next_action.unwrap();
+    assert!(mailbox.has_row("a"), "the move's answer took it away again");
+    // The move back, refused, leaves it in Archive after all.
+    let _ = mailbox.finish_action(&next, Err(MailboxError::Service));
+    assert!(!mailbox.has_row("a"));
 }

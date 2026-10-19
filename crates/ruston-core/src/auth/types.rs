@@ -1,5 +1,6 @@
 //! Auth wire types.
 
+use crate::model::enums::password_mode;
 use serde::Deserialize;
 
 /// Response from creating an unauthenticated session (UID + initial tokens).
@@ -36,7 +37,8 @@ pub struct AuthInfo {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct TwoFa {
-    /// Bitmask of enabled 2FA methods: bit 0 = TOTP, bit 1 = FIDO2/WebAuthn.
+    /// Bitmask of enabled 2FA methods, of
+    /// [`two_factor`](crate::model::enums::two_factor) bits.
     #[serde(default)]
     pub enabled: u32,
 }
@@ -58,16 +60,16 @@ pub struct AuthResponse {
     /// Two-factor status (which methods are required).
     #[serde(rename = "2FA", default)]
     pub two_fa: TwoFa,
-    /// Password mode: `1` for single-password, `2` for separate mailbox password.
-    #[serde(default = "one")]
+    /// Password mode, one of [`password_mode`]; one password when absent.
+    #[serde(default = "one_password")]
     pub password_mode: u8,
     /// Granted scope string, if returned.
     #[serde(default)]
     pub scope: Option<String>,
 }
 
-fn one() -> u8 {
-    1
+fn one_password() -> u8 {
+    password_mode::ONE_PASSWORD
 }
 
 #[cfg(test)]
@@ -83,7 +85,16 @@ mod tests {
         let r: AuthResponse = serde_json::from_value(json).unwrap();
         assert_eq!(r.uid, "x");
         assert_eq!(r.two_fa.enabled, 1);
-        assert_eq!(r.password_mode, 2);
+        assert_eq!(r.password_mode, password_mode::TWO_PASSWORDS);
+    }
+
+    #[test]
+    fn an_auth_response_without_a_password_mode_has_one_password() {
+        let json = serde_json::json!({
+            "Code": 1000, "UID": "x", "AccessToken": "a", "RefreshToken": "r"
+        });
+        let r: AuthResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(r.password_mode, 1);
     }
 
     #[test]

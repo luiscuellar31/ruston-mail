@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::mail::{
-    BodyFormat, Domains, InternationalDomain, Kind, MailMessage, Outgoing, Protection,
-    ProtectionCheck, Recipients, SendError, recipients,
+    BodyFormat, Domains, InternationalDomain, MailMessage, MailboxError, MessageBody, Outgoing,
+    OutgoingKind, Protection, ProtectionCheck, Recipients, SendError, recipients,
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
@@ -11,7 +11,7 @@ use super::{App, Effects, Message, ReaderState, UiEffect};
 pub type ComposeId = u64;
 
 /// One of the fields being typed into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ComposeField {
     To,
     Cc,
@@ -119,13 +119,42 @@ pub enum Sending {
     Failed(SendError),
 }
 
+/// How a message is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerKind {
+    /// A reply to whoever the message asks replies to go to.
+    Reply,
+    /// A reply that also copies in everyone else the message went to.
+    ReplyAll,
+    /// The message passed on to recipients the user types.
+    Forward,
+}
+
+impl AnswerKind {
+    /// What core sends to answer the message `message_id` this way.
+    fn outgoing(self, message_id: &str) -> OutgoingKind {
+        let message_id = message_id.to_owned();
+        match self {
+            AnswerKind::Reply => OutgoingKind::Reply {
+                message_id,
+                everyone: false,
+            },
+            AnswerKind::ReplyAll => OutgoingKind::Reply {
+                message_id,
+                everyone: true,
+            },
+            AnswerKind::Forward => OutgoingKind::Forward { message_id },
+        }
+    }
+}
+
 /// The message being answered. Core writes the subject and, for a reply,
 /// sends to the recipients shown here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answering {
     pub sender: String,
     pub subject: String,
-    pub everyone: bool,
+    pub kind: AnswerKind,
     /// Where a reply goes; empty for a forward, whose recipients are typed.
     pub to: Vec<String>,
     /// What Reply all copies in.
@@ -133,13 +162,19 @@ pub struct Answering {
     /// The sender's address when the message's Reply-To sends the reply
     /// somewhere else, so the composer can say so.
     pub redirected_from: Option<String>,
+    /// Whether core quotes the original under the text, which it does when
+    /// the original opens, as it did in the reader.
+    pub quotes_original: bool,
+    /// The files a forward carries from the original, as the reader lists
+    /// them; a reply carries none.
+    pub forwarded: Vec<String>,
 }
 
 /// A message being written.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Compose {
     id: ComposeId,
-    kind: Kind,
+    kind: OutgoingKind,
     answering: Option<Answering>,
     to: String,
     cc: String,
@@ -147,6 +182,9 @@ pub struct Compose {
     subject: String,
     body: String,
     attachments: Vec<PathBuf>,
+    /// The size of each attached file once read on the blocking pool; `None`
+    /// for a file that could not be read.
+    sizes: HashMap<PathBuf, Option<u64>>,
     /// Which domains the recipient fields take, from Settings.
     domains: Domains,
     /// The recipient fields as last read under `domains`.
@@ -156,7 +194,7 @@ pub struct Compose {
     protection: HashMap<String, Checked>,
     /// Whether the copy fields are on show. They start hidden: most mail goes
     /// to one person.
-    more: bool,
+    copies_shown: bool,
     state: Sending,
     confirming_discard: bool,
 }
@@ -284,8 +322,8 @@ impl Compose {
             .retain(|address, _| typed.contains(address.as_str()));
     }
 
-    pub fn showing_more(&self) -> bool {
-        self.more
+    pub fn showing_copies(&self) -> bool {
+        self.copies_shown
     }
 
     pub fn confirming_discard(&self) -> bool {
@@ -358,6 +396,11 @@ impl Compose {
         &self.attachments
     }
 
+    /// The size of an attached file, once it has been read.
+    pub fn attachment_size(&self, path: &Path) -> Option<u64> {
+        self.sizes.get(path).copied().flatten()
+    }
+
     pub fn add_attachments(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         for path in paths {
             if !self.attachments.contains(&path) {
@@ -369,7 +412,8 @@ impl Compose {
 
     pub fn remove_attachment(&mut self, index: usize) {
         if index < self.attachments.len() {
-            self.attachments.remove(index);
+            let path = self.attachments.remove(index);
+            self.sizes.remove(&path);
             self.edited();
         }
     }
@@ -386,7 +430,7 @@ impl Compose {
 
     /// Whether the window asks for a subject. Core writes one for an answer.
     pub fn asks_for_subject(&self) -> bool {
-        matches!(self.kind, Kind::New)
+        matches!(self.kind, OutgoingKind::New)
     }
 
     pub fn sending(&self) -> Sending {
@@ -448,25 +492,26 @@ impl Compose {
     }
 }
 
-/// What the composer says about the message `kind` answers.
-fn answering_for(kind: &Kind, message: &MailMessage, subject: Option<&str>) -> Answering {
-    let everyone = matches!(kind, Kind::Reply { everyone: true, .. });
+/// What the composer says about the message it answers this way.
+fn answering_for(kind: AnswerKind, message: &MailMessage, subject: Option<&str>) -> Answering {
     let (to, cc) = match kind {
-        Kind::Reply { everyone, .. } => (
-            message.reply_to.clone(),
-            if *everyone {
-                message.reply_all_cc.clone()
-            } else {
-                Vec::new()
-            },
-        ),
-        _ => (Vec::new(), Vec::new()),
+        AnswerKind::Reply => (message.reply_to.clone(), Vec::new()),
+        AnswerKind::ReplyAll => (message.reply_to.clone(), message.reply_all_cc.clone()),
+        AnswerKind::Forward => (Vec::new(), Vec::new()),
     };
     // Core says when Reply-To moved the answer: a reply to mail you sent
     // also goes to someone other than its sender, without any redirect.
     let sender = message.sender.address.trim();
     let redirected_from = (!to.is_empty() && message.reply_redirected && !sender.is_empty())
         .then(|| sender.to_owned());
+    let forwarded = match kind {
+        AnswerKind::Forward => message
+            .attachments
+            .iter()
+            .map(|attachment| attachment.name.clone())
+            .collect(),
+        AnswerKind::Reply | AnswerKind::ReplyAll => Vec::new(),
+    };
     Answering {
         sender: message
             .sender
@@ -474,16 +519,88 @@ fn answering_for(kind: &Kind, message: &MailMessage, subject: Option<&str>) -> A
             .unwrap_or("(unknown sender)")
             .to_owned(),
         subject: subject.unwrap_or("(No subject)").to_owned(),
-        everyone,
+        kind,
         to,
         cc,
         redirected_from,
+        quotes_original: message.body != MessageBody::Unreadable,
+        forwarded,
     }
+}
+
+/// A message being written when Proton ended the session. It stays in memory,
+/// never on disk, for its own account to pick up by signing in again.
+pub(super) struct ParkedDraft {
+    /// The Proton account it was written in.
+    account: String,
+    /// That account's address, to say who to sign in as.
+    address: Option<String>,
+    compose: Compose,
 }
 
 impl App {
     pub fn compose(&self) -> Option<&Compose> {
         self.compose.as_ref()
+    }
+
+    /// Whether a message waits for its account to sign in again.
+    pub fn has_parked_draft(&self) -> bool {
+        self.parked_draft.is_some()
+    }
+
+    /// The address of the account a waiting message belongs to, when known.
+    pub fn parked_draft_address(&self) -> Option<&str> {
+        self.parked_draft.as_ref()?.address.as_deref()
+    }
+
+    /// Takes the draft out of a session that is closing. Given the `account`
+    /// whose session Proton ended, a written or sending draft waits in memory
+    /// for it; otherwise it goes, so it never reaches another account. A send
+    /// on its way may or may not have gone, so it comes back asking to check
+    /// Sent; any other failure was the old session's.
+    pub(super) fn park_draft(&mut self, ended: Option<String>) {
+        let address = match &self.auth_state {
+            super::AuthState::Authenticated { email } => email.clone(),
+            _ => None,
+        };
+        let (Some(mut compose), Some(account)) = (self.compose.take(), ended) else {
+            return;
+        };
+        if compose.is_untouched() && !compose.in_flight() {
+            return;
+        }
+        compose.state = match std::mem::take(&mut compose.state) {
+            Sending::InFlight | Sending::Failed(SendError::Unconfirmed) => {
+                Sending::Failed(SendError::Unconfirmed)
+            }
+            Sending::Writing | Sending::Failed(_) => Sending::Writing,
+        };
+        compose.confirming_discard = false;
+        self.parked_draft = Some(ParkedDraft {
+            account,
+            address,
+            compose,
+        });
+    }
+
+    /// Gives a waiting draft back when its own account has just signed in,
+    /// under a new ID so nothing from the ended session reaches it, and asks
+    /// again about recipients whose lookup that session left unanswered. Any
+    /// other account, or the demo, drops it.
+    pub(super) fn restore_parked_draft(&mut self) -> Effects {
+        let Some(parked) = self.parked_draft.take() else {
+            return Effects::none();
+        };
+        if self.account.as_deref() != Some(parked.account.as_str()) {
+            return Effects::none();
+        }
+        let mut compose = parked.compose;
+        compose.id = self.next_compose_id();
+        compose
+            .protection
+            .retain(|_, checked| *checked != Checked::Checking);
+        self.compose = Some(compose);
+        self.check_compose_protection()
     }
 
     pub(super) fn open_compose(&mut self) {
@@ -498,7 +615,7 @@ impl App {
     }
 
     /// Answers the message with the given id in the open conversation.
-    pub(super) fn answer(&mut self, message_id: &str, forward: bool, everyone: bool) {
+    pub(super) fn answer(&mut self, message_id: &str, kind: AnswerKind) {
         let Some(ReaderState::Loaded(reader)) = self.mailbox().map(super::Mailbox::reader_state)
         else {
             return;
@@ -511,25 +628,15 @@ impl App {
         else {
             return;
         };
-        let kind = if forward {
-            Kind::Forward {
-                message_id: message_id.to_owned(),
-            }
-        } else {
-            Kind::Reply {
-                message_id: message_id.to_owned(),
-                everyone,
-            }
-        };
         // Read what the composer shows while the reader still holds the
         // message, rather than copying its decrypted body and attachments.
-        let answering = answering_for(&kind, message, reader.detail().subject.as_deref());
-        self.open_answer(kind, answering);
+        let answering = answering_for(kind, message, reader.detail().subject.as_deref());
+        self.open_answer(kind.outgoing(message_id), answering);
     }
 
     /// Answers or forwards a message. Core addresses replies itself; the
     /// composer shows where they go.
-    fn open_answer(&mut self, kind: Kind, answering: Answering) {
+    fn open_answer(&mut self, kind: OutgoingKind, answering: Answering) {
         if self.compose.is_some() {
             return;
         }
@@ -559,11 +666,13 @@ impl App {
         }
     }
 
-    /// Discards an unsent message even if it carries text.
+    /// Discards an unsent message even if it carries text, and one waiting
+    /// for its account to sign in again.
     pub(super) fn discard_compose(&mut self) {
         if !self.compose.as_ref().is_some_and(Compose::in_flight) {
             self.compose = None;
         }
+        self.parked_draft = None;
     }
 
     /// Cancels discard confirmation and keeps the message.
@@ -581,7 +690,7 @@ impl App {
 
     pub(super) fn toggle_compose_copies(&mut self) {
         if let Some(compose) = self.compose.as_mut() {
-            compose.more = !compose.more;
+            compose.copies_shown = !compose.copies_shown;
         }
     }
 
@@ -593,13 +702,42 @@ impl App {
         }
     }
 
-    pub(super) fn add_compose_attachments(&mut self, id: ComposeId, paths: Vec<PathBuf>) {
-        if let Some(compose) = self
+    /// Attaches files to the draft `id`, and reads their sizes on the blocking
+    /// pool: asking the file system can hang on a share that went away.
+    pub(super) fn add_compose_attachments(
+        &mut self,
+        id: ComposeId,
+        paths: Vec<PathBuf>,
+    ) -> Effects {
+        let Some(compose) = self
             .compose
             .as_mut()
             .filter(|c| c.id == id && !c.in_flight())
-        {
-            compose.add_attachments(paths);
+        else {
+            return Effects::none();
+        };
+        compose.add_attachments(paths.iter().cloned());
+        if paths.is_empty() {
+            return Effects::none();
+        }
+        Effects::perform(
+            async move {
+                tokio::task::spawn_blocking(move || file_sizes(paths))
+                    .await
+                    .unwrap_or_default()
+            },
+            move |sizes| Message::AttachmentSizesRead(id, sizes),
+        )
+    }
+
+    /// Records sizes read for the draft `id`, if it is still the one open.
+    pub(super) fn finish_attachment_sizes(
+        &mut self,
+        id: ComposeId,
+        sizes: HashMap<PathBuf, Option<u64>>,
+    ) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| c.id == id) {
+            compose.sizes.extend(sizes);
         }
     }
 
@@ -735,11 +873,25 @@ impl App {
                 self.reload_counts()
             }
             Err(error) => {
+                let expired = error == SendError::Mailbox(MailboxError::SessionExpired);
                 compose.state = Sending::Failed(error);
+                // Signing in again is the way on, and the draft waits for it.
+                self.end_session_if_expired(expired.then_some(MailboxError::SessionExpired));
                 Effects::none()
             }
         }
     }
+}
+
+/// The size of each file, or `None` for one that cannot be read.
+fn file_sizes(paths: Vec<PathBuf>) -> HashMap<PathBuf, Option<u64>> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+            (path, size)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -784,6 +936,46 @@ mod tests {
         // Nothing new to ask about: the same address is not looked up twice.
         assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 0);
 
+        checked(
+            &mut app,
+            vec![("ada@proton.me".into(), Ok(Protection::EndToEnd))],
+        );
+        assert_eq!(notice(&app), Some(ProtectionNotice::Encrypted));
+    }
+
+    #[test]
+    fn a_kept_draft_asks_again_about_recipients_its_session_left_unanswered() {
+        let opened_again = |checking: bool| {
+            let mut app = App::signed_in_as("user-1", "alex@proton.me");
+            let _ = app.update(Message::OpenCompose);
+            let _ = app.update(Message::ComposeChanged(
+                ComposeField::To,
+                "ada@proton.me".into(),
+            ));
+            let _ = app.update(Message::ComposeRecipientsLeft);
+            if !checking {
+                checked(
+                    &mut app,
+                    vec![("ada@proton.me".into(), Ok(Protection::EndToEnd))],
+                );
+            }
+            let _ = app.update(Message::ConversationsLoaded(
+                1,
+                Err(MailboxError::SessionExpired),
+            ));
+            let effects = app.open_mailbox(
+                crate::mail::MailBackend::demo(),
+                None,
+                Some("user-1".into()),
+            );
+            (app, effects.units())
+        };
+
+        let (_, answered) = opened_again(false);
+        let (mut app, unanswered) = opened_again(true);
+        // The ended session's answer will never come, so it is asked again.
+        assert_eq!(unanswered, answered + 1);
+        assert_eq!(notice(&app), Some(ProtectionNotice::Checking));
         checked(
             &mut app,
             vec![("ada@proton.me".into(), Ok(Protection::EndToEnd))],
@@ -918,7 +1110,7 @@ mod tests {
             Some(ProtectionNotice::Encrypted)
         );
 
-        compose.kind = Kind::Reply {
+        compose.kind = OutgoingKind::Reply {
             message_id: "message".into(),
             everyone: false,
         };
@@ -963,7 +1155,9 @@ mod tests {
                 name: Some("Alex Rivera".into()),
                 address: "alex@corp.example".into(),
             },
-            recipients: Vec::new(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
             reply_to: vec![reply_to.into()],
             reply_all_cc: vec!["bob@corp.example".into()],
             reply_redirected: !reply_to.eq_ignore_ascii_case("alex@corp.example"),
@@ -975,36 +1169,55 @@ mod tests {
         }
     }
 
-    fn answering(kind: Kind, message: &MailMessage) -> Answering {
-        answering_for(&kind, message, Some("Invoice"))
+    fn answering(kind: AnswerKind, message: &MailMessage) -> Answering {
+        answering_for(kind, message, Some("Invoice"))
+    }
+
+    #[test]
+    fn an_answer_says_what_goes_out_with_its_text() {
+        let mut message = answered_message("alex@corp.example");
+        message.attachments = vec![crate::mail::MailAttachment {
+            id: "a1".into(),
+            name: "invoice.pdf".into(),
+            size: 2048,
+        }];
+
+        let forward = answering(AnswerKind::Forward, &message);
+        assert_eq!(forward.forwarded, ["invoice.pdf"]);
+        assert!(forward.quotes_original);
+        for kind in [AnswerKind::Reply, AnswerKind::ReplyAll] {
+            let reply = answering(kind, &message);
+            assert!(reply.forwarded.is_empty(), "{kind:?} carries no files");
+            assert!(reply.quotes_original, "{kind:?}");
+        }
+
+        // Core quotes only an original that opens.
+        message.body = crate::mail::MessageBody::Unreadable;
+        assert!(!answering(AnswerKind::Reply, &message).quotes_original);
     }
 
     #[test]
     fn a_reply_shows_where_it_goes_and_flags_a_redirect() {
-        let reply = |everyone| Kind::Reply {
-            message_id: "message".into(),
-            everyone,
-        };
-
-        let honest = answering(reply(false), &answered_message("Alex@Corp.example"));
+        let honest = answering(AnswerKind::Reply, &answered_message("Alex@Corp.example"));
         assert_eq!(honest.to, ["Alex@Corp.example"]);
         assert!(honest.cc.is_empty());
         assert_eq!(honest.redirected_from, None);
 
-        let redirected = answering(reply(false), &answered_message("attacker@evil.example"));
+        let redirected = answering(
+            AnswerKind::Reply,
+            &answered_message("attacker@evil.example"),
+        );
         assert_eq!(redirected.to, ["attacker@evil.example"]);
         assert_eq!(
             redirected.redirected_from.as_deref(),
             Some("alex@corp.example")
         );
 
-        let everyone = answering(reply(true), &answered_message("alex@corp.example"));
+        let everyone = answering(AnswerKind::ReplyAll, &answered_message("alex@corp.example"));
         assert_eq!(everyone.cc, ["bob@corp.example"]);
 
         let forward = answering(
-            Kind::Forward {
-                message_id: "message".into(),
-            },
+            AnswerKind::Forward,
             &answered_message("attacker@evil.example"),
         );
         assert!(forward.to.is_empty() && forward.cc.is_empty());

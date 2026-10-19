@@ -17,9 +17,29 @@ static FALLBACKS: OnceLock<Vec<Arc<FontData>>> = OnceLock::new();
 
 /// The font setup in effect: which policy, and which installed fonts had
 /// finished loading when it was applied.
+/// Which fonts the interface reads in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Typeface {
+    /// The fonts bundled with the app.
+    Bundled,
+    /// The system's interface font, ahead of the bundled ones.
+    System,
+}
+
+impl Typeface {
+    /// The typeface the system font setting asks for.
+    pub(super) fn chosen(system_font: bool) -> Self {
+        if system_font {
+            Self::System
+        } else {
+            Self::Bundled
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Applied {
-    system: bool,
+    typeface: Typeface,
     primary_ready: bool,
     fallbacks_ready: bool,
 }
@@ -27,22 +47,23 @@ struct Applied {
 /// Installed fonts can add tens of megabytes to read, so they load off the
 /// UI thread: the bundled fonts apply at once, and the installed ones join
 /// on a later frame, without delaying the first window.
-pub(super) fn apply(context: &egui::Context, system: bool) {
+pub(super) fn apply(context: &egui::Context, typeface: Typeface) {
     static FALLBACKS_STARTED: Once = Once::new();
     static PRIMARY_STARTED: Once = Once::new();
     load_in_background(&FALLBACKS, &FALLBACKS_STARTED, load_fallbacks, context);
+    let system = typeface == Typeface::System;
     if system {
         load_in_background(&PRIMARY, &PRIMARY_STARTED, load_primary, context);
     }
     let applied = Applied {
-        system,
+        typeface,
         primary_ready: system && PRIMARY.get().is_some(),
         fallbacks_ready: FALLBACKS.get().is_some(),
     };
     if context.data(|data| data.get_temp::<Applied>(egui::Id::new(APPLIED))) == Some(applied) {
         return;
     }
-    context.set_fonts(definitions(system));
+    context.set_fonts(definitions(typeface));
     context.data_mut(|data| data.insert_temp(egui::Id::new(APPLIED), applied));
 }
 
@@ -97,9 +118,11 @@ fn load_primary() -> Option<Arc<FontData>> {
 }
 
 /// The bundled fonts, plus whichever installed fonts have loaded so far.
-fn definitions(system: bool) -> FontDefinitions {
+fn definitions(typeface: Typeface) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
-    if system && let Some(Some(data)) = PRIMARY.get() {
+    if typeface == Typeface::System
+        && let Some(Some(data)) = PRIMARY.get()
+    {
         fonts
             .font_data
             .insert("ruston-system-ui".into(), data.clone());
@@ -224,6 +247,10 @@ fn fallback_candidates() -> Vec<Vec<PathBuf>> {
         windows_fonts(&["msyh.ttc", "meiryo.ttc", "msgothic.ttc"]),
         windows_fonts(&["malgun.ttf"]),
         windows_fonts(&["arial.ttf", "tahoma.ttf"]),
+        // None of the above has the Indic scripts or Thai. Nirmala UI comes
+        // as a collection, or on older Windows as a single file.
+        windows_fonts(&["Nirmala.ttc", "Nirmala.ttf"]),
+        windows_fonts(&["LeelawUI.ttf"]),
     ]
 }
 
@@ -307,19 +334,25 @@ mod tests {
     use super::*;
 
     /// What `apply` would have loaded by now.
-    fn loaded_definitions(system: bool) -> FontDefinitions {
+    fn loaded_definitions(typeface: Typeface) -> FontDefinitions {
         FALLBACKS.get_or_init(load_fallbacks);
-        if system {
+        if typeface == Typeface::System {
             PRIMARY.get_or_init(load_primary);
         }
-        definitions(system)
+        definitions(typeface)
+    }
+
+    #[test]
+    fn the_system_font_setting_chooses_the_typeface() {
+        assert_eq!(Typeface::chosen(true), Typeface::System);
+        assert_eq!(Typeface::chosen(false), Typeface::Bundled);
     }
 
     #[test]
     fn both_modes_keep_bundled_faces_and_the_monospace_primary() {
         let defaults = FontDefinitions::default();
-        for system in [false, true] {
-            let fonts = loaded_definitions(system);
+        for typeface in [Typeface::Bundled, Typeface::System] {
+            let fonts = loaded_definitions(typeface);
             for name in defaults.font_data.keys() {
                 assert!(fonts.font_data.contains_key(name));
             }
@@ -327,7 +360,7 @@ mod tests {
                 fonts.families[&FontFamily::Monospace]
                     .starts_with(&defaults.families[&FontFamily::Monospace])
             );
-            if !system {
+            if typeface == Typeface::Bundled {
                 assert!(
                     fonts.families[&FontFamily::Proportional]
                         .starts_with(&defaults.families[&FontFamily::Proportional])
@@ -338,7 +371,7 @@ mod tests {
 
     #[test]
     fn installed_fallback_glyphs_are_available_in_both_families() {
-        let definitions = loaded_definitions(false);
+        let definitions = loaded_definitions(Typeface::Bundled);
         let context = egui::Context::default();
         context.set_fonts(definitions.clone());
         context
@@ -373,10 +406,32 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_fallbacks_cover_the_indic_scripts_and_thai() {
+        let definitions = loaded_definitions(Typeface::Bundled);
+        let covered = |glyph: char| {
+            definitions.font_data.values().any(|data| {
+                FontRef::from_index(data.font.as_ref(), data.index)
+                    .is_ok_and(|font| font.charmap().map(glyph).is_some())
+            })
+        };
+        let installed = |names: &[&str]| windows_fonts(names).iter().any(|path| path.exists());
+        if installed(&["Nirmala.ttc", "Nirmala.ttf"]) {
+            // Devanagari, Bengali and Tamil.
+            for glyph in ['क', 'ক', 'க'] {
+                assert!(covered(glyph), "Nirmala UI should cover {glyph}");
+            }
+        }
+        if installed(&["LeelawUI.ttf"]) {
+            assert!(covered('ส'), "Leelawadee UI should cover Thai");
+        }
+    }
+
     #[test]
     fn repeated_apply_does_not_reset_the_font_layout_cache() {
         let context = egui::Context::default();
-        apply(&context, false);
+        apply(&context, Typeface::Bundled);
         context
             .run_ui(egui::RawInput::default(), |_| {})
             .drop_without_applying_deltas();
@@ -390,7 +445,7 @@ mod tests {
             })
         };
         let first = layout();
-        apply(&context, false);
+        apply(&context, Typeface::Bundled);
         context
             .run_ui(egui::RawInput::default(), |_| {})
             .drop_without_applying_deltas();

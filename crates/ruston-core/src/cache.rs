@@ -1,6 +1,6 @@
 //! Local SQLite cache of message metadata, indexed bodies, and the sync cursor.
 
-use crate::api::events::{EventBatch, action};
+use crate::api::events::{EventBatch, MessageEvent, action};
 use crate::error::{Error, Result};
 use crate::model::message::MessageMetadata;
 use crate::session::validate_profile_name;
@@ -152,6 +152,41 @@ fn delete_message(conn: &Connection, id: &str) -> Result<()> {
     }
     conn.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
         .map_err(map)?;
+    Ok(())
+}
+
+/// Applies one event of a batch, adding what it changed to `counts`.
+fn apply_message_event(
+    conn: &Connection,
+    event: &MessageEvent,
+    counts: &mut BatchCounts,
+) -> Result<()> {
+    match (event.action, &event.message) {
+        (action::DELETE, _) => {
+            delete_message(conn, &event.id)?;
+            counts.deleted += 1;
+        }
+        (action::CREATE, Some(message)) => {
+            upsert_message(conn, message)?;
+            counts.created += 1;
+        }
+        (action::UPDATE, message) => {
+            // Events carry metadata, not the decrypted body.
+            conn.execute(DELETE_INDEX_SQL, [&event.id]).map_err(map)?;
+            if let Some(message) = message {
+                upsert_message(conn, message)?;
+                counts.updated += 1;
+            }
+        }
+        (action::UPDATE_FLAGS, Some(message)) => {
+            upsert_metadata(conn, message)?;
+            counts.updated += 1;
+            counts.flags_updated += 1;
+        }
+        // Unknown actions, and events without the message they need, change
+        // nothing; the batch's cursor still moves past them.
+        _ => {}
+    }
     Ok(())
 }
 
@@ -311,6 +346,10 @@ impl CacheIdentity {
         })
     }
 
+    pub(crate) fn user_id(&self) -> &str {
+        &self.user_id
+    }
+
     fn serialized(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
     }
@@ -328,6 +367,15 @@ pub(crate) struct BatchCounts {
     pub(crate) deleted: usize,
 }
 
+impl std::ops::AddAssign for BatchCounts {
+    fn add_assign(&mut self, other: Self) {
+        self.created += other.created;
+        self.updated += other.updated;
+        self.flags_updated += other.flags_updated;
+        self.deleted += other.deleted;
+    }
+}
+
 /// A local metadata cache. Client operations use an account-specific database.
 pub struct Cache {
     conn: Connection,
@@ -342,28 +390,44 @@ fn list_sql(unread_only: bool) -> String {
     )
 }
 
+/// The folder that holds the caches, created on first use.
+fn cache_root() -> Result<PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
+        .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
+    let dir = dirs.cache_dir().to_path_buf();
+    create_cache_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Creates a cache folder, private to this user.
+#[cfg(unix)]
+fn create_cache_dir(dir: &Path) -> Result<()> {
+    secure_cache_dir(dir)
+}
+
+/// Creates a cache folder in the user's profile, which Windows keeps private
+/// to them.
+#[cfg(not(unix))]
+fn create_cache_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).map_err(map)
+}
+
 /// A label's cached total and unread count, as `Cache::count` reads them.
 const COUNT_SQL: &str = "SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM messages m \
      JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1";
 
 impl Cache {
-    /// Legacy cache path: `<cache_dir>/ruston-mail/<profile>.db`.
-    /// Client operations no longer use this path because its owner is unknown.
+    /// Legacy cache path: `<cache_dir>/ruston-mail/<profile>.db`. Client
+    /// operations never open it, since its owner is unknown: they use a path
+    /// of each account's own under the same folder.
     pub fn default_path(profile: &str) -> Result<PathBuf> {
         validate_profile_name(profile)?;
-        let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
-            .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
-        let dir = dirs.cache_dir().to_path_buf();
-        #[cfg(unix)]
-        secure_cache_dir(&dir)?;
-        #[cfg(not(unix))]
-        std::fs::create_dir_all(&dir).map_err(map)?;
-        Ok(dir.join(format!("{profile}.db")))
+        Ok(cache_root()?.join(format!("{profile}.db")))
     }
 
     pub(crate) fn default_account_path(profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
-        let legacy_path = Self::default_path(profile)?;
-        Self::account_path(legacy_path.parent().unwrap(), profile, identity)
+        validate_profile_name(profile)?;
+        Self::account_path(&cache_root()?, profile, identity)
     }
 
     fn account_path(root: &Path, profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
@@ -371,10 +435,7 @@ impl Cache {
         let accounts = root.join("accounts");
         let dir = accounts.join(profile);
         for directory in [&accounts, &dir] {
-            #[cfg(unix)]
-            secure_cache_dir(directory)?;
-            #[cfg(not(unix))]
-            std::fs::create_dir_all(directory).map_err(map)?;
+            create_cache_dir(directory)?;
         }
         // A fixed-size lowercase name also avoids path separators and collisions
         // caused by case-insensitive filesystems. Verify the full identity in SQLite.
@@ -491,6 +552,8 @@ impl Cache {
     }
 
     /// Claim an uninitialized cursor without replacing another sync's cursor.
+    /// Returns whether this call stored `id`: `false` means another sync had
+    /// already stored one.
     pub(crate) fn initialize_cursor(&self, id: &str) -> Result<bool> {
         Ok(self
             .conn
@@ -516,8 +579,8 @@ impl Cache {
             .optional()
             .map_err(map)?;
         if current.as_deref() != expected {
-            return Err(Error::Cache(
-                "sync cursor changed during cache download; retry".into(),
+            return Err(Error::cache_changed(
+                "sync cursor changed during cache download",
             ));
         }
         Ok(tx)
@@ -569,41 +632,14 @@ impl Cache {
             .optional()
             .map_err(map)?;
         if current_cursor.as_deref() != Some(previous_cursor) {
-            return Err(Error::Cache(
-                "sync cursor changed during incremental sync; retry".into(),
+            return Err(Error::cache_changed(
+                "sync cursor changed during incremental sync",
             ));
         }
 
         let mut counts = BatchCounts::default();
-        for ev in &batch.messages {
-            match ev.action {
-                action::DELETE => {
-                    delete_message(&tx, &ev.id)?;
-                    counts.deleted += 1;
-                }
-                action::CREATE | action::UPDATE => {
-                    if ev.action == action::UPDATE {
-                        // Events carry metadata, not the decrypted body.
-                        tx.execute(DELETE_INDEX_SQL, [&ev.id]).map_err(map)?;
-                    }
-                    if let Some(m) = &ev.message {
-                        upsert_message(&tx, m)?;
-                        if ev.action == action::CREATE {
-                            counts.created += 1;
-                        } else {
-                            counts.updated += 1;
-                        }
-                    }
-                }
-                action::UPDATE_FLAGS => {
-                    if let Some(m) = &ev.message {
-                        upsert_metadata(&tx, m)?;
-                        counts.updated += 1;
-                        counts.flags_updated += 1;
-                    }
-                }
-                _ => {}
-            }
+        for event in &batch.messages {
+            apply_message_event(&tx, event, &mut counts)?;
         }
         tx.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
@@ -623,7 +659,9 @@ impl Cache {
         Ok(())
     }
 
-    /// Apply a flags/labels-only event without changing indexed headers or body.
+    /// Writes a message's flags and labels, leaving its indexed headers and
+    /// body as they are. Unlike sync's `apply_event_batch`, it does not check
+    /// the sync cursor.
     pub fn upsert_message_flags(&self, m: &MessageMetadata) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
         upsert_metadata(&tx, m)?;
@@ -639,7 +677,8 @@ impl Cache {
         Ok(())
     }
 
-    /// Drop an indexed body when a full update may have changed its content.
+    /// Drops a message's indexed body, so a changed one is indexed again.
+    /// Unlike sync's `apply_event_batch`, it does not check the sync cursor.
     pub fn invalidate_index(&self, id: &str) -> Result<()> {
         self.conn.execute(DELETE_INDEX_SQL, [id]).map_err(map)?;
         Ok(())
@@ -748,16 +787,14 @@ impl Cache {
             .optional()
             .map_err(map)?;
         if current_cursor.as_deref() != Some(previous_cursor) {
-            return Err(Error::Cache(
-                "sync cursor changed during resync; retry".into(),
-            ));
+            return Err(Error::cache_changed("sync cursor changed during resync"));
         }
         let staged: i64 = tx
             .query_row("SELECT COUNT(*) FROM resync_messages", [], |row| row.get(0))
             .map_err(map)?;
         if staged != i64::from(expected_total) {
-            return Err(Error::Cache(
-                "incomplete mailbox listing during resync; retry".into(),
+            return Err(Error::cache_changed(
+                "incomplete mailbox listing during resync",
             ));
         }
 
@@ -1325,6 +1362,57 @@ mod tests {
         drop(slow);
         drop(fast);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn events_change_only_what_their_action_and_message_allow() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        cache
+            .index_message(&meta("indexed", "0", 0, 1), "privatebody")
+            .unwrap();
+        cache.upsert_message(&meta("flagged", "0", 0, 2)).unwrap();
+        let event = |id: &str, code, message| MessageEvent {
+            id: id.into(),
+            action: code,
+            message,
+        };
+        let batch = event_batch(
+            "new",
+            vec![
+                event("created", action::CREATE, Some(meta("created", "0", 1, 3))),
+                event("missing", action::CREATE, None),
+                // An update drops the indexed body even without its message.
+                event("indexed", action::UPDATE, None),
+                event("flagged", action::UPDATE_FLAGS, None),
+                event("unknown", 9, Some(meta("unknown", "0", 1, 4))),
+            ],
+        );
+
+        assert_eq!(
+            cache.apply_event_batch("old", &batch).unwrap(),
+            BatchCounts {
+                created: 1,
+                ..BatchCounts::default()
+            }
+        );
+        let listed: Vec<(String, i64)> = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.id, m.unread))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("created".to_owned(), 1),
+                ("flagged".to_owned(), 0),
+                ("indexed".to_owned(), 0)
+            ]
+        );
+        assert!(cache.search("privatebody", 10).unwrap().is_empty());
+        // The cursor moves past every event, the unknown one included.
+        assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("new"));
     }
 
     #[test]

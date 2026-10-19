@@ -10,7 +10,7 @@ mod notifications;
 mod reader;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::future::{AbortHandle, Abortable};
 use inspection::Inspections;
@@ -29,17 +29,19 @@ use crate::mail::{
 
 use auth::LoginForm;
 pub use auth::{AuthState, SignInStep};
-pub use compose::{Answering, Compose, ComposeField, ComposeId, Sending};
+use compose::ParkedDraft;
+pub use compose::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Sending};
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{
     MIN_PANEL_WIDTH, compact as compact_layout, ratios as panel_ratios, widths as panel_widths,
 };
 use mailbox::ActionStart;
+use mailbox::PageRequest;
+pub(crate) use mailbox::RequestId;
 pub use mailbox::{
     ActionRequest, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
 };
-use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
 /// Identifies one file operation across a destination dialog and download.
@@ -65,6 +67,8 @@ pub enum Message {
     Submit,
     CancelChallenge,
     SessionChecked(ResumeOutcome),
+    /// Tries the saved session again after a failure that may pass.
+    RetrySavedSession,
     SignInFinished(AuthAttempt, SignInOutcome),
     SignInPrompt(AuthAttempt, SignInPrompt),
     OpenVerificationPage,
@@ -126,6 +130,9 @@ pub enum Message {
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
+    /// A settings write finished: the revision it wrote, and whether the file
+    /// holds it now.
+    SettingsWritten(u64, bool),
     /// Restores the default window size and mailbox pane widths.
     ResetLayout,
     /// A key the focused widget did not take.
@@ -155,8 +162,10 @@ pub enum Message {
     SetShowQuotedText(bool),
     /// Scales the whole interface.
     SetZoom(f32),
-    /// Chooses the desktop color scheme.
+    /// Chooses the desktop color scheme, which stops following the system's.
     SetAppearance(Appearance),
+    /// Follows the system's light or dark mode, or the chosen scheme.
+    SetFollowSystemAppearance(bool),
     SetSystemFont(bool),
     /// Shows or hides the unread mail badge on the dock/app icon.
     SetShowUnreadBadge(bool),
@@ -180,12 +189,10 @@ pub enum Message {
     OpenPendingMailto,
     DismissPendingMailto,
     DismissMailtoError,
-    /// Answers the open message, or passes it on. `everyone` is only read by
-    /// a reply.
+    /// Answers the open message, or passes it on.
     Answer {
         message_id: String,
-        forward: bool,
-        everyone: bool,
+        kind: AnswerKind,
     },
     /// Puts an unsent message away. Untouched messages close; written ones ask first.
     CloseCompose,
@@ -204,6 +211,8 @@ pub enum Message {
     PickComposeAttachments,
     /// Adds picked local files as attachments to the active draft.
     AddComposeAttachments(ComposeId, Vec<PathBuf>),
+    /// The sizes of a draft's attached files, read on the blocking pool.
+    AttachmentSizesRead(ComposeId, std::collections::HashMap<PathBuf, Option<u64>>),
     /// Removes an attachment by index from the active draft.
     RemoveComposeAttachment(usize),
     /// Hands the message over to be sent.
@@ -218,6 +227,10 @@ pub struct App {
     auth_state: AuthState,
     login_form: LoginForm,
     auth_error: Option<AuthError>,
+    /// The saved session could not open for a reason that may pass, such as
+    /// no network, and is still saved; the sign-in screen offers to try it
+    /// again.
+    resume_may_retry: bool,
     /// Changes for every authentication attempt so queued results from an
     /// aborted task cannot affect its replacement.
     auth_attempt: AuthAttempt,
@@ -228,6 +241,8 @@ pub struct App {
     pending_mailto: std::collections::VecDeque<crate::mailto::Request>,
     mailto_error: Option<&'static str>,
     backend: Option<MailBackend>,
+    /// The Proton account the open session belongs to. The demo has none.
+    account: Option<String>,
     mailbox: Option<Mailbox>,
     /// Changes whenever an account opens or closes so late async results can
     /// never mutate another session.
@@ -251,10 +266,24 @@ pub struct App {
     /// The UI waits for resizing to settle before calling [`Self::save_settings`].
     settings_revision: u64,
     settings_written: u64,
+    /// The revision whose write failed, tried again with a later change or on
+    /// quitting rather than on every frame.
+    settings_failed: Option<u64>,
+    /// A write runs off the interface's thread; the next waits for it.
+    settings_writing: bool,
+    /// The newest revision the file holds, shared with the write running, so
+    /// one that finishes late never undoes a newer one.
+    settings_on_disk: Arc<Mutex<u64>>,
     /// Whether Settings replaces the conversation list and reader.
     showing_settings: bool,
     /// The message being written, if there is one.
     compose: Option<Compose>,
+    /// The message being written when Proton ended the session, kept in
+    /// memory only until its own account signs in again.
+    parked_draft: Option<ParkedDraft>,
+    /// A conversation opened while a draft covered the reader, so nobody saw
+    /// it. It is marked read once the reader shows it, if still open there.
+    read_once_shown: Option<String>,
     /// Changes for each opened draft so asynchronous attachment pickers from a
     /// closed or discarded draft cannot inject files into a subsequent draft.
     last_compose_id: ComposeId,
@@ -272,7 +301,7 @@ impl App {
         let mut app = Self::new(settings);
         app.demo_process = demo;
         let task = if demo {
-            app.open_mailbox(MailBackend::demo(), None)
+            app.open_mailbox(MailBackend::demo(), None, None)
         } else {
             Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
         };
@@ -286,12 +315,14 @@ impl App {
             auth_state: AuthState::CheckingSession,
             login_form: LoginForm::default(),
             auth_error: None,
+            resume_may_retry: false,
             auth_attempt: 0,
             pending_prompt: None,
             pending_link: None,
             pending_mailto: std::collections::VecDeque::new(),
             mailto_error: None,
             backend: None,
+            account: None,
             mailbox: None,
             session_epoch: 0,
             last_request: 0,
@@ -303,8 +334,13 @@ impl App {
             settings,
             settings_revision: 0,
             settings_written: 0,
+            settings_failed: None,
+            settings_writing: false,
+            settings_on_disk: Arc::new(Mutex::new(0)),
             showing_settings: false,
             compose: None,
+            parked_draft: None,
+            read_once_shown: None,
             last_compose_id: 0,
             saved_attachment: None,
             saving_attachment: None,
@@ -347,6 +383,20 @@ impl App {
     pub(crate) fn signed_out() -> Self {
         let mut app = Self::new(Settings::default());
         app.auth_state = AuthState::SignedOut;
+        app
+    }
+
+    /// A session of the Proton account `account`, at `address`, with the demo
+    /// mailbox standing in for its mail, so tests can follow one account
+    /// from a session to the next.
+    #[cfg(test)]
+    pub(crate) fn signed_in_as(account: &str, address: &str) -> Self {
+        let mut app = Self::new(Settings::default());
+        let _ = app.open_mailbox(
+            MailBackend::demo(),
+            Some(address.to_owned()),
+            Some(account.to_owned()),
+        );
         app
     }
 
@@ -486,20 +536,75 @@ impl App {
         self.settings_written != self.settings_revision
     }
 
-    /// Writes changed settings best-effort; in-memory changes always remain.
-    pub fn save_settings(&mut self) {
+    /// Starts writing changed settings, best-effort, off the interface's
+    /// thread: the write waits for the disk, longer while something scans the
+    /// file. One write runs at a time; a change made meanwhile is written
+    /// once it ends. A write that failed stays to be done, tried again with
+    /// the next change. In-memory changes always remain.
+    pub fn save_settings(&mut self) -> Effects {
+        let revision = self.settings_revision;
+        if !self.settings_unsaved()
+            || self.settings_writing
+            || self.settings_failed == Some(revision)
+        {
+            return Effects::none();
+        }
+        self.settings_writing = true;
+        let settings = self.settings.clone();
+        let on_disk = Arc::clone(&self.settings_on_disk);
+        Effects::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    write_settings_revision(&on_disk, revision, || settings.save())
+                })
+                .await
+                .unwrap_or(false)
+            },
+            move |written| Message::SettingsWritten(revision, written),
+        )
+    }
+
+    /// Writes changed settings before quitting, trying again even a write
+    /// that failed: there is no later. A write still running finishes first,
+    /// and this newer one is the last to reach the file.
+    pub fn save_settings_before_quitting(&mut self) {
+        let revision = self.settings_revision;
         if !self.settings_unsaved() {
             return;
         }
-        self.settings.save();
-        self.settings_written = self.settings_revision;
+        let settings = &self.settings;
+        let written = write_settings_revision(&self.settings_on_disk, revision, || settings.save());
+        self.finish_settings_write(revision, written);
     }
 
+    fn finish_settings_write(&mut self, revision: u64, written: bool) {
+        self.settings_writing = false;
+        if written {
+            self.settings_written = self.settings_written.max(revision);
+            self.settings_failed = None;
+        } else {
+            self.settings_failed = Some(revision);
+        }
+    }
+
+    /// Handles one message. One that uncovers the reader, as closing a draft
+    /// in the reading pane does, shows what was opened behind the draft, which
+    /// is then read.
     pub fn update(&mut self, message: Message) -> Effects {
+        let covered = self.draft_covers_reader();
+        let effects = self.dispatch(message);
+        if covered && !self.draft_covers_reader() {
+            return Effects::batch([effects, self.mark_read_once_shown()]);
+        }
+        effects
+    }
+
+    fn dispatch(&mut self, message: Message) -> Effects {
         match message {
             Message::Submit => return self.sign_in(),
             Message::CancelChallenge => return self.cancel_sign_in(),
             Message::SessionChecked(outcome) => return self.finish_session_check(outcome),
+            Message::RetrySavedSession => return self.retry_saved_session(),
             Message::SignInFinished(attempt, outcome) => {
                 return self.finish_sign_in(attempt, outcome);
             }
@@ -536,7 +641,7 @@ impl App {
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_search(&request, result));
-                self.handle_mailbox_error(error);
+                self.end_session_if_expired(error);
             }
             Message::ToggleMessageExpanded(id) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -553,8 +658,10 @@ impl App {
                 return self.apply_row_action(row_id, action);
             }
             Message::UndoMove => return self.undo_move(),
+            // The notice stays on screen while signing out, and its timer must
+            // still clear it there.
             Message::DismissUndo(offer) => {
-                if let Some(mailbox) = self.active_mailbox() {
+                if let Some(mailbox) = &mut self.mailbox {
                     mailbox.dismiss_undo(&offer);
                 }
             }
@@ -578,7 +685,7 @@ impl App {
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_page(request, result));
-                self.handle_mailbox_error(error);
+                self.end_session_if_expired(error);
                 if error.is_none() {
                     let revalidating = self
                         .mailbox
@@ -633,7 +740,7 @@ impl App {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        self.handle_mailbox_error(Some(error));
+                        self.end_session_if_expired(Some(error));
                     }
                 }
                 return self.start_inspections();
@@ -650,7 +757,7 @@ impl App {
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_conversation(&request, result));
-                self.handle_mailbox_error(error);
+                self.end_session_if_expired(error);
                 if awaited {
                     return self.mark_opened_read();
                 }
@@ -666,7 +773,7 @@ impl App {
                     // nothing about the open folder, which stays open.
                     Err(error) => {
                         self.refetch_folders = true;
-                        self.handle_mailbox_error(Some(error));
+                        self.end_session_if_expired(Some(error));
                         return Effects::none();
                     }
                 }
@@ -679,11 +786,11 @@ impl App {
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_counts(request, result));
-                self.handle_mailbox_error(error);
+                self.end_session_if_expired(error);
             }
             Message::NewMailLoaded(epoch, request, result) => {
                 if !self.is_current_session(epoch)
-                    || !matches!(self.auth_state, AuthState::Authenticated { .. })
+                    || !self.auth_state.is_authenticated()
                     || !self.settings.desktop_notifications
                     || self.new_mail.pending != Some(request)
                 {
@@ -699,7 +806,9 @@ impl App {
                             });
                         }
                     }
-                    Err(error) => self.handle_mailbox_error(Some(error)),
+                    Err(error) => {
+                        self.end_session_if_expired(Some(error));
+                    }
                 }
             }
             Message::ActionFinished(request, result) => {
@@ -746,6 +855,9 @@ impl App {
             Message::PanelsResized(panels) => {
                 self.remember(|settings| settings.panels = panels);
             }
+            Message::SettingsWritten(revision, written) => {
+                self.finish_settings_write(revision, written);
+            }
             Message::ResetLayout => {
                 self.remember(|settings| {
                     settings.window = Window::default();
@@ -791,7 +903,7 @@ impl App {
                 self.saving_attachment = None;
                 // An expired session ends here as it does for any request.
                 if matches!(outcome, Err(SaveError::SessionExpired)) {
-                    self.handle_mailbox_error(Some(MailboxError::SessionExpired));
+                    self.close_mailbox(Some(AuthError::SessionExpired));
                     return Effects::none();
                 }
                 // A save that landed after the session ended has nobody left
@@ -814,7 +926,13 @@ impl App {
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {
-                self.remember(|settings| settings.appearance = appearance);
+                self.remember(|settings| {
+                    settings.appearance = appearance;
+                    settings.follow_system_appearance = false;
+                });
+            }
+            Message::SetFollowSystemAppearance(on) => {
+                self.remember(|settings| settings.follow_system_appearance = on);
             }
             Message::SetSystemFont(enabled) => {
                 self.remember(|settings| settings.system_font = enabled)
@@ -844,11 +962,7 @@ impl App {
                 self.showing_settings = false;
                 self.open_compose();
             }
-            Message::Answer {
-                message_id,
-                forward,
-                everyone,
-            } => self.answer(&message_id, forward, everyone),
+            Message::Answer { message_id, kind } => self.answer(&message_id, kind),
             Message::CloseCompose => self.close_compose(),
             Message::DiscardCompose => self.discard_compose(),
             Message::CancelDiscard => self.cancel_discard(),
@@ -859,7 +973,10 @@ impl App {
                 self.finish_protection_check(epoch, id, checks);
             }
             Message::PickComposeAttachments => return self.pick_compose_attachments(),
-            Message::AddComposeAttachments(id, paths) => self.add_compose_attachments(id, paths),
+            Message::AddComposeAttachments(id, paths) => {
+                return self.add_compose_attachments(id, paths);
+            }
+            Message::AttachmentSizesRead(id, sizes) => self.finish_attachment_sizes(id, sizes),
             Message::RemoveComposeAttachment(index) => self.remove_compose_attachment(index),
             Message::Send => return self.send_compose(),
             Message::Sent(epoch, result) => return self.finish_send(epoch, result),
@@ -873,10 +990,11 @@ impl App {
     }
 
     pub(crate) fn accepts_page(&self, request: RequestId) -> bool {
-        matches!(self.auth_state, AuthState::Authenticated { .. })
-            && self.mailbox.as_ref().is_some_and(|mailbox| {
-                matches!(mailbox.status(), ListStatus::Loading(id) | ListStatus::Refreshing(id) | ListStatus::LoadingMore(id) if id == request)
-            })
+        self.auth_state.is_authenticated()
+            && self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.status().request_in_flight() == Some(request))
     }
 
     pub fn is_demo(&self) -> bool {
@@ -890,13 +1008,32 @@ impl App {
     /// Whether a background-triggered list request can start without racing
     /// another list-changing operation.
     pub fn auto_refresh_available(&self) -> bool {
-        matches!(self.auth_state, AuthState::Authenticated { .. })
+        self.auth_state.is_authenticated()
             && self.backend.is_some()
             && self
                 .mailbox
                 .as_ref()
                 .is_some_and(Mailbox::auto_refresh_available)
             && !self.compose.as_ref().is_some_and(Compose::in_flight)
+    }
+
+    /// Changes Proton has not confirmed yet, which quitting now would lose.
+    pub fn unsent_changes(&self) -> usize {
+        self.mailbox.as_ref().map_or(0, Mailbox::unsent_changes)
+    }
+
+    /// The mailbox, for tests outside this module that put actions on their
+    /// way as Proton's would be.
+    #[cfg(test)]
+    pub(crate) fn mailbox_mut(&mut self) -> Option<&mut Mailbox> {
+        self.mailbox.as_mut()
+    }
+
+    /// Puts the app in `state`, for tests outside this module that need one,
+    /// such as signing out, which the demo never stays in.
+    #[cfg(test)]
+    pub(crate) fn set_auth_state(&mut self, state: AuthState) {
+        self.auth_state = state;
     }
 
     pub fn panels(&self) -> Panels {
@@ -944,11 +1081,13 @@ impl App {
     }
 
     fn select_conversation(&mut self, id: String) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+        if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
         self.pending_link = None;
-        if let Some(MailBackend::Demo(service)) = self.backend.clone() {
+        if let Some(MailBackend::Demo(service)) = self.backend.clone()
+            && !self.defer_read(&id)
+        {
             if !service.set_unread(&id, false) {
                 return Effects::none();
             }
@@ -973,7 +1112,7 @@ impl App {
     /// Acts on one listed row, open or not. Only the open one, when it leaves
     /// the view, gives its place in the reader to the row after it.
     fn apply_row_action(&mut self, row_id: String, action: MailAction) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+        if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
         match self.backend.clone() {
@@ -993,7 +1132,7 @@ impl App {
         let Some(mailbox) = self.mailbox.as_ref() else {
             return Effects::none();
         };
-        if mailbox.is_busy() {
+        if !mailbox.takes_actions() {
             return Effects::none();
         }
         let Some(kind) = mailbox.row(id).map(|row| row.kind) else {
@@ -1028,8 +1167,6 @@ impl App {
         let Some(undo) = self.active_mailbox().and_then(Mailbox::take_undo) else {
             return Effects::none();
         };
-        let action = MailAction::MoveTo(undo.from.clone());
-
         match self.backend.clone() {
             Some(MailBackend::Demo(service)) => {
                 if service.move_to(&undo.row_id, &undo.from) {
@@ -1040,9 +1177,10 @@ impl App {
             }
             Some(MailBackend::Proton(service)) => {
                 let request = self.next_request();
-                let Some(start) = self.active_mailbox().and_then(|mailbox| {
-                    mailbox.start_action_on(undo.row_id, undo.kind, action, request)
-                }) else {
+                let Some(start) = self
+                    .active_mailbox()
+                    .and_then(|mailbox| mailbox.start_move_back(undo, request))
+                else {
                     return Effects::none();
                 };
                 self.show_started_action(&service, start)
@@ -1079,9 +1217,9 @@ impl App {
         let send = start.send.map_or_else(Effects::none, |request| {
             run_action(Arc::clone(service), request, Message::ActionFinished)
         });
-        let open = start.opened.map_or_else(Effects::none, |id| {
-            Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
-        });
+        let open = start
+            .opened
+            .map_or_else(Effects::none, |id| self.open_row(id));
         Effects::batch([send, open])
     }
 
@@ -1114,9 +1252,8 @@ impl App {
                 .mailbox
                 .as_ref()
                 .is_some_and(|mailbox| mailbox.took_out(&request));
-            self.handle_mailbox_error(Some(error));
-            // An expired session closed the mailbox, and nothing is sent.
-            if self.mailbox.is_none() {
+            // An expired session closes the mailbox, and nothing is sent.
+            if self.end_session_if_expired(Some(error)) {
                 return Effects::none();
             }
             let reload = if restore {
@@ -1124,9 +1261,9 @@ impl App {
             } else {
                 Effects::none()
             };
-            return Effects::batch([self.send_action(finish.next), reload]);
+            return Effects::batch([self.send_action(finish.next_action), reload]);
         }
-        let send_next = self.send_action(finish.next);
+        let send_next = self.send_action(finish.next_action);
 
         // Reload only when undo returns a missing row to the visible folder.
         let arrived = self
@@ -1138,15 +1275,16 @@ impl App {
         }
 
         let counts = self.reload_counts();
-        let open_next = finish.opened.map_or_else(Effects::none, |id| {
-            Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
-        });
+        let open_next = finish
+            .opened
+            .map_or_else(Effects::none, |id| self.open_row(id));
 
         Effects::batch([send_next, counts, open_next])
     }
 
     /// Once an unread Proton row's content is shown, marks it read on Proton.
-    /// Demo rows are already marked read when they are selected.
+    /// Demo rows are already marked read when they are selected, unless a
+    /// draft covers the reader.
     fn mark_opened_read(&mut self) -> Effects {
         if !self.settings.mark_read_on_open {
             return Effects::none();
@@ -1154,6 +1292,11 @@ impl App {
         let Some(MailBackend::Proton(service)) = self.backend.clone() else {
             return Effects::none();
         };
+        if let Some(id) = self.selected_conversation_id()
+            && self.defer_read(&id)
+        {
+            return Effects::none();
+        }
         let request = self.next_request();
         let Some(request) = self
             .active_mailbox()
@@ -1162,6 +1305,44 @@ impl App {
             return Effects::none();
         };
         run_action(service, request, Message::MarkReadFinished)
+    }
+
+    fn selected_conversation_id(&self) -> Option<String> {
+        self.mailbox
+            .as_ref()
+            .and_then(Mailbox::selected_conversation)
+            .map(str::to_owned)
+    }
+
+    /// Whether a draft covers the reader, so the conversation `id` opens
+    /// where nobody sees it. It then stays unread until the reader shows it.
+    fn defer_read(&mut self, id: &str) -> bool {
+        if !self.draft_covers_reader() {
+            return false;
+        }
+        self.read_once_shown = Some(id.to_owned());
+        true
+    }
+
+    /// Marks read what was opened while a draft covered the reader, now that
+    /// the reader shows it; nothing if another conversation is open by then.
+    fn mark_read_once_shown(&mut self) -> Effects {
+        let Some(id) = self.read_once_shown.take() else {
+            return Effects::none();
+        };
+        if self.selected_conversation_id().as_deref() != Some(id.as_str()) {
+            return Effects::none();
+        }
+        match self.backend.clone() {
+            Some(MailBackend::Demo(service)) => {
+                if service.set_unread(&id, false) {
+                    self.apply_demo_snapshot(&service);
+                }
+                Effects::none()
+            }
+            Some(MailBackend::Proton(_)) => self.mark_opened_read(),
+            None => Effects::none(),
+        }
     }
 
     fn finish_mark_read(
@@ -1179,14 +1360,13 @@ impl App {
         // The mailbox also records an error for any queued explicit action.
         // An expired session closes the mailbox, and then nothing is sent.
         if let Some(error) = completion.error {
-            self.handle_mailbox_error(Some(error));
-            if self.mailbox.is_none() {
+            if self.end_session_if_expired(Some(error)) {
                 return Effects::none();
             }
             return self.send_action(completion.next_action);
         }
         let next = self.send_action(completion.next_action);
-        let counts = if completion.changed {
+        let counts = if completion.read_confirmed {
             self.reload_counts()
         } else {
             Effects::none()
@@ -1199,7 +1379,7 @@ impl App {
         let counts_request = self.next_request();
         let counts = self
             .active_mailbox()
-            .and_then(|mailbox| mailbox.refresh_counts(counts_request));
+            .map(|mailbox| mailbox.refresh_counts(counts_request));
 
         self.fetch_counts(counts)
     }
@@ -1224,6 +1404,13 @@ impl App {
         // A new conversation starts at its top, not where the last one was
         // left; the reader pane keeps its scroll offset otherwise.
         Effects::batch([Effects::ui(UiEffect::ScrollReaderTop), content])
+    }
+
+    /// Opens a row the user did not click, such as the neighbour a list key
+    /// reaches or the one after a row a move took away, and brings it into
+    /// view.
+    fn open_row(&mut self, id: String) -> Effects {
+        Effects::batch([self.reveal_in_list(&id), self.select_conversation(id)])
     }
 
     /// Brings a row the app opened on its own into view. A row the user
@@ -1303,7 +1490,7 @@ impl App {
     }
 
     fn select_folder(&mut self, folder: Folder) -> Effects {
-        if matches!(self.auth_state, AuthState::Authenticated { .. })
+        if self.auth_state.is_authenticated()
             && self
                 .mailbox
                 .as_ref()
@@ -1370,7 +1557,11 @@ impl App {
             Effects::none()
         };
 
-        Effects::batch([self.fetch_page(page), self.fetch_counts(counts), folders])
+        Effects::batch([
+            self.fetch_page(page),
+            self.fetch_counts(Some(counts)),
+            folders,
+        ])
     }
 
     fn auto_refresh_mailbox(&mut self) -> Effects {
@@ -1403,7 +1594,7 @@ impl App {
         let Some(mailbox) = self.active_mailbox() else {
             return Effects::none();
         };
-        if mailbox.search_results().is_some() {
+        if mailbox.shown_search_query().is_some() {
             let search = mailbox.load_more_search(request);
             search.map_or_else(Effects::none, |search| self.fetch_search(search))
         } else {
@@ -1430,7 +1621,7 @@ impl App {
         let Some(mailbox) = self.mailbox.as_ref() else {
             return Effects::none();
         };
-        if mailbox.search_results().is_some() {
+        if mailbox.shown_search_query().is_some() {
             return Effects::none();
         }
         self.inspections.enqueue(
@@ -1442,7 +1633,7 @@ impl App {
     }
 
     fn start_inspections(&mut self) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. }) {
+        if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
         let (Some(backend), Some(mailbox)) = (self.backend.clone(), self.mailbox.as_ref()) else {
@@ -1517,7 +1708,7 @@ impl App {
     }
 
     fn fetch_new_mail_notification(&mut self) -> Effects {
-        if !matches!(self.auth_state, AuthState::Authenticated { .. })
+        if !self.auth_state.is_authenticated()
             || !self.settings.desktop_notifications
             || self.new_mail.pending.is_some()
         {
@@ -1574,13 +1765,16 @@ impl App {
         }
     }
 
-    /// Signs out when Proton ended the session. A session that could not be
-    /// read or saved only shows its message: unlocking the password storage
-    /// fixes the next request, and signing out would drop the draft.
-    fn handle_mailbox_error(&mut self, error: Option<MailboxError>) {
-        if error == Some(MailboxError::SessionExpired) {
+    /// Signs out when Proton ended the session, and says whether it did. Any
+    /// other error is left as it is. A session that could not be read or
+    /// saved only shows its message: unlocking the password storage fixes
+    /// the next request, and signing out would drop the draft.
+    fn end_session_if_expired(&mut self, error: Option<MailboxError>) -> bool {
+        let expired = error == Some(MailboxError::SessionExpired);
+        if expired {
             self.close_mailbox(Some(AuthError::SessionExpired));
         }
+        expired
     }
 }
 
@@ -1611,7 +1805,7 @@ impl PendingLink {
         let url = url::Url::parse(link.trim()).ok()?;
         let target = match url.scheme() {
             "http" | "https" => url.host_str()?.to_owned(),
-            "mailto" => url.path().to_owned(),
+            "mailto" => mail_target(url.as_str()).unwrap_or_else(|| url.path().to_owned()),
             _ => return None,
         };
 
@@ -1620,6 +1814,26 @@ impl PendingLink {
             target,
         })
     }
+}
+
+/// Who a mail link writes to: the addresses the composer would take from it,
+/// those after `?to=` included, as the first few and how many more. `None`
+/// when the composer would refuse the link.
+fn mail_target(link: &str) -> Option<String> {
+    const NAMED: usize = 3;
+    let (to, _, _) = crate::mailto::Request::parse(link)?.into_fields();
+    let addresses: Vec<_> = to
+        .split(", ")
+        .filter(|address| !address.is_empty())
+        .collect();
+    if addresses.len() <= NAMED {
+        return Some(addresses.join(", "));
+    }
+    Some(format!(
+        "{} and {} more",
+        addresses[..NAMED].join(", "),
+        addresses.len() - NAMED
+    ))
 }
 
 /// Runs one mailbox action on Proton and reports the outcome under
@@ -1654,24 +1868,79 @@ fn open_in_browser(url: String) -> Effects {
 
 /// Opens `url` in the default browser without going through a shell.
 fn open_url(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("rundll32");
-        command.arg("url.dll,FileProtocolHandler");
-        command
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let mut command = std::process::Command::new("xdg-open");
+    browser_opener()?.arg(url).spawn().map(drop)
+}
 
-    command.arg(url).spawn().map(drop)
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(target_os = "macos")]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    Ok(std::process::Command::new("open"))
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(target_os = "windows")]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    let mut command = std::process::Command::new(system_rundll32()?);
+    command.arg("url.dll,FileProtocolHandler");
+    Ok(command)
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    Ok(std::process::Command::new("xdg-open"))
+}
+
+/// rundll32 from System32. Windows looks for a program named without a
+/// folder beside this executable first, where a saved attachment could be.
+#[cfg(target_os = "windows")]
+fn system_rundll32() -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut buffer = [0_u16; 260];
+    // SAFETY: the length passed is the buffer's own; the API writes at most
+    // that many UTF-16 units and returns how many it wrote, or 0 on failure.
+    let length = unsafe {
+        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    } as usize;
+    if length == 0 || length >= buffer.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])).join("rundll32.exe"))
 }
 
 fn reveal_in_file_manager(path: PathBuf) -> Effects {
     Effects::background(async move {
         let _ = crate::file_manager::reveal(&path).await;
     })
+}
+
+/// Writes revision `revision` of the settings with `write`, unless the file
+/// already holds it or a newer one. The lock keeps writes in turn, and the
+/// check keeps one that started early and finishes late, such as the last
+/// write running when the app quits, from undoing a newer one.
+fn write_settings_revision(
+    on_disk: &Mutex<u64>,
+    revision: u64,
+    write: impl FnOnce() -> bool,
+) -> bool {
+    let mut newest = on_disk
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *newest >= revision {
+        return true;
+    }
+    let written = write();
+    if written {
+        *newest = revision;
+    }
+    written
 }
 
 #[cfg(test)]

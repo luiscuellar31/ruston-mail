@@ -1,25 +1,24 @@
 //! End-to-end state-machine tests through `App::update`.
 
 use super::*;
-use crate::mail::SendError;
 use crate::mail::demo;
+use crate::mail::{INSPECTION_CONCURRENCY, SendError};
 use crate::settings::{ComposePlacement, Reading};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::mail::MailFolder;
-
-/// One of Proton's own folders, as a place to list from.
-fn sys(folder: MailFolder) -> Folder {
-    Folder::System(folder)
-}
+use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, sys};
 
 const NOW: i64 = 1_789_000_000;
+
+/// What a refresh asks for: the open folder's page and its counts.
+const PAGE_AND_COUNTS: usize = 2;
 
 fn authenticated_app() -> App {
     let mut app = App::new(Settings::default());
     app.auth_state = AuthState::Authenticated { email: None };
-    app.mailbox = Some(Mailbox::open(Folder::INBOX, 50, 1, 2).0);
-    app.last_request = 2;
+    app.mailbox = Some(Mailbox::open(Folder::INBOX, 50, OPENING_PAGE, OPENING_COUNTS).0);
+    app.last_request = OPENING_COUNTS;
     app
 }
 
@@ -119,8 +118,38 @@ fn only_a_real_change_counts_as_one() {
     assert_eq!(app.settings_revision(), 2);
 }
 
+/// Runs a settings write as the runtime does, off the interface's thread,
+/// and hands the app its result.
+async fn finish_settings_write(app: &mut App, write: Effects) {
+    for effect in write.into_iter() {
+        let Effect::Future(future) = effect else {
+            panic!("a settings write runs as a future");
+        };
+        let _ = app.update(future.await);
+    }
+}
+
 #[test]
-fn a_change_waits_to_be_written_and_is_written_once() {
+fn a_failed_settings_write_is_tried_again_with_the_next_change_or_on_quitting() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetConfirmLinks(false));
+    assert_eq!(app.save_settings().units(), 1);
+    let _ = app.update(Message::SettingsWritten(app.settings_revision(), false));
+    assert!(app.settings_unsaved(), "nothing reached the file");
+
+    // Not again on every frame...
+    assert_eq!(app.save_settings().units(), 0);
+    // ...but with the next change,
+    let _ = app.update(Message::SetConfirmLinks(true));
+    assert_eq!(app.save_settings().units(), 1);
+    let _ = app.update(Message::SettingsWritten(app.settings_revision(), false));
+    // and on quitting, the last chance, which writes here and now.
+    app.save_settings_before_quitting();
+    assert!(!app.settings_unsaved());
+}
+
+#[tokio::test]
+async fn a_change_is_written_off_the_interface_once() {
     let mut app = loaded_demo_app();
 
     let _ = app.update(Message::SetConfirmLinks(false));
@@ -128,13 +157,75 @@ fn a_change_waits_to_be_written_and_is_written_once() {
     assert!(!app.settings().confirm_links);
     assert!(app.settings_unsaved());
 
-    app.save_settings();
+    let write = app.save_settings();
+    assert_eq!(write.units(), 1);
+    // One write at a time: asking again while it runs starts nothing.
+    assert_eq!(app.save_settings().units(), 0);
+    finish_settings_write(&mut app, write).await;
     assert!(!app.settings_unsaved());
 
     // Nothing further to write until something changes again.
-    app.save_settings();
-    assert!(!app.settings_unsaved());
+    assert_eq!(app.save_settings().units(), 0);
     assert_eq!(app.settings_revision(), 1);
+}
+
+#[tokio::test]
+async fn a_change_made_while_a_write_runs_is_written_after_it() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetConfirmLinks(false));
+    let first = app.save_settings();
+
+    let _ = app.update(Message::SetConfirmLinks(true));
+    finish_settings_write(&mut app, first).await;
+    assert!(
+        app.settings_unsaved(),
+        "the second change is still to write"
+    );
+
+    let second = app.save_settings();
+    assert_eq!(second.units(), 1);
+    finish_settings_write(&mut app, second).await;
+    assert!(!app.settings_unsaved());
+}
+
+#[tokio::test]
+async fn quitting_while_a_write_runs_keeps_the_newest_revision_counted() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetConfirmLinks(false));
+    let first = app.save_settings();
+    let _ = app.update(Message::SetConfirmLinks(true));
+
+    app.save_settings_before_quitting();
+    assert!(!app.settings_unsaved());
+    // The first write ends after quitting wrote the newer revision.
+    finish_settings_write(&mut app, first).await;
+    assert!(!app.settings_unsaved(), "the late write undid the count");
+}
+
+#[test]
+fn a_settings_write_that_ends_late_never_undoes_a_newer_one() {
+    let on_disk = Mutex::new(0);
+    let mut written = Vec::new();
+
+    // Quitting writes revision 2 while the write of revision 1 waits.
+    assert!(super::write_settings_revision(&on_disk, 2, || {
+        written.push(2);
+        true
+    }));
+    // Revision 1 then finds the file newer and leaves it, reporting it done.
+    assert!(super::write_settings_revision(&on_disk, 1, || {
+        written.push(1);
+        true
+    }));
+    assert_eq!(written, [2]);
+
+    // A failed write leaves the file's revision where it was.
+    assert!(!super::write_settings_revision(&on_disk, 3, || false));
+    assert!(super::write_settings_revision(&on_disk, 3, || {
+        written.push(3);
+        true
+    }));
+    assert_eq!(written, [2, 3]);
 }
 
 #[test]
@@ -163,6 +254,12 @@ fn settings_changes_reach_the_app() {
     assert_eq!(app.settings().compose_placement, ComposePlacement::Window);
     assert_eq!(app.settings().zoom, 1.3);
     assert_eq!(app.settings().appearance, Appearance::Light);
+    // Following the system keeps the scheme chosen; choosing one stops it.
+    let _ = app.update(Message::SetFollowSystemAppearance(true));
+    assert!(app.settings().follow_system_appearance);
+    assert_eq!(app.settings().appearance, Appearance::Light);
+    let _ = app.update(Message::SetAppearance(Appearance::Light));
+    assert!(!app.settings().follow_system_appearance);
     assert_eq!(
         app.settings().reading(),
         Reading {
@@ -177,8 +274,7 @@ fn asking_for_every_message_reaches_the_open_conversation() {
     // The choice is read where a message is drawn, so it applies to the
     // conversation already open, not only the next one.
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::SetExpandAllMessages(true));
 
@@ -338,6 +434,41 @@ fn compose_attachments_can_be_added_and_removed_through_messages() {
     assert_eq!(compose.attachments(), &[file2]);
 }
 
+#[tokio::test]
+async fn attached_files_are_measured_away_from_the_interface() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let draft = app.compose().unwrap().id();
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let length = std::fs::metadata(&file).unwrap().len();
+
+    let measure = app.update(Message::AddComposeAttachments(draft, vec![file.clone()]));
+    assert_eq!(app.compose().unwrap().attachment_size(&file), None);
+    for effect in measure.into_iter() {
+        let Effect::Future(future) = effect else {
+            panic!("the sizes are read by a future");
+        };
+        let _ = app.update(future.await);
+    }
+    assert_eq!(app.compose().unwrap().attachment_size(&file), Some(length));
+    // A file taken off forgets its size, which may differ when it comes back.
+    let _ = app.update(Message::RemoveComposeAttachment(0));
+    assert_eq!(app.compose().unwrap().attachment_size(&file), None);
+
+    // Sizes read for a draft that is gone change nothing in the next one.
+    let _ = app.update(Message::DiscardCompose);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::AddComposeAttachments(
+        app.compose().unwrap().id(),
+        vec![file.clone()],
+    ));
+    let _ = app.update(Message::AttachmentSizesRead(
+        draft,
+        [(file.clone(), Some(1))].into_iter().collect(),
+    ));
+    assert_eq!(app.compose().unwrap().attachment_size(&file), None);
+}
+
 #[test]
 fn attachments_from_discarded_compose_are_ignored_by_new_compose() {
     let mut app = loaded_demo_app();
@@ -378,33 +509,25 @@ fn attachments_from_discarded_compose_are_ignored_by_new_compose() {
 }
 
 #[test]
-fn dock_badge_reflects_inbox_unread_and_preference() {
+fn unread_badge_reflects_inbox_unread_and_preference() {
     let mut app = loaded_demo_app();
-    assert_eq!(crate::ui::dock_badge_count(&app), Some(6));
+    assert_eq!(crate::ui::unread_badge_count(&app), Some(6));
 
     let _ = app.update(Message::SetShowUnreadBadge(false));
-    assert_eq!(crate::ui::dock_badge_count(&app), None);
+    assert_eq!(crate::ui::unread_badge_count(&app), None);
 
     let _ = app.update(Message::SetShowUnreadBadge(true));
-    assert_eq!(crate::ui::dock_badge_count(&app), Some(6));
+    assert_eq!(crate::ui::unread_badge_count(&app), Some(6));
 }
 
 /// Sends a plain key press, as the window would when no field took it.
 fn press(app: &mut App, key: Key) {
-    let _ = app.update(Message::KeyPressed(KeyPress {
-        key,
-        command: false,
-        other_modifier: false,
-    }));
+    let _ = app.update(Message::KeyPressed(KeyPress::plain(key)));
 }
 
 /// Sends a command key press (Cmd on macOS, Ctrl on other platforms).
 fn press_command(app: &mut App, key: Key) {
-    let _ = app.update(Message::KeyPressed(KeyPress {
-        key,
-        command: true,
-        other_modifier: false,
-    }));
+    let _ = app.update(Message::KeyPressed(KeyPress::with_command(key)));
 }
 
 #[test]
@@ -445,31 +568,45 @@ fn command_enter_sends_compose() {
 }
 
 #[test]
+fn the_mailbox_keys_leave_a_draft_in_its_own_window_alone() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
+    open_conversation(&mut app, "demo-3");
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::To,
+        "recipient@example.com".into(),
+    ));
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
+
+    // Escape and Send in the mailbox window are not meant for the draft:
+    // its own window handles them.
+    press_command(&mut app, Key::Enter);
+    press(&mut app, Key::Escape);
+    let draft = app.compose().unwrap();
+    assert_eq!(draft.sending(), Sending::Writing);
+    assert!(!draft.confirming_discard());
+    // Escape went on to what the mailbox window shows.
+    assert!(app.mailbox().unwrap().reader().is_none());
+}
+
+#[test]
 fn trash_shortcuts_move_selected_conversation() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
 
     press_command(&mut app, Key::Backspace);
 
-    let has_row = |app: &App| {
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|row| row.id == "demo-3")
-    };
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
     assert!(app.mailbox().unwrap().undo().is_some());
 
     let _ = app.update(Message::UndoMove);
-    assert!(has_row(&app));
+    assert!(is_listed(&app, "demo-3"));
 
     // Plain Delete key also moves to trash
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
     press(&mut app, Key::Delete);
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
 }
 
 #[test]
@@ -483,7 +620,7 @@ fn a_save_in_flight_does_not_outlive_the_session() {
     assert_eq!(app.saving_attachment(), None);
     assert!(app.saved_attachment().is_none());
 
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let _ = app.update(Message::SaveAttachment("demo-1".into(), "new-file".into()));
 
     // A late save from the previous session must not replace the new one.
@@ -521,7 +658,7 @@ fn signing_out_takes_the_account_folders_with_it() {
     // not open showing names that belong to the last one.
     assert!(app.folders().is_empty());
 
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let _ = app.update(Message::FoldersLoaded(
         previous_epoch,
         Ok(vec![Folder::custom("old", "Previous account")]),
@@ -595,8 +732,7 @@ fn keys_do_not_reach_the_mailbox_under_a_link_prompt() {
 #[test]
 fn escape_answers_the_link_prompt_before_the_draft_behind_it() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let _ = app.update(Message::OpenCompose);
     let _ = app.update(Message::LinkClicked("https://example.com/".to_owned()));
 
@@ -627,8 +763,7 @@ fn the_apps_own_refresh_goes_unannounced_until_someone_asks_for_one() {
 #[test]
 fn a_rows_menu_acts_on_that_row_and_leaves_the_open_one_open() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let listed = |app: &App, id: &str| app.mailbox().unwrap().has_row(id);
     let unread = |app: &App, id: &str| {
         app.mailbox()
@@ -801,12 +936,15 @@ fn a_folder_list_that_fails_to_load_keeps_the_open_folder_and_is_asked_again() {
     // and only until it arrives.
     let mut app = loaded_demo_app();
     deliver_folders(&mut app, Err(MailboxError::Connection));
-    assert_eq!(app.update(Message::RefreshMailbox).units(), 3);
+    assert_eq!(
+        app.update(Message::RefreshMailbox).units(),
+        PAGE_AND_COUNTS + 1
+    );
     let page_request = app.last_request - 1;
     deliver_demo_page(&mut app, page_request, 0);
     deliver_folders(&mut app, Ok(vec![invoices.clone()]));
     assert_eq!(app.folders(), [invoices]);
-    assert_eq!(app.update(Message::RefreshMailbox).units(), 2);
+    assert_eq!(app.update(Message::RefreshMailbox).units(), PAGE_AND_COUNTS);
 }
 
 #[test]
@@ -826,6 +964,17 @@ fn only_web_and_mail_links_are_offered() {
             .unwrap()
             .target,
         "evil.example"
+    );
+    // So does every address a mail link writes to, past its `?` too.
+    let target = |link| PendingLink::parse(link).unwrap().target;
+    assert_eq!(
+        target("mailto:support@bank.example?to=x@evil.example&subject=Hi"),
+        "support@bank.example, x@evil.example"
+    );
+    assert_eq!(target("mailto:?to=x@evil.example"), "x@evil.example");
+    assert_eq!(
+        target("mailto:a@example.org,b@example.org?to=c@example.org,d@example.org,e@example.org"),
+        "a@example.org, b@example.org, c@example.org and 2 more"
     );
 
     for rejected in [
@@ -855,12 +1004,16 @@ fn email_links_wait_through_login_and_open_only_an_editable_new_message() {
         AuthState::SignedOut,
         AuthState::NeedsTotp,
     ] {
-        app.auth_state = auth;
-        assert_eq!(app.update(Message::OpenPendingMailto).units(), 0);
-        assert!(app.compose().is_none());
-        assert_eq!(app.pending_mailto_count(), 1);
+        app.auth_state = auth.clone();
+        assert_eq!(
+            app.update(Message::OpenPendingMailto).units(),
+            0,
+            "{auth:?}"
+        );
+        assert!(app.compose().is_none(), "{auth:?}");
+        assert_eq!(app.pending_mailto_count(), 1, "{auth:?}");
     }
-    app.open_mailbox(MailBackend::demo(), None);
+    app.open_mailbox(MailBackend::demo(), None, None);
     assert_eq!(app.update(Message::OpenPendingMailto).units(), 0);
     let compose = app.compose().unwrap();
     assert_eq!(compose.field(ComposeField::To), "team@example.org");
@@ -1004,15 +1157,18 @@ fn clicked_links_wait_for_confirmation_and_clear() {
 fn rerender_inputs_issue_no_mailbox_requests() {
     let mut app = loaded_demo_app();
     let requests = app.last_request;
-    for message in [
-        Message::SearchChanged("alex".into()),
-        Message::PanelsResized(Panels {
-            sidebar: 0.3,
-            ..app.panels()
-        }),
-        Message::SearchChanged(String::new()),
+    for (case, message) in [
+        ("search typed", Message::SearchChanged("alex".into())),
+        (
+            "panels resized",
+            Message::PanelsResized(Panels {
+                sidebar: 0.3,
+                ..app.panels()
+            }),
+        ),
+        ("search cleared", Message::SearchChanged(String::new())),
     ] {
-        assert_eq!(app.update(message).units(), 0);
+        assert_eq!(app.update(message).units(), 0, "{case}");
     }
 
     assert_eq!(app.last_request, requests);
@@ -1020,9 +1176,9 @@ fn rerender_inputs_issue_no_mailbox_requests() {
 
 fn loaded_demo_app() -> App {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     let counts = demo_service(&app).counts();
-    let _ = app.update(Message::CountsLoaded(2, Ok(counts)));
+    let _ = app.update(Message::CountsLoaded(OPENING_COUNTS, Ok(counts)));
     app
 }
 
@@ -1056,13 +1212,10 @@ fn demo_startup_opens_mailbox_without_session_resume() {
 
 #[test]
 fn demo_mailbox_uses_production_pagination() {
-    let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
-    let counts = demo_service(&app).counts();
-    let _ = app.update(Message::CountsLoaded(2, Ok(counts)));
+    let mut app = loaded_demo_app();
 
     let mailbox = app.mailbox().unwrap();
-    assert_eq!(mailbox.conversations().len(), 10);
+    assert_eq!(mailbox.conversations().len(), demo::PAGE_SIZE as usize);
     assert!(mailbox.has_more());
     assert_eq!(
         mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
@@ -1101,7 +1254,7 @@ fn demo_empty_and_spam_folders_load() {
 #[test]
 fn demo_selection_is_local() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
 
     let _ = app.update(Message::SelectConversation("demo-3".into()));
 
@@ -1153,7 +1306,7 @@ fn selecting_only_queues_a_detail_request() {
 #[test]
 fn no_selection_has_no_reader() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
 
     assert_eq!(app.mailbox().unwrap().reader_state(), &ReaderState::Empty);
 }
@@ -1161,10 +1314,9 @@ fn no_selection_has_no_reader() {
 #[test]
 fn demo_selection_opens_reader_with_newest_message_expanded() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
 
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let reader = app.mailbox().unwrap().reader().unwrap();
     assert_eq!(reader.conversation_id(), "demo-0");
@@ -1177,17 +1329,15 @@ fn demo_selection_opens_reader_with_newest_message_expanded() {
 #[test]
 fn returning_to_a_conversation_restores_its_reader_without_loading() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
     let reader = app.mailbox().unwrap().reader().unwrap();
     assert!(reader.is_expanded("demo-0-0", Reading::default()));
     assert!(reader.is_expanded("demo-0-2", Reading::default()));
 
-    let _ = app.update(Message::SelectConversation("demo-2".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-2");
     let effects = app.update(Message::SelectConversation("demo-0".into()));
     // The only work is scrolling the restored reader to its top.
     assert_eq!(effects.units(), 1);
@@ -1203,7 +1353,7 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
 #[test]
 fn folder_switch_closes_reader() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     let _ = app.update(Message::SelectConversation("demo-0".into()));
 
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
@@ -1257,7 +1407,10 @@ fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
         0
     );
 
-    assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 2);
+    assert_eq!(
+        app.update(Message::AutoRefreshMailbox).units(),
+        PAGE_AND_COUNTS
+    );
     let page_request = app.last_request - 1;
     deliver_demo_page(&mut app, page_request, 0);
 
@@ -1273,38 +1426,44 @@ fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
 }
 
 #[test]
-fn an_automatic_refresh_keeps_the_offer_to_undo_a_move() {
+fn an_undo_offer_that_expires_while_signing_out_still_goes() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
     press_command(&mut app, Key::Backspace);
-    let has_row = |app: &App| {
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|row| row.id == "demo-3")
-    };
-    assert!(!has_row(&app));
+    let offer = app.mailbox().unwrap().undo().cloned().expect("an offer");
 
-    // The poll lands while the notice is still up.
-    assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 2);
+    // The list stays on screen while signing out, and so does the notice,
+    // whose timer asks for it to go.
+    app.set_auth_state(AuthState::SigningOut);
+    let _ = app.update(Message::DismissUndo(offer));
+    assert!(app.mailbox().unwrap().undo().is_none());
+}
+
+#[test]
+fn an_automatic_refresh_holds_back_neither_a_move_nor_its_undo() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-3");
+    assert_eq!(
+        app.update(Message::AutoRefreshMailbox).units(),
+        PAGE_AND_COUNTS
+    );
+    press_command(&mut app, Key::Backspace);
+    assert!(!is_listed(&app, "demo-3"));
+
+    // The next poll starts while the notice is still up, and keeps it.
+    assert_eq!(
+        app.update(Message::AutoRefreshMailbox).units(),
+        PAGE_AND_COUNTS
+    );
     assert!(app.mailbox().unwrap().undo().is_some());
-    // Undo waits for the reloading list...
     let _ = app.update(Message::UndoMove);
-    assert!(!has_row(&app));
-    assert!(app.mailbox().unwrap().undo().is_some());
-    // ...and works once it is back.
-    let page_request = app.last_request - 1;
-    deliver_demo_page(&mut app, page_request, 0);
-    let _ = app.update(Message::UndoMove);
-    assert!(has_row(&app));
+    assert!(is_listed(&app, "demo-3"));
 }
 
 #[test]
 fn automatic_refresh_does_not_overlap_a_list_request() {
     let mut app = loaded_demo_app();
-    assert_eq!(app.update(Message::RefreshMailbox).units(), 2);
+    assert_eq!(app.update(Message::RefreshMailbox).units(), PAGE_AND_COUNTS);
     let requests = app.last_request;
 
     assert_eq!(app.update(Message::AutoRefreshMailbox).units(), 0);
@@ -1424,7 +1583,7 @@ fn late_new_mail_result_never_notifies_after_logout_or_in_another_session() {
     let _ = app.update(Message::Logout);
     assert_eq!(app.update(late_result.clone()).units(), 0);
 
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     assert_eq!(app.update(late_result).units(), 0);
 }
 
@@ -1540,8 +1699,7 @@ fn detail_failure_and_retry_use_a_new_request() {
 fn demo_read_actions_update_row_and_count_idempotently() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SearchChanged("design review".into()));
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let detail = app.mailbox().unwrap().reader().unwrap().detail().clone();
 
     assert!(!app.mailbox().unwrap().conversations()[0].unread);
@@ -1615,32 +1773,20 @@ fn abandoned_conversation_loads_are_stopped_and_ignored() {
 #[test]
 fn demo_star_actions_update_starred_folder_and_selection() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-1".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-1");
     let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
     let _ = app.update(Message::ApplyAction(MailAction::SetStarred(true)));
     assert!(app.mailbox().unwrap().conversations()[1].starred);
 
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Starred)));
     deliver_latest_demo_page(&mut app, 0);
-    assert!(
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|conversation| conversation.id == "demo-1")
-    );
+    assert!(is_listed(&app, "demo-1"));
 
     let effects = app.update(Message::SelectConversation("demo-1".into()));
     assert_eq!(effects.units(), 1);
     let _ = app.update(Message::ApplyAction(MailAction::SetStarred(false)));
     let mailbox = app.mailbox().unwrap();
-    assert!(
-        mailbox
-            .conversations()
-            .iter()
-            .all(|conversation| conversation.id != "demo-1")
-    );
+    assert!(!is_listed(&app, "demo-1"));
     assert!(
         mailbox
             .selected_conversation()
@@ -1658,7 +1804,7 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
 
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
-    let effects = app.update(Message::ConversationsLoaded(1, page));
+    let effects = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
     assert_eq!(effects.units(), 1, "the waiting search starts");
     assert!(app.mailbox().unwrap().loaded_count() > 0);
 
@@ -1670,7 +1816,7 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
     };
     let result = demo_service(&app).search("Avery", demo::PAGE_SIZE, NOW);
     let _ = app.update(Message::SearchLoaded(request, result));
-    assert_eq!(app.mailbox().unwrap().search_results(), Some("Avery"));
+    assert_eq!(app.mailbox().unwrap().shown_search_query(), Some("Avery"));
 
     // Leaving the results shows the folder that loaded meanwhile.
     let _ = app.update(Message::SearchChanged(String::new()));
@@ -1686,10 +1832,10 @@ fn a_search_waiting_for_the_folder_is_dropped_when_the_query_changes() {
 
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
-    let effects = app.update(Message::ConversationsLoaded(1, page));
+    let effects = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
 
     assert_eq!(effects.units(), 0, "Enter was for another query");
-    assert_eq!(app.mailbox().unwrap().search_results(), None);
+    assert_eq!(app.mailbox().unwrap().shown_search_query(), None);
 }
 
 #[test]
@@ -1767,19 +1913,31 @@ fn cancelling_save_as_does_not_download_or_change_a_later_save() {
 
     let second = choose_attachment_destination(&mut app);
     assert_ne!(first, second);
-    for stale in [
-        Message::AttachmentDestinationChosen(
-            first.clone(),
-            Some(std::env::temp_dir().join("stale.pdf")),
+    for (case, stale) in [
+        (
+            "a destination for the earlier download",
+            Message::AttachmentDestinationChosen(
+                first.clone(),
+                Some(std::env::temp_dir().join("stale.pdf")),
+            ),
         ),
-        Message::AttachmentDestinationChosen(first.clone(), None),
-        Message::AttachmentSaved(first, Err(SaveError::Failed)),
+        (
+            "no destination for the earlier download",
+            Message::AttachmentDestinationChosen(first.clone(), None),
+        ),
+        (
+            "the earlier download's result",
+            Message::AttachmentSaved(first, Err(SaveError::Failed)),
+        ),
         // A completion cannot skip the destination-selection phase.
-        Message::AttachmentSaved(second, Err(SaveError::Failed)),
+        (
+            "a result before its destination",
+            Message::AttachmentSaved(second, Err(SaveError::Failed)),
+        ),
     ] {
-        assert_eq!(app.update(stale).units(), 0);
-        assert_eq!(app.saving_attachment(), Some("file"));
-        assert!(app.saved_attachment().is_none());
+        assert_eq!(app.update(stale).units(), 0, "{case}");
+        assert_eq!(app.saving_attachment(), Some("file"), "{case}");
+        assert!(app.saved_attachment().is_none(), "{case}");
     }
 }
 
@@ -1819,7 +1977,7 @@ fn save_as_dialog_results_after_sign_out_cannot_start_a_download() {
     let mut app = loaded_demo_app();
     let previous = choose_attachment_destination(&mut app);
     let _ = app.update(Message::Logout);
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let current = choose_attachment_destination(&mut app);
     assert_ne!(previous.session, current.session);
     assert_eq!(
@@ -1845,8 +2003,7 @@ fn a_conversation_the_server_found_can_still_be_acted_on() {
         .expect("the search found something")
         .id
         .clone();
-    let _ = app.update(Message::SelectConversation(found.clone()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, &found);
 
     // The row is not in the open folder's listing, which used to leave
     // the reader with no actions at all.
@@ -1859,7 +2016,7 @@ fn a_conversation_the_server_found_can_still_be_acted_on() {
 
     // The results are what is on screen, so they carry the change.
     let mailbox = app.mailbox().unwrap();
-    assert_eq!(mailbox.search_results(), Some("offsite"));
+    assert_eq!(mailbox.shown_search_query(), Some("offsite"));
     assert!(
         mailbox
             .visible_conversations()
@@ -1880,8 +2037,7 @@ fn archiving_from_the_results_takes_the_row_out_of_them() {
         .map(|row| row.id.clone())
         .collect();
     assert!(rows.len() > 1, "the search found more than one row");
-    let _ = app.update(Message::SelectConversation(rows[0].clone()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, &rows[0]);
 
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
         MailFolder::Archive,
@@ -1900,31 +2056,19 @@ fn archiving_from_the_results_takes_the_row_out_of_them() {
 #[test]
 fn demo_archive_removes_selected_and_opens_next() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
         MailFolder::Archive,
     ))));
 
     let mailbox = app.mailbox().unwrap();
-    assert!(
-        mailbox
-            .conversations()
-            .iter()
-            .all(|conversation| conversation.id != "demo-0")
-    );
+    assert!(!is_listed(&app, "demo-0"));
     assert_eq!(mailbox.selected_conversation(), Some("demo-1"));
 
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
     deliver_latest_demo_page(&mut app, 0);
-    assert!(
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|conversation| conversation.id == "demo-0")
-    );
+    assert!(is_listed(&app, "demo-0"));
 }
 
 #[test]
@@ -1953,25 +2097,17 @@ fn moving_selected_conversation_invalidates_its_pending_detail() {
 #[test]
 fn undoing_a_demo_move_puts_the_conversation_back() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
 
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
         MailFolder::Archive,
     ))));
-    let has_row = |app: &App| {
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|conversation| conversation.id == "demo-3")
-    };
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
     assert!(app.mailbox().unwrap().undo().is_some());
 
     let _ = app.update(Message::UndoMove);
 
-    assert!(has_row(&app));
+    assert!(is_listed(&app, "demo-3"));
     assert!(app.mailbox().unwrap().undo().is_none());
 }
 
@@ -1988,34 +2124,20 @@ fn demo_trash_and_spam_moves_update_folders() {
         ),
     ] {
         let mut app = loaded_demo_app();
-        let _ = app.update(Message::SelectConversation("demo-3".into()));
-        deliver_selected_demo_detail(&mut app);
+        open_conversation(&mut app, "demo-3");
         let _ = app.update(message);
-        assert!(
-            app.mailbox()
-                .unwrap()
-                .conversations()
-                .iter()
-                .all(|conversation| conversation.id != "demo-3")
-        );
+        assert!(!is_listed(&app, "demo-3"), "{folder:?}");
 
         let _ = app.update(Message::SelectFolder(folder.clone()));
         deliver_latest_demo_page(&mut app, 0);
-        assert!(
-            app.mailbox()
-                .unwrap()
-                .conversations()
-                .iter()
-                .any(|conversation| conversation.id == "demo-3")
-        );
+        assert!(is_listed(&app, "demo-3"), "{folder:?}");
     }
 }
 
 #[test]
 fn a_move_proton_refuses_brings_the_row_back_with_the_list() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     // As the Proton path does: the move shows at once.
     let request = app
         .mailbox
@@ -2041,19 +2163,11 @@ fn a_move_proton_refuses_brings_the_row_back_with_the_list() {
 #[test]
 fn list_keys_wait_while_the_draft_covers_the_reader() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
     let _ = app.update(Message::OpenCompose);
-    let plain = |key| {
-        Message::KeyPressed(KeyPress {
-            key,
-            command: false,
-            other_modifier: false,
-        })
-    };
 
     for key in [Key::Character('j'), Key::ArrowDown] {
-        let _ = app.update(plain(key));
+        press(&mut app, key);
         assert_eq!(
             app.mailbox().unwrap().selected_conversation(),
             Some("demo-0"),
@@ -2063,7 +2177,7 @@ fn list_keys_wait_while_the_draft_covers_the_reader() {
 
     // In its own window the draft leaves the reader in view.
     let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
-    let _ = app.update(plain(Key::Character('j')));
+    press(&mut app, Key::Character('j'));
     assert_eq!(
         app.mailbox().unwrap().selected_conversation(),
         Some("demo-1")
@@ -2071,56 +2185,195 @@ fn list_keys_wait_while_the_draft_covers_the_reader() {
 }
 
 #[test]
+fn the_row_a_list_key_opens_is_brought_into_view() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-0");
+
+    let effects = app.update(Message::KeyPressed(KeyPress::plain(Key::Character('j'))));
+
+    assert_eq!(
+        app.mailbox().unwrap().selected_conversation(),
+        Some("demo-1")
+    );
+    assert!(effects.into_iter().any(|effect| matches!(
+        effect,
+        Effect::Ui(UiEffect::RevealConversation(ref id)) if id == "demo-1"
+    )));
+}
+
+fn is_unread(app: &App, id: &str) -> bool {
+    app.mailbox()
+        .unwrap()
+        .conversations()
+        .iter()
+        .find(|row| row.id == id)
+        .is_some_and(|row| row.unread)
+}
+
+fn unread_rows(app: &App) -> Vec<String> {
+    app.mailbox()
+        .unwrap()
+        .conversations()
+        .iter()
+        .filter(|row| row.unread)
+        .map(|row| row.id.clone())
+        .collect()
+}
+
+/// Whether the open folder's list has a row for `id`.
+fn is_listed(app: &App, id: &str) -> bool {
+    app.mailbox()
+        .unwrap()
+        .conversations()
+        .iter()
+        .any(|row| row.id == id)
+}
+
+fn open_conversation(app: &mut App, id: &str) {
+    let _ = app.update(Message::SelectConversation(id.to_owned()));
+    deliver_selected_demo_detail(app);
+}
+
+#[test]
+fn a_conversation_opened_behind_a_draft_stays_unread_until_it_shows() {
+    let mut app = loaded_demo_app();
+    let id = unread_rows(&app).remove(0);
+    let _ = app.update(Message::OpenCompose);
+
+    // A click in the list opens it behind the draft, where nobody reads it.
+    open_conversation(&mut app, &id);
+    assert_eq!(app.mailbox().unwrap().selected_conversation(), Some(&*id));
+    assert!(is_unread(&app, &id), "marked read behind the draft");
+
+    // Putting the untouched draft away shows it, and so reads it.
+    let _ = app.update(Message::CloseCompose);
+    assert!(app.compose().is_none());
+    assert!(!is_unread(&app, &id));
+}
+
+#[test]
+fn only_the_conversation_the_reader_shows_after_a_draft_is_read() {
+    let mut app = loaded_demo_app();
+    let unread = unread_rows(&app);
+    let (passed, kept) = (&unread[0], &unread[1]);
+    let _ = app.update(Message::OpenCompose);
+
+    open_conversation(&mut app, passed);
+    open_conversation(&mut app, kept);
+    let _ = app.update(Message::CloseCompose);
+
+    assert!(is_unread(&app, passed), "never shown, yet marked read");
+    assert!(!is_unread(&app, kept));
+}
+
+#[test]
+fn changes_on_their_way_to_proton_count_until_they_arrive() {
+    let mut app = loaded_demo_app();
+    assert_eq!(app.unsent_changes(), 0);
+    // Proton's actions go one after another, the way the demo's never wait.
+    let star = |app: &mut App, row: &str, request| {
+        app.mailbox
+            .as_mut()
+            .unwrap()
+            .start_action_on(
+                row.to_owned(),
+                crate::mail::SummaryKind::Conversation,
+                MailAction::SetStarred(true),
+                request,
+            )
+            .unwrap()
+    };
+    let sent = star(&mut app, "demo-0", 900).send.unwrap();
+    assert!(
+        star(&mut app, "demo-1", 901).send.is_none(),
+        "it waits its turn"
+    );
+    assert_eq!(app.unsent_changes(), 2);
+
+    let finish = |app: &mut App, request| {
+        app.mailbox
+            .as_mut()
+            .unwrap()
+            .finish_action(&request, Ok(()))
+    };
+    let next = finish(&mut app, sent).next_action.unwrap();
+    assert_eq!(app.unsent_changes(), 1);
+    let _ = finish(&mut app, next);
+    assert_eq!(app.unsent_changes(), 0);
+}
+
+#[test]
+fn a_conversation_left_behind_a_draft_is_never_marked_read() {
+    let mut app = loaded_demo_app();
+    let inbox_unread = |app: &App| demo_service(app).counts().unread(&Folder::INBOX);
+    let before = inbox_unread(&app);
+    let id = unread_rows(&app).remove(0);
+    let _ = app.update(Message::OpenCompose);
+    open_conversation(&mut app, &id);
+
+    // Another folder replaces it before the draft is put away.
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
+    deliver_latest_demo_page(&mut app, 0);
+    let _ = app.update(Message::CloseCompose);
+
+    assert_eq!(inbox_unread(&app), before);
+}
+
+#[test]
+fn moving_the_draft_to_its_own_window_shows_what_it_covered() {
+    let mut app = loaded_demo_app();
+    let id = unread_rows(&app).remove(0);
+    let _ = app.update(Message::OpenCompose);
+    open_conversation(&mut app, &id);
+    assert!(is_unread(&app, &id));
+
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
+
+    assert!(app.compose().is_some(), "the draft is still being written");
+    assert!(!is_unread(&app, &id));
+    // With the reader in view, what opens is read at once.
+    let next = unread_rows(&app).remove(0);
+    open_conversation(&mut app, &next);
+    assert!(!is_unread(&app, &next));
+}
+
+#[test]
 fn demo_mail_marked_not_spam_goes_back_to_the_inbox() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
         MailFolder::Spam,
     ))));
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Spam)));
     deliver_latest_demo_page(&mut app, 0);
-    let _ = app.update(Message::SelectConversation("demo-3".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-3");
 
     let _ = app.update(Message::ApplyAction(MailAction::MoveTo(Folder::INBOX)));
 
-    let has_row = |app: &App| {
-        app.mailbox()
-            .unwrap()
-            .conversations()
-            .iter()
-            .any(|conversation| conversation.id == "demo-3")
-    };
-    assert!(!has_row(&app));
+    assert!(!is_listed(&app, "demo-3"));
     let undo = app.mailbox().unwrap().undo().expect("an offer to undo");
     assert_eq!(undo.from, sys(MailFolder::Spam));
     assert_eq!(undo.to, Folder::INBOX);
 
     let _ = app.update(Message::SelectFolder(Folder::INBOX));
     deliver_latest_demo_page(&mut app, 0);
-    assert!(has_row(&app));
+    assert!(is_listed(&app, "demo-3"));
 }
 
 #[test]
 fn inbox_search_reflects_folder_moves_immediately() {
-    for message in [
-        Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Archive))),
-        Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Trash))),
-        Message::ApplyAction(MailAction::MoveTo(sys(MailFolder::Spam))),
-    ] {
+    for folder in [MailFolder::Archive, MailFolder::Trash, MailFolder::Spam] {
         let mut app = loaded_demo_app();
         let _ = app.update(Message::SearchChanged("blue notebook".into()));
         assert_eq!(app.mailbox().unwrap().visible_conversations().count(), 1);
-        let _ = app.update(Message::SelectConversation("demo-3".into()));
-        deliver_selected_demo_detail(&mut app);
+        open_conversation(&mut app, "demo-3");
 
-        let _ = app.update(message);
+        let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(folder))));
 
         let mailbox = app.mailbox().unwrap();
-        assert_eq!(mailbox.search_query(), "blue notebook");
-        assert_eq!(mailbox.visible_conversations().count(), 0);
-        assert_eq!(mailbox.selected_conversation(), None);
+        assert_eq!(mailbox.search_query(), "blue notebook", "{folder:?}");
+        assert_eq!(mailbox.visible_conversations().count(), 0, "{folder:?}");
+        assert_eq!(mailbox.selected_conversation(), None, "{folder:?}");
     }
 }
 
@@ -2148,9 +2401,8 @@ fn moving_only_conversation_closes_reader_cleanly() {
 #[test]
 fn resizing_panels_only_changes_layout() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    open_conversation(&mut app, "demo-0");
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
     let requests = app.last_request;
     let default_panels = app.panels();
@@ -2166,7 +2418,7 @@ fn resizing_panels_only_changes_layout() {
     let mailbox = app.mailbox().unwrap();
     assert_eq!(mailbox.folder(), &sys(MailFolder::Inbox));
     assert_eq!(mailbox.status(), ListStatus::Loaded);
-    assert_eq!(mailbox.conversations().len(), 10);
+    assert_eq!(mailbox.conversations().len(), demo::PAGE_SIZE as usize);
     let reader = mailbox.reader().unwrap();
     assert_eq!(reader.conversation_id(), "demo-0");
     assert!(reader.is_expanded("demo-0-0", Reading::default()));
@@ -2200,7 +2452,7 @@ fn resetting_layout_preserves_other_preferences() {
 #[test]
 fn exiting_demo_clears_mailbox_and_opens_login() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
 
     let _ = app.update(Message::Logout);
 
@@ -2214,7 +2466,7 @@ fn exiting_demo_clears_mailbox_and_opens_login() {
 #[test]
 fn a_demo_process_never_starts_a_proton_sign_in() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     let _ = app.update(Message::Logout);
     app.login_form.username = "username sentinel".into();
     app.login_form.password = "password sentinel".to_owned().into();
@@ -2232,7 +2484,7 @@ fn a_demo_process_never_starts_a_proton_sign_in() {
 #[test]
 fn a_demo_process_keeps_its_notice_while_the_form_is_edited() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     let _ = app.update(Message::Logout);
 
     app.login_form.username = "username sentinel".into();
@@ -2288,6 +2540,91 @@ fn about_source_code_uses_the_background_browser_effect() {
 }
 
 #[test]
+fn an_offline_start_keeps_the_saved_session_to_try_again() {
+    let mut app = App::new(Settings::default());
+
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::Failed(
+        AuthError::Connection,
+    )));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::Connection));
+    assert!(app.can_retry_saved_session());
+
+    let retry = app.update(Message::RetrySavedSession);
+    assert_eq!(retry.units(), 1);
+    assert_eq!(app.auth_state, AuthState::CheckingSession);
+    assert_eq!(app.auth_error, None);
+    assert!(!app.can_retry_saved_session());
+    // A second press while it runs starts nothing more.
+    assert_eq!(app.update(Message::RetrySavedSession).units(), 0);
+}
+
+#[test]
+fn only_a_failure_that_may_pass_offers_the_saved_session_again() {
+    for (outcome, retry) in [
+        (ResumeOutcome::Failed(AuthError::TimedOut), true),
+        (ResumeOutcome::Failed(AuthError::SessionUnavailable), true),
+        (
+            ResumeOutcome::Failed(AuthError::Service {
+                http_status: 503,
+                code: 0,
+            }),
+            true,
+        ),
+        (
+            ResumeOutcome::Failed(AuthError::Service {
+                http_status: 422,
+                code: 2001,
+            }),
+            false,
+        ),
+        (
+            ResumeOutcome::Failed(AuthError::SessionAddressMismatch),
+            false,
+        ),
+        (ResumeOutcome::SignedOut, false),
+    ] {
+        let label = match &outcome {
+            ResumeOutcome::Failed(error) => format!("{error:?}"),
+            _ => "signed out".to_owned(),
+        };
+        let mut app = App::new(Settings::default());
+        let _ = app.update(Message::SessionChecked(outcome));
+        assert_eq!(app.can_retry_saved_session(), retry, "{label}");
+    }
+}
+
+#[test]
+fn signing_in_instead_leaves_nothing_to_retry_and_ignores_a_late_check() {
+    let mut app = App::new(Settings::default());
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::Failed(
+        AuthError::Connection,
+    )));
+    app.login_form.username = "username sentinel".into();
+    app.login_form.password = "password sentinel".to_owned().into();
+
+    let _ = app.update(Message::Submit);
+    assert!(!app.can_retry_saved_session());
+    assert_eq!(app.update(Message::RetrySavedSession).units(), 0);
+
+    // A check that answers once a sign-in runs changes nothing.
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    assert_eq!(
+        app.auth_state,
+        AuthState::SigningIn(SignInStep::Credentials)
+    );
+
+    // Back on the form after that sign-in failed, its error is the one
+    // shown, with no offer to try the old session beside it.
+    let _ = app.update(Message::SignInFinished(
+        app.auth_attempt,
+        SignInOutcome::Failed(AuthError::Connection),
+    ));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert!(!app.can_retry_saved_session());
+}
+
+#[test]
 fn absent_saved_session_opens_login() {
     let mut app = App::new(Settings::default());
 
@@ -2308,7 +2645,7 @@ fn signing_in_app() -> App {
 #[test]
 fn totp_prompt_is_answered_within_the_same_sign_in() {
     let mut app = signing_in_app();
-    let (reply, mut answer) = crate::mail::Reply::channel();
+    let (reply, mut answer) = crate::mail::PromptAnswer::channel();
 
     let _ = app.update(Message::SignInPrompt(
         app.auth_attempt,
@@ -2332,9 +2669,42 @@ fn totp_prompt_is_answered_within_the_same_sign_in() {
 }
 
 #[test]
+fn mailbox_password_prompt_is_answered_within_the_same_sign_in() {
+    let mut app = signing_in_app();
+    let attempt = app.auth_attempt;
+    let (reply, mut answer) = crate::mail::PromptAnswer::channel();
+
+    let _ = app.update(Message::SignInPrompt(
+        attempt,
+        SignInPrompt::MailboxPassword(reply),
+    ));
+    assert_eq!(app.auth_state, AuthState::NeedsMailboxPassword);
+    assert_eq!(app.login_form.password.as_str(), "password sentinel");
+
+    let _ = app.update(Message::Submit);
+    assert_eq!(app.auth_error, Some(AuthError::MailboxPasswordRequired));
+    assert!(matches!(answer.try_recv(), Ok(None)));
+
+    *app.mailbox_password_mut() = " two words ".into();
+    app.login_edited();
+    let _ = app.update(Message::Submit);
+    // Taken exactly as typed, spaces included.
+    let password = answer.try_recv().unwrap().unwrap();
+    assert_eq!(password.expose_secret(), " two words ");
+    assert_eq!(
+        app.auth_state,
+        AuthState::SigningIn(SignInStep::MailboxPassword)
+    );
+    // The same sign-in goes on: no new attempt asks for the password or a
+    // code again.
+    assert_eq!(app.auth_attempt, attempt);
+    assert!(app.login_form.mailbox_password.is_empty());
+}
+
+#[test]
 fn human_verification_waits_for_confirmation() {
     let mut app = signing_in_app();
-    let (done, mut answer) = crate::mail::Reply::channel();
+    let (done, mut answer) = crate::mail::PromptAnswer::channel();
     let url = "https://verify.proton.me/?methods=captcha&token=t".to_owned();
 
     let _ = app.update(Message::SignInPrompt(
@@ -2352,11 +2722,45 @@ fn human_verification_waits_for_confirmation() {
     assert!(matches!(app.auth_state, AuthState::SigningIn(_)));
 }
 
+/// A sign-in in its own `NeedsHumanVerification` step, and the answer the
+/// browser check waits for.
+fn verifying_app() -> (App, futures::channel::oneshot::Receiver<()>) {
+    let mut app = signing_in_app();
+    let (done, answer) = crate::mail::PromptAnswer::channel();
+    let url = "https://verify.proton.me/?methods=captcha&token=t".to_owned();
+    let _ = app.update(Message::SignInPrompt(
+        app.auth_attempt,
+        SignInPrompt::HumanVerification { url, done },
+    ));
+    (app, answer)
+}
+
+#[test]
+fn a_sign_in_waiting_for_the_browser_check_is_still_running() {
+    let (mut app, mut answer) = verifying_app();
+    let effects = app.update(Message::CancelChallenge);
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert!(answer.try_recv().is_err());
+    assert!(matches!(
+        effects.into_iter().next(),
+        Some(Effect::CancelSignIn)
+    ));
+
+    // Its outcome still applies while the check is open.
+    let (mut app, _answer) = verifying_app();
+    let _ = app.update(Message::SignInFinished(
+        app.auth_attempt,
+        SignInOutcome::Failed(AuthError::Connection),
+    ));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::Connection));
+}
+
 #[test]
 fn going_back_cancels_the_pending_prompt() {
     let mut app = signing_in_app();
     let attempt = app.auth_attempt;
-    let (reply, mut answer) = crate::mail::Reply::<SecretString>::channel();
+    let (reply, mut answer) = crate::mail::PromptAnswer::<SecretString>::channel();
     let _ = app.update(Message::SignInPrompt(attempt, SignInPrompt::Totp(reply)));
 
     let effects = app.update(Message::CancelChallenge);
@@ -2383,9 +2787,8 @@ fn going_back_cancels_the_pending_prompt() {
 
 #[test]
 fn prompts_without_a_running_sign_in_are_cancelled() {
-    let mut app = App::new(Settings::default());
-    app.auth_state = AuthState::SignedOut;
-    let (reply, mut answer) = crate::mail::Reply::<SecretString>::channel();
+    let mut app = App::signed_out();
+    let (reply, mut answer) = crate::mail::PromptAnswer::<SecretString>::channel();
 
     let _ = app.update(Message::SignInPrompt(
         app.auth_attempt,
@@ -2465,7 +2868,7 @@ fn expired_session_signs_out_and_clears_mailbox() {
     ));
 
     let _ = app.update(Message::ConversationsLoaded(
-        1,
+        OPENING_PAGE,
         Err(MailboxError::SessionExpired),
     ));
 
@@ -2485,7 +2888,7 @@ fn a_session_that_cannot_be_read_keeps_the_mailbox_and_the_draft() {
     ));
 
     let _ = app.update(Message::ConversationsLoaded(
-        1,
+        OPENING_PAGE,
         Err(MailboxError::SessionUnavailable),
     ));
 
@@ -2493,6 +2896,127 @@ fn a_session_that_cannot_be_read_keeps_the_mailbox_and_the_draft() {
     assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
     assert!(app.mailbox.is_some());
     assert!(app.compose().is_some());
+}
+
+/// Ends the session of account "user-1" the way Proton does, from its first
+/// page request, while `app` holds whatever it was given.
+fn session_ended_by_proton(app: &mut App) {
+    let _ = app.update(Message::ConversationsLoaded(
+        OPENING_PAGE,
+        Err(MailboxError::SessionExpired),
+    ));
+}
+
+/// Signs account `account` in again, with the demo mailbox standing in.
+fn signed_in_again(app: &mut App, account: &str) -> Effects {
+    app.open_mailbox(
+        MailBackend::demo(),
+        Some("alex@proton.me".into()),
+        Some(account.into()),
+    )
+}
+
+#[test]
+fn an_expired_session_keeps_the_draft_for_its_own_account() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    write(&mut app, "sam@example.com");
+    let written = app.compose().unwrap().id();
+    session_ended_by_proton(&mut app);
+
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
+    assert!(app.compose().is_none(), "no session shows it meanwhile");
+    assert_eq!(app.parked_draft_address(), Some("alex@proton.me"));
+
+    let _ = signed_in_again(&mut app, "user-1");
+    let draft = app.compose().expect("its own account gets it back");
+    assert_eq!(draft.field(ComposeField::To), "sam@example.com");
+    assert_eq!(draft.field(ComposeField::Body), "See you then.");
+    assert_ne!(
+        draft.id(),
+        written,
+        "nothing from the ended session reaches it"
+    );
+    assert!(!app.has_parked_draft());
+}
+
+#[test]
+fn another_account_or_none_never_gets_a_kept_draft() {
+    for next in [Some("user-2"), None] {
+        let mut app = App::signed_in_as("user-1", "alex@proton.me");
+        write(&mut app, "sam@example.com");
+        session_ended_by_proton(&mut app);
+
+        let _ = app.open_mailbox(MailBackend::demo(), None, next.map(str::to_owned));
+        assert!(app.compose().is_none(), "{next:?}");
+        assert!(!app.has_parked_draft(), "{next:?}");
+        // Nor does its own account afterwards.
+        app.close_mailbox(None);
+        let _ = signed_in_again(&mut app, "user-1");
+        assert!(app.compose().is_none(), "{next:?}");
+    }
+}
+
+#[test]
+fn an_untouched_draft_or_a_sign_out_keeps_nothing() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    let _ = app.update(Message::OpenCompose);
+    session_ended_by_proton(&mut app);
+    assert!(!app.has_parked_draft(), "nothing was written");
+
+    let _ = signed_in_again(&mut app, "user-1");
+    write(&mut app, "sam@example.com");
+    app.close_mailbox(Some(AuthError::Connection));
+    assert!(
+        !app.has_parked_draft(),
+        "only Proton ending the session keeps it"
+    );
+}
+
+#[test]
+fn a_message_on_its_way_when_the_session_ends_comes_back_unconfirmed() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    write(&mut app, "sam@example.com");
+    let ended = app.session_epoch;
+    assert_eq!(app.update(Message::Send).units(), 1);
+    session_ended_by_proton(&mut app);
+
+    let _ = signed_in_again(&mut app, "user-1");
+    // Its answer belonged to the session that ended, and changes nothing.
+    let _ = app.update(Message::Sent(ended, Ok(())));
+    let draft = app.compose().expect("it may not have gone");
+    assert_eq!(draft.sending(), Sending::Failed(SendError::Unconfirmed));
+}
+
+#[test]
+fn a_send_refused_for_an_expired_session_ends_it_and_keeps_the_draft() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    write(&mut app, "sam@example.com");
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::Send);
+
+    let _ = app.update(Message::Sent(
+        epoch,
+        Err(SendError::Mailbox(MailboxError::SessionExpired)),
+    ));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
+
+    let _ = signed_in_again(&mut app, "user-1");
+    let draft = app.compose().expect("signing in again brings it back");
+    assert_eq!(draft.sending(), Sending::Writing, "ready to send again");
+}
+
+#[test]
+fn discarding_drops_a_kept_draft() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    write(&mut app, "sam@example.com");
+    session_ended_by_proton(&mut app);
+
+    let _ = app.update(Message::DiscardCompose);
+    assert!(!app.has_parked_draft());
+    let _ = signed_in_again(&mut app, "user-1");
+    assert!(app.compose().is_none());
 }
 
 #[test]
@@ -2523,7 +3047,7 @@ fn a_failed_download_says_why_the_file_was_not_saved() {
         (MailboxError::Service, SaveError::NotFetched),
         (MailboxError::Unavailable, SaveError::NotFetched),
     ] {
-        assert_eq!(super::unsaved(error), saved);
+        assert_eq!(super::unsaved(error), saved, "{error:?}");
     }
 }
 
@@ -2532,7 +3056,7 @@ fn stale_expired_session_response_is_ignored() {
     let mut app = authenticated_app();
 
     let _ = app.update(Message::ConversationsLoaded(
-        99,
+        NEVER_ISSUED,
         Err(MailboxError::SessionExpired),
     ));
 
@@ -2545,7 +3069,10 @@ fn logout_result_after_session_expiry_is_ignored() {
     let mut app = authenticated_app();
     let previous_epoch = app.session_epoch;
     app.auth_state = AuthState::SigningOut;
-    let _ = app.update(Message::CountsLoaded(2, Err(MailboxError::SessionExpired)));
+    let _ = app.update(Message::CountsLoaded(
+        OPENING_COUNTS,
+        Err(MailboxError::SessionExpired),
+    ));
 
     let _ = app.update(Message::LogoutFinished(
         previous_epoch,
@@ -2561,8 +3088,11 @@ fn logout_result_from_a_previous_session_is_ignored() {
     let mut app = authenticated_app();
     let previous_epoch = app.session_epoch;
     app.auth_state = AuthState::SigningOut;
-    let _ = app.update(Message::CountsLoaded(2, Err(MailboxError::SessionExpired)));
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.update(Message::CountsLoaded(
+        OPENING_COUNTS,
+        Err(MailboxError::SessionExpired),
+    ));
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     app.auth_state = AuthState::SigningOut;
 
     let _ = app.update(Message::LogoutFinished(previous_epoch, Ok(())));
@@ -2621,7 +3151,7 @@ fn send_result_from_a_previous_session_keeps_the_new_draft() {
     // Signing out waits for the send; an expired session cannot.
     app.close_mailbox(Some(AuthError::SessionExpired));
 
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     write(&mut app, "new@example.com");
     let _ = app.update(Message::Sent(previous_epoch, Ok(())));
 
@@ -2751,13 +3281,11 @@ fn a_reply_needs_nobody_named_because_proton_knows() {
     // Core addresses a reply from the message being answered, so the window
     // must not refuse to send for want of a recipient.
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        forward: false,
-        everyone: false,
+        kind: AnswerKind::Reply,
     });
 
     let writing = app.compose().expect("a reply is open");
@@ -2769,13 +3297,11 @@ fn a_reply_needs_nobody_named_because_proton_knows() {
 #[test]
 fn a_forward_still_has_to_be_addressed() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        forward: true,
-        everyone: false,
+        kind: AnswerKind::Forward,
     });
 
     let writing = app.compose().expect("a forward is open");
@@ -2794,20 +3320,18 @@ fn a_forward_still_has_to_be_addressed() {
 #[test]
 fn answering_says_what_is_being_answered() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-    deliver_selected_demo_detail(&mut app);
+    open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        forward: false,
-        everyone: true,
+        kind: AnswerKind::ReplyAll,
     });
 
     let answering = app
         .compose()
         .and_then(Compose::answering)
         .expect("it says what it answers");
-    assert!(answering.everyone);
+    assert_eq!(answering.kind, AnswerKind::ReplyAll);
     assert!(!answering.subject.is_empty());
     assert!(!answering.sender.is_empty());
 }
@@ -2818,8 +3342,7 @@ fn answering_a_message_that_is_not_there_opens_nothing() {
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        forward: false,
-        everyone: false,
+        kind: AnswerKind::Reply,
     });
 
     assert!(app.compose().is_none());
@@ -2848,27 +3371,29 @@ fn inspection_page(app: &App, count: usize) -> ConversationPage {
 #[test]
 fn inspection_candidates_do_not_spawn_an_unbounded_number_of_tasks() {
     let mut app = loaded_demo_app();
-    let mut page = inspection_page(&app, 100);
+    // Twice as many candidates as the queue takes, each offered twice.
+    let mut page = inspection_page(&app, 2 * inspection::CAPACITY);
     page.inspect_candidates
         .extend(page.inspect_candidates.clone());
     let _ = app.update(Message::RefreshMailbox);
     let request = app.last_request - 1;
     let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
-    assert_eq!(effects.units(), 4);
+    assert_eq!(effects.units(), INSPECTION_CONCURRENCY);
 }
 
 #[test]
 fn stale_page_response_does_not_start_inspections() {
     let mut app = loaded_demo_app();
     let page = inspection_page(&app, 2);
-    let effects = app.update(Message::ConversationsLoaded(0, Ok(page)));
+    let effects = app.update(Message::ConversationsLoaded(NEVER_ISSUED, Ok(page)));
     assert_eq!(effects.units(), 0);
 }
 
 #[test]
 fn inspection_queue_drains_with_bounded_deduplicated_work() {
     let mut app = loaded_demo_app();
-    let mut page = inspection_page(&app, 100);
+    // Twice as many candidates as the queue takes, each offered twice.
+    let mut page = inspection_page(&app, 2 * inspection::CAPACITY);
     page.inspect_candidates
         .extend(page.inspect_candidates.clone());
     let _ = app.update(Message::RefreshMailbox);
@@ -2896,18 +3421,25 @@ fn inspection_queue_drains_with_bounded_deduplicated_work() {
         // A duplicate completion cannot release another slot or launch work.
         assert_eq!(app.update(message).units(), 0);
         running.extend(next.into_iter());
-        assert!(running.len() <= 4);
+        assert!(running.len() <= INSPECTION_CONCURRENCY);
     }
-    assert_eq!(completed.len(), 50, "overflow must keep Proton grouping");
+    assert_eq!(
+        completed.len(),
+        inspection::CAPACITY,
+        "overflow must keep Proton grouping"
+    );
 }
 
 #[test]
 fn inspections_are_cancelled_when_the_context_changes() {
-    for transition in [
-        Message::SelectFolder(sys(MailFolder::Sent)),
-        Message::SearchSubmitted,
-        Message::RefreshMailbox,
-        Message::Logout,
+    for (case, transition) in [
+        (
+            "another folder",
+            Message::SelectFolder(sys(MailFolder::Sent)),
+        ),
+        ("a search", Message::SearchSubmitted),
+        ("a refresh", Message::RefreshMailbox),
+        ("signing out", Message::Logout),
     ] {
         let mut app = loaded_demo_app();
         let effects = app.inspect_candidates(vec!["demo-0".into()]);
@@ -2927,9 +3459,9 @@ fn inspections_are_cancelled_when_the_context_changes() {
         };
         *result = Err(MailboxError::SessionExpired);
         let expected_auth = app.auth_state.clone();
-        assert_eq!(app.update(message).units(), 0);
-        assert_eq!(app.auth_state, expected_auth);
-        assert!(!app.inspections.finish(request, "demo-0"));
+        assert_eq!(app.update(message).units(), 0, "{case}");
+        assert_eq!(app.auth_state, expected_auth, "{case}");
+        assert!(!app.inspections.finish(request, "demo-0"), "{case}");
     }
 }
 

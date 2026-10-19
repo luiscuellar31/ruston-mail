@@ -53,8 +53,9 @@ pub struct ActionRequest {
 /// How an automatic read ended, and the action that can be sent after it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReadCompletion {
-    /// Whether a loaded row went from unread to read.
-    pub changed: bool,
+    /// Whether Proton took the read, which changes its counts, whether or
+    /// not the row is still listed here.
+    pub read_confirmed: bool,
     /// An explicit read that waited for this one, or, when this read failed
     /// and took that read down with it, the action waiting behind them.
     pub next_action: Option<ActionRequest>,
@@ -75,7 +76,7 @@ pub struct ActionStart {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ActionFinish {
     pub result: Result<(), MailboxError>,
-    pub next: Option<ActionRequest>,
+    pub next_action: Option<ActionRequest>,
     /// The row opened in place of one a reload had brought back while its
     /// move was on the way.
     pub opened: Option<String>,
@@ -90,6 +91,9 @@ pub struct UndoMove {
     pub from: Folder,
     /// Where it was moved, which is what the offer says.
     pub to: Folder,
+    /// The row as it was listed, so taking the move back can list it again
+    /// even when it came from a page a reload does not read.
+    pub row: Option<ConversationSummary>,
 }
 
 /// Which way the keyboard moves through the conversation list.
@@ -108,6 +112,18 @@ pub enum ListStatus {
     LoadingMore(RequestId),
     Loaded,
     Failed(MailboxError, ListAttempt),
+}
+
+impl ListStatus {
+    /// The list request this status waits for, if one is in flight.
+    pub fn request_in_flight(self) -> Option<RequestId> {
+        match self {
+            Self::Loading(request) | Self::Refreshing(request) | Self::LoadingMore(request) => {
+                Some(request)
+            }
+            Self::Loaded | Self::Failed(..) => None,
+        }
+    }
 }
 
 /// What a list request that failed asked for, so trying again asks the same.
@@ -332,6 +348,14 @@ pub struct Mailbox {
     visible_cache: Vec<usize>,
     page_size: u32,
     next_page: u32,
+    /// The page `load_more` asked for, which the next page continues from.
+    more_page: u32,
+    /// Rows of the loaded pages a move took off the screen, before Proton
+    /// answered.
+    moving_out: HashSet<String>,
+    /// Rows Proton confirmed gone from the loaded pages since the last page
+    /// arrived: Proton's later pages now start that many rows earlier.
+    moved_out: HashSet<String>,
     has_more: bool,
     /// The folders left most recently, the one left longest ago first.
     cached_listings: Vec<CachedListing>,
@@ -356,7 +380,7 @@ pub struct Mailbox {
     search_deferred: bool,
     /// The action on its way to Proton, or waiting for an automatic read of
     /// the same row.
-    action_request: Option<ActionRequest>,
+    action_in_flight: Option<ActionRequest>,
     /// Actions asked for while another was on its way, in the order asked.
     /// Each already shows; they are sent one at a time, so taking a move back
     /// always follows the move.
@@ -369,16 +393,23 @@ pub struct Mailbox {
     undo: Option<UndoMove>,
     /// Automatic reads in flight, by row. Explicit read mutations on the same
     /// row wait here without blocking independent rows or other action kinds.
-    pending_reads: HashMap<String, RequestId>,
+    automatic_reads: HashMap<String, RequestId>,
     /// Where rows moved without leaving the view now are. Starred and labels
     /// list mail wherever it sits, so a conversation moved to another folder
     /// stays in them, and only this says where it went.
     relocated: HashMap<String, Folder>,
+    /// Rows a move back listed again before Proton confirmed it; a refused
+    /// one takes its row away again.
+    listed_again: HashSet<String>,
+    /// Actions Proton confirmed since the folder's first page on its way was
+    /// asked for. It may have read the page before applying them, so the
+    /// page shows them again.
+    confirmed_while_loading: Vec<ActionRequest>,
 }
 
 impl Mailbox {
-    /// Opens `folder`, which is the one last read, returning the first page
-    /// to fetch. Counts are fetched under `counts_request`.
+    /// Opens `folder`, returning the first page to fetch. Counts are fetched
+    /// under `counts_request`.
     pub fn open(
         folder: Folder,
         page_size: u32,
@@ -394,6 +425,9 @@ impl Mailbox {
             visible_cache: Vec::new(),
             page_size,
             next_page: 0,
+            more_page: 0,
+            moving_out: HashSet::new(),
+            moved_out: HashSet::new(),
             has_more: false,
             cached_listings: Vec::new(),
             groups: ConversationGroups::default(),
@@ -408,13 +442,15 @@ impl Mailbox {
             search: None,
             search_request: None,
             search_deferred: false,
-            action_request: None,
+            action_in_flight: None,
             waiting_actions: VecDeque::new(),
             shown_flags: HashMap::new(),
             action_error: None,
             undo: None,
-            pending_reads: HashMap::new(),
+            automatic_reads: HashMap::new(),
             relocated: HashMap::new(),
+            listed_again: HashSet::new(),
+            confirmed_while_loading: Vec::new(),
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -448,20 +484,7 @@ impl Mailbox {
             Some(search) => {
                 self.visible_cache.extend(0..search.rows.len());
             }
-            None => {
-                let trimmed = self.search_query.trim();
-                if trimmed.is_empty() {
-                    self.visible_cache.extend(0..self.conversations.len());
-                } else {
-                    let query = trimmed.to_lowercase();
-                    self.visible_cache
-                        .extend(self.conversations.iter().enumerate().filter_map(
-                            |(idx, conversation)| {
-                                matches_search(conversation, &query).then_some(idx)
-                            },
-                        ));
-                }
-            }
+            None => self.append_visible(0),
         }
     }
 
@@ -509,7 +532,7 @@ impl Mailbox {
     }
 
     /// The query whose results are on screen, if any.
-    pub fn search_results(&self) -> Option<&str> {
+    pub fn shown_search_query(&self) -> Option<&str> {
         self.search.as_ref().map(|search| search.query.as_str())
     }
 
@@ -517,7 +540,7 @@ impl Mailbox {
         &self.search_query
     }
 
-    pub fn is_searching(&self) -> bool {
+    pub fn has_search_text(&self) -> bool {
         !self.search_query.trim().is_empty()
     }
 
@@ -580,9 +603,12 @@ impl Mailbox {
 
         match result {
             Ok(page) => {
-                let has_more = !page.conversations.is_empty()
-                    && (u64::from(request.page) + 1) * u64::from(request.page_size)
-                        < u64::from(page.total);
+                let has_more = has_more_pages(
+                    page.conversations.len(),
+                    u64::from(request.page) + 1,
+                    request.page_size,
+                    page.total,
+                );
                 if request.page > 0 {
                     let search = self
                         .search
@@ -635,7 +661,14 @@ impl Mailbox {
             self.status = ListStatus::Loaded;
         }
         self.search_request = None;
-        if matches!(self.status, ListStatus::Failed(..)) {
+        // Only the search's own failure goes with it: a folder that failed to
+        // load still says so, with its way to try again.
+        let search_failed = match self.status {
+            ListStatus::Failed(_, ListAttempt::Search) => true,
+            ListStatus::Failed(_, ListAttempt::More) => leaving_results,
+            _ => false,
+        };
+        if search_failed {
             self.status = ListStatus::Loaded;
         }
         self.recompute_visible();
@@ -841,7 +874,7 @@ impl Mailbox {
 
     #[cfg(test)]
     pub fn action_pending(&self) -> bool {
-        self.action_request.is_some()
+        self.action_in_flight.is_some()
     }
 
     pub fn action_error(&self) -> Option<MailboxError> {
@@ -849,14 +882,30 @@ impl Mailbox {
     }
 
     pub fn is_busy(&self) -> bool {
-        matches!(
+        self.status.request_in_flight().is_some()
+    }
+
+    /// Whether an action or a move back can start now. A refresh leaves the
+    /// rows on screen, so they take actions while it runs. Nothing does while
+    /// the folder first loads, a search's answer is on its way, or Load more
+    /// runs: it asks Proton by position, which a move meanwhile would shift.
+    pub fn takes_actions(&self) -> bool {
+        !matches!(
             self.status,
-            ListStatus::Loading(_) | ListStatus::Refreshing(_) | ListStatus::LoadingMore(_)
+            ListStatus::Loading(_) | ListStatus::LoadingMore(_)
         )
     }
 
     pub(super) fn auto_refresh_available(&self) -> bool {
-        !self.is_busy() && self.action_request.is_none() && self.pending_reads.is_empty()
+        !self.is_busy() && self.action_in_flight.is_none() && self.automatic_reads.is_empty()
+    }
+
+    /// Changes shown here that Proton has not confirmed yet: the action on its
+    /// way, those waiting behind it, and automatic reads.
+    pub fn unsent_changes(&self) -> usize {
+        usize::from(self.action_in_flight.is_some())
+            + self.waiting_actions.len()
+            + self.automatic_reads.len()
     }
 
     pub(super) fn needs_revalidation(&self) -> bool {
@@ -979,8 +1028,8 @@ impl Mailbox {
     fn set_reader(&mut self, reader: ReaderState) {
         let previous = std::mem::replace(&mut self.reader, reader);
         let stamp = self.reader_stamp.take();
-        if let (ReaderState::Loaded(reader), Some(stamp)) = (previous, stamp) {
-            self.cache_reader(reader, stamp);
+        if let (ReaderState::Loaded(previous_reader), Some(stamp)) = (previous, stamp) {
+            self.cache_reader(previous_reader, stamp);
         }
     }
 
@@ -1045,30 +1094,48 @@ impl Mailbox {
         };
         let row = self.row(reader.conversation_id())?;
         if !row.unread
-            || self.pending_reads.contains_key(&row.id)
-            || self
-                .action_request
-                .iter()
-                .chain(&self.waiting_actions)
-                .any(|action| {
-                    action.row_id == row.id && matches!(action.action, MailAction::SetUnread(_))
-                })
+            || self.automatic_reads.contains_key(&row.id)
+            || self.read_change_queued(&row.id)
         {
             return None;
         }
         let (row_id, kind) = (row.id.clone(), row.kind);
 
-        let request = ActionRequest {
-            id: request,
+        let request = self.new_action_request(request, row_id, kind, MailAction::SetUnread(false));
+        self.automatic_reads
+            .insert(request.row_id.clone(), request.id);
+        Some(request)
+    }
+
+    /// An action on `row_id` started from the open folder, read by Proton in
+    /// that folder while the row is listed there.
+    fn new_action_request(
+        &self,
+        id: RequestId,
+        row_id: String,
+        kind: SummaryKind,
+        action: MailAction,
+    ) -> ActionRequest {
+        ActionRequest {
+            id,
             context: self.listed_in_folder(&row_id).then(|| self.folder.clone()),
             row_id,
             kind,
             folder: self.folder.clone(),
-            action: MailAction::SetUnread(false),
-        };
-        self.pending_reads
-            .insert(request.row_id.clone(), request.id);
-        Some(request)
+            action,
+        }
+    }
+
+    /// The action on its way to Proton, then those waiting behind it, in
+    /// the order they go.
+    fn queued_actions(&self) -> impl Iterator<Item = &ActionRequest> {
+        self.action_in_flight.iter().chain(&self.waiting_actions)
+    }
+
+    /// Whether an explicit read or unread of `row_id` is on its way or waits.
+    fn read_change_queued(&self, row_id: &str) -> bool {
+        self.queued_actions()
+            .any(|action| action.row_id == row_id && action.action.changes_read())
     }
 
     /// Applies a confirmed automatic read and releases a queued explicit read
@@ -1081,43 +1148,37 @@ impl Mailbox {
         request: &ActionRequest,
         result: Result<(), MailboxError>,
     ) -> ReadCompletion {
-        if self.pending_reads.get(&request.row_id) != Some(&request.id) {
+        if self.automatic_reads.get(&request.row_id) != Some(&request.id) {
             return ReadCompletion::default();
         }
-        self.pending_reads.remove(&request.row_id);
+        self.automatic_reads.remove(&request.row_id);
+        // Only the head of the queue can be waiting for this read: anything
+        // behind it waits for the head first.
         let waiting = self
-            .action_request
+            .action_in_flight
             .as_ref()
-            .filter(|action| {
-                action.row_id == request.row_id && matches!(action.action, MailAction::SetUnread(_))
-            })
+            .filter(|action| action.row_id == request.row_id && action.action.changes_read())
             .cloned();
         if let Err(error) = result {
             let next_action =
-                waiting.and_then(|action| self.finish_action(&action, Err(error)).next);
+                waiting.and_then(|action| self.finish_action(&action, Err(error)).next_action);
             return ReadCompletion {
-                changed: false,
+                read_confirmed: false,
                 next_action,
                 error: Some(error),
             };
         }
         self.invalidate_listings();
-        if request.folder != self.folder {
-            return ReadCompletion {
-                changed: false,
-                next_action: waiting,
-                error: None,
-            };
-        }
-
-        let mut found = false;
-        for row in self.row_copies(&request.row_id) {
-            row.unread = false;
-            found = true;
+        // The row is only marked here while its folder is open, but Proton's
+        // counts changed wherever the person went meanwhile.
+        if request.folder == self.folder {
+            for row in self.row_copies(&request.row_id) {
+                row.unread = false;
+            }
         }
 
         ReadCompletion {
-            changed: found,
+            read_confirmed: true,
             next_action: waiting,
             error: None,
         }
@@ -1137,16 +1198,17 @@ impl Mailbox {
                 kind,
                 from: from.clone(),
                 to: to.clone(),
+                row: self.row(row_id).cloned(),
             }),
             _ => None,
         };
     }
 
-    /// Claims the offer, so it is made only once. While the list loads, the
-    /// move back could not start, so the offer stays. Behind an action still
-    /// on its way, the move back waits its turn.
+    /// Claims the offer, so it is made only once. While the move back could
+    /// not start (see `takes_actions`), the offer stays. Behind an action
+    /// still on its way, the move back waits its turn.
     pub fn take_undo(&mut self) -> Option<UndoMove> {
-        if self.is_busy() {
+        if !self.takes_actions() {
             return None;
         }
         self.undo.take()
@@ -1160,7 +1222,7 @@ impl Mailbox {
     }
 
     /// Accepts an action on the selected row and shows it at once, before
-    /// Proton answers. None starts while the list loads. The app names the
+    /// Proton answers, when `takes_actions` lets it start. The app names the
     /// row, through `start_action_on`; tests act on the open one.
     #[cfg(test)]
     pub fn start_action(&mut self, action: MailAction, request: RequestId) -> Option<ActionStart> {
@@ -1182,36 +1244,64 @@ impl Mailbox {
         action: MailAction,
         request: RequestId,
     ) -> Option<ActionStart> {
-        if self.is_busy() {
+        if !self.takes_actions() {
             return None;
         }
 
-        let request = ActionRequest {
-            id: request,
-            context: self.listed_in_folder(&row_id).then(|| self.folder.clone()),
-            row_id,
-            kind,
-            folder: self.folder.clone(),
-            action,
-        };
+        let request = self.new_action_request(request, row_id, kind, action);
         self.action_error = None;
         let opened = self.show_action(&request);
-        if self.action_request.is_some() {
+        if self.action_in_flight.is_some() {
             self.waiting_actions.push_back(request);
             return Some(ActionStart { send: None, opened });
         }
-        self.action_request = Some(request.clone());
+        self.action_in_flight = Some(request.clone());
         Some(ActionStart {
             send: self.ready_to_send(&request).then_some(request),
             opened,
         })
     }
 
+    /// Takes a move back, as `start_action_on` starts it, and lists the row
+    /// again at once when the open view keeps it: a reload reads only the
+    /// first page, so a row from a deeper one would not come back with it.
+    /// If Proton refuses the move back, the row leaves again.
+    pub fn start_move_back(&mut self, undo: UndoMove, request: RequestId) -> Option<ActionStart> {
+        let action = MailAction::MoveTo(undo.from);
+        let start = self.start_action_on(undo.row_id, undo.kind, action.clone(), request)?;
+        if let Some(row) = undo.row
+            && !self.leaves_view(&self.folder, &action)
+            && !self.has_row(&row.id)
+        {
+            self.list_again(row);
+        }
+        Some(start)
+    }
+
+    /// Lists `row` again where its date puts it among the loaded rows, newest
+    /// first, and remembers that Proton has yet to confirm it is here.
+    fn list_again(&mut self, row: ConversationSummary) {
+        self.listed_again.insert(row.id.clone());
+        self.list_by_date(row);
+    }
+
+    /// Lists `row` where its date puts it among the loaded rows, newest first.
+    fn list_by_date(&mut self, row: ConversationSummary) {
+        let at = self
+            .conversations
+            .iter()
+            .position(|listed| listed.time < row.time)
+            .unwrap_or(self.conversations.len());
+        self.row_ids.insert(row.id.clone());
+        self.conversations.insert(at, row);
+        self.last_dated_time = last_dated_time(&self.conversations);
+        self.recompute_visible();
+    }
+
     /// Whether a request can go now: a read mutation waits for an automatic
     /// read of the same row already on its way.
     fn ready_to_send(&self, request: &ActionRequest) -> bool {
-        !(matches!(request.action, MailAction::SetUnread(_))
-            && self.pending_reads.contains_key(&request.row_id))
+        !(request.action.changes_read() && self.automatic_reads.contains_key(&request.row_id))
     }
 
     /// Shows an action before Proton confirms it. A move out of the view takes
@@ -1221,6 +1311,9 @@ impl Mailbox {
         if self.leaves_view(&self.folder, &request.action) {
             // Offered while the row is still listed, which tells where it was.
             self.offer_undo(&request.row_id, request.kind, request.action.clone());
+            if self.row_ids.contains(&request.row_id) {
+                self.moving_out.insert(request.row_id.clone());
+            }
             return self.remove_row(&request.row_id);
         }
         // Only the last move can be taken back, and only until the next action.
@@ -1251,16 +1344,16 @@ impl Mailbox {
         request: &ActionRequest,
         result: Result<(), MailboxError>,
     ) -> ActionFinish {
-        if self.action_request.as_ref() != Some(request) {
+        if self.action_in_flight.as_ref() != Some(request) {
             return ActionFinish {
                 result: Ok(()),
-                next: None,
+                next_action: None,
                 opened: None,
             };
         }
-        self.action_request = self.waiting_actions.pop_front();
-        let next = self
-            .action_request
+        self.action_in_flight = self.waiting_actions.pop_front();
+        let next_action = self
+            .action_in_flight
             .clone()
             .filter(|next| self.ready_to_send(next));
         let before = self.shown_flags.remove(&request.id);
@@ -1270,7 +1363,7 @@ impl Mailbox {
             self.take_back(request, before);
             return ActionFinish {
                 result: Err(error),
-                next,
+                next_action,
                 opened: None,
             };
         }
@@ -1278,16 +1371,37 @@ impl Mailbox {
         if request.folder != self.folder {
             return ActionFinish {
                 result: Ok(()),
-                next,
+                next_action,
                 opened: None,
             };
+        }
+        if matches!(
+            self.status,
+            ListStatus::Loading(_) | ListStatus::Refreshing(_)
+        ) {
+            self.confirmed_while_loading.push(request.clone());
         }
 
         // A reload while the move was on its way can have brought the row back,
         // and a confirmed automatic read can have covered an unread shown early.
+        // A later move of the same row, such as one taking it back, decides
+        // whether it stays.
         let opened = if self.leaves_view(&self.folder, &request.action) {
-            self.remove_row(&request.row_id)
+            if self.moving_out.remove(&request.row_id) {
+                self.moved_out.insert(request.row_id.clone());
+            }
+            if self.superseded(request) {
+                None
+            } else {
+                self.remove_row(&request.row_id)
+            }
         } else {
+            // A move that keeps its row here is where Proton now lists it.
+            if request.action.destination().is_some() {
+                self.listed_again.remove(&request.row_id);
+                // Back where it was, it counts in Proton's pages again.
+                self.moved_out.remove(&request.row_id);
+            }
             if !self.superseded(request) {
                 self.record_action(&request.row_id, &request.action);
             }
@@ -1303,7 +1417,7 @@ impl Mailbox {
         }
         ActionFinish {
             result: Ok(()),
-            next,
+            next_action,
             opened,
         }
     }
@@ -1311,6 +1425,11 @@ impl Mailbox {
     /// Undoes what a refused action showed early, where it can be undone here:
     /// `before` is the flag it replaced.
     fn take_back(&mut self, request: &ActionRequest, before: Option<MailAction>) {
+        self.moving_out.remove(&request.row_id);
+        // A move back that did not happen leaves its row where it went.
+        if self.listed_again.remove(&request.row_id) {
+            let _ = self.remove_row(&request.row_id);
+        }
         // The move did not happen, so there is nothing to take back.
         if self
             .undo
@@ -1337,14 +1456,10 @@ impl Mailbox {
     /// Whether an action asked for later changes the same thing on the same
     /// row, so that what it shows is what stays.
     fn superseded(&self, request: &ActionRequest) -> bool {
-        self.action_request
-            .iter()
-            .chain(&self.waiting_actions)
-            .any(|later| {
-                later.row_id == request.row_id
-                    && std::mem::discriminant(&later.action)
-                        == std::mem::discriminant(&request.action)
-            })
+        self.queued_actions().any(|later| {
+            later.row_id == request.row_id
+                && std::mem::discriminant(&later.action) == std::mem::discriminant(&request.action)
+        })
     }
 
     /// Whether a refused action had taken its row out of the view on screen,
@@ -1461,6 +1576,9 @@ impl Mailbox {
         // The offer belongs to the folder it was made in.
         self.undo = None;
         self.relocated.clear();
+        self.listed_again.clear();
+        self.moving_out.clear();
+        self.moved_out.clear();
         // So do search results: a folder is a different question.
         self.search = None;
         self.search_request = None;
@@ -1485,7 +1603,7 @@ impl Mailbox {
                 // running can make its answer stale again.
                 self.active_dirty = false;
                 self.status = ListStatus::Refreshing(request);
-                Some(self.page_request(request, 0))
+                Some(self.first_page_request(request))
             } else {
                 self.status = ListStatus::Loaded;
                 None
@@ -1500,7 +1618,7 @@ impl Mailbox {
             self.groups = ConversationGroups::default();
             self.recompute_visible();
             self.status = ListStatus::Loading(request);
-            Some(self.page_request(request, 0))
+            Some(self.first_page_request(request))
         }
     }
 
@@ -1567,7 +1685,7 @@ impl Mailbox {
         } else {
             ListStatus::Refreshing(request)
         };
-        Some(self.page_request(request, 0))
+        Some(self.first_page_request(request))
     }
 
     pub fn load_more(&mut self, request: RequestId) -> Option<PageRequest> {
@@ -1576,13 +1694,19 @@ impl Mailbox {
         }
 
         self.status = ListStatus::LoadingMore(request);
-        Some(self.page_request(request, self.next_page))
+        // Rows that left the loaded pages moved Proton's later ones up: ask for
+        // the page holding the first row not loaded, and what it repeats is
+        // dropped as already listed.
+        let moved_out = u32::try_from(self.moved_out.len()).unwrap_or(u32::MAX);
+        let first_unloaded = (self.next_page * self.page_size).saturating_sub(moved_out);
+        self.more_page = first_unloaded / self.page_size;
+        Some(self.page_request(request, self.more_page))
     }
 
     /// Starts a counts refresh, superseding any older request.
-    pub fn refresh_counts(&mut self, request: RequestId) -> Option<RequestId> {
+    pub fn refresh_counts(&mut self, request: RequestId) -> RequestId {
         self.counts_request = Some(request);
-        Some(request)
+        request
     }
 
     pub fn loaded_conversation_limit(&self) -> u32 {
@@ -1772,6 +1896,37 @@ impl Mailbox {
         rows
     }
 
+    /// The actions a first page may have been read without, in the order
+    /// asked: those confirmed since it was asked for, then those still on
+    /// their way or waiting.
+    fn unseen_actions(&mut self) -> Vec<ActionRequest> {
+        let confirmed = std::mem::take(&mut self.confirmed_while_loading);
+        confirmed
+            .into_iter()
+            .chain(self.queued_actions().cloned())
+            .filter(|request| request.folder == self.folder)
+            .collect()
+    }
+
+    /// Shows `actions` again on the rows a first page just replaced, in the
+    /// order asked: a move out takes its row away, a move that keeps its row
+    /// here lists it as `before` held it, and a flag changes again.
+    fn show_again(&mut self, actions: &[ActionRequest], before: &[ConversationSummary]) {
+        for request in actions {
+            if self.leaves_view(&self.folder, &request.action) {
+                let _ = self.remove_row(&request.row_id);
+                continue;
+            }
+            if request.action.destination().is_some()
+                && !self.row_ids.contains(&request.row_id)
+                && let Some(row) = before.iter().find(|row| row.id == request.row_id)
+            {
+                self.list_by_date(row.clone());
+            }
+            self.record_action(&request.row_id, &request.action);
+        }
+    }
+
     fn page_request(&self, id: RequestId, page: u32) -> PageRequest {
         PageRequest {
             id,
@@ -1779,6 +1934,13 @@ impl Mailbox {
             page,
             page_size: self.page_size,
         }
+    }
+
+    /// Asks for the folder's first page. Only actions confirmed from now on
+    /// can be missing from what it brings.
+    fn first_page_request(&mut self, id: RequestId) -> PageRequest {
+        self.confirmed_while_loading.clear();
+        self.page_request(id, 0)
     }
 
     fn apply_page(&mut self, page: ConversationPage, append: bool) {
@@ -1815,19 +1977,29 @@ impl Mailbox {
                 .collect();
             self.row_ids.extend(new.iter().map(|row| row.id.clone()));
             let from = self.conversations.len();
-            let (last_dated_time, appended_at_end) =
-                append_newest_first(&mut self.conversations, new, self.last_dated_time);
-            self.last_dated_time = last_dated_time;
-            if appended_at_end && invalidated.is_empty() && self.search.is_none() {
+            let appended = append_newest_first(&mut self.conversations, new, self.last_dated_time);
+            self.last_dated_time = appended.last_dated_time;
+            if appended.at_end && invalidated.is_empty() && self.search.is_none() {
                 self.append_visible(from);
             } else {
                 self.recompute_visible();
             }
-            self.next_page += 1;
+            // What is loaded now reaches the end of the page asked for.
+            self.next_page = self.more_page + 1;
+            self.moved_out.clear();
             if !invalidated.is_empty() {
                 self.groups.retain_rows(&self.row_ids);
             }
         } else {
+            // Proton may have read the page before applying these, so what
+            // they showed stays.
+            let unseen = self.unseen_actions();
+            let before: Vec<_> = self
+                .conversations
+                .iter()
+                .filter(|row| unseen.iter().any(|request| request.row_id == row.id))
+                .cloned()
+                .collect();
             self.conversations =
                 self.refreshed_rows(page.conversations, received >= self.page_size as usize);
             self.row_ids = collect_ids(&self.conversations);
@@ -1837,6 +2009,7 @@ impl Mailbox {
             self.recompute_visible();
             self.next_page = self.next_page.max(1);
             self.groups.retain_rows(&self.row_ids);
+            self.show_again(&unseen, &before);
         }
         if !append
             && self
@@ -1849,9 +2022,19 @@ impl Mailbox {
             self.reader_stamp = None;
         }
 
-        self.has_more = received > 0
-            && u64::from(self.next_page) * u64::from(self.page_size) < u64::from(page.total);
+        self.has_more = has_more_pages(
+            received,
+            u64::from(self.next_page),
+            self.page_size,
+            page.total,
+        );
     }
+}
+
+/// Whether a listing has pages left after `pages_loaded` pages of
+/// `page_size`. An empty page means it ran out, whatever `total` says.
+fn has_more_pages(received: usize, pages_loaded: u64, page_size: u32, total: u32) -> bool {
+    received > 0 && pages_loaded * u64::from(page_size) < u64::from(total)
 }
 
 fn deduplicate_rows(rows: &mut Vec<ConversationSummary>) {
@@ -1867,24 +2050,24 @@ fn last_dated_time(rows: &[ConversationSummary]) -> Option<i64> {
     rows.iter().rev().find_map(|row| row.time)
 }
 
+/// Where a page went: the time of the last dated row after it, and whether
+/// it went at the end, after every row already there.
+struct Appended {
+    last_dated_time: Option<i64>,
+    at_end: bool,
+}
+
 /// Keeps older pages proportional to the new page. Interleaved pages use a
 /// stable linear merge, with earlier pages winning ties.
 fn append_newest_first(
     rows: &mut Vec<ConversationSummary>,
     incoming: Vec<ConversationSummary>,
     last_dated: Option<i64>,
-) -> (Option<i64>, bool) {
+) -> Appended {
     let seed = last_dated
         .or_else(|| incoming.iter().find_map(|row| row.time))
         .unwrap_or(i64::MAX);
-    let mut previous = seed;
-    let mut keyed: Vec<_> = incoming
-        .into_iter()
-        .map(|row| {
-            previous = row.time.unwrap_or(previous);
-            (previous, row)
-        })
-        .collect();
+    let mut keyed = keyed_by_time(incoming, seed);
     let tail_key = last_dated.unwrap_or(seed);
 
     keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
@@ -1892,51 +2075,61 @@ fn append_newest_first(
         // The old rows are already ordered. Recreate their undated sort keys
         // using the same seed as sorting the concatenated pages would use.
         let old_seed = rows.iter().find_map(|row| row.time).unwrap_or(seed);
-        let mut previous = old_seed;
-        let old = std::mem::take(rows);
-        let mut old = old
+        let mut old = keyed_by_time(std::mem::take(rows), old_seed)
             .into_iter()
-            .map(|row| {
-                previous = row.time.unwrap_or(previous);
-                (previous, row)
-            })
             .peekable();
         let mut new = keyed.into_iter().peekable();
         rows.reserve(old.len() + new.len());
 
-        while old.peek().is_some() && new.peek().is_some() {
-            if old.peek().unwrap().0 >= new.peek().unwrap().0 {
-                rows.push(old.next().unwrap().1);
+        while let (Some((older, _)), Some((newer, _))) = (old.peek(), new.peek()) {
+            let next = if older >= newer {
+                old.next()
             } else {
-                rows.push(new.next().unwrap().1);
-            }
+                new.next()
+            };
+            rows.extend(next.map(|(_, row)| row));
         }
         rows.extend(old.chain(new).map(|(_, row)| row));
-        return (last_dated_time(rows), false);
+        return Appended {
+            last_dated_time: last_dated_time(rows),
+            at_end: false,
+        };
     }
 
-    let next_last_dated = keyed
+    let last_dated_time = keyed
         .iter()
         .rev()
         .find_map(|(_, row)| row.time)
         .or(last_dated);
     rows.extend(keyed.into_iter().map(|(_, row)| row));
-    (next_last_dated, true)
+    Appended {
+        last_dated_time,
+        at_end: true,
+    }
 }
 
 /// Sorts newest first while preserving undated rows' relative positions.
 fn sort_newest_first(rows: &mut Vec<ConversationSummary>) {
-    // Borrow a neighboring time so stable sorting does not move undated rows.
-    let mut previous = rows.iter().find_map(|row| row.time).unwrap_or(i64::MAX);
-    let mut keyed: Vec<_> = rows
-        .drain(..)
+    let seed = rows.iter().find_map(|row| row.time).unwrap_or(i64::MAX);
+    let mut keyed = keyed_by_time(rows.drain(..), seed);
+    keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+    rows.extend(keyed.into_iter().map(|(_, row)| row));
+}
+
+/// Pairs each row with the time it sorts by: its own, or for an undated row
+/// the time of the row before it, and `seed` for the first. A stable sort
+/// then leaves undated rows beside their neighbours.
+fn keyed_by_time(
+    rows: impl IntoIterator<Item = ConversationSummary>,
+    seed: i64,
+) -> Vec<(i64, ConversationSummary)> {
+    let mut previous = seed;
+    rows.into_iter()
         .map(|row| {
             previous = row.time.unwrap_or(previous);
             (previous, row)
         })
-        .collect();
-    keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
-    rows.extend(keyed.into_iter().map(|(_, row)| row));
+        .collect()
 }
 
 fn matches_search(conversation: &ConversationSummary, query: &str) -> bool {

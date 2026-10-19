@@ -35,7 +35,9 @@ loaded lists of the eight folders left most recently. The desktop client
 does not write a persistent mail cache to disk. Sign-in fields keep no undo
 history, and a draft's undo history is dropped once the draft is sent,
 discarded, or left behind by signing out, so undo cannot bring back another
-draft or a typed password.
+draft or a typed password. A message being written when Proton ends the
+session stays in memory, never on disk, for the same account's next sign-in:
+another account's sign-in, discarding it or closing Ruston drops it.
 
 Passwords and codes typed at sign-in are kept in buffers with room reserved
 for them, so typing does not move them and leave earlier copies behind, and
@@ -48,8 +50,10 @@ while Ruston is running. It accepts bounded email-link requests after a random
 256-bit token handshake; it exposes no account or mailbox data and cannot send
 mail. The private `activation` directory under Ruston's configuration directory
 contains an OS lock file and an endpoint record with the port, token, and process
-ID. Unix permissions are 0700 for the directory and 0600 for the files; Windows
-uses the current user's application-data directory and inherited access rules.
+ID. Unix permissions are 0700 for the directory and 0600 for the files. Windows
+keeps the directory in the local, non-roaming application data,
+`%LOCALAPPDATA%\Ruston Mail\data\activation`, with the access rules it inherits
+from the user's profile.
 The endpoint is removed on orderly exit and replaced after a crash. The lock
 file remains for safe coordination. `activation-demo` isolates the demo.
 Pending email links stay in memory through sign-in and are cleared when a
@@ -60,9 +64,12 @@ applications launched as URL handlers.
 When desktop notifications are enabled, a new-mail notification can show the
 sender and subject. A pending notification result is discarded during sign-out
 or after the session changes. Disabling the option also invalidates pending
-detection and native delivery work. Once handed to the operating system,
-notifications can remain in its notification history; signing out does not
-remove notifications already delivered. No email content is logged by the
+detection and native delivery work. On Windows, a new notification replaces
+the previous one, and signing out or turning notifications off removes
+Ruston's notifications from the notification center. Elsewhere, once handed
+to the operating system, notifications can remain in its notification
+history; signing out does not remove notifications already delivered. No
+email content is logged by the
 notification integration. Headers are bounded and treated as literal text,
 without controls or invisible direction marks; notification delivery does not
 load links or remote images.
@@ -76,11 +83,12 @@ attachments. Its reference IDs and timestamp stay in process memory. The first
 successful snapshot is silent; new unread IDs can notify even when the unread
 count does not grow. Turning the option off clears this reference.
 
-Windows toast registration creates `Ruston Mail.lnk` in the user's Start menu
-Programs folder, pointing to the running executable and carrying Ruston's
-AppUserModelID. It does not replace a shortcut belonging to another application
-and requires no administrator privileges. The shortcut remains when the app
-closes; remove it when uninstalling a manually copied executable. macOS asks
+Windows toast registration needs `Ruston Mail.lnk` in the user's Start menu
+Programs folder, carrying Ruston's AppUserModelID. The installer creates it and
+removes it on uninstall; a portable copy creates it at the first notification,
+pointing to the running executable. It does not replace a shortcut belonging
+to another application and requires no administrator privileges. A portable
+copy's shortcut remains when the app closes; delete it with the folder. macOS asks
 for system authorization when notifications become active for a signed-in
 account; a bare development executable does not request permission or notify.
 
@@ -109,8 +117,8 @@ characters while retaining the original decoded values. Explicit `--format html`
 when redirected to a file or pipe; when displayed on a terminal, they also
 filter controls. `messages read --output` and EML exports preserve the body
 content supplied by core, including its HTML sanitization. `--output` writes a
-file only you can read and replaces whatever is at that path, a symbolic link
-included, instead of writing through it.
+file only you can read, as exports are below, and replaces whatever is at that
+path, a symbolic link included, instead of writing through it.
 When replying or forwarding as HTML, sender details and quoted plain text are
 escaped before insertion; quoted HTML keeps the markup sanitized during reading.
 
@@ -176,6 +184,9 @@ Indexing drops a message's older body when Proton says the message is gone or
 its body cannot be decrypted. Any other failed body download, such as a lost
 connection or rate limiting, stops `index` with an error and keeps what was
 indexed for that message.
+On a cache that has never synchronized, backfill and indexing first record
+Proton's latest event as the sync cursor, so the next `sync` also removes a
+message deleted after they listed it, instead of leaving it searchable.
 Backfill and indexing also check the cursor before saving downloaded data,
 including when they drop a body. If sync changes the cursor while a page
 or body is being downloaded, the operation stops with a retry error and does
@@ -189,11 +200,20 @@ cache; run `sync` to receive remote changes.
 The Proton password is not saved. The CLI can read sign-in secrets from
 `PROTON_PASSWORD`, `PROTON_MAILBOX_PASSWORD`, `PROTON_TOTP` and
 `PROTON_HV_TOKEN`; a browser it opens for human verification does not inherit
-them. While it waits for a CAPTCHA, the CLI listens on a loopback port and takes
+them. On a terminal it asks, hidden, for the account password, a TOTP code and
+a separate mailbox password when they are needed and not given, and
+`messages send --eo-password` without a value asks for the message password.
+None of them then goes on the command line, where process listings and shell
+history would show it. Both apps open human verification only on Proton's own
+hosts: a challenge that names another host gets Proton's default page, since
+the page receives the challenge's token. While it waits for a CAPTCHA, the CLI listens on a loopback port and takes
 a token only with the random code the captcha page it opened carries at the end
 of its address, so no other web page can hand it one. The address's fragment
 never reaches Proton. A capture bookmarklet saved by an earlier version is
-refused and has to be saved again. `ruston-core` stores the access token, refresh
+refused and has to be saved again. With `--captcha-chrome`, the page opens in
+Chrome with a new throwaway profile: a folder the CLI creates itself in the
+temporary directory, under a random name and, on Unix, for this user alone, so
+another user cannot prepare it. It is removed when verification ends. `ruston-core` stores the access token, refresh
 token, and key passphrase in the operating system's credential store:
 
 - Keychain on macOS.
@@ -204,7 +224,13 @@ Access and refresh tokens are saved together in one credential-store entry.
 The API address the session was created for is saved beside them. A session
 file that names a different address is not resumed; sign in again to replace
 it. Sessions saved before this record existed resume only on the default
-Proton API address.
+Proton API address. Signing in removes the previous session's tokens and key
+passphrase before saving anything of the new one, so a save that fails part
+way leaves no session to resume, rather than old tokens beside a new address.
+A sign-in that fails after Proton accepted the password, at the second factor,
+the mailbox password or saving the session, asks Proton to end the session it
+opened, for up to 10 seconds, instead of leaving it valid on the account with
+nothing using it.
 If the credential store is locked or rejects a token refresh, the request
 reports that Ruston Mail could not access the saved session, and the desktop
 stays signed in so the next request can succeed once the store is unlocked.
@@ -230,7 +256,12 @@ whether it was maximized, and pane widths. When a
 session ends, a remembered folder or label you created is replaced by the
 Inbox, so its name never reaches the next account to sign in. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged
-settings file falls back to defaults.
+settings file falls back to defaults. One that is there but cannot be read is
+first renamed with `.unreadable` added, such as `settings.json.unreadable`, so
+the defaults saved instead replace nothing; if it cannot be renamed, it is left
+as it is and that run saves no preferences. A save that fails, on a full or
+read-only disk for example, is tried again with the next change and when Ruston
+Mail quits.
 
 Signing out first removes local session metadata and credentials, then tries
 to revoke the server session for up to 30 seconds. If the access token has
@@ -240,7 +271,10 @@ confirms it. Remote failures or timeouts do not prevent local cleanup. Cleanup r
 under the profile lock, attempts every removal, and continues if its caller is
 cancelled after cleanup starts. If local storage rejects a removal, the CLI
 reports an error and the desktop warns that credentials may remain on the device;
-the desktop still clears its in-memory mailbox and draft.
+the desktop still clears its in-memory mailbox and draft. Closing the desktop
+window while it signs out waits for the sign-out to finish, since quitting
+could stop the cleanup half done and leave the session saved; **Close now**
+closes at once.
 A pending logout checks the saved session identity before deleting it, protecting
 a later login in the same profile. When the CLI cannot resume the saved session
 (offline, revoked, after a password change, or bound to another API address),
@@ -257,6 +291,25 @@ The signature turns on the hardened runtime, so macOS does not load libraries
 injected with `DYLD_INSERT_LIBRARIES` into the process that reads the saved
 session from the Keychain.
 
+On Windows, everything stays in the user's profile, which Windows' default
+access rules keep to that user, the system and administrators:
+
+| Data | Location |
+| --- | --- |
+| Tokens and key passphrase | Credential Manager, generic credentials named `<profile>:…ruston-mail` |
+| Session metadata | `%APPDATA%\ruston-mail\config\sessions` |
+| Desktop settings | `%APPDATA%\Ruston Mail\config\settings.json` |
+| CLI cache | `%LOCALAPPDATA%\ruston-mail\cache\accounts` |
+| Single-instance lock | `%LOCALAPPDATA%\Ruston Mail\data\activation` |
+
+`%APPDATA%` follows a roaming profile to other computers, and so do the
+Credential Manager entries, which use enterprise persistence. Any program
+running as the same user can read those entries; Windows has no per-app access
+check like the macOS Keychain's. Uninstalling removes the program, its Start
+menu shortcut, the email-link registration and the `PATH` entry, and leaves
+the rest: sign out first to remove the session from Credential Manager, then
+delete the folders above to remove settings and the cache.
+
 ## Attachments
 
 Desktop attachments are downloaded only after **Save** or a confirmed **Save as…**
@@ -265,8 +318,15 @@ exact path chosen by the user, and cancelling its dialog starts no download.
 The CLI saves them in `--output-dir`, or the current directory
 by default. Both reduce sender-provided paths to a plain file name. Invisible
 direction marks are removed, so a name cannot disguise its real extension.
-Names with invalid characters become `attachment`, Windows device names receive
-an underscore prefix, and existing files are never overwritten.
+Characters no file system accepts become `_`, a name longer than 240 bytes is
+cut keeping its extension, leading dots and trailing dots and spaces are
+removed, a name left empty becomes `attachment`, Windows device names (`CON`,
+`COM1`, `LPT¹` and the like) receive an underscore prefix, and existing files
+are never overwritten. On Windows,
+both mark a saved attachment as downloaded from the internet, as browsers do
+(a `Zone.Identifier` stream naming the Internet zone), so SmartScreen checks it
+before it runs and Office opens it in Protected View. A file system without
+such streams, such as FAT32, keeps the file unmarked.
 Sender-provided names are sanitized before suggesting a name in the save
 dialog too. Revealing a saved file sends its local path to the operating
 system's file manager (a file URI over the session bus on Linux).
@@ -314,8 +374,11 @@ copy of the received message: the original MIME structure, some original
 headers, and inline Content-ID references are not preserved. The offline demo
 exports only fictional sample text and does not include attachment bytes.
 
-Exported files contain plaintext mail and attachments. On Unix, new files use
-mode `0600`; protect the destination directory and its backups on all systems.
+Exported files contain plaintext mail and attachments. New files can be opened
+only by you: on Unix they use mode `0600`, and on Windows an access list for
+you, administrators and the system, as your profile's folders have, that takes
+nothing from the destination folder, so a shared folder does not share them.
+Protect the destination directory's backups on all systems.
 The command never replaces an existing file. In live export, each file is
 written under a hidden temporary name (`.message-….eml.tmp`) and moved to its
 final name only once complete, so a file under its final name is always

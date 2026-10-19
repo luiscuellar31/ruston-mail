@@ -41,6 +41,13 @@ pub struct ApiPublicKey {
     pub source: u8,
 }
 
+impl ApiPublicKey {
+    /// True if this is the primary key for the address.
+    pub fn is_primary(&self) -> bool {
+        self.primary == 1
+    }
+}
+
 #[derive(Deserialize)]
 struct AddrKeys {
     #[serde(rename = "Keys", default)]
@@ -61,7 +68,7 @@ struct AllKeysResp {
 /// `unverified` are external/WKD keys (for PGP-to-external sending).
 #[derive(Debug, Clone)]
 pub struct RecipientKeys {
-    /// Recipient type (1 = Proton-internal, 2 = external).
+    /// Recipient type, one of [`recipient_type`](crate::model::enums::recipient_type).
     pub recipient_type: u8,
     /// Proton-internal (verified) keys.
     pub keys: Vec<ApiPublicKey>,
@@ -148,7 +155,7 @@ pub async fn get_all_public_keys<D: Doer>(d: &D, email: &str) -> Result<Recipien
 pub fn pick_encryption_key(keys: &[ApiPublicKey]) -> Option<&ApiPublicKey> {
     use crate::model::enums::key_flag;
     keys.iter()
-        .find(|k| k.primary == 1 && key_flag::can_encrypt_mail(k.flags))
+        .find(|k| k.is_primary() && key_flag::can_encrypt_mail(k.flags))
         .or_else(|| keys.iter().find(|k| key_flag::can_encrypt_mail(k.flags)))
 }
 

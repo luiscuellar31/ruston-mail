@@ -30,6 +30,7 @@
 //! with the original challenge token. Nothing is captured from the page.
 
 use crate::terminal;
+use ruston_core::model::enums::human_verification;
 use ruston_core::{Error, HvChallenge, HvResolver, Result};
 use std::future::Future;
 use std::io::{Read, Write};
@@ -54,8 +55,6 @@ const NOT_THIS_SIGN_IN_PAGE: &str = "<h2>Not from this sign-in</h2><p>This reque
     earlier version, save the one your terminal shows now and click it on that page.</p>";
 const NO_TOKEN_PAGE: &str =
     "<h2>No token received</h2><p>Your terminal is still waiting: solve the captcha again.</p>";
-/// Verification page used when the challenge carries no usable `WebUrl`.
-const DEFAULT_VERIFY_ORIGIN: &str = "https://verify.proton.me";
 
 /// Build the HV resolver.
 /// - `api_base`: API root (used to derive the captcha widget URL).
@@ -76,24 +75,24 @@ async fn solve(
     api_base: String,
     use_chrome: bool,
 ) -> Result<(String, String)> {
-    if !chal.methods.is_empty() && !chal.methods.iter().any(|m| m == "captcha") {
+    if !chal.offers_captcha() {
         return Err(Error::Other(format!(
             "human verification requires an unsupported method: {:?} (only 'captcha' is handled)",
             chal.methods
         )));
     }
     if let Some(t) = pre {
-        return Ok((t, "captcha".to_string()));
+        return Ok((t, human_verification::CAPTCHA.to_string()));
     }
 
     if use_chrome {
-        let url = verify_url(&chal);
+        let url = chal.verification_url();
         tokio::task::spawn_blocking(move || run_external_flow(&url))
             .await
             .map_err(|e| Error::Other(format!("hv task: {e}")))??;
         // The verify page attached the solved captcha to the challenge, so the
         // retry echoes the challenge token itself (as Proton Bridge does).
-        return Ok((chal.token, "captcha".to_string()));
+        return Ok((chal.token, human_verification::CAPTCHA.to_string()));
     }
 
     let (endpoint, _origin) = captcha_endpoint(&api_base);
@@ -107,27 +106,11 @@ async fn solve(
         .map_err(|e| Error::Other(format!("hv task: {e}")))?
 }
 
-/// Proton's standalone verification page for `chal`, restricted to the captcha
-/// method (the only one whose external-browser result the retry can redeem).
-/// Keeps the host of the server-provided `WebUrl` when it is https.
-fn verify_url(chal: &HvChallenge) -> String {
-    let origin = chal
-        .web_url
-        .strip_prefix("https://")
-        .and_then(|rest| rest.split(['/', '?', '#']).next())
-        .filter(|host| !host.is_empty())
-        .map_or_else(
-            || DEFAULT_VERIFY_ORIGIN.to_string(),
-            |host| format!("https://{host}"),
-        );
-    format!("{origin}/?methods=captcha&token={}", urlencode(&chal.token))
-}
-
 /// `--captcha-chrome`: open the verification page in an isolated Chrome window
 /// and wait (bounded) for the user to confirm completion with ENTER.
 fn run_external_flow(url: &str) -> Result<()> {
     terminal::eprintln!("\n── Human verification (CAPTCHA) ──");
-    let mut chrome = match launch_chrome(url, &std::process::id().to_string()) {
+    let mut chrome = match launch_chrome(url) {
         Ok(c) => {
             terminal::eprintln!("Opened the verification page in an isolated Chrome window.");
             Some(c)
@@ -241,65 +224,84 @@ fn run_manual_flow(page: &str) -> Result<(String, String)> {
     let nonce = new_nonce()?;
     let captcha_url = captcha_page_url(page, port, &nonce);
 
-    let console = capture_snippet(Some((port, &nonce)));
-    let bookmarklet = capture_snippet(None);
-    let err = std::io::stderr();
-    let mut e = err.lock();
-    let _ = terminal::writeln!(e, "\n── Human verification (CAPTCHA) ──");
+    print_manual_instructions(
+        &mut std::io::stderr().lock(),
+        &capture_snippet(Some((port, &nonce))),
+        &capture_snippet(None),
+        &captcha_url,
+    );
+    let _ = open_browser(&captcha_url);
+
+    let token = wait_for_token(&listener, &nonce, Instant::now() + HV_TIMEOUT)?;
+    let _ = terminal::writeln!(std::io::stderr(), "Token received — continuing login.");
+    Ok((token, human_verification::CAPTCHA.to_string()))
+}
+
+/// Tells the person how to hand this sign-in's token back: through the
+/// browser console with `console`, or the saved `bookmarklet`, on the page
+/// at `captcha_url`.
+fn print_manual_instructions(
+    output: &mut impl Write,
+    console: &str,
+    bookmarklet: &str,
+    captcha_url: &str,
+) {
+    let _ = terminal::writeln!(output, "\n── Human verification (CAPTCHA) ──");
     let _ = terminal::writeln!(
-        e,
+        output,
         "A browser tab is opening at the captcha page. Then EITHER:"
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "\n  [A] Console: open DevTools → Console (F12) and paste once:"
     );
-    let _ = terminal::writeln!(e, "      {console}");
+    let _ = terminal::writeln!(output, "      {console}");
     let _ = terminal::writeln!(
-        e,
+        output,
         "\n  [B] Bookmarklet (save it once): save this as a bookmark, then click it"
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "      on the captcha page opened from here (no console, no \"allow pasting\")."
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "      One saved by an earlier version is refused; save this one instead:"
     );
-    let _ = terminal::writeln!(e, "      javascript:{bookmarklet}");
+    let _ = terminal::writeln!(output, "      javascript:{bookmarklet}");
     let _ = terminal::writeln!(
-        e,
+        output,
         "\nSolve the CAPTCHA — the token returns here automatically."
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "(Fallback: copy the token, re-run login with --captcha-token <token>.)"
     );
     let _ = terminal::writeln!(
-        e,
+        output,
         "\nCaptcha URL (open it whole; the bookmarklet reads its end): {captcha_url}"
     );
-    let _ = e.flush();
+    let _ = output.flush();
+}
 
-    let _ = open_browser(&captcha_url);
-
-    let deadline = Instant::now() + HV_TIMEOUT;
+/// Waits until this sign-in's page hands in its token on `listener`, which
+/// does not block, or `deadline` passes. Requests that carry another nonce,
+/// or no token, are answered and the wait goes on.
+fn wait_for_token(listener: &TcpListener, nonce: &str, deadline: Instant) -> Result<String> {
     loop {
         if Instant::now() >= deadline {
             break Err(Error::Other("human verification timed out".into()));
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
-                if let Some(token) = handle_conn(&mut stream, &nonce) {
-                    let _ = terminal::writeln!(e, "Token received — continuing login.");
-                    break Ok((token, "captcha".to_string()));
+                if let Some(token) = handle_conn(&mut stream, nonce) {
+                    break Ok(token);
                 }
             }
-            Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(150));
             }
-            Err(err) => break Err(Error::Other(format!("hv accept: {err}"))),
+            Err(error) => break Err(Error::Other(format!("hv accept: {error}"))),
         }
     }
 }
@@ -451,26 +453,62 @@ fn urlencode(s: &str) -> String {
 }
 
 fn open_browser(url: &str) -> std::io::Result<()> {
-    browser_command(url).spawn().map(|_| ())
+    browser_command(url)?.spawn().map(|_| ())
 }
 
-/// The system's way to open `url` in the default browser.
-fn browser_command(url: &str) -> std::process::Command {
-    #[cfg(target_os = "macos")]
-    let mut cmd = std::process::Command::new("open");
-    #[cfg(target_os = "linux")]
-    let mut cmd = std::process::Command::new("xdg-open");
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        c
-    };
+/// The system's way to open `url` in the default browser. No shell reads the
+/// address: `cmd /C start` would cut it at the first `&`.
+fn browser_command(url: &str) -> std::io::Result<std::process::Command> {
+    let mut cmd = browser_opener()?;
     cmd.arg(url);
     cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     without_secrets(&mut cmd);
-    cmd
+    Ok(cmd)
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(target_os = "macos")]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    Ok(std::process::Command::new("open"))
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(target_os = "windows")]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    let mut command = std::process::Command::new(system_rundll32()?);
+    command.arg("url.dll,FileProtocolHandler");
+    Ok(command)
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    Ok(std::process::Command::new("xdg-open"))
+}
+
+/// rundll32 from System32. Windows looks for a program named without a
+/// folder beside this executable first, where a download could be waiting.
+#[cfg(target_os = "windows")]
+fn system_rundll32() -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut buffer = [0_u16; 260];
+    // SAFETY: the length passed is the buffer's own; the API writes at most
+    // that many UTF-16 units and returns how many it wrote, or 0 on failure.
+    let length = unsafe {
+        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    } as usize;
+    if length == 0 || length >= buffer.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])).join("rundll32.exe"))
 }
 
 /// A browser started now may outlive the CLI, so it gets none of the
@@ -481,24 +519,64 @@ fn without_secrets(command: &mut std::process::Command) {
     }
 }
 
-/// Throwaway Chrome profile used only by ruston-cli (never a user profile).
-fn chrome_profile_dir(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("ruston-cli-hv-{tag}"))
+/// Names a new Chrome profile tries; each has 64 random bits, so only
+/// directories made on purpose under every one of them would use them all.
+const PROFILE_NAME_ATTEMPTS: u32 = 8;
+
+/// A new, empty Chrome profile for this verification only (never a user's).
+/// It is created here, exclusively and on Unix for this user alone, under a
+/// name with a random part: a name another user of a shared temporary
+/// directory could guess, and prepare with a profile of theirs, is never used.
+fn new_chrome_profile_dir() -> std::io::Result<PathBuf> {
+    create_private_dir(&std::env::temp_dir(), || {
+        let mut random = [0_u8; 8];
+        getrandom::fill(&mut random).map_err(|e| std::io::Error::other(e.to_string()))?;
+        let random: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        Ok(format!("ruston-cli-hv-{}-{random}", std::process::id()))
+    })
 }
 
-/// Open `url` in an isolated Chrome window (throwaway profile named by `tag`).
+/// Creates a directory in `parent` under the first name from `next_name` that
+/// nothing holds yet, so it is always a new one.
+fn create_private_dir(
+    parent: &std::path::Path,
+    mut next_name: impl FnMut() -> std::io::Result<String>,
+) -> std::io::Result<PathBuf> {
+    for _ in 0..PROFILE_NAME_ATTEMPTS {
+        let dir = parent.join(next_name()?);
+        let builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        let mut builder = builder;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no free name for a Chrome profile",
+    ))
+}
+
+/// Open `url` in an isolated Chrome window with a new throwaway profile.
 /// Returns the child process and its profile dir so both can be cleaned up
 /// once verification completes.
-fn launch_chrome(
-    url: &str,
-    tag: &str,
-) -> std::result::Result<(std::process::Child, PathBuf), String> {
+fn launch_chrome(url: &str) -> std::result::Result<(std::process::Child, PathBuf), String> {
     let chrome = find_chrome().ok_or_else(|| "no Chrome/Chromium binary found".to_string())?;
-    let profile = chrome_profile_dir(tag);
-    chrome_command(&chrome, &profile, url)
-        .spawn()
-        .map(|child| (child, profile))
-        .map_err(|e| format!("spawn {chrome}: {e}"))
+    let profile = new_chrome_profile_dir().map_err(|e| format!("Chrome profile: {e}"))?;
+    match chrome_command(&chrome, &profile, url).spawn() {
+        Ok(child) => Ok((child, profile)),
+        Err(e) => {
+            let _ = std::fs::remove_dir(&profile);
+            Err(format!("spawn {chrome}: {e}"))
+        }
+    }
 }
 
 fn chrome_command(chrome: &str, profile: &std::path::Path, url: &str) -> std::process::Command {
@@ -515,29 +593,30 @@ fn chrome_command(chrome: &str, profile: &std::path::Path, url: &str) -> std::pr
 }
 
 fn find_chrome() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    let candidates = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ];
-    #[cfg(target_os = "linux")]
-    let candidates = [
-        "google-chrome",
-        "google-chrome-stable",
-        "chromium",
-        "chromium-browser",
-        "brave-browser",
-    ];
     #[cfg(target_os = "windows")]
-    let candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    ];
-    for c in candidates {
-        #[cfg(unix)]
-        {
+    {
+        windows_browsers()
+            .into_iter()
+            .find(|path| std::path::Path::new(path).exists())
+    }
+    #[cfg(unix)]
+    {
+        #[cfg(target_os = "macos")]
+        let candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ];
+        #[cfg(target_os = "linux")]
+        let candidates = [
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "brave-browser",
+        ];
+        for c in candidates {
             if c.contains('/') {
                 if std::path::Path::new(c).exists() {
                     return Some(c.to_string());
@@ -546,14 +625,29 @@ fn find_chrome() -> Option<String> {
                 return Some(p);
             }
         }
-        #[cfg(not(unix))]
-        {
-            if std::path::Path::new(c).exists() {
-                return Some(c.to_string());
-            }
-        }
+        None
     }
-    None
+}
+
+/// Chromium-based browsers in the per-machine and per-user install folders.
+/// Microsoft Edge comes with Windows, so one is nearly always found.
+#[cfg(target_os = "windows")]
+fn windows_browsers() -> Vec<String> {
+    const BROWSERS: [&str; 3] = [
+        r"Google\Chrome\Application\chrome.exe",
+        r"BraveSoftware\Brave-Browser\Application\brave.exe",
+        r"Microsoft\Edge\Application\msedge.exe",
+    ];
+    let roots: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect();
+    BROWSERS
+        .iter()
+        .flat_map(|browser| roots.iter().map(move |root| root.join(browser)))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 #[cfg(unix)]
@@ -576,7 +670,7 @@ mod tests {
     fn browsers_never_inherit_sign_in_secrets() {
         let url = "https://verify.proton.me/?methods=captcha";
         for command in [
-            browser_command(url),
+            browser_command(url).unwrap(),
             chrome_command("chrome", std::path::Path::new("profile"), url),
         ] {
             let removed: Vec<_> = command
@@ -591,6 +685,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_hands_the_whole_address_to_system_rundll32() {
+        let url =
+            "https://mail-api.proton.me/core/v4/captcha?Token=a&ForceWebMessaging=1#ruston=1.2";
+        let command = browser_command(url).unwrap();
+        let program = std::path::Path::new(command.get_program());
+        assert!(program.is_absolute(), "{program:?}");
+        assert!(program.ends_with("rundll32.exe"), "{program:?}");
+        assert!(program.exists(), "{program:?}");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["url.dll,FileProtocolHandler", url]);
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_looks_for_edge_and_per_user_browsers() {
+        let browsers = windows_browsers();
+        assert!(
+            browsers
+                .iter()
+                .all(|path| std::path::Path::new(path).is_absolute())
+        );
+        assert!(browsers.iter().any(|path| path.ends_with(r"\msedge.exe")));
+        let local = std::env::var("LOCALAPPDATA").unwrap();
+        assert!(browsers.iter().any(|path| path.starts_with(&local)));
     }
 
     #[test]
@@ -738,27 +860,12 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
 
-        let handle = std::thread::spawn(move || -> Option<String> {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if Instant::now() >= deadline {
-                    return None;
-                }
-                match listener.accept() {
-                    Ok((mut s, _)) => {
-                        if let Some(t) = handle_conn(&mut s, NONCE) {
-                            return Some(t);
-                        }
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(_) => return None,
-                }
-            }
+        let handle = std::thread::spawn(move || {
+            wait_for_token(&listener, NONCE, Instant::now() + Duration::from_secs(5))
         });
 
-        std::thread::sleep(Duration::from_millis(100));
+        // The listener is already bound, so the connection waits for the
+        // helper in its queue.
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         c.write_all(get(&format!("/token?nonce={NONCE}&value=raw%3Atoken+abc")).as_bytes())
             .unwrap();
@@ -766,7 +873,38 @@ mod tests {
         let _ = c.read_to_string(&mut resp);
 
         let got = handle.join().unwrap();
-        assert_eq!(got.as_deref(), Some("raw:token abc"));
+        assert_eq!(got.ok().as_deref(), Some("raw:token abc"));
+    }
+
+    #[test]
+    fn a_wait_for_the_token_ends_at_its_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let waited = wait_for_token(&listener, NONCE, Instant::now());
+
+        assert!(matches!(
+            waited,
+            Err(Error::Other(ref message)) if message == "human verification timed out"
+        ));
+    }
+
+    #[test]
+    fn the_manual_instructions_offer_the_console_the_bookmarklet_and_the_page() {
+        let mut output = Vec::new();
+        print_manual_instructions(&mut output, "CONSOLE", "BOOKMARKLET", "https://page/#n");
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(
+            text.starts_with("\n── Human verification (CAPTCHA) ──\n"),
+            "{text}"
+        );
+        assert!(text.contains("\n      CONSOLE\n"), "{text}");
+        assert!(text.contains("\n      javascript:BOOKMARKLET\n"), "{text}");
+        assert!(
+            text.ends_with("the bookmarklet reads its end): https://page/#n\n"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -785,10 +923,12 @@ mod tests {
             let _ = c.read_to_string(&mut resp);
         });
 
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut stream = loop {
             match listener.accept() {
                 Ok((s, _)) => break s,
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "the client never connected");
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 Err(e) => panic!("accept: {e}"),
@@ -803,40 +943,38 @@ mod tests {
     }
 
     #[test]
-    fn chrome_profile_dir_is_a_dedicated_temp_dir() {
-        let dir = chrome_profile_dir("123");
-        assert_eq!(dir.parent(), Some(std::env::temp_dir().as_path()));
-        assert_eq!(dir.file_name().unwrap(), "ruston-cli-hv-123");
-    }
+    fn a_chrome_profile_is_always_a_new_private_directory() {
+        let parent =
+            std::env::temp_dir().join(format!("ruston-hv-profiles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(parent.join("taken")).unwrap();
+        std::fs::write(parent.join("taken").join("Preferences"), b"someone else's").unwrap();
 
-    fn chal(token: &str, web_url: &str) -> HvChallenge {
-        HvChallenge {
-            token: token.into(),
-            methods: vec!["captcha".into(), "email".into()],
-            web_url: web_url.into(),
+        // A name already held, with a profile in it, is passed over.
+        let mut names = ["taken", "fresh"].into_iter();
+        let dir = create_private_dir(&parent, || Ok(names.next().unwrap().to_owned())).unwrap();
+        assert_eq!(dir, parent.join("fresh"));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
         }
-    }
+        // With every name held, none is borrowed.
+        let held = create_private_dir(&parent, || Ok("taken".to_owned())).unwrap_err();
+        assert_eq!(held.kind(), std::io::ErrorKind::AlreadyExists);
+        std::fs::remove_dir_all(&parent).unwrap();
 
-    #[test]
-    fn verify_url_keeps_web_url_host_and_forces_captcha() {
-        let c = chal(
-            "chal/1 x",
-            "https://verify.proton.me/?methods=captcha,email&token=other",
-        );
-        assert_eq!(
-            verify_url(&c),
-            "https://verify.proton.me/?methods=captcha&token=chal%2F1%20x"
-        );
-    }
-
-    #[test]
-    fn verify_url_falls_back_for_missing_or_insecure_web_url() {
-        let expected = "https://verify.proton.me/?methods=captcha&token=t";
-        assert_eq!(verify_url(&chal("t", "")), expected);
-        assert_eq!(
-            verify_url(&chal("t", "http://attacker.example/?token=t")),
-            expected
-        );
+        // A real profile has a name of its own each time.
+        let first = new_chrome_profile_dir().unwrap();
+        let second = new_chrome_profile_dir().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(std::env::temp_dir().as_path()));
+        std::fs::remove_dir(first).unwrap();
+        std::fs::remove_dir(second).unwrap();
     }
 
     #[test]

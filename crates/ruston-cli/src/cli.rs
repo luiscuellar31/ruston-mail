@@ -1,10 +1,11 @@
 //! Command-line interface definition (clap v4 derive).
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use ruston_core::SearchOpts;
+use ruston_core::{SearchOpts, SendOptions};
 use std::path::PathBuf;
 
-/// What each exit status means, shown at the end of `--help`.
+/// What each exit status means, shown at the end of `--help`. Statuses 1 to
+/// 5 are `ruston_core::error::exit_status`.
 const EXIT_STATUS: &str = "Exit status:
   0  Success, also when the reader of the output stops early (as `| head` does)
   1  Any other error
@@ -57,7 +58,8 @@ pub struct Cli {
     #[arg(long, global = true, env = "PROTON_TOTP", hide_env_values = true)]
     pub totp: Option<String>,
 
-    /// Separate mailbox password (two-password accounts).
+    /// Separate mailbox password (two-password accounts). On a terminal it is
+    /// asked for, hidden, when the account has one and it is not given.
     #[arg(
         long,
         global = true,
@@ -78,8 +80,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub user_agent: Option<String>,
 
-    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window
-    /// (throwaway profile); press Enter once verified and the window is closed.
+    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window, or
+    /// Chromium, Brave or Edge (throwaway profile); press Enter once verified
+    /// and the window is closed.
     #[arg(long, global = true)]
     pub captcha_chrome: bool,
 
@@ -148,14 +151,8 @@ pub struct Ctx {
 
 impl From<&Cli> for Ctx {
     fn from(c: &Cli) -> Self {
-        let env_demo = std::env::var("RUSTON_DEMO")
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false);
+        let env_demo = std::env::var(ruston_core::DEMO_ENV)
+            .is_ok_and(|value| ruston_core::demo_requested(&value));
 
         Ctx {
             profile: c.profile.clone(),
@@ -242,7 +239,10 @@ pub enum Command {
         #[arg(long, default_value_t = 100)]
         max: u32,
     },
-    /// Continuously sync the cache (event stream) until interrupted.
+    /// Continuously sync the cache (event stream) until interrupted. Network
+    /// errors, Proton being busy or down, and the cache changing during a sync
+    /// are tried again after a wait that doubles, up to 10 minutes; a refused
+    /// session, or any other error, stops it.
     Watch {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         interval: u64,
@@ -334,9 +334,9 @@ impl From<SearchArgs> for SearchOpts {
     }
 }
 
-/// Compose options shared by `send`.
+/// What a message holds: everything a saved draft keeps.
 #[derive(Debug, Args)]
-pub struct SendArgs {
+pub struct DraftArgs {
     /// Primary recipient(s) (repeatable).
     #[arg(long = "to", required = true)]
     pub to: Vec<String>,
@@ -346,8 +346,9 @@ pub struct SendArgs {
     /// Blind carbon-copy recipient(s) (repeatable).
     #[arg(long = "bcc")]
     pub bcc: Vec<String>,
-    /// Sender address (prompted for on a terminal with multiple addresses;
-    /// otherwise defaults to the primary address).
+    /// Sender address. `messages send` asks for one on a terminal when the
+    /// account has several; otherwise a new message comes from the primary
+    /// address, and an edited draft from its own.
     #[arg(long)]
     pub from: Option<String>,
     /// Message subject.
@@ -356,12 +357,38 @@ pub struct SendArgs {
     /// Message body, or `-` to read from stdin.
     #[arg(long)]
     pub body: String,
-    /// Treat the body as HTML. A terminal may ask when the body looks like HTML.
+    /// Treat the body as HTML. `messages send` may ask on a terminal when the
+    /// body looks like HTML.
     #[arg(long)]
     pub html: bool,
     /// Attach a file (repeatable).
     #[arg(long = "attach")]
     pub attach: Vec<PathBuf>,
+}
+
+impl DraftArgs {
+    /// The message these arguments describe, with `body` as its text: the
+    /// body argument itself may only say where to read it from.
+    pub fn into_send_options(self, body: String) -> SendOptions {
+        SendOptions {
+            to: self.to,
+            cc: self.cc,
+            bcc: self.bcc,
+            from: self.from,
+            subject: self.subject,
+            body,
+            html: self.html,
+            attachments: self.attach,
+            ..SendOptions::default()
+        }
+    }
+}
+
+/// Compose options for `send`: a message, and how it is sent.
+#[derive(Debug, Args)]
+pub struct SendArgs {
+    #[command(flatten)]
+    pub message: DraftArgs,
     /// Schedule delivery at this Unix timestamp.
     #[arg(long = "send-at")]
     pub send_at: Option<i64>,
@@ -369,7 +396,8 @@ pub struct SendArgs {
     #[arg(long = "expires")]
     pub expires: Option<i64>,
     /// Encrypted-outside: password-protect the message for keyless external recipients.
-    #[arg(long = "eo-password")]
+    /// Without a value, the password is asked for twice, hidden, on the terminal.
+    #[arg(long = "eo-password", num_args = 0..=1, default_missing_value = "")]
     pub eo_password: Option<String>,
     /// Password hint shown to encrypted-outside recipients.
     #[arg(long = "eo-hint")]
@@ -666,14 +694,17 @@ pub enum DraftsCmd {
         #[arg(long = "page-size", default_value_t = 25)]
         page_size: u32,
     },
-    /// Save a new draft (does not send).
-    Save(SendArgs),
-    /// Replace an existing draft's content.
+    /// Save a new draft with its attachments (does not send). A delivery
+    /// time, an expiration and a message password are `messages send`
+    /// options; a draft keeps none of them.
+    Save(DraftArgs),
+    /// Replace an existing draft's content, adding any `--attach` files to
+    /// the attachments it has.
     Edit {
         /// Draft message ID.
         id: String,
         #[command(flatten)]
-        args: SendArgs,
+        args: DraftArgs,
     },
     /// Permanently delete drafts. Lists them and asks first; outside a
     /// terminal `--yes` is required. Other messages are refused.
@@ -807,4 +838,471 @@ pub enum LabelsCmd {
         #[arg(long)]
         parent: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    #[test]
+    fn verify_clap_command() {
+        // Guards against derive macro misconfiguration.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn help_never_shows_secrets_read_from_the_environment() {
+        let command = Cli::command();
+        for id in ["totp", "mailbox_password", "captcha_token"] {
+            let arg = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .unwrap();
+            assert!(arg.get_env().is_some(), "{id} is read from the environment");
+            assert!(
+                arg.is_hide_env_values_set(),
+                "help would print the value of {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_session_profile_is_default_but_can_be_overridden() {
+        assert_eq!(
+            parse(&["ruston-cli", "whoami"]).profile,
+            ruston_core::DEFAULT_SESSION_PROFILE
+        );
+        assert_eq!(
+            parse(&["ruston-cli", "--profile", "default", "whoami"]).profile,
+            "default"
+        );
+    }
+
+    #[test]
+    fn profile_must_be_one_path_component() {
+        for profile in [
+            "",
+            ".",
+            "..",
+            "../settings",
+            r"..\settings",
+            "folder/work",
+            r"folder\work",
+            "C:settings",
+            "/tmp/work",
+        ] {
+            assert!(
+                Cli::try_parse_from(["ruston-cli", "--profile", profile, "whoami"]).is_err(),
+                "accepted invalid profile {profile:?}"
+            );
+        }
+        assert!(Cli::try_parse_from(["ruston-cli", "--profile", "work.mail", "whoami"]).is_ok());
+    }
+
+    #[test]
+    fn watch_requires_positive_interval() {
+        assert!(Cli::try_parse_from(["ruston-cli", "watch", "--interval", "0"]).is_err());
+        assert!(Cli::try_parse_from(["ruston-cli", "watch", "--interval", "1"]).is_ok());
+    }
+
+    #[test]
+    fn search_dates_are_refused_while_parsing() {
+        // Found before any session is resumed.
+        for command in ["messages", "conversations"] {
+            for flag in ["--after", "--before"] {
+                for date in ["15/01/2024", "2024-02-30", "yesterday"] {
+                    let error = Cli::try_parse_from(["ruston-cli", command, "search", flag, date])
+                        .unwrap_err();
+                    assert_eq!(
+                        error.kind(),
+                        clap::error::ErrorKind::ValueValidation,
+                        "{command} {flag} {date}"
+                    );
+                }
+            }
+            assert!(
+                Cli::try_parse_from([
+                    "ruston-cli",
+                    command,
+                    "search",
+                    "--after",
+                    "2024-01-01",
+                    "--before",
+                    "2024-01-31",
+                ])
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn send_with_stdin_body() {
+        let cli = parse(&[
+            "ruston-cli",
+            "messages",
+            "send",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "x",
+            "--body",
+            "-",
+        ]);
+        let Command::Messages {
+            cmd: MessagesCmd::Send(a),
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(a.message.to, vec!["a@b.com"]);
+        assert_eq!(a.message.subject, "x");
+        assert_eq!(a.message.body, "-");
+        assert!(!a.message.html);
+    }
+
+    #[test]
+    fn send_multiple_recipients_and_attachments() {
+        let cli = parse(&[
+            "ruston-cli",
+            "messages",
+            "send",
+            "--to",
+            "a@b.com",
+            "--to",
+            "c@d.com",
+            "--cc",
+            "e@f.com",
+            "--subject",
+            "hi",
+            "--body",
+            "hello",
+            "--html",
+            "--attach",
+            "/tmp/x.pdf",
+            "--attach",
+            "/tmp/y.png",
+        ]);
+        let Command::Messages {
+            cmd: MessagesCmd::Send(a),
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(a.message.to.len(), 2);
+        assert_eq!(a.message.cc, vec!["e@f.com"]);
+        assert!(a.message.html);
+        assert_eq!(a.message.attach.len(), 2);
+    }
+
+    #[test]
+    fn a_message_password_can_be_asked_for_instead_of_given() {
+        let eo_password = |extra: &[&str]| {
+            let mut args = vec![
+                "ruston-cli",
+                "messages",
+                "send",
+                "--to",
+                "a@b.com",
+                "--subject",
+                "hi",
+                "--body",
+                "hello",
+            ];
+            args.extend(extra);
+            let Command::Messages {
+                cmd: MessagesCmd::Send(a),
+            } = parse(&args).command
+            else {
+                panic!("wrong command");
+            };
+            a.eo_password
+        };
+        assert_eq!(eo_password(&[]), None);
+        assert_eq!(
+            eo_password(&["--eo-password", "s3cret"]),
+            Some("s3cret".into())
+        );
+        // Without a value it is asked for, even with an option after it.
+        assert_eq!(eo_password(&["--eo-password"]), Some(String::new()));
+        assert_eq!(
+            eo_password(&["--eo-password", "--eo-hint", "our pet"]),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn drafts_take_attachments_but_no_sending_options() {
+        let draft = [
+            "ruston-cli",
+            "drafts",
+            "save",
+            "--to",
+            "a@b.com",
+            "--subject",
+            "hi",
+            "--body",
+            "hello",
+            "--attach",
+            "/tmp/x.pdf",
+        ];
+        let Command::Drafts {
+            cmd: DraftsCmd::Save(a),
+        } = parse(&draft).command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(a.attach.len(), 1);
+        // Only sending can schedule, expire or password-protect a message.
+        for option in [
+            ["--send-at", "1900000000"],
+            ["--expires", "3600"],
+            ["--eo-password", "secret"],
+            ["--eo-hint", "hint"],
+        ] {
+            for command in ["save", "edit"] {
+                let mut args = draft.to_vec();
+                args[2] = command;
+                if command == "edit" {
+                    args.insert(3, "draft1");
+                }
+                args.extend(option);
+                assert!(
+                    Cli::try_parse_from(&args).is_err(),
+                    "drafts {command} took {}",
+                    option[0]
+                );
+            }
+            let mut send = draft.to_vec();
+            send[1] = "messages";
+            send[2] = "send";
+            send.extend(option);
+            assert!(
+                Cli::try_parse_from(&send).is_ok(),
+                "send refused {}",
+                option[0]
+            );
+        }
+    }
+
+    #[test]
+    fn read_with_html_format() {
+        let cli = parse(&["ruston-cli", "messages", "read", "REF", "--format", "html"]);
+        let Command::Messages {
+            cmd:
+                MessagesCmd::Read {
+                    reference,
+                    format,
+                    body_only,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(reference, "REF");
+        assert!(matches!(format, ReadFormat::Html));
+        assert!(!body_only);
+    }
+
+    #[test]
+    fn read_defaults_to_text() {
+        let cli = parse(&["ruston-cli", "messages", "read", "abc"]);
+        let Command::Messages {
+            cmd: MessagesCmd::Read { format, .. },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert!(matches!(format, ReadFormat::Text));
+    }
+
+    #[test]
+    fn move_requires_dest() {
+        let cli = parse(&["ruston-cli", "messages", "move", "REF", "--dest", "archive"]);
+        let Command::Messages {
+            cmd: MessagesCmd::Move { references, dest },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(references, vec!["REF"]);
+        assert_eq!(dest, "archive");
+        // Missing --dest is a parse error.
+        assert!(Cli::try_parse_from(["ruston-cli", "messages", "move", "REF"]).is_err());
+    }
+
+    #[test]
+    fn permanent_deletes_take_only_trash_or_spam_and_an_optional_yes() {
+        for folder in ["inbox", "all", "archive", "qBIcv1_Wv5X4hLpEo0Tz9A=="] {
+            assert!(
+                Cli::try_parse_from(["ruston-cli", "messages", "empty", folder]).is_err(),
+                "emptied {folder}"
+            );
+        }
+        let Command::Messages {
+            cmd: MessagesCmd::Empty { folder, yes },
+        } = parse(&["ruston-cli", "messages", "empty", "spam", "--yes"]).command
+        else {
+            panic!("wrong command");
+        };
+        assert!(matches!(folder, EmptyFolder::Spam));
+        assert!(yes);
+        let Command::Messages {
+            cmd: MessagesCmd::Delete { references, yes },
+        } = parse(&["ruston-cli", "messages", "delete", "id1"]).command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(references, vec!["id1"]);
+        assert!(!yes, "deleting asks unless told not to");
+        // Deleting drafts names them and asks the same way.
+        assert!(Cli::try_parse_from(["ruston-cli", "drafts", "delete"]).is_err());
+        let Command::Drafts {
+            cmd: DraftsCmd::Delete { ids, yes },
+        } = parse(&["ruston-cli", "drafts", "delete", "draft1"]).command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(ids, vec!["draft1"]);
+        assert!(!yes, "deleting asks unless told not to");
+    }
+
+    #[test]
+    fn mark_state_then_refs() {
+        let cli = parse(&["ruston-cli", "messages", "mark", "read", "id1", "id2"]);
+        let Command::Messages {
+            cmd: MessagesCmd::Mark { state, references },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert!(matches!(state, ReadState::Read));
+        assert!(state.as_bool());
+        assert_eq!(references, vec!["id1", "id2"]);
+    }
+
+    #[test]
+    fn global_flags_parse() {
+        let cli = parse(&[
+            "ruston-cli",
+            "--json",
+            "--profile",
+            "work",
+            "messages",
+            "list",
+            "--folder",
+            "archive",
+            "--page-size",
+            "10",
+            "--unread",
+        ]);
+        assert!(cli.json);
+        assert_eq!(cli.profile, "work");
+        let Command::Messages {
+            cmd:
+                MessagesCmd::List {
+                    folder,
+                    page_size,
+                    unread,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(folder, "archive");
+        assert_eq!(page_size, 10);
+        assert!(unread);
+    }
+
+    #[test]
+    fn conversations_mark_default_folder() {
+        let cli = parse(&["ruston-cli", "conversations", "mark", "unread", "conv1"]);
+        let Command::Conversations {
+            cmd: ConversationsCmd::Mark { state, folder, ids },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert!(matches!(state, ReadState::Unread));
+        assert_eq!(folder, "all");
+        assert_eq!(ids, vec!["conv1"]);
+    }
+
+    #[test]
+    fn an_attachment_download_names_what_to_fetch_before_anything_runs() {
+        // Found while parsing: no session is resumed and no folder is made.
+        let error =
+            Cli::try_parse_from(["ruston-cli", "attachments", "download", "msg"]).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        for args in [
+            &["ruston-cli", "attachments", "download", "msg", "att"][..],
+            &["ruston-cli", "attachments", "download", "msg", "--all"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");
+        }
+    }
+
+    #[test]
+    fn help_explains_every_exit_status() {
+        let help = Cli::command().render_help().to_string();
+        for status in ["0  ", "1  ", "2  ", "3  ", "4  ", "5  "] {
+            assert!(help.contains(status), "status {status}is not explained");
+        }
+    }
+
+    #[test]
+    fn index_leaves_trash_and_spam_out_unless_asked() {
+        use ruston_core::model::enums::{label_ids, resolve_folder};
+
+        let folder = |args: &[&str]| {
+            let Command::Index { folder, .. } = parse(args).command else {
+                panic!("wrong command");
+            };
+            resolve_folder(&folder)
+        };
+        // Mail moved to Trash or Spam is not decrypted onto disk by default.
+        assert_eq!(folder(&["ruston-cli", "index"]), label_ids::ALMOST_ALL_MAIL);
+        assert_eq!(
+            folder(&["ruston-cli", "index", "--folder", "all"]),
+            label_ids::ALL_MAIL
+        );
+    }
+
+    #[test]
+    fn labels_create_defaults() {
+        let cli = parse(&["ruston-cli", "labels", "create", "--name", "Work"]);
+        let Command::Labels {
+            cmd:
+                LabelsCmd::Create {
+                    name,
+                    color,
+                    folder,
+                    parent,
+                },
+        } = cli.command
+        else {
+            panic!("wrong command");
+        };
+        assert_eq!(name, "Work");
+        assert_eq!(color, "#8080FF");
+        assert!(!folder);
+        assert!(parent.is_none());
+    }
+
+    #[test]
+    fn demo_flag_parsed() {
+        let cli = parse(&["ruston-cli", "--demo", "whoami"]);
+        assert!(cli.demo);
+        let ctx: Ctx = (&cli).into();
+        assert!(ctx.demo);
+    }
 }

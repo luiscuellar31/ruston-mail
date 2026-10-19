@@ -2,14 +2,14 @@
 
 mod html;
 
-use crate::terminal;
+use crate::terminal::{self, BodyFormat};
 use std::borrow::Cow;
 
 use crate::cli::ReadFormat;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Filter,
-    FullMessage, Label, LabelCount, MessageMetadata, Recipient,
+    FullMessage, Label, LabelCount, MessageMetadata, Recipient, Verdict,
 };
 use serde_json::json;
 
@@ -78,7 +78,11 @@ pub fn filters_list(json_mode: bool, filters: &[Filter]) {
     }
     terminal::println!("{} filter(s)", filters.len());
     for f in filters {
-        let state = if f.status == 1 { "enabled" } else { "disabled" };
+        let state = if f.is_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        };
         terminal::println!("  [{state}] {}  {}", f.id, f.name);
     }
 }
@@ -186,6 +190,16 @@ pub fn conversations_list(json: bool, total: u32, convs: &[Conversation]) {
     }
 }
 
+/// A verdict's name, as `--json` writes it.
+fn verdict_name(verdict: Verdict) -> &'static str {
+    match verdict {
+        Verdict::Verified => "verified",
+        Verdict::Unsigned => "unsigned",
+        Verdict::Unverified => "unverified",
+        Verdict::Invalid => "invalid",
+    }
+}
+
 fn print_message_header(m: &MessageMetadata, verdict: &str, mime_type: &str) {
     terminal::println!("Subject: {}", subject_or_empty(&m.subject));
     terminal::println!("From:    {}", fmt_addr(&m.sender));
@@ -199,9 +213,45 @@ fn print_message_header(m: &MessageMetadata, verdict: &str, mime_type: &str) {
     terminal::println!("Id:      {}", m.id);
 }
 
-pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only: bool) {
-    if json {
+/// How much of a message [`full_message`] writes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MessageView {
+    /// Its headers, attachments and body.
+    Whole,
+    /// Only its body.
+    BodyOnly,
+}
+
+impl MessageView {
+    /// The view the `--body-only` flag asks for.
+    pub fn chosen(body_only: bool) -> Self {
         if body_only {
+            Self::BodyOnly
+        } else {
+            Self::Whole
+        }
+    }
+}
+
+/// Which of the account's labels a listing holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LabelKind {
+    /// Labels, which a message can carry several of.
+    Labels,
+    /// Folders, which a message is in one at a time.
+    Folders,
+}
+
+impl LabelKind {
+    /// The kind the `--folders` flag asks for.
+    pub fn chosen(folders: bool) -> Self {
+        if folders { Self::Folders } else { Self::Labels }
+    }
+}
+
+pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, view: MessageView) {
+    if json {
+        if view == MessageView::BodyOnly {
             // Borrowed, not copied into a `json!` value: bodies can be large.
             #[derive(serde::Serialize)]
             struct Body<'a> {
@@ -213,17 +263,17 @@ pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only
         }
         return;
     }
-    let verdict = serde_json::to_string(&msg.verdict)
-        .ok()
-        .map(|s| s.trim_matches('"').to_string())
-        .unwrap_or_else(|| "unknown".to_string());
     let body = displayed_body(&msg.body, &msg.mime_type, format);
-    let explicit_format = matches!(format, ReadFormat::Raw | ReadFormat::Html);
-    if body_only || matches!(format, ReadFormat::Raw) {
-        terminal::print_body(&body, explicit_format);
+    let body_format = if matches!(format, ReadFormat::Raw | ReadFormat::Html) {
+        BodyFormat::Named
+    } else {
+        BodyFormat::Readable
+    };
+    if view == MessageView::BodyOnly || matches!(format, ReadFormat::Raw) {
+        terminal::print_body(&body, body_format);
         return;
     }
-    print_message_header(&msg.meta, &verdict, &msg.mime_type);
+    print_message_header(&msg.meta, verdict_name(msg.verdict), &msg.mime_type);
     if !msg.attachments.is_empty() {
         terminal::println!("Attachments:");
         for a in &msg.attachments {
@@ -231,7 +281,7 @@ pub fn full_message(json: bool, msg: &FullMessage, format: ReadFormat, body_only
         }
     }
     terminal::println!();
-    terminal::print_body(&body, explicit_format);
+    terminal::print_body(&body, body_format);
 }
 
 fn displayed_body<'a>(body: &'a str, mime_type: &str, format: ReadFormat) -> Cow<'a, str> {
@@ -250,8 +300,8 @@ struct Thread<'a> {
     messages: Vec<ThreadMessage<'a>>,
 }
 
-/// An opened message is written as before; one that could not be opened
-/// keeps its headers and says why, with no body.
+/// An opened message is written as its `FullMessage` serializes; one that
+/// could not be opened keeps its headers and says why, with no body.
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum ThreadMessage<'a> {
@@ -309,26 +359,22 @@ pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[ConversationMe
                 continue;
             }
         };
-        let verdict = serde_json::to_string(&m.verdict)
-            .ok()
-            .map(|s| s.trim_matches('"').to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        print_message_header(&m.meta, &verdict, &m.mime_type);
+        print_message_header(&m.meta, verdict_name(m.verdict), &m.mime_type);
         terminal::println!();
-        terminal::print!("{}", m.body);
-        if !m.body.ends_with('\n') {
-            terminal::println!();
-        }
+        terminal::print_body(&m.body, BodyFormat::Readable);
     }
 }
 
-pub fn labels_list(json: bool, labels: &[Label], folders: bool) {
+pub fn labels_list(json: bool, labels: &[Label], kind: LabelKind) {
     if json {
         json_out(labels);
         return;
     }
-    let kind = if folders { "folder" } else { "label" };
-    terminal::println!("{} {kind}(s)", labels.len());
+    let noun = match kind {
+        LabelKind::Labels => "label",
+        LabelKind::Folders => "folder",
+    };
+    terminal::println!("{} {noun}(s)", labels.len());
     for l in labels {
         let parent = l
             .parent_id
@@ -369,7 +415,7 @@ pub fn action_result(json: bool, action: &str, ids: &[String]) {
     terminal::println!("{action}: {} item(s)", ids.len());
 }
 
-/// Report a successful send (returns message ID).
+/// Report a successful send, with the sent message's ID.
 pub fn sent(json: bool, id: &str) {
     if json {
         json_out(&json!({ "status": "ok", "id": id }));
@@ -378,7 +424,20 @@ pub fn sent(json: bool, id: &str) {
     terminal::println!("Sent (id {id})");
 }
 
-/// Report a saved draft, which was not sent (returns its message ID).
+/// Report a message Proton holds until `at` (Unix time): it has not left yet.
+pub fn scheduled(json: bool, id: &str, at: i64) {
+    if json {
+        json_out(&json!({ "status": "ok", "id": id, "scheduled_at": at }));
+        return;
+    }
+    terminal::println!("{}", scheduled_text(id, at));
+}
+
+fn scheduled_text(id: &str, at: i64) -> String {
+    format!("Scheduled (id {id}) to be sent at {}", fmt_time(at))
+}
+
+/// Report a saved draft, which was not sent, with its message ID.
 pub fn draft_saved(json: bool, id: &str) {
     if json {
         json_out(&json!({ "status": "ok", "id": id }));
@@ -390,6 +449,21 @@ pub fn draft_saved(json: bool, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_verdict_is_named_as_json_writes_it() {
+        for verdict in [
+            Verdict::Verified,
+            Verdict::Unsigned,
+            Verdict::Unverified,
+            Verdict::Invalid,
+        ] {
+            assert_eq!(
+                serde_json::to_value(verdict).unwrap(),
+                verdict_name(verdict)
+            );
+        }
+    }
 
     #[test]
     fn text_format_converts_html_without_changing_explicit_formats() {
@@ -426,6 +500,16 @@ mod tests {
         assert_eq!(fmt_time(1), "1970-01-01 00:00:01 UTC");
         // A well-known timestamp: 1_700_000_000 = 2023-11-14 22:13:20 UTC.
         assert_eq!(fmt_time(1_700_000_000), "2023-11-14 22:13:20 UTC");
+        // And the first second of 2021.
+        assert_eq!(fmt_time(1_609_459_200), "2021-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn a_scheduled_message_says_when_it_leaves_not_that_it_was_sent() {
+        assert_eq!(
+            scheduled_text("m1", 1_900_000_000),
+            "Scheduled (id m1) to be sent at 2030-03-17 17:46:40 UTC"
+        );
     }
 
     #[test]
@@ -477,7 +561,7 @@ mod tests {
 
         let json = serde_json::to_value(Thread::new(&conversation, &messages)).unwrap();
 
-        // An opened message is written exactly as before.
+        // An opened message is written exactly as its `FullMessage` serializes.
         assert_eq!(json["messages"][0], serde_json::to_value(&opened).unwrap());
         let unreadable = &json["messages"][1];
         assert_eq!(unreadable["meta"]["ID"], "m1");

@@ -66,9 +66,35 @@ pub struct KeyPress {
     pub other_modifier: bool,
 }
 
+impl KeyPress {
+    /// A key pressed alone.
+    pub fn plain(key: Key) -> Self {
+        Self {
+            key,
+            command: false,
+            other_modifier: false,
+        }
+    }
+
+    /// A key pressed with Command on macOS, or Ctrl elsewhere.
+    pub fn with_command(key: Key) -> Self {
+        Self {
+            key,
+            command: true,
+            other_modifier: false,
+        }
+    }
+}
+
 impl App {
-    fn draft_covers_reader(&self) -> bool {
+    pub(super) fn draft_covers_reader(&self) -> bool {
         self.compose.is_some() && self.settings.compose_placement == ComposePlacement::ReadingPane
+    }
+
+    /// A draft in its own window takes that window's Escape and Send keys;
+    /// the keys handled here come from the mailbox window.
+    fn draft_in_window(&self) -> bool {
+        self.compose.is_some() && self.settings.compose_placement == ComposePlacement::Window
     }
 
     pub(super) fn handle_key(&mut self, press: KeyPress) -> Effects {
@@ -83,8 +109,8 @@ impl App {
             return Effects::none();
         }
 
-        // The draft covers the reader, so a step through the list would open,
-        // and could mark read, a conversation nobody sees.
+        // The draft covers the reader, so a step through the list would open
+        // a conversation nobody sees.
         if matches!(shortcut, Shortcut::Move(_) | Shortcut::Open) && self.draft_covers_reader() {
             return Effects::none();
         }
@@ -98,7 +124,7 @@ impl App {
                     return Effects::none();
                 };
 
-                Effects::batch([self.reveal_in_list(&next), self.select_conversation(next)])
+                self.open_row(next)
             }
             Shortcut::Open => {
                 let Some(selected) = self
@@ -124,7 +150,9 @@ impl App {
                     return Effects::none();
                 }
                 // In-flight messages cannot be dismissed.
-                if let Some(compose) = self.compose().filter(|c| !c.in_flight()) {
+                if !self.draft_in_window()
+                    && let Some(compose) = self.compose().filter(|c| !c.in_flight())
+                {
                     if compose.confirming_discard() {
                         self.cancel_discard();
                     } else {
@@ -133,7 +161,7 @@ impl App {
                     return Effects::none();
                 }
                 if let Some(mailbox) = self.active_mailbox() {
-                    if mailbox.is_searching() {
+                    if mailbox.has_search_text() {
                         mailbox.set_search_query(String::new());
                     } else {
                         mailbox.close_reader();
@@ -153,7 +181,7 @@ impl App {
                 Effects::none()
             }
             Shortcut::Send => {
-                if self.compose.is_some() {
+                if self.compose.is_some() && !self.draft_in_window() {
                     return self.send_compose();
                 }
                 Effects::none()
@@ -178,16 +206,8 @@ mod tests {
 
     #[test]
     fn keys_map_to_mailbox_shortcuts() {
-        let plain = |key| KeyPress {
-            key,
-            command: false,
-            other_modifier: false,
-        };
-        let command = |key| KeyPress {
-            key,
-            command: true,
-            other_modifier: false,
-        };
+        let plain = KeyPress::plain;
+        let command = KeyPress::with_command;
 
         assert_eq!(
             shortcut(plain(Key::Character('j'))),

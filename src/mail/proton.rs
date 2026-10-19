@@ -7,16 +7,16 @@ use tokio::sync::Semaphore;
 
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
-use ruston_core::model::enums::{label_ids, message_flag};
+use ruston_core::model::enums::{human_verification, label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
     Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, HvResolver, Label,
-    LabelCount, LoginOptions, MessageMetadata, Recipient, RecipientProtection, SearchOpts,
-    SendOptions, TotpPrompt, UnreadableMessage, Verdict,
+    LabelCount, LoginOptions, LoginPrompts, MailboxPasswordPrompt, MessageMetadata, Recipient,
+    RecipientProtection, SearchOpts, SendOptions, TotpPrompt, UnreadableMessage, Verdict,
 };
 use secrecy::SecretString;
 
-use super::outgoing::{Kind, Outgoing, Protection, ProtectionCheck, SendError};
+use super::outgoing::{Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
@@ -35,8 +35,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// file itself, which may take core's whole transfer deadline.
 const ATTACHMENT_SAVE_TIMEOUT: Duration = ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT
     .saturating_add(REQUEST_TIMEOUT.saturating_mul(2));
-/// A complete authentication attempt, including interactive challenges, must
-/// eventually release its credentials even when the server stops responding.
+/// A complete authentication attempt must eventually release its credentials
+/// even when the server stops responding. The time a person spends on a
+/// prompt, solving a CAPTCHA or finding a code, does not count.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(120);
 /// Sending is several requests: a draft, a key for every recipient, then the
 /// message. It is given longer than a request that only reads; uploads add
@@ -47,8 +48,6 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
 const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
-/// Proton's standalone human-verification page.
-const VERIFY_ORIGIN: &str = "https://verify.proton.me";
 const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox password";
 const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
 const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
@@ -75,16 +74,18 @@ pub enum SignInOutcome {
 #[derive(Clone)]
 pub enum SignInPrompt {
     /// Enter the current TOTP code.
-    Totp(Reply<SecretString>),
+    Totp(PromptAnswer<SecretString>),
+    /// Enter the separate mailbox password of a two-password account.
+    MailboxPassword(PromptAnswer<SecretString>),
     /// Complete Proton's check at `url` in a browser, then confirm.
-    HumanVerification { url: String, done: Reply<()> },
+    HumanVerification { url: String, done: PromptAnswer<()> },
 }
 
 impl SignInPrompt {
     /// Abandons the prompt; the waiting sign-in ends as cancelled.
     pub fn cancel(self) {
         match self {
-            Self::Totp(reply) => reply.cancel(),
+            Self::Totp(reply) | Self::MailboxPassword(reply) => reply.cancel(),
             Self::HumanVerification { done, .. } => done.cancel(),
         }
     }
@@ -99,9 +100,9 @@ pub enum SignInEvent {
 /// A one-time answer to a sign-in prompt. Clones share one answer slot, so it
 /// can travel inside UI messages; only the first answer is delivered.
 #[derive(Clone)]
-pub struct Reply<T>(Arc<Mutex<Option<oneshot::Sender<T>>>>);
+pub struct PromptAnswer<T>(Arc<Mutex<Option<oneshot::Sender<T>>>>);
 
-impl<T> Reply<T> {
+impl<T> PromptAnswer<T> {
     pub(crate) fn channel() -> (Self, oneshot::Receiver<T>) {
         let (sender, receiver) = oneshot::channel();
         (Self(Arc::new(Mutex::new(Some(sender)))), receiver)
@@ -131,22 +132,18 @@ pub struct ProtonMailService {
 
 impl ProtonMailService {
     pub async fn resume() -> ResumeOutcome {
-        match Client::resume(PROFILE).await {
-            Ok(client) => ResumeOutcome::Authenticated(Arc::new(Self::from_client(client))),
-            Err(Error::Unauthorized | Error::Crypto(_) | Error::Srp(_)) => ResumeOutcome::SignedOut,
-            Err(Error::Api(error)) if matches!(error.http_status, 401 | 403) => {
-                ResumeOutcome::SignedOut
-            }
-            Err(error) => ResumeOutcome::Failed(map_error(error)),
-        }
+        resume_within(Client::resume(PROFILE), SIGN_IN_TIMEOUT).await
     }
 
     /// Signs in, forwarding interactive prompts and always emitting `Finished`.
     pub async fn sign_in(request: LoginRequest, mut events: mpsc::Sender<SignInEvent>) {
-        let has_totp = request.totp.is_some();
-        let has_mailbox_password = request.mailbox_password.is_some();
-        let prompted_totp = Arc::new(AtomicBool::new(false));
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let given = Supplied {
+            totp: request.totp.is_some(),
+            mailbox_password: request.mailbox_password.is_some(),
+        };
+        let answered_totp = Arc::new(AtomicBool::new(false));
+        let answered_mailbox_password = Arc::new(AtomicBool::new(false));
+        let prompter = Prompter::new(events.clone());
         let options = LoginOptions {
             username: request.username,
             password: request.password,
@@ -156,23 +153,33 @@ impl ProtonMailService {
             base_url: None,
             app_version: None,
             user_agent: Some(user_agent()),
-            hv: Some(human_verification(events.clone(), cancelled.clone())),
+            hv: Some(prompter.human_verification()),
         };
-        let totp_prompt = totp_prompt(events.clone(), prompted_totp.clone(), cancelled.clone());
+        // The mailbox password is asked for in the same sign-in, so the
+        // password and the code are not asked for, and checked, again.
+        let login_prompts = LoginPrompts {
+            totp: Some(prompter.totp(answered_totp.clone())),
+            mailbox_password: Some(prompter.mailbox_password(answered_mailbox_password.clone())),
+        };
 
-        let outcome = match tokio::time::timeout(
+        let outcome = match within(
             SIGN_IN_TIMEOUT,
-            Client::login_with_totp_prompt(options, totp_prompt),
+            &prompter.prompt_time,
+            Client::login_with_prompts(options, login_prompts),
         )
         .await
         {
-            Ok(Ok(client)) => SignInOutcome::Authenticated(Arc::new(Self::from_client(client))),
-            Ok(Err(_)) if cancelled.load(Ordering::Relaxed) => SignInOutcome::Cancelled,
-            Ok(Err(error)) => {
-                let has_totp = has_totp || prompted_totp.load(Ordering::Relaxed);
-                map_sign_in_error(error, has_totp, has_mailbox_password)
+            Some(Ok(client)) => SignInOutcome::Authenticated(Arc::new(Self::from_client(client))),
+            Some(Err(_)) if prompter.cancelled.load(Ordering::Relaxed) => SignInOutcome::Cancelled,
+            Some(Err(error)) => {
+                let supplied = Supplied {
+                    totp: given.totp || answered_totp.load(Ordering::Relaxed),
+                    mailbox_password: given.mailbox_password
+                        || answered_mailbox_password.load(Ordering::Relaxed),
+                };
+                map_sign_in_error(error, supplied)
             }
-            Err(_) => SignInOutcome::Failed(AuthError::Connection),
+            None => SignInOutcome::Failed(AuthError::TimedOut),
         };
         let _ = events.send(SignInEvent::Finished(outcome)).await;
         // The client keeps the verification resolver; closing the channel ends
@@ -194,6 +201,11 @@ impl ProtonMailService {
 
     pub fn email(&self) -> Option<&str> {
         self.email.as_deref()
+    }
+
+    /// The Proton account signed in, the same from one session to the next.
+    pub fn user_id(&self) -> &str {
+        self.client.user_id()
     }
 
     /// Reads metadata without downloading message bodies or resolving sender keys.
@@ -288,8 +300,8 @@ impl ProtonMailService {
             .collect())
     }
 
-    /// Sends a message. The reply is Proton's id for it, which nothing here
-    /// needs yet.
+    /// Sends a message. Proton answers with the sent message's ID, which
+    /// nothing here uses yet.
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
         let options = SendOptions {
             to: outgoing.to.clone(),
@@ -309,12 +321,14 @@ impl ProtonMailService {
         // attachments for the draft; Proton threads them.
         let call = async {
             match &outgoing.kind {
-                Kind::New => self.client.send(&options).await,
-                Kind::Reply {
+                OutgoingKind::New => self.client.send(&options).await,
+                OutgoingKind::Reply {
                     message_id,
                     everyone,
                 } => self.client.reply(message_id, *everyone, &options).await,
-                Kind::Forward { message_id } => self.client.forward(message_id, &options).await,
+                OutgoingKind::Forward { message_id } => {
+                    self.client.forward(message_id, &options).await
+                }
             }
         };
 
@@ -374,7 +388,6 @@ impl ProtonMailService {
             map_mailbox_error,
         )
         .await?;
-        let subject = conversation.subject.trim();
         let labels = conversation
             .labels
             .into_iter()
@@ -383,40 +396,26 @@ impl ProtonMailService {
 
         Ok(ConversationDetail {
             id: id.to_owned(),
-            subject: (!subject.is_empty()).then(|| subject.to_owned()),
+            subject: non_blank(&conversation.subject),
             labels,
             messages: messages
                 .into_iter()
-                .map(|message| match message {
-                    ConversationMessage::Opened(message) => {
-                        mail_message(message, &self.own_addresses)
-                    }
-                    ConversationMessage::Unreadable(unreadable) => {
-                        unreadable_mail_message(unreadable, &self.own_addresses)
-                    }
-                })
+                .map(|message| conversation_message(message, &self.own_addresses))
                 .collect(),
         })
     }
 
-    /// Fetches and decrypts one message that the list shows on its own.
+    /// Fetches and decrypts one message that the list shows on its own. One
+    /// that cannot be opened shows as it does in a conversation.
     pub async fn message_detail(&self, id: &str) -> Result<ConversationDetail, MailboxError> {
         let message = timed_with(
-            self.client.read_message(id),
+            self.client.read_message_or_unreadable(id),
             conversation_deadline(1),
             MailboxError::Connection,
             map_mailbox_error,
         )
         .await?;
-        let subject = message.meta.subject.trim().to_owned();
-        let labels = message.meta.label_ids.clone();
-
-        Ok(ConversationDetail {
-            id: id.to_owned(),
-            subject: (!subject.is_empty()).then_some(subject),
-            labels,
-            messages: vec![mail_message(message, &self.own_addresses)],
-        })
+        Ok(single_message_detail(id, message, &self.own_addresses))
     }
 
     /// Searches one page across all folders.
@@ -606,54 +605,123 @@ fn user_agent() -> String {
     )
 }
 
-/// Asks for the TOTP code only when Proton requires it, after any human
-/// verification, so the code is still fresh.
-fn totp_prompt(
-    events: mpsc::Sender<SignInEvent>,
-    prompted: Arc<AtomicBool>,
-    cancelled: Arc<AtomicBool>,
-) -> TotpPrompt {
-    Arc::new(move || {
-        let events = events.clone();
-        let prompted = prompted.clone();
-        let cancelled = cancelled.clone();
-        Box::pin(async move {
-            // Only a sign-in asks for a code, so a code nobody gives ends it.
-            let code = ask(events, SignInPrompt::Totp).await.map_err(|_| {
-                cancelled.store(true, Ordering::Relaxed);
-                Error::Other("no TOTP code was given".to_owned())
-            })?;
-            prompted.store(true, Ordering::Relaxed);
-            Ok(code)
-        })
-    })
+/// A prompt for a secret. Core gives the TOTP code's and the mailbox
+/// password's prompts this same type, so one builder serves both.
+type SecretPrompt = TotpPrompt;
+
+/// What the person signing in gave, up front or when asked. A failure
+/// means something else once a code or a mailbox password was in play.
+#[derive(Clone, Copy, Default)]
+struct Supplied {
+    totp: bool,
+    mailbox_password: bool,
 }
 
-/// Proton Bridge's external-browser flow: the verification page attaches the
-/// solved captcha to the challenge, so the retry echoes the challenge token.
-fn human_verification(events: mpsc::Sender<SignInEvent>, cancelled: Arc<AtomicBool>) -> HvResolver {
-    Arc::new(move |challenge: HvChallenge| {
-        let events = events.clone();
-        let cancelled = cancelled.clone();
-        Box::pin(async move {
-            let captcha = challenge.methods.is_empty()
-                || challenge.methods.iter().any(|method| method == "captcha");
-            if !captcha {
-                return Err(Error::HumanVerification(challenge));
-            }
-            let url = verification_url(&challenge.web_url, &challenge.token);
-            match ask(events, |done| SignInPrompt::HumanVerification { url, done }).await {
-                Ok(()) => Ok((challenge.token, "captcha".to_owned())),
-                // The client keeps this resolver after its sign-in. A challenge
-                // then is Proton's requirement, as for a resumed session.
-                Err(Unanswered::Closed) => Err(Error::HumanVerification(challenge)),
-                Err(Unanswered::Dismissed) => {
-                    cancelled.store(true, Ordering::Relaxed);
-                    Err(Error::HumanVerification(challenge))
-                }
-            }
+/// Asks the person signing in, through the sign-in's events, for what the
+/// sign-in needs. Clones ask through the same events, cancel the same
+/// sign-in and count their time on the same clock.
+#[derive(Clone)]
+struct Prompter {
+    events: mpsc::Sender<SignInEvent>,
+    /// Set when a prompt is abandoned, which ends the sign-in as cancelled.
+    cancelled: Arc<AtomicBool>,
+    /// The time spent on prompts, which the sign-in deadline leaves out.
+    prompt_time: Arc<PromptTime>,
+}
+
+impl Prompter {
+    fn new(events: mpsc::Sender<SignInEvent>) -> Self {
+        Self {
+            events,
+            cancelled: Arc::default(),
+            prompt_time: Arc::default(),
+        }
+    }
+
+    /// Asks for the TOTP code only when Proton requires it, after any human
+    /// verification, so the code is still fresh. `answered` is set once the
+    /// person gives one.
+    fn totp(&self, answered: Arc<AtomicBool>) -> TotpPrompt {
+        self.secret(SignInPrompt::Totp, "no TOTP code was given", answered)
+    }
+
+    /// Asks for the mailbox password only when the account has a separate
+    /// one, once its password and any code are accepted. `answered` is set
+    /// once the person gives it.
+    fn mailbox_password(&self, answered: Arc<AtomicBool>) -> MailboxPasswordPrompt {
+        self.secret(
+            SignInPrompt::MailboxPassword,
+            "no mailbox password was given",
+            answered,
+        )
+    }
+
+    /// A secret the sign-in asks the person for with `prompt`. Only a sign-in
+    /// asks, so a secret nobody gives ends it, with `unanswered`.
+    fn secret(
+        &self,
+        prompt: fn(PromptAnswer<SecretString>) -> SignInPrompt,
+        unanswered: &'static str,
+        answered: Arc<AtomicBool>,
+    ) -> SecretPrompt {
+        let prompter = self.clone();
+        Arc::new(move || {
+            let prompter = prompter.clone();
+            let answered = answered.clone();
+            Box::pin(async move {
+                let secret = prompter.ask(prompt).await.map_err(|_| {
+                    prompter.cancelled.store(true, Ordering::Relaxed);
+                    Error::Other(unanswered.to_owned())
+                })?;
+                answered.store(true, Ordering::Relaxed);
+                Ok(secret)
+            })
         })
-    })
+    }
+
+    /// Proton Bridge's external-browser flow: the verification page attaches
+    /// the solved captcha to the challenge, so the retry echoes the challenge
+    /// token.
+    fn human_verification(&self) -> HvResolver {
+        let prompter = self.clone();
+        Arc::new(move |challenge: HvChallenge| {
+            let prompter = prompter.clone();
+            Box::pin(async move {
+                if !challenge.offers_captcha() {
+                    return Err(Error::HumanVerification(challenge));
+                }
+                let url = challenge.verification_url();
+                let prompt = |done| SignInPrompt::HumanVerification { url, done };
+                match prompter.ask(prompt).await {
+                    Ok(()) => Ok((challenge.token, human_verification::CAPTCHA.to_owned())),
+                    // The client keeps this resolver after its sign-in. A
+                    // challenge then is Proton's requirement, as for a
+                    // resumed session.
+                    Err(Unanswered::Closed) => Err(Error::HumanVerification(challenge)),
+                    Err(Unanswered::Dismissed) => {
+                        prompter.cancelled.store(true, Ordering::Relaxed);
+                        Err(Error::HumanVerification(challenge))
+                    }
+                }
+            })
+        })
+    }
+
+    /// Sends a prompt to the UI and waits for the answer, on the time
+    /// `prompt_time` sets aside.
+    async fn ask<T: Send + 'static>(
+        &self,
+        prompt: impl FnOnce(PromptAnswer<T>) -> SignInPrompt,
+    ) -> Result<T, Unanswered> {
+        let _answering = self.prompt_time.start();
+        let (reply, answer) = PromptAnswer::channel();
+        self.events
+            .clone()
+            .send(SignInEvent::Prompt(prompt(reply)))
+            .await
+            .map_err(|_| Unanswered::Closed)?;
+        answer.await.map_err(|_| Unanswered::Dismissed)
+    }
 }
 
 /// Why a prompt got no answer.
@@ -664,49 +732,69 @@ enum Unanswered {
     Dismissed,
 }
 
-/// Sends a prompt to the UI and waits for the answer.
-async fn ask<T: Send + 'static>(
-    mut events: mpsc::Sender<SignInEvent>,
-    prompt: impl FnOnce(Reply<T>) -> SignInPrompt,
-) -> Result<T, Unanswered> {
-    let (reply, answer) = Reply::channel();
-    events
-        .send(SignInEvent::Prompt(prompt(reply)))
-        .await
-        .map_err(|_| Unanswered::Closed)?;
-    answer.await.map_err(|_| Unanswered::Dismissed)
+/// How long the person signing in has spent on prompts, which the sign-in
+/// deadline leaves out.
+#[derive(Default)]
+struct PromptTime(Mutex<PromptClock>);
+
+#[derive(Default)]
+struct PromptClock {
+    spent: Duration,
+    /// When the prompt being answered now was shown.
+    since: Option<tokio::time::Instant>,
 }
 
-/// The verification page for a challenge. The server's `WebUrl` host is kept
-/// only when it is an https `proton.me` host; anything else uses the default.
-fn verification_url(web_url: &str, token: &str) -> String {
-    let origin = web_url
-        .strip_prefix("https://")
-        .and_then(|rest| rest.split(['/', '?', '#']).next())
-        .filter(|host| {
-            host.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-                && (*host == "proton.me" || host.ends_with(".proton.me"))
-        })
-        .map_or_else(
-            || VERIFY_ORIGIN.to_owned(),
-            |host| format!("https://{host}"),
-        );
+impl PromptTime {
+    /// Counts the time until the returned guard is dropped, as a prompt's.
+    fn start(&self) -> Answering<'_> {
+        self.0.lock().expect("prompt time lock poisoned").since = Some(tokio::time::Instant::now());
+        Answering(self)
+    }
 
-    format!("{origin}/?methods=captcha&token={}", percent_encode(token))
+    /// The time set aside by `now`, a prompt still open included.
+    fn spent(&self, now: tokio::time::Instant) -> Duration {
+        let clock = self.0.lock().expect("prompt time lock poisoned");
+        clock.spent
+            + clock
+                .since
+                .map_or(Duration::ZERO, |since| now.saturating_duration_since(since))
+    }
 }
 
-fn percent_encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-                char::from(b).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
+/// A prompt being answered; dropping it stops counting its time.
+struct Answering<'a>(&'a PromptTime);
+
+impl Drop for Answering<'_> {
+    fn drop(&mut self) {
+        let mut clock = self.0.0.lock().expect("prompt time lock poisoned");
+        if let Some(since) = clock.since.take() {
+            clock.spent += since.elapsed();
+        }
+    }
+}
+
+/// Runs `sign_in` for at most `limit` of its own time: what `prompt_time`
+/// sets aside does not count. `None` when that time runs out first.
+async fn within<F: Future>(
+    limit: Duration,
+    prompt_time: &PromptTime,
+    sign_in: F,
+) -> Option<F::Output> {
+    let started = tokio::time::Instant::now();
+    let mut deadline = started + limit;
+    tokio::pin!(sign_in);
+    loop {
+        if let Ok(output) = tokio::time::timeout_at(deadline, &mut sign_in).await {
+            return Some(output);
+        }
+        let now = tokio::time::Instant::now();
+        let elapsed = now.duration_since(started);
+        let worked = elapsed.saturating_sub(prompt_time.spent(now));
+        if worked >= limit {
+            return None;
+        }
+        deadline = now + (limit - worked);
+    }
 }
 
 /// The Proton operation behind a mailbox action.
@@ -782,14 +870,13 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
         .chain(&conversation.recipients)
         .map(mail_address)
         .collect();
-    let subject = conversation.subject.trim();
 
     ConversationSummary {
-        subject: (!subject.is_empty()).then(|| subject.to_owned()),
+        subject: non_blank(&conversation.subject),
         correspondents: display_names(correspondents),
         participants,
         preview: None,
-        time: (time > 0).then_some(time),
+        time: known_time(time),
         unread: unread > 0,
         starred,
         message_count: u32::try_from(conversation.num_messages).unwrap_or(0),
@@ -860,14 +947,13 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
         .chain(&message.cc_list)
         .map(mail_address)
         .collect();
-    let subject = message.subject.trim();
 
     ConversationSummary {
-        subject: (!subject.is_empty()).then(|| subject.to_owned()),
+        subject: non_blank(&message.subject),
         correspondents,
         participants,
         preview: None,
-        time: (message.time > 0).then_some(message.time),
+        time: known_time(message.time),
         unread: message.unread != 0,
         starred: message.label_ids.iter().any(|id| id == label_ids::STARRED),
         message_count: 1,
@@ -885,9 +971,22 @@ fn mail_attachment(attachment: Attachment) -> MailAttachment {
     }
 }
 
+/// Text Proton sends without its surrounding spaces, or `None` when nothing
+/// is left.
+fn non_blank(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// A time Proton sends, or `None` for the 0 it sends when the time is
+/// unknown.
+fn known_time(seconds: i64) -> Option<i64> {
+    (seconds > 0).then_some(seconds)
+}
+
 fn mail_address(person: &Recipient) -> MailAddress {
     MailAddress {
-        name: (!person.name.trim().is_empty()).then(|| person.name.trim().to_owned()),
+        name: non_blank(&person.name),
         address: person.address.trim().to_owned(),
     }
 }
@@ -927,6 +1026,34 @@ fn unreadable_mail_message(message: UnreadableMessage, own: &OwnAddresses) -> Ma
     message_without_body(message.meta, &message.reply_tos, own)
 }
 
+/// One message of the reader: opened, or with its headers and a notice.
+fn conversation_message(message: ConversationMessage, own: &OwnAddresses) -> MailMessage {
+    match message {
+        ConversationMessage::Opened(message) => mail_message(message, own),
+        ConversationMessage::Unreadable(unreadable) => unreadable_mail_message(unreadable, own),
+    }
+}
+
+/// The reader's view of a message the list shows on its own.
+fn single_message_detail(
+    id: &str,
+    message: ConversationMessage,
+    own: &OwnAddresses,
+) -> ConversationDetail {
+    let meta = match &message {
+        ConversationMessage::Opened(message) => &message.meta,
+        ConversationMessage::Unreadable(message) => &message.meta,
+    };
+    let subject = non_blank(&meta.subject);
+    let labels = meta.label_ids.clone();
+    ConversationDetail {
+        id: id.to_owned(),
+        subject,
+        labels,
+        messages: vec![conversation_message(message, own)],
+    }
+}
+
 /// Who sent a message, to whom, when, and where an answer goes, with no
 /// body or attachments.
 fn message_without_body(
@@ -934,24 +1061,20 @@ fn message_without_body(
     reply_tos: &[Recipient],
     own: &OwnAddresses,
 ) -> MailMessage {
-    let own: Vec<String> = own.iter().cloned().collect();
-    let reply = ruston_core::reply_recipients(&meta, reply_tos, &own);
+    let own_list: Vec<String> = own.iter().cloned().collect();
+    let reply = ruston_core::reply_recipients(&meta, reply_tos, &own_list);
     let reply_redirected = ruston_core::reply_redirected(&meta, reply_tos);
 
     MailMessage {
         attachments: Vec::new(),
         sender: mail_address(&meta.sender),
-        recipients: meta
-            .to_list
-            .iter()
-            .chain(&meta.cc_list)
-            .chain(&meta.bcc_list)
-            .map(mail_address)
-            .collect(),
+        to: meta.to_list.iter().map(mail_address).collect(),
+        cc: meta.cc_list.iter().map(mail_address).collect(),
+        bcc: meta.bcc_list.iter().map(mail_address).collect(),
         reply_to: reply.to,
         reply_all_cc: reply.cc,
         reply_redirected,
-        time: (meta.time > 0).then_some(meta.time),
+        time: known_time(meta.time),
         unread: meta.unread != 0,
         body: MessageBody::Unreadable,
         verdict: Verdict::Unverified,
@@ -1006,7 +1129,7 @@ fn custom_places(labels: Vec<Label>, make: fn(String, String) -> Folder) -> Vec<
 fn map_mailbox_error(error: Error) -> MailboxError {
     match error {
         Error::Unauthorized => MailboxError::SessionExpired,
-        Error::Api(error) if error.http_status == 401 => MailboxError::SessionExpired,
+        Error::Api(error) if error.is_unauthorized() => MailboxError::SessionExpired,
         Error::Http(_) => MailboxError::Connection,
         Error::AttachmentVerificationFailed => MailboxError::AttachmentVerificationFailed,
         Error::Api(_) | Error::HumanVerification(_) => MailboxError::Service,
@@ -1017,7 +1140,40 @@ fn map_mailbox_error(error: Error) -> MailboxError {
     }
 }
 
-fn map_sign_in_error(error: Error, has_totp: bool, has_mailbox_password: bool) -> SignInOutcome {
+/// What resuming the saved session comes to, with `deadline` to finish. A
+/// session Proton refuses is signed out; any other failure, running out of
+/// time included, keeps it saved for another try.
+async fn resume_within(
+    resume: impl Future<Output = ruston_core::Result<Client>>,
+    deadline: Duration,
+) -> ResumeOutcome {
+    let Ok(resumed) = tokio::time::timeout(deadline, resume).await else {
+        return ResumeOutcome::Failed(AuthError::TimedOut);
+    };
+    match resumed {
+        Ok(client) => {
+            ResumeOutcome::Authenticated(Arc::new(ProtonMailService::from_client(client)))
+        }
+        Err(Error::Unauthorized | Error::Crypto(_) | Error::Srp(_)) => ResumeOutcome::SignedOut,
+        Err(Error::Api(error)) if matches!(error.http_status, 401 | 403) => {
+            ResumeOutcome::SignedOut
+        }
+        Err(error) => ResumeOutcome::Failed(map_auth_error(error)),
+    }
+}
+
+/// What a human verification that ended a sign-in or a session asks of the
+/// person: signing in again answers a CAPTCHA, while any other method is one
+/// Ruston cannot answer.
+fn verification_error(challenge: &HvChallenge) -> AuthError {
+    if challenge.offers_captcha() {
+        AuthError::HumanVerificationRequired
+    } else {
+        AuthError::HumanVerificationUnsupported
+    }
+}
+
+fn map_sign_in_error(error: Error, supplied: Supplied) -> SignInOutcome {
     match error {
         Error::Other(message) if message.contains(MAILBOX_PASSWORD_REQUIRED) => {
             SignInOutcome::NeedsMailboxPassword
@@ -1025,10 +1181,12 @@ fn map_sign_in_error(error: Error, has_totp: bool, has_mailbox_password: bool) -
         Error::Other(message) if message.contains(SECURITY_KEY_REQUIRED) => {
             SignInOutcome::Failed(AuthError::SecurityKeyUnsupported)
         }
-        Error::HumanVerification(_) => SignInOutcome::Failed(AuthError::HumanVerificationRequired),
-        Error::Unauthorized if has_totp => SignInOutcome::Failed(AuthError::InvalidTotp),
+        Error::HumanVerification(challenge) => {
+            SignInOutcome::Failed(verification_error(&challenge))
+        }
+        Error::Unauthorized if supplied.totp => SignInOutcome::Failed(AuthError::InvalidTotp),
         Error::Unauthorized => SignInOutcome::Failed(AuthError::InvalidCredentials),
-        Error::Api(error) if has_totp && mentions_totp(&error.message) => {
+        Error::Api(error) if supplied.totp && mentions_totp(&error.message) => {
             SignInOutcome::Failed(AuthError::InvalidTotp)
         }
         Error::Api(error)
@@ -1037,17 +1195,17 @@ fn map_sign_in_error(error: Error, has_totp: bool, has_mailbox_password: bool) -
             SignInOutcome::Failed(AuthError::InvalidCredentials)
         }
         Error::Crypto(message)
-            if has_mailbox_password && message.contains(USER_KEY_UNLOCK_FAILED) =>
+            if supplied.mailbox_password && message.contains(USER_KEY_UNLOCK_FAILED) =>
         {
             SignInOutcome::Failed(AuthError::InvalidMailboxPassword)
         }
-        error => SignInOutcome::Failed(map_error(error)),
+        error => SignInOutcome::Failed(map_auth_error(error)),
     }
 }
 
-fn map_error(error: Error) -> AuthError {
+fn map_auth_error(error: Error) -> AuthError {
     match error {
-        Error::HumanVerification(_) => AuthError::HumanVerificationRequired,
+        Error::HumanVerification(challenge) => verification_error(&challenge),
         Error::Http(_) => AuthError::Connection,
         Error::Session(message) if message.contains(SESSION_ADDRESS_MISMATCH) => {
             AuthError::SessionAddressMismatch
@@ -1080,6 +1238,55 @@ mod tests {
     use ruston_core::model::ConversationLabel;
 
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn the_sign_in_deadline_leaves_out_the_time_spent_on_prompts() {
+        let prompts = PromptTime::default();
+        // A CAPTCHA that takes ten minutes between two quick requests.
+        let sign_in = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            {
+                let _answering = prompts.start();
+                tokio::time::sleep(Duration::from_secs(600)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            "signed in"
+        };
+
+        assert_eq!(
+            within(SIGN_IN_TIMEOUT, &prompts, sign_in).await,
+            Some("signed in")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sign_in_runs_out_of_time_once_its_own_time_is_used_up() {
+        let prompts = PromptTime::default();
+        let sign_in = async {
+            {
+                let _answering = prompts.start();
+                tokio::time::sleep(Duration::from_secs(600)).await;
+            }
+            // Proton stops answering once the prompt is solved.
+            std::future::pending::<()>().await;
+        };
+        let started = tokio::time::Instant::now();
+
+        assert_eq!(within(SIGN_IN_TIMEOUT, &prompts, sign_in).await, None);
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_secs(600) + SIGN_IN_TIMEOUT
+        );
+
+        // Without a prompt, the whole deadline is the sign-in's own.
+        let started = tokio::time::Instant::now();
+        let silent = std::future::pending::<()>();
+        assert_eq!(
+            within(SIGN_IN_TIMEOUT, &PromptTime::default(), silent).await,
+            None
+        );
+        assert_eq!(started.elapsed(), SIGN_IN_TIMEOUT);
+    }
 
     #[tokio::test]
     async fn inspection_deadline_includes_waiting_for_a_permit() {
@@ -1130,6 +1337,36 @@ mod tests {
         .await;
         assert_eq!(result, Err(MailboxError::SessionExpired));
         assert_eq!(limiter.available_permits(), 1);
+    }
+
+    #[test]
+    fn a_message_on_its_own_that_cannot_be_opened_shows_as_in_a_conversation() {
+        let unreadable = UnreadableMessage {
+            meta: MessageMetadata {
+                id: "m1".into(),
+                subject: " Invoice ".into(),
+                label_ids: vec!["0".into()],
+                sender: person("Boss", "boss@corp.example"),
+                ..Default::default()
+            },
+            reply_tos: Vec::new(),
+            error: Error::Crypto("no key of the account opens it".into()),
+        };
+
+        let detail = single_message_detail(
+            "m1",
+            ConversationMessage::Unreadable(unreadable),
+            &OwnAddresses::new(),
+        );
+
+        assert_eq!(detail.id, "m1");
+        assert_eq!(detail.subject.as_deref(), Some("Invoice"));
+        assert_eq!(detail.labels, ["0"]);
+        let [message] = &detail.messages[..] else {
+            panic!("the message itself");
+        };
+        assert_eq!(message.id, "m1");
+        assert!(matches!(message.body, MessageBody::Unreadable));
     }
 
     fn person(name: &str, address: &str) -> Recipient {
@@ -1186,7 +1423,13 @@ mod tests {
         assert_eq!(message.verdict, ruston_core::Verdict::Invalid);
         assert_eq!(message.sender.name, None);
         assert_eq!(message.sender.address, "alex@example.com");
-        assert_eq!(message.recipients.len(), 3);
+        // To, Cc and Bcc stay apart, so the reader can say which is which.
+        let addresses = |people: &[MailAddress]| -> Vec<String> {
+            people.iter().map(|person| person.address.clone()).collect()
+        };
+        assert_eq!(addresses(&message.to), ["demo@example.com"]);
+        assert_eq!(addresses(&message.cc), ["team@example.org"]);
+        assert_eq!(addresses(&message.bcc), ["archive@example.net"]);
         // The reader knows where core will send a reply before it is written.
         assert_eq!(message.reply_to, ["replies@example.com"]);
         assert_eq!(message.reply_all_cc, ["team@example.org"]);
@@ -1244,7 +1487,10 @@ mod tests {
         assert_eq!(message.verdict, Verdict::Unverified);
         assert!(message.attachments.is_empty());
         assert_eq!(message.sender.address, "alex@example.com");
-        assert_eq!(message.recipients.len(), 2);
+        assert_eq!(
+            (message.to.len(), message.cc.len(), message.bcc.len()),
+            (1, 1, 0)
+        );
         // Answering still goes where core will send it.
         assert_eq!(message.reply_to, ["replies@example.com"]);
         assert_eq!(message.reply_all_cc, ["team@example.org"]);
@@ -1291,19 +1537,77 @@ mod tests {
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_resume_that_outlasts_its_deadline_keeps_the_session() {
+        let outcome = resume_within(std::future::pending(), SIGN_IN_TIMEOUT).await;
+        assert!(matches!(
+            outcome,
+            ResumeOutcome::Failed(AuthError::TimedOut)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_resume_signs_out_only_when_proton_refuses_the_session() {
+        let refused = resume_within(async { Err(Error::Unauthorized) }, SIGN_IN_TIMEOUT).await;
+        assert!(matches!(refused, ResumeOutcome::SignedOut));
+
+        let unreachable = resume_within(
+            async { Err(Error::Session("keyring get: locked".into())) },
+            SIGN_IN_TIMEOUT,
+        )
+        .await;
+        assert!(matches!(
+            unreachable,
+            ResumeOutcome::Failed(AuthError::SessionUnavailable)
+        ));
+    }
+
+    #[test]
+    fn a_verification_says_whether_signing_in_again_answers_it() {
+        let email = HvChallenge {
+            methods: vec!["email".into(), "sms".into()],
+            ..captcha_challenge()
+        };
+        let unnamed = HvChallenge {
+            methods: Vec::new(),
+            ..captcha_challenge()
+        };
+
+        for (challenge, expected) in [
+            (captcha_challenge(), AuthError::HumanVerificationRequired),
+            (unnamed, AuthError::HumanVerificationRequired),
+            (email, AuthError::HumanVerificationUnsupported),
+        ] {
+            let methods = challenge.methods.clone();
+            let outcome = map_sign_in_error(
+                Error::HumanVerification(challenge.clone()),
+                Supplied::default(),
+            );
+            assert!(
+                matches!(outcome, SignInOutcome::Failed(error) if error == expected),
+                "{methods:?}"
+            );
+            assert_eq!(
+                map_auth_error(Error::HumanVerification(challenge)),
+                expected,
+                "{methods:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_challenge_after_sign_in_is_reported_as_for_a_resumed_session() {
         // The client keeps the sign-in's resolver for the whole session, but
         // once the sign-in is over nothing shows its prompt.
         let (events, receiver) = mpsc::channel(1);
         drop(receiver);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let error = human_verification(events, cancelled.clone())(captcha_challenge())
+        let prompter = Prompter::new(events);
+        let error = prompter.human_verification()(captcha_challenge())
             .await
             .unwrap_err();
         assert!(matches!(error, Error::HumanVerification(_)), "{error}");
         assert_eq!(map_mailbox_error(error), MailboxError::Service);
-        assert!(!cancelled.load(Ordering::Relaxed));
+        assert!(!prompter.cancelled.load(Ordering::Relaxed));
     }
 
     #[tokio::test]
@@ -1311,27 +1615,47 @@ mod tests {
         use futures::StreamExt;
 
         let (events, mut shown) = mpsc::channel(1);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let verification = tokio::spawn(human_verification(events.clone(), cancelled.clone())(
-            captcha_challenge(),
-        ));
+        let prompter = Prompter::new(events.clone());
+        let verification = tokio::spawn(prompter.human_verification()(captcha_challenge()));
         let Some(SignInEvent::Prompt(prompt)) = shown.next().await else {
             panic!("no verification prompt");
         };
         prompt.cancel();
         assert!(verification.await.unwrap().is_err());
-        assert!(cancelled.load(Ordering::Relaxed));
+        assert!(prompter.cancelled.load(Ordering::Relaxed));
+        // An abandoned prompt stops counting as one.
+        let now = tokio::time::Instant::now();
+        assert_eq!(
+            prompter.prompt_time.spent(now),
+            prompter.prompt_time.spent(now + Duration::from_secs(60))
+        );
 
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let prompted = Arc::new(AtomicBool::new(false));
-        let code = tokio::spawn(totp_prompt(events, prompted.clone(), cancelled.clone())());
+        let prompter = Prompter {
+            cancelled: Arc::default(),
+            ..prompter
+        };
+        let answered = Arc::new(AtomicBool::new(false));
+        let code = tokio::spawn(prompter.totp(answered.clone())());
         let Some(SignInEvent::Prompt(prompt)) = shown.next().await else {
             panic!("no TOTP prompt");
         };
         prompt.cancel();
         assert!(code.await.unwrap().is_err());
-        assert!(cancelled.load(Ordering::Relaxed));
-        assert!(!prompted.load(Ordering::Relaxed));
+        assert!(prompter.cancelled.load(Ordering::Relaxed));
+        assert!(!answered.load(Ordering::Relaxed));
+
+        let prompter = Prompter::new(events);
+        let answered = Arc::new(AtomicBool::new(false));
+        let password = tokio::spawn(prompter.mailbox_password(answered.clone())());
+        let Some(SignInEvent::Prompt(prompt @ SignInPrompt::MailboxPassword(_))) =
+            shown.next().await
+        else {
+            panic!("no mailbox password prompt");
+        };
+        prompt.cancel();
+        assert!(password.await.unwrap().is_err());
+        assert!(prompter.cancelled.load(Ordering::Relaxed));
+        assert!(!answered.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -1398,51 +1722,33 @@ mod tests {
     }
 
     #[test]
-    fn verification_page_stays_on_proton() {
-        assert_eq!(
-            verification_url("", "a b/c"),
-            "https://verify.proton.me/?methods=captcha&token=a%20b%2Fc"
-        );
-        assert_eq!(
-            verification_url("https://verify-api.proton.me/x?y=1", "t"),
-            "https://verify-api.proton.me/?methods=captcha&token=t"
-        );
-        for untrusted in [
-            "http://verify.proton.me/",
-            "https://proton.me.example.com/",
-            "https://evil@verify.proton.me/",
-            "https://example.com/",
-        ] {
-            assert!(
-                verification_url(untrusted, "t").starts_with("https://verify.proton.me/?"),
-                "{untrusted}"
-            );
-        }
-    }
-
-    #[test]
     fn replies_are_delivered_once_or_cancelled() {
-        let (reply, mut answer) = Reply::channel();
+        let (reply, mut answer) = PromptAnswer::channel();
         reply.clone().send(1);
         reply.send(2);
         assert_eq!(answer.try_recv(), Ok(Some(1)));
 
-        let (reply, mut answer) = Reply::<u8>::channel();
+        let (reply, mut answer) = PromptAnswer::<u8>::channel();
         reply.cancel();
         assert!(answer.try_recv().is_err());
     }
 
     #[test]
     fn missing_mailbox_password_has_a_structured_outcome() {
-        let outcome =
-            map_sign_in_error(Error::Other(MAILBOX_PASSWORD_REQUIRED.into()), false, false);
+        let outcome = map_sign_in_error(
+            Error::Other(MAILBOX_PASSWORD_REQUIRED.into()),
+            Supplied::default(),
+        );
 
         assert!(matches!(outcome, SignInOutcome::NeedsMailboxPassword));
     }
 
     #[test]
     fn security_key_requirement_is_supported_failure() {
-        let outcome = map_sign_in_error(Error::Other(SECURITY_KEY_REQUIRED.into()), false, false);
+        let outcome = map_sign_in_error(
+            Error::Other(SECURITY_KEY_REQUIRED.into()),
+            Supplied::default(),
+        );
 
         assert!(matches!(
             outcome,
@@ -1452,7 +1758,13 @@ mod tests {
 
     #[test]
     fn unauthorized_totp_retry_is_an_invalid_code() {
-        let outcome = map_sign_in_error(Error::Unauthorized, true, false);
+        let outcome = map_sign_in_error(
+            Error::Unauthorized,
+            Supplied {
+                totp: true,
+                ..Supplied::default()
+            },
+        );
 
         assert!(matches!(
             outcome,
@@ -1464,8 +1776,10 @@ mod tests {
     fn failed_mailbox_unlock_is_an_invalid_mailbox_password() {
         let outcome = map_sign_in_error(
             Error::Crypto(format!("{USER_KEY_UNLOCK_FAILED} (wrong password?)")),
-            false,
-            true,
+            Supplied {
+                mailbox_password: true,
+                ..Supplied::default()
+            },
         );
 
         assert!(matches!(
@@ -1510,9 +1824,9 @@ mod tests {
         };
         std::fs::remove_dir_all(&folder).unwrap();
 
-        assert_eq!(map_error(error), AuthError::SessionAddressMismatch);
+        assert_eq!(map_auth_error(error), AuthError::SessionAddressMismatch);
         assert_eq!(
-            map_error(Error::Session("keyring get: locked".into())),
+            map_auth_error(Error::Session("keyring get: locked".into())),
             AuthError::SessionUnavailable
         );
     }
@@ -1772,6 +2086,65 @@ mod tests {
         assert_eq!(summary.message_count, 0);
         assert!(!summary.unread);
         assert!(!summary.starred);
+    }
+
+    #[test]
+    fn a_message_row_trims_its_subject_and_names_and_drops_what_is_blank() {
+        let padded = MessageMetadata {
+            subject: "  Statement ready ".into(),
+            sender: person("  Bank  ", &format!(" {BANK} ")),
+            ..metadata("padded", BANK, 1_700_000_000, &[label_ids::INBOX])
+        };
+        let blank = MessageMetadata {
+            subject: " ".into(),
+            sender: person(" ", BANK),
+            ..metadata("blank", BANK, 0, &[label_ids::INBOX])
+        };
+
+        let padded = message_summary(padded);
+        let blank = message_summary(blank);
+
+        assert_eq!(padded.subject.as_deref(), Some("Statement ready"));
+        assert_eq!(padded.correspondents.as_deref(), Some("Bank"));
+        assert_eq!(
+            padded.participants,
+            [MailAddress {
+                name: Some("Bank".into()),
+                address: BANK.into(),
+            }]
+        );
+        assert_eq!(padded.time, Some(1_700_000_000));
+        assert_eq!(blank.subject, None);
+        assert_eq!(blank.correspondents.as_deref(), Some(BANK));
+        assert_eq!(
+            blank.participants,
+            [MailAddress {
+                name: None,
+                address: BANK.into(),
+            }]
+        );
+        assert_eq!(blank.time, None);
+    }
+
+    #[test]
+    fn a_message_on_its_own_with_a_blank_subject_has_none() {
+        let unreadable = UnreadableMessage {
+            meta: MessageMetadata {
+                subject: "  ".into(),
+                ..metadata("m1", BANK, 0, &[label_ids::INBOX])
+            },
+            reply_tos: Vec::new(),
+            error: Error::Crypto("no key of the account opens it".into()),
+        };
+
+        let detail = single_message_detail(
+            "m1",
+            ConversationMessage::Unreadable(unreadable),
+            &OwnAddresses::new(),
+        );
+
+        assert_eq!(detail.subject, None);
+        assert_eq!(detail.messages[0].time, None);
     }
 
     #[test]

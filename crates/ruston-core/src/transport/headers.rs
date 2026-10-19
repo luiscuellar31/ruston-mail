@@ -4,7 +4,10 @@ use super::{AuthState, Request};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use secrecy::ExposeSecret;
 
-/// Build the Proton headers for a request given the current auth state.
+/// Build the Proton headers for a request given the current auth state. A
+/// value that cannot be a header is left out rather than failing the
+/// request, so Proton answers as if it were missing: a token that is not a
+/// valid header reads as an expired session.
 pub fn build_headers(auth: &AuthState, req: &Request) -> HeaderMap {
     let mut h = HeaderMap::new();
 
@@ -58,7 +61,7 @@ pub fn build_headers(auth: &AuthState, req: &Request) -> HeaderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::{Body, Request};
+    use crate::transport::Request;
     use reqwest::Method;
     use secrecy::SecretString;
 
@@ -119,6 +122,5 @@ mod tests {
             h.get("content-type").unwrap(),
             "multipart/form-data; boundary=z"
         );
-        let _ = Body::Empty;
     }
 }

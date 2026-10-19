@@ -5,7 +5,6 @@ use crate::transport::{Doer, Request};
 use serde::Deserialize;
 use std::time::Duration;
 
-const BOUNDARY: &str = "----protoncliBOUNDARYx7MA4YWxkTrZu0gW";
 /// Maximum encrypted attachment response (64 MiB). Decryption accepts at most
 /// [`MAX_ATTACHMENT_PLAINTEXT_BYTES`]; the rest leaves room for OpenPGP's
 /// overhead, under 1% with usual encodings and about a quarter with the
@@ -35,19 +34,50 @@ enum Part<'a> {
     File(&'a str, &'a [u8]),
 }
 
-fn build_multipart(parts: &[Part]) -> Result<Vec<u8>> {
-    let end = format!("--{BOUNDARY}--\r\n");
+/// An upload's body, and the boundary between its parts.
+struct Multipart {
+    body: Vec<u8>,
+    boundary: String,
+}
+
+/// A boundary for one upload, with 128 bits no content can predict, so no
+/// part can end early or start another of its own.
+fn random_boundary() -> String {
+    use std::hash::{BuildHasher, RandomState};
+    let state = RandomState::new();
+    format!(
+        "ruston-{:016x}{:016x}",
+        state.hash_one(0_u8),
+        state.hash_one(1_u8)
+    )
+}
+
+fn build_multipart(parts: &[Part]) -> Result<Multipart> {
+    // A line break in a value, such as the name of a local file, would read
+    // as the end of the part's own lines.
+    for part in parts {
+        if let Part::Text(name, value) = part
+            && value.contains(['\r', '\n'])
+        {
+            return Err(Error::Other(format!(
+                "an attachment's {} cannot contain a line break",
+                name.to_ascii_lowercase()
+            )));
+        }
+    }
+    let boundary = random_boundary();
+    let end = format!("--{boundary}--\r\n");
     let mut size = end.len();
     let mut headers = Vec::with_capacity(parts.len());
     for p in parts {
         let (header, len) = match p {
             Part::Text(name, value) => (
-                format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"),
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"),
                 value.len(),
             ),
             Part::File(name, data) => (
                 format!(
-                    "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"blob\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"blob\"\r\nContent-Type: application/octet-stream\r\n\r\n"
                 ),
                 data.len(),
             ),
@@ -74,7 +104,10 @@ fn build_multipart(parts: &[Part]) -> Result<Vec<u8>> {
         out.extend_from_slice(b"\r\n");
     }
     out.extend_from_slice(end.as_bytes());
-    Ok(out)
+    Ok(Multipart {
+        body: out,
+        boundary,
+    })
 }
 
 /// Download the raw (encrypted) attachment data packet.
@@ -124,7 +157,7 @@ pub(crate) fn upload_request(
     data_packet: &[u8],
     signature: &[u8],
 ) -> Result<Request> {
-    let body = build_multipart(&[
+    let multipart = build_multipart(&[
         Part::Text("Filename", filename),
         Part::Text("MessageID", message_id),
         Part::Text("ContentID", content_id),
@@ -133,9 +166,9 @@ pub(crate) fn upload_request(
         Part::File("DataPacket", data_packet),
         Part::File("Signature", signature),
     ])?;
-    let content_type = format!("multipart/form-data; boundary={BOUNDARY}");
+    let content_type = format!("multipart/form-data; boundary={}", multipart.boundary);
     Ok(Request::post("/mail/v4/attachments")
-        .raw(body, content_type)
+        .raw(multipart.body, content_type)
         .timeout(ATTACHMENT_REQUEST_TIMEOUT))
 }
 
@@ -147,7 +180,7 @@ pub(crate) async fn upload_prepared<D: Doer>(d: &D, request: Request) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::Response;
+    use crate::transport::{Body, Response};
     use async_trait::async_trait;
     use serde::de::DeserializeOwned;
 
@@ -202,7 +235,7 @@ mod tests {
 
     #[test]
     fn multipart_contains_all_parts() {
-        let body = build_multipart(&[
+        let Multipart { body, boundary } = build_multipart(&[
             Part::Text("Filename", "f.txt"),
             Part::File("DataPacket", b"\x00\x01"),
         ])
@@ -212,8 +245,38 @@ mod tests {
         assert!(s.contains("f.txt"));
         assert!(s.contains("name=\"DataPacket\""));
         assert!(s.contains("application/octet-stream"));
-        assert!(s.trim_end().ends_with(&format!("--{BOUNDARY}--")));
+        assert!(s.trim_end().ends_with(&format!("--{boundary}--")));
         assert_eq!(body.capacity(), body.len());
+    }
+
+    #[test]
+    fn every_upload_has_a_boundary_of_its_own() {
+        let upload = || upload_request("f.txt", "m", "", "text/plain", b"k", b"d", b"s").unwrap();
+        let boundary = |request: &Request| {
+            let content_type = request.content_type.clone().unwrap();
+            let boundary = content_type
+                .strip_prefix("multipart/form-data; boundary=")
+                .unwrap()
+                .to_owned();
+            let Body::Bytes(body) = &request.body else {
+                panic!("an upload has a raw body");
+            };
+            // The header names the boundary the body uses.
+            assert!(body.ends_with(format!("--{boundary}--\r\n").as_bytes()));
+            boundary
+        };
+        assert_ne!(boundary(&upload()), boundary(&upload()));
+    }
+
+    #[test]
+    fn a_line_break_cannot_reach_the_upload_form() {
+        for name in ["f.txt\r\n--x", "f\nMessageID", "f\r"] {
+            let refused = upload_request(name, "m", "", "text/plain", b"k", b"d", b"s");
+            assert!(
+                matches!(&refused, Err(Error::Other(message)) if message.contains("line break")),
+                "{name:?}"
+            );
+        }
     }
 
     #[test]

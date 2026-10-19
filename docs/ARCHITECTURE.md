@@ -37,17 +37,30 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   other local users cannot use up a later launch's retries. It wakes egui
   through a bounded channel; shutdown joins it before releasing the lock. The
   private activation directory contains only the lock and a
-  port/token/process-ID record, never email contents. The record lives only as
+  port/token/process-ID record, never email contents. Windows keeps it in the
+  local application data, which does not roam with the profile. The record lives only as
   long as the process, so it is not flushed to disk; if it cannot be written,
   the window still opens, a warning goes to standard error, and later launches
   cannot hand it their links. A stale record that cannot be removed still stops
-  startup, so no link reaches a reused port.
+  startup, so no link reaches a reused port. A launch that finds the lock held
+  but no instance to connect to keeps trying both for three seconds: an
+  instance that is closing has removed its record, and once its lock comes
+  free the new launch takes over with its links.
   Demo activation uses a separate directory. Windows secondary launches grant
   foreground rights to the primary when Windows permits it.
   [`launch/macos.rs`](../src/launch/macos.rs) registers a retained `GURL` Apple
   Event target before the event loop starts, without replacing winit's delegate.
   Linux's `.desktop` file passes `%u`; Windows exposes a selectable per-user
-  handler through [`register-mailto.ps1`](../packaging/windows/register-mailto.ps1).
+  handler through [`register-mailto.ps1`](../packaging/windows/register-mailto.ps1),
+  which [`unregister-mailto.ps1`](../packaging/windows/unregister-mailto.ps1)
+  removes.
+- On Windows the desktop is a window app with no console of its own
+  (`windows_subsystem` in [`src/main.rs`](../src/main.rs)), so standard error
+  reaches nobody unless the caller hands it down. [`src/diagnostics.rs`](../src/diagnostics.rs)
+  shows a failure to start, or to hand a link to the open window, and a panic
+  that ends the process in a message box. With `RUSTON_DEBUG_HTTP` it attaches
+  to the console of the terminal Ruston was started from, unless standard
+  error already goes to a file or pipe, and ignores that console's Ctrl+C.
 - [`src/mailto.rs`](../src/mailto.rs) accepts only recipient, subject, and plain
   text body defaults. It decodes UTF-8 escapes once, preserves literal `+`,
   rejects control/header injection and ambiguous duplicate fields, and ignores
@@ -83,6 +96,18 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   ignores ordinary focus requests. Activation remains subject to compositor policy.
 - [`src/ui/`](../src/ui/) draws widgets with `eframe` and `egui`, gathers user
   actions, dispatches `Message`s, and applies effects that require the UI thread.
+- [`ui/graphics.rs`](../src/ui/graphics.rs) picks the renderer: OpenGL (glow)
+  on macOS and Linux; on Windows DirectX 12 through wgpu, on the GPU that uses
+  the least power or on WARP, Windows' software renderer, without one, and
+  OpenGL when `RUSTON_RENDERER=opengl`. If DirectX 12 fails before the app is
+  created, `ui::run` opens the window again with OpenGL. The activation
+  instance waits in a `Cell` until the app takes it, so the retry keeps the
+  single-instance lock and link hand-off.
+- The Inbox unread count goes on the Dock tile on macOS and, through
+  [`ui/taskbar.rs`](../src/ui/taskbar.rs), over the Windows taskbar button as
+  an overlay icon: a red disc with the count, up to "99+", drawn in Segoe UI
+  with GDI, and the count as its description. The shell sets it once the
+  window is visible and again when the count or the Settings option changes.
 - [`ui/identity.rs`](../src/ui/identity.rs) supplies the shared logo and app ID
   to the mailbox and composer viewports. It sets the Windows process identity
   before native windows are created. The ID matches the existing macOS bundle
@@ -113,8 +138,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   the window, whose own undo history is empty, so their keys still reach egui's
   text fields. View's Actual Size, Zoom In and Zoom Out queue zoom steps, which
   the shell applies like `Cmd`/`Ctrl` with `0`, `+`, `=` or `-` on every
-  platform: one of Settings' scale levels, saved at once and copied into an
-  open Settings draft. egui's own keyboard zoom is off, since the shell
+  platform, pressed in the mailbox or the separate composer, whose window
+  hands the step back to the shell: one of Settings' scale levels, saved at
+  once and copied into an open Settings draft. egui's own keyboard zoom is off, since the shell
   reapplies the saved zoom every pass. It retains
   selector targets, validates authentication/modal availability, and restores
   owned menu and responder changes on drop; it does not replace winit's
@@ -123,11 +149,19 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   including minimized windows. An in-flight send or native file dialog blocks
   closing. Unapplied preferences use the existing Settings exit decisions
   before proceeding to the draft check. [`ui/close.rs`](../src/ui/close.rs)
-  requests explicit discard of a written message in either composer placement;
+  requests explicit discard of a written message in either composer placement,
+  and of one parked for its account's next sign-in;
   repeated close requests never approve it. Discard/cancel reuse App messages,
   and closing rechecks current send/draft state. Signing out or leaving the
   demo asks through the same confirmation, then signs out once the message is
-  discarded. `App` itself refuses to sign out over a written message or an
+  discarded. A close or a sign-out with nothing else to ask about waits while
+  `App::unsent_changes` counts mailbox actions or automatic reads Proton has
+  not confirmed, and a close also while a sign-out is under way, whose local
+  cleanup runs on a blocking worker that quitting would stop:
+  `close::DeferredLeave` holds it, the window says why, and it goes ahead once
+  they are done, or at once on **Close now** or **Sign out now** or a second
+  request.
+  `App` itself refuses to sign out over a written message or an
   in-flight send; during a send the sidebar's sign-out button is disabled. The
   separate composer is disabled during a root confirmation. macOS menu Quit/Cmd+Q uses this same
   path; direct OS termination (including Dock Quit) bypasses these guards.
@@ -138,7 +172,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   API exposes no native handle for an immediate child viewport. Dialog creation
   stays on the UI thread; results return through the runtime. Cancelled compose
   pickers return an empty result to release the dialog slot, while draft IDs
-  still prevent results from modifying a closed or replaced composer.
+  still prevent results from modifying a closed or replaced composer. Files
+  dropped on the window that shows the draft, the reading pane's or the
+  composer's own, which hands them back like its zoom keys, join it through the
+  same message, but only while no file dialog or confirmation is open, so a
+  drop never releases a dialog's slot. winit delivers no drops on Wayland.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine.
@@ -172,11 +210,17 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Grouping records are pruned with their loaded rows; no disk storage is added.
   Ordinary appended pages do not rebuild or scan the grouping index; refresh
   uses an ID-to-row index to move existing metadata into the new listing.
+  Proton pages a folder by position, so each row a confirmed action takes out
+  of the loaded pages moves its later pages up by one: **Load more** asks for
+  the page that holds the first row not loaded, and the rows it repeats are
+  dropped as already listed. A row that comes back, as with Undo, counts again.
   Page responses preserve the open reader, including expansion and quote state.
   A server search submitted while a folder page loads waits for that page, so
   the search does not turn the folder response into a stale one. A failed list
   request records what it asked for (`ListAttempt`: the folder, a next page or
-  a search), so the list's Try again sends the same request again.
+  a search), so the list's Try again sends the same request again. Clearing
+  the search clears only the search's own failure; a folder that failed to
+  load keeps saying so.
   A refreshed listing can regroup a message or omit its row without proving
   deletion; the reader remains visible and loses its cache stamp if its row is
   absent. Typing in the search field keeps the reader open the same way, even
@@ -204,9 +248,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   row away, offers its undo and names the row to open in its place. Starred and
   labels list mail wherever it sits, so a move to another folder keeps the row
   there and the mailbox remembers where it went, for the reader's buttons and a
-  later undo; Spam and Trash still take it out. When a confirmed move, such as
-  a move back, belongs in the view but its row is not listed, `App` reloads the
-  list. A read or
+  later undo; Spam and Trash still take it out. The undo offer keeps the row as
+  it was listed, so `Mailbox::start_move_back` lists it again at once, where its
+  date puts it, even from a page a reload would not read; a refused move back
+  takes it away again. When a confirmed move belongs in the view but its row is
+  not listed, `App` reloads the list. A read or
   star flag changes on every copy of the row, and the flag it replaced is kept
   by request. One action is on its way to Proton at a time: actions asked for
   meanwhile wait in order in the mailbox, so a move back follows its move, and
@@ -215,8 +261,15 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   replaced, unless a later action changes the same flag, and drops its undo
   offer; a row a refused move took out of the view comes back with the list,
   which `App` reloads. A confirmation applies its flag again, over a confirmed
-  automatic read, and takes out again a row that a reload brought back while
-  its move was on the way.
+  automatic read, and takes out again a row that a search brought back while
+  its move was on the way. Actions start while a refresh leaves the rows on
+  screen, but not while a folder first loads, a search's answer is on its way
+  or Load more asks Proton by position (`Mailbox::takes_actions`). Proton may
+  have read a folder's first page before applying the actions still on their
+  way or those confirmed since the page was asked for, so the page shows them
+  again in order: a move out keeps its row out, a move that keeps its row here
+  keeps it listed as it was, and a flag stays changed. Actions asked for in
+  another folder change nothing there.
   The mailbox state machine also orders read mutations by row. An explicit
   read/unread action accepted during an automatic read waits at the head of
   that line until the read succeeds. A failed or timed-out predecessor fails it
@@ -225,7 +278,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   mutation on the same row is pending or waiting. Stale or duplicate
   completions never release a queued request. Successful automatic reads still
   update local state, so a later explicit failure does not hide an already
-  confirmed read.
+  confirmed read, and reload the folder counts even when the person has moved
+  to another folder meanwhile.
 - `App` asks for the account's folders and labels when a mailbox opens; the
   Proton adapter requests the two lists at the same time. A list
   that arrives renames the open custom folder or, once it is gone, falls back
@@ -240,9 +294,25 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   [`model.rs`](../src/mail/model.rs) defines the types the desktop uses.
   Actions on a conversation row use Proton's conversation endpoints, one
   request each: a move, a star or a custom label applies to every message in
-  the conversation, as in Proton's web client.
+  the conversation, as in Proton's web client. A sign-in has two minutes of
+  its own time: `PromptTime` sets aside how long its CAPTCHA, code and mailbox
+  password prompts wait for the person, and running out is a timeout of its
+  own, not a failed connection. The mailbox password of a two-password account
+  is a prompt of the same sign-in, through core's `LoginPrompts`, so the
+  password and code are not entered or checked twice. Resuming the saved
+  session at startup has the same two minutes. A failure that may pass, such
+  as no network, Proton being busy or down by core's `ApiError` rule, or
+  locked password storage, keeps the session saved, and `App` offers the sign-in screen's **Try again**,
+  which resumes it again; only the check the startup screen waits for is
+  applied.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
-  process in a file of its own;
+  process in a file of its own, and moves a file it cannot read aside before
+  saving defaults in its place. `App` writes settled settings off the
+  interface's thread, one write at a time, and counts a write only once it
+  succeeds: one that fails is tried again with the next change and on
+  quitting, not on every frame. The write on quitting waits for one still
+  running, and the file keeps the newest revision written, so a write that
+  finishes late never undoes a newer one;
   [`src/downloads.rs`](../src/downloads.rs) writes downloaded attachments.
   Incoming attachment saves have a session and unique request ID. **Save as**
   chooses a destination before downloading; cancellation starts no download,
@@ -250,14 +320,31 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   save actions use the backend's signature checks before starting filesystem
   work on a blocking worker. Downloads use sanitized sender names with numeric
   collision suffixes; explicit destinations use the user's exact absolute path.
-  Both use exclusive creation and never replace existing files or follow a
-  final-component symlink. [`src/file_manager.rs`](../src/file_manager.rs)
-  reveals saved files: Finder/Explorer on macOS/Windows and FileManager1.ShowItems
-  with an encoded file URI on Linux. Linux bounds connection and reply to three
-  seconds and falls back to opening the containing folder with `xdg-open`.
+  Both write through core, with exclusive creation, and never replace existing
+  files or follow a final-component symlink. [`src/file_manager.rs`](../src/file_manager.rs)
+  reveals saved files: Finder on macOS, FileManager1.ShowItems with an encoded
+  file URI on Linux, and on Windows the shell's `SHOpenFolderAndSelectItems`,
+  called on a blocking worker in a single-threaded COM apartment, which takes
+  the path whole where Explorer's command line splits it at commas. Linux
+  bounds connection and reply to three seconds and falls back to opening the
+  containing folder with `xdg-open`.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
-  to egui visuals and custom-painted widget colors. The shell stores it for
-  the next run and applies [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
+  to egui visuals and custom-painted widget colors; egui gives each window's
+  title bar the same theme when it changes. Following the system sets egui's
+  `ThemePreference::System`, which tracks the theme winit reports, with the
+  stored scheme as its fallback; settings keep that choice in a field of its
+  own, so an older version still reads a scheme it knows. winit 0.30 reports
+  no system theme on Linux, so Settings offers the choice on macOS and Windows.
+  With Windows' Animation effects off, read on every pass, `theme` sets egui's
+  animation time to zero and scrolls without gliding, so loading pulses and
+  spinners keep the still picture of an unfocused window. macOS's and Linux's
+  reduced-motion settings are not read yet. winit gives a Windows title bar
+  the Windows theme again whenever Windows announces a changed setting, so
+  `theme::TitleBar` repeats egui's request for the main and composer windows
+  when the Windows theme changes or the window comes back to the front. A
+  change announced while the window keeps focus shows until then. The shell
+  stores the preference for the next run and applies
+  [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
   Bundled typography stays primary by default. The optional system UI face is
   San Francisco/Helvetica Neue on macOS, Segoe UI/Arial on Windows, or
   Fontconfig's sans-serif family on Linux (with known local alternatives).
@@ -293,6 +380,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   The sidebar scrolls its folders and labels independently, reserving the
   account, Settings, and sign-out actions at the bottom;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.
+  eframe 0.36 connects AccessKit only to the main window, so screen readers
+  find nothing in the composer's own window; Settings says so beside the
+  placement, whose default is the reading pane.
 - With a mailbox open, [`ui/mailbox.rs`](../src/ui/mailbox.rs) replaces the
   conversation list and reader with
   [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. The desktop
@@ -308,7 +398,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Settings ends with an About card containing the existing logo, package version,
   technology and author credits, license, and a Source code button. The button
   dispatches `OpenSourceCode` through `App`, which opens the package repository
-  using the existing background browser effect.
+  using the existing background browser effect. That effect, like the CLI's
+  human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
+  the address to the system's opener without a shell: `open`, `xdg-open`, or
+  on Windows `rundll32 url.dll,FileProtocolHandler` from System32, never a
+  `rundll32` that Windows would first look for beside the executable. Both
+  apps take that page from core's `HvChallenge::verification_url`, which keeps
+  the host a challenge names only when it is one of Proton's own over https,
+  and ask `HvChallenge::offers_captcha` whether a CAPTCHA answers it.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches
@@ -321,7 +418,9 @@ message keeps Proton's unread flag, so its first unread message, or else the
 newest, opens and is scrolled into view once, on the pass after the
 conversation opens, never on a refresh. Only the
 answer the reader waits for marks a conversation read, so a late one cannot
-mark the conversation on screen. The desktop
+mark the conversation on screen. Nothing is marked while a draft covers the
+reader: once a message uncovers it, `App::update` marks the conversation
+opened behind the draft, if it is still the open one. The desktop
 adapter converts sanitized HTML into the native rich-body model in
 [`mail/html.rs`](../src/mail/html.rs). It appends visible text in runs instead
 of comparing styles and link targets for every character. Styled spans share
@@ -385,7 +484,14 @@ separate status allocations keep queued native work and callbacks from becoming
 valid again in a later activation. Linux sends bounded D-Bus Notify requests
 with the desktop identity and escaped body text. Windows uses WinRT toasts,
 literal XML text nodes, an AUMID-bearing per-user Start menu shortcut, and an
-in-memory activation callback to restore/focus the running mailbox. COM and file
+in-memory activation callback to restore/focus the running mailbox. The toast
+on screen is kept with that callback, and the process's multithreaded
+apartment stays up from the first toast on, so a click still reaches the
+callback after the worker that showed the toast has returned. Every toast
+carries one tag, so a new one replaces the last, and when notifications stop
+for an account the history Windows keeps for the app ID is cleared on a thread
+of its own. Windows reports no notification setting for the app until its
+first toast shows, so only a reported setting denies one. COM and file
 operations stay on a blocking worker. macOS uses UserNotifications authorization
 only with the matching `.app` bundle; it rereads authorization for each arrival
 and submits local notifications through completion blocks. Native errors update
@@ -399,6 +505,16 @@ memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`mail/proton.rs`](../src/mail/proton.rs) calls
 [`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
 result returns to the app as a message.
+
+A draft never crosses into another account's session. When Proton ends the
+session (`AuthError::SessionExpired`, a refused send included),
+`App::close_mailbox` parks a written or sending draft in memory with the
+account's ID from core's `Client::user_id`; a send that was on its way comes
+back as unconfirmed. `App::open_mailbox` gives it back, under a new draft ID,
+only when the same account signs in again, and asks again about recipients
+whose lookup the ended session left unanswered. Another account's sign-in
+drops it, the sign-in screen says whose sign-in brings it back, and closing
+the window asks before discarding it. Nothing of it is written to disk.
 
 The composer's protection notice takes the same path. When a recipient field
 loses focus, [`app/compose.rs`](../src/app/compose.rs) asks the backend about
@@ -422,7 +538,10 @@ form. Email links always use the ASCII rule. The draft reads its recipient
 fields when one of them or the rule changes and keeps the result, so the checks
 the window repeats on every frame neither parse addresses nor copy the body or
 attachments; only Send builds the outgoing message. Duplicates are found with
-hash sets, so a long recipient list reads in one pass.
+hash sets, so a long recipient list reads in one pass. Adding attachments
+reads their sizes on Tokio's blocking pool, and the draft keeps them for the
+composer to show: asking the file system on the interface thread would wait
+on a network share that stopped answering.
 
 Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
 validation, shared by the desktop backend and all SDK/CLI send paths. New local
@@ -434,7 +553,8 @@ Inherited forwarded attachments remain on Proton and are outside this local
 file budget; their session keys are recovered from the draft's key packets and
 wrapped for every recipient like new uploads, and a draft attachment without a
 key packet stops the send. Reading, encryption, and multipart construction run together on a
-blocking worker. Plaintext is zeroized and dropped before constructing multipart;
+blocking worker. Each upload has a random boundary, and a line break in a text
+part, such as the file's name, refuses it. Plaintext is zeroized and dropped before constructing multipart;
 the encrypted intermediate is dropped before network upload. A process-wide
 semaphore admits at most two preparations or uploads across clients and sends.
 The worker owns its permit, and a prepared upload retains it until completion
@@ -508,12 +628,22 @@ instead of an unknown outcome.
   multiple account addresses and no `--from`. Noninteractive and JSON sends
   keep the primary-address default from core. It also detects likely HTML in
   an interactive send without `--html` and asks before changing the format;
-  scripted sends keep the explicit flag behavior. Permanent deletes ask first:
-  `messages delete` lists the subject and sender each reference matched,
-  taken from the search for search text and fetched only for an exact ID,
-  `drafts delete` lists each draft, and `messages empty` accepts only Trash or
-  Spam. Without a terminal to ask on, all three need `--yes`. Core's
-  `delete_draft` refuses the whole request if any ID is not a draft.
+  scripted sends keep the explicit flag behavior. Permanent deletes ask first,
+  all with the same question and consent rule from
+  [`commands/prompt.rs`](../crates/ruston-cli/src/commands/prompt.rs), which
+  also holds the CLI's other terminal questions: `messages delete` lists the
+  subject and sender each reference matched, taken from the search for search
+  text and fetched only for an exact ID, `drafts delete` lists each draft, and
+  `messages empty` accepts only Trash or Spam. Without a terminal to ask on,
+  all three need `--yes`. Core's `delete_draft` refuses the whole request if
+  any ID is not a draft.
+  `save_draft` and `update_draft` upload attached files to the draft once its
+  content is written, and refuse a delivery time or an expiration, which only
+  sending applies; the draft commands do not offer those, nor a message
+  password. A new draft whose attachments fail to upload is deleted again.
+  `update_draft` refuses any other message and keeps the draft's address
+  unless another is named; a draft with attachments, which are keyed to that
+  address, cannot change it.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
   commands and uses the shared attachment filename policy. The desktop has its
   own demo mailbox in `src/mail/demo.rs`.
@@ -521,7 +651,10 @@ instead of an unknown outcome.
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
   HTML replies and forwards escape sender details and quoted plain text; quoted
-  HTML retains the sanitized markup produced by the read path. The original is
+  HTML retains the sanitized markup produced by the read path. Plain-text ones
+  quote an HTML original as its text. An answer's subject gains "Re: " or
+  "Fw: " unless it already starts with "Re:", "Fw:" or "Fwd:", and the draft
+  tells Proton whether it replies, replies to all, or forwards. The original is
   fetched once and decrypted for its text alone, so quoting looks up no sender
   keys. One function,
   `reply_recipients`, decides where `Client::reply` sends an answer; mail the
@@ -534,15 +667,25 @@ instead of an unknown outcome.
   to either frontend. The keys of every distinct sender are asked for together
   first, so each sender is looked up once and no body waits for another's
   lookup. Decrypting, MIME parsing and sanitizing run on the blocking pool, up
-  to three bodies at a time while the next ones download; attachment
+  to three bodies at a time while the next ones download. A decrypted MIME body
+  reads as every part of its HTML version, in order, or of its text version
+  when it has none, so text around an image is not cut after the first part;
+  attachment
   decryption and signature checks run there too. Both frontends read threads
   through `read_conversation_each`: a message that downloads but cannot be
   opened comes back as `ConversationMessage::Unreadable`, with its headers,
   and the rest still open. A failed request still fails the whole read, and
-  `read_conversation` keeps failing on any message it cannot open.
+  `read_conversation` keeps failing on any message it cannot open. The desktop
+  reads a message listed on its own through `read_message_or_unreadable`, the
+  same way; `read_message` still fails on one it cannot open.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
-  owns the filename policy shared by both frontends. Each frontend chooses its
-  destination and creates the file exclusively. Core can pass decrypted
+  owns the filename policy and the writing shared by both frontends.
+  `save_under_free_name` saves into a folder under the first free name,
+  `report.pdf`, then `report (1).pdf` and so on, and `write_new_file` writes to
+  a path the user chose. Both create the file exclusively, then mark it with
+  `mark_downloaded`: on Windows a `Zone.Identifier` stream naming the Internet
+  zone, best effort, so SmartScreen and Office's Protected View apply; nothing
+  elsewhere. Core can pass decrypted
   attachments to a caller one at a time; the CLI uses this path for `--all`,
   fetching message metadata once and saving each file before the next download.
   The convenience API that returns all attachment bytes has a total size limit.
@@ -571,7 +714,10 @@ instead of an unknown outcome.
   [export handler](../crates/ruston-cli/src/commands/export.rs) chooses the
   destination and reports the result, exiting with an error when a message was
   skipped; demo mode writes fictional sample mail.
-- [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints;
+- [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints.
+  Actions on several messages or conversations read the response Proton gives
+  for each ID (`Code` 1001 with `Responses`), and fail with an API error that
+  names the IDs it refused, instead of reporting all of them done;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
   authentication headers, token refresh, retries, bounded response bodies, and
@@ -619,27 +765,39 @@ instead of an unknown outcome.
   execution and response-body failures, so both frontends receive the same
   sanitized HTTP errors. Paths can still contain resource IDs; other logging
   targets and server-provided errors keep their existing behavior.
-- [`auth/`](../crates/ruston-core/src/auth/) handles sign-in;
+- [`auth/`](../crates/ruston-core/src/auth/) handles sign-in. `Client::login_with_prompts`
+  asks through `LoginPrompts` for what the account needs and the options do not
+  carry: a TOTP code once any human verification is done, and a separate mailbox
+  password once the account password is accepted, so neither repeats the other.
+  Once Proton has accepted the password, `auth::or_end_session` ends the session
+  if the second factor, unlocking the keys or saving the session then fails.
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
   message cryptography. Each address key is unlocked once per session and kept
   as an unlocked export in zeroized memory, so later operations skip its
   passphrase derivation; the armored key and passphrase stay as a fallback.
   An address's keys are kept primary first, then those Proton has not marked
   compromised or obsolete, whatever order the API lists them in; messages are
-  signed and drafts encrypted with the first. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
+  signed and drafts encrypted with the first. OpenPGP dates and checks
+  signatures at Proton's time: the transport hands each response's `Date` to
+  `crypto::clock`, which keeps how far this machine's clock is off, as far as
+  the round trip and the header's whole seconds let it tell, and on the first
+  one sets proton-crypto's process-wide clock to this machine's time moved by
+  it. Before any response, and in the demo, OpenPGP keeps this machine's time.
+  [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
   HTML before either frontend renders it. Links keep only `http`, `https` and
   `mailto` URLs and relative ones are dropped, for exports and quoted replies
   as much as for the readers; the sanitizer is built once. Its crate-private
   `to_text` turns an outgoing HTML body into plain text for PGP/Inline
   recipients, who can only receive text: `send.rs` encrypts that version
   under a session key of its own for their package alone. It is a third HTML
-  tokenizer beside the CLI's and the desktop's converters.
+  tokenizer beside the CLI's and the desktop's converters, and all three take
+  the hidden, block and void elements from its tables.
 
 ## Where to start
 
 | Change or question | Start here | Follow the boundary into |
 | --- | --- | --- |
-| Desktop sign-in and prompts | [`src/app/auth.rs`](../src/app/auth.rs), [`src/ui/login.rs`](../src/ui/login.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`auth/`](../crates/ruston-core/src/auth/), [`session/`](../crates/ruston-core/src/session/) |
+| Desktop sign-in and prompts | [`src/app/auth.rs`](../src/app/auth.rs), [`src/ui/login.rs`](../src/ui/login.rs) | [`src/mail/auth.rs`](../src/mail/auth.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), core [`auth/`](../crates/ruston-core/src/auth/), [`session/`](../crates/ruston-core/src/session/) |
 | CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
 | Mailbox lists, search, and thread grouping | [`src/app/mailbox.rs`](../src/app/mailbox.rs), [`src/mail/threading.rs`](../src/mail/threading.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`api/conversations.rs`](../crates/ruston-core/src/api/conversations.rs) |
 | Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | [`src/mail/html.rs`](../src/mail/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
@@ -674,7 +832,9 @@ separately in `Ruston Mail`'s config directory. Core
 [`session/`](../crates/ruston-core/src/session/) stores access and refresh
 tokens as one keychain entry and the session's API address as another; loading
 rejects metadata whose address differs from it. Session writes and token refresh use a per-profile
-file lock. On a 401, another process's rotated tokens are reloaded before
+file lock. Sign-in and resume read and save the session on Tokio's blocking
+pool, since the keychain may wait for the person to unlock it and the lock for
+another process; a deadline around them still ends on time. On a 401, another process's rotated tokens are reloaded before
 refreshing again. Tokens reloaded that way, or renewed meanwhile by another
 request, may have expired too: a 401 with them refreshes once more, so a
 request asks Proton for new tokens at most once. Persistence errors still
@@ -762,11 +922,13 @@ recreates it, and the next newer open drops it again. The event stream in
 invalidates an indexed body on a full message update. Each incremental event
 batch and its cursor commit together only if the stored cursor still matches
 the one used to fetch the batch; a competing sync causes a retry error without
-applying stale data. Backfill and indexing capture the local cursor before each
-page request and retain it for all body downloads from that page. Before writing,
-SQLite's immediate transaction checks that cursor, including an uninitialized
-cursor. A competing sync or resync causes a retry error without applying the
-stale result. Backfill commits each page atomically; indexing commits metadata
+applying stale data. On a cache with no cursor yet, backfill and indexing first
+pin one to Proton's latest event, so the next sync applies every change made
+after their listing; rows stored without a cursor were never reconciled before.
+They capture that cursor before each page request and retain it for all body
+downloads from that page. Before writing, SQLite's immediate transaction checks
+that cursor. A competing sync or resync causes a retry error without applying
+the stale result. Backfill commits each page atomically; indexing commits metadata
 and the body together, or metadata and body invalidation when the message is
 gone or its body cannot be opened. Any other failed read stops indexing with
 its error and writes nothing for that message.
@@ -787,8 +949,12 @@ CLI [`watch --folder`](../crates/ruston-cli/src/commands/watch.rs) backfills
 metadata and indexes the selected folder on its first tick. Later ticks use
 sync events for metadata and reindex only after creates, content updates, or a
 full refresh; flag and label changes keep the indexed bodies. `watch` polls the event API at the configured interval; it does not
-use Server-Sent Events. Backfill and indexing failures stop the command
-instead of producing a successful tick.
+use Server-Sent Events. A failed tick never counts as a successful one. When
+the failure may pass (the network, Proton being busy or down, or the cache
+changing during a sync), the tick is tried again after a wait that doubles up
+to 10 minutes, and that try indexes whatever its sync brings, since the failed
+one may have taken in changes it never indexed. Any other failure, a refused
+session first, stops the command.
 
 Most unit tests live beside the code they cover. Core HTTP contract tests are
 in [`tests/api_wiremock.rs`](../crates/ruston-core/tests/api_wiremock.rs).
@@ -799,15 +965,22 @@ session or keychain entry behind. CLI parser and demo tests
 are in [`crates/ruston-cli/src/main.rs`](../crates/ruston-cli/src/main.rs).
 Run and check commands are in [Development](DEVELOPMENT.md).
 
-The shared [CI workflow](../.github/workflows/ci.yml) checks Linux and macOS on
-x86_64 and arm64, and Windows on x86_64 using the native MSVC toolchain. All
+The shared [CI workflow](../.github/workflows/ci.yml) checks Linux, macOS and
+Windows on x86_64 and arm64, Windows with the native MSVC toolchain. All
 platforms run the same formatting, Clippy, documentation, and test gates.
 Linux validates the desktop entry and the AppStream metadata in
 [`packaging/linux/`](../packaging/linux/), which describe the application to
-software centers and AppImage catalogs. Windows additionally builds the desktop
-executable and checks its embedded version information. Root [`build.rs`](../build.rs)
-uses `winresource` only for Windows targets to embed the ICO and Cargo version;
-it leaves the CLI and core packages' binaries untouched. Committed Linux PNGs
+software centers and AppImage catalogs. Windows additionally builds both
+executables and checks them with
+[`verify-windows.ps1`](../packaging/windows/verify-windows.ps1): architecture,
+window or console subsystem, DLLs Windows includes, manifest, and version
+information. Root [`build.rs`](../build.rs) uses `winresource` only for Windows
+targets to embed the ICO, Cargo version and an application manifest in
+`ruston.exe`; the CLI's [`build.rs`](../crates/ruston-cli/build.rs) embeds its
+version and manifest, inline so the published crate needs no files outside it.
+[`.cargo/config.toml`](../.cargo/config.toml) links the C runtime statically
+for MSVC targets, so neither executable needs the Visual C++ redistributable.
+Committed Linux PNGs
 and the Windows ICO are derived from the existing logo by
 [`packaging/generate-desktop-icons.py`](../packaging/generate-desktop-icons.py).
 A Windows-only identity test reads back the process AppUserModelID with the
@@ -829,13 +1002,31 @@ architecture on a native runner:
   [`AppRun`](../packaging/linux/AppRun) starts the app or the CLI, and
   [`check-glibc.sh`](../packaging/linux/check-glibc.sh) holds the glibc floor at
   2.35.
-- Every app is started once with [`smoke-test.sh`](../packaging/smoke-test.sh).
+- Windows Server 2025 and Windows 11 ARM runners run
+  [`package.ps1`](../packaging/windows/package.ps1) with a pinned,
+  digest-checked Inno Setup. It checks both executables with
+  `verify-windows.ps1` and writes a per-user installer, from
+  [`ruston-mail.iss`](../packaging/windows/ruston-mail.iss), and a portable ZIP.
+  The installer adds the Start menu shortcut with the app's AppUserModelID and
+  optionally the email-link registration and a `PATH` entry, all removed again
+  on uninstall.
+- Every macOS and Linux app is started once with
+  [`smoke-test.sh`](../packaging/smoke-test.sh). On Windows,
+  [`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) requires the window
+  to open and draw without an error box, since a failure to start shows one
+  instead of ending the process, and
+  [`test-installer.ps1`](../packaging/windows/test-installer.ps1) installs,
+  starts and uninstalls the installer.
 
 Only the publishing job may write to the repository. It adds `SHA256SUMS.txt`,
 build provenance attestations, and notes that
 [`release-notes.sh`](../packaging/release-notes.sh) writes from the Conventional
-Commits since the previous tag. It never replaces the files of a release that is
-already published.
+Commits since the previous tag, grouped by the areas that
+[`release-note-areas.tsv`](../packaging/release-note-areas.tsv) gives their
+scopes. It never replaces files already uploaded, since builds are not
+bit-for-bit reproducible: a published release fails the job, and so does a
+draft that already has files. A draft keeps its notes, which may have been
+edited by hand.
 
 ## Keeping this map current
 
