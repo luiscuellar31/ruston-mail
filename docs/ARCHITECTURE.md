@@ -761,7 +761,13 @@ instead of an unknown outcome.
   passphrase derivation; the armored key and passphrase stay as a fallback.
   An address's keys are kept primary first, then those Proton has not marked
   compromised or obsolete, whatever order the API lists them in; messages are
-  signed and drafts encrypted with the first. [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
+  signed and drafts encrypted with the first. OpenPGP dates and checks
+  signatures at Proton's time: the transport hands each response's `Date` to
+  `crypto::clock`, which keeps how far this machine's clock is off, as far as
+  the round trip and the header's whole seconds let it tell, and on the first
+  one sets proton-crypto's process-wide clock to this machine's time moved by
+  it. Before any response, and in the demo, OpenPGP keeps this machine's time.
+  [`html.rs`](../crates/ruston-core/src/html.rs) sanitizes
   HTML before either frontend renders it. Links keep only `http`, `https` and
   `mailto` URLs and relative ones are dropped, for exports and quoted replies
   as much as for the readers; the sanitizer is built once. Its crate-private

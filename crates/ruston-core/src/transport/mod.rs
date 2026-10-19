@@ -390,7 +390,16 @@ impl HttpClient {
             .ok_or_else(|| Error::Other("request body cannot be replayed".into()))?;
         *attempt.headers_mut() = hdrs;
         let started = std::time::Instant::now();
+        let sent = std::time::SystemTime::now();
         let resp = client.execute(attempt).await?;
+        // Every response comes from the API, whose clock OpenPGP keeps to.
+        if let Some(date) = resp
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|v| v.to_str().ok())
+        {
+            crate::crypto::clock::note_proton_date(date, sent, std::time::SystemTime::now());
+        }
         let status = resp.status().as_u16();
         let retry_after = resp
             .headers()

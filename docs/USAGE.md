@@ -116,7 +116,9 @@ treat that message's contents with caution. The status applies to the body,
 not to its attachments. Verification uses available sender keys, never one
 Proton marks as compromised, and does not establish the sender's identity
 independently. If the sender's keys cannot be fetched, the message shows as not
-verified.
+verified. Signatures are checked, and yours are dated, by Proton's clock once
+Proton has answered, so a computer clock that is set wrong does not make good
+signatures look invalid.
 
 A message that cannot be decrypted, for example because it was encrypted to a
 key your account no longer has, shows a notice instead of its text, whether it
