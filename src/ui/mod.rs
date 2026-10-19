@@ -402,10 +402,13 @@ impl DesktopApp {
             Self::bring_main_window_forward(context);
             return;
         }
+        // A written draft is discarded only once asked, and so is one kept
+        // for its account to sign in again.
         if self
             .app
             .compose()
             .is_some_and(|draft| !draft.is_untouched())
+            || self.app.has_parked_draft()
         {
             Self::cancel_root_close(context);
             self.pending_discard = Some(close::Leaving::Window);
@@ -1612,6 +1615,33 @@ mod tests {
             assert!(desktop.app.compose().is_none());
             assert!(desktop.window_close_approved);
         }
+    }
+
+    #[test]
+    fn closing_asks_before_dropping_a_draft_kept_for_its_account() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.app = App::signed_in_as("user-1", "alex@proton.me");
+        desktop.dispatch(Message::OpenCompose, &context);
+        desktop.dispatch(
+            Message::ComposeChanged(crate::app::ComposeField::Body, "Keep this draft".into()),
+            &context,
+        );
+        desktop.dispatch(
+            Message::ConversationsLoaded(1, Err(crate::mail::MailboxError::SessionExpired)),
+            &context,
+        );
+        assert!(desktop.app.has_parked_draft());
+
+        assert!(native_close(&mut desktop, &context).contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(desktop.pending_discard, Some(close::Leaving::Window));
+        desktop.resolve_discard(Message::CancelDiscard, &context);
+        assert!(desktop.app.has_parked_draft());
+
+        native_close(&mut desktop, &context);
+        desktop.resolve_discard(Message::DiscardCompose, &context);
+        assert!(!desktop.app.has_parked_draft());
+        assert!(desktop.window_close_approved);
     }
 
     #[test]

@@ -205,6 +205,11 @@ impl ProtonMailService {
         self.email.as_deref()
     }
 
+    /// The Proton account signed in, the same from one session to the next.
+    pub fn user_id(&self) -> &str {
+        self.client.user_id()
+    }
+
     /// Reads metadata without downloading message bodies or resolving sender keys.
     pub async fn recent_inbox(&self, limit: u32) -> Result<Vec<IncomingMail>, MailboxError> {
         let (_, messages) =

@@ -35,7 +35,9 @@ loaded lists of the eight folders left most recently. The desktop client
 does not write a persistent mail cache to disk. Sign-in fields keep no undo
 history, and a draft's undo history is dropped once the draft is sent,
 discarded, or left behind by signing out, so undo cannot bring back another
-draft or a typed password.
+draft or a typed password. A message being written when Proton ends the
+session stays in memory, never on disk, for the same account's next sign-in:
+another account's sign-in, discarding it or closing Ruston drops it.
 
 Passwords and codes typed at sign-in are kept in buffers with room reserved
 for them, so typing does not move them and leave earlier copies behind, and

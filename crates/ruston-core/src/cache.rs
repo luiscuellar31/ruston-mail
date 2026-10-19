@@ -346,6 +346,10 @@ impl CacheIdentity {
         })
     }
 
+    pub(crate) fn user_id(&self) -> &str {
+        &self.user_id
+    }
+
     fn serialized(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
     }

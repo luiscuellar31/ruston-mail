@@ -340,17 +340,27 @@ impl App {
 
     pub(super) fn set_authenticated(&mut self, service: Arc<ProtonMailService>) -> Effects {
         let email = service.email().map(str::to_owned);
-        self.open_mailbox(MailBackend::Proton(service), email)
+        let account = Some(service.user_id().to_owned());
+        self.open_mailbox(MailBackend::Proton(service), email, account)
     }
 
-    pub(super) fn open_mailbox(&mut self, backend: MailBackend, email: Option<String>) -> Effects {
+    /// Opens a session's mailbox. `account` is the Proton account signed in,
+    /// which a draft its last session ended under comes back to.
+    pub(super) fn open_mailbox(
+        &mut self,
+        backend: MailBackend,
+        email: Option<String>,
+        account: Option<String>,
+    ) -> Effects {
         self.advance_session_epoch();
         self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
         self.auth_error = None;
         let page_size = backend.page_size();
         self.backend = Some(backend);
+        self.account = account;
         self.auth_state = AuthState::Authenticated { email };
+        let draft = self.restore_parked_draft();
 
         let page_request = self.next_request();
         let counts_request = self.next_request();
@@ -373,6 +383,7 @@ impl App {
             } else {
                 self.fetch_new_mail_notification()
             },
+            draft,
         ])
     }
 
@@ -448,8 +459,10 @@ impl App {
         self.backend = None;
         self.mailbox = None;
         // A draft belongs to the account that created it and must never cross
-        // into a later session.
-        self.compose = None;
+        // into another account's session. One Proton ended the session under
+        // waits in memory for its own account to sign in again.
+        let account = self.account.take();
+        self.park_draft(account.filter(|_| error == Some(AuthError::SessionExpired)));
         self.pending_link = None;
         // Pending email requests accepted in a session must not cross accounts.
         self.pending_mailto.clear();

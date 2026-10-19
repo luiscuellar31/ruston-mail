@@ -267,6 +267,7 @@ fn sign_in(
     }
 
     error(ui, app);
+    parked_draft(ui, app);
     // The saved session is still there, and may open now.
     if app.can_retry_saved_session() && ui.button("Try again").clicked() {
         messages.push(Message::RetrySavedSession);
@@ -553,9 +554,61 @@ fn error(ui: &mut egui::Ui, app: &App) {
     }
 }
 
+/// Says that the message being written when Proton ended the session waits
+/// for its own account, and that another account's sign-in drops it.
+fn parked_draft(ui: &mut egui::Ui, app: &App) {
+    if !app.has_parked_draft() {
+        return;
+    }
+    let whom = app.parked_draft_address().map_or_else(
+        || "to the same account".to_owned(),
+        |address| format!("as {address}"),
+    );
+    ui.label(format!(
+        "Your unsent message comes back when you sign in again {whom}; \
+         signing in to another account discards it."
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sign_in_screen_says_who_gets_a_kept_draft_back() {
+        let mut app = App::signed_in_as("user-1", "alex@proton.me");
+        let _ = app.update(Message::OpenCompose);
+        let _ = app.update(Message::ComposeChanged(
+            crate::app::ComposeField::Body,
+            "Keep this draft".into(),
+        ));
+        let _ = app.update(Message::ConversationsLoaded(
+            1,
+            Err(crate::mail::MailboxError::SessionExpired),
+        ));
+        let context = egui::Context::default();
+        theme::install(&context);
+
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            sign_in(ui, &mut app, &mut false, &mut Vec::new());
+        });
+        let shown: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+
+        assert!(
+            shown
+                .iter()
+                .any(|text| text.contains("sign in again as alex@proton.me")),
+            "{shown:?}"
+        );
+    }
 
     #[test]
     fn the_sign_in_screen_offers_to_try_a_saved_session_again() {

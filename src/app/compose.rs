@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::mail::{
-    BodyFormat, Domains, InternationalDomain, MailMessage, MessageBody, Outgoing, OutgoingKind,
-    Protection, ProtectionCheck, Recipients, SendError, recipients,
+    BodyFormat, Domains, InternationalDomain, MailMessage, MailboxError, MessageBody, Outgoing,
+    OutgoingKind, Protection, ProtectionCheck, Recipients, SendError, recipients,
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
@@ -519,9 +519,79 @@ fn answering_for(kind: AnswerKind, message: &MailMessage, subject: Option<&str>)
     }
 }
 
+/// A message being written when Proton ended the session. It stays in memory,
+/// never on disk, for its own account to pick up by signing in again.
+pub(super) struct ParkedDraft {
+    /// The Proton account it was written in.
+    account: String,
+    /// That account's address, to say who to sign in as.
+    address: Option<String>,
+    compose: Compose,
+}
+
 impl App {
     pub fn compose(&self) -> Option<&Compose> {
         self.compose.as_ref()
+    }
+
+    /// Whether a message waits for its account to sign in again.
+    pub fn has_parked_draft(&self) -> bool {
+        self.parked_draft.is_some()
+    }
+
+    /// The address of the account a waiting message belongs to, when known.
+    pub fn parked_draft_address(&self) -> Option<&str> {
+        self.parked_draft.as_ref()?.address.as_deref()
+    }
+
+    /// Takes the draft out of a session that is closing. Given the `account`
+    /// whose session Proton ended, a written or sending draft waits in memory
+    /// for it; otherwise it goes, so it never reaches another account. A send
+    /// on its way may or may not have gone, so it comes back asking to check
+    /// Sent; any other failure was the old session's.
+    pub(super) fn park_draft(&mut self, ended: Option<String>) {
+        let address = match &self.auth_state {
+            super::AuthState::Authenticated { email } => email.clone(),
+            _ => None,
+        };
+        let (Some(mut compose), Some(account)) = (self.compose.take(), ended) else {
+            return;
+        };
+        if compose.is_untouched() && !compose.in_flight() {
+            return;
+        }
+        compose.state = match std::mem::take(&mut compose.state) {
+            Sending::InFlight | Sending::Failed(SendError::Unconfirmed) => {
+                Sending::Failed(SendError::Unconfirmed)
+            }
+            Sending::Writing | Sending::Failed(_) => Sending::Writing,
+        };
+        compose.confirming_discard = false;
+        self.parked_draft = Some(ParkedDraft {
+            account,
+            address,
+            compose,
+        });
+    }
+
+    /// Gives a waiting draft back when its own account has just signed in,
+    /// under a new ID so nothing from the ended session reaches it, and asks
+    /// again about recipients whose lookup that session left unanswered. Any
+    /// other account, or the demo, drops it.
+    pub(super) fn restore_parked_draft(&mut self) -> Effects {
+        let Some(parked) = self.parked_draft.take() else {
+            return Effects::none();
+        };
+        if self.account.as_deref() != Some(parked.account.as_str()) {
+            return Effects::none();
+        }
+        let mut compose = parked.compose;
+        compose.id = self.next_compose_id();
+        compose
+            .protection
+            .retain(|_, checked| *checked != Checked::Checking);
+        self.compose = Some(compose);
+        self.check_compose_protection()
     }
 
     pub(super) fn open_compose(&mut self) {
@@ -587,11 +657,13 @@ impl App {
         }
     }
 
-    /// Discards an unsent message even if it carries text.
+    /// Discards an unsent message even if it carries text, and one waiting
+    /// for its account to sign in again.
     pub(super) fn discard_compose(&mut self) {
         if !self.compose.as_ref().is_some_and(Compose::in_flight) {
             self.compose = None;
         }
+        self.parked_draft = None;
     }
 
     /// Cancels discard confirmation and keeps the message.
@@ -763,7 +835,10 @@ impl App {
                 self.reload_counts()
             }
             Err(error) => {
+                let expired = error == SendError::Mailbox(MailboxError::SessionExpired);
                 compose.state = Sending::Failed(error);
+                // Signing in again is the way on, and the draft waits for it.
+                self.end_session_if_expired(expired.then_some(MailboxError::SessionExpired));
                 Effects::none()
             }
         }
@@ -812,6 +887,46 @@ mod tests {
         // Nothing new to ask about: the same address is not looked up twice.
         assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 0);
 
+        checked(
+            &mut app,
+            vec![("ada@proton.me".into(), Ok(Protection::EndToEnd))],
+        );
+        assert_eq!(notice(&app), Some(ProtectionNotice::Encrypted));
+    }
+
+    #[test]
+    fn a_kept_draft_asks_again_about_recipients_its_session_left_unanswered() {
+        let opened_again = |checking: bool| {
+            let mut app = App::signed_in_as("user-1", "alex@proton.me");
+            let _ = app.update(Message::OpenCompose);
+            let _ = app.update(Message::ComposeChanged(
+                ComposeField::To,
+                "ada@proton.me".into(),
+            ));
+            let _ = app.update(Message::ComposeRecipientsLeft);
+            if !checking {
+                checked(
+                    &mut app,
+                    vec![("ada@proton.me".into(), Ok(Protection::EndToEnd))],
+                );
+            }
+            let _ = app.update(Message::ConversationsLoaded(
+                1,
+                Err(MailboxError::SessionExpired),
+            ));
+            let effects = app.open_mailbox(
+                crate::mail::MailBackend::demo(),
+                None,
+                Some("user-1".into()),
+            );
+            (app, effects.units())
+        };
+
+        let (_, answered) = opened_again(false);
+        let (mut app, unanswered) = opened_again(true);
+        // The ended session's answer will never come, so it is asked again.
+        assert_eq!(unanswered, answered + 1);
+        assert_eq!(notice(&app), Some(ProtectionNotice::Checking));
         checked(
             &mut app,
             vec![("ada@proton.me".into(), Ok(Protection::EndToEnd))],

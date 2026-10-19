@@ -29,6 +29,7 @@ use crate::mail::{
 
 use auth::LoginForm;
 pub use auth::{AuthState, SignInStep};
+use compose::ParkedDraft;
 pub use compose::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Sending};
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
@@ -237,6 +238,8 @@ pub struct App {
     pending_mailto: std::collections::VecDeque<crate::mailto::Request>,
     mailto_error: Option<&'static str>,
     backend: Option<MailBackend>,
+    /// The Proton account the open session belongs to. The demo has none.
+    account: Option<String>,
     mailbox: Option<Mailbox>,
     /// Changes whenever an account opens or closes so late async results can
     /// never mutate another session.
@@ -272,6 +275,9 @@ pub struct App {
     showing_settings: bool,
     /// The message being written, if there is one.
     compose: Option<Compose>,
+    /// The message being written when Proton ended the session, kept in
+    /// memory only until its own account signs in again.
+    parked_draft: Option<ParkedDraft>,
     /// A conversation opened while a draft covered the reader, so nobody saw
     /// it. It is marked read once the reader shows it, if still open there.
     read_once_shown: Option<String>,
@@ -292,7 +298,7 @@ impl App {
         let mut app = Self::new(settings);
         app.demo_process = demo;
         let task = if demo {
-            app.open_mailbox(MailBackend::demo(), None)
+            app.open_mailbox(MailBackend::demo(), None, None)
         } else {
             Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
         };
@@ -313,6 +319,7 @@ impl App {
             pending_mailto: std::collections::VecDeque::new(),
             mailto_error: None,
             backend: None,
+            account: None,
             mailbox: None,
             session_epoch: 0,
             last_request: 0,
@@ -329,6 +336,7 @@ impl App {
             settings_on_disk: Arc::new(Mutex::new(0)),
             showing_settings: false,
             compose: None,
+            parked_draft: None,
             read_once_shown: None,
             last_compose_id: 0,
             saved_attachment: None,
@@ -372,6 +380,20 @@ impl App {
     pub(crate) fn signed_out() -> Self {
         let mut app = Self::new(Settings::default());
         app.auth_state = AuthState::SignedOut;
+        app
+    }
+
+    /// A session of the Proton account `account`, at `address`, with the demo
+    /// mailbox standing in for its mail, so tests can follow one account
+    /// from a session to the next.
+    #[cfg(test)]
+    pub(crate) fn signed_in_as(account: &str, address: &str) -> Self {
+        let mut app = Self::new(Settings::default());
+        let _ = app.open_mailbox(
+            MailBackend::demo(),
+            Some(address.to_owned()),
+            Some(account.to_owned()),
+        );
         app
     }
 

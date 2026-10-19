@@ -38,6 +38,12 @@ own folders or labels, the next sign-in opens the Inbox instead. If you are writ
 Ruston asks before discarding it. While a message is being sent, **Sign out**
 is unavailable until the send finishes.
 
+If Proton ends the session while you are writing, the message waits in memory,
+never on disk, and comes back when you sign in again to the same account. The
+sign-in screen says so; signing in to another account discards it, and closing
+Ruston asks first. A message that was being sent comes back asking you to check
+Sent before sending it again.
+
 FIDO2 and WebAuthn security keys are not supported yet.
 
 ## Finding mail

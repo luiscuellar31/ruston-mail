@@ -597,7 +597,7 @@ fn a_save_in_flight_does_not_outlive_the_session() {
     assert_eq!(app.saving_attachment(), None);
     assert!(app.saved_attachment().is_none());
 
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let _ = app.update(Message::SaveAttachment("demo-1".into(), "new-file".into()));
 
     // A late save from the previous session must not replace the new one.
@@ -635,7 +635,7 @@ fn signing_out_takes_the_account_folders_with_it() {
     // not open showing names that belong to the last one.
     assert!(app.folders().is_empty());
 
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let _ = app.update(Message::FoldersLoaded(
         previous_epoch,
         Ok(vec![Folder::custom("old", "Previous account")]),
@@ -990,7 +990,7 @@ fn email_links_wait_through_login_and_open_only_an_editable_new_message() {
         assert!(app.compose().is_none(), "{auth:?}");
         assert_eq!(app.pending_mailto_count(), 1, "{auth:?}");
     }
-    app.open_mailbox(MailBackend::demo(), None);
+    app.open_mailbox(MailBackend::demo(), None, None);
     assert_eq!(app.update(Message::OpenPendingMailto).units(), 0);
     let compose = app.compose().unwrap();
     assert_eq!(compose.field(ComposeField::To), "team@example.org");
@@ -1546,7 +1546,7 @@ fn late_new_mail_result_never_notifies_after_logout_or_in_another_session() {
     let _ = app.update(Message::Logout);
     assert_eq!(app.update(late_result.clone()).units(), 0);
 
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     assert_eq!(app.update(late_result).units(), 0);
 }
 
@@ -1940,7 +1940,7 @@ fn save_as_dialog_results_after_sign_out_cannot_start_a_download() {
     let mut app = loaded_demo_app();
     let previous = choose_attachment_destination(&mut app);
     let _ = app.update(Message::Logout);
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let current = choose_attachment_destination(&mut app);
     assert_ne!(previous.session, current.session);
     assert_eq!(
@@ -2865,6 +2865,127 @@ fn a_session_that_cannot_be_read_keeps_the_mailbox_and_the_draft() {
     assert!(app.compose().is_some());
 }
 
+/// Ends the session of account "user-1" the way Proton does, from its first
+/// page request, while `app` holds whatever it was given.
+fn session_ended_by_proton(app: &mut App) {
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Err(MailboxError::SessionExpired),
+    ));
+}
+
+/// Signs account `account` in again, with the demo mailbox standing in.
+fn signed_in_again(app: &mut App, account: &str) -> Effects {
+    app.open_mailbox(
+        MailBackend::demo(),
+        Some("alex@proton.me".into()),
+        Some(account.into()),
+    )
+}
+
+#[test]
+fn an_expired_session_keeps_the_draft_for_its_own_account() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    write(&mut app, "sam@example.com");
+    let written = app.compose().unwrap().id();
+    session_ended_by_proton(&mut app);
+
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
+    assert!(app.compose().is_none(), "no session shows it meanwhile");
+    assert_eq!(app.parked_draft_address(), Some("alex@proton.me"));
+
+    let _ = signed_in_again(&mut app, "user-1");
+    let draft = app.compose().expect("its own account gets it back");
+    assert_eq!(draft.field(ComposeField::To), "sam@example.com");
+    assert_eq!(draft.field(ComposeField::Body), "See you then.");
+    assert_ne!(
+        draft.id(),
+        written,
+        "nothing from the ended session reaches it"
+    );
+    assert!(!app.has_parked_draft());
+}
+
+#[test]
+fn another_account_or_none_never_gets_a_kept_draft() {
+    for next in [Some("user-2"), None] {
+        let mut app = App::signed_in_as("user-1", "alex@proton.me");
+        write(&mut app, "sam@example.com");
+        session_ended_by_proton(&mut app);
+
+        let _ = app.open_mailbox(MailBackend::demo(), None, next.map(str::to_owned));
+        assert!(app.compose().is_none(), "{next:?}");
+        assert!(!app.has_parked_draft(), "{next:?}");
+        // Nor does its own account afterwards.
+        app.close_mailbox(None);
+        let _ = signed_in_again(&mut app, "user-1");
+        assert!(app.compose().is_none(), "{next:?}");
+    }
+}
+
+#[test]
+fn an_untouched_draft_or_a_sign_out_keeps_nothing() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    let _ = app.update(Message::OpenCompose);
+    session_ended_by_proton(&mut app);
+    assert!(!app.has_parked_draft(), "nothing was written");
+
+    let _ = signed_in_again(&mut app, "user-1");
+    write(&mut app, "sam@example.com");
+    app.close_mailbox(Some(AuthError::Connection));
+    assert!(
+        !app.has_parked_draft(),
+        "only Proton ending the session keeps it"
+    );
+}
+
+#[test]
+fn a_message_on_its_way_when_the_session_ends_comes_back_unconfirmed() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    write(&mut app, "sam@example.com");
+    let ended = app.session_epoch;
+    assert_eq!(app.update(Message::Send).units(), 1);
+    session_ended_by_proton(&mut app);
+
+    let _ = signed_in_again(&mut app, "user-1");
+    // Its answer belonged to the session that ended, and changes nothing.
+    let _ = app.update(Message::Sent(ended, Ok(())));
+    let draft = app.compose().expect("it may not have gone");
+    assert_eq!(draft.sending(), Sending::Failed(SendError::Unconfirmed));
+}
+
+#[test]
+fn a_send_refused_for_an_expired_session_ends_it_and_keeps_the_draft() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    write(&mut app, "sam@example.com");
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::Send);
+
+    let _ = app.update(Message::Sent(
+        epoch,
+        Err(SendError::Mailbox(MailboxError::SessionExpired)),
+    ));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::SessionExpired));
+
+    let _ = signed_in_again(&mut app, "user-1");
+    let draft = app.compose().expect("signing in again brings it back");
+    assert_eq!(draft.sending(), Sending::Writing, "ready to send again");
+}
+
+#[test]
+fn discarding_drops_a_kept_draft() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    write(&mut app, "sam@example.com");
+    session_ended_by_proton(&mut app);
+
+    let _ = app.update(Message::DiscardCompose);
+    assert!(!app.has_parked_draft());
+    let _ = signed_in_again(&mut app, "user-1");
+    assert!(app.compose().is_none());
+}
+
 #[test]
 fn an_attachment_save_that_finds_the_session_expired_signs_out() {
     let mut app = loaded_demo_app();
@@ -2932,7 +3053,7 @@ fn logout_result_from_a_previous_session_is_ignored() {
     let previous_epoch = app.session_epoch;
     app.auth_state = AuthState::SigningOut;
     let _ = app.update(Message::CountsLoaded(2, Err(MailboxError::SessionExpired)));
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     app.auth_state = AuthState::SigningOut;
 
     let _ = app.update(Message::LogoutFinished(previous_epoch, Ok(())));
@@ -2991,7 +3112,7 @@ fn send_result_from_a_previous_session_keeps_the_new_draft() {
     // Signing out waits for the send; an expired session cannot.
     app.close_mailbox(Some(AuthError::SessionExpired));
 
-    let _ = app.open_mailbox(MailBackend::demo(), None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     write(&mut app, "new@example.com");
     let _ = app.update(Message::Sent(previous_epoch, Ok(())));
 

@@ -388,6 +388,13 @@ impl Client {
         self.keys.primary_address().map(|a| a.email.as_str())
     }
 
+    /// The ID of the Proton account this client is signed in to. It stays the
+    /// same from one session to the next, so it tells a later sign-in to the
+    /// same account from one to another.
+    pub fn user_id(&self) -> &str {
+        self.cache_identity.user_id()
+    }
+
     /// Fetch (and cache for a while) a sender's armored public keys for
     /// verification, leaving out keys Proton marks as compromised.
     pub(crate) async fn sender_pubkeys(&self, email: &str) -> Result<Vec<String>> {
@@ -562,6 +569,14 @@ mod tests {
             .mount(&server)
             .await;
         (server, requested)
+    }
+
+    #[tokio::test]
+    async fn a_client_names_the_account_it_is_signed_in_to() {
+        let (client, base) =
+            saved_logout_client("http://127.0.0.1:9", Arc::new(MemoryStore::new())).await;
+        assert_eq!(client.user_id(), "logout-account");
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[tokio::test]

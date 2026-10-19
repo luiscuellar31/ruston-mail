@@ -149,7 +149,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   including minimized windows. An in-flight send or native file dialog blocks
   closing. Unapplied preferences use the existing Settings exit decisions
   before proceeding to the draft check. [`ui/close.rs`](../src/ui/close.rs)
-  requests explicit discard of a written message in either composer placement;
+  requests explicit discard of a written message in either composer placement,
+  and of one parked for its account's next sign-in;
   repeated close requests never approve it. Discard/cancel reuse App messages,
   and closing rechecks current send/draft state. Signing out or leaving the
   demo asks through the same confirmation, then signs out once the message is
@@ -501,6 +502,16 @@ memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`mail/proton.rs`](../src/mail/proton.rs) calls
 [`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
 result returns to the app as a message.
+
+A draft never crosses into another account's session. When Proton ends the
+session (`AuthError::SessionExpired`, a refused send included),
+`App::close_mailbox` parks a written or sending draft in memory with the
+account's ID from core's `Client::user_id`; a send that was on its way comes
+back as unconfirmed. `App::open_mailbox` gives it back, under a new draft ID,
+only when the same account signs in again, and asks again about recipients
+whose lookup the ended session left unanswered. Another account's sign-in
+drops it, the sign-in screen says whose sign-in brings it back, and closing
+the window asks before discarding it. Nothing of it is written to disk.
 
 The composer's protection notice takes the same path. When a recipient field
 loses focus, [`app/compose.rs`](../src/app/compose.rs) asks the backend about
