@@ -40,7 +40,7 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
     builder
         // Hidden elements go with their content, as in plain text; ammonia
         // already drops script and style that way.
-        .add_clean_content_tags(HIDDEN)
+        .add_clean_content_tags(HIDDEN_ELEMENTS)
         // A link may lead to the web or to an address, and nowhere else. Every
         // output keeps this, EML exports and quoted replies included, not only
         // the readers that filter links themselves.
@@ -57,18 +57,44 @@ pub fn sanitize(html: &str) -> String {
 }
 
 /// Elements whose content is never read.
-const HIDDEN: &[&str] = &[
+pub const HIDDEN_ELEMENTS: &[&str] = &[
     "head", "iframe", "noscript", "script", "style", "svg", "template", "textarea", "title",
 ];
 /// Where a link may lead: the web or an address.
 const LINK_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
-/// Elements that start a block of their own.
-const BLOCKS: &[&str] = &[
-    "address", "article", "aside", "div", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header",
-    "main", "p", "section", "table", "tr",
+/// Elements that start and end a block of their own.
+pub const BLOCK_ELEMENTS: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "center",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "main",
+    "nav",
+    "p",
+    "section",
+    "table",
+    "tbody",
+    "tfoot",
+    "thead",
+    "tr",
 ];
 /// Elements that have no content and no end tag.
-const VOID: &[&str] = &[
+pub const VOID_ELEMENTS: &[&str] = &[
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
     "wbr",
 ];
@@ -136,7 +162,7 @@ impl TextBuilder {
         match tag.kind {
             TagKind::StartTag => {
                 self.start(name, tag);
-                if tag.self_closing && !VOID.contains(&name) {
+                if tag.self_closing && !VOID_ELEMENTS.contains(&name) {
                     self.end(name);
                 }
                 match name {
@@ -157,7 +183,7 @@ impl TextBuilder {
         if self.hidden.is_some() {
             return;
         }
-        if HIDDEN.contains(&name) {
+        if HIDDEN_ELEMENTS.contains(&name) {
             self.hidden = Some(name.to_owned());
             return;
         }
@@ -197,7 +223,7 @@ impl TextBuilder {
                 });
             }
             "td" | "th" => self.space = !self.block.is_empty(),
-            _ if BLOCKS.contains(&name) => self.flush(),
+            _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
     }
@@ -227,7 +253,7 @@ impl TextBuilder {
             "pre" if self.pre_depth == 1 => self.close_pre(),
             "a" => self.end_link(),
             "br" => self.line_break(),
-            _ if BLOCKS.contains(&name) => self.flush(),
+            _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
     }
@@ -387,6 +413,16 @@ mod tests {
             "a b c\n\nFish & chips <3"
         );
         assert_eq!(to_text("Bare <i>text</i>, no block"), "Bare text, no block");
+    }
+
+    #[test]
+    fn text_starts_a_block_wherever_the_desktop_reader_does() {
+        assert_eq!(
+            to_text(
+                "<dl><dt>Term</dt><dd>One</dd><dd>Two</dd></dl><nav>Menu</nav>Intro<h2>Title</h2>Body"
+            ),
+            "Term\n\nOne\n\nTwo\n\nMenu\n\nIntro\n\nTitle\n\nBody"
+        );
     }
 
     #[test]

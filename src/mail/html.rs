@@ -9,45 +9,9 @@ use html5ever::tokenizer::states::RawKind;
 use html5ever::tokenizer::{
     BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
+use ruston_core::html::{BLOCK_ELEMENTS, HIDDEN_ELEMENTS, VOID_ELEMENTS};
 
 use super::model::{BlockKind, RichBlock, RichBody, RichSpan};
-
-/// Elements that start and end a paragraph.
-const BLOCKS: &[&str] = &[
-    "address",
-    "article",
-    "aside",
-    "center",
-    "dd",
-    "div",
-    "dl",
-    "dt",
-    "figcaption",
-    "figure",
-    "footer",
-    "form",
-    "header",
-    "main",
-    "nav",
-    "p",
-    "section",
-    "table",
-    "tbody",
-    "tfoot",
-    "thead",
-    "tr",
-];
-
-/// Elements whose content is never shown.
-const HIDDEN: &[&str] = &[
-    "head", "noscript", "script", "style", "template", "textarea", "title",
-];
-
-/// Elements that have no content and no end tag.
-const VOID: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track",
-    "wbr",
-];
 
 /// Parses a sanitized HTML body.
 pub(super) fn parse(html: &str) -> RichBody {
@@ -109,7 +73,7 @@ impl Builder {
         match tag.kind {
             TagKind::StartTag => {
                 self.start(name, tag);
-                if tag.self_closing && !VOID.contains(&name) {
+                if tag.self_closing && !VOID_ELEMENTS.contains(&name) {
                     self.end(name);
                     return TokenSinkResult::Continue;
                 }
@@ -126,7 +90,7 @@ impl Builder {
         if self.hidden.is_some() {
             return;
         }
-        if HIDDEN.contains(&name) {
+        if HIDDEN_ELEMENTS.contains(&name) {
             self.hidden = Some(name.to_owned());
             return;
         }
@@ -169,7 +133,7 @@ impl Builder {
             "a" => self.link = link_target(tag),
             // Table cells read left to right, separated like words.
             "td" | "th" => self.separate(),
-            _ if BLOCKS.contains(&name) => self.flush(),
+            _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
     }
@@ -207,7 +171,7 @@ impl Builder {
             "code" | "kbd" | "samp" | "tt" => self.code = self.code.saturating_sub(1),
             "s" | "strike" | "del" => self.struck = self.struck.saturating_sub(1),
             "a" => self.link = None,
-            _ if BLOCKS.contains(&name) => self.flush(),
+            _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
     }

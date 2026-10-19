@@ -790,7 +790,8 @@ instead of an unknown outcome.
   `to_text` turns an outgoing HTML body into plain text for PGP/Inline
   recipients, who can only receive text: `send.rs` encrypts that version
   under a session key of its own for their package alone. It is a third HTML
-  tokenizer beside the CLI's and the desktop's converters.
+  tokenizer beside the CLI's and the desktop's converters, and all three take
+  the hidden, block and void elements from its tables.
 
 ## Where to start
 
