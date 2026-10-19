@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::mail::{
     BodyFormat, Domains, InternationalDomain, MailMessage, MailboxError, MessageBody, Outgoing,
@@ -182,6 +182,9 @@ pub struct Compose {
     subject: String,
     body: String,
     attachments: Vec<PathBuf>,
+    /// The size of each attached file once read on the blocking pool; `None`
+    /// for a file that could not be read.
+    sizes: HashMap<PathBuf, Option<u64>>,
     /// Which domains the recipient fields take, from Settings.
     domains: Domains,
     /// The recipient fields as last read under `domains`.
@@ -393,6 +396,11 @@ impl Compose {
         &self.attachments
     }
 
+    /// The size of an attached file, once it has been read.
+    pub fn attachment_size(&self, path: &Path) -> Option<u64> {
+        self.sizes.get(path).copied().flatten()
+    }
+
     pub fn add_attachments(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
         for path in paths {
             if !self.attachments.contains(&path) {
@@ -404,7 +412,8 @@ impl Compose {
 
     pub fn remove_attachment(&mut self, index: usize) {
         if index < self.attachments.len() {
-            self.attachments.remove(index);
+            let path = self.attachments.remove(index);
+            self.sizes.remove(&path);
             self.edited();
         }
     }
@@ -693,13 +702,42 @@ impl App {
         }
     }
 
-    pub(super) fn add_compose_attachments(&mut self, id: ComposeId, paths: Vec<PathBuf>) {
-        if let Some(compose) = self
+    /// Attaches files to the draft `id`, and reads their sizes on the blocking
+    /// pool: asking the file system can hang on a share that went away.
+    pub(super) fn add_compose_attachments(
+        &mut self,
+        id: ComposeId,
+        paths: Vec<PathBuf>,
+    ) -> Effects {
+        let Some(compose) = self
             .compose
             .as_mut()
             .filter(|c| c.id == id && !c.in_flight())
-        {
-            compose.add_attachments(paths);
+        else {
+            return Effects::none();
+        };
+        compose.add_attachments(paths.iter().cloned());
+        if paths.is_empty() {
+            return Effects::none();
+        }
+        Effects::perform(
+            async move {
+                tokio::task::spawn_blocking(move || file_sizes(paths))
+                    .await
+                    .unwrap_or_default()
+            },
+            move |sizes| Message::AttachmentSizesRead(id, sizes),
+        )
+    }
+
+    /// Records sizes read for the draft `id`, if it is still the one open.
+    pub(super) fn finish_attachment_sizes(
+        &mut self,
+        id: ComposeId,
+        sizes: HashMap<PathBuf, Option<u64>>,
+    ) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| c.id == id) {
+            compose.sizes.extend(sizes);
         }
     }
 
@@ -843,6 +881,17 @@ impl App {
             }
         }
     }
+}
+
+/// The size of each file, or `None` for one that cannot be read.
+fn file_sizes(paths: Vec<PathBuf>) -> HashMap<PathBuf, Option<u64>> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+            (path, size)
+        })
+        .collect()
 }
 
 #[cfg(test)]

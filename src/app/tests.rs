@@ -438,6 +438,41 @@ fn compose_attachments_can_be_added_and_removed_through_messages() {
     assert_eq!(compose.attachments(), &[file2]);
 }
 
+#[tokio::test]
+async fn attached_files_are_measured_away_from_the_interface() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let draft = app.compose().unwrap().id();
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let length = std::fs::metadata(&file).unwrap().len();
+
+    let measure = app.update(Message::AddComposeAttachments(draft, vec![file.clone()]));
+    assert_eq!(app.compose().unwrap().attachment_size(&file), None);
+    for effect in measure.into_iter() {
+        let Effect::Future(future) = effect else {
+            panic!("the sizes are read by a future");
+        };
+        let _ = app.update(future.await);
+    }
+    assert_eq!(app.compose().unwrap().attachment_size(&file), Some(length));
+    // A file taken off forgets its size, which may differ when it comes back.
+    let _ = app.update(Message::RemoveComposeAttachment(0));
+    assert_eq!(app.compose().unwrap().attachment_size(&file), None);
+
+    // Sizes read for a draft that is gone change nothing in the next one.
+    let _ = app.update(Message::DiscardCompose);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::AddComposeAttachments(
+        app.compose().unwrap().id(),
+        vec![file.clone()],
+    ));
+    let _ = app.update(Message::AttachmentSizesRead(
+        draft,
+        [(file.clone(), Some(1))].into_iter().collect(),
+    ));
+    assert_eq!(app.compose().unwrap().attachment_size(&file), None);
+}
+
 #[test]
 fn attachments_from_discarded_compose_are_ignored_by_new_compose() {
     let mut app = loaded_demo_app();

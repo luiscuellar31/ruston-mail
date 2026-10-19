@@ -210,6 +210,8 @@ pub enum Message {
     PickComposeAttachments,
     /// Adds picked local files as attachments to the active draft.
     AddComposeAttachments(ComposeId, Vec<PathBuf>),
+    /// The sizes of a draft's attached files, read on the blocking pool.
+    AttachmentSizesRead(ComposeId, std::collections::HashMap<PathBuf, Option<u64>>),
     /// Removes an attachment by index from the active draft.
     RemoveComposeAttachment(usize),
     /// Hands the message over to be sent.
@@ -970,7 +972,10 @@ impl App {
                 self.finish_protection_check(epoch, id, checks);
             }
             Message::PickComposeAttachments => return self.pick_compose_attachments(),
-            Message::AddComposeAttachments(id, paths) => self.add_compose_attachments(id, paths),
+            Message::AddComposeAttachments(id, paths) => {
+                return self.add_compose_attachments(id, paths);
+            }
+            Message::AttachmentSizesRead(id, sizes) => self.finish_attachment_sizes(id, sizes),
             Message::RemoveComposeAttachment(index) => self.remove_compose_attachment(index),
             Message::Send => return self.send_compose(),
             Message::Sent(epoch, result) => return self.finish_send(epoch, result),
