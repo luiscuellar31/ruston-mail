@@ -356,7 +356,7 @@ fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
             egui::Atom::grow(),
             egui::RichText::new("New message")
                 .size(15.0)
-                .color(Color32::WHITE)
+                .color(theme::ON_ACCENT)
                 .atom_id(egui::Id::new(NEW_MESSAGE_LABEL_ID)),
             egui::Atom::grow(),
         ))

@@ -14,11 +14,13 @@ const FILE: &str = "settings.json";
 const DEMO_FILE: &str = "settings-demo.json";
 const TEMP_ATTEMPTS: u32 = 100;
 
-/// Ratios are clamped on load: a damaged file must not produce a layout with
-/// no room to read in.
-const MIN_RATIO: f32 = 0.1;
-const MAX_RATIO: f32 = 0.9;
-const MIN_WINDOW: (f32, f32) = (480.0, 420.0);
+/// Panel ratios stay within this range, on load and when a divider moves: a
+/// damaged file must not produce a layout with no room to read in.
+pub const MIN_RATIO: f32 = 0.1;
+pub const MAX_RATIO: f32 = 0.9;
+/// The smallest a window may be: narrow enough for half a laptop screen,
+/// where the panes show one at a time.
+pub const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 /// Zoom is a scale on every length in the interface, so it has to stay within
 /// what a window can still show something useful at.
 pub const MIN_ZOOM: f32 = 0.8;
@@ -265,8 +267,13 @@ impl Settings {
         self.panels.sidebar = clamp_ratio(self.panels.sidebar, defaults.panels.sidebar);
         self.panels.conversations =
             clamp_ratio(self.panels.conversations, defaults.panels.conversations);
-        self.window.width = clamp_size(self.window.width, MIN_WINDOW.0, defaults.window.width);
-        self.window.height = clamp_size(self.window.height, MIN_WINDOW.1, defaults.window.height);
+        self.window.width =
+            clamp_size(self.window.width, MIN_WINDOW_SIZE[0], defaults.window.width);
+        self.window.height = clamp_size(
+            self.window.height,
+            MIN_WINDOW_SIZE[1],
+            defaults.window.height,
+        );
         self.window.position = self
             .window
             .position

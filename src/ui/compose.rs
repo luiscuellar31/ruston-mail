@@ -6,9 +6,9 @@ use super::settings::ZoomStep;
 use super::{identity, mailbox::detail, reader, theme};
 use crate::app::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
+use crate::settings::MIN_WINDOW_SIZE;
 
 const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
-const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 
 pub(super) fn viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("compose-window")

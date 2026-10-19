@@ -780,7 +780,7 @@ mod tests {
                 })
                 .collect();
             assert!(
-                !drawn.is_empty() && drawn.iter().all(|color| *color == egui::Color32::WHITE),
+                !drawn.is_empty() && drawn.iter().all(|color| *color == theme::ON_ACCENT),
                 "the label is faded: {:?}",
                 drawn.first()
             );

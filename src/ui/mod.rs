@@ -22,11 +22,9 @@ use eframe::egui;
 use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect, UndoMove};
 use crate::mail::Folder;
 use crate::runtime::Runtime;
-use crate::settings::{ComposePlacement, Settings, Window};
+use crate::settings::{ComposePlacement, MIN_WINDOW_SIZE, Settings, Window};
 use auto_refresh::AutoRefresh;
 
-/// Narrow enough for half a laptop screen, where the panes show one at a time.
-const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 /// Debounces settings writes while a window or divider is dragged.
 const SETTINGS_QUIET: f32 = 0.75;
 const LAYOUT_RESET_WAIT: f64 = 2.0;

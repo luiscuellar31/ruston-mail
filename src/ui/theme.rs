@@ -9,6 +9,8 @@ use eframe::egui::{
 pub const ACCENT: Color32 = Color32::from_rgb(109, 92, 245);
 pub const ACCENT_HOVER: Color32 = Color32::from_rgb(100, 83, 226);
 pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(86, 69, 198);
+/// Text and marks drawn on the accent color.
+pub const ON_ACCENT: Color32 = Color32::WHITE;
 pub const PANEL_PADDING: i8 = 16;
 pub const FOOTNOTE_SIZE: f32 = 11.0;
 /// Text in a conversation row and a message header: names, subjects and
@@ -225,7 +227,7 @@ impl Widget for IconButton<'_> {
         } else if self.danger {
             colors(ui).danger
         } else if self.selected == Some(true) {
-            Color32::WHITE
+            ON_ACCENT
         } else {
             ui.style().interact(&layout.response).fg_stroke.color
         };
@@ -360,7 +362,7 @@ fn paint_check_box(ui: &egui::Ui, square: egui::Rect, checked: bool, response: &
             egui::pos2(mark.center().x, mark.bottom()),
             egui::pos2(mark.right(), mark.top()),
         ],
-        Stroke::new(CHECK_MARK_WIDTH, Color32::WHITE),
+        Stroke::new(CHECK_MARK_WIDTH, ON_ACCENT),
     ));
 }
 
@@ -464,7 +466,7 @@ pub fn primary_visuals(ui: &mut egui::Ui) {
     ] {
         state.weak_bg_fill = fill;
         state.bg_stroke = Stroke::NONE;
-        state.fg_stroke.color = Color32::WHITE;
+        state.fg_stroke.color = ON_ACCENT;
     }
 }
 
@@ -572,7 +574,7 @@ pub fn install(context: &egui::Context) {
         // Only its color shows, on selected text and selected buttons. egui
         // would also draw it as a focused field's border, which
         // `paint_focus_ring` replaces.
-        style.visuals.selection.stroke = Stroke::new(0.0, Color32::WHITE);
+        style.visuals.selection.stroke = Stroke::new(0.0, ON_ACCENT);
         style.visuals.hyperlink_color = colors.hyperlink;
         // egui draws only hint text with it in this app.
         style.visuals.weak_text_color = Some(colors.placeholder);
@@ -1174,7 +1176,7 @@ mod tests {
             let (fill, stroke) = frame.expect("a button frame");
             let danger = DARK.danger;
             let expected = match emphasis {
-                Emphasis::Primary => (ACCENT, Stroke::NONE, Color32::WHITE),
+                Emphasis::Primary => (ACCENT, Stroke::NONE, ON_ACCENT),
                 Emphasis::Secondary => (neutral, Stroke::NONE, DARK.text),
                 Emphasis::Danger => (Color32::TRANSPARENT, Stroke::new(1.0, danger), danger),
             };
@@ -1200,10 +1202,10 @@ mod tests {
     }
 
     #[test]
-    fn white_text_on_accent_buttons_keeps_adequate_contrast() {
+    fn text_on_accent_buttons_keeps_adequate_contrast() {
         for fill in [ACCENT, ACCENT_HOVER, ACCENT_PRESSED] {
-            let ratio = contrast(Color32::WHITE, fill);
-            assert!(ratio >= 4.5, "white on {fill:?} has {ratio:.2}:1 contrast");
+            let ratio = contrast(ON_ACCENT, fill);
+            assert!(ratio >= 4.5, "text on {fill:?} has {ratio:.2}:1 contrast");
         }
     }
 
