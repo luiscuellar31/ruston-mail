@@ -224,10 +224,13 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             // A loading card does not know the sender yet, so it keeps room
             // for a name and an address of its own.
             let (header, _) = ui.allocate_exact_size(
-                egui::vec2(width, message_header_height(expanded, true, 1)),
+                egui::vec2(
+                    width,
+                    message_header_height(expanded, SenderLine::NameOverAddress, 1),
+                ),
                 Sense::hover(),
             );
-            paint_message_chevron(ui, header, expanded, false);
+            paint_message_chevron(ui, header, expanded, None);
             let date_width = 122.0_f32.min(header.width() * 0.3);
             let copy = header_copy_rect(header, date_width);
             let sender_height =
@@ -248,7 +251,11 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             );
             let expanded_lines = [
                 (20.0, 0.85, detail_height),
-                (recipients_top(true), 0.65, detail_height),
+                (
+                    recipients_top(SenderLine::NameOverAddress),
+                    0.65,
+                    detail_height,
+                ),
             ];
             let collapsed_lines = [(22.0, 0.85, sender_height)];
             let lines = if expanded {
@@ -869,11 +876,11 @@ fn message_header(
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(
             ui.available_width(),
-            message_header_height(expanded, line.separate_address(), recipients.len()),
+            message_header_height(expanded, line, recipients.len()),
         ),
         Sense::click(),
     );
-    paint_message_chevron(ui, rect, expanded, response.hovered());
+    paint_message_chevron(ui, rect, expanded, Some(&response));
 
     let painter = ui.painter_at(rect);
     let time = message
@@ -976,7 +983,7 @@ fn paint_header_details(
     copy_rect: egui::Rect,
 ) {
     if !recipients.is_empty() {
-        let top = recipients_top(line.separate_address());
+        let top = recipients_top(line);
         for (index, recipient_line) in recipients.iter().enumerate() {
             header_detail(
                 painter,
@@ -1066,12 +1073,12 @@ fn paint_name_and_address(
 }
 
 /// A header's height: an open card lists its recipients under the sender,
-/// and under the sender's address when that has a line of its own, in
-/// `recipient_lines` lines.
-fn message_header_height(expanded: bool, separate_address: bool, recipient_lines: usize) -> f32 {
+/// and under the sender's address when `line` gives that a line of its own,
+/// in `recipient_lines` lines.
+fn message_header_height(expanded: bool, line: SenderLine, recipient_lines: usize) -> f32 {
     if expanded {
         let more = recipient_lines.saturating_sub(1) as f32;
-        recipients_top(separate_address) + 27.0 + more * RECIPIENT_LINE_PITCH
+        recipients_top(line) + 27.0 + more * RECIPIENT_LINE_PITCH
     } else {
         44.0
     }
@@ -1094,14 +1101,21 @@ fn recipient_lines(message: &MailMessage) -> Vec<String> {
 }
 
 /// How far below an open header's top its "To:" line starts.
-fn recipients_top(separate_address: bool) -> f32 {
-    if separate_address { 39.0 } else { 20.0 }
+fn recipients_top(line: SenderLine) -> f32 {
+    if line.separate_address() { 39.0 } else { 20.0 }
 }
 
-fn paint_message_chevron(ui: &egui::Ui, rect: egui::Rect, expanded: bool, hovered: bool) {
+/// Paints a header's chevron, brighter while the pointer is over the header
+/// whose `response` it is. A loading card has none.
+fn paint_message_chevron(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    expanded: bool,
+    response: Option<&egui::Response>,
+) {
     let icon_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
     let points = chevron_points(icon_center, expanded);
-    let color = if hovered {
+    let color = if response.is_some_and(egui::Response::hovered) {
         ui.visuals().strong_text_color()
     } else {
         theme::colors(ui).muted
@@ -2409,11 +2423,13 @@ mod tests {
 
     #[test]
     fn loading_and_loaded_readers_keep_the_same_positions_at_every_scale() {
-        for (appearance, system_font) in [
-            (crate::settings::Appearance::Dark, false),
-            (crate::settings::Appearance::Light, false),
-            (crate::settings::Appearance::Dark, true),
-            (crate::settings::Appearance::Light, true),
+        use super::super::fonts::Typeface;
+
+        for (appearance, typeface) in [
+            (crate::settings::Appearance::Dark, Typeface::Bundled),
+            (crate::settings::Appearance::Light, Typeface::Bundled),
+            (crate::settings::Appearance::Dark, Typeface::System),
+            (crate::settings::Appearance::Light, Typeface::System),
         ] {
             for (width, zoom, native_scale) in [
                 (540.0, 1.0, 1.5),
@@ -2423,7 +2439,7 @@ mod tests {
             ] {
                 let context = egui::Context::default();
                 theme::install(&context);
-                super::super::fonts::apply(&context, system_font);
+                super::super::fonts::apply(&context, typeface);
                 theme::apply(&context, appearance);
                 context.set_zoom_factor(zoom);
                 for subject in [

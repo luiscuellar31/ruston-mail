@@ -133,26 +133,21 @@ fn theme_toggle(
             Appearance::Dark,
         ),
     };
-    let response = icon_button(ui, icon, label, true);
+    let response = icon_button(ui, icon, label);
     if response.clicked() {
         messages.push(Message::SetAppearance(next));
     }
     response
 }
 
-fn icon_button(
-    ui: &mut egui::Ui,
-    icon: egui::ImageSource<'static>,
-    label: &str,
-    enabled: bool,
-) -> egui::Response {
+/// A button that shows an icon and is announced by `label`; it is disabled
+/// inside a disabled `ui`.
+fn icon_button(ui: &mut egui::Ui, icon: egui::ImageSource<'static>, label: &str) -> egui::Response {
     let image = egui::Image::new(icon)
         .fit_to_exact_size(egui::Vec2::splat(16.0))
         .tint(theme::colors(ui).muted);
-    let response = ui.add_enabled(
-        enabled,
-        egui::Button::image(image).min_size(theme::ICON_BUTTON_MIN_SIZE),
-    );
+    let enabled = ui.is_enabled();
+    let response = ui.add(egui::Button::image(image).min_size(theme::ICON_BUTTON_MIN_SIZE));
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     response.on_hover_text(label)
 }
@@ -477,7 +472,9 @@ fn password_toggle(ui: &mut egui::Ui, show_password: &mut bool, busy: bool) -> e
             "Show password",
         )
     };
-    let response = icon_button(ui, icon, label, !busy);
+    let response = ui
+        .add_enabled_ui(!busy, |ui| icon_button(ui, icon, label))
+        .inner;
     if response.clicked() {
         *show_password = !*show_password;
     }
@@ -1125,6 +1122,27 @@ mod tests {
             );
             assert!(button.right() <= available.right());
             assert!(available.right() - button.right() <= spacing);
+        }
+    }
+
+    #[test]
+    fn a_busy_password_toggle_is_announced_as_unavailable() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.enable_accesskit();
+        for busy in [false, true] {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                password_toggle(ui, &mut false, busy);
+            });
+            let unavailable = output
+                .platform_output
+                .accesskit_update
+                .iter()
+                .flat_map(|update| &update.nodes)
+                .find(|(_, node)| node.label() == Some("Show password"))
+                .map(|(_, node)| node.is_disabled());
+            output.drop_without_applying_deltas();
+            assert_eq!(unavailable, Some(busy), "busy: {busy}");
         }
     }
 

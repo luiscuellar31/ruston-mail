@@ -560,7 +560,7 @@ pub const STAR: &str = "★";
 pub const DOT: &str = "·";
 
 pub fn install(context: &egui::Context) {
-    super::fonts::apply(context, false);
+    super::fonts::apply(context, super::fonts::Typeface::Bundled);
     egui_extras::install_image_loaders(context);
     for mode in [egui::Theme::Dark, egui::Theme::Light] {
         let colors = colors_for(mode);

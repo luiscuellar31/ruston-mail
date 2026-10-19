@@ -182,7 +182,7 @@ impl DesktopApp {
     fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
         theme::install(context);
         apply_appearance(context, &settings);
-        fonts::apply(context, settings.system_font);
+        fonts::apply(context, fonts::Typeface::chosen(settings.system_font));
         let runtime = Runtime::new().expect("failed to start background runtime");
         runtime.attach(context);
         let (app, effects) = App::boot(demo, settings);
@@ -779,34 +779,34 @@ impl DesktopApp {
             let plain = !command && !input.modifiers.alt && !input.modifiers.shift;
             let mut presses = Vec::new();
             if command && input.key_pressed(egui::Key::R) {
-                presses.push(key(Key::Character('r'), true));
+                presses.push(KeyPress::with_command(Key::Character('r')));
             }
             if command && input.key_pressed(egui::Key::F) {
-                presses.push(key(Key::Character('f'), true));
+                presses.push(KeyPress::with_command(Key::Character('f')));
             }
             if command && input.key_pressed(egui::Key::Comma) {
-                presses.push(key(Key::Character(','), true));
+                presses.push(KeyPress::with_command(Key::Character(',')));
             }
             if command && input.key_pressed(egui::Key::N) {
-                presses.push(key(Key::Character('n'), true));
+                presses.push(KeyPress::with_command(Key::Character('n')));
             }
             if command && input.key_pressed(egui::Key::Enter) {
-                presses.push(key(Key::Enter, true));
+                presses.push(KeyPress::with_command(Key::Enter));
             }
             if !menu_open && input.key_pressed(egui::Key::Escape) {
-                presses.push(key(Key::Escape, false));
+                presses.push(KeyPress::plain(Key::Escape));
             }
             // A focused widget keeps the arrows and Enter: egui moves focus
             // with the arrows and presses a focused button with Enter. Delete
             // waits too, as a focused row need not be the selected one.
             if plain && !wants_text && input.key_pressed(egui::Key::ArrowDown) {
-                presses.push(key(Key::ArrowDown, false));
+                presses.push(KeyPress::plain(Key::ArrowDown));
             } else if plain && !wants_text && input.key_pressed(egui::Key::ArrowUp) {
-                presses.push(key(Key::ArrowUp, false));
+                presses.push(KeyPress::plain(Key::ArrowUp));
             } else if plain && !wants_text && input.key_pressed(egui::Key::Enter) {
-                presses.push(key(Key::Enter, false));
+                presses.push(KeyPress::plain(Key::Enter));
             } else if plain && !wants_text && input.key_pressed(egui::Key::Delete) {
-                presses.push(key(Key::Delete, false));
+                presses.push(KeyPress::plain(Key::Delete));
             } else if plain && !typing {
                 let letter = input.events.iter().find_map(|event| match event {
                     egui::Event::Text(text) => text
@@ -815,12 +815,12 @@ impl DesktopApp {
                         .filter(|first| matches!(first, 'j' | 'k')),
                     _ => None,
                 });
-                presses.extend(letter.map(|letter| key(Key::Character(letter), false)));
+                presses.extend(letter.map(|letter| KeyPress::plain(Key::Character(letter))));
             } else if !wants_text && command && !input.modifiers.alt && !input.modifiers.shift {
                 if input.key_pressed(egui::Key::Backspace) {
-                    presses.push(key(Key::Backspace, true));
+                    presses.push(KeyPress::with_command(Key::Backspace));
                 } else if input.key_pressed(egui::Key::Delete) {
-                    presses.push(key(Key::Delete, true));
+                    presses.push(KeyPress::with_command(Key::Delete));
                 }
             }
             presses
@@ -1021,7 +1021,10 @@ impl eframe::App for DesktopApp {
         theme::reduce_motion(context, system_reduces_motion());
         self.root_title_bar.keep(context);
         self.apply_zoom(context);
-        fonts::apply(context, self.app.settings().system_font);
+        fonts::apply(
+            context,
+            fonts::Typeface::chosen(self.app.settings().system_font),
+        );
         self.drain_runtime(context);
         #[cfg(target_os = "macos")]
         {
@@ -1218,14 +1221,6 @@ fn zoom_keys(context: &egui::Context) -> Option<settings::ZoomStep> {
 /// layout, so it takes no Ctrl shortcut there.
 fn ctrl_alt_types(modifiers: egui::Modifiers) -> bool {
     cfg!(target_os = "windows") && modifiers.command && modifiers.alt
-}
-
-fn key(key: Key, command: bool) -> KeyPress {
-    KeyPress {
-        key,
-        command,
-        other_modifier: false,
-    }
 }
 
 fn apply_appearance(context: &egui::Context, settings: &Settings) {
@@ -1929,13 +1924,13 @@ mod tests {
         desktop.dispatch(Message::SelectConversation(id), &context);
         assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Reader);
         desktop.dispatch(
-            Message::KeyPressed(key(Key::Character('f'), true)),
+            Message::KeyPressed(KeyPress::with_command(Key::Character('f'))),
             &context,
         );
         assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Mail);
         assert!(desktop.ui.focus_search);
         desktop.dispatch(
-            Message::KeyPressed(key(Key::Character('n'), true)),
+            Message::KeyPressed(KeyPress::with_command(Key::Character('n'))),
             &context,
         );
         assert_eq!(desktop.ui.compact_view, mailbox::CompactView::Reader);
@@ -2300,7 +2295,7 @@ mod tests {
     #[test]
     fn unchanged_settings_close_with_escape_or_a_folder() {
         let (mut desktop, context) = demo_with_settings();
-        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        desktop.dispatch(Message::KeyPressed(KeyPress::plain(Key::Escape)), &context);
         assert!(!desktop.app.showing_settings());
         assert!(desktop.pending_settings_exit.is_none());
 
@@ -2316,7 +2311,7 @@ mod tests {
         let (mut desktop, context) = demo_with_settings();
         desktop.settings_draft.as_mut().unwrap().confirm_links = false;
 
-        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        desktop.dispatch(Message::KeyPressed(KeyPress::plain(Key::Escape)), &context);
         assert!(desktop.app.showing_settings());
         assert!(matches!(
             desktop.pending_settings_exit,
@@ -2325,7 +2320,7 @@ mod tests {
         desktop.resolve_settings_exit(settings::ExitDecision::KeepEditing, &context);
 
         desktop.dispatch(
-            Message::KeyPressed(key(Key::Character(','), true)),
+            Message::KeyPressed(KeyPress::with_command(Key::Character(','))),
             &context,
         );
         assert!(matches!(
@@ -2351,7 +2346,7 @@ mod tests {
         assert!(desktop.app.showing_settings());
         assert!(!desktop.app.settings().confirm_links);
 
-        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        desktop.dispatch(Message::KeyPressed(KeyPress::plain(Key::Escape)), &context);
         assert!(!desktop.app.showing_settings());
         assert!(desktop.pending_settings_exit.is_none());
     }
@@ -2371,7 +2366,7 @@ mod tests {
             Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::SelectFolder(_))
         ));
 
-        desktop.dispatch(Message::KeyPressed(key(Key::Escape, false)), &context);
+        desktop.dispatch(Message::KeyPressed(KeyPress::plain(Key::Escape)), &context);
         assert!(matches!(
             desktop.pending_settings_exit,
             Some(SettingsExit::Navigate(ref message)) if matches!(**message, Message::SelectFolder(_)),

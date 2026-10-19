@@ -66,6 +66,26 @@ pub struct KeyPress {
     pub other_modifier: bool,
 }
 
+impl KeyPress {
+    /// A key pressed alone.
+    pub fn plain(key: Key) -> Self {
+        Self {
+            key,
+            command: false,
+            other_modifier: false,
+        }
+    }
+
+    /// A key pressed with Command on macOS, or Ctrl elsewhere.
+    pub fn with_command(key: Key) -> Self {
+        Self {
+            key,
+            command: true,
+            other_modifier: false,
+        }
+    }
+}
+
 impl App {
     pub(super) fn draft_covers_reader(&self) -> bool {
         self.compose.is_some() && self.settings.compose_placement == ComposePlacement::ReadingPane
@@ -186,16 +206,8 @@ mod tests {
 
     #[test]
     fn keys_map_to_mailbox_shortcuts() {
-        let plain = |key| KeyPress {
-            key,
-            command: false,
-            other_modifier: false,
-        };
-        let command = |key| KeyPress {
-            key,
-            command: true,
-            other_modifier: false,
-        };
+        let plain = KeyPress::plain;
+        let command = KeyPress::with_command;
 
         assert_eq!(
             shortcut(plain(Key::Character('j'))),

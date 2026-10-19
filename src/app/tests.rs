@@ -533,20 +533,12 @@ fn unread_badge_reflects_inbox_unread_and_preference() {
 
 /// Sends a plain key press, as the window would when no field took it.
 fn press(app: &mut App, key: Key) {
-    let _ = app.update(Message::KeyPressed(KeyPress {
-        key,
-        command: false,
-        other_modifier: false,
-    }));
+    let _ = app.update(Message::KeyPressed(KeyPress::plain(key)));
 }
 
 /// Sends a command key press (Cmd on macOS, Ctrl on other platforms).
 fn press_command(app: &mut App, key: Key) {
-    let _ = app.update(Message::KeyPressed(KeyPress {
-        key,
-        command: true,
-        other_modifier: false,
-    }));
+    let _ = app.update(Message::KeyPressed(KeyPress::with_command(key)));
 }
 
 #[test]
@@ -2208,11 +2200,7 @@ fn the_row_a_list_key_opens_is_brought_into_view() {
     let mut app = loaded_demo_app();
     open_conversation(&mut app, "demo-0");
 
-    let effects = app.update(Message::KeyPressed(KeyPress {
-        key: Key::Character('j'),
-        command: false,
-        other_modifier: false,
-    }));
+    let effects = app.update(Message::KeyPressed(KeyPress::plain(Key::Character('j'))));
 
     assert_eq!(
         app.mailbox().unwrap().selected_conversation(),
