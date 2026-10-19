@@ -224,6 +224,14 @@ pub mod human_verification {
     pub const CAPTCHA: &str = "captcha";
 }
 
+/// Server-side Sieve filters.
+pub mod filter {
+    /// The Sieve version filters are written in.
+    pub const SIEVE_VERSION: i64 = 2;
+    /// The status of a filter that applies to new mail.
+    pub const ENABLED: i64 = 1;
+}
+
 /// The `Code` of a Proton response, for the codes the client acts on.
 pub(crate) mod response_code {
     /// The request succeeded.

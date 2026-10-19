@@ -78,7 +78,11 @@ pub fn filters_list(json_mode: bool, filters: &[Filter]) {
     }
     terminal::println!("{} filter(s)", filters.len());
     for f in filters {
-        let state = if f.status == 1 { "enabled" } else { "disabled" };
+        let state = if f.is_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        };
         terminal::println!("  [{state}] {}  {}", f.id, f.name);
     }
 }

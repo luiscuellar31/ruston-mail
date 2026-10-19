@@ -1,6 +1,7 @@
 //! Sieve filters API (`/mail/v4/filters`).
 
 use crate::error::Result;
+use crate::model::enums::filter;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
@@ -15,12 +16,19 @@ pub struct Filter {
     /// Filter display name.
     #[serde(default)]
     pub name: String,
-    /// Status (`1` = enabled, `0` = disabled).
+    /// Status: [`filter::ENABLED`] when the filter applies to new mail.
     #[serde(default)]
     pub status: i64,
     /// Sieve filter format version.
     #[serde(default)]
     pub version: i64,
+}
+
+impl Filter {
+    /// Whether the filter applies to new mail.
+    pub fn is_enabled(&self) -> bool {
+        self.status == filter::ENABLED
+    }
 }
 
 #[derive(Deserialize)]
@@ -35,11 +43,6 @@ struct OneResp {
     filter: Filter,
 }
 
-/// The Sieve version filters are written in.
-const SIEVE_VERSION: u8 = 2;
-/// The status of a filter that applies to new mail.
-const ENABLED_STATUS: u8 = 1;
-
 /// List the account's Sieve filters.
 pub async fn list<D: Doer>(d: &D) -> Result<Vec<Filter>> {
     let r: ListResp = d.decode(Request::get("/mail/v4/filters")).await?;
@@ -51,8 +54,8 @@ pub async fn create<D: Doer>(d: &D, name: &str, sieve: &str) -> Result<Filter> {
     let body = serde_json::json!({
         "Name": name,
         "Sieve": sieve,
-        "Version": SIEVE_VERSION,
-        "Status": ENABLED_STATUS,
+        "Version": filter::SIEVE_VERSION,
+        "Status": filter::ENABLED,
     });
     let r: OneResp = d
         .decode(Request::post("/mail/v4/filters").json(body))
@@ -62,7 +65,7 @@ pub async fn create<D: Doer>(d: &D, name: &str, sieve: &str) -> Result<Filter> {
 
 /// Validate a Sieve script (does not create a filter).
 pub async fn check<D: Doer>(d: &D, sieve: &str) -> Result<()> {
-    let body = serde_json::json!({ "Sieve": sieve, "Version": SIEVE_VERSION });
+    let body = serde_json::json!({ "Sieve": sieve, "Version": filter::SIEVE_VERSION });
     let _: IgnoredAny = d
         .decode(Request::put("/mail/v4/filters/check").json(body))
         .await?;
@@ -137,5 +140,17 @@ mod tests {
         let http = HttpClient::new(server.uri(), "Other");
 
         check(&http, "keep;").await.unwrap();
+    }
+
+    #[test]
+    fn only_the_enabled_status_applies_a_filter() {
+        let with_status = |status| Filter {
+            id: "filter-id".into(),
+            name: "news".into(),
+            status,
+            version: filter::SIEVE_VERSION,
+        };
+        assert!(with_status(filter::ENABLED).is_enabled());
+        assert!(!with_status(0).is_enabled());
     }
 }

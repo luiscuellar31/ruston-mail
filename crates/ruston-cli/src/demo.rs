@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use ruston_core::mail::attachments::safe_attachment_name;
 use ruston_core::model::ConversationLabel;
-use ruston_core::model::enums::{label_ids, resolve_folder};
+use ruston_core::model::enums::{filter, label_ids, resolve_folder};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
     Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
@@ -633,8 +633,8 @@ fn demo_filters() -> Vec<Filter> {
     vec![Filter {
         id: "filter-demo-01".to_string(),
         name: "Auto-label Work".to_string(),
-        status: 1,
-        version: 1,
+        status: filter::ENABLED,
+        version: filter::SIEVE_VERSION,
     }]
 }
 
@@ -1121,8 +1121,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let f = Filter {
                     id: "filter-demo-02".to_string(),
                     name,
-                    status: 1,
-                    version: 1,
+                    status: filter::ENABLED,
+                    version: filter::SIEVE_VERSION,
                 };
                 render::filter_created(ctx.json, &f);
                 Ok(())
