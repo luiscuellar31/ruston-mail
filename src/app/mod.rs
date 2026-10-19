@@ -655,8 +655,10 @@ impl App {
                 return self.apply_row_action(row_id, action);
             }
             Message::UndoMove => return self.undo_move(),
+            // The notice stays on screen while signing out, and its timer must
+            // still clear it there.
             Message::DismissUndo(offer) => {
-                if let Some(mailbox) = self.active_mailbox() {
+                if let Some(mailbox) = &mut self.mailbox {
                     mailbox.dismiss_undo(&offer);
                 }
             }

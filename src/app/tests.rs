@@ -1403,6 +1403,20 @@ fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
 }
 
 #[test]
+fn an_undo_offer_that_expires_while_signing_out_still_goes() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-3");
+    press_command(&mut app, Key::Backspace);
+    let offer = app.mailbox().unwrap().undo().cloned().expect("an offer");
+
+    // The list stays on screen while signing out, and so does the notice,
+    // whose timer asks for it to go.
+    app.set_auth_state(AuthState::SigningOut);
+    let _ = app.update(Message::DismissUndo(offer));
+    assert!(app.mailbox().unwrap().undo().is_none());
+}
+
+#[test]
 fn an_automatic_refresh_holds_back_neither_a_move_nor_its_undo() {
     let mut app = loaded_demo_app();
     open_conversation(&mut app, "demo-3");
