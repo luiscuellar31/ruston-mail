@@ -24,6 +24,34 @@ Thanks for helping with Ruston Mail. The
    remains accurate. For UI changes, use the fictional desktop mailbox when
    possible; the demo itself does not contact Proton.
 
+## Engineering rules
+
+- Write each rule, and each value that must match another, once: Proton values
+  in `ruston-core`'s `model/enums.rs`, values several views share in
+  `src/ui/theme.rs`, and behavior both apps need in `ruston-core`.
+- Reuse what the crate, `ruston-core`, and current dependencies provide. Add a
+  trait, generic, wrapper, or crate only when a second user or a test double
+  needs it.
+- Use an enum or a named-field struct instead of a `bool` passed as a literal,
+  several `bool`s, or a tuple of more than two items.
+- Interface code reads `App` and returns `Message`s; the shell applies them in
+  named steps. Sign-in fields, edited in place to keep secrets out of copies,
+  are the exception.
+- Keep platform code in one function per system with the same signature, not in
+  `#[cfg]` branches inside a function.
+- Keep slow work off the interface thread: disk, network, dialogs, the
+  credential store, processes, and system calls run as `Runtime` effects, with
+  blocking calls in `spawn_blocking`.
+- Wake the window with `request_repaint()` when a result arrives, and never
+  emit on every frame a message the app ignores.
+- Comments say why, briefly; doc comments say what an item is for. Describe the
+  code as it is, not how it changed; a regression test may name its failure.
+- When behavior changes, update the names, docs, and tests that describe it,
+  wherever they are.
+- Keep a test module longer than about 300 lines in its own `tests.rs`, share
+  helpers through a `test_support` module, and wait for other threads or tasks
+  with a deadline or `tokio::time::timeout`, not a fixed sleep.
+
 ## Pull requests and AI assistance
 
 AI tools are welcome. Please review the full diff yourself and make sure you

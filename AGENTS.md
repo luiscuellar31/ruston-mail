@@ -1,10 +1,9 @@
 # Working in this repository
 
-- For package ownership and cross-crate changes, consult `docs/ARCHITECTURE.md`.
-- For development checks, pull requests, and commit conventions, consult
-  `CONTRIBUTING.md`.
-- Prefer readable, maintainable code consistent with the surrounding style over
-  fewer lines.
+- Find the package that owns a change in `docs/ARCHITECTURE.md`, and follow
+  `CONTRIBUTING.md` for checks, engineering rules, and commits.
+- Keep each change to what the task needs: do not rename, restructure, or
+  reformat code it does not touch, and suggest such cleanups separately.
 - When responsibilities, flows, persistence, or navigation paths change, update
-  `docs/ARCHITECTURE.md` in the same change.
-- Keep user-facing documentation aligned with behavior changes.
+  `docs/ARCHITECTURE.md` in the same change, and keep user-facing documentation
+  aligned with behavior.
