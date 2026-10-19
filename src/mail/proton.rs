@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 
 use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
-use ruston_core::model::enums::{label_ids, message_flag};
+use ruston_core::model::enums::{human_verification, label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
     Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, HvResolver, Label,
@@ -687,13 +687,13 @@ impl Prompter {
         Arc::new(move |challenge: HvChallenge| {
             let prompter = prompter.clone();
             Box::pin(async move {
-                if !offers_captcha(&challenge) {
+                if !challenge.offers_captcha() {
                     return Err(Error::HumanVerification(challenge));
                 }
                 let url = challenge.verification_url();
                 let prompt = |done| SignInPrompt::HumanVerification { url, done };
                 match prompter.ask(prompt).await {
-                    Ok(()) => Ok((challenge.token, "captcha".to_owned())),
+                    Ok(()) => Ok((challenge.token, human_verification::CAPTCHA.to_owned())),
                     // The client keeps this resolver after its sign-in. A
                     // challenge then is Proton's requirement, as for a
                     // resumed session.
@@ -1162,17 +1162,11 @@ async fn resume_within(
     }
 }
 
-/// Whether Ruston can answer `challenge`: its external-browser flow solves a
-/// CAPTCHA, which Proton also means when it names no method.
-fn offers_captcha(challenge: &HvChallenge) -> bool {
-    challenge.methods.is_empty() || challenge.methods.iter().any(|method| method == "captcha")
-}
-
 /// What a human verification that ended a sign-in or a session asks of the
 /// person: signing in again answers a CAPTCHA, while any other method is one
 /// Ruston cannot answer.
 fn verification_error(challenge: &HvChallenge) -> AuthError {
-    if offers_captcha(challenge) {
+    if challenge.offers_captcha() {
         AuthError::HumanVerificationRequired
     } else {
         AuthError::HumanVerificationUnsupported

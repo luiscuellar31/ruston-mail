@@ -30,6 +30,7 @@
 //! with the original challenge token. Nothing is captured from the page.
 
 use crate::terminal;
+use ruston_core::model::enums::human_verification;
 use ruston_core::{Error, HvChallenge, HvResolver, Result};
 use std::future::Future;
 use std::io::{Read, Write};
@@ -74,14 +75,14 @@ async fn solve(
     api_base: String,
     use_chrome: bool,
 ) -> Result<(String, String)> {
-    if !chal.methods.is_empty() && !chal.methods.iter().any(|m| m == "captcha") {
+    if !chal.offers_captcha() {
         return Err(Error::Other(format!(
             "human verification requires an unsupported method: {:?} (only 'captcha' is handled)",
             chal.methods
         )));
     }
     if let Some(t) = pre {
-        return Ok((t, "captcha".to_string()));
+        return Ok((t, human_verification::CAPTCHA.to_string()));
     }
 
     if use_chrome {
@@ -91,7 +92,7 @@ async fn solve(
             .map_err(|e| Error::Other(format!("hv task: {e}")))??;
         // The verify page attached the solved captcha to the challenge, so the
         // retry echoes the challenge token itself (as Proton Bridge does).
-        return Ok((chal.token, "captcha".to_string()));
+        return Ok((chal.token, human_verification::CAPTCHA.to_string()));
     }
 
     let (endpoint, _origin) = captcha_endpoint(&api_base);
@@ -233,7 +234,7 @@ fn run_manual_flow(page: &str) -> Result<(String, String)> {
 
     let token = wait_for_token(&listener, &nonce, Instant::now() + HV_TIMEOUT)?;
     let _ = terminal::writeln!(std::io::stderr(), "Token received — continuing login.");
-    Ok((token, "captcha".to_string()))
+    Ok((token, human_verification::CAPTCHA.to_string()))
 }
 
 /// Tells the person how to hand this sign-in's token back: through the

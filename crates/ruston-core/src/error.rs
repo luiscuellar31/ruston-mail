@@ -16,6 +16,16 @@ pub struct HvChallenge {
 }
 
 impl HvChallenge {
+    /// Whether solving a CAPTCHA answers this challenge: Proton names it among
+    /// the methods, or names no method at all.
+    pub fn offers_captcha(&self) -> bool {
+        self.methods.is_empty()
+            || self
+                .methods
+                .iter()
+                .any(|method| method == human_verification::CAPTCHA)
+    }
+
     /// The page where a person solves this challenge's CAPTCHA. The host the
     /// server named is kept only when it is one of Proton's own over https,
     /// since the page receives the token; anything else opens Proton's
@@ -331,6 +341,22 @@ mod tests {
             page.verification_url(),
             "https://verify.proton.me/?methods=captcha&token=chal%2F1%20x"
         );
+    }
+
+    #[test]
+    fn a_captcha_answers_a_challenge_that_names_it_or_no_method() {
+        for (methods, offered) in [
+            (vec![], true),
+            (vec!["captcha"], true),
+            (vec!["email", "captcha"], true),
+            (vec!["email", "sms"], false),
+        ] {
+            let named = HvChallenge {
+                methods: methods.iter().map(|method| (*method).to_owned()).collect(),
+                ..challenge("", "token")
+            };
+            assert_eq!(named.offers_captcha(), offered, "{methods:?}");
+        }
     }
 
     #[test]

@@ -219,7 +219,8 @@ pub mod human_verification {
     pub const PAGE: &str = "https://verify.proton.me";
     /// The domain of Proton's own verification hosts.
     pub const DOMAIN: &str = "proton.me";
-    /// The method a browser outside the app can complete.
+    /// The method a browser outside the app can complete, named again with
+    /// the token that answers it.
     pub const CAPTCHA: &str = "captcha";
 }
 
