@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use ruston_core::ApiError;
 use secrecy::SecretString;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +34,7 @@ impl AuthError {
     pub fn may_pass(self) -> bool {
         match self {
             Self::Connection | Self::TimedOut | Self::SessionUnavailable => true,
-            Self::Service { http_status, .. } => http_status == 429 || http_status >= 500,
+            Self::Service { http_status, .. } => ApiError::status_may_pass(http_status),
             _ => false,
         }
     }

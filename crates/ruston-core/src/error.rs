@@ -104,7 +104,13 @@ impl ApiError {
     /// Whether the same request may succeed later: Proton was busy or down,
     /// rather than refusing the request or the session.
     pub fn may_pass(&self) -> bool {
-        self.is_rate_limited() || self.is_server_error()
+        Self::status_may_pass(self.http_status)
+    }
+
+    /// [`may_pass`](Self::may_pass) for an answer known only by its HTTP
+    /// status, as a frontend keeps it to show.
+    pub fn status_may_pass(http_status: u16) -> bool {
+        http_status == 429 || http_status >= 500
     }
 }
 

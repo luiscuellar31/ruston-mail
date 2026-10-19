@@ -301,8 +301,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   is a prompt of the same sign-in, through core's `LoginPrompts`, so the
   password and code are not entered or checked twice. Resuming the saved
   session at startup has the same two minutes. A failure that may pass, such
-  as no network, Proton being unavailable or locked password storage, keeps
-  the session saved, and `App` offers the sign-in screen's **Try again**,
+  as no network, Proton being busy or down by core's `ApiError` rule, or
+  locked password storage, keeps the session saved, and `App` offers the sign-in screen's **Try again**,
   which resumes it again; only the check the startup screen waits for is
   applied.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
