@@ -240,7 +240,11 @@ fn sidebar(
 }
 
 fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
-    ui.heading(egui::RichText::new("Ruston Mail").size(23.0).strong());
+    ui.heading(
+        egui::RichText::new("Ruston Mail")
+            .size(theme::APP_NAME_SIZE)
+            .strong(),
+    );
     ui.add_space(12.0);
 
     if new_message_button(ui).clicked() {
@@ -1012,7 +1016,7 @@ fn conversation_row(
         egui::pos2(lines.text_left, lines.sender_y),
         Align2::LEFT_CENTER,
         correspondents,
-        FontId::proportional(14.0),
+        FontId::proportional(theme::ROW_TEXT_SIZE),
         sender_color,
         text_width,
     );
@@ -1021,12 +1025,12 @@ fn conversation_row(
         egui::pos2(lines.text_left, lines.subject_y),
         Align2::LEFT_CENTER,
         subject,
-        FontId::proportional(14.0),
+        FontId::proportional(theme::ROW_TEXT_SIZE),
         subject_color,
         text_width,
     );
 
-    let meta_font = FontId::proportional(11.0);
+    let meta_font = FontId::proportional(theme::FOOTNOTE_SIZE);
     painter.text(
         egui::pos2(lines.meta_right, lines.sender_y),
         Align2::RIGHT_CENTER,

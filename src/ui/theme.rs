@@ -11,6 +11,13 @@ pub const ACCENT_HOVER: Color32 = Color32::from_rgb(100, 83, 226);
 pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(86, 69, 198);
 pub const PANEL_PADDING: i8 = 16;
 pub const FOOTNOTE_SIZE: f32 = 11.0;
+/// Text in a conversation row and a message header: names, subjects and
+/// previews.
+pub const ROW_TEXT_SIZE: f32 = 14.0;
+/// A message's body, in the reader and the composer.
+pub const BODY_SIZE: f32 = 15.0;
+/// The app's name heading the sign-in screen and the mailbox's sidebar.
+pub const APP_NAME_SIZE: f32 = 23.0;
 pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
 /// How long a looping animation waits before asking for its next frame.

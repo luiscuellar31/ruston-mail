@@ -353,7 +353,7 @@ fn body_editor(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &m
             .id(body_id(compose.id()))
             .hint_text("Write your message…")
             // What is written reads at the size it will be read at.
-            .font(egui::FontId::proportional(reader::BODY_SIZE))
+            .font(egui::FontId::proportional(theme::BODY_SIZE))
             .frame(theme::field_frame(ui))
             .desired_width(f32::INFINITY)
             .desired_rows(16),
@@ -614,7 +614,7 @@ mod tests {
             .iter()
             .find(|galley| galley.text() == "Hello")
             .expect("the body should be drawn");
-        assert_eq!(body.job.sections[0].format.font_id.size, reader::BODY_SIZE);
+        assert_eq!(body.job.sections[0].format.font_id.size, theme::BODY_SIZE);
     }
 
     #[test]

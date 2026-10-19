@@ -17,11 +17,12 @@ use crate::mail::{
 use crate::settings::Reading;
 
 const SUBJECT_SIZE: f32 = 22.0;
+/// A sender's address beside their name.
+const ADDRESS_SIZE: f32 = 12.0;
 const MAX_QUOTE_DEPTH: u8 = 4;
 /// Deeper list items keep this level's indent, as in the CLI, so a deeply
 /// nested list cannot push its text out of the column.
 const MAX_LIST_DEPTH: u8 = 8;
-pub(super) const BODY_SIZE: f32 = 15.0;
 const READING_WIDTH: f32 = 680.0;
 const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
 const MARKER_WIDTH: f32 = 12.0;
@@ -229,8 +230,10 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             paint_message_chevron(ui, header, expanded, false);
             let date_width = 122.0_f32.min(header.width() * 0.3);
             let copy = header_copy_rect(header, date_width);
-            let sender_height = ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(14.0)));
-            let detail_height = ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(11.0)));
+            let sender_height =
+                ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::ROW_TEXT_SIZE)));
+            let detail_height =
+                ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::FOOTNOTE_SIZE)));
             theme::paint_skeleton(
                 ui.painter(),
                 egui::Rect::from_min_size(
@@ -280,7 +283,7 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                 reply_toolbar(ui, None, &mut Vec::new());
                 ui.separator();
                 let line_height =
-                    ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(BODY_SIZE)));
+                    ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::BODY_SIZE)));
                 for fraction in [0.92, 0.76, 0.84, 0.48] {
                     skeleton_bar(ui, width * fraction, line_height, fill);
                 }
@@ -882,7 +885,7 @@ fn message_header(
     let date = theme::truncated_galley(
         &painter,
         &time,
-        FontId::proportional(11.0),
+        FontId::proportional(theme::FOOTNOTE_SIZE),
         theme::colors(ui).muted,
         (rect.width() - HEADER_TEXT_INSET) * 0.5,
     );
@@ -945,7 +948,7 @@ fn paint_sender(
             painter,
             sender_origin,
             sender,
-            FontId::proportional(14.0),
+            FontId::proportional(theme::ROW_TEXT_SIZE),
             ui.visuals().strong_text_color(),
             sender_width,
         ),
@@ -988,7 +991,7 @@ fn paint_header_details(
             painter,
             copy_rect.left_top() + egui::vec2(0.0, 22.0),
             preview,
-            FontId::proportional(14.0),
+            FontId::proportional(theme::ROW_TEXT_SIZE),
             theme::colors(ui).muted,
             copy_rect.width(),
         );
@@ -1041,14 +1044,14 @@ fn paint_name_and_address(
     let address = theme::truncated_galley(
         painter,
         &format!("<{address}>"),
-        FontId::proportional(12.0),
+        FontId::proportional(ADDRESS_SIZE),
         muted,
         width * 2.0 / 3.0,
     );
     let name = theme::truncated_galley(
         painter,
         name,
-        FontId::proportional(14.0),
+        FontId::proportional(theme::ROW_TEXT_SIZE),
         strong,
         (width - address.size().x - GAP).max(0.0),
     );
@@ -1136,7 +1139,7 @@ fn header_detail(
         painter,
         position,
         text,
-        FontId::proportional(11.0),
+        FontId::proportional(theme::FOOTNOTE_SIZE),
         color,
         width,
     );
@@ -1205,7 +1208,7 @@ fn message_body(
     match &message.body {
         MessageBody::PlainText(content) => {
             ui.add(
-                egui::Label::new(egui::RichText::new(content).size(BODY_SIZE))
+                egui::Label::new(egui::RichText::new(content).size(theme::BODY_SIZE))
                     .selectable(true)
                     .wrap(),
             );
@@ -1214,7 +1217,7 @@ fn message_body(
         MessageBody::Unreadable => {
             ui.label(
                 egui::RichText::new(UNREADABLE_NOTICE)
-                    .size(BODY_SIZE)
+                    .size(theme::BODY_SIZE)
                     .color(theme::colors(ui).danger),
             );
         }
@@ -1314,7 +1317,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
                     Layout::right_to_left(Align::TOP),
                     |ui| {
                         ui.add(
-                            egui::Label::new(egui::RichText::new(marker).size(BODY_SIZE))
+                            egui::Label::new(egui::RichText::new(marker).size(theme::BODY_SIZE))
                                 .selectable(true),
                         );
                     },
@@ -1329,9 +1332,13 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(
-                        egui::Label::new(egui::RichText::new(content).monospace().size(BODY_SIZE))
-                            .selectable(true)
-                            .wrap(),
+                        egui::Label::new(
+                            egui::RichText::new(content)
+                                .monospace()
+                                .size(theme::BODY_SIZE),
+                        )
+                        .selectable(true)
+                        .wrap(),
                     );
                 });
         }
@@ -1346,7 +1353,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(format!("Image not loaded: {description}"))
-                                .size(BODY_SIZE - 2.0)
+                                .size(theme::BODY_SIZE - 2.0)
                                 .color(theme::colors(ui).muted),
                         )
                         .selectable(true)
@@ -1405,7 +1412,7 @@ fn link_menu(ui: &mut egui::Ui, link: &str, messages: &mut Vec<Message>) {
 
 /// Builds span styling; `TextFormat` allows padded code backgrounds.
 fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>) -> LayoutJob {
-    let size = heading.map(heading_size).unwrap_or(BODY_SIZE);
+    let size = heading.map(heading_size).unwrap_or(theme::BODY_SIZE);
     // egui's bundled faces have no bold, so weight reads as a brighter ink.
     let ink = if span.strong || heading.is_some() {
         ui.visuals().strong_text_color()

@@ -7,6 +7,8 @@ use crate::settings::Appearance;
 const CARD_WIDTH: f32 = 480.0;
 const CARD_PADDING: i8 = 36;
 const LOGO_SIZE: f32 = 44.0;
+/// The heading of each sign-in step.
+const HEADING_SIZE: f32 = 28.0;
 
 pub(super) fn show(
     root: &mut egui::Ui,
@@ -192,7 +194,7 @@ fn sign_in(
         _ => (SignInStep::Credentials, false),
     };
 
-    ui.heading(egui::RichText::new("Sign in").size(28.0).strong());
+    ui.heading(egui::RichText::new("Sign in").size(HEADING_SIZE).strong());
     ui.label(
         egui::RichText::new("Continue to Ruston Mail with your Proton account.")
             .color(theme::colors(ui).muted),
@@ -321,7 +323,7 @@ fn sign_in(
 fn verification(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
     ui.heading(
         egui::RichText::new("Verify you are human")
-            .size(28.0)
+            .size(HEADING_SIZE)
             .strong(),
     );
     ui.add_space(12.0);
@@ -514,7 +516,11 @@ fn brand(ui: &mut egui::Ui) {
                 .fit_to_exact_size(egui::Vec2::splat(LOGO_SIZE))
                 .alt_text("Ruston Mail logo"),
         );
-        ui.label(egui::RichText::new("Ruston Mail").size(23.0).strong());
+        ui.label(
+            egui::RichText::new("Ruston Mail")
+                .size(theme::APP_NAME_SIZE)
+                .strong(),
+        );
     });
 }
 
