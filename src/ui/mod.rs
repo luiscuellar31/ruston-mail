@@ -115,9 +115,11 @@ struct DesktopApp {
     app: App,
     runtime: Runtime,
     ui: UiState,
-    demo: bool,
+    /// Whether the process started as the demo. It stays so after Exit demo,
+    /// while `app.is_demo()` follows the backend that is open.
+    demo_process: bool,
     title: String,
-    dock_badge: Option<u32>,
+    unread_badge: Option<u32>,
     auto_refresh: AutoRefresh,
     /// Preferences being edited in the settings pane until Apply is pressed.
     settings_draft: Option<Settings>,
@@ -138,9 +140,9 @@ struct DesktopApp {
     /// Waits for the requested window size before resetting egui's cached pane widths.
     layout_reset_at: Option<f64>,
     /// The main window: the parent of native dialogs, retained until each
-    /// completes, including portal export, and the window whose place is
-    /// remembered.
-    dialog_parent: Option<std::sync::Arc<winit::window::Window>>,
+    /// completes, including portal export, the window whose place is
+    /// remembered, and on Windows the taskbar button with the unread count.
+    main_window: Option<std::sync::Arc<winit::window::Window>>,
     /// Native dialog completion, including cancellation, releases this slot.
     file_dialog_open: bool,
     notifications: notifications::Notifications,
@@ -166,8 +168,8 @@ enum SettingsExit {
 impl DesktopApp {
     fn new(creation: &eframe::CreationContext<'_>, demo: bool, settings: Settings) -> Self {
         let mut app = Self::with_context(&creation.egui_ctx, demo, settings);
-        app.dialog_parent = creation.winit_window().cloned();
-        if let Some(window) = &app.dialog_parent {
+        app.main_window = creation.winit_window().cloned();
+        if let Some(window) = &app.main_window {
             window_place::restore(window, app.app.settings().window);
         }
         #[cfg(target_os = "macos")]
@@ -188,9 +190,9 @@ impl DesktopApp {
             app,
             runtime,
             ui: UiState::default(),
-            demo,
+            demo_process: demo,
             title: String::new(),
-            dock_badge: None,
+            unread_badge: None,
             auto_refresh: AutoRefresh::default(),
             settings_draft: None,
             pending_settings_exit: None,
@@ -201,7 +203,7 @@ impl DesktopApp {
             settings_seen_at: 0.0,
             last_window_size: None,
             layout_reset_at: None,
-            dialog_parent: None,
+            main_window: None,
             file_dialog_open: false,
             notifications: notifications::Notifications::default(),
             activation: None,
@@ -593,7 +595,7 @@ impl DesktopApp {
                 }
                 UiEffect::PickComposeAttachments(id) => {
                     self.file_dialog_open = true;
-                    let parent = self.dialog_parent.clone();
+                    let parent = self.main_window.clone();
                     let task = dialogs::open(
                         parent.as_ref(),
                         self.app.settings().compose_placement == ComposePlacement::Window,
@@ -615,7 +617,7 @@ impl DesktopApp {
                     suggested_name,
                 } => {
                     self.file_dialog_open = true;
-                    let parent = self.dialog_parent.clone();
+                    let parent = self.main_window.clone();
                     let task = dialogs::open(parent.as_ref(), false, |dialog| {
                         dialog
                             .set_title("Save attachment as (choose a new filename)")
@@ -676,7 +678,7 @@ impl DesktopApp {
                 height: unscaled.y,
                 maximized: false,
                 position: self
-                    .dialog_parent
+                    .main_window
                     .as_deref()
                     .and_then(window_place::position)
                     .or(saved.position),
@@ -920,17 +922,17 @@ impl DesktopApp {
     }
 
     fn update_title(&mut self, context: &egui::Context) {
-        let title = window_title(&self.app, self.demo);
+        let title = window_title(&self.app, self.demo_process);
         if title != self.title {
             self.title.clone_from(&title);
             context.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
     }
 
-    fn update_dock_badge(&mut self) {
-        let badge = dock_badge_count(&self.app);
-        if badge != self.dock_badge && set_dock_badge(self.dialog_parent.as_deref(), badge) {
-            self.dock_badge = badge;
+    fn update_unread_badge(&mut self) {
+        let badge = unread_badge_count(&self.app);
+        if badge != self.unread_badge && set_unread_badge(self.main_window.as_deref(), badge) {
+            self.unread_badge = badge;
         }
     }
 
@@ -1053,7 +1055,7 @@ impl eframe::App for DesktopApp {
         self.refresh_automatically(context);
         self.save_settled_settings(context);
         self.update_title(context);
-        self.update_dock_badge();
+        self.update_unread_badge();
     }
 
     /// Closing is the one moment the settings must reach the file whether or
@@ -1061,7 +1063,7 @@ impl eframe::App for DesktopApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.notifications.stop();
         self.app.save_settings_before_quitting();
-        set_dock_badge(self.dialog_parent.as_deref(), None);
+        set_unread_badge(self.main_window.as_deref(), None);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1323,10 +1325,13 @@ fn version_label(ui: &mut egui::Ui) -> egui::Response {
 }
 
 fn window_title(app: &App, demo: bool) -> String {
-    let unread = app
-        .mailbox()
-        .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX));
-    title_label(unread, demo)
+    title_label(inbox_unread(app), demo)
+}
+
+/// The Inbox's unread count, once the mailbox has its counts.
+fn inbox_unread(app: &App) -> Option<u32> {
+    app.mailbox()
+        .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX))
 }
 
 fn title_label(unread: Option<u32>, demo: bool) -> String {
@@ -1341,20 +1346,18 @@ fn title_label(unread: Option<u32>, demo: bool) -> String {
     }
 }
 
-pub(crate) fn dock_badge_count(app: &App) -> Option<u32> {
+pub(crate) fn unread_badge_count(app: &App) -> Option<u32> {
     if !app.settings().show_unread_badge {
         return None;
     }
-    app.mailbox()
-        .and_then(|mailbox| mailbox.counts()?.unread(&Folder::INBOX))
-        .filter(|&count| count > 0)
+    inbox_unread(app).filter(|&count| count > 0)
 }
 
 /// Shows the unread count on the Dock icon, or on Windows the taskbar
 /// button. Returns false while the window cannot show it yet, so the next
 /// pass tries again.
 #[cfg(target_os = "macos")]
-fn set_dock_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
+fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
     use objc2_app_kit::NSApplication;
     use objc2_foundation::{MainThreadMarker, NSString};
 
@@ -1368,12 +1371,12 @@ fn set_dock_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -
 }
 
 #[cfg(target_os = "windows")]
-fn set_dock_badge(window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
+fn set_unread_badge(window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
     window.is_none_or(|window| taskbar::show_unread(window, count))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn set_dock_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> bool {
+fn set_unread_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> bool {
     true
 }
 
@@ -2417,15 +2420,15 @@ mod tests {
     }
 
     #[test]
-    fn dock_badge_count_returns_none_when_unauthenticated() {
+    fn unread_badge_count_returns_none_when_unauthenticated() {
         let (app, _) = App::boot(false, crate::settings::Settings::default());
-        assert_eq!(dock_badge_count(&app), None);
+        assert_eq!(unread_badge_count(&app), None);
     }
 
     #[test]
-    fn set_dock_badge_does_not_panic() {
-        assert!(set_dock_badge(None, Some(5)));
-        assert!(set_dock_badge(None, None));
+    fn set_unread_badge_does_not_panic() {
+        assert!(set_unread_badge(None, Some(5)));
+        assert!(set_unread_badge(None, None));
     }
 
     #[test]

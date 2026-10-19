@@ -5,6 +5,12 @@ use crate::mail::{MailAddress, MailMessage, MessageBody};
 use crate::settings::Reading;
 
 const PAGE_SIZE: u32 = 50;
+/// The requests a mailbox opens with, in `open`: the Inbox's first
+/// page, then its counts.
+const OPENING_PAGE: RequestId = 1;
+const OPENING_COUNTS: RequestId = 2;
+/// A request ID no test issues: a reply to it answers nothing pending.
+const NEVER_ISSUED: RequestId = 99;
 
 /// One of Proton's own folders, as a place to list from.
 fn sys(folder: MailFolder) -> Folder {
@@ -104,7 +110,12 @@ fn ids(mailbox: &Mailbox) -> Vec<&str> {
 }
 
 fn open() -> (Mailbox, PageRequest) {
-    Mailbox::open(Folder::INBOX, PAGE_SIZE, 1, 2)
+    open_with_page_size(PAGE_SIZE)
+}
+
+/// The Inbox, opened to list `page_size` rows a page.
+fn open_with_page_size(page_size: u32) -> (Mailbox, PageRequest) {
+    Mailbox::open(Folder::INBOX, page_size, OPENING_PAGE, OPENING_COUNTS)
 }
 
 fn loaded_inbox(ids: &[&str], total: u32) -> Mailbox {
@@ -280,7 +291,7 @@ fn search_loads_more_than_fifty_results_without_losing_the_first_page() {
 
 #[test]
 fn search_pages_reuse_the_id_index_after_a_row_leaves_the_results() {
-    let (mut mailbox, inbox) = Mailbox::open(Folder::INBOX, 2, 1, 2);
+    let (mut mailbox, inbox) = open_with_page_size(2);
     mailbox.finish_page(inbox.id, page(&["inbox"], 1));
     mailbox.set_search_query("invoice".into());
     let first = mailbox.start_search(3).unwrap();
@@ -549,6 +560,7 @@ fn searched(listed: &[&str], found: &[&str], opened: &str) -> Mailbox {
     mailbox.finish_page(request.id, page_of(rows, total));
 
     mailbox.set_search_query("report".to_owned());
+    // Fixtures issue IDs from 80, clear of the 3, 4 and on that tests issue.
     let search = mailbox.start_search(90).unwrap();
     let results: Vec<ConversationSummary> = found.iter().map(|id| unread(id)).collect();
     let total = results.len() as u32;
@@ -1260,7 +1272,7 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
 
 #[test]
 fn later_pages_merge_interleaved_dates_and_keep_earlier_rows_first_on_ties() {
-    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    let (mut mailbox, first) = open_with_page_size(3);
     mailbox.finish_page(first.id, dated_page(&[("a", 100), ("b", 80), ("c", 50)], 7));
 
     let next = mailbox.load_more(3).unwrap();
@@ -1275,7 +1287,7 @@ fn later_pages_merge_interleaved_dates_and_keep_earlier_rows_first_on_ties() {
 
 #[test]
 fn interleaved_pages_keep_undated_rows_with_their_neighbours() {
-    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    let (mut mailbox, first) = open_with_page_size(3);
     mailbox.finish_page(
         first.id,
         page_of(
@@ -1301,7 +1313,7 @@ fn interleaved_pages_keep_undated_rows_with_their_neighbours() {
 
 #[test]
 fn older_pages_preserve_undated_rows_and_extend_local_filter() {
-    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 3, 1, 2);
+    let (mut mailbox, first) = open_with_page_size(3);
     let mut match_a = dated("a", 100);
     match_a.subject = Some("receipt".into());
     let mut match_b = dated("b", 70);
@@ -1327,7 +1339,7 @@ fn older_pages_preserve_undated_rows_and_extend_local_filter() {
 
 #[test]
 fn page_size_controls_whether_more_pages_exist() {
-    let (mut mailbox, request) = Mailbox::open(Folder::INBOX, 2, 1, 2);
+    let (mut mailbox, request) = open_with_page_size(2);
     mailbox.finish_page(request.id, page(&["a", "b"], 3));
     assert!(mailbox.has_more());
 
@@ -1453,9 +1465,10 @@ fn failed_refresh_keeps_previous_list() {
 fn counts_apply_once() {
     let (mut mailbox, _) = open();
 
-    // `open` left request 2 in flight; its response is the one that counts.
+    // `open` left its counts request in flight; its response is the one that
+    // counts.
     let counts: MailboxCounts = [(sys(MailFolder::Inbox), 4)].into_iter().collect();
-    mailbox.finish_counts(2, Ok(counts));
+    mailbox.finish_counts(OPENING_COUNTS, Ok(counts));
     assert_eq!(
         mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
         Some(4)
@@ -1465,7 +1478,10 @@ fn counts_apply_once() {
         None
     );
 
-    assert_eq!(mailbox.finish_counts(2, Ok(MailboxCounts::default())), None);
+    assert_eq!(
+        mailbox.finish_counts(OPENING_COUNTS, Ok(MailboxCounts::default())),
+        None
+    );
     assert_eq!(
         mailbox.counts().unwrap().unread(&sys(MailFolder::Inbox)),
         Some(4)
@@ -1665,7 +1681,7 @@ fn stale_classified_page_cannot_replace_newer_folder() {
 fn split_rows_are_searchable_and_leave_counts_alone() {
     let (mut mailbox, request) = open();
     let counts: MailboxCounts = [(sys(MailFolder::Inbox), 2)].into_iter().collect();
-    mailbox.finish_counts(2, Ok(counts.clone()));
+    mailbox.finish_counts(OPENING_COUNTS, Ok(counts.clone()));
     mailbox.finish_page(
         request.id,
         page_of(vec![message_row("m1"), message_row("m2"), summary("c1")], 2),
@@ -1683,6 +1699,7 @@ fn split_rows_are_searchable_and_leave_counts_alone() {
 
 fn selected_in(folder: MailFolder, ids: &[&str], selected: &str) -> Mailbox {
     let (mut mailbox, inbox) = open();
+    // Fixtures issue IDs from 80, clear of the 3, 4 and on that tests issue.
     let listing = if folder == MailFolder::Inbox {
         inbox.id
     } else {
@@ -1698,6 +1715,7 @@ fn selected_in(folder: MailFolder, ids: &[&str], selected: &str) -> Mailbox {
 
 fn opened_unread(ids: &[&str], opened: &str) -> Mailbox {
     let (mut mailbox, request) = open();
+    // Fixtures issue IDs from 80, clear of the 3, 4 and on that tests issue.
     let rows = ids.iter().map(|id| unread(id)).collect();
     mailbox.finish_page(request.id, page_of(rows, ids.len() as u32));
     let load = mailbox.start_conversation_load(opened.into(), 82).unwrap();
@@ -1737,7 +1755,7 @@ fn failed_or_stale_reads_leave_the_row_unread() {
     let mut mailbox = opened_unread(&["a"], "a");
     let request = mailbox.start_mark_read(3).unwrap();
     let stale = ActionRequest {
-        id: 99,
+        id: NEVER_ISSUED,
         ..request.clone()
     };
 
@@ -1929,7 +1947,7 @@ fn only_the_current_read_of_the_same_row_releases_a_queued_action() {
     );
 
     let stale = ActionRequest {
-        id: 99,
+        id: NEVER_ISSUED,
         ..second.clone()
     };
     assert_eq!(
@@ -2379,7 +2397,7 @@ fn stale_or_moved_action_responses_change_nothing() {
         3,
     );
     let stale = ActionRequest {
-        id: 99,
+        id: NEVER_ISSUED,
         ..request.clone()
     };
 
@@ -2592,7 +2610,7 @@ fn typing_keeps_a_conversation_that_is_still_loading() {
 fn search_does_not_change_mailbox_counts() {
     let mut mailbox = searchable_mailbox();
     let counts: MailboxCounts = [(sys(MailFolder::Inbox), 7)].into_iter().collect();
-    mailbox.finish_counts(2, Ok(counts.clone()));
+    mailbox.finish_counts(OPENING_COUNTS, Ok(counts.clone()));
 
     mailbox.set_search_query("rust".into());
     mailbox.set_search_query("missing".into());

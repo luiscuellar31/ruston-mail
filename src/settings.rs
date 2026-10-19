@@ -53,7 +53,8 @@ pub struct Settings {
     #[serde(default = "enabled")]
     pub check_recipient_protection: bool,
     /// Take recipient domains written in another script, sent in their ASCII
-    /// `xn--` form. Off, only ASCII domains are taken, as before this choice.
+    /// `xn--` form. Off, only ASCII domains are taken, and settings saved
+    /// before this choice existed keep it off.
     #[serde(default)]
     pub accept_international_domains: bool,
     /// Color scheme of the desktop interface.

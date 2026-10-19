@@ -447,7 +447,8 @@ impl App {
         self.close_mailbox(result.err());
     }
 
-    /// Drops all session state and returns to the login screen.
+    /// Returns to the login screen, dropping the session's state. Only a draft
+    /// whose session Proton ended stays, in memory, for its own account.
     pub(super) fn close_mailbox(&mut self, error: Option<AuthError>) {
         // A folder the account made belongs to it: the next account must not
         // see its name or have its ID asked for. Proton's own folders stay

@@ -445,9 +445,12 @@ fn folder_button(
         );
     }
     let response = layout.response;
-    let name = folder.name().to_owned();
+    let spoken_name = folder.name().to_owned();
     response.widget_info(|| {
-        let label = unread.map_or_else(|| name.clone(), |count| format!("{name}, {count} unread"));
+        let label = unread.map_or_else(
+            || spoken_name.clone(),
+            |count| format!("{spoken_name}, {count} unread"),
+        );
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
     });
     if response.clicked() {
@@ -664,7 +667,7 @@ fn undo_notice(
         return;
     };
     let now = context.input(|input| input.time);
-    let Some(remaining) = sync_undo_notice(state, offer, now) else {
+    let Some(remaining) = undo_notice_remaining(state, offer, now) else {
         messages.push(Message::DismissUndo(offer.clone()));
         return;
     };
@@ -696,7 +699,7 @@ fn undo_notice(
     });
 }
 
-fn sync_undo_notice(
+fn undo_notice_remaining(
     state: &mut UiState,
     offer: &UndoMove,
     now: f64,
@@ -742,8 +745,8 @@ struct RowAnchor {
 pub(super) struct ConversationScroll {
     scroll_id: egui::Id,
     folder: Folder,
-    query: String,
-    search: Option<String>,
+    search_query: String,
+    shown_search_query: Option<String>,
     offset: f32,
     anchors: [Option<RowAnchor>; 2],
 }
@@ -761,8 +764,8 @@ impl ConversationScroll {
         Self {
             scroll_id,
             folder: mailbox.folder().clone(),
-            query: mailbox.search_query().to_owned(),
-            search: mailbox.shown_search_query().map(str::to_owned),
+            search_query: mailbox.search_query().to_owned(),
+            shown_search_query: mailbox.shown_search_query().map(str::to_owned),
             offset,
             anchors: std::array::from_fn(|extra| {
                 let index = first + extra;
@@ -788,8 +791,8 @@ impl ConversationScroll {
     fn same_view(&self, mailbox: &Mailbox, scroll_id: egui::Id) -> bool {
         self.scroll_id == scroll_id
             && &self.folder == mailbox.folder()
-            && self.query == mailbox.search_query()
-            && self.search.as_deref() == mailbox.shown_search_query()
+            && self.search_query == mailbox.search_query()
+            && self.shown_search_query.as_deref() == mailbox.shown_search_query()
     }
 
     fn offset_after_update(&self, mailbox: &Mailbox, scroll_id: egui::Id) -> Option<f32> {
@@ -2854,21 +2857,21 @@ mod tests {
         let mut state = UiState::default();
 
         assert_eq!(
-            sync_undo_notice(&mut state, &offer, 10.0),
+            undo_notice_remaining(&mut state, &offer, 10.0),
             Some(std::time::Duration::from_secs(6))
         );
         assert_eq!(
-            sync_undo_notice(&mut state, &offer, 15.0),
+            undo_notice_remaining(&mut state, &offer, 15.0),
             Some(std::time::Duration::from_secs(1))
         );
-        assert_eq!(sync_undo_notice(&mut state, &offer, 16.0), None);
+        assert_eq!(undo_notice_remaining(&mut state, &offer, 16.0), None);
 
         let next = UndoMove {
             row_id: "second".into(),
             ..offer
         };
         assert_eq!(
-            sync_undo_notice(&mut state, &next, 16.0),
+            undo_notice_remaining(&mut state, &next, 16.0),
             Some(std::time::Duration::from_secs(6))
         );
     }

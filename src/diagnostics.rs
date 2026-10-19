@@ -16,7 +16,7 @@ pub fn show_debug_output() {
 }
 
 /// Runs the app, saying in a window when it stops with a panic. The panic
-/// still ends the process as before; only the window is added.
+/// still ends the process.
 pub fn report_panics<T>(run: impl FnOnce() -> T) -> T {
     #[cfg(target_os = "windows")]
     {

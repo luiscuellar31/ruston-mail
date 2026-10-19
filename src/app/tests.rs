@@ -18,11 +18,18 @@ const NOW: i64 = 1_789_000_000;
 /// What a refresh asks for: the open folder's page and its counts.
 const PAGE_AND_COUNTS: usize = 2;
 
+/// The requests a mailbox opens with, at boot and in `authenticated_app`:
+/// its first page, then its counts.
+const OPENING_PAGE: RequestId = 1;
+const OPENING_COUNTS: RequestId = 2;
+/// A request ID no test issues: a reply to it answers nothing pending.
+const NEVER_ISSUED: RequestId = 99;
+
 fn authenticated_app() -> App {
     let mut app = App::new(Settings::default());
     app.auth_state = AuthState::Authenticated { email: None };
-    app.mailbox = Some(Mailbox::open(Folder::INBOX, 50, 1, 2).0);
-    app.last_request = 2;
+    app.mailbox = Some(Mailbox::open(Folder::INBOX, 50, OPENING_PAGE, OPENING_COUNTS).0);
+    app.last_request = OPENING_COUNTS;
     app
 }
 
@@ -513,15 +520,15 @@ fn attachments_from_discarded_compose_are_ignored_by_new_compose() {
 }
 
 #[test]
-fn dock_badge_reflects_inbox_unread_and_preference() {
+fn unread_badge_reflects_inbox_unread_and_preference() {
     let mut app = loaded_demo_app();
-    assert_eq!(crate::ui::dock_badge_count(&app), Some(6));
+    assert_eq!(crate::ui::unread_badge_count(&app), Some(6));
 
     let _ = app.update(Message::SetShowUnreadBadge(false));
-    assert_eq!(crate::ui::dock_badge_count(&app), None);
+    assert_eq!(crate::ui::unread_badge_count(&app), None);
 
     let _ = app.update(Message::SetShowUnreadBadge(true));
-    assert_eq!(crate::ui::dock_badge_count(&app), Some(6));
+    assert_eq!(crate::ui::unread_badge_count(&app), Some(6));
 }
 
 /// Sends a plain key press, as the window would when no field took it.
@@ -1188,9 +1195,9 @@ fn rerender_inputs_issue_no_mailbox_requests() {
 
 fn loaded_demo_app() -> App {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     let counts = demo_service(&app).counts();
-    let _ = app.update(Message::CountsLoaded(2, Ok(counts)));
+    let _ = app.update(Message::CountsLoaded(OPENING_COUNTS, Ok(counts)));
     app
 }
 
@@ -1266,7 +1273,7 @@ fn demo_empty_and_spam_folders_load() {
 #[test]
 fn demo_selection_is_local() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
 
     let _ = app.update(Message::SelectConversation("demo-3".into()));
 
@@ -1318,7 +1325,7 @@ fn selecting_only_queues_a_detail_request() {
 #[test]
 fn no_selection_has_no_reader() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
 
     assert_eq!(app.mailbox().unwrap().reader_state(), &ReaderState::Empty);
 }
@@ -1326,7 +1333,7 @@ fn no_selection_has_no_reader() {
 #[test]
 fn demo_selection_opens_reader_with_newest_message_expanded() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
 
     open_conversation(&mut app, "demo-0");
 
@@ -1341,7 +1348,7 @@ fn demo_selection_opens_reader_with_newest_message_expanded() {
 #[test]
 fn returning_to_a_conversation_restores_its_reader_without_loading() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
@@ -1365,7 +1372,7 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
 #[test]
 fn folder_switch_closes_reader() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     let _ = app.update(Message::SelectConversation("demo-0".into()));
 
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
@@ -1816,7 +1823,7 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
 
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
-    let effects = app.update(Message::ConversationsLoaded(1, page));
+    let effects = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
     assert_eq!(effects.units(), 1, "the waiting search starts");
     assert!(app.mailbox().unwrap().loaded_count() > 0);
 
@@ -1844,7 +1851,7 @@ fn a_search_waiting_for_the_folder_is_dropped_when_the_query_changes() {
 
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
-    let effects = app.update(Message::ConversationsLoaded(1, page));
+    let effects = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
 
     assert_eq!(effects.units(), 0, "Enter was for another query");
     assert_eq!(app.mailbox().unwrap().shown_search_query(), None);
@@ -2417,7 +2424,7 @@ fn moving_only_conversation_closes_reader_cleanly() {
 #[test]
 fn resizing_panels_only_changes_layout() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     open_conversation(&mut app, "demo-0");
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
     let requests = app.last_request;
@@ -2468,7 +2475,7 @@ fn resetting_layout_preserves_other_preferences() {
 #[test]
 fn exiting_demo_clears_mailbox_and_opens_login() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
 
     let _ = app.update(Message::Logout);
 
@@ -2482,7 +2489,7 @@ fn exiting_demo_clears_mailbox_and_opens_login() {
 #[test]
 fn a_demo_process_never_starts_a_proton_sign_in() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     let _ = app.update(Message::Logout);
     app.login_form.username = "username sentinel".into();
     app.login_form.password = "password sentinel".to_owned().into();
@@ -2500,7 +2507,7 @@ fn a_demo_process_never_starts_a_proton_sign_in() {
 #[test]
 fn a_demo_process_keeps_its_notice_while_the_form_is_edited() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, 1, 0);
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
     let _ = app.update(Message::Logout);
 
     app.login_form.username = "username sentinel".into();
@@ -2884,7 +2891,7 @@ fn expired_session_signs_out_and_clears_mailbox() {
     ));
 
     let _ = app.update(Message::ConversationsLoaded(
-        1,
+        OPENING_PAGE,
         Err(MailboxError::SessionExpired),
     ));
 
@@ -2904,7 +2911,7 @@ fn a_session_that_cannot_be_read_keeps_the_mailbox_and_the_draft() {
     ));
 
     let _ = app.update(Message::ConversationsLoaded(
-        1,
+        OPENING_PAGE,
         Err(MailboxError::SessionUnavailable),
     ));
 
@@ -2918,7 +2925,7 @@ fn a_session_that_cannot_be_read_keeps_the_mailbox_and_the_draft() {
 /// page request, while `app` holds whatever it was given.
 fn session_ended_by_proton(app: &mut App) {
     let _ = app.update(Message::ConversationsLoaded(
-        1,
+        OPENING_PAGE,
         Err(MailboxError::SessionExpired),
     ));
 }
@@ -3072,7 +3079,7 @@ fn stale_expired_session_response_is_ignored() {
     let mut app = authenticated_app();
 
     let _ = app.update(Message::ConversationsLoaded(
-        99,
+        NEVER_ISSUED,
         Err(MailboxError::SessionExpired),
     ));
 
@@ -3085,7 +3092,10 @@ fn logout_result_after_session_expiry_is_ignored() {
     let mut app = authenticated_app();
     let previous_epoch = app.session_epoch;
     app.auth_state = AuthState::SigningOut;
-    let _ = app.update(Message::CountsLoaded(2, Err(MailboxError::SessionExpired)));
+    let _ = app.update(Message::CountsLoaded(
+        OPENING_COUNTS,
+        Err(MailboxError::SessionExpired),
+    ));
 
     let _ = app.update(Message::LogoutFinished(
         previous_epoch,
@@ -3101,7 +3111,10 @@ fn logout_result_from_a_previous_session_is_ignored() {
     let mut app = authenticated_app();
     let previous_epoch = app.session_epoch;
     app.auth_state = AuthState::SigningOut;
-    let _ = app.update(Message::CountsLoaded(2, Err(MailboxError::SessionExpired)));
+    let _ = app.update(Message::CountsLoaded(
+        OPENING_COUNTS,
+        Err(MailboxError::SessionExpired),
+    ));
     let _ = app.open_mailbox(MailBackend::demo(), None, None);
     app.auth_state = AuthState::SigningOut;
 
@@ -3395,7 +3408,7 @@ fn inspection_candidates_do_not_spawn_an_unbounded_number_of_tasks() {
 fn stale_page_response_does_not_start_inspections() {
     let mut app = loaded_demo_app();
     let page = inspection_page(&app, 2);
-    let effects = app.update(Message::ConversationsLoaded(0, Ok(page)));
+    let effects = app.update(Message::ConversationsLoaded(NEVER_ISSUED, Ok(page)));
     assert_eq!(effects.units(), 0);
 }
 

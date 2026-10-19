@@ -424,7 +424,7 @@ mod tests {
 
         assert_eq!(read.accepted, ["ivan@xn--80a1acny.xn--p1ai"]);
         assert_eq!(read.international.len(), 1);
-        // ASCII domains are sent exactly as typed, as before.
+        // ASCII domains are sent exactly as typed.
         let read = recipients("Alex@Example.com", Domains::International);
         assert_eq!(read.accepted, ["Alex@Example.com"]);
         assert!(read.international.is_empty());
