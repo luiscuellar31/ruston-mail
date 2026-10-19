@@ -151,14 +151,8 @@ pub struct Ctx {
 
 impl From<&Cli> for Ctx {
     fn from(c: &Cli) -> Self {
-        let env_demo = std::env::var("RUSTON_DEMO")
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(false);
+        let env_demo = std::env::var(ruston_core::DEMO_ENV)
+            .is_ok_and(|value| ruston_core::demo_requested(&value));
 
         Ctx {
             profile: c.profile.clone(),

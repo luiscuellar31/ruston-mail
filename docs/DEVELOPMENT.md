@@ -22,7 +22,8 @@ cargo run -p ruston-cli -- --help
 
 ## Demo mailbox
 
-Demo mode uses fictional mail and never contacts Proton or saves a session:
+Demo mode uses fictional mail and never contacts Proton or saves a session.
+`RUSTON_DEMO` turns it on in both apps with `1`, `true`, `yes`, or `on`:
 
 ```sh
 RUSTON_DEMO=1 cargo run

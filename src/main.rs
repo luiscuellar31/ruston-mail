@@ -13,7 +13,6 @@ mod runtime;
 mod settings;
 mod ui;
 
-use std::ffi::OsStr;
 use std::process::ExitCode;
 
 use tracing_subscriber::EnvFilter;
@@ -25,9 +24,6 @@ const DEBUG_HTTP_ENV: &str = "RUSTON_DEBUG_HTTP";
 /// timing. Other ruston-core targets log usernames, session UIDs and
 /// addresses, so the filter is fixed and `RUST_LOG` is deliberately ignored.
 const DEBUG_HTTP_FILTER: &str = "ruston_core::http=debug";
-
-/// Set to `1` to open a local fictional mailbox instead of Proton.
-const DEMO_ENV: &str = "RUSTON_DEMO";
 
 fn main() -> ExitCode {
     if std::env::var_os(DEBUG_HTTP_ENV).is_some() {
@@ -48,29 +44,11 @@ fn main() -> ExitCode {
 }
 
 fn start() -> Result<(), Box<dyn std::error::Error>> {
-    let demo = demo_requested(std::env::var_os(DEMO_ENV).as_deref());
+    let demo =
+        std::env::var(ruston_core::DEMO_ENV).is_ok_and(|value| ruston_core::demo_requested(&value));
     let urls = launch::arguments(std::env::args_os().skip(1))?;
     match launch::Instance::start(demo, urls)? {
         launch::Start::Forwarded => Ok(()),
         launch::Start::Primary(instance) => Ok(ui::run(demo, instance)?),
-    }
-}
-
-fn demo_requested(value: Option<&OsStr>) -> bool {
-    value == Some(OsStr::new("1"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn demo_requires_explicit_one() {
-        assert!(demo_requested(Some(OsStr::new("1"))));
-
-        assert!(!demo_requested(None));
-        for value in ["", "0", "true", "yes", " 1", "01"] {
-            assert!(!demo_requested(Some(OsStr::new(value))), "{value:?}");
-        }
     }
 }
