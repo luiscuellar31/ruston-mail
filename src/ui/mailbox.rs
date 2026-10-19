@@ -679,8 +679,8 @@ fn undo_notice(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(format!("Moved to {}.", offer.to.name()));
-                    // The move back waits for a loading list.
-                    let ready = !mailbox.is_busy();
+                    // The move back waits while the list loads or loads more.
+                    let ready = mailbox.takes_actions();
                     if ui
                         .add_enabled(ready, theme::compact_button("Undo"))
                         .clicked()
@@ -2563,6 +2563,57 @@ mod tests {
         assert!(
             search.left() - 40.0 < notice.left() && notice.right() < list.right() + 20.0,
             "the notice at {notice:?} leaves the list column"
+        );
+    }
+
+    #[test]
+    fn undo_answers_while_the_list_refreshes() {
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::ConversationsLoaded(
+            1,
+            Ok(ConversationPage {
+                conversations: vec![pagination_row("demo-3", 1000)],
+                total: 1,
+                inspect_candidates: Vec::new(),
+            }),
+        ));
+        app.update(Message::SelectConversation("demo-3".into()));
+        app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+            Folder::System(MailFolder::Archive),
+        )));
+        let _ = app.update(Message::RefreshMailbox);
+        assert!(matches!(
+            app.mailbox().unwrap().status(),
+            ListStatus::Refreshing(_)
+        ));
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let size = egui::vec2(1100.0, 700.0);
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        }
+        let undo = visible_text_rect(&shapes, "Undo")
+            .expect("the offer's Undo")
+            .center();
+
+        let press = |pressed| egui::Event::PointerButton {
+            pos: undo,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let click = egui::RawInput {
+            events: vec![egui::Event::PointerMoved(undo), press(true), press(false)],
+            ..Default::default()
+        };
+        let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, click);
+        assert!(
+            asked
+                .iter()
+                .any(|message| matches!(message, Message::UndoMove)),
+            "Undo waited for the refresh"
         );
     }
 

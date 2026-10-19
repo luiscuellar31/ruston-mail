@@ -260,8 +260,15 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   replaced, unless a later action changes the same flag, and drops its undo
   offer; a row a refused move took out of the view comes back with the list,
   which `App` reloads. A confirmation applies its flag again, over a confirmed
-  automatic read, and takes out again a row that a reload brought back while
-  its move was on the way.
+  automatic read, and takes out again a row that a search brought back while
+  its move was on the way. Actions start while a refresh leaves the rows on
+  screen, but not while a folder first loads, a search's answer is on its way
+  or Load more asks Proton by position (`Mailbox::takes_actions`). Proton may
+  have read a folder's first page before applying the actions still on their
+  way or those confirmed since the page was asked for, so the page shows them
+  again in order: a move out keeps its row out, a move that keeps its row here
+  keeps it listed as it was, and a flag stays changed. Actions asked for in
+  another folder change nothing there.
   The mailbox state machine also orders read mutations by row. An explicit
   read/unread action accepted during an automatic read waits at the head of
   that line until the read succeeds. A failed or timed-out predecessor fails it

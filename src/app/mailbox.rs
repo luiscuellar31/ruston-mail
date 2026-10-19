@@ -401,6 +401,10 @@ pub struct Mailbox {
     /// Rows a move back listed again before Proton confirmed it; a refused
     /// one takes its row away again.
     listed_again: HashSet<String>,
+    /// Actions Proton confirmed since the folder's first page on its way was
+    /// asked for. It may have read the page before applying them, so the
+    /// page shows them again.
+    confirmed_while_loading: Vec<ActionRequest>,
 }
 
 impl Mailbox {
@@ -446,6 +450,7 @@ impl Mailbox {
             automatic_reads: HashMap::new(),
             relocated: HashMap::new(),
             listed_again: HashSet::new(),
+            confirmed_while_loading: Vec::new(),
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -880,6 +885,17 @@ impl Mailbox {
         self.status.request_in_flight().is_some()
     }
 
+    /// Whether an action or a move back can start now. A refresh leaves the
+    /// rows on screen, so they take actions while it runs. Nothing does while
+    /// the folder first loads, a search's answer is on its way, or Load more
+    /// runs: it asks Proton by position, which a move meanwhile would shift.
+    pub fn takes_actions(&self) -> bool {
+        !matches!(
+            self.status,
+            ListStatus::Loading(_) | ListStatus::LoadingMore(_)
+        )
+    }
+
     pub(super) fn auto_refresh_available(&self) -> bool {
         !self.is_busy() && self.action_in_flight.is_none() && self.automatic_reads.is_empty()
     }
@@ -1188,11 +1204,11 @@ impl Mailbox {
         };
     }
 
-    /// Claims the offer, so it is made only once. While the list loads, the
-    /// move back could not start, so the offer stays. Behind an action still
-    /// on its way, the move back waits its turn.
+    /// Claims the offer, so it is made only once. While the move back could
+    /// not start (see `takes_actions`), the offer stays. Behind an action
+    /// still on its way, the move back waits its turn.
     pub fn take_undo(&mut self) -> Option<UndoMove> {
-        if self.is_busy() {
+        if !self.takes_actions() {
             return None;
         }
         self.undo.take()
@@ -1206,7 +1222,7 @@ impl Mailbox {
     }
 
     /// Accepts an action on the selected row and shows it at once, before
-    /// Proton answers. None starts while the list loads. The app names the
+    /// Proton answers, when `takes_actions` lets it start. The app names the
     /// row, through `start_action_on`; tests act on the open one.
     #[cfg(test)]
     pub fn start_action(&mut self, action: MailAction, request: RequestId) -> Option<ActionStart> {
@@ -1228,7 +1244,7 @@ impl Mailbox {
         action: MailAction,
         request: RequestId,
     ) -> Option<ActionStart> {
-        if self.is_busy() {
+        if !self.takes_actions() {
             return None;
         }
 
@@ -1265,13 +1281,18 @@ impl Mailbox {
     /// Lists `row` again where its date puts it among the loaded rows, newest
     /// first, and remembers that Proton has yet to confirm it is here.
     fn list_again(&mut self, row: ConversationSummary) {
+        self.listed_again.insert(row.id.clone());
+        self.list_by_date(row);
+    }
+
+    /// Lists `row` where its date puts it among the loaded rows, newest first.
+    fn list_by_date(&mut self, row: ConversationSummary) {
         let at = self
             .conversations
             .iter()
             .position(|listed| listed.time < row.time)
             .unwrap_or(self.conversations.len());
         self.row_ids.insert(row.id.clone());
-        self.listed_again.insert(row.id.clone());
         self.conversations.insert(at, row);
         self.last_dated_time = last_dated_time(&self.conversations);
         self.recompute_visible();
@@ -1353,6 +1374,12 @@ impl Mailbox {
                 next_action,
                 opened: None,
             };
+        }
+        if matches!(
+            self.status,
+            ListStatus::Loading(_) | ListStatus::Refreshing(_)
+        ) {
+            self.confirmed_while_loading.push(request.clone());
         }
 
         // A reload while the move was on its way can have brought the row back,
@@ -1576,7 +1603,7 @@ impl Mailbox {
                 // running can make its answer stale again.
                 self.active_dirty = false;
                 self.status = ListStatus::Refreshing(request);
-                Some(self.page_request(request, 0))
+                Some(self.first_page_request(request))
             } else {
                 self.status = ListStatus::Loaded;
                 None
@@ -1591,7 +1618,7 @@ impl Mailbox {
             self.groups = ConversationGroups::default();
             self.recompute_visible();
             self.status = ListStatus::Loading(request);
-            Some(self.page_request(request, 0))
+            Some(self.first_page_request(request))
         }
     }
 
@@ -1658,7 +1685,7 @@ impl Mailbox {
         } else {
             ListStatus::Refreshing(request)
         };
-        Some(self.page_request(request, 0))
+        Some(self.first_page_request(request))
     }
 
     pub fn load_more(&mut self, request: RequestId) -> Option<PageRequest> {
@@ -1869,6 +1896,37 @@ impl Mailbox {
         rows
     }
 
+    /// The actions a first page may have been read without, in the order
+    /// asked: those confirmed since it was asked for, then those still on
+    /// their way or waiting.
+    fn unseen_actions(&mut self) -> Vec<ActionRequest> {
+        let confirmed = std::mem::take(&mut self.confirmed_while_loading);
+        confirmed
+            .into_iter()
+            .chain(self.queued_actions().cloned())
+            .filter(|request| request.folder == self.folder)
+            .collect()
+    }
+
+    /// Shows `actions` again on the rows a first page just replaced, in the
+    /// order asked: a move out takes its row away, a move that keeps its row
+    /// here lists it as `before` held it, and a flag changes again.
+    fn show_again(&mut self, actions: &[ActionRequest], before: &[ConversationSummary]) {
+        for request in actions {
+            if self.leaves_view(&self.folder, &request.action) {
+                let _ = self.remove_row(&request.row_id);
+                continue;
+            }
+            if request.action.destination().is_some()
+                && !self.row_ids.contains(&request.row_id)
+                && let Some(row) = before.iter().find(|row| row.id == request.row_id)
+            {
+                self.list_by_date(row.clone());
+            }
+            self.record_action(&request.row_id, &request.action);
+        }
+    }
+
     fn page_request(&self, id: RequestId, page: u32) -> PageRequest {
         PageRequest {
             id,
@@ -1876,6 +1934,13 @@ impl Mailbox {
             page,
             page_size: self.page_size,
         }
+    }
+
+    /// Asks for the folder's first page. Only actions confirmed from now on
+    /// can be missing from what it brings.
+    fn first_page_request(&mut self, id: RequestId) -> PageRequest {
+        self.confirmed_while_loading.clear();
+        self.page_request(id, 0)
     }
 
     fn apply_page(&mut self, page: ConversationPage, append: bool) {
@@ -1926,6 +1991,15 @@ impl Mailbox {
                 self.groups.retain_rows(&self.row_ids);
             }
         } else {
+            // Proton may have read the page before applying these, so what
+            // they showed stays.
+            let unseen = self.unseen_actions();
+            let before: Vec<_> = self
+                .conversations
+                .iter()
+                .filter(|row| unseen.iter().any(|request| request.row_id == row.id))
+                .cloned()
+                .collect();
             self.conversations =
                 self.refreshed_rows(page.conversations, received >= self.page_size as usize);
             self.row_ids = collect_ids(&self.conversations);
@@ -1935,6 +2009,7 @@ impl Mailbox {
             self.recompute_visible();
             self.next_page = self.next_page.max(1);
             self.groups.retain_rows(&self.row_ids);
+            self.show_again(&unseen, &before);
         }
         if !append
             && self

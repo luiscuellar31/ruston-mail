@@ -331,7 +331,7 @@ fn reading_column(
             &detail_data.labels,
             view.places,
             // An action asked for while another is on its way waits its turn.
-            !mailbox.is_busy(),
+            mailbox.takes_actions(),
             messages,
         );
         if let Some(error) = mailbox.action_error() {
@@ -542,8 +542,8 @@ pub(super) fn conversation_menu(
     messages: &mut Vec<Message>,
 ) {
     ui.set_min_width(200.0);
-    // An action asked for while the list loads would not start.
-    let enabled = !mailbox.is_busy();
+    // An action asked for while the rows on screen take none would not start.
+    let enabled = mailbox.takes_actions();
     let mut item = |ui: &mut egui::Ui, icon, label, action| {
         if ui
             .add_enabled_ui(enabled, |ui| icon_item(ui, icon, label))
@@ -1689,6 +1689,87 @@ mod tests {
                 "the first action in {folder:?} did not lead back to the Inbox"
             );
         }
+    }
+
+    #[test]
+    fn the_conversation_takes_actions_while_the_list_refreshes() {
+        let (mut mailbox, request, detail) = loading_reader("Message", Folder::INBOX, 1);
+        mailbox.finish_conversation(&request, Ok(detail));
+        let _ = mailbox.refresh(9).unwrap();
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(540.0, 950.0),
+            )),
+            ..Default::default()
+        };
+        let (shapes, _) = reader_frame(
+            &context,
+            &mailbox,
+            &[],
+            Reading::default(),
+            &mut state,
+            input.clone(),
+        );
+        let archive = rounded_rects(&shapes, 7)[0].center();
+
+        let (_, messages) = reader_frame(
+            &context,
+            &mailbox,
+            &[],
+            Reading::default(),
+            &mut state,
+            click_at(&input, archive),
+        );
+
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::ApplyAction(MailAction::MoveTo(to))]
+                    if *to == Folder::System(MailFolder::Archive)
+            ),
+            "the toolbar did not archive while the list refreshed"
+        );
+    }
+
+    #[test]
+    fn a_rows_menu_acts_while_the_list_refreshes() {
+        let (mut mailbox, _, _) = loading_reader("Message", Folder::INBOX, 1);
+        let _ = mailbox.refresh(9).unwrap();
+        let row = mailbox.conversations()[0].clone();
+        let context = egui::Context::default();
+        theme::install(&context);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(540.0, 950.0),
+            )),
+            ..Default::default()
+        };
+        let frame = |input: egui::RawInput| {
+            let mut messages = Vec::new();
+            let output = context.run_ui(input, |ui| {
+                conversation_menu(ui, &mailbox, &row, &mut messages);
+            });
+            let shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+            (shapes, messages)
+        };
+
+        let (shapes, _) = frame(input.clone());
+        let (_, messages) = frame(click_at(&input, text_rect(&shapes, "Archive").center()));
+
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [Message::ApplyRowAction(id, MailAction::MoveTo(to))]
+                    if id == "conversation" && *to == Folder::System(MailFolder::Archive)
+            ),
+            "the row's menu did not archive while the list refreshed"
+        );
     }
 
     #[test]

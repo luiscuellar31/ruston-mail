@@ -1102,7 +1102,7 @@ impl App {
         let Some(mailbox) = self.mailbox.as_ref() else {
             return Effects::none();
         };
-        if mailbox.is_busy() {
+        if !mailbox.takes_actions() {
             return Effects::none();
         }
         let Some(kind) = mailbox.row(id).map(|row| row.kind) else {

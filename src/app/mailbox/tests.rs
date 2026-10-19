@@ -335,9 +335,6 @@ fn a_refresh_keeps_the_offer_to_undo() {
     // describes.
     let refresh = mailbox.refresh(5).unwrap();
     assert!(mailbox.undo().is_some());
-    // The move back cannot start while the list loads, so the offer waits.
-    assert!(mailbox.take_undo().is_none());
-    assert!(mailbox.undo().is_some());
 
     mailbox.finish_page(refresh.id, page(&["b"], 1));
     let undo = mailbox.take_undo().expect("the offer outlives the refresh");
@@ -2064,15 +2061,152 @@ fn automatic_refresh_waits_for_pending_mail_changes() {
 }
 
 #[test]
-fn actions_wait_for_the_list_to_load() {
-    let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
-    mailbox.refresh(3);
+fn actions_wait_for_rows_still_to_come_but_not_for_a_refresh() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, full_page(0, 120));
+    load_detail(&mut mailbox, "p0", detail("p0", &["m"]), 3);
 
-    assert_eq!(
-        mailbox.start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 4),
-        None
+    // Load more asks Proton by position, which a move meanwhile would shift.
+    let more = mailbox.load_more(4).unwrap();
+    assert_eq!(mailbox.start_action(MailAction::SetStarred(true), 5), None);
+    mailbox.finish_page(more.id, full_page(50, 120));
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        6,
     );
-    assert!(!mailbox.action_pending());
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    load_detail(&mut mailbox, "p1", detail("p1", &["m"]), 7);
+    // A search's answer replaces the rows on screen. The offer to undo
+    // waits for it, since the move back could not start.
+    mailbox.set_search_query("invoice".into());
+    let _ = mailbox.start_search(8).unwrap();
+    assert_eq!(mailbox.start_action(MailAction::SetStarred(true), 9), None);
+    assert!(mailbox.take_undo().is_none());
+    assert!(mailbox.undo().is_some());
+    mailbox.set_search_query(String::new());
+
+    // A refresh leaves the rows on screen, and they take actions meanwhile.
+    let _ = mailbox.refresh(10).unwrap();
+    assert!(
+        mailbox
+            .start_action(MailAction::SetStarred(true), 11)
+            .is_some()
+    );
+    assert!(mailbox.action_pending());
+}
+
+#[test]
+fn a_page_read_before_proton_applied_an_action_still_shows_it() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b", "c"], "a");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+    let refresh = mailbox.refresh(4).unwrap();
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    let star = mailbox
+        .start_action_on(
+            "c".into(),
+            SummaryKind::Conversation,
+            MailAction::SetStarred(true),
+            5,
+        )
+        .and_then(|start| start.send)
+        .unwrap();
+
+    // Proton read the page before it archived "a" or starred "c": the move
+    // was confirmed meanwhile, and the star is still on its way.
+    mailbox.finish_page(refresh.id, page(&["a", "b", "c"], 3));
+    assert_eq!(ids(&mailbox), ["b", "c"]);
+    assert!(mailbox.row("c").unwrap().starred);
+    let _ = mailbox.finish_action(&star, Ok(()));
+    assert_eq!(ids(&mailbox), ["b", "c"]);
+    assert!(mailbox.row("c").unwrap().starred);
+    // The app asks once more for what Proton has now.
+    assert!(mailbox.needs_revalidation());
+}
+
+#[test]
+fn a_move_confirmed_while_an_emptied_folder_loads_again_stays_shown() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+    // Nothing is left to show, so the folder loads from scratch.
+    let reload = mailbox.refresh(4).unwrap();
+    assert!(matches!(mailbox.status(), ListStatus::Loading(_)));
+    let _ = mailbox.finish_action(&archive, Ok(()));
+
+    mailbox.finish_page(reload.id, page(&["a"], 1));
+    assert!(ids(&mailbox).is_empty());
+}
+
+#[test]
+fn a_move_taken_back_while_the_list_refreshes_keeps_its_row() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, dated_page(&[("a", 30), ("b", 20)], 2));
+    load_detail(&mut mailbox, "a", detail("a", &["m"]), 3);
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        4,
+    );
+    let _ = mailbox.finish_action(&archive, Ok(()));
+    let refresh = mailbox.refresh(5).unwrap();
+
+    let undo = mailbox
+        .take_undo()
+        .expect("a refresh does not hold Undo back");
+    let back = mailbox.start_move_back(undo, 6).unwrap().send.unwrap();
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+
+    // Proton read the page while "a" was still archived.
+    mailbox.finish_page(refresh.id, dated_page(&[("b", 20)], 1));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    // It read the next one after moving "a" back, before saying so.
+    let refresh = mailbox.refresh(7).unwrap();
+    mailbox.finish_page(refresh.id, dated_page(&[("a", 30), ("b", 20)], 2));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    let _ = mailbox.finish_action(&back, Ok(()));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    assert!(!mailbox.brought_back(&back));
+}
+
+#[test]
+fn an_action_proton_refused_during_a_refresh_is_not_shown_again() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+    let refresh = mailbox.refresh(3).unwrap();
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    let _ = mailbox.finish_action(&star, Err(MailboxError::Connection));
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        5,
+    );
+    let _ = mailbox.finish_action(&archive, Err(MailboxError::Connection));
+
+    mailbox.finish_page(refresh.id, page(&["a", "b"], 2));
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+    assert!(!mailbox.row("a").unwrap().starred);
+}
+
+#[test]
+fn a_page_asked_for_after_an_action_was_confirmed_shows_what_proton_says() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b"], "a");
+    let failed = mailbox.refresh(3).unwrap();
+    let star = send(&mut mailbox, MailAction::SetStarred(true), 4);
+    let _ = mailbox.finish_action(&star, Ok(()));
+    mailbox.finish_page(failed.id, Err(MailboxError::Connection));
+
+    // Asked for once Proton had starred it, this page knows better: the star
+    // was taken off elsewhere since.
+    let refresh = mailbox.refresh(5).unwrap();
+    mailbox.finish_page(refresh.id, page(&["a", "b"], 2));
+    assert!(!mailbox.row("a").unwrap().starred);
 }
 
 #[test]
@@ -2230,7 +2364,7 @@ fn a_reload_while_a_move_is_on_its_way_cannot_bring_the_row_back() {
     // Proton had not moved it yet when the page was read.
     let refresh = mailbox.refresh(4).unwrap();
     mailbox.finish_page(refresh.id, page(&["a", "b"], 2));
-    assert_eq!(ids(&mailbox), ["a", "b"]);
+    assert_eq!(ids(&mailbox), ["a"]);
 
     let _ = mailbox.finish_action(&archive, Ok(()));
     assert_eq!(ids(&mailbox), ["a"]);

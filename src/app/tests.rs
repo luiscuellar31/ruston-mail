@@ -1403,25 +1403,22 @@ fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
 }
 
 #[test]
-fn an_automatic_refresh_keeps_the_offer_to_undo_a_move() {
+fn an_automatic_refresh_holds_back_neither_a_move_nor_its_undo() {
     let mut app = loaded_demo_app();
     open_conversation(&mut app, "demo-3");
+    assert_eq!(
+        app.update(Message::AutoRefreshMailbox).units(),
+        PAGE_AND_COUNTS
+    );
     press_command(&mut app, Key::Backspace);
     assert!(!is_listed(&app, "demo-3"));
 
-    // The poll lands while the notice is still up.
+    // The next poll starts while the notice is still up, and keeps it.
     assert_eq!(
         app.update(Message::AutoRefreshMailbox).units(),
         PAGE_AND_COUNTS
     );
     assert!(app.mailbox().unwrap().undo().is_some());
-    // Undo waits for the reloading list...
-    let _ = app.update(Message::UndoMove);
-    assert!(!is_listed(&app, "demo-3"));
-    assert!(app.mailbox().unwrap().undo().is_some());
-    // ...and works once it is back.
-    let page_request = app.last_request - 1;
-    deliver_demo_page(&mut app, page_request, 0);
     let _ = app.update(Message::UndoMove);
     assert!(is_listed(&app, "demo-3"));
 }

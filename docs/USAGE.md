@@ -153,8 +153,11 @@ Actions show at once, without waiting for Proton: a moved conversation leaves
 the list and the next one opens, and its undo is offered right away. Under
 Starred or a label, a conversation moved to another folder keeps its star and
 labels, so it stays in the list; a move to Spam or Trash still takes it out.
-Actions taken in quick succession go to Proton one after another, in order. If
-Proton refuses one, the reader says so and the change is taken back; a moved
+Actions taken in quick succession go to Proton one after another, in order.
+They also work while the list refreshes, on its own or after **Refresh**, and
+the refreshed list keeps what they changed. Only a folder's first load, a
+search on its way and **Load more** hold them back for a moment. If Proton
+refuses one, the reader says so and the change is taken back; a moved
 conversation comes back when the folder reloads.
 
 If an automatic read is still pending, **Mark unread** waits for it to succeed
