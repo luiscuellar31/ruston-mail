@@ -320,8 +320,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   save actions use the backend's signature checks before starting filesystem
   work on a blocking worker. Downloads use sanitized sender names with numeric
   collision suffixes; explicit destinations use the user's exact absolute path.
-  Both use exclusive creation and never replace existing files or follow a
-  final-component symlink. [`src/file_manager.rs`](../src/file_manager.rs)
+  Both write through core, with exclusive creation, and never replace existing
+  files or follow a final-component symlink. [`src/file_manager.rs`](../src/file_manager.rs)
   reveals saved files: Finder on macOS, FileManager1.ShowItems with an encoded
   file URI on Linux, and on Windows the shell's `SHOpenFolderAndSelectItems`,
   called on a blocking worker in a single-threaded COM apartment, which takes
@@ -678,8 +678,10 @@ instead of an unknown outcome.
   reads a message listed on its own through `read_message_or_unreadable`, the
   same way; `read_message` still fails on one it cannot open.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
-  owns the filename policy shared by both frontends. Each frontend chooses its
-  destination and creates the file exclusively, then marks it with core's
+  owns the filename policy and the writing shared by both frontends.
+  `save_under_free_name` saves into a folder under the first free name,
+  `report.pdf`, then `report (1).pdf` and so on, and `write_new_file` writes to
+  a path the user chose. Both create the file exclusively, then mark it with
   `mark_downloaded`: on Windows a `Zone.Identifier` stream naming the Internet
   zone, best effort, so SmartScreen and Office's Protected View apply; nothing
   elsewhere. Core can pass decrypted

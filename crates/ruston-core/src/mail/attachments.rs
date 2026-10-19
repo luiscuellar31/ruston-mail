@@ -5,7 +5,9 @@ use crate::api;
 use crate::crypto;
 use crate::error::{Error, Result};
 use crate::model::message::{Attachment, Message};
-use std::path::{Component, Path};
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
+use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
 
 /// Maximum combined plaintext returned by `download_all_attachments` (128 MiB).
@@ -16,9 +18,12 @@ pub const MAX_BULK_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: usize = 50 * 1024 * 1024;
 
 /// The longest name kept, in UTF-8 bytes. NTFS allows 255 UTF-16 units and
-/// Linux and macOS file systems 255 bytes; this leaves room for the number a
-/// frontend adds to a copy, such as " (9999)".
+/// Linux and macOS file systems 255 bytes; this leaves room for the number
+/// [`save_under_free_name`] adds to a copy, " (9999)" at most.
 const MAX_NAME_BYTES: usize = 240;
+
+/// How many names a saved attachment tries: its own and 9,999 numbered ones.
+const FREE_NAME_ATTEMPTS: usize = 10_000;
 
 /// Return a portable plain filename for an untrusted attachment name.
 /// Invisible direction marks are dropped; path components are removed;
@@ -121,6 +126,56 @@ pub fn mark_downloaded(path: &Path) -> std::io::Result<()> {
         let _ = path;
         Ok(())
     }
+}
+
+/// Saves an attachment's `contents` in `folder` under its name made safe,
+/// or as `name (1)`, `name (2)` and so on when that is taken, and returns
+/// where it landed. Each name is claimed by creating the file exclusively,
+/// so a file or symlink that appears meanwhile is never written through.
+pub fn save_under_free_name(
+    folder: &Path,
+    name: &str,
+    contents: &[u8],
+) -> std::io::Result<PathBuf> {
+    let name = safe_attachment_name(name);
+    for candidate in free_names(&name).take(FREE_NAME_ATTEMPTS) {
+        let path = folder.join(candidate);
+        match write_new_file(&path, contents) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "no free name for the attachment",
+    ))
+}
+
+/// Writes `contents` to a new file at `path` and marks it as downloaded.
+/// Creating it exclusively fails on anything already there, a dangling
+/// symlink included; a file that could not be written in full is removed.
+pub fn write_new_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    if let Err(error) = file.write_all(contents) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    // Best effort: a file system without the mark still gets the file.
+    let _ = mark_downloaded(path);
+    Ok(())
+}
+
+/// `name`, then `name (1)`, `name (2)` and so on, numbered before the
+/// extension.
+fn free_names(name: &str) -> impl Iterator<Item = String> + '_ {
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
+        _ => (name, String::new()),
+    };
+    std::iter::once(name.to_owned())
+        .chain((1..).map(move |number| format!("{stem} ({number}){extension}")))
 }
 
 fn is_windows_reserved(name: &str) -> bool {
@@ -944,5 +999,155 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// An empty directory of its own for one test.
+    fn save_folder(label: &str) -> PathBuf {
+        let folder = export_directory(label);
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    fn file_name(path: &Path) -> &str {
+        path.file_name().unwrap().to_str().unwrap()
+    }
+
+    #[test]
+    fn a_saved_attachment_takes_the_first_free_name() {
+        let folder = save_folder("free-name");
+        let saved: Vec<_> = [b"one", b"two", b"red"]
+            .iter()
+            .map(|contents| save_under_free_name(&folder, "report.pdf", *contents).unwrap())
+            .collect();
+        let names: Vec<_> = saved.iter().map(|path| file_name(path)).collect();
+        assert_eq!(names, ["report.pdf", "report (1).pdf", "report (2).pdf"]);
+        // An earlier file keeps what it held.
+        assert_eq!(std::fs::read(&saved[0]).unwrap(), b"one");
+
+        // A name with no extension, or a device name made safe, is numbered
+        // the same way.
+        for (name, first, copy) in [
+            ("notes", "notes", "notes (1)"),
+            ("CON.pdf", "_CON.pdf", "_CON (1).pdf"),
+        ] {
+            let saved_first = save_under_free_name(&folder, name, b"x").unwrap();
+            let saved_copy = save_under_free_name(&folder, name, b"y").unwrap();
+            assert_eq!(file_name(&saved_first), first);
+            assert_eq!(file_name(&saved_copy), copy);
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn untrusted_attachment_names_stay_inside_the_folder() {
+        let folder = save_folder("untrusted-names");
+        for (untrusted, expected) in [
+            ("../../outside.txt", "outside.txt"),
+            ("/tmp/absolute.txt", "absolute.txt"),
+            (r"..\windows\file.txt", "file.txt"),
+            ("C:drive.txt", "C_drive.txt"),
+            ("CON .txt", "_CON .txt"),
+            ("...", "attachment"),
+        ] {
+            let path = save_under_free_name(&folder, untrusted, b"mail").unwrap();
+            assert_eq!(path.parent(), Some(folder.as_path()));
+            assert_eq!(file_name(&path), expected);
+            assert_eq!(std::fs::read(path).unwrap(), b"mail");
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_long_name_and_its_numbered_copy_can_both_be_saved() {
+        let folder = save_folder("long-name");
+        let long = format!("{}.pdf", "informe ".repeat(40));
+        let first = save_under_free_name(&folder, &long, b"one").unwrap();
+        let second = save_under_free_name(&folder, &long, b"two").unwrap();
+        assert_ne!(first, second);
+        for path in [&first, &second] {
+            let name = file_name(path);
+            assert!(name.len() <= 255 && name.ends_with(".pdf"), "{name}");
+        }
+        assert_eq!(std::fs::read(second).unwrap(), b"two");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn the_last_copy_of_a_long_name_still_fits_a_file_system() {
+        let name = safe_attachment_name(&format!("{}.pdf", "informe ".repeat(40)));
+        let last = free_names(&name).take(FREE_NAME_ATTEMPTS).last().unwrap();
+        assert!(last.ends_with(" (9999).pdf"), "{last}");
+        assert!(last.len() <= 255, "{} bytes", last.len());
+    }
+
+    #[test]
+    fn concurrent_saves_claim_different_names_without_overwriting() {
+        let folder = save_folder("concurrent-saves");
+        std::fs::write(folder.join("report.txt"), b"existing").unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let saves: Vec<_> = (0_u8..8)
+            .map(|contents| {
+                let (folder, barrier) = (folder.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    save_under_free_name(&folder, "report.txt", &[contents]).unwrap()
+                })
+            })
+            .collect();
+        let mut paths = std::collections::HashSet::new();
+        let mut contents = std::collections::HashSet::new();
+        for save in saves {
+            let path = save.join().unwrap();
+            contents.insert(std::fs::read(&path).unwrap()[0]);
+            assert!(paths.insert(path));
+        }
+        assert_eq!(contents.len(), 8);
+        assert_eq!(
+            std::fs::read(folder.join("report.txt")).unwrap(),
+            b"existing"
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_missing_folder_is_a_failure_not_a_taken_name() {
+        let folder = save_folder("missing-folder");
+        let missing = folder.join("missing");
+        let error = save_under_free_name(&missing, "report.pdf", b"x").unwrap_err();
+        let created = missing.exists();
+        std::fs::remove_dir_all(folder).unwrap();
+        assert_ne!(error.kind(), ErrorKind::AlreadyExists);
+        assert!(!created);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_is_never_followed() {
+        let folder = save_folder("dangling-symlink");
+        let outside = folder.with_extension("outside");
+        let _ = std::fs::remove_file(&outside);
+        std::os::unix::fs::symlink(&outside, folder.join("report.txt")).unwrap();
+        let path = save_under_free_name(&folder, "report.txt", b"mail").unwrap();
+        let escaped = outside.exists();
+        std::fs::remove_dir_all(&folder).unwrap();
+        let _ = std::fs::remove_file(&outside);
+        assert!(!escaped, "the write followed a dangling symlink");
+        assert_eq!(file_name(&path), "report (1).txt");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_saved_attachment_is_marked_as_downloaded_from_the_internet() {
+        let folder = save_folder("saved-zone");
+        let mut stream = save_under_free_name(&folder, "factura.pdf", b"%PDF")
+            .unwrap()
+            .into_os_string();
+        stream.push(":Zone.Identifier");
+        assert!(
+            std::fs::read_to_string(stream)
+                .unwrap()
+                .contains("ZoneId=3")
+        );
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }
