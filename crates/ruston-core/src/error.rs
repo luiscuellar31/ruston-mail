@@ -85,7 +85,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    /// Map to a CLI process exit code (mirrors the Go reference).
+    /// Map to the CLI's process exit status, one of [`exit_status`].
     pub fn exit_code(&self) -> i32 {
         match self.http_status {
             401 | 403 => exit_status::SESSION,
@@ -259,9 +259,10 @@ impl From<reqwest::Error> for Error {
 /// How a cache error says that trying again later may succeed.
 const CACHE_CHANGED_SUFFIX: &str = "; retry";
 
-/// Convenience exit-code mapping for any error (defaults to 1 for non-API).
 impl Error {
-    /// Map this error to a CLI process exit code (defaults to 1 for non-API errors).
+    /// Map this error to the CLI's process exit status: an API error by its
+    /// HTTP status, and any other [`exit_status::OTHER`] unless it names a
+    /// session, something not found, or a conflict.
     pub fn exit_code(&self) -> i32 {
         match self {
             Error::Api(e) => e.exit_code(),

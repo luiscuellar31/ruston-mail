@@ -93,6 +93,8 @@ pub async fn get_events<D: Doer>(d: &D, event_id: &str) -> Result<EventBatch> {
         .await?;
     Ok(EventBatch {
         event_id: r.event_id,
+        // `More` is 0 or 1, while `Refresh` holds flags: its lowest bit, the
+        // mail's, asks for the resync.
         more: r.more == 1,
         refresh: r.refresh & 1 != 0,
         messages: r.messages,

@@ -390,28 +390,44 @@ fn list_sql(unread_only: bool) -> String {
     )
 }
 
+/// The folder that holds the caches, created on first use.
+fn cache_root() -> Result<PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
+        .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
+    let dir = dirs.cache_dir().to_path_buf();
+    create_cache_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Creates a cache folder, private to this user.
+#[cfg(unix)]
+fn create_cache_dir(dir: &Path) -> Result<()> {
+    secure_cache_dir(dir)
+}
+
+/// Creates a cache folder in the user's profile, which Windows keeps private
+/// to them.
+#[cfg(not(unix))]
+fn create_cache_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).map_err(map)
+}
+
 /// A label's cached total and unread count, as `Cache::count` reads them.
 const COUNT_SQL: &str = "SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM messages m \
      JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1";
 
 impl Cache {
-    /// Legacy cache path: `<cache_dir>/ruston-mail/<profile>.db`.
-    /// Client operations no longer use this path because its owner is unknown.
+    /// Legacy cache path: `<cache_dir>/ruston-mail/<profile>.db`. Client
+    /// operations never open it, since its owner is unknown: they use a path
+    /// of each account's own under the same folder.
     pub fn default_path(profile: &str) -> Result<PathBuf> {
         validate_profile_name(profile)?;
-        let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
-            .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
-        let dir = dirs.cache_dir().to_path_buf();
-        #[cfg(unix)]
-        secure_cache_dir(&dir)?;
-        #[cfg(not(unix))]
-        std::fs::create_dir_all(&dir).map_err(map)?;
-        Ok(dir.join(format!("{profile}.db")))
+        Ok(cache_root()?.join(format!("{profile}.db")))
     }
 
     pub(crate) fn default_account_path(profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
-        let legacy_path = Self::default_path(profile)?;
-        Self::account_path(legacy_path.parent().unwrap(), profile, identity)
+        validate_profile_name(profile)?;
+        Self::account_path(&cache_root()?, profile, identity)
     }
 
     fn account_path(root: &Path, profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
@@ -419,10 +435,7 @@ impl Cache {
         let accounts = root.join("accounts");
         let dir = accounts.join(profile);
         for directory in [&accounts, &dir] {
-            #[cfg(unix)]
-            secure_cache_dir(directory)?;
-            #[cfg(not(unix))]
-            std::fs::create_dir_all(directory).map_err(map)?;
+            create_cache_dir(directory)?;
         }
         // A fixed-size lowercase name also avoids path separators and collisions
         // caused by case-insensitive filesystems. Verify the full identity in SQLite.
@@ -646,7 +659,9 @@ impl Cache {
         Ok(())
     }
 
-    /// Apply a flags/labels-only event without changing indexed headers or body.
+    /// Writes a message's flags and labels, leaving its indexed headers and
+    /// body as they are. Unlike sync's `apply_event_batch`, it does not check
+    /// the sync cursor.
     pub fn upsert_message_flags(&self, m: &MessageMetadata) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
         upsert_metadata(&tx, m)?;
@@ -662,7 +677,8 @@ impl Cache {
         Ok(())
     }
 
-    /// Drop an indexed body when a full update may have changed its content.
+    /// Drops a message's indexed body, so a changed one is indexed again.
+    /// Unlike sync's `apply_event_batch`, it does not check the sync cursor.
     pub fn invalidate_index(&self, id: &str) -> Result<()> {
         self.conn.execute(DELETE_INDEX_SQL, [id]).map_err(map)?;
         Ok(())

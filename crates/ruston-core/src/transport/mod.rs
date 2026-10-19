@@ -2,7 +2,7 @@
 //! automatic 401-refresh / 429-rate-limit / 9001-human-verification retries.
 
 mod headers;
-mod retry;
+mod retry_after;
 
 use crate::error::{ApiError, Error, HvChallenge, Result};
 use crate::model::enums::response_code;
@@ -60,7 +60,8 @@ pub struct Request {
     pub content_type: Option<String>,
     /// Human-verification token and its type, if attached.
     pub hv: Option<(String, String)>,
-    /// Skip the 401→refresh retry (auth-flow endpoints).
+    /// Skip the 401→refresh retry (auth-flow endpoints). Set by
+    /// [`Request::no_refresh`].
     pub skip_refresh: bool,
     /// Do not attach `Authorization` (refresh endpoint).
     pub omit_auth: bool,
@@ -126,7 +127,8 @@ impl Request {
         self.hv = Some((token.into(), ttype.into()));
         self
     }
-    /// Skip the automatic 401→refresh retry (for auth-flow endpoints).
+    /// Skip the automatic 401→refresh retry (for auth-flow endpoints), by
+    /// setting [`Request::skip_refresh`].
     pub fn no_refresh(mut self) -> Self {
         self.skip_refresh = true;
         self
@@ -160,7 +162,8 @@ pub struct Response {
     pub status: u16,
     /// Raw response body bytes.
     pub body: Vec<u8>,
-    /// `Retry-After` delay in seconds, if the server sent one.
+    /// `Retry-After` delay in seconds, if the server sent one, cut to the
+    /// longest wait the transport honors.
     pub retry_after: Option<u64>,
 }
 
@@ -405,7 +408,7 @@ impl HttpClient {
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| retry::parse_retry_after(Some(s)));
+            .and_then(retry_after::parse);
         let body = read_bounded_body(resp, req.max_response_bytes).await?;
         tracing::debug!(target: "ruston_core::http", status, bytes = body.len(), ms = started.elapsed().as_millis() as u64, "← response");
         Ok(Response {

@@ -5,7 +5,9 @@ use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// Storage for per-profile secrets (access token, refresh token, key passphrase).
+/// Storage for a profile's secrets: its tokens, its key passphrase, and the
+/// API address the tokens were issued for, which a saved session must match
+/// before they are sent anywhere.
 pub trait SecretStore: Send + Sync {
     /// Store `value` under `key`, overwriting any existing entry.
     fn set(&self, key: &str, value: &str) -> Result<()>;

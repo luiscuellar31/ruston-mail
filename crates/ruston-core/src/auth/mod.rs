@@ -1,4 +1,5 @@
-//! SRP login, 2FA, refresh, and logout.
+//! SRP login, the second factor, and logout. Renewing tokens is the
+//! transport's.
 
 pub mod types;
 
@@ -56,8 +57,8 @@ pub async fn login_with_prompt(
     tracing::info!(target: "ruston_core::auth", username, "login: starting SRP flow");
 
     // 1. Unauthenticated session.
-    tracing::debug!(target: "ruston_core::auth", "login step 1/4: creating unauthenticated session (POST /auth/v4/sessions)");
-    let sess: SessionResp = http
+    tracing::debug!(target: "ruston_core::auth", "login step 1/6: creating unauthenticated session (POST /auth/v4/sessions)");
+    let session: SessionResp = http
         .decode(
             Request::post("/auth/v4/sessions")
                 .json(serde_json::json!({}))
@@ -65,16 +66,16 @@ pub async fn login_with_prompt(
                 .no_refresh(),
         )
         .await?;
-    tracing::debug!(target: "ruston_core::auth", uid = %sess.uid, "login: got unauth session");
+    tracing::debug!(target: "ruston_core::auth", uid = %session.uid, "login: got unauth session");
     http.set_tokens(
-        sess.uid,
-        SecretString::from(sess.access_token),
-        SecretString::from(sess.refresh_token),
+        session.uid,
+        SecretString::from(session.access_token),
+        SecretString::from(session.refresh_token),
     )
     .await;
 
     // 2. SRP challenge.
-    tracing::debug!(target: "ruston_core::auth", "login step 2/4: fetching SRP challenge (POST /core/v4/auth/info)");
+    tracing::debug!(target: "ruston_core::auth", "login step 2/6: fetching SRP challenge (POST /core/v4/auth/info)");
     let info: AuthInfo = http
         .decode(
             Request::post("/core/v4/auth/info")
@@ -87,7 +88,7 @@ pub async fn login_with_prompt(
     // 3. Compute SRP proofs (modulus signature verified internally by RPGPVerifier).
     let version = SrpHashVersion::try_from(info.version)
         .map_err(|e| Error::Srp(format!("unsupported SRP version {}: {e}", info.version)))?;
-    tracing::debug!(target: "ruston_core::auth", "login step 3/4: verifying signed modulus + generating client proof (proton-srp)");
+    tracing::debug!(target: "ruston_core::auth", "login step 3/6: verifying signed modulus + generating client proof (proton-srp)");
     let verifier = RPGPVerifier::default();
     let srp = SRPAuth::new(
         &verifier,
@@ -103,31 +104,31 @@ pub async fn login_with_prompt(
         .generate_proofs()
         .map_err(|e| Error::Srp(format!("SRP proof failed: {e}")))?;
     tracing::debug!(target: "ruston_core::auth", "login: client proof + ephemeral generated; modulus signature verified");
-    let b64: SRPProofB64 = proof.into();
+    let proofs: SRPProofB64 = proof.into();
 
     // 4. Submit proof.
-    tracing::debug!(target: "ruston_core::auth", "login step 4/4: submitting client proof (POST /core/v4/auth)");
+    tracing::debug!(target: "ruston_core::auth", "login step 4/6: submitting client proof (POST /core/v4/auth)");
     let resp: AuthResponse = http
         .decode(
             Request::post("/core/v4/auth")
                 .json(serde_json::json!({
                     "Username": username,
-                    "ClientProof": b64.client_proof,
-                    "ClientEphemeral": b64.client_ephemeral,
+                    "ClientProof": proofs.client_proof,
+                    "ClientEphemeral": proofs.client_ephemeral,
                     "SRPSession": info.srp_session,
                 }))
                 .no_refresh(),
         )
         .await?;
 
-    // 5. Verify the server proof (MITM guard).
-    if !b64.compare_server_proof(&resp.server_proof) {
+    // 5. Verify the server proof (MITM guard), then use the authenticated
+    // session.
+    if !proofs.compare_server_proof(&resp.server_proof) {
         tracing::error!(target: "ruston_core::auth", "login: SERVER PROOF MISMATCH — aborting (possible MITM)");
         return Err(Error::Srp("server proof verification failed".into()));
     }
-    tracing::info!(target: "ruston_core::auth", uid = %resp.uid, password_mode = resp.password_mode, two_fa = resp.two_fa.enabled, "login: server proof verified; authenticated");
+    tracing::info!(target: "ruston_core::auth", uid = %resp.uid, password_mode = resp.password_mode, two_fa = resp.two_fa.enabled, "login step 5/6: server proof verified; authenticated");
 
-    // Promote to the authenticated session.
     http.set_tokens(
         resp.uid.clone(),
         SecretString::from(resp.access_token.clone()),
@@ -135,7 +136,8 @@ pub async fn login_with_prompt(
     )
     .await;
 
-    // 6. 2FA if required.
+    // 6. The second factor, if the account has one.
+    tracing::debug!(target: "ruston_core::auth", "login step 6/6: second factor, if the account has one");
     or_end_session(
         http,
         second_factor(http, resp.two_fa.enabled, totp, totp_prompt),
