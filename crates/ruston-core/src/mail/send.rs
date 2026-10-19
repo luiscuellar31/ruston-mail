@@ -931,6 +931,7 @@ fn quote_block(parent: &Message, body: &str, original_mime: &str, html: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail::test_support;
     use crate::transport::{HttpClient, Request, Response};
     use async_trait::async_trait;
     use serde::de::DeserializeOwned;
@@ -1025,7 +1026,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        test_client(&server, vec![me])
+        test_support::client(&server, vec![me])
             .send(&SendOptions {
                 to: vec!["fwd@proton.me".into()],
                 body: "Hello".into(),
@@ -1313,22 +1314,6 @@ mod tests {
         )
     }
 
-    fn test_client(server: &MockServer, addresses: Vec<AddressKeys>) -> Client {
-        Client {
-            http: HttpClient::new(server.uri(), "Other"),
-            keys: crypto::keys::KeyStore {
-                user_keys: vec![],
-                addresses,
-            },
-            paths: crate::session::Paths::with_base(std::env::temp_dir()),
-            profile: "test".into(),
-            session_uid: "test".into(),
-            cache_identity: crate::cache::CacheIdentity::new(&server.uri(), "send-test").unwrap(),
-            store: std::sync::Arc::new(crate::session::MemoryStore::new()),
-            sender_cache: tokio::sync::Mutex::new(Default::default()),
-        }
-    }
-
     #[tokio::test]
     async fn forwarded_attachments_are_keyed_for_every_recipient() {
         use wiremock::matchers::query_param;
@@ -1390,7 +1375,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = test_client(&server, vec![me]);
+        let client = test_support::client(&server, vec![me]);
         let opts = SendOptions {
             to: vec!["friend@proton.me".into(), "plain@example.com".into()],
             body: "FYI".into(),
@@ -1474,7 +1459,7 @@ mod tests {
             .await;
         let html = "<p>Hi Alex,<br>How are you?</p>\n<p>See you <b>Thursday</b>.</p>";
 
-        test_client(&server, vec![me])
+        test_support::client(&server, vec![me])
             .send(&SendOptions {
                 to: vec!["friend@proton.me".into(), "pgp@example.org".into()],
                 subject: "Plans".into(),
@@ -1586,7 +1571,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = test_client(&server, vec![me]);
+        let client = test_support::client(&server, vec![me]);
         let opts = SendOptions {
             to: vec!["ana@example.com".into()],
             body: "the plan".into(),
@@ -1751,7 +1736,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = test_client(&server, vec![personal, work]);
+        let client = test_support::client(&server, vec![personal, work]);
         let reply = SendOptions {
             body: "Thanks".into(),
             ..SendOptions::default()
@@ -1827,7 +1812,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = test_client(&server, vec![me]);
+        let client = test_support::client(&server, vec![me]);
         let answer = SendOptions {
             body: "Thanks".into(),
             ..SendOptions::default()
@@ -1916,7 +1901,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = test_client(&server, vec![me.clone()]);
+        let client = test_support::client(&server, vec![me.clone()]);
         let forward = SendOptions {
             to: vec!["friend@example.com".into()],
             body: "FYI".into(),
@@ -1983,7 +1968,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = test_client(&server, vec![me.clone()]);
+        let client = test_support::client(&server, vec![me.clone()]);
         if reply {
             let thanks = SendOptions {
                 body: "Thanks".into(),
@@ -2054,7 +2039,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = test_client(&server, vec![me]);
+        let client = test_support::client(&server, vec![me]);
         let opts = SendOptions {
             to: vec!["friend@proton.me".into()],
             ..SendOptions::default()

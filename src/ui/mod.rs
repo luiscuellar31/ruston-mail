@@ -14,6 +14,8 @@ mod reader;
 mod settings;
 #[cfg(target_os = "windows")]
 mod taskbar;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod window_place;
 

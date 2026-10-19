@@ -7,23 +7,12 @@ use crate::settings::{ComposePlacement, Reading};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::mail::MailFolder;
-
-/// One of Proton's own folders, as a place to list from.
-fn sys(folder: MailFolder) -> Folder {
-    Folder::System(folder)
-}
+use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, sys};
 
 const NOW: i64 = 1_789_000_000;
 
 /// What a refresh asks for: the open folder's page and its counts.
 const PAGE_AND_COUNTS: usize = 2;
-
-/// The requests a mailbox opens with, at boot and in `authenticated_app`:
-/// its first page, then its counts.
-const OPENING_PAGE: RequestId = 1;
-const OPENING_COUNTS: RequestId = 2;
-/// A request ID no test issues: a reply to it answers nothing pending.
-const NEVER_ISSUED: RequestId = 99;
 
 fn authenticated_app() -> App {
     let mut app = App::new(Settings::default());

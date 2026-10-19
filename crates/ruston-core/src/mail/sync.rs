@@ -457,6 +457,7 @@ mod tests {
     use super::*;
     use crate::api::events::{EventBatch, MessageEvent, action};
     use crate::crypto::Verdict;
+    use crate::mail::test_support;
     use crate::transport::{HttpClient, Request, Response};
     use serde::de::DeserializeOwned;
     use std::path::Path;
@@ -529,14 +530,11 @@ mod tests {
 
     #[tokio::test]
     async fn indexing_reads_bodies_without_looking_up_sender_keys() {
-        use crate::cache::CacheIdentity;
-        use crate::crypto::{AddressKeys, KeyStore, StoredKey};
-        use crate::session::{MemoryStore, Paths};
+        use crate::crypto::{AddressKeys, StoredKey};
         use proton_crypto::crypto::{
             DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
         };
         use secrecy::SecretString;
-        use std::sync::Arc;
 
         let server = MockServer::start().await;
         let provider = crate::crypto::provider();
@@ -600,19 +598,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let client = Client {
-            http: HttpClient::new(server.uri(), "Other"),
-            keys: KeyStore {
-                user_keys: Vec::new(),
-                addresses: vec![address],
-            },
-            paths: Paths::with_base(std::env::temp_dir()),
-            profile: "test".into(),
-            session_uid: "test".into(),
-            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
-            store: Arc::new(MemoryStore::default()),
-            sender_cache: tokio::sync::Mutex::new(super::super::SenderKeyCache::default()),
-        };
+        let client = test_support::client(&server, vec![address]);
         let cache = Cache::open(Path::new(":memory:")).unwrap();
 
         assert_eq!(client.index_into(&cache, "inbox", 1, 10).await.unwrap(), 1);
@@ -866,16 +852,6 @@ mod tests {
     async fn index_reads_three_bodies_at_once_and_stores_them_in_listing_order() {
         use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
-        async fn wait_for(counter: &AtomicUsize, count: usize) {
-            tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                while counter.load(SeqCst) < count {
-                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                }
-            })
-            .await
-            .expect("body reads did not make progress");
-        }
-
         let cache = Cache::open(Path::new(":memory:")).unwrap();
         cache.set_last_event_id("old").unwrap();
         let http = ListingDoer {
@@ -907,15 +883,15 @@ mod tests {
             }
         });
         let release = async {
-            wait_for(&started, 3).await;
+            test_support::wait_for(&started, 3, "body reads").await;
             // Later bodies arrive first, but wait for the first one.
             gates[2].add_permits(1);
             gates[1].add_permits(1);
-            wait_for(&finished, 2).await;
+            test_support::wait_for(&finished, 2, "body reads").await;
             assert!(cache.search("downloadedbody", 10).unwrap().is_empty());
             assert_eq!(started.load(SeqCst), 3);
             gates[0].add_permits(1);
-            wait_for(&started, 5).await;
+            test_support::wait_for(&started, 5, "body reads").await;
             gates[3].add_permits(1);
             gates[4].add_permits(1);
         };

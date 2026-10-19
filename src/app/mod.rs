@@ -37,10 +37,11 @@ pub use layout::{
     MIN_PANEL_WIDTH, compact as compact_layout, ratios as panel_ratios, widths as panel_widths,
 };
 use mailbox::ActionStart;
+use mailbox::PageRequest;
+pub(crate) use mailbox::RequestId;
 pub use mailbox::{
     ActionRequest, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
 };
-use mailbox::{PageRequest, RequestId};
 pub use reader::{ConversationReader, ReaderState};
 
 /// Identifies one file operation across a destination dialog and download.

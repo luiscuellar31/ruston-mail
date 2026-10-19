@@ -1544,6 +1544,7 @@ mod tests {
 
     use super::*;
     use crate::mail::ConversationDetail;
+    use crate::ui::test_support::text_rect;
 
     #[test]
     fn the_reading_column_is_bounded_and_centred() {
@@ -2296,21 +2297,6 @@ mod tests {
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
         (shapes, messages)
-    }
-
-    fn text_rect(shapes: &[egui::epaint::ClippedShape], label: &str) -> egui::Rect {
-        shapes
-            .iter()
-            .find_map(|shape| {
-                if let egui::epaint::Shape::Text(text) = &shape.shape
-                    && text.galley.text() == label
-                {
-                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| panic!("missing text: {label}"))
     }
 
     fn rounded_rects(shapes: &[egui::epaint::ClippedShape], radius: u8) -> Vec<egui::Rect> {

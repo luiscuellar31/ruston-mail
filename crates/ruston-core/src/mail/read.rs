@@ -464,6 +464,7 @@ fn metadata_oldest_first(mut messages: Vec<Message>) -> Vec<MessageMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail::test_support;
     use crate::transport::{Request, Response};
     use serde::de::DeserializeOwned;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -489,16 +490,6 @@ mod tests {
                 gates: (0..gate_count).map(|_| Semaphore::new(0)).collect(),
                 fail_on,
             }
-        }
-
-        async fn wait_for(counter: &AtomicUsize, count: usize) {
-            tokio::time::timeout(Duration::from_secs(2), async {
-                while counter.load(Ordering::SeqCst) < count {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            })
-            .await
-            .expect("body fetches did not make progress");
         }
     }
 
@@ -554,10 +545,7 @@ mod tests {
     fn conversation_client(
         server: &wiremock::MockServer,
     ) -> (Client, crypto::keys::AddressKeys, String) {
-        use crate::cache::CacheIdentity;
-        use crate::crypto::{KeyStore, StoredKey};
-        use crate::session::{MemoryStore, Paths};
-        use crate::transport::HttpClient;
+        use crate::crypto::StoredKey;
         use proton_crypto::crypto::{
             DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
         };
@@ -596,19 +584,7 @@ mod tests {
                 unlocked: None,
             }],
         };
-        let client = Client {
-            http: HttpClient::new(server.uri(), "Other"),
-            keys: KeyStore {
-                user_keys: Vec::new(),
-                addresses: vec![address.clone()],
-            },
-            paths: Paths::with_base(std::env::temp_dir()),
-            profile: "test".into(),
-            session_uid: "test".into(),
-            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
-            store: std::sync::Arc::new(MemoryStore::default()),
-            sender_cache: tokio::sync::Mutex::new(super::super::SenderKeyCache::default()),
-        };
+        let client = test_support::client(server, vec![address.clone()]);
         (client, address, public)
     }
 
@@ -1063,20 +1039,20 @@ mod tests {
             ids
         };
         let release = async {
-            GatedDoer::wait_for(&http.started, 3).await;
+            test_support::wait_for(&http.started, 3, "body fetches").await;
             assert_eq!(http.active.load(Ordering::SeqCst), 3);
 
             // Complete newer responses first. The oldest is still awaited,
             // so no fourth request should begin yet.
             http.gates[2].add_permits(1);
-            GatedDoer::wait_for(&http.completed, 1).await;
+            test_support::wait_for(&http.completed, 1, "body fetches").await;
             assert_eq!(http.started.load(Ordering::SeqCst), 3);
             http.gates[1].add_permits(1);
-            GatedDoer::wait_for(&http.completed, 2).await;
+            test_support::wait_for(&http.completed, 2, "body fetches").await;
             assert_eq!(http.started.load(Ordering::SeqCst), 3);
 
             http.gates[0].add_permits(1);
-            GatedDoer::wait_for(&http.started, 4).await;
+            test_support::wait_for(&http.started, 4, "body fetches").await;
             http.gates[3].add_permits(1);
         };
 

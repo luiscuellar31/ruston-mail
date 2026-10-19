@@ -3,20 +3,9 @@
 use super::*;
 use crate::mail::{MailAddress, MailMessage, MessageBody};
 use crate::settings::Reading;
+use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, sys};
 
 const PAGE_SIZE: u32 = 50;
-/// The requests a mailbox opens with, in `open`: the Inbox's first
-/// page, then its counts.
-const OPENING_PAGE: RequestId = 1;
-const OPENING_COUNTS: RequestId = 2;
-/// A request ID no test issues: a reply to it answers nothing pending.
-const NEVER_ISSUED: RequestId = 99;
-
-/// One of Proton's own folders, as a place to list from.
-fn sys(folder: MailFolder) -> Folder {
-    Folder::System(folder)
-}
-
 fn summary(id: &str) -> ConversationSummary {
     ConversationSummary {
         id: id.to_owned(),

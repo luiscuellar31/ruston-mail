@@ -1156,6 +1156,7 @@ fn non_empty(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::sys;
 
     #[test]
     fn demo_protection_depends_only_on_the_address() {
@@ -1170,11 +1171,6 @@ mod tests {
     }
 
     pub(super) const NOW: i64 = 1_789_000_000;
-
-    /// One of Proton's own folders, as a place to list from.
-    fn sys(folder: MailFolder) -> Folder {
-        Folder::System(folder)
-    }
 
     #[test]
     fn search_reaches_every_folder() {

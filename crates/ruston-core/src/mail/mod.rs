@@ -9,6 +9,8 @@ pub mod organize;
 pub mod read;
 pub mod send;
 pub mod sync;
+#[cfg(test)]
+mod test_support;
 
 use crate::DEFAULT_BASE_URL;
 use crate::api;

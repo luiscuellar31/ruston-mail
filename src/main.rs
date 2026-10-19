@@ -11,6 +11,8 @@ mod mail;
 mod mailto;
 mod runtime;
 mod settings;
+#[cfg(test)]
+mod test_support;
 mod ui;
 
 use std::process::ExitCode;

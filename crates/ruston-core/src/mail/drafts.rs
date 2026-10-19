@@ -142,18 +142,14 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::CacheIdentity;
-    use crate::crypto::{KeyStore, StoredKey};
+    use crate::crypto::StoredKey;
+    use crate::mail::test_support;
     use crate::model::message::Message;
-    use crate::session::{MemoryStore, Paths};
-    use crate::transport::HttpClient;
     use proton_crypto::crypto::{
         DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
     };
     use secrecy::SecretString;
     use std::path::PathBuf;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -203,22 +199,6 @@ mod tests {
                 passphrase: SecretString::from("pass"),
                 unlocked: None,
             }],
-        }
-    }
-
-    fn client(server: &MockServer, addresses: Vec<AddressKeys>) -> Client {
-        Client {
-            http: HttpClient::new(server.uri(), "Other"),
-            keys: KeyStore {
-                user_keys: Vec::new(),
-                addresses,
-            },
-            paths: Paths::with_base(std::env::temp_dir()),
-            profile: "test".into(),
-            session_uid: "test".into(),
-            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
-            store: Arc::new(MemoryStore::default()),
-            sender_cache: Mutex::new(super::super::SenderKeyCache::default()),
         }
     }
 
@@ -277,7 +257,7 @@ mod tests {
             ..SendOptions::default()
         };
 
-        let client = client(&server, vec![address("me@proton.me", "address-1")]);
+        let client = test_support::client(&server, vec![address("me@proton.me", "address-1")]);
         assert_eq!(client.save_draft(&opts).await.unwrap(), "draft-1");
 
         let requests = server.received_requests().await.unwrap();
@@ -318,7 +298,7 @@ mod tests {
             ..SendOptions::default()
         };
 
-        let client = client(&server, vec![address("me@proton.me", "address-1")]);
+        let client = test_support::client(&server, vec![address("me@proton.me", "address-1")]);
         assert!(matches!(
             client.save_draft(&opts).await,
             Err(Error::Api(refused)) if refused.code == 2011
@@ -335,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn a_draft_refuses_a_delivery_time_or_an_expiration() {
         let server = MockServer::start().await;
-        let client = client(&server, vec![address("me@proton.me", "address-1")]);
+        let client = test_support::client(&server, vec![address("me@proton.me", "address-1")]);
         let scheduled = SendOptions {
             send_at: Some(1_900_000_000),
             ..SendOptions::default()
@@ -376,7 +356,7 @@ mod tests {
             .mount(&server)
             .await;
         let second = address("second@proton.me", "address-2");
-        let client = client(
+        let client = test_support::client(
             &server,
             vec![address("primary@proton.me", "address-1"), second.clone()],
         );
@@ -427,7 +407,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let client = client(&server, Vec::new());
+        let client = test_support::client(&server, Vec::new());
 
         // One received message among the IDs stops the whole delete.
         let refused = client

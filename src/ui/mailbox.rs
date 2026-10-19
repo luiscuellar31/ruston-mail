@@ -1245,6 +1245,7 @@ mod tests {
 
     use super::*;
     use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
+    use crate::ui::test_support::visible_text_rect;
 
     fn mailbox_frame(
         context: &egui::Context,
@@ -1265,20 +1266,6 @@ mod tests {
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
         (messages, shapes)
-    }
-
-    fn visible_text_rect(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Rect> {
-        shapes.iter().find_map(|clipped| {
-            if let egui::epaint::Shape::Text(text) = &clipped.shape
-                && text.galley.text() == label
-            {
-                let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                if clipped.clip_rect.contains_rect(rect) {
-                    return Some(rect);
-                }
-            }
-            None
-        })
     }
 
     #[test]

@@ -561,18 +561,7 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn text_rect(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Rect> {
-        match shape {
-            egui::epaint::Shape::Text(text) if text.galley.text() == label => {
-                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-            }
-            egui::epaint::Shape::Vec(shapes) => {
-                shapes.iter().find_map(|shape| text_rect(shape, label))
-            }
-            _ => None,
-        }
-    }
+    use crate::ui::test_support::shape_text_rect;
 
     #[test]
     fn every_shortcut_key_stays_inside_its_section() {
@@ -602,7 +591,7 @@ mod tests {
                 let rect = output
                     .shapes
                     .iter()
-                    .find_map(|shape| text_rect(&shape.shape, label))
+                    .find_map(|shape| shape_text_rect(&shape.shape, label))
                     .unwrap_or(egui::Rect::NOTHING);
                 (label.to_string(), rect.left())
             })
@@ -610,7 +599,7 @@ mod tests {
         let keyboard = output
             .shapes
             .iter()
-            .find_map(|shape| text_rect(&shape.shape, "Keyboard"))
+            .find_map(|shape| shape_text_rect(&shape.shape, "Keyboard"))
             .map(|rect| rect.left());
         output.drop_without_applying_deltas();
 
@@ -648,7 +637,7 @@ mod tests {
             output
                 .shapes
                 .iter()
-                .find_map(|shape| text_rect(&shape.shape, label))
+                .find_map(|shape| shape_text_rect(&shape.shape, label))
                 .unwrap()
         };
         assert!(find("About").top() > find("Keyboard").bottom());
@@ -684,7 +673,7 @@ mod tests {
             output
                 .shapes
                 .iter()
-                .find_map(|shape| text_rect(&shape.shape, label))
+                .find_map(|shape| shape_text_rect(&shape.shape, label))
                 .unwrap_or_else(|| panic!("missing {label}"))
         };
         let advanced = find("Advanced");
@@ -728,7 +717,7 @@ mod tests {
                 let button = output
                     .shapes
                     .iter()
-                    .find_map(|shape| text_rect(&shape.shape, "Source code"))
+                    .find_map(|shape| shape_text_rect(&shape.shape, "Source code"))
                     .unwrap();
                 assert!(viewport.contains_rect(button));
                 for clipped in &output.shapes {

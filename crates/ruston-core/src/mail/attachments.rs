@@ -336,19 +336,15 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::CacheIdentity;
-    use crate::crypto::{AddressKeys, KeyStore, StoredKey};
+    use crate::crypto::{AddressKeys, StoredKey};
+    use crate::mail::test_support;
     use crate::model::enums::key_flag;
-    use crate::session::{MemoryStore, Paths};
-    use crate::transport::HttpClient;
     use base64::{Engine, engine::general_purpose::STANDARD};
     use proton_crypto::crypto::{
         ArmorerSync, DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync,
         PGPProviderSync,
     };
     use secrecy::SecretString;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -418,19 +414,7 @@ mod tests {
             })))
             .mount(server)
             .await;
-        let client = Client {
-            http: HttpClient::new(server.uri(), "Other"),
-            keys: KeyStore {
-                user_keys: Vec::new(),
-                addresses: vec![address],
-            },
-            paths: Paths::with_base(std::env::temp_dir()),
-            profile: "test".into(),
-            session_uid: "test".into(),
-            cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
-            store: Arc::new(MemoryStore::default()),
-            sender_cache: Mutex::new(super::super::SenderKeyCache::default()),
-        };
+        let client = test_support::client(server, vec![address]);
         (
             client,
             Attachment {
