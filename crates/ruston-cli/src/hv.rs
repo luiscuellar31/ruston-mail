@@ -459,21 +459,35 @@ fn open_browser(url: &str) -> std::io::Result<()> {
 /// The system's way to open `url` in the default browser. No shell reads the
 /// address: `cmd /C start` would cut it at the first `&`.
 fn browser_command(url: &str) -> std::io::Result<std::process::Command> {
-    #[cfg(target_os = "macos")]
-    let mut cmd = std::process::Command::new("open");
-    #[cfg(target_os = "linux")]
-    let mut cmd = std::process::Command::new("xdg-open");
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = std::process::Command::new(system_rundll32()?);
-        c.arg("url.dll,FileProtocolHandler");
-        c
-    };
+    let mut cmd = browser_opener()?;
     cmd.arg(url);
     cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     without_secrets(&mut cmd);
     Ok(cmd)
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(target_os = "macos")]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    Ok(std::process::Command::new("open"))
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(target_os = "windows")]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    let mut command = std::process::Command::new(system_rundll32()?);
+    command.arg("url.dll,FileProtocolHandler");
+    Ok(command)
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    Ok(std::process::Command::new("xdg-open"))
 }
 
 /// rundll32 from System32. Windows looks for a program named without a

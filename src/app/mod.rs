@@ -1867,18 +1867,30 @@ fn open_in_browser(url: String) -> Effects {
 
 /// Opens `url` in the default browser without going through a shell.
 fn open_url(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new(system_rundll32()?);
-        command.arg("url.dll,FileProtocolHandler");
-        command
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let mut command = std::process::Command::new("xdg-open");
+    browser_opener()?.arg(url).spawn().map(drop)
+}
 
-    command.arg(url).spawn().map(drop)
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(target_os = "macos")]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    Ok(std::process::Command::new("open"))
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(target_os = "windows")]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    let mut command = std::process::Command::new(system_rundll32()?);
+    command.arg("url.dll,FileProtocolHandler");
+    Ok(command)
+}
+
+/// The program that opens an address in the default browser, with no shell
+/// to read the address.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn browser_opener() -> std::io::Result<std::process::Command> {
+    Ok(std::process::Command::new("xdg-open"))
 }
 
 /// rundll32 from System32. Windows looks for a program named without a
