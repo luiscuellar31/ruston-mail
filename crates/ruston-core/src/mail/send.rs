@@ -1162,7 +1162,8 @@ mod tests {
         let operation = tokio::spawn(attachment_work(&SLOTS, move || {
             assert_ne!(std::thread::current().id(), current);
             started.send(()).unwrap();
-            held.recv().unwrap();
+            held.recv_timeout(Duration::from_secs(5))
+                .expect("the test never released the job");
             Ok(())
         }));
         waiting.await.unwrap();

@@ -864,7 +864,8 @@ mod tests {
             wait_for_token(&listener, NONCE, Instant::now() + Duration::from_secs(5))
         });
 
-        std::thread::sleep(Duration::from_millis(100));
+        // The listener is already bound, so the connection waits for the
+        // helper in its queue.
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         c.write_all(get(&format!("/token?nonce={NONCE}&value=raw%3Atoken+abc")).as_bytes())
             .unwrap();
@@ -922,10 +923,12 @@ mod tests {
             let _ = c.read_to_string(&mut resp);
         });
 
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut stream = loop {
             match listener.accept() {
                 Ok((s, _)) => break s,
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "the client never connected");
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 Err(e) => panic!("accept: {e}"),

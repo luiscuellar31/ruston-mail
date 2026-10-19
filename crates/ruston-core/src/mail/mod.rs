@@ -880,7 +880,11 @@ mod tests {
             let saved = self.inner.get(key)?.is_some();
             if key == "auth_tokens_v1" && saved {
                 self.entered.notify_one();
-                self.release.lock().unwrap().recv().unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("the test never let the delete go on");
             }
             self.inner.delete(key)?;
             if key == "skp" && saved {
