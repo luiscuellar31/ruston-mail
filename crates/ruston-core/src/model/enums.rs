@@ -212,6 +212,17 @@ pub mod label_type {
     pub const SYSTEM_FOLDER: i64 = 4;
 }
 
+/// Human verification: where a person solves a challenge, and how.
+pub mod human_verification {
+    /// Proton's verification page, for a challenge that names no host of its
+    /// own.
+    pub const PAGE: &str = "https://verify.proton.me";
+    /// The domain of Proton's own verification hosts.
+    pub const DOMAIN: &str = "proton.me";
+    /// The method a browser outside the app can complete.
+    pub const CAPTCHA: &str = "captcha";
+}
+
 /// The `Code` of a Proton response, for the codes the client acts on.
 pub(crate) mod response_code {
     /// The request succeeded.

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::model::enums::human_verification;
+
 /// A human-verification challenge returned by the API (code 9001).
 #[derive(Debug, Clone)]
 pub struct HvChallenge {
@@ -11,6 +13,38 @@ pub struct HvChallenge {
     pub methods: Vec<String>,
     /// URL where the user completes the challenge in a browser.
     pub web_url: String,
+}
+
+impl HvChallenge {
+    /// The page where a person solves this challenge's CAPTCHA. The host the
+    /// server named is kept only when it is one of Proton's own over https,
+    /// since the page receives the token; anything else opens Proton's
+    /// default page.
+    pub fn verification_url(&self) -> String {
+        let origin = self
+            .web_url
+            .strip_prefix("https://")
+            .and_then(|rest| rest.split(['/', '?', '#']).next())
+            .filter(|host| is_proton_host(host))
+            .map_or_else(
+                || human_verification::PAGE.to_owned(),
+                |host| format!("https://{host}"),
+            );
+        format!(
+            "{origin}/?methods={}&token={}",
+            human_verification::CAPTCHA,
+            urlencoding::encode(&self.token)
+        )
+    }
+}
+
+/// Whether `host` is a plain host name in Proton's verification domain.
+fn is_proton_host(host: &str) -> bool {
+    let plain = host
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let domain = human_verification::DOMAIN;
+    plain && (host == domain || host.ends_with(&format!(".{domain}")))
 }
 
 /// The process exit statuses the CLI ends with, as its `--help` explains.
@@ -241,6 +275,57 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn challenge(web_url: &str, token: &str) -> HvChallenge {
+        HvChallenge {
+            token: token.into(),
+            methods: vec!["captcha".into(), "email".into()],
+            web_url: web_url.into(),
+        }
+    }
+
+    #[test]
+    fn the_verification_page_opens_only_on_protons_own_hosts() {
+        assert_eq!(
+            challenge("https://verify-api.proton.me/x?y=1", "t").verification_url(),
+            "https://verify-api.proton.me/?methods=captcha&token=t"
+        );
+        assert_eq!(
+            challenge("https://proton.me/", "t").verification_url(),
+            "https://proton.me/?methods=captcha&token=t"
+        );
+        // The page receives the token, so any other host gets the default one.
+        for untrusted in [
+            "",
+            "https://",
+            "http://verify.proton.me/",
+            "https://example.com/",
+            "https://proton.me.example.com/",
+            "https://evilproton.me/",
+            "https://evil@verify.proton.me/",
+            "https://x&calc&/",
+            "https://evil host/",
+            "https://a\"b/",
+        ] {
+            assert_eq!(
+                challenge(untrusted, "t").verification_url(),
+                "https://verify.proton.me/?methods=captcha&token=t",
+                "{untrusted}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_verification_page_asks_for_the_captcha_with_the_token_encoded() {
+        let page = challenge(
+            "https://verify.proton.me/?methods=captcha,email&token=other",
+            "chal/1 x",
+        );
+        assert_eq!(
+            page.verification_url(),
+            "https://verify.proton.me/?methods=captcha&token=chal%2F1%20x"
+        );
+    }
 
     #[test]
     fn http_conversion_removes_url_without_losing_error_kind_or_cause() {

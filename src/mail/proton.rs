@@ -48,8 +48,6 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
 const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
-/// Proton's standalone human-verification page.
-const VERIFY_ORIGIN: &str = "https://verify.proton.me";
 const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox password";
 const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
 const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
@@ -692,7 +690,7 @@ impl Prompter {
                 if !offers_captcha(&challenge) {
                     return Err(Error::HumanVerification(challenge));
                 }
-                let url = verification_url(&challenge.web_url, &challenge.token);
+                let url = challenge.verification_url();
                 let prompt = |done| SignInPrompt::HumanVerification { url, done };
                 match prompter.ask(prompt).await {
                     Ok(()) => Ok((challenge.token, "captcha".to_owned())),
@@ -797,38 +795,6 @@ async fn within<F: Future>(
         }
         deadline = now + (limit - worked);
     }
-}
-
-/// The verification page for a challenge. The server's `WebUrl` host is kept
-/// only when it is an https `proton.me` host; anything else uses the default.
-fn verification_url(web_url: &str, token: &str) -> String {
-    let origin = web_url
-        .strip_prefix("https://")
-        .and_then(|rest| rest.split(['/', '?', '#']).next())
-        .filter(|host| {
-            host.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-                && (*host == "proton.me" || host.ends_with(".proton.me"))
-        })
-        .map_or_else(
-            || VERIFY_ORIGIN.to_owned(),
-            |host| format!("https://{host}"),
-        );
-
-    format!("{origin}/?methods=captcha&token={}", percent_encode(token))
-}
-
-fn percent_encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-                char::from(b).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
 }
 
 /// The Proton operation behind a mailbox action.
@@ -1759,29 +1725,6 @@ mod tests {
             );
         }
         assert_eq!(send_deadline(0), SEND_TIMEOUT);
-    }
-
-    #[test]
-    fn verification_page_stays_on_proton() {
-        assert_eq!(
-            verification_url("", "a b/c"),
-            "https://verify.proton.me/?methods=captcha&token=a%20b%2Fc"
-        );
-        assert_eq!(
-            verification_url("https://verify-api.proton.me/x?y=1", "t"),
-            "https://verify-api.proton.me/?methods=captcha&token=t"
-        );
-        for untrusted in [
-            "http://verify.proton.me/",
-            "https://proton.me.example.com/",
-            "https://evil@verify.proton.me/",
-            "https://example.com/",
-        ] {
-            assert!(
-                verification_url(untrusted, "t").starts_with("https://verify.proton.me/?"),
-                "{untrusted}"
-            );
-        }
     }
 
     #[test]

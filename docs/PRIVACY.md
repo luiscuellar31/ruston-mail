@@ -204,7 +204,9 @@ them. On a terminal it asks, hidden, for the account password, a TOTP code and
 a separate mailbox password when they are needed and not given, and
 `messages send --eo-password` without a value asks for the message password.
 None of them then goes on the command line, where process listings and shell
-history would show it. While it waits for a CAPTCHA, the CLI listens on a loopback port and takes
+history would show it. Both apps open human verification only on Proton's own
+hosts: a challenge that names another host gets Proton's default page, since
+the page receives the challenge's token. While it waits for a CAPTCHA, the CLI listens on a loopback port and takes
 a token only with the random code the captcha page it opened carries at the end
 of its address, so no other web page can hand it one. The address's fragment
 never reaches Proton. A capture bookmarklet saved by an earlier version is

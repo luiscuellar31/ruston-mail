@@ -402,7 +402,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
   the address to the system's opener without a shell: `open`, `xdg-open`, or
   on Windows `rundll32 url.dll,FileProtocolHandler` from System32, never a
-  `rundll32` that Windows would first look for beside the executable.
+  `rundll32` that Windows would first look for beside the executable. Both
+  apps take that page from core's `HvChallenge::verification_url`, which keeps
+  the host a challenge names only when it is one of Proton's own over https.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches

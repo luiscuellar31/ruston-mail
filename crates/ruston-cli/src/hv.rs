@@ -54,8 +54,6 @@ const NOT_THIS_SIGN_IN_PAGE: &str = "<h2>Not from this sign-in</h2><p>This reque
     earlier version, save the one your terminal shows now and click it on that page.</p>";
 const NO_TOKEN_PAGE: &str =
     "<h2>No token received</h2><p>Your terminal is still waiting: solve the captcha again.</p>";
-/// Verification page used when the challenge carries no usable `WebUrl`.
-const DEFAULT_VERIFY_ORIGIN: &str = "https://verify.proton.me";
 
 /// Build the HV resolver.
 /// - `api_base`: API root (used to derive the captcha widget URL).
@@ -87,7 +85,7 @@ async fn solve(
     }
 
     if use_chrome {
-        let url = verify_url(&chal);
+        let url = chal.verification_url();
         tokio::task::spawn_blocking(move || run_external_flow(&url))
             .await
             .map_err(|e| Error::Other(format!("hv task: {e}")))??;
@@ -105,28 +103,6 @@ async fn solve(
     tokio::task::spawn_blocking(move || run_manual_flow(&page))
         .await
         .map_err(|e| Error::Other(format!("hv task: {e}")))?
-}
-
-/// Proton's standalone verification page for `chal`, restricted to the captcha
-/// method (the only one whose external-browser result the retry can redeem).
-/// Keeps the host of the server-provided `WebUrl` when it is https and a plain
-/// host name, which the browser launch then passes on as written.
-fn verify_url(chal: &HvChallenge) -> String {
-    let origin = chal
-        .web_url
-        .strip_prefix("https://")
-        .and_then(|rest| rest.split(['/', '?', '#']).next())
-        .filter(|host| {
-            !host.is_empty()
-                && host
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-        })
-        .map_or_else(
-            || DEFAULT_VERIFY_ORIGIN.to_string(),
-            |host| format!("https://{host}"),
-        );
-    format!("{origin}/?methods=captcha&token={}", urlencode(&chal.token))
 }
 
 /// `--captcha-chrome`: open the verification page in an isolated Chrome window
@@ -697,34 +673,6 @@ mod tests {
     }
 
     #[test]
-    fn the_verification_page_keeps_only_a_plain_https_host() {
-        let page = |web_url: &str| {
-            verify_url(&HvChallenge {
-                token: "t".into(),
-                methods: vec!["captcha".into()],
-                web_url: web_url.into(),
-            })
-        };
-        assert_eq!(
-            page("https://verify-api.proton.me/?methods=captcha"),
-            "https://verify-api.proton.me/?methods=captcha&token=t"
-        );
-        for hostile in [
-            "https://x&calc&/",
-            "https://evil host/",
-            "https://a\"b/",
-            "http://verify.proton.me/",
-            "https://",
-        ] {
-            assert_eq!(
-                page(hostile),
-                format!("{DEFAULT_VERIFY_ORIGIN}/?methods=captcha&token=t"),
-                "{hostile}"
-            );
-        }
-    }
-
-    #[test]
     #[cfg(target_os = "windows")]
     fn windows_hands_the_whole_address_to_system_rundll32() {
         let url =
@@ -1009,36 +957,6 @@ mod tests {
         assert_eq!(first.parent(), Some(std::env::temp_dir().as_path()));
         std::fs::remove_dir(first).unwrap();
         std::fs::remove_dir(second).unwrap();
-    }
-
-    fn chal(token: &str, web_url: &str) -> HvChallenge {
-        HvChallenge {
-            token: token.into(),
-            methods: vec!["captcha".into(), "email".into()],
-            web_url: web_url.into(),
-        }
-    }
-
-    #[test]
-    fn verify_url_keeps_web_url_host_and_forces_captcha() {
-        let c = chal(
-            "chal/1 x",
-            "https://verify.proton.me/?methods=captcha,email&token=other",
-        );
-        assert_eq!(
-            verify_url(&c),
-            "https://verify.proton.me/?methods=captcha&token=chal%2F1%20x"
-        );
-    }
-
-    #[test]
-    fn verify_url_falls_back_for_missing_or_insecure_web_url() {
-        let expected = "https://verify.proton.me/?methods=captcha&token=t";
-        assert_eq!(verify_url(&chal("t", "")), expected);
-        assert_eq!(
-            verify_url(&chal("t", "http://attacker.example/?token=t")),
-            expected
-        );
     }
 
     #[test]
