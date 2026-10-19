@@ -260,8 +260,8 @@ struct Thread<'a> {
     messages: Vec<ThreadMessage<'a>>,
 }
 
-/// An opened message is written as before; one that could not be opened
-/// keeps its headers and says why, with no body.
+/// An opened message is written as its `FullMessage` serializes; one that
+/// could not be opened keeps its headers and says why, with no body.
 #[derive(serde::Serialize)]
 #[serde(untagged)]
 enum ThreadMessage<'a> {
@@ -372,7 +372,7 @@ pub fn action_result(json: bool, action: &str, ids: &[String]) {
     terminal::println!("{action}: {} item(s)", ids.len());
 }
 
-/// Report a successful send (returns message ID).
+/// Report a successful send, with the sent message's ID.
 pub fn sent(json: bool, id: &str) {
     if json {
         json_out(&json!({ "status": "ok", "id": id }));
@@ -394,7 +394,7 @@ fn scheduled_text(id: &str, at: i64) -> String {
     format!("Scheduled (id {id}) to be sent at {}", fmt_time(at))
 }
 
-/// Report a saved draft, which was not sent (returns its message ID).
+/// Report a saved draft, which was not sent, with its message ID.
 pub fn draft_saved(json: bool, id: &str) {
     if json {
         json_out(&json!({ "status": "ok", "id": id }));
@@ -518,7 +518,7 @@ mod tests {
 
         let json = serde_json::to_value(Thread::new(&conversation, &messages)).unwrap();
 
-        // An opened message is written exactly as before.
+        // An opened message is written exactly as its `FullMessage` serializes.
         assert_eq!(json["messages"][0], serde_json::to_value(&opened).unwrap());
         let unreadable = &json["messages"][1];
         assert_eq!(unreadable["meta"]["ID"], "m1");

@@ -570,7 +570,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let output = dir.join("message.txt");
 
-        // A file already there is replaced, as before.
+        // A file already there is replaced.
         std::fs::write(&output, b"older").unwrap();
         write_private(&output, b"decrypted body").unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"decrypted body");
