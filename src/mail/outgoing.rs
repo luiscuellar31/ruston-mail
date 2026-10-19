@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use ruston_core::html::escape_text;
+
 use super::MailboxError;
 
 /// How the body is sent.
@@ -205,28 +207,12 @@ fn as_html(body: &str) -> String {
         .map(|paragraph| paragraph.trim_matches('\n'))
         .filter(|paragraph| !paragraph.trim().is_empty())
         .map(|paragraph| {
-            let lines: Vec<String> = paragraph.split('\n').map(escape).collect();
+            let lines: Vec<String> = paragraph.split('\n').map(escape_text).collect();
             format!("<p>{}</p>", lines.join("<br>"))
         })
         .collect();
 
     paragraphs.join("\n")
-}
-
-fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(character),
-        }
-    }
-
-    out
 }
 
 /// What can stop a message from leaving.
