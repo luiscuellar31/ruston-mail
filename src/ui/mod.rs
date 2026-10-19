@@ -657,8 +657,10 @@ impl DesktopApp {
             )
         });
         // Full screen and the Dock or taskbar are passing states: the window
-        // to come back to is the one already remembered.
+        // to come back to is the one already remembered, and a reset can only
+        // run out of time.
         let Some(size) = size.filter(|_| !passing) else {
+            self.settle_layout_reset(None, context);
             return;
         };
         let saved = self.app.settings().window;
@@ -682,17 +684,8 @@ impl DesktopApp {
                     .or(saved.position),
             }
         };
-        if let Some(started_at) = self.layout_reset_at {
-            let target = Window::default();
-            let reached = (current.width - target.width).abs() <= 1.0
-                && (current.height - target.height).abs() <= 1.0;
-            let timed_out = context.input(|input| input.time) - started_at >= LAYOUT_RESET_WAIT;
-            if !reached && !timed_out {
-                return;
-            }
-            self.layout_reset_at = None;
-            self.last_window_size = None;
-            mailbox::reset_panel_sizes(context);
+        if self.settle_layout_reset(Some(&current), context) {
+            return;
         }
         if let Some(last) = self.last_window_size
             && (last.width - current.width).abs() < f32::EPSILON
@@ -704,6 +697,29 @@ impl DesktopApp {
         }
         self.last_window_size = Some(current);
         self.dispatch(Message::WindowResized(current), context);
+    }
+
+    /// Ends a layout reset once the window has its default size or the reset
+    /// has waited long enough, and puts the panes back to their default sizes
+    /// too. Returns whether the reset still waits. `current` is the window's
+    /// size, or `None` while it is full screen or minimized.
+    fn settle_layout_reset(&mut self, current: Option<&Window>, context: &egui::Context) -> bool {
+        let Some(started_at) = self.layout_reset_at else {
+            return false;
+        };
+        let target = Window::default();
+        let reached = current.is_some_and(|current| {
+            (current.width - target.width).abs() <= 1.0
+                && (current.height - target.height).abs() <= 1.0
+        });
+        let timed_out = context.input(|input| input.time) - started_at >= LAYOUT_RESET_WAIT;
+        if !reached && !timed_out {
+            return true;
+        }
+        self.layout_reset_at = None;
+        self.last_window_size = None;
+        mailbox::reset_panel_sizes(context);
+        false
     }
 
     /// Command with plus, equals, minus or zero steps the zoom on every
@@ -2759,6 +2775,37 @@ mod tests {
         desktop.remember_window_size(&context);
         assert_eq!(desktop.layout_reset_at, None);
         assert_eq!(desktop.app.settings().window, old);
+    }
+
+    #[test]
+    fn a_layout_reset_in_full_screen_ends_when_its_wait_does() {
+        let context = egui::Context::default();
+        let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+        desktop.dispatch(Message::ResetLayout, &context);
+        let started = desktop
+            .layout_reset_at
+            .expect("a reset waits for the window");
+
+        // Full screen keeps the window from ever reaching the default size.
+        let mut full_screen = egui::RawInput {
+            time: Some(started + LAYOUT_RESET_WAIT + 1.0),
+            ..Default::default()
+        };
+        let viewport = full_screen
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default();
+        viewport.inner_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1920.0, 1080.0),
+        ));
+        viewport.fullscreen = Some(true);
+        context
+            .run_ui(full_screen, |_| {})
+            .drop_without_applying_deltas();
+        desktop.remember_window_size(&context);
+
+        assert_eq!(desktop.layout_reset_at, None);
     }
 
     #[test]
