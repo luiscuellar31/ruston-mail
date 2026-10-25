@@ -62,14 +62,24 @@ impl SyncReport {
     }
 }
 
-async fn rebuild_cache<D: Doer>(
+/// What a resync leaves: the cache it rebuilt, handed back to its caller, the
+/// cursor it now holds, and how many messages it lists.
+struct Rebuilt<C> {
+    cache: C,
+    cursor: String,
+    count: usize,
+}
+
+/// Relists every message into `cache`. Like the other cache operations, it
+/// takes the cache by value, so no reference to it lives across a request.
+async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
     http: &D,
-    cache: &Cache,
+    cache: C,
     previous_cursor: &str,
     page_size: u32,
-) -> Result<(String, usize)> {
+) -> Result<Rebuilt<C>> {
     let cursor = api::events::get_latest_event_id(http).await?;
-    cache.begin_rebuild()?;
+    cache.borrow().begin_rebuild()?;
     let mut expected_total = None;
     let mut page = 0;
     let total = loop {
@@ -89,27 +99,36 @@ async fn rebuild_cache<D: Doer>(
                 "incomplete mailbox listing during resync",
             ));
         }
-        cache.stage_rebuild_page(&messages)?;
+        cache.borrow().stage_rebuild_page(&messages)?;
         if listed_before + u64::from(page_size) >= u64::from(total) {
             break total;
         }
         page += 1;
     };
-    let rebuilt = cache.finish_rebuild(previous_cursor, &cursor, total)?;
-    Ok((cursor, rebuilt))
+    let count = cache
+        .borrow()
+        .finish_rebuild(previous_cursor, &cursor, total)?;
+    Ok(Rebuilt {
+        cache,
+        cursor,
+        count,
+    })
 }
 
-async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
-    let mut cursor = match cache.last_event_id()? {
+/// Applies Proton's events since the cached cursor. The cache comes by value
+/// so the future stays `Send`: SQLite connections are not `Sync`.
+async fn sync_cache<D: Doer, C: Borrow<Cache>>(http: &D, mut cache: C) -> Result<SyncReport> {
+    let saved = cache.borrow().last_event_id()?;
+    let mut cursor = match saved {
         Some(cursor) => cursor,
         None => {
             // Bootstrap: record the current cursor; deltas flow from here.
             let latest = api::events::get_latest_event_id(http).await?;
-            if cache.initialize_cursor(&latest)? {
+            if cache.borrow().initialize_cursor(&latest)? {
                 tracing::info!(target: "ruston_core::sync", event_id = %latest, "sync initialized cursor");
                 return Ok(SyncReport::initialized(latest));
             }
-            cache.last_event_id()?.ok_or_else(|| {
+            cache.borrow().last_event_id()?.ok_or_else(|| {
                 Error::cache_changed("sync cursor disappeared during initialization")
             })?
         }
@@ -123,17 +142,17 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
             if rebuilt.is_some() {
                 return Err(Error::cache_changed("server requested another resync"));
             }
-            let (rebuilt_cursor, count) =
-                rebuild_cache(http, cache, &cursor, RESYNC_PAGE_SIZE).await?;
-            tracing::warn!(target: "ruston_core::sync", rebuilt = count, "server requested full resync — cache rebuilt");
-            cursor = rebuilt_cursor;
-            rebuilt = Some(count);
+            let resynced = rebuild_cache(http, cache, &cursor, RESYNC_PAGE_SIZE).await?;
+            tracing::warn!(target: "ruston_core::sync", rebuilt = resynced.count, "server requested full resync — cache rebuilt");
+            cache = resynced.cache;
+            cursor = resynced.cursor;
+            rebuilt = Some(resynced.count);
             // What earlier batches changed is part of the rebuild, which
             // `rebuilt` reports.
             counts = BatchCounts::default();
             continue;
         }
-        counts += cache.apply_event_batch(&cursor, &batch)?;
+        counts += cache.borrow().apply_event_batch(&cursor, &batch)?;
         cursor = batch.event_id;
         if !batch.more {
             break;
@@ -380,8 +399,7 @@ impl Client {
 
     /// Apply incremental events from the cached cursor into the local cache.
     pub async fn sync(&self) -> Result<SyncReport> {
-        let cache = self.open_cache()?;
-        sync_cache(self.http(), &cache).await
+        sync_cache(self.http(), self.open_cache()?).await
     }
 
     /// Backfill a folder into the cache by paging the API (bounded by `max_pages`).
@@ -711,10 +729,11 @@ mod tests {
     }
 
     #[test]
-    fn folder_cache_futures_remain_send() {
+    fn cache_futures_remain_send() {
         fn require_send(_: impl Future + Send) {}
         // Type-check the public futures without polling or signing in.
         let _check = |client: &Client| {
+            require_send(client.sync());
             require_send(client.cache_folder("inbox", 1, 10));
             require_send(client.index_folder("inbox", 1, 10));
         };
@@ -1302,7 +1321,7 @@ mod tests {
 
         let cache = Cache::open(Path::new(":memory:")).unwrap();
         cache.set_last_event_id("old").unwrap();
-        let (cursor, count) =
+        let Rebuilt { cursor, count, .. } =
             rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2)
                 .await
                 .unwrap();
@@ -1317,7 +1336,7 @@ mod tests {
     async fn rebuild_with_second_page(
         totals: [u32; 2],
         second_page: Vec<serde_json::Value>,
-    ) -> Result<(String, usize)> {
+    ) -> Result<usize> {
         let [first_total, second_total] = totals;
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1346,7 +1365,9 @@ mod tests {
             .await;
         let cache = Cache::open(Path::new(":memory:")).unwrap();
         cache.set_last_event_id("old").unwrap();
-        rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2).await
+        rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2)
+            .await
+            .map(|rebuilt| rebuilt.count)
     }
 
     #[tokio::test]

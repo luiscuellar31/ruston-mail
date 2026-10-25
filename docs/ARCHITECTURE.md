@@ -934,7 +934,10 @@ with the password itself, as Proton's clients do; a key whose passphrase cannot
 be worked out is left out like one that does not open. They retain
 the authenticated `User.ID` alongside the API base URL in `Client`; session UIDs and email addresses
 are not cache identities. All client cache operations go through `open_cache`
-in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs). The session
+in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs). The ones that make
+requests, `sync`, `cache_folder` and `index_folder`, take the opened cache by
+value, so no reference to a SQLite connection, which is not `Sync`, lives
+across a request and their futures can run on `tokio::spawn`. The session
 metadata also records the `User.ID`, so `LocalCache` opens the same database
 from the saved session without a request; the CLI's `messages list --cached`
 and `search` use it and work offline. A session saved before the ID was kept is
