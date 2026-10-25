@@ -4,7 +4,7 @@ use chrono::Utc;
 
 use super::*;
 use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
-use crate::ui::test_support::visible_text_rect;
+use crate::ui::test_support::{text_rect, visible_text_rect};
 
 fn mailbox_frame(
     context: &egui::Context,
@@ -498,6 +498,45 @@ fn high_zoom_uses_the_available_width_without_overwriting_panel_preferences() {
             .iter()
             .any(|message| matches!(message, Message::PanelsResized(_))),
         "a temporary compact layout must not overwrite saved split ratios"
+    );
+}
+
+#[test]
+fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut app, _) = App::boot(true, Settings::default());
+    let name = "Receipts from every trip we took together across three continents";
+    let folder = Folder::custom("trips", name);
+    app.update(Message::FoldersLoaded(1, Ok(vec![folder.clone()])));
+    let _ = app.update(Message::SelectFolder(folder));
+    let mut state = UiState::default();
+    let mut asked = Vec::new();
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        let (messages, drawn) = mailbox_frame(
+            &context,
+            &app,
+            &mut state,
+            egui::vec2(1100.0, 700.0),
+            None,
+            egui::RawInput::default(),
+        );
+        asked.extend(messages);
+        shapes = drawn;
+    }
+
+    assert!(
+        !asked
+            .iter()
+            .any(|message| matches!(message, Message::PanelsResized(_))),
+        "the name must not widen the list"
+    );
+    let refresh = visible_text_rect(&shapes, "Refresh").expect("Refresh stays in view");
+    let title = text_rect(&shapes, name);
+    assert!(
+        title.right() <= refresh.left(),
+        "{title:?} runs into {refresh:?}"
     );
 }
 

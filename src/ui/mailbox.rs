@@ -486,13 +486,22 @@ fn conversation_pane(
     messages: &mut Vec<Message>,
 ) {
     ui.horizontal(|ui| {
-        ui.heading(
-            egui::RichText::new(mailbox.folder().name())
-                .size(21.0)
-                .strong(),
-        );
+        // Refresh takes its place first; a long name is shortened in the
+        // width left, with the whole name on hover, instead of widening the
+        // list or running under the button.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             refresh_button(ui, app, mailbox, messages);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(mailbox.folder().name())
+                            .heading()
+                            .size(21.0)
+                            .strong(),
+                    )
+                    .truncate(),
+                );
+            });
         });
     });
     ui.add_space(6.0);
