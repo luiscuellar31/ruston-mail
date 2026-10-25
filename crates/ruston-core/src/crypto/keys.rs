@@ -194,13 +194,17 @@ pub fn unlock<P: PGPProviderSync>(
     salts: &[KeySalt],
 ) -> Result<(KeyStore, SecretString)> {
     unlock_inner(provider, user, addresses, |k| {
-        let salt_b64 = salts
-            .iter()
-            .find(|s| s.id == k.id)
-            .and_then(|s| s.key_salt.clone())
-            .or_else(|| salts.first().and_then(|s| s.key_salt.clone()))
-            .ok_or_else(|| Error::Crypto("no key salt available".into()))?;
-        kdf::derive_key_passphrase(password, &salt_b64)
+        // A key without an entry of its own borrows the first salt. One
+        // without a salt, from before key passwords were salted, opens with
+        // the password itself, as in Proton's own clients.
+        let salt = match salts.iter().find(|s| s.id == k.id) {
+            Some(own) => own.key_salt.as_deref(),
+            None => salts.first().and_then(|s| s.key_salt.as_deref()),
+        };
+        match salt.filter(|salt| !salt.is_empty()) {
+            Some(salt_b64) => kdf::derive_key_passphrase(password, salt_b64),
+            None => Ok(password.clone()),
+        }
     })
 }
 
@@ -261,7 +265,8 @@ impl<P: PGPProviderSync> UserKeys<P> {
 }
 
 /// Opens each active user key with the passphrase `passphrase_for` gives it.
-/// A key that does not open is left out; none opening is an error.
+/// A key that does not open, or whose passphrase cannot be worked out, is
+/// left out; none opening is an error.
 fn unlock_user_keys<P: PGPProviderSync>(
     provider: &P,
     user: &User,
@@ -270,7 +275,13 @@ fn unlock_user_keys<P: PGPProviderSync>(
     let mut stored = Vec::new();
     let mut privs = Vec::new();
     for key in user.keys.iter().filter(|key| key.is_active()) {
-        let passphrase = passphrase_for(key)?;
+        let passphrase = match passphrase_for(key) {
+            Ok(passphrase) => passphrase,
+            Err(error) => {
+                tracing::warn!(target: "ruston_core::crypto", key_id = %key.id, error = %error, "user key passphrase unavailable — key left out");
+                continue;
+            }
+        };
         if let Ok(imported) = provider.private_key_import(
             key.private_key.as_bytes(),
             passphrase.expose_secret().as_bytes(),
@@ -766,11 +777,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_user_key_without_a_salt_of_its_own_borrows_the_first_one() {
-        let user_password = derived(&salt(3));
-        let (user_key, _) = listed_key("user-key", "user@proton.me", &user_password, 1, None);
-        let (legacy, _) = listed_key("legacy", "me@proton.me", &user_password, 1, None);
+    /// An account whose one user key and one address key are locked with
+    /// `passphrase`, the address key as legacy keys are.
+    fn account_locked_with(passphrase: &str) -> (User, [Address; 1]) {
+        let (user_key, _) = listed_key("user-key", "user@proton.me", passphrase, 1, None);
+        let (legacy, _) = listed_key("legacy", "me@proton.me", passphrase, 1, None);
         let user = User {
             id: "user".into(),
             keys: vec![user_key],
@@ -781,19 +792,63 @@ mod tests {
             order: 1,
             keys: vec![legacy],
         }];
+        (user, addresses)
+    }
+
+    #[test]
+    fn a_user_key_without_an_entry_of_its_own_borrows_the_first_salt() {
+        let user_password = derived(&salt(3));
+        let (user, addresses) = account_locked_with(&user_password);
         let provider = crate::crypto::provider();
         let password = SecretString::from(MAILBOX_PASSWORD);
 
-        let salts = [key_salt("first", Some(salt(3))), key_salt("user-key", None)];
+        let salts = [key_salt("first", Some(salt(3)))];
         let Ok((_, key_password)) = unlock(&provider, &user, &addresses, &password, &salts) else {
             panic!("the first salt opens the user key");
         };
         assert_eq!(key_password.expose_secret(), user_password);
+    }
 
-        let no_salt = unlock(&provider, &user, &addresses, &password, &[]);
-        assert!(
-            matches!(no_salt, Err(Error::Crypto(ref message)) if message == "no key salt available")
-        );
+    #[test]
+    fn a_user_key_without_a_salt_opens_with_the_password_itself() {
+        // Keys from before key passwords were salted open with the mailbox
+        // password as it is, as Proton's own clients open them.
+        let (user, addresses) = account_locked_with(MAILBOX_PASSWORD);
+        let provider = crate::crypto::provider();
+        let password = SecretString::from(MAILBOX_PASSWORD);
+
+        for salts in [
+            vec![key_salt("first", Some(salt(3))), key_salt("user-key", None)],
+            vec![key_salt("user-key", Some(String::new()))],
+            Vec::new(),
+        ] {
+            let Ok((_, key_password)) = unlock(&provider, &user, &addresses, &password, &salts)
+            else {
+                panic!("the password opens a key without a salt, with salts {salts:?}");
+            };
+            assert_eq!(key_password.expose_secret(), MAILBOX_PASSWORD);
+        }
+    }
+
+    #[test]
+    fn a_salt_that_cannot_be_read_leaves_out_only_its_key() {
+        let user_password = derived(&salt(4));
+        let (mut user, addresses) = account_locked_with(&user_password);
+        let (unreadable, _) = listed_key("unreadable", "user@proton.me", &user_password, 0, None);
+        user.keys.insert(0, unreadable);
+        let provider = crate::crypto::provider();
+        let password = SecretString::from(MAILBOX_PASSWORD);
+
+        let salts = [
+            key_salt("unreadable", Some("not base64!".into())),
+            key_salt("user-key", Some(salt(4))),
+        ];
+        let Ok((store, key_password)) = unlock(&provider, &user, &addresses, &password, &salts)
+        else {
+            panic!("the key with a readable salt still opens");
+        };
+        assert_eq!(key_password.expose_secret(), user_password);
+        assert_eq!(store.user_keys.len(), 1);
     }
 
     #[test]

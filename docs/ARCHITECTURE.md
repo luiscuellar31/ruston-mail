@@ -922,7 +922,10 @@ the desktop still discards its in-memory mailbox and draft.
 
 The desktop keeps mailbox data in memory. The core also offers a SQLite cache
 used by CLI sync and local search. Login and resume ask for the user and its
-addresses at once, and login asks for the key salts alongside them. They retain
+addresses at once, and login asks for the key salts alongside them. Each user
+key opens with the passphrase its own salt derives, one listed without a salt
+with the password itself, as Proton's clients do; a key whose passphrase cannot
+be worked out is left out like one that does not open. They retain
 the authenticated `User.ID` alongside the API base URL in `Client`; session UIDs and email addresses
 are not cache identities. All client cache operations go through `open_cache`
 in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs). The session
