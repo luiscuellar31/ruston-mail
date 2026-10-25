@@ -182,11 +182,27 @@ fn show_compact(
                     CompactView::Folders => {
                         sidebar(ui, app, mailbox, messages);
                     }
-                    CompactView::Mail => conversation_pane(ui, app, mailbox, state, messages),
+                    CompactView::Mail => compact_mail(ui, app, mailbox, state, messages),
                     CompactView::Reader => reading_pane(ui, app, state, messages),
                 }
             }
         });
+}
+
+/// The list on its own, as one column shows it. The reader, which says why
+/// an action failed, is a tab away there, so the list says it too.
+fn compact_mail(
+    ui: &mut egui::Ui,
+    app: &App,
+    mailbox: &Mailbox,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    if let Some(error) = mailbox.action_error() {
+        ui.label(egui::RichText::new(error.action_message()).color(theme::colors(ui).danger));
+        ui.add_space(4.0);
+    }
+    conversation_pane(ui, app, mailbox, state, messages);
 }
 
 fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mut Vec<Message>) {

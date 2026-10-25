@@ -381,7 +381,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`app/layout.rs`](../src/app/layout.rs) owns the minimum width for usable
   columns and chooses compact presentation below 602 available egui points.
   [`ui/mailbox.rs`](../src/ui/mailbox.rs) then shows a single pane with Folders,
-  Mail, and Reading/Message navigation. The local selection lives in `UiState`;
+  Mail, and Reading/Message navigation; Mail repeats over the list why the last
+  action failed, which columns show under the reader's buttons. The local
+  selection lives in `UiState`;
   `DesktopApp` follows accepted folder selections, opened conversations, search
   focus, and new drafts without adding persistent navigation state. Compact
   rendering never sends `PanelsResized`, so returning to columns preserves the
@@ -396,7 +398,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   account, Settings, and sign-out actions at the bottom;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.
   Closing a written draft asks with the shared confirmation over the window
-  the draft is in, so the form under the question does not move.
+  the draft is in, so the form under the question does not move. Why a send
+  failed shows right under Send's row; what still stops a send shows under
+  the fields it is about.
   eframe 0.36 connects AccessKit only to the main window, so screen readers
   find nothing in the composer's own window; Settings says so beside the
   placement, whose default is the reading pane.

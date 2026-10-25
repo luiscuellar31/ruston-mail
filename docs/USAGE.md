@@ -300,7 +300,8 @@ it.
 The composer scrolls vertically when its fields or attachments exceed the
 available height, in either placement. Closing it with something written asks
 first, in a dialog over its window: **Keep writing** or **Discard**. Once a
-message is sent, the composer closes and the foot of the list says so.
+message is sent, the composer closes and the foot of the list says so; when a
+send fails, the reason shows right under **Send**.
 
 Closing the main window asks before discarding a written message, whether the
 composer is in the reading pane or a separate window. Choose **Keep writing**

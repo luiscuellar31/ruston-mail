@@ -144,6 +144,11 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     focus_new_draft(ui, compose);
 
     title_and_actions(ui, compose, leaving, send_label(&sending), messages);
+    // Why the last send failed, right under Send, where the person looks once
+    // they have pressed it.
+    if let Sending::Failed(error) = &sending {
+        ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
+    }
     ui.add_space(10.0);
     if compose.asked_again() {
         ui.label("You are already writing a message. Send or discard it to start another.");
@@ -177,7 +182,9 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         ui.add_space(4.0);
     }
     ui.add_space(6.0);
-    send_status(ui, compose, &sending);
+    if !matches!(sending, Sending::Failed(_)) {
+        not_ready(ui, compose);
+    }
     ui.add_space(6.0);
     body_editor(ui, compose, leaving, messages);
 }
@@ -322,18 +329,11 @@ fn attachment_list(
     }
 }
 
-/// Why the last send failed or, failing that, what still stops this one: a
-/// send result takes priority over validation hints.
-fn send_status(ui: &mut egui::Ui, compose: &Compose, sending: &Sending) {
-    match sending {
-        Sending::Failed(error) => {
-            ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
-        }
-        _ => {
-            if let Some(problem) = compose.not_ready().filter(|_| !compose.is_untouched()) {
-                detail(ui, &problem.message());
-            }
-        }
+/// What still stops this message from going, under the fields it is about.
+/// A failed send says why under Send instead, and takes priority.
+fn not_ready(ui: &mut egui::Ui, compose: &Compose) {
+    if let Some(problem) = compose.not_ready().filter(|_| !compose.is_untouched()) {
+        detail(ui, &problem.message());
     }
 }
 

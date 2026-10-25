@@ -582,6 +582,29 @@ fn high_zoom_uses_the_available_width_without_overwriting_panel_preferences() {
 }
 
 #[test]
+fn one_column_says_why_an_action_failed_over_the_list() {
+    let mut mailbox = pagination_mailbox(false);
+    let start = mailbox
+        .start_action(crate::mail::MailAction::SetStarred(true), 50)
+        .unwrap();
+    mailbox.finish_action(&start.send.unwrap(), Err(MailboxError::Connection));
+    let said = MailboxError::Connection.action_message();
+    let (app, _) = App::boot(true, Settings::default());
+    let context = egui::Context::default();
+    theme::install(&context);
+
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        ui.set_width(320.0);
+        compact_mail(ui, &app, &mailbox, &mut UiState::default(), &mut Vec::new());
+    });
+    let error = visible_text_rect(&output.shapes, said).expect("the reason is in view");
+    let title = text_rect(&output.shapes, "Inbox");
+    output.drop_without_applying_deltas();
+
+    assert!(error.bottom() <= title.top(), "{error:?} then {title:?}");
+}
+
+#[test]
 fn what_the_server_found_is_titled_as_search_results() {
     let context = egui::Context::default();
     theme::install(&context);

@@ -489,6 +489,47 @@ fn field_labels_are_drawn_at_body_size() {
     output.drop_without_applying_deltas();
 }
 
+#[tokio::test]
+async fn a_failed_send_is_told_right_under_send() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+    app.update(Message::OpenCompose);
+    let draft = app.compose().unwrap().id();
+    for (field, value) in [
+        (ComposeField::To, "ana@example.org"),
+        (ComposeField::Subject, "Plans"),
+        (ComposeField::Body, "See you there"),
+    ] {
+        app.update(Message::ComposeChanged(field, value.into()));
+    }
+    // A file that is gone by the time the message goes.
+    let gone = std::env::temp_dir().join(format!("ruston-gone-{}.txt", std::process::id()));
+    app.update(Message::AddComposeAttachments(draft, vec![gone]));
+    for effect in app.update(Message::Send).into_iter() {
+        if let crate::app::Effect::Future(sending) = effect {
+            let sent = sending.await;
+            app.update(sent);
+        }
+    }
+    let Sending::Failed(error) = app.compose().unwrap().sending() else {
+        panic!("the send should have failed");
+    };
+
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        show(ui, app.compose().unwrap(), &mut Vec::new());
+    });
+    let said = crate::ui::test_support::text_rect(&output.shapes, &error.message());
+    let title = crate::ui::test_support::text_rect(&output.shapes, "New message");
+    let to = crate::ui::test_support::text_rect(&output.shapes, "To");
+    output.drop_without_applying_deltas();
+
+    assert!(
+        title.bottom() <= said.top() && said.bottom() <= to.top(),
+        "between Send's row {title:?} and the fields {to:?}: {said:?}"
+    );
+}
+
 #[test]
 fn a_draft_says_why_asking_for_another_message_opened_none() {
     let context = egui::Context::default();
