@@ -581,11 +581,219 @@ async fn forwarded_attachments_are_keyed_for_every_recipient() {
     assert_eq!(clear["Algorithm"], "aes256");
 }
 
-#[tokio::test]
-async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
+/// The body a send package carries, opened with `material`.
+fn read_package(package: &Value, material: &SessionKeyMaterial) -> String {
     use proton_crypto::crypto::{
         DataEncoding, Decryptor, DecryptorSync, PGPProviderSync, VerifiedData,
     };
+
+    let provider = crypto::provider();
+    let key = provider
+        .session_key_import(&material.key, material.algo)
+        .unwrap();
+    let data = STANDARD.decode(package["Body"].as_str().unwrap()).unwrap();
+    let text = provider
+        .new_decryptor()
+        .with_session_key(key)
+        .decrypt(&data, DataEncoding::Bytes)
+        .unwrap();
+    // Bodies are signed as text, which canonicalizes line ends.
+    String::from_utf8(text.as_bytes().to_vec())
+        .unwrap()
+        .replace("\r\n", "\n")
+}
+
+#[tokio::test]
+async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
+    use wiremock::matchers::query_param;
+
+    let server = MockServer::start().await;
+    let (me, _) = test_address("me@proton.me", "address-1");
+    let (friend, friend_public) = test_address("friend@proton.me", "friend-address");
+    let (hidden, hidden_public) = test_address("hidden@proton.me", "hidden-address");
+    let (outsider, outsider_public) = test_address("pgp@example.org", "outsider-address");
+    let provider = crypto::provider();
+    let attachment = crypto::encrypt_attachment(&provider, &me, b"attached").unwrap();
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Code": 1000,
+            "Message": {
+                "ID": "draft-1",
+                "Attachments": [{
+                    "ID": "draft-att",
+                    "Name": "notes.txt",
+                    "KeyPackets": STANDARD.encode(&attachment.key_packet),
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    for (email, public) in [
+        ("friend@proton.me", &friend_public),
+        ("hidden@proton.me", &hidden_public),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/core/v4/keys/all"))
+            .and(query_param("Email", email))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "Code": 1000, "RecipientType": 1,
+                "Address": {"Keys": [{"PublicKey": public, "Flags": 3, "Primary": 1}]}
+            })))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .and(query_param("Email", "pgp@example.org"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Code": 1000, "RecipientType": 2,
+            "Unverified": {"Keys": [{"PublicKey": outsider_public, "Flags": 3}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .and(query_param("Email", "plain@example.com"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages/draft-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let html = "<p>The <b>plan</b></p>";
+
+    test_support::client(&server, vec![me.clone()])
+        .send(&SendOptions {
+            to: vec!["friend@proton.me".into()],
+            cc: vec!["pgp@example.org".into()],
+            bcc: vec!["hidden@proton.me".into(), "plain@example.com".into()],
+            body: html.into(),
+            html: true,
+            ..SendOptions::default()
+        })
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let sent = |at: &str| -> Value {
+        let request = requests
+            .iter()
+            .find(|request| request.method.as_str() == "POST" && request.url.path() == at)
+            .unwrap();
+        serde_json::from_slice(&request.body).unwrap()
+    };
+    let draft = sent("/mail/v4/messages");
+    let bcc: Vec<_> = draft["Message"]["BCCList"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|recipient| recipient["Address"].as_str().unwrap())
+        .collect();
+    assert_eq!(bcc, ["hidden@proton.me", "plain@example.com"]);
+
+    let request = sent("/mail/v4/messages/draft-1");
+    let packages = request["Packages"].as_array().unwrap();
+    let types: Vec<_> = packages
+        .iter()
+        .map(|package| package["Type"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            package_type::PM,
+            package_type::PGP_INLINE,
+            package_type::CLEAR
+        ]
+    );
+    let package = |kind: i64| {
+        packages
+            .iter()
+            .find(|package| package["Type"] == kind)
+            .unwrap()
+    };
+    // Who `package` addresses, and what `recipient` opens there: the body
+    // and the attachment.
+    let open = |package: &Value, recipient: &AddressKeys| {
+        let entry = &package["Addresses"][recipient.email.as_str()];
+        assert_eq!(entry["Type"], package["Type"]);
+        let material = crypto::decrypt_session_key(
+            &provider,
+            recipient,
+            entry["BodyKeyPacket"].as_str().unwrap(),
+        )
+        .unwrap();
+        let wrapped = entry["AttachmentKeyPackets"]["draft-att"].as_str().unwrap();
+        let attached =
+            crypto::decrypt_attachment(&provider, recipient, wrapped, &attachment.data_packet)
+                .unwrap();
+        (read_package(package, &material), attached)
+    };
+    let addressed = |package: &Value| {
+        let mut addresses: Vec<_> = package["Addresses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        addresses.sort();
+        addresses
+    };
+
+    // Proton recipients, the hidden one too, read the HTML as written.
+    let internal = package(package_type::PM);
+    assert_eq!(internal["MIMEType"], "text/html");
+    assert_eq!(
+        addressed(internal),
+        ["friend@proton.me", "hidden@proton.me"]
+    );
+    for recipient in [&friend, &hidden] {
+        assert_eq!(
+            open(internal, recipient),
+            (html.to_owned(), b"attached".to_vec())
+        );
+    }
+    // The package's own key packet is the sender's.
+    let body_key =
+        crypto::decrypt_session_key(&provider, &me, internal["BodyKeyPacket"].as_str().unwrap())
+            .unwrap();
+    assert_eq!(read_package(internal, &body_key), html);
+
+    // A published key gets the text version.
+    let pgp = package(package_type::PGP_INLINE);
+    assert_eq!(pgp["MIMEType"], "text/plain");
+    assert_eq!(addressed(pgp), ["pgp@example.org"]);
+    assert_eq!(
+        open(pgp, &outsider),
+        ("The plan".to_owned(), b"attached".to_vec())
+    );
+
+    // Without a key, Proton is handed the keys of the same body.
+    let clear = package(package_type::CLEAR);
+    assert_eq!(clear["MIMEType"], "text/html");
+    assert_eq!(addressed(clear), ["plain@example.com"]);
+    assert_eq!(
+        clear["Addresses"]["plain@example.com"]["Type"],
+        package_type::CLEAR
+    );
+    assert_eq!(clear["Body"], internal["Body"]);
+    assert_eq!(
+        clear["BodyKey"]["Key"],
+        STANDARD.encode(body_key.key.as_slice())
+    );
+    assert_eq!(
+        clear["AttachmentKeys"]["draft-att"]["Key"],
+        STANDARD.encode(attachment.material.key.as_slice())
+    );
+}
+
+#[tokio::test]
+async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
     use wiremock::matchers::query_param;
 
     let server = MockServer::start().await;
@@ -659,20 +867,10 @@ async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
             entry["BodyKeyPacket"].as_str().unwrap(),
         )
         .unwrap();
-        let key = provider
-            .session_key_import(&material.key, material.algo)
-            .unwrap();
-        let data = STANDARD.decode(package["Body"].as_str().unwrap()).unwrap();
-        let text = provider
-            .new_decryptor()
-            .with_session_key(key)
-            .decrypt(&data, DataEncoding::Bytes)
-            .unwrap();
-        // Bodies are signed as text, which canonicalizes line ends.
-        let text = String::from_utf8(text.as_bytes().to_vec())
-            .unwrap()
-            .replace("\r\n", "\n");
-        (text, package["MIMEType"].as_str().unwrap().to_owned())
+        (
+            read_package(package, &material),
+            package["MIMEType"].as_str().unwrap().to_owned(),
+        )
     };
 
     assert_eq!(
