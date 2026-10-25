@@ -529,7 +529,9 @@ the local cache with `messages list --cached` works offline, so it takes only
 system folders and IDs.
 
 Output can be piped into tools that stop reading early, such as `head`: the
-CLI then ends quietly with exit status 0.
+CLI then ends quietly with exit status 0. A script can tell a refused or
+missing session, exit status 6, which signing in again fixes, from a mistake in
+the command, exit status 2; `--help` lists them all.
 
 Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
 seconds. Commands with multiple requests or a rate-limit retry can take longer.

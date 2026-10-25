@@ -61,8 +61,10 @@ fn is_proton_host(host: &str) -> bool {
 pub mod exit_status {
     /// Any other error.
     pub const OTHER: i32 = 1;
-    /// A session that is missing, expired or refused.
-    pub const SESSION: i32 = 2;
+    /// A session that is missing, expired or refused. Its own status, apart
+    /// from the 2 argument parsers such as clap give a usage error, so a
+    /// script can tell that signing in again would help.
+    pub const SESSION: i32 = 6;
     /// Something the request named was not found.
     pub const NOT_FOUND: i32 = 3;
     /// An ambiguous reference, or a conflict Proton reports.
@@ -433,8 +435,9 @@ mod tests {
 
     #[test]
     fn exit_codes_map_status() {
-        assert_eq!(api(401).exit_code(), 2);
-        assert_eq!(api(403).exit_code(), 2);
+        // 2 is clap's, for a usage error.
+        assert_eq!(api(401).exit_code(), 6);
+        assert_eq!(api(403).exit_code(), 6);
         assert_eq!(api(404).exit_code(), 3);
         assert_eq!(api(409).exit_code(), 4);
         assert_eq!(api(422).exit_code(), 4);
@@ -458,7 +461,7 @@ mod tests {
     #[test]
     fn error_exit_code_delegates() {
         assert_eq!(Error::Api(api(404)).exit_code(), 3);
-        assert_eq!(Error::Unauthorized.exit_code(), 2);
+        assert_eq!(Error::Unauthorized.exit_code(), 6);
         assert_eq!(
             Error::NotFound {
                 kind: "message".into()

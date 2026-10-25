@@ -4,15 +4,16 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use ruston_core::{SearchOpts, SendOptions};
 use std::path::PathBuf;
 
-/// What each exit status means, shown at the end of `--help`. Statuses 1 to
-/// 5 are `ruston_core::error::exit_status`.
+/// What each exit status means, shown at the end of `--help`. Status 2 is
+/// clap's; the others are `ruston_core::error::exit_status`.
 const EXIT_STATUS: &str = "Exit status:
   0  Success, also when the reader of the output stops early (as `| head` does)
   1  Any other error
-  2  A usage error, or a session that is missing, expired or refused
+  2  A usage error
   3  Not found
   4  An ambiguous reference, or a conflict Proton reports (409, 422)
-  5  A Proton server error";
+  5  A Proton server error
+  6  A session that is missing, expired or refused: sign in again";
 
 /// Environment variables that may carry sign-in secrets. Programs the CLI
 /// starts, such as a browser for human verification, never inherit them.
@@ -1481,7 +1482,7 @@ mod tests {
     #[test]
     fn help_explains_every_exit_status() {
         let help = Cli::command().render_help().to_string();
-        for status in ["0  ", "1  ", "2  ", "3  ", "4  ", "5  "] {
+        for status in ["0  ", "1  ", "2  ", "3  ", "4  ", "5  ", "6  "] {
             assert!(help.contains(status), "status {status}is not explained");
         }
     }

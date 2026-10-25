@@ -719,8 +719,8 @@ instead of an unknown outcome.
   ends it with status 1. Diagnostics on standard error are best effort. A
   failed command prints its error followed by each underlying cause, so a
   failed request says whether DNS, the connection, TLS or a timeout failed.
-  `--help` ends with the exit statuses; 2 covers both usage errors and a
-  missing, expired or refused session. Arguments that can only fail or would
+  `--help` ends with the exit statuses: 2 is clap's usage error, and a
+  missing, expired or refused session has its own, 6. Arguments that can only fail or would
   be ignored are refused while parsing, before a session is resumed:
   `attachments download` with neither an ID nor `--all`, or with both; `spam`,
   `ham`, `undelete` and `label` without a message; a snooze with both
