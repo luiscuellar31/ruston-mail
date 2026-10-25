@@ -64,11 +64,11 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
             theme::install(&context);
             context.set_zoom_factor(zoom);
             let (mut app, _) = App::boot(true, Settings::default());
-            app.update(Message::ConversationsLoaded(
+            let _ = app.update(Message::ConversationsLoaded(
                 1,
                 Ok(pagination_page(0, 50, 120)),
             ));
-            app.update(Message::SearchChanged(query.into()));
+            let _ = app.update(Message::SearchChanged(query.into()));
             assert_eq!(app.mailbox().unwrap().visible_count(), 50);
             let mut state = UiState::default();
             let mut shapes = Vec::new();
@@ -145,11 +145,11 @@ fn typing_a_search_leaves_the_list_where_it_was() {
             theme::install(&context);
             context.set_zoom_factor(zoom);
             let (mut app, _) = App::boot(true, Settings::default());
-            app.update(Message::ConversationsLoaded(
+            let _ = app.update(Message::ConversationsLoaded(
                 1,
                 Ok(pagination_page(0, 50, 120)),
             ));
-            app.update(Message::SearchChanged(query.into()));
+            let _ = app.update(Message::SearchChanged(query.into()));
             let mut state = UiState::default();
             let mut shapes = Vec::new();
             for _ in 0..3 {
@@ -241,7 +241,7 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::FoldersLoaded(
+    let _ = app.update(Message::FoldersLoaded(
         1,
         Ok(crate::mail::OwnPlaces {
             folders: (0..30)
@@ -372,7 +372,7 @@ fn the_accounts_own_folders_and_labels_come_under_headings() {
     theme::install(&context);
     let draw = |places: Vec<Folder>| {
         let (mut app, _) = App::boot(true, Settings::default());
-        app.update(Message::FoldersLoaded(
+        let _ = app.update(Message::FoldersLoaded(
             1,
             Ok(crate::mail::OwnPlaces {
                 folders: places,
@@ -420,7 +420,7 @@ fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
             preferences.zoom = zoom;
             preferences.appearance = appearance;
             let (mut app, _) = App::boot(true, preferences);
-            app.update(Message::SearchChanged("needle".into()));
+            let _ = app.update(Message::SearchChanged("needle".into()));
             context
                 .run_ui(
                     egui::RawInput {
@@ -512,7 +512,7 @@ fn switching_between_compact_and_columns_keeps_the_list_offset_and_split_ratios(
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::ConversationsLoaded(
+    let _ = app.update(Message::ConversationsLoaded(
         1,
         Ok(pagination_page(0, 50, 120)),
     ));
@@ -553,11 +553,11 @@ fn enter_in_the_search_field_searches_all_mail() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::ConversationsLoaded(
+    let _ = app.update(Message::ConversationsLoaded(
         1,
         Ok(pagination_page(0, 5, 5)),
     ));
-    app.update(Message::SearchChanged("invoice".into()));
+    let _ = app.update(Message::SearchChanged("invoice".into()));
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
     let enter = || egui::RawInput {
@@ -625,8 +625,8 @@ fn high_zoom_uses_the_available_width_without_overwriting_panel_preferences() {
 #[test]
 fn a_conversation_chosen_while_writing_shows_under_the_folded_draft() {
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::OpenCompose);
-    app.update(Message::ComposeChanged(
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
         crate::app::ComposeField::Subject,
         "Plans".into(),
     ));
@@ -649,7 +649,7 @@ fn a_conversation_chosen_while_writing_shows_under_the_folded_draft() {
     };
     assert!(visible_text_rect(&draw(&app), "To").is_some(), "writing");
 
-    app.update(Message::SelectConversation("demo-0".into()));
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
     let shapes = draw(&app);
 
     assert!(visible_text_rect(&shapes, "Draft: Plans").is_some());
@@ -705,7 +705,7 @@ fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
     let (mut app, _) = App::boot(true, Settings::default());
     let name = "Receipts from every trip we took together across three continents";
     let folder = Folder::custom("trips", name);
-    app.update(Message::FoldersLoaded(
+    let _ = app.update(Message::FoldersLoaded(
         1,
         Ok(crate::mail::OwnPlaces {
             folders: vec![folder.clone()],
@@ -1414,7 +1414,7 @@ fn settings_replaces_mail_panes_and_preserves_their_split() {
 #[test]
 fn a_right_click_on_a_row_offers_its_actions_without_opening_it() {
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::ConversationsLoaded(
+    let _ = app.update(Message::ConversationsLoaded(
         1,
         Ok(ConversationPage {
             conversations: vec![
@@ -1504,7 +1504,7 @@ fn a_right_click_on_a_row_offers_its_actions_without_opening_it() {
 #[test]
 fn the_compact_reader_opens_only_with_a_conversation_to_read() {
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::ConversationsLoaded(
+    let _ = app.update(Message::ConversationsLoaded(
         1,
         Ok(ConversationPage {
             conversations: vec![pagination_row("demo-3", 1000)],
@@ -1523,7 +1523,7 @@ fn the_compact_reader_opens_only_with_a_conversation_to_read() {
     mailbox_frame(&context, &app, &mut state, size, None, Default::default());
     assert_eq!(state.compact_view, CompactView::Mail, "nothing to read");
 
-    app.update(Message::SelectConversation("demo-3".into()));
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
     state.compact_view = CompactView::Reader;
     mailbox_frame(&context, &app, &mut state, size, None, Default::default());
     assert_eq!(state.compact_view, CompactView::Reader);
@@ -1532,7 +1532,7 @@ fn the_compact_reader_opens_only_with_a_conversation_to_read() {
 #[test]
 fn the_offer_to_undo_sits_under_the_list_it_was_made_from() {
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::ConversationsLoaded(
+    let _ = app.update(Message::ConversationsLoaded(
         1,
         Ok(ConversationPage {
             conversations: vec![
@@ -1543,8 +1543,8 @@ fn the_offer_to_undo_sits_under_the_list_it_was_made_from() {
             inspect_candidates: Vec::new(),
         }),
     ));
-    app.update(Message::SelectConversation("demo-3".into()));
-    app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
+    let _ = app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
         Folder::System(MailFolder::Archive),
     )));
     let context = egui::Context::default();
@@ -1569,7 +1569,7 @@ fn the_offer_to_undo_sits_under_the_list_it_was_made_from() {
 #[test]
 fn undo_answers_while_the_list_refreshes() {
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::ConversationsLoaded(
+    let _ = app.update(Message::ConversationsLoaded(
         1,
         Ok(ConversationPage {
             conversations: vec![pagination_row("demo-3", 1000)],
@@ -1577,8 +1577,8 @@ fn undo_answers_while_the_list_refreshes() {
             inspect_candidates: Vec::new(),
         }),
     ));
-    app.update(Message::SelectConversation("demo-3".into()));
-    app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
+    let _ = app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
         Folder::System(MailFolder::Archive),
     )));
     let _ = app.update(Message::RefreshMailbox);
@@ -1621,7 +1621,7 @@ fn undo_answers_while_the_list_refreshes() {
 fn an_offer_to_undo_stays_on_screen_while_settings_is_open() {
     let (mut app, _) = App::boot(true, Settings::default());
     // A row the demo account has, so the demo can move it.
-    app.update(Message::ConversationsLoaded(
+    let _ = app.update(Message::ConversationsLoaded(
         1,
         Ok(ConversationPage {
             conversations: vec![pagination_row("demo-3", 1000)],
@@ -1629,8 +1629,8 @@ fn an_offer_to_undo_stays_on_screen_while_settings_is_open() {
             inspect_candidates: Vec::new(),
         }),
     ));
-    app.update(Message::SelectConversation("demo-3".into()));
-    app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+    let _ = app.update(Message::SelectConversation("demo-3".into()));
+    let _ = app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
         Folder::System(MailFolder::Archive),
     )));
     assert!(app.mailbox().unwrap().undo().is_some());
@@ -1932,18 +1932,18 @@ fn a_saved_file_is_confirmed_with_a_way_to_show_it() {
 #[tokio::test]
 async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there() {
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     for (field, value) in [
         (crate::app::ComposeField::To, "ana@example.org"),
         (crate::app::ComposeField::Subject, "Plans"),
         (crate::app::ComposeField::Body, "See you there"),
     ] {
-        app.update(Message::ComposeChanged(field, value.into()));
+        let _ = app.update(Message::ComposeChanged(field, value.into()));
     }
     for effect in app.update(Message::Send).into_iter() {
         if let crate::app::Effect::Future(sending) = effect {
             let sent = sending.await;
-            app.update(sent);
+            let _ = app.update(sent);
         }
     }
     assert_eq!(app.notice(), Some(&Notice::Sent));
@@ -2308,7 +2308,7 @@ fn subfolders_sit_under_their_parent_and_labels_wear_their_color() {
     .into_iter()
     .map(|(id, look)| (id.to_owned(), look))
     .collect();
-    app.update(Message::FoldersLoaded(
+    let _ = app.update(Message::FoldersLoaded(
         1,
         Ok(crate::mail::OwnPlaces {
             folders: vec![

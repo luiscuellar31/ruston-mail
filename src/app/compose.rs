@@ -1597,7 +1597,7 @@ mod tests {
     #[test]
     fn closing_an_untouched_message_discards_immediately() {
         let mut app = App::new(crate::settings::Settings::default());
-        app.open_compose();
+        let _ = app.open_compose();
         assert!(app.compose().is_some());
 
         app.close_compose();
@@ -1607,7 +1607,7 @@ mod tests {
     #[test]
     fn closing_a_written_message_asks_for_confirmation() {
         let mut app = App::new(crate::settings::Settings::default());
-        app.open_compose();
+        let _ = app.open_compose();
         app.change_compose(ComposeField::Body, "Draft content".to_owned());
 
         app.close_compose();

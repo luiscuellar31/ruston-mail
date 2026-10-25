@@ -908,7 +908,7 @@ impl App {
             Message::MailtoRejected => {
                 self.mailto_error = Some("This email link could not be opened.")
             }
-            Message::OpenPendingMailto => self.open_pending_mailto(),
+            Message::OpenPendingMailto => return self.open_pending_mailto(),
             Message::DismissPendingMailto => {
                 self.pending_mailto.pop_front();
             }

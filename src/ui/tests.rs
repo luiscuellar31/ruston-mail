@@ -795,7 +795,7 @@ fn files_dragged_over_the_draft_show_where_they_go() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = App::boot(true, Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let hovering = egui::RawInput {
         hovered_files: vec![egui::HoveredFile::default()],
         ..Default::default()
@@ -1106,7 +1106,7 @@ fn main_viewport_leaves_system_decorations_intact() {
 fn mailbox_and_composer_share_the_desktop_identity_and_icon() {
     let settings = Settings::default();
     let (mut app, _) = App::boot(true, settings.clone());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let main = main_viewport(&settings);
     let composer = compose::window_viewport(app.compose().unwrap());
     assert_eq!(main.app_id.as_deref(), Some(identity::APP_ID));

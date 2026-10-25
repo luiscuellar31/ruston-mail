@@ -1,6 +1,6 @@
 //! Email links wait in memory until the shell can safely show a new composer.
 
-use super::{App, ComposeField};
+use super::{App, ComposeField, Effects};
 use crate::mailto::{MAX_PENDING, Request};
 
 impl App {
@@ -36,17 +36,18 @@ impl App {
             && self.pending_link.is_none()
     }
 
-    pub(super) fn open_pending_mailto(&mut self) {
+    pub(super) fn open_pending_mailto(&mut self) -> Effects {
         if !self.can_open_pending_mailto() {
-            return;
+            return Effects::none();
         }
         let Some(request) = self.pending_mailto.pop_front() else {
-            return;
+            return Effects::none();
         };
         let (to, subject, body) = request.into_fields();
-        self.open_compose();
+        let opened = self.open_compose();
         self.change_compose(ComposeField::To, to);
         self.change_compose(ComposeField::Subject, subject);
         self.change_compose(ComposeField::Body, body);
+        opened
     }
 }

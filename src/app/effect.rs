@@ -54,6 +54,7 @@ impl UiEffect {
 /// A flat collection makes combining independent effects explicit and keeps
 /// tests able to assert how much work an interaction starts.
 #[derive(Default)]
+#[must_use = "effects do nothing until they are returned to the runtime"]
 pub struct Effects(Vec<Effect>);
 
 impl Effects {

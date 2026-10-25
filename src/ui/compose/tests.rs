@@ -6,8 +6,8 @@ fn screen_readers_hear_each_field_by_its_name() {
     theme::install(&context);
     context.enable_accesskit();
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
-    app.update(Message::ToggleComposeCopies);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ToggleComposeCopies);
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         show(ui, app.compose().unwrap(), &mut Vec::new());
     });
@@ -27,8 +27,8 @@ fn a_small_composer_keeps_actions_visible_and_fields_scrollable() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
-    app.update(Message::ToggleComposeCopies);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ToggleComposeCopies);
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(410.0, 240.0));
     let mut messages = Vec::new();
     for _ in 0..3 {
@@ -73,13 +73,13 @@ fn the_composer_offers_one_attach_button_and_writes_at_reading_size() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let draft = app.compose().unwrap().id();
-    app.update(Message::AddComposeAttachments(
+    let _ = app.update(Message::AddComposeAttachments(
         draft,
         vec![std::path::PathBuf::from("/nonexistent/notes.txt")],
     ));
-    app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         show(ui, app.compose().unwrap(), &mut Vec::new());
     });
@@ -114,9 +114,9 @@ fn an_attachment_shows_its_size_once_read_away_from_the_interface() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let draft = app.compose().unwrap().id();
-    app.update(Message::AddComposeAttachments(draft, vec![file.clone()]));
+    let _ = app.update(Message::AddComposeAttachments(draft, vec![file.clone()]));
     let attachment_label = |app: &crate::app::App| {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             show(ui, app.compose().unwrap(), &mut Vec::new());
@@ -140,7 +140,7 @@ fn an_attachment_shows_its_size_once_read_away_from_the_interface() {
     let unread = attachment_label(&app);
     std::fs::remove_file(&file).unwrap();
     assert!(!unread.contains('('), "{unread}");
-    app.update(Message::AttachmentSizesRead(
+    let _ = app.update(Message::AttachmentSizesRead(
         draft,
         [(file, Some(2048))].into_iter().collect(),
     ));
@@ -170,21 +170,21 @@ fn undo_in_a_new_draft_never_brings_back_an_earlier_one() {
     };
     let body_id = |app: &crate::app::App| body_id(app.compose().unwrap().id());
 
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     frame(&app, Vec::new());
     context.memory_mut(|memory| memory.request_focus(body_id(&app)));
     frame(&app, Vec::new());
     for message in frame(&app, vec![egui::Event::Text("private draft".into())]) {
-        app.update(message);
+        let _ = app.update(message);
     }
     // Pauses let the editor record what was typed as an undo step.
     frame(&app, Vec::new());
     frame(&app, Vec::new());
-    app.update(Message::CloseCompose);
-    app.update(Message::DiscardCompose);
+    let _ = app.update(Message::CloseCompose);
+    let _ = app.update(Message::DiscardCompose);
     assert!(app.compose().is_none());
 
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     frame(&app, Vec::new());
     context.memory_mut(|memory| memory.request_focus(body_id(&app)));
     frame(&app, Vec::new());
@@ -221,8 +221,8 @@ fn forgetting_a_draft_drops_what_every_field_it_showed_kept() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
-    app.update(Message::ToggleComposeCopies);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ToggleComposeCopies);
     let draft = app.compose().unwrap().id();
     context
         .run_ui(egui::RawInput::default(), |ui| {
@@ -288,8 +288,8 @@ fn the_composer_names_recipients_whose_copy_is_not_encrypted() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
-    app.update(Message::ComposeChanged(
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
         ComposeField::To,
         "ada@proton.me, plain@example.com".into(),
     ));
@@ -322,7 +322,7 @@ fn the_composer_names_recipients_whose_copy_is_not_encrypted() {
     let Effect::Future(lookup) = effect else {
         panic!("the lookup runs off the UI thread");
     };
-    app.update(block_on(lookup));
+    let _ = app.update(block_on(lookup));
 
     assert!(shown(&app));
 }
@@ -335,8 +335,8 @@ fn the_composer_shows_the_ascii_form_of_an_international_domain() {
         let mut settings = crate::settings::Settings::default();
         settings.accept_international_domains = accept_international_domains;
         let (mut app, _) = crate::app::App::boot(true, settings);
-        app.update(Message::OpenCompose);
-        app.update(Message::ComposeChanged(
+        let _ = app.update(Message::OpenCompose);
+        let _ = app.update(Message::ComposeChanged(
             ComposeField::To,
             "ceo@p\u{430}ypal.com".into(),
         ));
@@ -376,7 +376,7 @@ fn a_new_draft_puts_the_cursor_where_writing_starts() {
     };
 
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let draft = app.compose().unwrap().id();
     assert_eq!(
         focused_after_showing(&app),
@@ -387,7 +387,7 @@ fn a_new_draft_puts_the_cursor_where_writing_starts() {
     assert_eq!(focused_after_showing(&app), None);
 
     // A reply knows its recipients, so it starts in the body.
-    app.update(Message::DiscardCompose);
+    let _ = app.update(Message::DiscardCompose);
     answer(&mut app, AnswerKind::Reply, Vec::new());
     let reply = app.compose().expect("a reply is open").id();
     assert_eq!(focused_after_showing(&app), Some(body_id(reply)));
@@ -401,8 +401,8 @@ fn answer(app: &mut crate::app::App, kind: AnswerKind, files: Vec<crate::mail::M
     let mailbox = demo::DemoMailbox::new();
     let page =
         mailbox.list_conversations(&crate::mail::Folder::INBOX, 0, demo::PAGE_SIZE, demo::now());
-    app.update(Message::ConversationsLoaded(1, page));
-    app.update(Message::SelectConversation("demo-0".into()));
+    let _ = app.update(Message::ConversationsLoaded(1, page));
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
     let crate::app::ReaderState::Loading {
         conversation_id,
         request,
@@ -422,8 +422,8 @@ fn answer(app: &mut crate::app::App, kind: AnswerKind, files: Vec<crate::mail::M
             detail.messages.last_mut().unwrap().attachments = files;
             detail
         });
-    app.update(Message::ConversationLoaded(request, detail));
-    app.update(Message::Answer {
+    let _ = app.update(Message::ConversationLoaded(request, detail));
+    let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
         kind,
     });
@@ -473,7 +473,7 @@ fn an_answer_offers_to_leave_the_original_out() {
 
     // A new message answers nothing, so it offers nothing to quote.
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let (shapes, _) = frame(&app, Vec::new());
     assert!(!shapes.iter().any(|clipped| matches!(
         &clipped.shape,
@@ -486,7 +486,7 @@ fn field_labels_are_drawn_at_body_size() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let mut messages = Vec::new();
     let mut body = 0.0;
     let output = context.run_ui(egui::RawInput::default(), |ui| {
@@ -519,8 +519,8 @@ fn a_folded_draft_waits_in_a_strip_with_the_way_back() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
-    app.update(Message::ComposeChanged(
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
         ComposeField::Subject,
         "Plans for Friday".into(),
     ));
@@ -561,22 +561,22 @@ async fn a_failed_send_is_told_right_under_send() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let draft = app.compose().unwrap().id();
     for (field, value) in [
         (ComposeField::To, "ana@example.org"),
         (ComposeField::Subject, "Plans"),
         (ComposeField::Body, "See you there"),
     ] {
-        app.update(Message::ComposeChanged(field, value.into()));
+        let _ = app.update(Message::ComposeChanged(field, value.into()));
     }
     // A file that is gone by the time the message goes.
     let gone = std::env::temp_dir().join(format!("ruston-gone-{}.txt", std::process::id()));
-    app.update(Message::AddComposeAttachments(draft, vec![gone]));
+    let _ = app.update(Message::AddComposeAttachments(draft, vec![gone]));
     for effect in app.update(Message::Send).into_iter() {
         if let crate::app::Effect::Future(sending) = effect {
             let sent = sending.await;
-            app.update(sent);
+            let _ = app.update(sent);
         }
     }
     let Sending::Failed(error) = app.compose().unwrap().sending() else {
@@ -602,8 +602,8 @@ fn a_draft_says_why_asking_for_another_message_opened_none() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
-    app.update(Message::ComposeChanged(
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
         ComposeField::Subject,
         "Plans".into(),
     ));
@@ -624,8 +624,8 @@ fn asking_to_discard_a_written_message_leaves_its_form_in_place() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
-    app.update(Message::ComposeChanged(
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(
         ComposeField::Subject,
         "Plans".into(),
     ));
@@ -642,7 +642,7 @@ fn asking_to_discard_a_written_message_leaves_its_form_in_place() {
     };
 
     let before = crate::ui::test_support::text_rect(&draw(&app), "To");
-    app.update(Message::CloseCompose);
+    let _ = app.update(Message::CloseCompose);
     assert!(app.compose().unwrap().confirming_discard());
     let asking = draw(&app);
 
@@ -655,7 +655,7 @@ fn leaving_a_recipient_field_asks_how_the_message_will_be_protected() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let frame = |events: Vec<egui::Event>| {
         let mut messages = Vec::new();
         context
@@ -779,7 +779,7 @@ fn a_forward_lists_the_files_it_carries_and_each_can_be_left_out() {
     assert_eq!(left_out, ["invoice"]);
     let id = left_out[0];
 
-    app.update(Message::LeaveOutForwarded(id.clone()));
+    let _ = app.update(Message::LeaveOutForwarded(id.clone()));
     let left: Vec<&str> = app
         .compose()
         .unwrap()
