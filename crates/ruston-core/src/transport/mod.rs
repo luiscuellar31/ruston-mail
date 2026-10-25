@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
+use zeroize::Zeroizing;
 
 /// Maximum response body for ordinary API requests (32 MiB).
 pub const MAX_API_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -226,11 +227,12 @@ impl AuthState {
     }
 }
 
-/// Callback invoked after a successful token refresh (uid, access, refresh) —
-/// use [`FallibleRefreshPersist`] when storage can fail.
-pub type RefreshPersist = Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
+/// Callback invoked after a successful token refresh with the rotated tokens,
+/// which it borrows, so saving them needs no copy in the clear — use
+/// [`FallibleRefreshPersist`] when storage can fail.
+pub type RefreshPersist = Arc<dyn Fn(&Tokens) + Send + Sync>;
 /// A token-refresh callback whose persistence failure is returned to the request.
-pub type FallibleRefreshPersist = Arc<dyn Fn(&str, &str, &str) -> Result<()> + Send + Sync>;
+pub type FallibleRefreshPersist = Arc<dyn Fn(&Tokens) -> Result<()> + Send + Sync>;
 type RefreshLoad = Arc<dyn Fn() -> Result<(File, Option<Tokens>)> + Send + Sync>;
 /// Resolver for human-verification challenges (returns token, token-type).
 pub type HvResolver =
@@ -338,8 +340,8 @@ impl HttpClient {
     }
     /// Register a callback invoked with rotated tokens after each refresh.
     pub fn set_refresh_persist(&mut self, cb: RefreshPersist) {
-        self.on_refresh = Some(Arc::new(move |uid, access, refresh| {
-            cb(uid, access, refresh);
+        self.on_refresh = Some(Arc::new(move |tokens| {
+            cb(tokens);
             Ok(())
         }));
     }
@@ -567,15 +569,23 @@ impl Rotation {
             #[serde(rename = "RefreshToken")]
             refresh_token: String,
         }
-        let parsed: RefreshResp = serde_json::from_slice(&resp.body)?;
-        a.access = Some(SecretString::from(parsed.access_token.clone()));
-        a.refresh = Some(SecretString::from(parsed.refresh_token.clone()));
+        // The body holds the pair in the clear: it is wiped once read, and
+        // the tokens move into secrets rather than being copied.
+        let body = Zeroizing::new(resp.body);
+        let parsed: RefreshResp = serde_json::from_slice(&body)?;
+        let tokens = Tokens {
+            uid,
+            access: SecretString::from(parsed.access_token),
+            refresh: SecretString::from(parsed.refresh_token),
+        };
+        a.access = Some(tokens.access.clone());
+        a.refresh = Some(tokens.refresh.clone());
         if self.on_refresh.is_some() {
             self.refresh_unsaved.store(true, Ordering::Release);
         }
         drop(a);
         if let Some(cb) = &self.on_refresh {
-            cb(&uid, &parsed.access_token, &parsed.refresh_token)?;
+            cb(&tokens)?;
             self.refresh_unsaved.store(false, Ordering::Release);
         }
         Ok(())
@@ -1364,7 +1374,7 @@ mod tests {
             SecretString::from("old-ref"),
         )
         .await;
-        c.set_refresh_persist_fallible(Arc::new(|_, _, _| {
+        c.set_refresh_persist_fallible(Arc::new(|_| {
             Err(Error::Session("keyring unavailable".into()))
         }));
         let err = c
@@ -1470,7 +1480,7 @@ mod tests {
             .await;
         crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
         // Only saving is made to fail; loading stays the client's own.
-        client.set_refresh_persist_fallible(Arc::new(|_, _, _| {
+        client.set_refresh_persist_fallible(Arc::new(|_| {
             Err(Error::Session("keyring unavailable".into()))
         }));
         assert!(matches!(
@@ -1525,8 +1535,11 @@ mod tests {
         let mut http = HttpClient::new(server.uri(), "Other");
         let saved = Arc::new(std::sync::Mutex::new(None));
         let saves = saved.clone();
-        http.set_refresh_persist_fallible(Arc::new(move |_, access, refresh| {
-            *saves.lock().unwrap() = Some((access.to_owned(), refresh.to_owned()));
+        http.set_refresh_persist_fallible(Arc::new(move |tokens: &Tokens| {
+            *saves.lock().unwrap() = Some((
+                tokens.access.expose_secret().to_owned(),
+                tokens.refresh.expose_secret().to_owned(),
+            ));
             Ok(())
         }));
         http.set_tokens(

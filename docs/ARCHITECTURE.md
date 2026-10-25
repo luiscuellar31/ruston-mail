@@ -972,8 +972,10 @@ account's keys there too, since deriving each key's passphrase is slow by
 design. On a 401, another process's rotated tokens are reloaded before
 refreshing again. Tokens reloaded that way, or renewed meanwhile by another
 request, may have expired too: a 401 with them refreshes once more, so a
-request asks Proton for new tokens at most once. Persistence errors still
-reach the request. The desktop
+request asks Proton for new tokens at most once. The rotated pair moves out of
+the response, whose body is wiped, into secrets, and the persistence callback
+borrows them as `&Tokens`, so saving them makes no copy in the clear.
+Persistence errors still reach the request. The desktop
 reports them as a session it could not access and keeps the mailbox open,
 since unlocking the credential store fixes the next request; only an expired
 session signs it out, including one found while saving an attachment. That reload reads

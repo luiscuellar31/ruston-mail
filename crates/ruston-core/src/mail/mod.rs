@@ -166,8 +166,12 @@ impl Client {
         http.set_refresh_load(Arc::new(move || {
             Session::lock_and_load_tokens(&paths, &load_profile, load_store.as_ref())
         }));
-        http.set_refresh_persist_fallible(Arc::new(move |_uid, access, refresh| {
-            Session::save_tokens(store.as_ref(), access, refresh)
+        http.set_refresh_persist_fallible(Arc::new(move |tokens| {
+            Session::save_tokens(
+                store.as_ref(),
+                tokens.access.expose_secret(),
+                tokens.refresh.expose_secret(),
+            )
         }));
     }
 

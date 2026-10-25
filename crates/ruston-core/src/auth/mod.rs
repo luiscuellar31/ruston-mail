@@ -306,7 +306,7 @@ mod tests {
         let mut http = HttpClient::new(server.uri(), "Other");
         let saved = Arc::new(AtomicUsize::new(0));
         let saves = saved.clone();
-        http.set_refresh_persist_fallible(Arc::new(move |_, _, _| {
+        http.set_refresh_persist_fallible(Arc::new(move |_| {
             saves.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }));
