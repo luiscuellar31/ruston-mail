@@ -14,7 +14,8 @@ impl Client {
     pub async fn create_filter(&self, name: &str, sieve: &str) -> Result<Filter> {
         api::filters::create(self.http(), name, sieve).await
     }
-    /// Validate a Sieve script without creating a filter.
+    /// Validate a Sieve script without creating a filter. Problems Proton
+    /// reports in it come back as an error that lists them.
     pub async fn check_filter(&self, sieve: &str) -> Result<()> {
         api::filters::check(self.http(), sieve).await
     }
