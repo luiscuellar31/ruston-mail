@@ -332,6 +332,40 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
 }
 
 #[test]
+fn the_accounts_own_folders_and_labels_come_under_headings() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let draw = |places: Vec<Folder>| {
+        let (mut app, _) = App::boot(true, Settings::default());
+        app.update(Message::FoldersLoaded(1, Ok(places)));
+        let output = context.run_ui(egui::RawInput::default(), |root| {
+            egui::CentralPanel::default().show(root, |ui| {
+                sidebar_content(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+            });
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        shapes
+    };
+
+    let shapes = draw(vec![
+        Folder::custom("f1", "Invoices"),
+        Folder::label("l1", "Travel"),
+    ]);
+    let order =
+        ["Trash", "FOLDERS", "Invoices", "LABELS", "Travel"].map(|text| text_rect(&shapes, text));
+    for pair in order.windows(2) {
+        assert!(pair[0].bottom() <= pair[1].top(), "{order:?}");
+    }
+
+    let shapes = draw(Vec::new());
+    assert!(
+        visible_text_rect(&shapes, "FOLDERS").is_none(),
+        "no heading over nothing"
+    );
+}
+
+#[test]
 fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
     for appearance in [
         crate::settings::Appearance::Dark,
@@ -545,6 +579,21 @@ fn high_zoom_uses_the_available_width_without_overwriting_panel_preferences() {
             .any(|message| matches!(message, Message::PanelsResized(_))),
         "a temporary compact layout must not overwrite saved split ratios"
     );
+}
+
+#[test]
+fn what_the_server_found_is_titled_as_search_results() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let titled = |search: bool, title: &str| {
+        let (texts, _) = pane_frame(&context, &pagination_mailbox(search), None);
+        texts.iter().any(|(text, _)| text == title)
+    };
+
+    assert!(titled(true, "Search results"));
+    assert!(!titled(true, "Inbox"), "the results come from every folder");
+    assert!(titled(false, "Inbox"));
+    assert!(!titled(false, "Search results"));
 }
 
 #[test]

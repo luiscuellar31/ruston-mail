@@ -256,26 +256,29 @@ fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &m
 
     // Settings covers the mail panes, so it alone shows as chosen.
     let current = (!app.showing_settings()).then(|| mailbox.folder());
-    for folder in MailFolder::ALL.into_iter().map(Folder::System).chain(
-        app.folders()
-            .iter()
-            .filter(|folder| folder.kind() == Some(CustomKind::Folder))
-            .cloned(),
-    ) {
+    for folder in MailFolder::ALL.into_iter().map(Folder::System) {
         folder_button(ui, mailbox, current, folder, messages);
     }
 
-    let labels: Vec<_> = app
-        .folders()
-        .iter()
-        .filter(|folder| folder.kind() == Some(CustomKind::Label))
-        .cloned()
-        .collect();
-    if !labels.is_empty() {
-        ui.add_space(14.0);
-        detail(ui, "LABELS");
-        for label in labels {
-            folder_button(ui, mailbox, current, label, messages);
+    // The account's own folders and labels each come under a heading, as
+    // in Proton's web client, so a folder of its own is not read as one of
+    // Proton's.
+    for (heading, kind) in [
+        ("FOLDERS", CustomKind::Folder),
+        ("LABELS", CustomKind::Label),
+    ] {
+        let places: Vec<_> = app
+            .folders()
+            .iter()
+            .filter(|folder| folder.kind() == Some(kind))
+            .cloned()
+            .collect();
+        if !places.is_empty() {
+            ui.add_space(14.0);
+            detail(ui, heading);
+            for place in places {
+                folder_button(ui, mailbox, current, place, messages);
+            }
         }
     }
 }
@@ -487,6 +490,12 @@ fn conversation_pane(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
+    // What the server found comes from every folder, not the one open.
+    let title = if mailbox.shown_search_query().is_some() {
+        "Search results"
+    } else {
+        mailbox.folder().name()
+    };
     ui.horizontal(|ui| {
         // Refresh takes its place first; a long name is shortened in the
         // width left, with the whole name on hover, instead of widening the
@@ -495,13 +504,8 @@ fn conversation_pane(
             refresh_button(ui, app, mailbox, messages);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(mailbox.folder().name())
-                            .heading()
-                            .size(21.0)
-                            .strong(),
-                    )
-                    .truncate(),
+                    egui::Label::new(egui::RichText::new(title).heading().size(21.0).strong())
+                        .truncate(),
                 );
             });
         });
