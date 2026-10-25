@@ -257,7 +257,12 @@ if [[ -n "$commits_raw" ]]; then
         fi
       done <<<"$body"
       if [[ -n "$breaking_note" ]]; then
-        breaking_items+="- $(sentence "$breaking_note") (${short_sha})"$'\n'
+        # A note that starts with code, such as ruston_core::Error, keeps
+        # its case; one that starts with a plain word gets a capital.
+        if [[ "${breaking_note%% *}" =~ ^[a-z]+$ ]]; then
+          breaking_note="$(sentence "$breaking_note")"
+        fi
+        breaking_items+="- ${breaking_note} (${short_sha})"$'\n'
       else
         breaking_items+="- ${item}"$'\n'
       fi
