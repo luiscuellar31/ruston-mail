@@ -333,9 +333,7 @@ async fn read(
     let msg = client.read_message(&id).await?;
     if let Some(path) = output {
         write_private(path, msg.body.as_bytes())?;
-        if !ctx.json {
-            terminal::println!("Wrote {} bytes to {}", msg.body.len(), path.display());
-        }
+        render::body_written(ctx.json, msg.body.len(), path);
     } else {
         render::full_message(
             ctx.json,
@@ -435,7 +433,7 @@ async fn empty(ctx: &Ctx, folder: EmptyFolder, yes: bool) -> Result<()> {
     }
     let client = resume(&ctx.profile).await?;
     client.empty_folder(folder.as_str()).await?;
-    render::action_result(ctx.json, "emptied", &[folder.as_str().to_owned()]);
+    render::folder_emptied(ctx.json, folder);
     Ok(())
 }
 

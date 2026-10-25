@@ -20,8 +20,9 @@ use serde_json::json;
 
 use crate::cli::{
     AddressesCmd, AttachmentsCmd, Command, ContactsCmd, ConversationsCmd, Ctx, DraftsCmd,
-    FiltersCmd, LabelsCmd, MessagesCmd, SettingsCmd,
+    FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd,
 };
+use crate::commands::contacts;
 use crate::render;
 
 /// Said on standard error before every demo command, so a fictional send,
@@ -798,9 +799,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let full = msg.to_full();
                 if let Some(path) = output {
                     fs::write(&path, &full.body)?;
-                    if !ctx.json {
-                        terminal::println!("Wrote {} bytes to {}", full.body.len(), path.display());
-                    }
+                    render::body_written(ctx.json, full.body.len(), &path);
                 } else {
                     render::full_message(
                         ctx.json,
@@ -862,11 +861,11 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::Unsubscribe { reference } => {
-                render::action_result(ctx.json, "unsubscribe", &[reference]);
+                render::action_result(ctx.json, "unsubscribed", &[reference]);
                 Ok(())
             }
             MessagesCmd::Empty { folder, .. } => {
-                render::action_result(ctx.json, &format!("empty-{}", folder.as_str()), &[]);
+                render::folder_emptied(ctx.json, folder);
                 Ok(())
             }
             MessagesCmd::Label {
@@ -874,23 +873,32 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 label_id,
                 references,
             } => {
-                render::action_result(ctx.json, &format!("{action:?}-{label_id}"), &references);
+                folder_id_among(&demo_labels(), &label_id)?;
+                let action = match action {
+                    LabelAction::Add => "label",
+                    LabelAction::Rm => "unlabel",
+                };
+                render::action_result(ctx.json, action, &references);
                 Ok(())
             }
             MessagesCmd::Undelete { ids } => {
-                render::action_result(ctx.json, "undelete", &ids);
+                render::action_result(ctx.json, "undeleted", &ids);
                 Ok(())
             }
             MessagesCmd::Receipt { reference } => {
-                render::action_result(ctx.json, "receipt", &[reference]);
+                render::action_result(ctx.json, "receipt sent", &[reference]);
                 Ok(())
             }
             MessagesCmd::Move { references, dest } => {
-                render::action_result(ctx.json, &format!("move-to-{dest}"), &references);
+                folder_id_among(&demo_labels(), &dest)?;
+                render::action_result(ctx.json, "move", &references);
                 Ok(())
             }
-            MessagesCmd::Mark { state, references } => {
-                render::action_result(ctx.json, &format!("mark-{state:?}"), &references);
+            MessagesCmd::Mark {
+                state: _,
+                references,
+            } => {
+                render::action_result(ctx.json, "mark", &references);
                 Ok(())
             }
             MessagesCmd::Star { references } => {
@@ -979,7 +987,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             ConversationsCmd::Move { ids, dest } => {
-                render::action_result(ctx.json, &format!("move-to-{dest}"), &ids);
+                folder_id_among(&demo_labels(), &dest)?;
+                render::action_result(ctx.json, "move", &ids);
                 Ok(())
             }
             ConversationsCmd::Trash { ids } => {
@@ -987,11 +996,12 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             ConversationsCmd::Mark {
-                state,
-                folder: _,
+                state: _,
+                folder,
                 ids,
             } => {
-                render::action_result(ctx.json, &format!("mark-{state:?}"), &ids);
+                folder_id_among(&demo_labels(), &folder)?;
+                render::action_result(ctx.json, "mark", &ids);
                 Ok(())
             }
             ConversationsCmd::Star { ids } => {
@@ -1009,11 +1019,11 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             } => {
                 // Refuse what the live command refuses.
                 crate::commands::conversations::snooze_time(until, relative, 0)?;
-                render::action_result(ctx.json, "snooze", &ids);
+                render::action_result(ctx.json, "snoozed", &ids);
                 Ok(())
             }
             ConversationsCmd::Unsnooze { ids } => {
-                render::action_result(ctx.json, "unsnooze", &ids);
+                render::action_result(ctx.json, "unsnoozed", &ids);
                 Ok(())
             }
         },
@@ -1101,7 +1111,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             DraftsCmd::Delete { ids, .. } => {
-                render::action_result(ctx.json, "delete-draft", &ids);
+                render::action_result(ctx.json, "draft deleted", &ids);
                 Ok(())
             }
         },
@@ -1129,15 +1139,15 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             FiltersCmd::Delete { id } => {
-                render::action_result(ctx.json, "delete-filter", &[id]);
+                render::action_result(ctx.json, "filter deleted", &[id]);
                 Ok(())
             }
             FiltersCmd::Enable { id } => {
-                render::action_result(ctx.json, "enable-filter", &[id]);
+                render::action_result(ctx.json, "filter enabled", &[id]);
                 Ok(())
             }
             FiltersCmd::Disable { id } => {
-                render::action_result(ctx.json, "disable-filter", &[id]);
+                render::action_result(ctx.json, "filter disabled", &[id]);
                 Ok(())
             }
         },
@@ -1197,21 +1207,16 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             SettingsCmd::Sign { value } => {
-                if ctx.json {
-                    render::json_out(&json!({ "status": "ok", "sign": value.as_bool() }));
-                } else {
-                    terminal::println!("Set sign outgoing mail to: {value:?}");
-                }
+                render::setting_changed(ctx.json, "sign", contacts::SIGN, value.as_bool());
                 Ok(())
             }
             SettingsCmd::AttachPublicKey { value } => {
-                if ctx.json {
-                    render::json_out(
-                        &json!({ "status": "ok", "attach_public_key": value.as_bool() }),
-                    );
-                } else {
-                    terminal::println!("Set attach public key to: {value:?}");
-                }
+                render::setting_changed(
+                    ctx.json,
+                    "attach_public_key",
+                    contacts::ATTACH_PUBLIC_KEY,
+                    value.as_bool(),
+                );
                 Ok(())
             }
         },
@@ -1253,11 +1258,11 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             LabelsCmd::Delete { ids } => {
-                render::action_result(ctx.json, "delete-label", &ids);
+                render::action_result(ctx.json, "delete", &ids);
                 Ok(())
             }
             LabelsCmd::Update { id, .. } => {
-                render::action_result(ctx.json, "update-label", &[id]);
+                render::action_result(ctx.json, "updated", &[id]);
                 Ok(())
             }
         },

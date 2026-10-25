@@ -5,7 +5,7 @@ mod html;
 use crate::terminal::{self, BodyFormat};
 use std::borrow::Cow;
 
-use crate::cli::ReadFormat;
+use crate::cli::{EmptyFolder, ReadFormat};
 use ruston_core::model::enums::label_ids;
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Filter,
@@ -431,6 +431,34 @@ pub fn action_result(json: bool, action: &str, ids: &[String]) {
         return;
     }
     terminal::println!("{action}: {} item(s)", ids.len());
+}
+
+/// Report a setting turned on or off: `setting` names it in JSON, and
+/// `label` in text.
+pub fn setting_changed(json: bool, setting: &str, label: &str, on: bool) {
+    if json {
+        json_out(&json!({ "status": "ok", "setting": setting, "value": on }));
+        return;
+    }
+    terminal::println!("{label}: {}", if on { "on" } else { "off" });
+}
+
+/// Report a folder whose messages were all deleted for good.
+pub fn folder_emptied(json: bool, folder: EmptyFolder) {
+    if json {
+        json_out(&json!({ "status": "ok", "action": "emptied", "folder": folder.as_str() }));
+        return;
+    }
+    terminal::println!("Emptied {}.", folder.name());
+}
+
+/// Report a message body written to a file instead of shown.
+pub fn body_written(json: bool, bytes: usize, path: &std::path::Path) {
+    if json {
+        json_out(&json!({ "status": "ok", "bytes": bytes, "path": path.display().to_string() }));
+        return;
+    }
+    terminal::println!("Wrote {bytes} bytes to {}", path.display());
 }
 
 /// Report a successful send, with the sent message's ID.

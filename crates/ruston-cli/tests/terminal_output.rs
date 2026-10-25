@@ -65,6 +65,77 @@ fn a_folder_or_label_of_ones_own_is_named_as_people_see_it() {
 }
 
 #[test]
+fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
+    let json = |args: &[&str]| -> serde_json::Value {
+        let output = run_ok(&[&["--demo", "--json"][..], args].concat());
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    assert_eq!(
+        json(&["settings", "sign", "on"]),
+        serde_json::json!({"status": "ok", "setting": "sign", "value": true})
+    );
+    assert_eq!(
+        json(&["settings", "attach-public-key", "off"]),
+        serde_json::json!({"status": "ok", "setting": "attach_public_key", "value": false})
+    );
+    assert_eq!(
+        json(&["messages", "empty", "spam", "--yes"]),
+        serde_json::json!({"status": "ok", "action": "emptied", "folder": "spam"})
+    );
+    let text = assert_safe(&run_ok(&["--demo", "settings", "sign", "off"]).stdout);
+    assert_eq!(text, "Sign outgoing mail: off\n");
+    let text = assert_safe(&run_ok(&["--demo", "messages", "empty", "trash", "--yes"]).stdout);
+    assert_eq!(text, "Emptied Trash.\n");
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let file = std::env::temp_dir().join(format!(
+        "ruston-cli-body-{}-{unique}.txt",
+        std::process::id()
+    ));
+    let path = file.to_str().unwrap();
+    let written = json(&["messages", "read", "msg-demo-01", "--output", path]);
+    let bytes = std::fs::metadata(&file).unwrap().len();
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(
+        written,
+        serde_json::json!({"status": "ok", "bytes": bytes, "path": path})
+    );
+}
+
+#[test]
+fn the_demo_names_each_action_as_the_live_command_does() {
+    for (args, action) in [
+        (&["messages", "mark", "read", "msg-demo-01"][..], "mark"),
+        (
+            &["messages", "move", "msg-demo-01", "--dest", "archive"],
+            "move",
+        ),
+        (
+            &["messages", "label", "add", "Work", "msg-demo-01"],
+            "label",
+        ),
+        (
+            &["messages", "label", "rm", "Work", "msg-demo-01"],
+            "unlabel",
+        ),
+        (&["messages", "undelete", "msg-demo-01"], "undeleted"),
+        (
+            &["conversations", "move", "conv-demo-01", "--dest", "inbox"],
+            "move",
+        ),
+        (&["conversations", "mark", "unread", "conv-demo-01"], "mark"),
+        (&["conversations", "unsnooze", "conv-demo-01"], "unsnoozed"),
+    ] {
+        let output = run_ok(&[&["--demo", "--json"][..], args].concat());
+        let reported: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reported["action"], action, "{args:?}");
+    }
+}
+
+#[test]
 fn a_demo_page_far_past_the_end_lists_nothing() {
     for list in ["messages", "conversations", "drafts", "contacts"] {
         let args = [

@@ -40,6 +40,11 @@ pub async fn addresses(ctx: &Ctx, cmd: AddressesCmd) -> Result<()> {
     Ok(())
 }
 
+/// What `settings sign` and `settings attach-key` change, as their output
+/// names them.
+pub const SIGN: &str = "Sign outgoing mail";
+pub const ATTACH_PUBLIC_KEY: &str = "Attach your public key to outgoing mail";
+
 pub async fn settings(ctx: &Ctx, cmd: SettingsCmd) -> Result<()> {
     let client = resume(&ctx.profile).await?;
     match cmd {
@@ -49,14 +54,15 @@ pub async fn settings(ctx: &Ctx, cmd: SettingsCmd) -> Result<()> {
         }
         SettingsCmd::Sign { value } => {
             client.set_sign(value.as_bool()).await?;
-            render::action_result(ctx.json, "sign", &[value.as_bool().to_string()]);
+            render::setting_changed(ctx.json, "sign", SIGN, value.as_bool());
         }
         SettingsCmd::AttachPublicKey { value } => {
             client.set_attach_public_key(value.as_bool()).await?;
-            render::action_result(
+            render::setting_changed(
                 ctx.json,
-                "attach-public-key",
-                &[value.as_bool().to_string()],
+                "attach_public_key",
+                ATTACH_PUBLIC_KEY,
+                value.as_bool(),
             );
         }
     }

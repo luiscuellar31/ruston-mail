@@ -745,9 +745,10 @@ instead of an unknown outcome.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
   commands and saves its sample attachments as the live command does, with
   core's `save_under_free_name`: never over a file or through a link already
-  there, and reported the same way. Each demo command
-  first writes a note to standard error, since `RUSTON_DEMO` alone turns the
-  demo on. The desktop has its own demo mailbox in `src/mail/demo.rs`.
+  there, and reported the same way. Its commands report through the same
+  `render` functions, with the same action names, as the live ones. Each demo
+  command first writes a note to standard error, since `RUSTON_DEMO` alone
+  turns the demo on. The desktop has its own demo mailbox in `src/mail/demo.rs`.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).
