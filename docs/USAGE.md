@@ -514,6 +514,13 @@ address, since they are encrypted to it. A draft keeps no delivery time,
 expiration, or message password: `--send-at`, `--expires`, and
 `--eo-password` are options of `messages send`.
 
+Options that take a folder, such as `--folder` and `--dest`, and the label of
+`messages label`, accept a system folder (`inbox`, `sent`, `archive`, `all`…),
+or one of your folders or labels by its name or path (`Taxes/2024`), ignoring
+case, or by its ID. A name two folders share is refused; give its path. Reading
+the local cache with `messages list --cached` works offline, so it takes only
+system folders and IDs.
+
 Output can be piped into tools that stop reading early, such as `head`: the
 CLI then ends quietly with exit status 0.
 

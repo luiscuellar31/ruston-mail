@@ -9,8 +9,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use ruston_core::mail::attachments::save_under_free_name;
+use ruston_core::mail::organize::folder_id_among;
 use ruston_core::model::ConversationLabel;
-use ruston_core::model::enums::{filter, label_ids, label_type, resolve_folder};
+use ruston_core::model::enums::{filter, label_ids, label_type};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
     Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
@@ -703,7 +704,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 unread,
                 cached: _,
             } => {
-                let target_label = resolve_folder(&folder);
+                let target_label = folder_id_among(&demo_labels(), &folder)?;
                 let is_all = target_label == label_ids::ALL_MAIL
                     || folder.eq_ignore_ascii_case("all")
                     || folder.eq_ignore_ascii_case("allmail");
@@ -908,7 +909,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 page_size,
                 unread,
             } => {
-                let target_label = resolve_folder(&folder);
+                let target_label = folder_id_among(&demo_labels(), &folder)?;
                 let is_all = target_label == label_ids::ALL_MAIL
                     || folder.eq_ignore_ascii_case("all")
                     || folder.eq_ignore_ascii_case("allmail");
@@ -1262,7 +1263,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
         },
         Command::Export { folder, out, max } => {
             fs::create_dir_all(&out)?;
-            let target_label = resolve_folder(&folder);
+            let target_label = folder_id_among(&demo_labels(), &folder)?;
             let is_all = target_label == label_ids::ALL_MAIL || folder.eq_ignore_ascii_case("all");
 
             let exported: Vec<&DemoMessage> = fixtures_messages

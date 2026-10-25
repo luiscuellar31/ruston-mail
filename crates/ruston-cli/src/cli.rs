@@ -300,6 +300,8 @@ pub enum Command {
     /// directory resumes. Messages that cannot be decrypted are skipped and
     /// listed, and the command then exits with an error.
     Export {
+        /// A system folder (all, inbox, sent…), or one of your folders or
+        /// labels by its name, path or ID.
         #[arg(long, default_value = "all")]
         folder: String,
         /// Output directory.
@@ -376,7 +378,8 @@ pub struct SearchArgs {
     /// Only results on/before this date (YYYY-MM-DD, a day in UTC), including it.
     #[arg(long, value_parser = parse_search_date)]
     pub before: Option<String>,
-    /// Restrict to a folder/label.
+    /// Restrict to a folder or label: a system folder, or one of yours by
+    /// its name, path or ID.
     #[arg(long)]
     pub folder: Option<String>,
     /// Only unread results.
@@ -532,6 +535,9 @@ impl EmptyFolder {
 pub enum MessagesCmd {
     /// List messages in a folder.
     List {
+        /// A system folder (inbox, sent, archive…), or one of your folders or
+        /// labels by its name, path or ID; with --cached, a system folder or
+        /// an ID.
         #[arg(long, default_value = "inbox")]
         folder: String,
         #[arg(long, default_value_t = 0)]
@@ -616,7 +622,7 @@ pub enum MessagesCmd {
     Label {
         #[arg(value_enum)]
         action: LabelAction,
-        /// Label ID.
+        /// The label, by its name, path or ID.
         label_id: String,
         /// Message references.
         #[arg(required = true)]
@@ -633,6 +639,7 @@ pub enum MessagesCmd {
     Move {
         #[arg(required = true)]
         references: Vec<String>,
+        /// A system folder, or one of your folders by its name, path or ID.
         #[arg(long)]
         dest: String,
     },
@@ -672,6 +679,8 @@ pub enum MessagesCmd {
 pub enum ConversationsCmd {
     /// List conversations in a folder.
     List {
+        /// A system folder (inbox, sent, archive…), or one of your folders or
+        /// labels by its name, path or ID.
         #[arg(long, default_value = "inbox")]
         folder: String,
         #[arg(long, default_value_t = 0)]
@@ -692,6 +701,7 @@ pub enum ConversationsCmd {
     Move {
         #[arg(required = true)]
         ids: Vec<String>,
+        /// A system folder, or one of your folders by its name, path or ID.
         #[arg(long)]
         dest: String,
     },

@@ -668,7 +668,13 @@ instead of an unknown outcome.
 
 - [`cli.rs`](../crates/ruston-cli/src/cli.rs) defines commands and global
   options. [`main.rs`](../crates/ruston-cli/src/main.rs) dispatches them to
-  [`commands/`](../crates/ruston-cli/src/commands/).
+  [`commands/`](../crates/ruston-cli/src/commands/). A command that takes a
+  folder or label hands it to core's `Client::folder_id` first, which takes a
+  system folder or an ID as it is and otherwise asks Proton for the account's
+  folders and labels, to find one by its path or name with
+  `organize::folder_id_among`; the demo applies that rule to its own labels.
+  `messages list --cached` reads offline and resolves only what core does
+  without asking.
 - Command handlers call `ruston_core::Client`. Put terminal prompts and output
   formatting in the CLI; put shared mail behavior in the core. Output helpers
   are in [`render.rs`](../crates/ruston-cli/src/render.rs). Its

@@ -14,6 +14,10 @@ pub async fn run(
     page_size: u32,
 ) -> Result<()> {
     let client = resume(&ctx.profile).await?;
+    let backfill = match backfill {
+        Some(folder) => Some(client.folder_id(&folder).await?),
+        None => None,
+    };
     let report = client.sync().await?;
     let backfilled = match &backfill {
         Some(folder) => client.cache_folder(folder, max_pages, page_size).await?,

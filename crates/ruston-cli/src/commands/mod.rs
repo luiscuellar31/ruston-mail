@@ -14,12 +14,22 @@ pub mod search;
 pub mod sync;
 pub mod watch;
 
-use ruston_core::{Client, Result};
+use ruston_core::{Client, Result, SearchOpts};
 use std::io::Read;
 
 /// Resume a saved session for the given profile.
 pub async fn resume(profile: &str) -> Result<Client> {
     Client::resume(profile).await
+}
+
+/// `opts` with the folder it searches named by its label ID, so a folder
+/// of the account's own can be named as people see it.
+pub async fn search_options(client: &Client, opts: SearchOpts) -> Result<SearchOpts> {
+    let folder = match &opts.folder {
+        Some(folder) => Some(client.folder_id(folder).await?),
+        None => None,
+    };
+    Ok(SearchOpts { folder, ..opts })
 }
 
 /// Resolve a body argument: `-` reads stdin, otherwise the literal text.

@@ -3,7 +3,7 @@
 use crate::cli::Ctx;
 use crate::cli::{DraftArgs, EmptyFolder, LabelAction, MessagesCmd, ReadFormat, SendArgs};
 use crate::commands::prompt::{can_prompt, confirm, confirm_deletion, require_consent};
-use crate::commands::{read_body, resolve_all, resume};
+use crate::commands::{read_body, resolve_all, resume, search_options};
 use crate::render;
 use crate::terminal;
 use html5ever::tendril::StrTendril;
@@ -164,8 +164,9 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                     .await?
                     .messages_page(&folder, unread, page, page_size)?
             } else {
-                resume(&ctx.profile)
-                    .await?
+                let client = resume(&ctx.profile).await?;
+                let folder = client.folder_id(&folder).await?;
+                client
                     .list_messages(&folder, page, page_size, unread)
                     .await?
             };
@@ -174,7 +175,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::Search(args) => {
             let client = resume(&ctx.profile).await?;
-            let opts = args.into();
+            let opts = search_options(&client, args.into()).await?;
             let msgs = client.search_messages(&opts).await?;
             render::messages_list(ctx.json, msgs.len() as u32, &msgs);
             Ok(())
@@ -233,6 +234,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::Move { references, dest } => {
             organize(ctx, &references, "move", move |c, ids| async move {
+                let dest = c.folder_id(&dest).await?;
                 c.move_messages(&ids, &dest).await
             })
             .await
@@ -293,6 +295,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 LabelAction::Rm => "unlabel",
             };
             organize(ctx, &references, name, move |c, ids| async move {
+                let label_id = c.folder_id(&label_id).await?;
                 match action {
                     LabelAction::Add => c.apply_label(&ids, &label_id).await,
                     LabelAction::Rm => c.remove_label(&ids, &label_id).await,

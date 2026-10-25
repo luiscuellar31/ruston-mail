@@ -17,13 +17,14 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
             page_size,
             unread,
         } => {
+            let folder = client.folder_id(&folder).await?;
             let (total, convs) = client
                 .list_conversations(&folder, page, page_size, unread)
                 .await?;
             render::conversations_list(ctx.json, total, &convs);
         }
         ConversationsCmd::Search(args) => {
-            let opts = args.into();
+            let opts = crate::commands::search_options(&client, args.into()).await?;
             let convs = client.search_conversations(&opts).await?;
             render::conversations_list(ctx.json, convs.len() as u32, &convs);
         }
@@ -32,6 +33,7 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
             render::conversation_read(ctx.json, &conv, &msgs);
         }
         ConversationsCmd::Move { ids, dest } => {
+            let dest = client.folder_id(&dest).await?;
             client.move_conversations(&ids, &dest).await?;
             render::action_result(ctx.json, "move", &ids);
         }
@@ -40,6 +42,7 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
             render::action_result(ctx.json, "trash", &ids);
         }
         ConversationsCmd::Mark { state, folder, ids } => {
+            let folder = client.folder_id(&folder).await?;
             client
                 .mark_conversations_read(&ids, state.as_bool(), &folder)
                 .await?;

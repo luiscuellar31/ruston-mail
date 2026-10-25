@@ -48,6 +48,23 @@ fn attack_argument() -> &'static str {
 }
 
 #[test]
+fn a_folder_or_label_of_ones_own_is_named_as_people_see_it() {
+    let output = run_ok(&["--demo", "--json", "messages", "list", "--folder", "WORK"]);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let messages = listed["messages"].as_array().unwrap();
+    assert!(!messages.is_empty(), "{listed}");
+    for message in messages {
+        let labels = message["LabelIDs"].as_array().unwrap();
+        assert!(labels.contains(&"label-demo-work".into()), "{message}");
+    }
+
+    let unknown = run(&["--demo", "messages", "list", "--folder", "Nowhere"]);
+    assert!(!unknown.status.success());
+    let error = String::from_utf8(unknown.stderr).unwrap();
+    assert!(error.contains("folder or label not found"), "{error}");
+}
+
+#[test]
 fn a_demo_page_far_past_the_end_lists_nothing() {
     for list in ["messages", "conversations", "drafts", "contacts"] {
         let args = [

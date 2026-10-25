@@ -57,6 +57,10 @@ fn retry_delay(interval: Duration, failures: u32) -> Duration {
 
 pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()> {
     let client = resume(&ctx.profile).await?;
+    let folder = match folder {
+        Some(folder) => Some(client.folder_id(&folder).await?),
+        None => None,
+    };
     terminal::eprintln!("watching (every {interval}s; Ctrl-C to stop)…");
     let interval = Duration::from_secs(interval);
     let mut round = Round::First;
