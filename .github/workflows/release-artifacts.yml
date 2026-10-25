@@ -486,7 +486,7 @@ jobs:
             # The draft's notes may have been edited by hand, so they stay.
           else
             gh release create "$TAG" --repo "$REPOSITORY" \
-              --target "$TAG_COMMIT" --title "$TAG" \
+              --target "$TAG_COMMIT" --title "Ruston Mail ${VERSION}" \
               --draft --notes-file "$notes_file"
           fi
 

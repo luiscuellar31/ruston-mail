@@ -668,16 +668,21 @@ To publish a release:
    ```
 
 4. The workflow checks that the tag names the workspace version and is on
-   `main`, builds everything again, and creates a draft release with the files,
-   `SHA256SUMS.txt`, build provenance attestations, and notes written by
-   [`release-notes.sh`](../packaging/release-notes.sh) from the commits since the
-   previous tag: new features, fixes and performance work under the areas of
+   `main`, builds everything again, and creates a draft release titled
+   `Ruston Mail <version>`, so every release title carries the product name. The
+   draft has the files, `SHA256SUMS.txt`, build provenance attestations, and
+   notes written by [`release-notes.sh`](../packaging/release-notes.sh) from the
+   commits since the previous tag: new features, fixes and performance work
+   under the areas of
    [`release-note-areas.tsv`](../packaging/release-note-areas.tsv), and the rest
    in a short Maintenance list. Re-running the workflow for the tag keeps the
    draft's notes, which may have been edited, and stops if the draft already has
    files: delete them, or the draft, and run it again.
-5. Edit the introduction at the top of the draft, check the files, and publish
-   it. Once a release is published, the workflow refuses to replace its files.
+5. At the top of the draft, replace `Release name` with the update's name, as in
+   `# The <Name> Update (v<version>)` (0.8.0, the first release, is
+   `# Introducing Ruston Mail (v0.8.0)`), and write a short introduction below
+   it. Check the files and publish the release. Once a release is published, the
+   workflow refuses to replace its files.
 
 `./packaging/release-notes.sh --tag <tag> --version <version>` prints the same
 notes locally.
