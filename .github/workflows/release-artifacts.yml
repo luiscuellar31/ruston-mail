@@ -25,6 +25,7 @@ jobs:
   verify-source:
     name: Verify release source
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     outputs:
       tag_name: ${{ steps.meta.outputs.tag_name }}
       tag_commit: ${{ steps.meta.outputs.tag_commit }}
@@ -85,6 +86,8 @@ jobs:
     needs:
       - verify-source
     runs-on: ${{ matrix.runner }}
+    # Several times the slowest build so far; a hung step stops here.
+    timeout-minutes: 90
     env:
       VERSION: ${{ needs.verify-source.outputs.version }}
       ARCH: ${{ matrix.arch }}
@@ -146,6 +149,7 @@ jobs:
     # Ubuntu 22.04 is the oldest LTS in standard support, the one the AppImage
     # catalog tests on, so the AppImage needs no newer glibc than 2.35.
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     env:
       VERSION: ${{ needs.verify-source.outputs.version }}
       ARCH: ${{ matrix.arch }}
@@ -274,6 +278,7 @@ jobs:
     needs:
       - verify-source
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
@@ -366,6 +371,7 @@ jobs:
       - build-linux
       - build-windows
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
