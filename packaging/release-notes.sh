@@ -275,7 +275,7 @@ if [[ -n "$commits_raw" ]]; then
         fi
         case "$type" in
         feat)
-          FEAT_ITEMS[found_area]+="- **${AREA_NAMES[$found_area]}:** ${item}"$'\n'
+          FEAT_ITEMS[found_area]+="- ${item}"$'\n'
           feat_count=$((feat_count + 1))
           ;;
         fix)
@@ -308,16 +308,17 @@ for scope in $unlisted_scopes; do
   echo "[release-notes] scope '${scope}' is not in release-note-areas.tsv; its changes are listed under Other" >&2
 done
 
-# Prints the fixes or performance changes with one heading per area.
+# Prints the new features, fixes or performance changes with one heading per
+# area.
 print_by_area() {
   local title="$1" index items
   printf '## %s\n\n' "$title"
   for index in "${!AREA_NAMES[@]}"; do
-    if [[ "$title" == "Fixes" ]]; then
-      items="${FIX_ITEMS[$index]}"
-    else
-      items="${PERF_ITEMS[$index]}"
-    fi
+    case "$title" in
+    "What's new") items="${FEAT_ITEMS[$index]}" ;;
+    Fixes) items="${FIX_ITEMS[$index]}" ;;
+    *) items="${PERF_ITEMS[$index]}" ;;
+    esac
     [[ -n "$items" ]] || continue
     printf '### %s\n\n%s\n' "${AREA_NAMES[$index]}" "$items"
   done
@@ -373,11 +374,7 @@ EOF
     printf '## Breaking changes\n\n%s\n' "$breaking_items"
   fi
   if ((feat_count > 0)); then
-    printf "## What's new\n\n"
-    for index in "${!AREA_NAMES[@]}"; do
-      printf '%s' "${FEAT_ITEMS[$index]}"
-    done
-    printf '\n'
+    print_by_area "What's new"
   fi
   if ((fix_count > 0)); then
     print_by_area "Fixes"
