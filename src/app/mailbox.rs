@@ -465,6 +465,12 @@ impl Mailbox {
         self.status
     }
 
+    /// The counts request in flight, if any.
+    #[cfg(test)]
+    pub fn counts_request(&self) -> Option<RequestId> {
+        self.counts_request
+    }
+
     #[cfg(test)]
     pub fn conversations(&self) -> &[ConversationSummary] {
         &self.conversations

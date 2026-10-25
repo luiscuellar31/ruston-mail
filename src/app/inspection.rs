@@ -46,6 +46,12 @@ impl Inspections {
         Some((id, registration))
     }
 
+    /// The request `id`'s inspection runs under, if it runs.
+    #[cfg(test)]
+    pub fn running_request(&self, id: &str) -> Option<RequestId> {
+        self.running.get(id).map(|(request, _)| *request)
+    }
+
     /// Only the exact running request may release a slot and apply its result.
     pub fn finish(&mut self, request: RequestId, id: &str) -> bool {
         if !self

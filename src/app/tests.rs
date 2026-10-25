@@ -30,7 +30,7 @@ fn deliver_demo_page(app: &mut App, request: RequestId, page: u32) {
 }
 
 fn deliver_latest_demo_page(app: &mut App, page: u32) {
-    let request = app.last_request;
+    let request = pending_list_request(app);
     deliver_demo_page(app, request, page);
 }
 
@@ -39,6 +39,28 @@ fn demo_service(app: &App) -> demo::DemoMailbox {
         Some(MailBackend::Demo(service)) => service.clone(),
         _ => panic!("expected demo backend"),
     }
+}
+
+/// The list request the open folder or search waits for, as its status
+/// says, so a test need not know the order requests were numbered in.
+fn pending_list_request(app: &App) -> RequestId {
+    app.mailbox()
+        .and_then(|mailbox| mailbox.status().request_in_flight())
+        .expect("a list request in flight")
+}
+
+/// The counts request the open mailbox waits for.
+fn pending_counts_request(app: &App) -> RequestId {
+    app.mailbox()
+        .and_then(Mailbox::counts_request)
+        .expect("a counts request in flight")
+}
+
+/// The request the inspection of `conversation_id` runs under.
+fn running_inspection(app: &App, conversation_id: &str) -> RequestId {
+    app.inspections
+        .running_request(conversation_id)
+        .expect("an inspection running")
 }
 
 fn pending_reader_request(app: &App) -> ReaderRequest {
@@ -68,7 +90,7 @@ fn deliver_demo_search(app: &mut App, query: &str) {
     let _ = app.update(Message::SearchChanged(query.to_owned()));
     let _ = app.update(Message::SearchSubmitted);
     let request = SearchRequest {
-        id: app.last_request,
+        id: pending_list_request(app),
         query: query.to_owned(),
         page: 0,
         page_size: demo::PAGE_SIZE,
@@ -1022,7 +1044,7 @@ fn a_folder_list_that_fails_to_load_keeps_the_open_folder_and_is_asked_again() {
         app.update(Message::RefreshMailbox).units(),
         PAGE_AND_COUNTS + 1
     );
-    let page_request = app.last_request - 1;
+    let page_request = pending_list_request(&app);
     deliver_demo_page(&mut app, page_request, 0);
     deliver_folders(&mut app, Ok(vec![invoices.clone()]));
     assert_eq!(app.folders(), [invoices]);
@@ -1493,7 +1515,7 @@ fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
         app.update(Message::AutoRefreshMailbox).units(),
         PAGE_AND_COUNTS
     );
-    let page_request = app.last_request - 1;
+    let page_request = pending_list_request(&app);
     deliver_demo_page(&mut app, page_request, 0);
 
     assert_eq!(
@@ -1681,7 +1703,7 @@ fn automatic_refresh_does_not_notify_when_inbox_unread_stays_same() {
         .unwrap();
 
     let _ = app.update(Message::AutoRefreshMailbox);
-    let counts_request = app.last_request;
+    let counts_request = pending_counts_request(&app);
 
     let new_counts: crate::mail::MailboxCounts =
         [(Folder::INBOX, initial_unread)].into_iter().collect();
@@ -1701,7 +1723,7 @@ fn manual_refresh_does_not_trigger_notification_when_unread_increases() {
         .unwrap();
 
     let _ = app.update(Message::RefreshMailbox);
-    let counts_request = app.last_request;
+    let counts_request = pending_counts_request(&app);
 
     let new_counts: crate::mail::MailboxCounts =
         [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
@@ -1724,7 +1746,7 @@ fn automatic_refresh_does_not_notify_when_desktop_notifications_disabled() {
         .unwrap();
 
     let _ = app.update(Message::AutoRefreshMailbox);
-    let counts_request = app.last_request;
+    let counts_request = pending_counts_request(&app);
 
     let new_counts: crate::mail::MailboxCounts =
         [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
@@ -1736,7 +1758,7 @@ fn automatic_refresh_does_not_notify_when_desktop_notifications_disabled() {
 fn a_mutation_during_refresh_is_followed_by_a_fresh_request() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::RefreshMailbox);
-    let page_request = app.last_request - 1;
+    let page_request = pending_list_request(&app);
     app.mailbox.as_mut().unwrap().invalidate_listings();
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
@@ -1891,7 +1913,7 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
     assert!(app.mailbox().unwrap().loaded_count() > 0);
 
     let request = SearchRequest {
-        id: app.last_request,
+        id: pending_list_request(&app),
         query: "Avery".into(),
         page: 0,
         page_size: demo::PAGE_SIZE,
@@ -3539,7 +3561,7 @@ fn inspection_candidates_do_not_spawn_an_unbounded_number_of_tasks() {
     page.inspect_candidates
         .extend(page.inspect_candidates.clone());
     let _ = app.update(Message::RefreshMailbox);
-    let request = app.last_request - 1;
+    let request = pending_list_request(&app);
     let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
     assert_eq!(effects.units(), INSPECTION_CONCURRENCY);
 }
@@ -3560,7 +3582,7 @@ fn inspection_queue_drains_with_bounded_deduplicated_work() {
     page.inspect_candidates
         .extend(page.inspect_candidates.clone());
     let _ = app.update(Message::RefreshMailbox);
-    let request = app.last_request - 1;
+    let request = pending_list_request(&app);
     let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
     let mut running: std::collections::VecDeque<_> = effects.into_iter().collect();
     let mut completed = std::collections::HashSet::new();
@@ -3606,7 +3628,7 @@ fn inspections_are_cancelled_when_the_context_changes() {
     ] {
         let mut app = loaded_demo_app();
         let effects = app.inspect_candidates(vec!["demo-0".into()]);
-        let request = app.last_request;
+        let request = running_inspection(&app, "demo-0");
         let Effect::Future(future) = effects.into_iter().next().unwrap() else {
             panic!("expected an inspection");
         };
@@ -3650,9 +3672,12 @@ fn an_inspection_asked_before_a_rename_still_frees_its_place() {
         total: 1,
         inspect_candidates: vec!["thread-1".into()],
     };
-    let started = app.update(Message::ConversationsLoaded(app.last_request, Ok(page)));
+    let started = app.update(Message::ConversationsLoaded(
+        pending_list_request(&app),
+        Ok(page),
+    ));
     assert_eq!(started.units(), 1, "the thread is inspected");
-    let request = app.last_request;
+    let request = running_inspection(&app, "thread-1");
     deliver_folders(&mut app, Ok(vec![Folder::custom("kZ9", "Facturas")]));
 
     // The answer names the folder as it was called when it was asked.
@@ -3674,11 +3699,11 @@ fn an_inspection_asked_before_a_rename_still_frees_its_place() {
 fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
     let mut app = loaded_demo_app();
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
-    let old_request = app.last_request;
+    let old_request = running_inspection(&app, "demo-0");
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
     let _ = app.update(Message::SelectFolder(Folder::INBOX));
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
-    let current_request = app.last_request;
+    let current_request = running_inspection(&app, "demo-0");
     let effects = app.update(Message::ThreadInspected {
         revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
         epoch: app.session_epoch,
@@ -3696,7 +3721,7 @@ fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
 fn conversations_loaded_with_candidates_starts_inspection_effects() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::RefreshMailbox);
-    let request = app.last_request - 1;
+    let request = pending_list_request(&app);
 
     let page = ConversationPage {
         conversations: vec![ConversationSummary {
@@ -3787,7 +3812,7 @@ fn thread_inspected_splits_conversation_when_successful() {
     let mut app = loaded_demo_app();
     let epoch = app.session_epoch;
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
-    let request = app.last_request;
+    let request = running_inspection(&app, "demo-0");
 
     let split_rows = vec![
         ConversationSummary {
@@ -3843,7 +3868,7 @@ fn thread_inspected_stale_epoch_or_folder_is_ignored() {
     let mut app = loaded_demo_app();
     let stale_epoch = app.session_epoch + 99;
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
-    let request = app.last_request;
+    let request = running_inspection(&app, "demo-0");
 
     let split_rows = vec![ConversationSummary {
         id: "split-ignored".into(),
