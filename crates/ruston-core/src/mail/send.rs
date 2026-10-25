@@ -210,12 +210,34 @@ pub enum RecipientProtection {
 impl RecipientProtection {
     /// Reads a key lookup the way sending picks a recipient's package.
     fn of(keys: &api::keys::RecipientKeys) -> Self {
-        if api::keys::pick_encryption_key(&keys.keys).is_some() {
-            Self::EndToEnd
-        } else if api::keys::pick_encryption_key(&keys.unverified).is_some() {
-            Self::Pgp
+        match RecipientKey::pick(keys) {
+            RecipientKey::Verified(_) => Self::EndToEnd,
+            RecipientKey::Published(_) => Self::Pgp,
+            RecipientKey::Missing => Self::Unencrypted,
+        }
+    }
+}
+
+/// The armored key a recipient's copy is encrypted to, which decides the
+/// package it goes in. A key that may not encrypt mail, being obsolete or on
+/// an address whose owner turned email encryption off, counts as none.
+enum RecipientKey<'a> {
+    /// A key Proton vouches for, so a Proton address.
+    Verified(&'a str),
+    /// A key published outside Proton, as through WKD.
+    Published(&'a str),
+    /// No key to encrypt to.
+    Missing,
+}
+
+impl<'a> RecipientKey<'a> {
+    fn pick(keys: &'a api::keys::RecipientKeys) -> Self {
+        if let Some(key) = api::keys::pick_encryption_key(&keys.keys) {
+            Self::Verified(&key.public_key)
+        } else if let Some(key) = api::keys::pick_encryption_key(&keys.unverified) {
+            Self::Published(&key.public_key)
         } else {
-            Self::Unencrypted
+            Self::Missing
         }
     }
 }
@@ -413,6 +435,155 @@ impl EncryptedBody {
             data_packet,
         })
     }
+}
+
+/// How one recipient's copy goes out, which names its package.
+enum Delivery<'a> {
+    /// End-to-end encrypted to a key Proton vouches for (Type 1).
+    EndToEnd(&'a str),
+    /// As PGP/Inline text, encrypted to a published key (Type 8).
+    PgpInline(&'a str),
+    /// Behind the message password, with the entry that opens it (Type 2).
+    Password(Value),
+    /// Without end-to-end encryption (Type 4).
+    Clear,
+}
+
+/// The send request's packages, one for each way the copies go out, in that
+/// order, each listing its recipients with the body's and the attachments'
+/// keys wrapped for them. Password entries arrive built, so this asks the
+/// network for nothing.
+fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
+    provider: &P,
+    addr: &AddressKeys,
+    opts: &SendOptions,
+    body: &EncryptedBody,
+    attachments: &[AttachmentKey],
+    deliveries: Vec<(&str, Delivery<'_>)>,
+) -> Result<Vec<Value>> {
+    let mime_type = opts.body_mime_type();
+    let mut internal_addrs = Map::new();
+    let mut pgp_addrs = Map::new();
+    let mut eo_addrs = Map::new();
+    let mut external_addrs = Map::new();
+    // PGP/Inline carries plain text only, so an HTML body reaches those
+    // recipients as text, under a session key of its own.
+    let mut plain_text_body: Option<EncryptedBody> = None;
+
+    // Build a per-recipient encrypted entry (Type 1 or Type 8) wrapping
+    // `body_key` and the attachments' session keys to `pubkey`.
+    let entry_for = |pubkey: &str, pkg_type: i64, body_key: &SessionKeyMaterial| -> Result<Value> {
+        let bkp = crypto::wrap_session_key(provider, pubkey, body_key)?;
+        let mut entry = json!({
+            "Type": pkg_type,
+            "BodyKeyPacket": STANDARD.encode(&bkp),
+            "Signature": 0,
+        });
+        if !attachments.is_empty() {
+            let mut akp = Map::new();
+            for attachment in attachments {
+                akp.insert(
+                    attachment.id.clone(),
+                    json!(STANDARD.encode(crypto::wrap_session_key(
+                        provider,
+                        pubkey,
+                        &attachment.session_key
+                    )?)),
+                );
+            }
+            entry["AttachmentKeyPackets"] = Value::Object(akp);
+        }
+        Ok(entry)
+    };
+
+    for (email, delivery) in deliveries {
+        match delivery {
+            Delivery::EndToEnd(key) => {
+                internal_addrs.insert(
+                    email.to_owned(),
+                    entry_for(key, package_type::PM, &body.session_key)?,
+                );
+            }
+            Delivery::PgpInline(key) => {
+                if opts.html && plain_text_body.is_none() {
+                    let text = crate::html::to_text(&opts.body);
+                    plain_text_body = Some(EncryptedBody::encrypt(provider, addr, &text)?);
+                }
+                let text_body = plain_text_body.as_ref().unwrap_or(body);
+                pgp_addrs.insert(
+                    email.to_owned(),
+                    entry_for(key, package_type::PGP_INLINE, &text_body.session_key)?,
+                );
+            }
+            Delivery::Password(entry) => {
+                eo_addrs.insert(email.to_owned(), entry);
+            }
+            Delivery::Clear => {
+                external_addrs.insert(
+                    email.to_owned(),
+                    json!({ "Type": package_type::CLEAR, "Signature": 0 }),
+                );
+            }
+        }
+    }
+
+    let mut packages: Vec<Value> = Vec::new();
+    if !internal_addrs.is_empty() {
+        let body_kp = crypto::wrap_session_key_to_self(provider, addr, &body.session_key)?;
+        packages.push(json!({
+            "Addresses": Value::Object(internal_addrs),
+            "MIMEType": mime_type,
+            "Type": package_type::PM,
+            "Body": STANDARD.encode(&body.data_packet),
+            "BodyKeyPacket": STANDARD.encode(&body_kp),
+        }));
+    }
+    if !pgp_addrs.is_empty() {
+        // PGP-inline is plain text: the text version of an HTML body, or
+        // the plain body itself.
+        let text_body = plain_text_body.as_ref().unwrap_or(body);
+        let body_kp = crypto::wrap_session_key_to_self(provider, addr, &text_body.session_key)?;
+        packages.push(json!({
+            "Addresses": Value::Object(pgp_addrs),
+            "MIMEType": "text/plain",
+            "Type": package_type::PGP_INLINE,
+            "Body": STANDARD.encode(&text_body.data_packet),
+            "BodyKeyPacket": STANDARD.encode(&body_kp),
+        }));
+    }
+    if !eo_addrs.is_empty() {
+        packages.push(json!({
+            "Addresses": Value::Object(eo_addrs),
+            "MIMEType": mime_type,
+            "Type": package_type::EO,
+            "Body": STANDARD.encode(&body.data_packet),
+        }));
+    }
+    if !external_addrs.is_empty() {
+        let mut pkg = json!({
+            "Addresses": Value::Object(external_addrs),
+            "MIMEType": mime_type,
+            "Type": package_type::CLEAR,
+            "Body": STANDARD.encode(&body.data_packet),
+            "BodyKey": {
+                "Key": STANDARD.encode(&body.session_key.key),
+                "Algorithm": crypto::algo_name(body.session_key.algo),
+            },
+        });
+        if !attachments.is_empty() {
+            let mut ak = Map::new();
+            for attachment in attachments {
+                let key = &attachment.session_key;
+                ak.insert(
+                    attachment.id.clone(),
+                    json!({ "Key": STANDARD.encode(&key.key), "Algorithm": crypto::algo_name(key.algo) }),
+                );
+            }
+            pkg["AttachmentKeys"] = Value::Object(ak);
+        }
+        packages.push(pkg);
+    }
+    Ok(packages)
 }
 
 /// One password-protected (encrypted-outside) recipient's entry: an SRP
@@ -693,7 +864,6 @@ impl Client {
         eo: Option<&(String, String)>,
     ) -> Result<()> {
         let message_id = draft.meta.id.as_str();
-        let mime_type = opts.body_mime_type();
         // 3. attachments: those the draft already carries (a forward's copies
         // of the original's) are keyed for recipients like new uploads.
         let mut attachment_keys: Vec<AttachmentKey> = Vec::new();
@@ -716,169 +886,26 @@ impl Client {
             tracing::debug!(target: "ruston_core::send", count = attachment_keys.len(), "send step 3: attachments uploaded");
         }
 
-        // 4. encrypt the transport body, then build each recipient's entry
-        // and the packages they go in.
+        // 4. encrypt the transport body, then decide how each recipient's
+        // copy goes out and build the packages they go in.
         let transport_body = EncryptedBody::encrypt(provider, addr, &opts.body)?;
-        let body_algorithm = crypto::algo_name(transport_body.session_key.algo);
-
-        // Each recipient's entry, by how their copy is protected.
         tracing::debug!(target: "ruston_core::send", recipients = recipients.len(), "send step 4: building packages");
-        let mut internal_addrs = Map::new();
-        let mut pgp_addrs = Map::new();
-        let mut eo_addrs = Map::new();
-        let mut external_addrs = Map::new();
-        let mut modulus_cache: Option<(String, String)> = None;
-        // PGP/Inline carries plain text only, so an HTML body reaches those
-        // recipients as text, under a session key of its own.
-        let mut plain_text_body: Option<EncryptedBody> = None;
-
-        // Build a per-recipient encrypted entry (Type 1 or Type 8) wrapping
-        // `body_key` and the attachments' session keys to `pubkey`.
-        let entry_for =
-            |pubkey: &str, pkg_type: i64, body_key: &SessionKeyMaterial| -> Result<Value> {
-                let bkp = crypto::wrap_session_key(provider, pubkey, body_key)?;
-                let mut entry = json!({
-                    "Type": pkg_type,
-                    "BodyKeyPacket": STANDARD.encode(&bkp),
-                    "Signature": 0,
-                });
-                if !attachment_keys.is_empty() {
-                    let mut akp = Map::new();
-                    for attachment in &attachment_keys {
-                        akp.insert(
-                            attachment.id.clone(),
-                            json!(STANDARD.encode(crypto::wrap_session_key(
-                                provider,
-                                pubkey,
-                                &attachment.session_key
-                            )?)),
-                        );
-                    }
-                    entry["AttachmentKeyPackets"] = Value::Object(akp);
-                }
-                Ok(entry)
-            };
-
-        for (email, rk) in recipients {
-            // Internal = Proton-verified keys present → Type 1 (E2E).
-            // External with a published PGP/WKD key → Type 8 (PGP-inline).
-            // Otherwise → Type 4 (cleartext, with a warning). A key whose
-            // address turned email encryption off counts as no key.
-            if let Some(key) = api::keys::pick_encryption_key(&rk.keys) {
-                tracing::debug!(target: "ruston_core::send", recipient = %email, "internal recipient — E2E package (Type 1)");
-                internal_addrs.insert(
-                    email.clone(),
-                    entry_for(
-                        &key.public_key,
-                        package_type::PM,
-                        &transport_body.session_key,
-                    )?,
-                );
-            } else if let Some(key) = api::keys::pick_encryption_key(&rk.unverified) {
-                tracing::debug!(target: "ruston_core::send", recipient = %email, "external recipient with PGP key — PGP-inline (Type 8)");
-                if opts.html && plain_text_body.is_none() {
-                    let text = crate::html::to_text(&opts.body);
-                    plain_text_body = Some(EncryptedBody::encrypt(provider, addr, &text)?);
-                }
-                let text_body = plain_text_body.as_ref().unwrap_or(&transport_body);
-                pgp_addrs.insert(
-                    email.clone(),
-                    entry_for(
-                        &key.public_key,
-                        package_type::PGP_INLINE,
-                        &text_body.session_key,
-                    )?,
-                );
-            } else if let Some((password, hint)) = eo {
-                // Encrypted-outside (password-protected) recipient — Type 2.
-                let modulus = match &modulus_cache {
-                    Some(m) => m.clone(),
-                    None => {
-                        let m = api::keys::get_modulus(self.http()).await?;
-                        modulus_cache = Some(m.clone());
-                        m
-                    }
-                };
-                // Up to seconds of key derivation per recipient: keep it off
-                // the async workers.
-                let password = Zeroizing::new(password.clone());
-                let hint = hint.clone();
-                let body_key = transport_body.session_key.clone();
-                let attachments = attachment_keys.clone();
-                let entry = tokio::task::spawn_blocking(move || {
-                    password_entry(&password, &hint, &modulus, &body_key, &attachments)
-                })
-                .await
-                .map_err(|error| Error::Other(format!("password protection failed: {error}")))??;
-                tracing::debug!(target: "ruston_core::send", recipient = %email, "external recipient — encrypted-outside (Type 2)");
-                eo_addrs.insert(email.clone(), entry);
-            } else {
-                tracing::warn!(target: "ruston_core::send", recipient = %email, "external recipient with no key — sending CLEARTEXT (Type 4)");
-                external_addrs.insert(
-                    email.clone(),
-                    json!({ "Type": package_type::CLEAR, "Signature": 0 }),
-                );
-            }
-        }
-
-        // The packages, one for each way a copy is protected.
-        let mut packages: Vec<Value> = Vec::new();
-        if !internal_addrs.is_empty() {
-            let body_kp =
-                crypto::wrap_session_key_to_self(provider, addr, &transport_body.session_key)?;
-            packages.push(json!({
-                "Addresses": Value::Object(internal_addrs),
-                "MIMEType": mime_type,
-                "Type": package_type::PM,
-                "Body": STANDARD.encode(&transport_body.data_packet),
-                "BodyKeyPacket": STANDARD.encode(&body_kp),
-            }));
-        }
-        if !pgp_addrs.is_empty() {
-            // PGP-inline is plain text: the text version of an HTML body, or
-            // the plain body itself.
-            let text_body = plain_text_body.as_ref().unwrap_or(&transport_body);
-            let body_kp = crypto::wrap_session_key_to_self(provider, addr, &text_body.session_key)?;
-            packages.push(json!({
-                "Addresses": Value::Object(pgp_addrs),
-                "MIMEType": "text/plain",
-                "Type": package_type::PGP_INLINE,
-                "Body": STANDARD.encode(&text_body.data_packet),
-                "BodyKeyPacket": STANDARD.encode(&body_kp),
-            }));
-        }
-        if !eo_addrs.is_empty() {
-            packages.push(json!({
-                "Addresses": Value::Object(eo_addrs),
-                "MIMEType": mime_type,
-                "Type": package_type::EO,
-                "Body": STANDARD.encode(&transport_body.data_packet),
-            }));
-        }
-        if !external_addrs.is_empty() {
-            let mut pkg = json!({
-                "Addresses": Value::Object(external_addrs),
-                "MIMEType": mime_type,
-                "Type": package_type::CLEAR,
-                "Body": STANDARD.encode(&transport_body.data_packet),
-                "BodyKey": {
-                    "Key": STANDARD.encode(&transport_body.session_key.key),
-                    "Algorithm": body_algorithm,
-                },
-            });
-            if !attachment_keys.is_empty() {
-                let mut ak = Map::new();
-                for attachment in &attachment_keys {
-                    let key = &attachment.session_key;
-                    ak.insert(
-                        attachment.id.clone(),
-                        json!({ "Key": STANDARD.encode(&key.key), "Algorithm": crypto::algo_name(key.algo) }),
-                    );
-                }
-                pkg["AttachmentKeys"] = Value::Object(ak);
-            }
-            packages.push(pkg);
-        }
+        let deliveries = self
+            .deliveries(
+                recipients,
+                &transport_body.session_key,
+                &attachment_keys,
+                eo,
+            )
+            .await?;
+        let packages = build_packages(
+            provider,
+            addr,
+            opts,
+            &transport_body,
+            &attachment_keys,
+            deliveries,
+        )?;
 
         // 5. send.
         let mut send_request = json!({
@@ -894,6 +921,63 @@ impl Client {
         }
         tracing::debug!(target: "ruston_core::send", packages = packages.len(), "send step 5: submitting (POST /mail/v4/messages/{{id}})");
         submit_send(self.http(), message_id, send_request).await
+    }
+
+    /// How each recipient's copy goes out, by the key [`RecipientKey::pick`]
+    /// finds. Without a key, a copy goes behind the message password when
+    /// there is one, else unencrypted.
+    async fn deliveries<'a>(
+        &self,
+        recipients: &'a [(String, api::keys::RecipientKeys)],
+        body_key: &SessionKeyMaterial,
+        attachment_keys: &[AttachmentKey],
+        eo: Option<&(String, String)>,
+    ) -> Result<Vec<(&'a str, Delivery<'a>)>> {
+        let mut modulus_cache: Option<(String, String)> = None;
+        let mut deliveries = Vec::with_capacity(recipients.len());
+        for (email, keys) in recipients {
+            let delivery = match (RecipientKey::pick(keys), eo) {
+                (RecipientKey::Verified(key), _) => {
+                    tracing::debug!(target: "ruston_core::send", recipient = %email, "internal recipient — E2E package (Type 1)");
+                    Delivery::EndToEnd(key)
+                }
+                (RecipientKey::Published(key), _) => {
+                    tracing::debug!(target: "ruston_core::send", recipient = %email, "external recipient with PGP key — PGP-inline (Type 8)");
+                    Delivery::PgpInline(key)
+                }
+                (RecipientKey::Missing, Some((password, hint))) => {
+                    let modulus = match &modulus_cache {
+                        Some(m) => m.clone(),
+                        None => {
+                            let m = api::keys::get_modulus(self.http()).await?;
+                            modulus_cache = Some(m.clone());
+                            m
+                        }
+                    };
+                    // Up to seconds of key derivation per recipient: keep it
+                    // off the async workers.
+                    let password = Zeroizing::new(password.clone());
+                    let hint = hint.clone();
+                    let body_key = body_key.clone();
+                    let attachments = attachment_keys.to_vec();
+                    let entry = tokio::task::spawn_blocking(move || {
+                        password_entry(&password, &hint, &modulus, &body_key, &attachments)
+                    })
+                    .await
+                    .map_err(|error| {
+                        Error::Other(format!("password protection failed: {error}"))
+                    })??;
+                    tracing::debug!(target: "ruston_core::send", recipient = %email, "external recipient — encrypted-outside (Type 2)");
+                    Delivery::Password(entry)
+                }
+                (RecipientKey::Missing, None) => {
+                    tracing::warn!(target: "ruston_core::send", recipient = %email, "external recipient with no key — sending CLEARTEXT (Type 4)");
+                    Delivery::Clear
+                }
+            };
+            deliveries.push((email.as_str(), delivery));
+        }
+        Ok(deliveries)
     }
 }
 

@@ -613,6 +613,13 @@ token, and body and attachment keys wrapped with the message password. Each of
 those takes a costly key derivation, so a recipient's entry is built on the
 blocking pool, one recipient at a time.
 
+How each copy goes out is decided once, from the recipient's keys, by the same
+`RecipientKey::pick` that `recipient_protection` reports: end-to-end to a key
+Proton vouches for, PGP/Inline to a published one, and otherwise behind the
+message password or unencrypted. `build_packages` then turns those decisions,
+password entries already built, into the send request's packages without
+asking the network for anything, so tests can check every package directly.
+
 If the final send request has no reliable success or explicit rejection, core
 [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) returns an unconfirmed
 outcome and does not try to delete the draft. The desktop leaves the

@@ -792,6 +792,66 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
     );
 }
 
+#[test]
+fn packages_come_in_a_fixed_order_with_password_entries_as_built() {
+    let (me, _) = test_address("me@proton.me", "address-1");
+    let (_, friend_public) = test_address("friend@proton.me", "friend-address");
+    let (_, outsider_public) = test_address("pgp@example.org", "outsider-address");
+    let provider = crypto::provider();
+    let body = EncryptedBody::encrypt(&provider, &me, "Hello").unwrap();
+    let password_entry = json!({"Type": package_type::EO, "Token": "token"});
+    let opts = SendOptions {
+        body: "Hello".into(),
+        ..SendOptions::default()
+    };
+
+    let packages = build_packages(
+        &provider,
+        &me,
+        &opts,
+        &body,
+        &[],
+        vec![
+            ("plain@example.com", Delivery::Clear),
+            (
+                "ana@example.com",
+                Delivery::Password(password_entry.clone()),
+            ),
+            ("pgp@example.org", Delivery::PgpInline(&outsider_public)),
+            ("friend@proton.me", Delivery::EndToEnd(&friend_public)),
+        ],
+    )
+    .unwrap();
+
+    let types: Vec<_> = packages
+        .iter()
+        .map(|package| package["Type"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            package_type::PM,
+            package_type::PGP_INLINE,
+            package_type::EO,
+            package_type::CLEAR
+        ]
+    );
+    assert_eq!(packages[2]["Addresses"]["ana@example.com"], password_entry);
+    assert!(packages[2].get("BodyKeyPacket").is_none());
+    // A plain body reaches PGP/Inline recipients as written.
+    assert_eq!(packages[1]["Body"], packages[0]["Body"]);
+    // Without attachments, nothing names any.
+    assert!(
+        packages[0]["Addresses"]["friend@proton.me"]
+            .get("AttachmentKeyPackets")
+            .is_none()
+    );
+    assert!(packages[3].get("AttachmentKeys").is_none());
+
+    let none = build_packages(&provider, &me, &opts, &body, &[], Vec::new()).unwrap();
+    assert!(none.is_empty());
+}
+
 #[tokio::test]
 async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
     use wiremock::matchers::query_param;
