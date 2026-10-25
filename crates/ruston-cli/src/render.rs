@@ -424,7 +424,8 @@ pub fn downloaded(json: bool, files: &[String]) {
     }
 }
 
-/// Report the outcome of a bulk organize action.
+/// Report what a command did to the items `ids` names; `action` is the
+/// command's own name, as typed (`move`, `undelete`, `enable`...).
 pub fn action_result(json: bool, action: &str, ids: &[String]) {
     if json {
         json_out(&json!({ "status": "ok", "action": action, "count": ids.len(), "ids": ids }));
@@ -446,7 +447,7 @@ pub fn setting_changed(json: bool, setting: &str, label: &str, on: bool) {
 /// Report a folder whose messages were all deleted for good.
 pub fn folder_emptied(json: bool, folder: EmptyFolder) {
     if json {
-        json_out(&json!({ "status": "ok", "action": "emptied", "folder": folder.as_str() }));
+        json_out(&json!({ "status": "ok", "action": "empty", "folder": folder.as_str() }));
         return;
     }
     terminal::println!("Emptied {}.", folder.name());

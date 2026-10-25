@@ -861,7 +861,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::Unsubscribe { reference } => {
-                render::action_result(ctx.json, "unsubscribed", &[reference]);
+                render::action_result(ctx.json, "unsubscribe", &[reference]);
                 Ok(())
             }
             MessagesCmd::Empty { folder, .. } => {
@@ -882,11 +882,11 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::Undelete { ids } => {
-                render::action_result(ctx.json, "undeleted", &ids);
+                render::action_result(ctx.json, "undelete", &ids);
                 Ok(())
             }
             MessagesCmd::Receipt { reference } => {
-                render::action_result(ctx.json, "receipt sent", &[reference]);
+                render::action_result(ctx.json, "receipt", &[reference]);
                 Ok(())
             }
             MessagesCmd::Move { references, dest } => {
@@ -1019,11 +1019,11 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             } => {
                 // Refuse what the live command refuses.
                 crate::commands::conversations::snooze_time(until, relative, 0)?;
-                render::action_result(ctx.json, "snoozed", &ids);
+                render::action_result(ctx.json, "snooze", &ids);
                 Ok(())
             }
             ConversationsCmd::Unsnooze { ids } => {
-                render::action_result(ctx.json, "unsnoozed", &ids);
+                render::action_result(ctx.json, "unsnooze", &ids);
                 Ok(())
             }
         },
@@ -1111,7 +1111,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             DraftsCmd::Delete { ids, .. } => {
-                render::action_result(ctx.json, "draft deleted", &ids);
+                render::action_result(ctx.json, "delete", &ids);
                 Ok(())
             }
         },
@@ -1139,15 +1139,15 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             FiltersCmd::Delete { id } => {
-                render::action_result(ctx.json, "filter deleted", &[id]);
+                render::action_result(ctx.json, "delete", &[id]);
                 Ok(())
             }
             FiltersCmd::Enable { id } => {
-                render::action_result(ctx.json, "filter enabled", &[id]);
+                render::action_result(ctx.json, "enable", &[id]);
                 Ok(())
             }
             FiltersCmd::Disable { id } => {
-                render::action_result(ctx.json, "filter disabled", &[id]);
+                render::action_result(ctx.json, "disable", &[id]);
                 Ok(())
             }
         },
@@ -1262,7 +1262,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             LabelsCmd::Update { id, .. } => {
-                render::action_result(ctx.json, "updated", &[id]);
+                render::action_result(ctx.json, "update", &[id]);
                 Ok(())
             }
         },

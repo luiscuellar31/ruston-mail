@@ -63,11 +63,11 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
         } => {
             let ts = snooze_time(until, relative, now_unix())?;
             client.snooze_conversations(&ids, ts).await?;
-            render::action_result(ctx.json, "snoozed", &ids);
+            render::action_result(ctx.json, "snooze", &ids);
         }
         ConversationsCmd::Unsnooze { ids } => {
             client.unsnooze_conversations(&ids).await?;
-            render::action_result(ctx.json, "unsnoozed", &ids);
+            render::action_result(ctx.json, "unsnooze", &ids);
         }
     }
     Ok(())

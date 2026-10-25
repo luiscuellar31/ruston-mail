@@ -686,7 +686,10 @@ instead of an unknown outcome.
   without asking.
 - Command handlers call `ruston_core::Client`. Put terminal prompts and output
   formatting in the CLI; put shared mail behavior in the core. Output helpers
-  are in [`render.rs`](../crates/ruston-cli/src/render.rs). Its
+  are in [`render.rs`](../crates/ruston-cli/src/render.rs); `action_result`
+  reports what a command did to a list of IDs, naming the action after the
+  command, and settings, emptied folders and written bodies have reports of
+  their own. Its
   [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) converts HTML
   messages to readable Markdown-style text for the default read format, and
   for every message `conversations read` shows. It

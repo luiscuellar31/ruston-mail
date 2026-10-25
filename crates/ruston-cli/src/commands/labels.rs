@@ -41,7 +41,7 @@ pub async fn run(ctx: &Ctx, cmd: LabelsCmd) -> Result<()> {
             client
                 .update_label(&id, name.as_deref(), color.as_deref(), parent.as_deref())
                 .await?;
-            render::action_result(ctx.json, "updated", std::slice::from_ref(&id));
+            render::action_result(ctx.json, "update", std::slice::from_ref(&id));
         }
     }
     Ok(())

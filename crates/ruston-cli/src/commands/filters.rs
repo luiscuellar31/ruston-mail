@@ -29,15 +29,15 @@ pub async fn run(ctx: &Ctx, cmd: FiltersCmd) -> Result<()> {
         }
         FiltersCmd::Delete { id } => {
             client.delete_filter(&id).await?;
-            render::action_result(ctx.json, "filter deleted", &[id]);
+            render::action_result(ctx.json, "delete", &[id]);
         }
         FiltersCmd::Enable { id } => {
             client.enable_filter(&id).await?;
-            render::action_result(ctx.json, "filter enabled", &[id]);
+            render::action_result(ctx.json, "enable", &[id]);
         }
         FiltersCmd::Disable { id } => {
             client.disable_filter(&id).await?;
-            render::action_result(ctx.json, "filter disabled", &[id]);
+            render::action_result(ctx.json, "disable", &[id]);
         }
     }
     Ok(())

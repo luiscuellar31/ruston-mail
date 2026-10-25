@@ -80,7 +80,7 @@ fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
     );
     assert_eq!(
         json(&["messages", "empty", "spam", "--yes"]),
-        serde_json::json!({"status": "ok", "action": "emptied", "folder": "spam"})
+        serde_json::json!({"status": "ok", "action": "empty", "folder": "spam"})
     );
     let text = assert_safe(&run_ok(&["--demo", "settings", "sign", "off"]).stdout);
     assert_eq!(text, "Sign outgoing mail: off\n");
@@ -106,7 +106,7 @@ fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
 }
 
 #[test]
-fn the_demo_names_each_action_as_the_live_command_does() {
+fn each_action_is_named_after_its_command() {
     for (args, action) in [
         (&["messages", "mark", "read", "msg-demo-01"][..], "mark"),
         (
@@ -121,13 +121,20 @@ fn the_demo_names_each_action_as_the_live_command_does() {
             &["messages", "label", "rm", "Work", "msg-demo-01"],
             "unlabel",
         ),
-        (&["messages", "undelete", "msg-demo-01"], "undeleted"),
+        (&["messages", "undelete", "msg-demo-01"], "undelete"),
+        (&["messages", "unsubscribe", "msg-demo-01"], "unsubscribe"),
+        (&["messages", "receipt", "msg-demo-01"], "receipt"),
         (
             &["conversations", "move", "conv-demo-01", "--dest", "inbox"],
             "move",
         ),
         (&["conversations", "mark", "unread", "conv-demo-01"], "mark"),
-        (&["conversations", "unsnooze", "conv-demo-01"], "unsnoozed"),
+        (&["conversations", "unsnooze", "conv-demo-01"], "unsnooze"),
+        (&["drafts", "delete", "draft-demo-01", "--yes"], "delete"),
+        (&["filters", "enable", "filter-demo-01"], "enable"),
+        (&["filters", "disable", "filter-demo-01"], "disable"),
+        (&["filters", "delete", "filter-demo-01"], "delete"),
+        (&["labels", "delete", "label-demo-work"], "delete"),
     ] {
         let output = run_ok(&[&["--demo", "--json"][..], args].concat());
         let reported: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();

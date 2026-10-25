@@ -287,7 +287,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             let client = resume(&ctx.profile).await?;
             let id = client.resolve_ref(&reference).await?;
             client.unsubscribe(&id).await?;
-            render::action_result(ctx.json, "unsubscribed", std::slice::from_ref(&id));
+            render::action_result(ctx.json, "unsubscribe", std::slice::from_ref(&id));
             Ok(())
         }
         MessagesCmd::Empty { folder, yes } => empty(ctx, folder, yes).await,
@@ -312,14 +312,14 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         MessagesCmd::Undelete { ids } => {
             let client = resume(&ctx.profile).await?;
             client.undelete_messages(&ids).await?;
-            render::action_result(ctx.json, "undeleted", &ids);
+            render::action_result(ctx.json, "undelete", &ids);
             Ok(())
         }
         MessagesCmd::Receipt { reference } => {
             let client = resume(&ctx.profile).await?;
             let id = client.resolve_ref(&reference).await?;
             client.send_read_receipt(&id).await?;
-            render::action_result(ctx.json, "receipt sent", std::slice::from_ref(&id));
+            render::action_result(ctx.json, "receipt", std::slice::from_ref(&id));
             Ok(())
         }
     }

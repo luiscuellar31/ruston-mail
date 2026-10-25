@@ -34,7 +34,7 @@ pub async fn addresses(ctx: &Ctx, cmd: AddressesCmd) -> Result<()> {
             client
                 .update_address(&id, display_name.as_deref(), signature.as_deref())
                 .await?;
-            render::action_result(ctx.json, "address updated", std::slice::from_ref(&id));
+            render::action_result(ctx.json, "update", std::slice::from_ref(&id));
         }
     }
     Ok(())
