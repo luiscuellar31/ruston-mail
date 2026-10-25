@@ -29,6 +29,9 @@ const ENCODED_WORD_BYTES: usize = 36;
 const FILENAME_SECTION_BYTES: usize = 40;
 /// The longest address an export writes; a longer one is refused.
 const MAX_ADDRESS_LEN: usize = 512;
+/// The longest message ID an export writes, which keeps each of its lines
+/// within RFC 5322's 998 characters; a longer one is left out.
+const MAX_MESSAGE_ID_LEN: usize = 900;
 /// The longest MIME type an export trusts: RFC 6838 allows 127 characters on
 /// each side of the slash.
 const MAX_MIME_TYPE_LEN: usize = 255;
@@ -144,7 +147,7 @@ impl Client {
         let mut file = BufWriter::new(create_export_file(&temp)?);
 
         let result = async {
-            let mut eml = EmlWriter::new(&mut file, &full)?;
+            let mut eml = EmlWriter::new(&mut file, &full, message.header.as_deref())?;
             for attachment in &message.attachments {
                 let (_, bytes) = self
                     .download_attachment_from_message(&message, attachment)
@@ -361,16 +364,24 @@ struct EmlWriter<W: Write> {
 
 impl<W: Write> EmlWriter<W> {
     /// Starts the export of `message`: writes its headers and its body, so
-    /// only its attachments and the end are left to write.
-    fn new(mut out: W, message: &FullMessage) -> Result<Self> {
+    /// only its attachments and the end are left to write. `original_headers`
+    /// are the message's own headers as Proton keeps them, which name the
+    /// messages it answers.
+    fn new(mut out: W, message: &FullMessage, original_headers: Option<&str>) -> Result<Self> {
         write_address_header(&mut out, "From", std::slice::from_ref(&message.meta.sender))?;
         write_address_header(&mut out, "To", &message.meta.to_list)?;
         write_address_header(&mut out, "Cc", &message.meta.cc_list)?;
         write_address_header(&mut out, "Bcc", &message.meta.bcc_list)?;
+        write_reply_to(&mut out, message)?;
         write_encoded_header(&mut out, "Subject", &message.meta.subject)?;
         let date = chrono::DateTime::from_timestamp(message.meta.time, 0)
             .unwrap_or(chrono::DateTime::UNIX_EPOCH);
         write!(out, "Date: {}\r\n", date.to_rfc2822())?;
+        write_thread_headers(
+            &mut out,
+            message.meta.external_id.as_deref(),
+            original_headers,
+        )?;
         out.write_all(b"MIME-Version: 1.0\r\n")?;
 
         let multipart = !message.attachments.is_empty();
@@ -454,6 +465,81 @@ fn write_address_header<W: Write>(out: &mut W, field: &str, addresses: &[Recipie
     }
     out.write_all(b"\r\n")?;
     Ok(())
+}
+
+/// Reply-To, when it names someone besides the sender. An address that
+/// cannot be written safely is left out, not the message.
+fn write_reply_to<W: Write>(out: &mut W, message: &FullMessage) -> Result<()> {
+    let reply_tos: Vec<Recipient> = message
+        .reply_tos
+        .iter()
+        .filter(|recipient| checked_address(&recipient.address).is_ok())
+        .cloned()
+        .collect();
+    let sender = &message.meta.sender.address;
+    if reply_tos
+        .iter()
+        .all(|recipient| recipient.address.eq_ignore_ascii_case(sender))
+    {
+        return Ok(());
+    }
+    write_address_header(out, "Reply-To", &reply_tos)
+}
+
+/// Message-ID, In-Reply-To and References, so a mail program that imports
+/// the file can place it in its conversation. `external_id` is Proton's copy
+/// of the Message-ID; `original_headers` name the messages it answers.
+fn write_thread_headers<W: Write>(
+    out: &mut W,
+    external_id: Option<&str>,
+    original_headers: Option<&str>,
+) -> Result<()> {
+    let original = original_headers
+        .and_then(|headers| mail_parser::MessageParser::default().parse_headers(headers));
+    let message_id =
+        external_id.or_else(|| original.as_ref().and_then(|original| original.message_id()));
+    write_message_ids(out, "Message-ID", message_id)?;
+    if let Some(original) = &original {
+        for (field, ids) in [
+            ("In-Reply-To", original.in_reply_to()),
+            ("References", original.references()),
+        ] {
+            let ids = ids.as_text_list().unwrap_or_default();
+            write_message_ids(out, field, ids.iter().map(|id| id.as_ref()))?;
+        }
+    }
+    Ok(())
+}
+
+/// A header of message IDs, one to a line; an ID that could break the header
+/// is left out, and with no ID left, so is the header.
+fn write_message_ids<'a, W: Write>(
+    out: &mut W,
+    field: &str,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut ids = ids.into_iter().filter_map(checked_message_id);
+    let Some(first) = ids.next() else {
+        return Ok(());
+    };
+    write!(out, "{field}: <{first}>")?;
+    for id in ids {
+        write!(out, "\r\n <{id}>")?;
+    }
+    out.write_all(b"\r\n")?;
+    Ok(())
+}
+
+/// `id` without angle brackets, when it can go between them: printable ASCII
+/// with no bracket, short enough for its line.
+fn checked_message_id(id: &str) -> Option<&str> {
+    let id = id.trim();
+    let id = id
+        .strip_prefix('<')
+        .and_then(|id| id.strip_suffix('>'))
+        .unwrap_or(id);
+    let printable = |c: char| c.is_ascii_graphic() && c != '<' && c != '>';
+    (!id.is_empty() && id.len() <= MAX_MESSAGE_ID_LEN && id.chars().all(printable)).then_some(id)
 }
 
 fn write_encoded_header<W: Write>(out: &mut W, field: &str, value: &str) -> Result<()> {

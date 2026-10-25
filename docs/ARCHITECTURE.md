@@ -718,7 +718,10 @@ instead of an unknown outcome.
 - [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs) owns live CLI EML
   reconstruction. It decrypts one message and then downloads each attachment
   using the same metadata, writing MIME parts sequentially to a hidden
-  temporary file. A complete file is hard-linked to its final name, which
+  temporary file. Message-ID comes from Proton's `ExternalID`, and
+  In-Reply-To and References from the message's raw `Header`; an ID that is
+  not printable ASCII, or that holds a bracket, is left out rather than
+  written. A complete file is hard-linked to its final name, which
   fails rather than replace an existing export; file systems without hard
   links rename it once the name is checked free. A message whose file already
   exists counts as exported, so a rerun resumes. `export_folder_report` lists

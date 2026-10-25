@@ -34,7 +34,10 @@ fn subject_cannot_inject_a_second_header() {
     let mut full = message();
     full.meta.subject = "Hello\r\nBcc: attacker@example.test".into();
     full.meta.sender.name = "Alice\r\nX-Injected: yes".into();
-    let eml = EmlWriter::new(Vec::new(), &full).unwrap().finish().unwrap();
+    let eml = EmlWriter::new(Vec::new(), &full, None)
+        .unwrap()
+        .finish()
+        .unwrap();
     assert!(!eml.windows(6).any(|window| window == b"\r\nBcc:"));
     assert!(!eml.windows(13).any(|window| window == b"\r\nX-Injected:"));
     let parsed = MessageParser::default().parse(&eml).unwrap();
@@ -43,6 +46,62 @@ fn subject_cannot_inject_a_second_header() {
         parsed.from().unwrap().first().unwrap().name.as_deref(),
         Some("Alice  X-Injected: yes")
     );
+}
+
+#[test]
+fn an_export_keeps_what_places_it_in_its_conversation() {
+    let mut full = message();
+    full.meta.external_id = Some("<answer@mail.example.test>".into());
+    full.reply_tos = vec![Recipient::new("replies@example.test")];
+    let original = "In-Reply-To: <parent@mail.example.test>\r\n\
+                    References: <root@mail.example.test> <parent@mail.example.test>\r\n";
+    let eml = EmlWriter::new(Vec::new(), &full, Some(original))
+        .unwrap()
+        .finish()
+        .unwrap();
+
+    let parsed = MessageParser::default().parse(&eml).unwrap();
+    assert_eq!(parsed.message_id(), Some("answer@mail.example.test"));
+    assert_eq!(
+        parsed.in_reply_to().as_text_list().unwrap(),
+        ["parent@mail.example.test"]
+    );
+    assert_eq!(
+        parsed.references().as_text_list().unwrap(),
+        ["root@mail.example.test", "parent@mail.example.test"]
+    );
+    assert_eq!(
+        parsed
+            .reply_to()
+            .unwrap()
+            .first()
+            .unwrap()
+            .address
+            .as_deref(),
+        Some("replies@example.test")
+    );
+}
+
+#[test]
+fn an_export_leaves_out_ids_it_cannot_write_safely() {
+    let mut full = message();
+    full.meta.external_id = Some("evil@example.test>\r\nBcc: attacker@example.test".into());
+    // Proton names the sender when the message set no Reply-To.
+    full.reply_tos = vec![full.meta.sender.clone()];
+    let original = "References: <root@example.test> <réponse@example.test>\r\n";
+    let eml = EmlWriter::new(Vec::new(), &full, Some(original))
+        .unwrap()
+        .finish()
+        .unwrap();
+
+    assert!(!eml.windows(6).any(|window| window == b"\r\nBcc:"));
+    let parsed = MessageParser::default().parse(&eml).unwrap();
+    assert_eq!(parsed.message_id(), None);
+    assert_eq!(
+        parsed.references().as_text_list().unwrap(),
+        ["root@example.test"]
+    );
+    assert!(parsed.reply_to().is_none(), "the sender is not repeated");
 }
 
 #[test]
@@ -55,7 +114,7 @@ fn eml_round_trips_unicode_headers_body_and_attachment() {
     };
     full.attachments.push(attachment.clone());
     let bytes: Vec<u8> = (0..200).map(|value| value as u8).collect();
-    let mut writer = EmlWriter::new(Vec::new(), &full).unwrap();
+    let mut writer = EmlWriter::new(Vec::new(), &full, None).unwrap();
     writer.attachment(&attachment, &bytes).unwrap();
     let eml = writer.finish().unwrap();
 
@@ -96,7 +155,7 @@ fn base64_lines_hold_76_characters_and_text_ends_lines_with_crlf() {
 
 #[test]
 fn eml_without_attachments_has_a_single_text_part() {
-    let eml = EmlWriter::new(Vec::new(), &message())
+    let eml = EmlWriter::new(Vec::new(), &message(), None)
         .unwrap()
         .finish()
         .unwrap();
@@ -280,7 +339,7 @@ fn placing_an_export_never_replaces_what_is_there() {
 fn invalid_address_and_mime_type_cannot_inject_headers() {
     let mut full = message();
     full.meta.sender.address = "alice@example.test\r\nBcc: attacker@example.test".into();
-    assert!(EmlWriter::new(Vec::new(), &full).is_err());
+    assert!(EmlWriter::new(Vec::new(), &full, None).is_err());
 
     let mut full = message();
     let attachment = Attachment {
@@ -289,7 +348,7 @@ fn invalid_address_and_mime_type_cannot_inject_headers() {
         ..Default::default()
     };
     full.attachments.push(attachment.clone());
-    let mut writer = EmlWriter::new(Vec::new(), &full).unwrap();
+    let mut writer = EmlWriter::new(Vec::new(), &full, None).unwrap();
     writer.attachment(&attachment, b"file").unwrap();
     let eml = writer.finish().unwrap();
     assert!(!eml.windows(13).any(|window| window == b"\r\nX-Injected:"));
