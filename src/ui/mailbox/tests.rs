@@ -1660,33 +1660,159 @@ fn times_are_formatted_relative_to_now() {
 }
 
 #[test]
-fn an_undo_notice_expires_and_a_new_one_gets_its_own_time() {
-    let offer = UndoMove {
+fn a_bottom_notice_expires_and_a_new_one_gets_its_own_time() {
+    let offer = crate::app::UndoMove {
         row_id: "first".into(),
         kind: crate::mail::SummaryKind::Conversation,
         from: Folder::INBOX,
         to: Folder::System(MailFolder::Trash),
         row: None,
     };
+    let undo = BottomNotice::Undo(Box::new(offer.clone()));
     let mut state = UiState::default();
+    let remaining = |state: &mut UiState, notice: &BottomNotice, now| {
+        notice_remaining(state, notice, now, Pointer::Away)
+    };
 
     assert_eq!(
-        undo_notice_remaining(&mut state, &offer, 10.0),
+        remaining(&mut state, &undo, 10.0),
         Some(std::time::Duration::from_secs(6))
     );
     assert_eq!(
-        undo_notice_remaining(&mut state, &offer, 15.0),
+        remaining(&mut state, &undo, 15.0),
         Some(std::time::Duration::from_secs(1))
     );
-    assert_eq!(undo_notice_remaining(&mut state, &offer, 16.0), None);
+    assert_eq!(remaining(&mut state, &undo, 16.0), None);
 
-    let next = UndoMove {
+    let next = BottomNotice::Undo(Box::new(crate::app::UndoMove {
         row_id: "second".into(),
         ..offer
-    };
+    }));
     assert_eq!(
-        undo_notice_remaining(&mut state, &next, 16.0),
+        remaining(&mut state, &next, 16.0),
         Some(std::time::Duration::from_secs(6))
+    );
+    let sent = BottomNotice::Confirmation(Notice::Sent);
+    assert_eq!(
+        remaining(&mut state, &sent, 17.0),
+        Some(std::time::Duration::from_secs(6))
+    );
+}
+
+#[test]
+fn a_saved_file_is_confirmed_with_a_way_to_show_it() {
+    let path = std::path::PathBuf::from("/tmp/report.pdf");
+    let notice = BottomNotice::Confirmation(Notice::Saved(path.clone()));
+    let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| notice_content(ui, &notice, &mailbox, &mut messages),
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+
+    let (shapes, _) = frame(Vec::new());
+    text_rect(&shapes, "Saved report.pdf.");
+    let reveal = text_rect(&shapes, REVEAL_LABEL).center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: reveal,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    let (_, asked) = frame(vec![
+        egui::Event::PointerMoved(reveal),
+        press(true),
+        press(false),
+    ]);
+
+    assert!(matches!(
+        asked.as_slice(),
+        [Message::RevealAttachment(shown)] if *shown == path
+    ));
+}
+
+#[tokio::test]
+async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    app.update(Message::OpenCompose);
+    for (field, value) in [
+        (crate::app::ComposeField::To, "ana@example.org"),
+        (crate::app::ComposeField::Subject, "Plans"),
+        (crate::app::ComposeField::Body, "See you there"),
+    ] {
+        app.update(Message::ComposeChanged(field, value.into()));
+    }
+    for effect in app.update(Message::Send).into_iter() {
+        if let crate::app::Effect::Future(sending) = effect {
+            let sent = sending.await;
+            app.update(sent);
+        }
+    }
+    assert_eq!(app.notice(), Some(&Notice::Sent));
+
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let at = |time: f64, events: Vec<egui::Event>| egui::RawInput {
+        time: Some(time),
+        events,
+        ..Default::default()
+    };
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, at(1.0, Vec::new()));
+    }
+    let notice = visible_text_rect(&shapes, "Message sent.").expect("a confirmation");
+
+    // Past its own time, the pointer on it keeps it.
+    let rest = vec![egui::Event::PointerMoved(notice.center())];
+    let (asked, shapes) = mailbox_frame(&context, &app, &mut state, size, None, at(9.0, rest));
+    assert!(
+        !asked
+            .iter()
+            .any(|message| matches!(message, Message::DismissNotice(_)))
+    );
+    assert!(visible_text_rect(&shapes, "Message sent.").is_some());
+
+    let away = vec![egui::Event::PointerGone];
+    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, at(16.0, away));
+    assert!(
+        asked
+            .iter()
+            .any(|message| matches!(message, Message::DismissNotice(Notice::Sent)))
+    );
+}
+
+#[test]
+fn a_bottom_notice_stays_while_the_pointer_rests_on_it() {
+    let sent = BottomNotice::Confirmation(Notice::Sent);
+    let mut state = UiState::default();
+    notice_remaining(&mut state, &sent, 1.0, Pointer::Away);
+
+    // Past its own time, it is still there to be read.
+    assert_eq!(
+        notice_remaining(&mut state, &sent, 9.0, Pointer::OnNotice),
+        Some(std::time::Duration::from_secs(6))
+    );
+    // Once the pointer leaves, its time runs again from then.
+    assert_eq!(
+        notice_remaining(&mut state, &sent, 14.0, Pointer::Away),
+        Some(std::time::Duration::from_secs(1))
+    );
+    assert_eq!(
+        notice_remaining(&mut state, &sent, 15.0, Pointer::Away),
+        None
     );
 }
 

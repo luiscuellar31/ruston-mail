@@ -430,7 +430,7 @@ fn a_headers_menu_copies_the_senders_or_the_recipients_addresses() {
                     &reader.detail().messages[0],
                     reader.preview_at(0),
                     &reader,
-                    None,
+                    AttachmentSaves::default(),
                     Reading::default(),
                     &mut messages,
                 );
@@ -817,8 +817,7 @@ fn reader_frame(
             mailbox,
             places,
             actions_available: true,
-            saving_attachment: None,
-            saved_attachment: None,
+            saves: AttachmentSaves::default(),
             reading,
         };
         show(ui, &view, state, &mut messages);
@@ -1750,7 +1749,7 @@ fn an_expanded_message_card_only_uses_its_content_height() {
                     &reader.detail().messages[0],
                     reader.preview_at(0),
                     &reader,
-                    None,
+                    AttachmentSaves::default(),
                     Reading::default(),
                     &mut Vec::new(),
                 );
@@ -1890,7 +1889,7 @@ fn rendered_card(
                 &reader.detail().messages[0],
                 reader.preview_at(0),
                 reader,
-                None,
+                AttachmentSaves::default(),
                 Reading::default(),
                 &mut Vec::new(),
             );
@@ -2029,26 +2028,48 @@ fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
 }
 
 #[test]
-fn a_saved_attachment_renders_notice_and_reveal_button() {
-    let path = std::path::PathBuf::from("/tmp/report.pdf");
-    let context = egui::Context::default();
-    let mut messages = Vec::new();
-
-    let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
-    context
-        .run_ui(egui::RawInput::default(), |ui| {
-            ui.set_width(680.0);
-            let view = ReaderView {
-                mailbox: &mailbox,
-                places: &[],
-                actions_available: true,
-                saving_attachment: None,
-                saved_attachment: Some(Ok(&path)),
-                reading: Reading::default(),
-            };
-            show(ui, &view, &mut UiState::default(), &mut messages);
+fn a_failed_save_is_told_beside_its_own_file() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.attachments = ["report.pdf", "photo.jpg"]
+        .into_iter()
+        .map(|name| MailAttachment {
+            id: name.into(),
+            name: name.into(),
+            size: 1_024,
         })
-        .drop_without_applying_deltas();
+        .collect();
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    let context = egui::Context::default();
+    theme::install(&context);
+    let saves = AttachmentSaves {
+        saving: None,
+        failed: Some(("photo.jpg", crate::downloads::SaveError::Failed)),
+    };
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        ui.set_width(680.0);
+        message_card(
+            ui,
+            &reader.detail().messages[0],
+            reader.preview_at(0),
+            &reader,
+            saves,
+            Reading::default(),
+            &mut Vec::new(),
+        );
+    });
 
-    assert!(messages.is_empty());
+    let error = text_rect(&output.shapes, "Ruston Mail could not save the file.");
+    let report = text_rect(&output.shapes, "Attachment: report.pdf");
+    let photo = text_rect(&output.shapes, "Attachment: photo.jpg");
+    assert!(
+        photo.bottom() <= error.top() && error.top() - photo.bottom() < 20.0,
+        "the error belongs under its file: {photo:?} then {error:?}"
+    );
+    assert!(report.bottom() <= photo.top(), "not under the other file");
+    output.drop_without_applying_deltas();
 }

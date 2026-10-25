@@ -9,7 +9,7 @@ mod mailto;
 mod notifications;
 mod reader;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use futures::future::{AbortHandle, Abortable};
@@ -105,6 +105,8 @@ pub enum Message {
     UndoMove,
     /// Lets this temporary undo offer expire if it is still current.
     DismissUndo(UndoMove),
+    /// Lets this confirmation go if it is still the one shown.
+    DismissNotice(Notice),
     RefreshMailbox,
     /// Periodic refresh, every minute in the foreground and less often in the
     /// background. Unlike a manual refresh, this also marks the other folder
@@ -223,6 +225,16 @@ pub enum Message {
     Sent(SessionEpoch, Result<(), SendError>),
 }
 
+/// A short confirmation shown at the foot of the mailbox until it times out
+/// or another takes its place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notice {
+    /// The message being written went to Proton.
+    Sent,
+    /// An attachment was saved at this path.
+    Saved(PathBuf),
+}
+
 pub struct App {
     /// Set for a process started for the fictional mailbox. Such a process
     /// never signs in to Proton, even after its demo mailbox is closed.
@@ -290,8 +302,10 @@ pub struct App {
     /// Changes for each opened draft so asynchronous attachment pickers from a
     /// closed or discarded draft cannot inject files into a subsequent draft.
     last_compose_id: ComposeId,
-    /// What became of the last attachment someone asked to save.
-    saved_attachment: Option<Result<PathBuf, SaveError>>,
+    /// The confirmation shown at the foot of the mailbox.
+    notice: Option<Notice>,
+    /// The attachment whose last save failed, by ID, and why; its row says so.
+    failed_save: Option<(String, SaveError)>,
     /// The attachment in flight, preventing duplicate downloads.
     saving_attachment: Option<AttachmentSave>,
     new_mail: notifications::NewMail,
@@ -345,7 +359,8 @@ impl App {
             parked_draft: None,
             read_once_shown: None,
             last_compose_id: 0,
-            saved_attachment: None,
+            notice: None,
+            failed_save: None,
             saving_attachment: None,
             new_mail: notifications::NewMail::default(),
         }
@@ -410,11 +425,16 @@ impl App {
             .map(|save| save.request.attachment_id.as_str())
     }
 
-    /// Where the last saved attachment landed, or why it did not.
-    pub fn saved_attachment(&self) -> Option<Result<&Path, SaveError>> {
-        self.saved_attachment
+    /// The confirmation to show at the foot of the mailbox.
+    pub fn notice(&self) -> Option<&Notice> {
+        self.notice.as_ref()
+    }
+
+    /// The attachment whose last save failed, by ID, and why.
+    pub fn failed_save(&self) -> Option<(&str, SaveError)> {
+        self.failed_save
             .as_ref()
-            .map(|outcome| outcome.as_deref().map_err(|error| *error))
+            .map(|(attachment_id, error)| (attachment_id.as_str(), *error))
     }
 
     /// Fetches an attachment and writes it off the UI thread.
@@ -433,7 +453,7 @@ impl App {
             message_id,
             attachment_id,
         };
-        self.saved_attachment = None;
+        self.failed_save = None;
         self.saving_attachment = Some(AttachmentSave {
             request: request.clone(),
             choosing_destination: suggested_name.is_some(),
@@ -666,6 +686,11 @@ impl App {
             Message::DismissUndo(offer) => {
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.dismiss_undo(&offer);
+                }
+            }
+            Message::DismissNotice(notice) => {
+                if self.notice.as_ref() == Some(&notice) {
+                    self.notice = None;
                 }
             }
             Message::RefreshMailbox => {
@@ -915,7 +940,10 @@ impl App {
                 // A save that landed after the session ended has nobody left
                 // to tell, and its news must not surface in the next one.
                 if self.mailbox.is_some() {
-                    self.saved_attachment = Some(outcome);
+                    match outcome {
+                        Ok(path) => self.notice = Some(Notice::Saved(path)),
+                        Err(error) => self.failed_save = Some((request.attachment_id, error)),
+                    }
                 }
             }
             Message::RevealAttachment(path) => return reveal_in_file_manager(path),
@@ -1507,7 +1535,7 @@ impl App {
         }
         self.showing_settings = false;
         self.pending_link = None;
-        self.saved_attachment = None;
+        self.failed_save = None;
         self.remember_folder(&folder);
         let request = self.next_request();
         let page = self

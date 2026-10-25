@@ -2,9 +2,9 @@ use chrono::{DateTime, Datelike, Local, TimeZone};
 use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
-use super::{UiState, UndoNotice, compose, reader, settings, theme};
+use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
 use crate::app::{
-    App, AuthState, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, UndoMove,
+    App, AuthState, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, Notice,
     compact_layout, panel_ratios, panel_widths,
 };
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError};
@@ -46,7 +46,7 @@ pub(super) fn show(
     let window_width = root.available_width();
     if compact_layout(window_width) {
         show_compact(root, app, settings_draft, state, messages);
-        undo_notice(&context, mailbox, state, None, messages);
+        bottom_notice(&context, app, mailbox, state, None, messages);
         return;
     }
     let widths = panel_widths(app.panels(), window_width);
@@ -95,7 +95,7 @@ pub(super) fn show(
         }
     };
 
-    undo_notice(&context, mailbox, state, conversations, messages);
+    bottom_notice(&context, app, mailbox, state, conversations, messages);
     let conversations = conversations.map(|list| list.width());
 
     let stored = app.panels();
@@ -199,8 +199,10 @@ fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mu
             mailbox: app.mailbox().expect("authenticated mailbox"),
             places: app.folders(),
             actions_available: app.mailbox_actions_available(),
-            saving_attachment: app.saving_attachment(),
-            saved_attachment: app.saved_attachment(),
+            saves: reader::AttachmentSaves {
+                saving: app.saving_attachment(),
+                failed: app.failed_save(),
+            },
             reading: app.settings().reading(),
         };
         reader::show(ui, &view, state, messages);
@@ -667,72 +669,134 @@ fn failure_line(
     ui.add_space(4.0);
 }
 
-const UNDO_NOTICE_SECONDS: f64 = 6.0;
-const UNDO_NOTICE_MARGIN: f32 = 20.0;
+const NOTICE_SECONDS: f64 = 6.0;
+const NOTICE_MARGIN: f32 = 20.0;
 
-/// The offer to take back the last move. It sits at the foot of the list it
-/// was made from, `list`, rather than across the divider beside it; without
-/// a list on screen, at the foot of the window.
-fn undo_notice(
+#[cfg(target_os = "macos")]
+const REVEAL_LABEL: &str = "Show in Finder";
+#[cfg(target_os = "windows")]
+const REVEAL_LABEL: &str = "Show in Explorer";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const REVEAL_LABEL: &str = "Show in folder";
+
+/// Where the pointer is, for the bottom notice's time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pointer {
+    Away,
+    /// Resting on the notice, which keeps it until the pointer leaves.
+    OnNotice,
+}
+
+/// The notice at the foot of the list it is about, `list`, rather than
+/// across the divider beside it; without a list on screen, at the foot of
+/// the window. It offers to take back the last move or, with none to take
+/// back, confirms a message sent or a file saved.
+fn bottom_notice(
     context: &egui::Context,
+    app: &App,
     mailbox: &Mailbox,
     state: &mut UiState,
     list: Option<egui::Rect>,
     messages: &mut Vec<Message>,
 ) {
-    let Some(offer) = mailbox.undo() else {
-        state.undo_notice = None;
-        return;
+    let notice = match (mailbox.undo(), app.notice()) {
+        (Some(offer), _) => BottomNotice::Undo(Box::new(offer.clone())),
+        (None, Some(notice)) => BottomNotice::Confirmation(notice.clone()),
+        (None, None) => {
+            state.bottom_notice = None;
+            return;
+        }
     };
+    let id = egui::Id::new("bottom-notice");
     let now = context.input(|input| input.time);
-    let Some(remaining) = undo_notice_remaining(state, offer, now) else {
-        messages.push(Message::DismissUndo(offer.clone()));
+    // The notice is where it was laid out last frame.
+    let pointer = match (
+        context.memory(|memory| memory.area_rect(id)),
+        context.pointer_hover_pos(),
+    ) {
+        (Some(rect), Some(position)) if rect.contains(position) => Pointer::OnNotice,
+        _ => Pointer::Away,
+    };
+    let Some(remaining) = notice_remaining(state, &notice, now, pointer) else {
+        messages.push(match notice {
+            BottomNotice::Undo(offer) => Message::DismissUndo(*offer),
+            BottomNotice::Confirmation(notice) => Message::DismissNotice(notice),
+        });
         return;
     };
     context.request_repaint_after(remaining);
 
-    let area = egui::Area::new(egui::Id::new("undo-move-notice"));
+    let area = egui::Area::new(id);
     let area = match list {
         Some(list) => area
             .pivot(Align2::CENTER_BOTTOM)
-            .fixed_pos(list.center_bottom() - egui::vec2(0.0, UNDO_NOTICE_MARGIN)),
-        None => area.anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -UNDO_NOTICE_MARGIN)),
+            .fixed_pos(list.center_bottom() - egui::vec2(0.0, NOTICE_MARGIN)),
+        None => area.anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -NOTICE_MARGIN)),
     };
     let _ = area.order(egui::Order::Foreground).show(context, |ui| {
         theme::card(ui)
             .stroke(Stroke::new(1.0, theme::ACCENT))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(format!("Moved to {}.", offer.to.name()));
-                    // The move back waits while the list loads or loads more.
-                    let ready = mailbox.takes_actions();
-                    if ui
-                        .add_enabled(ready, theme::compact_button("Undo"))
-                        .clicked()
-                    {
-                        messages.push(Message::UndoMove);
-                    }
-                });
+                ui.horizontal(|ui| notice_content(ui, &notice, mailbox, messages));
             });
     });
 }
 
-fn undo_notice_remaining(
-    state: &mut UiState,
-    offer: &UndoMove,
-    now: f64,
-) -> Option<std::time::Duration> {
-    if state
-        .undo_notice
-        .as_ref()
-        .is_none_or(|notice| notice.offer != *offer)
-    {
-        state.undo_notice = Some(UndoNotice {
-            offer: offer.clone(),
-            expires_at: now + UNDO_NOTICE_SECONDS,
-        });
+/// What a bottom notice says, and what it offers to do.
+fn notice_content(
+    ui: &mut egui::Ui,
+    notice: &BottomNotice,
+    mailbox: &Mailbox,
+    messages: &mut Vec<Message>,
+) {
+    match notice {
+        BottomNotice::Undo(offer) => {
+            ui.label(format!("Moved to {}.", offer.to.name()));
+            // The move back waits while the list loads or loads more.
+            let ready = mailbox.takes_actions();
+            if ui
+                .add_enabled(ready, theme::compact_button("Undo"))
+                .clicked()
+            {
+                messages.push(Message::UndoMove);
+            }
+        }
+        BottomNotice::Confirmation(Notice::Sent) => {
+            ui.label("Message sent.");
+        }
+        BottomNotice::Confirmation(Notice::Saved(path)) => {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            ui.label(format!("Saved {name}."))
+                .on_hover_text(path.display().to_string());
+            if ui.add(theme::compact_button(REVEAL_LABEL)).clicked() {
+                messages.push(Message::RevealAttachment(path.clone()));
+            }
+        }
     }
-    let remaining = state.undo_notice.as_ref()?.expires_at - now;
+}
+
+/// How long `notice` stays from `now`: its own time from when it first
+/// showed, started again while the pointer rests on it. `None` once it is up.
+fn notice_remaining(
+    state: &mut UiState,
+    notice: &BottomNotice,
+    now: f64,
+    pointer: Pointer,
+) -> Option<std::time::Duration> {
+    let timed = match &mut state.bottom_notice {
+        Some(timed) if timed.notice == *notice => timed,
+        other => other.insert(TimedNotice {
+            notice: notice.clone(),
+            expires_at: now + NOTICE_SECONDS,
+        }),
+    };
+    if pointer == Pointer::OnNotice {
+        timed.expires_at = now + NOTICE_SECONDS;
+    }
+    let remaining = timed.expires_at - now;
     (remaining > 0.0).then(|| std::time::Duration::from_secs_f64(remaining))
 }
 

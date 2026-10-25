@@ -250,7 +250,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   row away, offers its undo and names the row to open in its place. Starred and
   labels list mail wherever it sits, so a move to another folder keeps the row
   there and the mailbox remembers where it went, for the reader's buttons and a
-  later undo; Spam and Trash still take it out. The undo offer keeps the row as
+  later undo; Spam and Trash still take it out. One notice at the foot of the
+  list carries the undo offer or, with none, `App`'s `Notice` of a message sent
+  or a file saved; [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it and starts
+  its time again while the pointer rests on it, then sends `DismissUndo` or
+  `DismissNotice`, which drop it only if it is still current. The undo offer keeps the row as
   it was listed, so `Mailbox::start_move_back` lists it again at once, where its
   date puts it, even from a page a reload would not read; a refused move back
   takes it away again. When a confirmed move belongs in the view but its row is
@@ -318,7 +322,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   [`src/downloads.rs`](../src/downloads.rs) writes downloaded attachments.
   Incoming attachment saves have a session and unique request ID. **Save as**
   chooses a destination before downloading; cancellation starts no download,
-  and stale or duplicate choices/completions cannot change a later save. Both
+  and stale or duplicate choices/completions cannot change a later save. A
+  save that lands becomes `App`'s `Notice::Saved`, and a failed one is kept
+  with its attachment's ID for that attachment's row to report. Both
   save actions use the backend's signature checks before starting filesystem
   work on a blocking worker. Downloads use sanitized sender names with numeric
   collision suffixes; explicit destinations use the user's exact absolute path.

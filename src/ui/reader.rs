@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 
 use chrono::{Local, TimeZone};
 use eframe::egui::text::LayoutJob;
@@ -37,13 +36,6 @@ const LINK_ADDRESS_MAX_HEIGHT: f32 = 120.0;
 /// Code background padding, kept clear of adjacent lines.
 const CODE_PADDING: f32 = 2.5;
 
-#[cfg(target_os = "macos")]
-const REVEAL_LABEL: &str = "Show in Finder";
-#[cfg(target_os = "windows")]
-const REVEAL_LABEL: &str = "Show in Explorer";
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const REVEAL_LABEL: &str = "Show in folder";
-
 /// What the reader draws around the open conversation, borrowed from the app
 /// for one frame.
 pub(super) struct ReaderView<'a> {
@@ -51,9 +43,17 @@ pub(super) struct ReaderView<'a> {
     /// The folders and labels a conversation can be moved to or given.
     pub(super) places: &'a [Folder],
     pub(super) actions_available: bool,
-    pub(super) saving_attachment: Option<&'a str>,
-    pub(super) saved_attachment: Option<Result<&'a Path, SaveError>>,
+    pub(super) saves: AttachmentSaves<'a>,
     pub(super) reading: Reading,
+}
+
+/// Where saving attachments stands, for the rows of the attachments.
+#[derive(Clone, Copy, Default)]
+pub(super) struct AttachmentSaves<'a> {
+    /// The attachment being fetched now, by ID.
+    pub(super) saving: Option<&'a str>,
+    /// The attachment whose last save failed, by ID, and why.
+    pub(super) failed: Option<(&'a str, SaveError)>,
 }
 
 pub(super) fn show(
@@ -62,26 +62,6 @@ pub(super) fn show(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    if let Some(outcome) = &view.saved_attachment {
-        match outcome {
-            Ok(path) => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("Saved to {}", path.display()))
-                            .small()
-                            .color(theme::colors(ui).success),
-                    );
-                    if ui.add(theme::compact_button(REVEAL_LABEL)).clicked() {
-                        messages.push(Message::RevealAttachment(path.to_path_buf()));
-                    }
-                });
-            }
-            Err(error) => {
-                ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
-            }
-        }
-        ui.separator();
-    }
     match view.mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
         ReaderState::Loading { .. } => conversation_skeleton(ui, view, state),
@@ -360,7 +340,7 @@ fn reading_column(
             message,
             reader.preview_at(index),
             reader,
-            view.saving_attachment,
+            view.saves,
             view.reading,
             messages,
         );
@@ -740,7 +720,7 @@ fn message_card(
     message: &MailMessage,
     preview: &str,
     reader: &ConversationReader,
-    saving_attachment: Option<&str>,
+    saves: AttachmentSaves<'_>,
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
@@ -754,7 +734,7 @@ fn message_card(
             header.context_menu(|ui| address_menu(ui, message, messages));
             if expanded {
                 for attachment in &message.attachments {
-                    attachment_row(ui, &message.id, attachment, saving_attachment, messages);
+                    attachment_row(ui, &message.id, attachment, saves, messages);
                 }
                 reply_toolbar(ui, Some(&message.id), messages);
                 ui.separator();
@@ -1201,11 +1181,11 @@ fn attachment_row(
     ui: &mut egui::Ui,
     message_id: &str,
     attachment: &MailAttachment,
-    saving_attachment: Option<&str>,
+    saves: AttachmentSaves<'_>,
     messages: &mut Vec<Message>,
 ) {
-    let saving = saving_attachment.is_some();
-    let this_one = saving_attachment == Some(attachment.id.as_str());
+    let saving = saves.saving.is_some();
+    let this_one = saves.saving == Some(attachment.id.as_str());
     ui.horizontal_wrapped(|ui| {
         detail(ui, &format!("Attachment: {}", attachment.name));
         detail(ui, &size_label(attachment.size));
@@ -1232,6 +1212,11 @@ fn attachment_row(
             ));
         }
     });
+    // A failed save is told beside its own file, not above every
+    // conversation opened after it.
+    if let Some((_, error)) = saves.failed.filter(|(id, _)| *id == attachment.id) {
+        ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
+    }
 }
 
 fn message_body(

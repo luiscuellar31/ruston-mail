@@ -890,9 +890,11 @@ impl App {
             return Effects::none();
         };
         match result {
-            // Gone. The window closes, and the folder it landed in catches up.
+            // Gone. The window closes, the mailbox says so, and the folder it
+            // landed in catches up.
             Ok(()) => {
                 self.compose = None;
+                self.notice = Some(super::Notice::Sent);
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.invalidate_listings();
                     mailbox.invalidate_reader_cache();

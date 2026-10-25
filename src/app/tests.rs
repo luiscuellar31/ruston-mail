@@ -97,6 +97,11 @@ fn deliver_send(app: &mut App, result: Result<(), SendError>) {
     let _ = app.update(Message::Sent(epoch, result));
 }
 
+/// Whether the app neither confirms a saved file nor reports a failed save.
+fn nothing_said_about_saves(app: &App) -> bool {
+    app.notice().is_none() && app.failed_save().is_none()
+}
+
 #[test]
 fn only_a_real_change_counts_as_one() {
     // Repeated drag values must not advance the revision.
@@ -657,7 +662,7 @@ fn a_save_in_flight_does_not_outlive_the_session() {
 
     let _ = app.update(Message::Logout);
     assert_eq!(app.saving_attachment(), None);
-    assert!(app.saved_attachment().is_none());
+    assert!(nothing_said_about_saves(&app));
 
     let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let _ = app.update(Message::SaveAttachment("demo-1".into(), "new-file".into()));
@@ -667,8 +672,32 @@ fn a_save_in_flight_does_not_outlive_the_session() {
         previous_request,
         Ok(PathBuf::from("/tmp/x.pdf")),
     ));
-    assert!(app.saved_attachment().is_none());
+    assert!(nothing_said_about_saves(&app));
     assert_eq!(app.saving_attachment(), Some("new-file"));
+}
+
+#[test]
+fn a_sent_message_and_a_saved_file_are_confirmed_until_their_notice_goes() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    deliver_send(&mut app, Ok(()));
+    assert_eq!(app.notice(), Some(&Notice::Sent));
+
+    let saved = PathBuf::from("/tmp/report.pdf");
+    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    deliver_attachment(&mut app, Ok(saved.clone()));
+    assert_eq!(app.notice(), Some(&Notice::Saved(saved.clone())));
+    // The time of an older notice running out takes nothing newer with it.
+    let _ = app.update(Message::DismissNotice(Notice::Sent));
+    assert_eq!(app.notice(), Some(&Notice::Saved(saved.clone())));
+    let _ = app.update(Message::DismissNotice(Notice::Saved(saved)));
+    assert_eq!(app.notice(), None);
+
+    // A failed save is kept for its own file instead.
+    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    deliver_attachment(&mut app, Err(SaveError::Failed));
+    assert_eq!(app.failed_save(), Some(("file", SaveError::Failed)));
+    assert_eq!(app.notice(), None);
 }
 
 #[test]
@@ -1962,7 +1991,7 @@ fn cancelling_save_as_does_not_download_or_change_a_later_save() {
         0
     );
     assert!(app.saving_attachment().is_none());
-    assert!(app.saved_attachment().is_none());
+    assert!(nothing_said_about_saves(&app));
 
     let second = choose_attachment_destination(&mut app);
     assert_ne!(first, second);
@@ -1990,7 +2019,7 @@ fn cancelling_save_as_does_not_download_or_change_a_later_save() {
     ] {
         assert_eq!(app.update(stale).units(), 0, "{case}");
         assert_eq!(app.saving_attachment(), Some("file"), "{case}");
-        assert!(app.saved_attachment().is_none(), "{case}");
+        assert!(nothing_said_about_saves(&app), "{case}");
     }
 }
 
@@ -2018,7 +2047,7 @@ async fn chosen_destination_starts_one_download_and_failure_creates_no_file() {
     };
     let _ = app.update(task.await);
     assert!(app.saving_attachment().is_none());
-    assert_eq!(app.saved_attachment(), Some(Err(SaveError::NotFetched)));
+    assert_eq!(app.failed_save(), Some(("file", SaveError::NotFetched)));
     assert!(
         !path.exists(),
         "failed downloads must not create the selected file"

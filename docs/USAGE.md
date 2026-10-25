@@ -147,7 +147,8 @@ The reader can:
 - Move it into one of your folders, or back to the Inbox, with **Move to…**.
 - Add or remove a custom label from the tag button, which is filled while the
   conversation carries one.
-- Undo the latest move while its notice remains visible. Under a label,
+- Undo the latest move while its notice remains visible at the foot of the
+  list; it stays while the pointer rests on it. Under a label,
   Starred, or in search results the conversation's folder is not known, so a
   move made there offers no undo until you have moved it once from that view;
   **Move to…** can still put it back.
@@ -229,7 +230,9 @@ filename: this action also never replaces an existing file, even if the native
 dialog offers replacement. If the destination exists, Ruston shows an error
 and you can choose another name.
 
-The app can reveal a saved attachment in the file manager. Use **Attach…**
+A saved attachment is confirmed at the foot of the list, with a button that
+reveals it in the file manager; a save that fails says why under the
+attachment itself. Use **Attach…**
 beside **Send** in the composer to add local files to an outgoing message, or
 drop files on the window that shows the message being written. Dropping files
 is not available on Wayland.
@@ -293,7 +296,8 @@ list meanwhile opens behind the draft and stays unread until the reader shows
 it.
 The composer scrolls vertically when its fields or attachments exceed the
 available height, in either placement. Closing it with something written asks
-first, in a dialog over its window: **Keep writing** or **Discard**.
+first, in a dialog over its window: **Keep writing** or **Discard**. Once a
+message is sent, the composer closes and the foot of the list says so.
 
 Closing the main window asks before discarding a written message, whether the
 composer is in the reading pane or a separate window. Choose **Keep writing**

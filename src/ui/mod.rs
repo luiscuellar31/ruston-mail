@@ -21,7 +21,7 @@ mod window_place;
 
 use eframe::egui;
 
-use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect, UndoMove};
+use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, Notice, UiEffect, UndoMove};
 use crate::mail::Folder;
 use crate::runtime::Runtime;
 use crate::settings::{ComposePlacement, MIN_WINDOW_SIZE, Settings, Window};
@@ -43,12 +43,21 @@ pub(super) struct UiState {
     reveal_conversation: Option<String>,
     conversation_scroll: Option<mailbox::ConversationScroll>,
     compact_view: mailbox::CompactView,
-    undo_notice: Option<UndoNotice>,
+    bottom_notice: Option<TimedNotice>,
     notification_status: notifications::Status,
 }
 
-struct UndoNotice {
-    offer: UndoMove,
+/// What the notice at the foot of the mailbox says: the offer to take back
+/// the last move, or a confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BottomNotice {
+    Undo(Box<UndoMove>),
+    Confirmation(Notice),
+}
+
+/// The bottom notice on screen, and when it goes.
+struct TimedNotice {
+    notice: BottomNotice,
     expires_at: f64,
 }
 
