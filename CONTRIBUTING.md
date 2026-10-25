@@ -124,3 +124,7 @@ Write the subject as the effect, not the mechanism: `fix(app): take over from
 an instance that is closing` rather than `fix(app): retry the instance lock
 while connecting`. The body, which the release notes do not show, can explain
 how.
+
+A merge commit keeps GitHub's default message, `Merge pull request #N from
+…`. The release notes skip merge commits, and the commits a merge brings in
+keep their own messages and hashes.
