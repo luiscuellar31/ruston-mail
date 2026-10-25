@@ -17,7 +17,7 @@ authors = ["Luis Cuellar <luiscuellar31@proton.me>"]
 
 [workspace.dependencies]
 ruston-core = { path = "crates/ruston-core" }
-proton-crypto = { version = "0.12", default-features = false, features = ["rustpgp"] }
+proton-crypto = { version = "0.14", default-features = false, features = ["rustpgp"] }
 proton-srp = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls", "gzip", "system-proxy"] }
 # reqwest's own rustls, declared for a feature its defaults leave off: TLS then

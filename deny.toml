@@ -9,7 +9,7 @@ feature-depth = 1
 
 [advisories]
 ignore = [
-    # Transitive through pgp 0.19's PQC support.
+    # Transitive through pgp 0.21's PQC support.
     "RUSTSEC-2025-0144",
     # Transitive through pgp/proton-rpgp; the advisory has no patched rsa release yet.
     "RUSTSEC-2023-0071",
