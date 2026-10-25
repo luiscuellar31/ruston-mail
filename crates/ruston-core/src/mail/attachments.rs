@@ -156,8 +156,16 @@ pub fn save_under_free_name(
 /// Creating it exclusively fails on anything already there, a dangling
 /// symlink included; a file that could not be written in full is removed.
 pub fn write_new_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_new_file_with(path, |file| file.write_all(contents))
+}
+
+/// [`write_new_file`], with `write` filling the file; tests make it fail.
+fn write_new_file_with(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    if let Err(error) = file.write_all(contents) {
+    if let Err(error) = write(&mut file) {
         drop(file);
         let _ = std::fs::remove_file(path);
         return Err(error);

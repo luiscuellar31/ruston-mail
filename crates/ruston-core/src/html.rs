@@ -402,6 +402,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_drawing_goes_with_everything_in_it() {
+        // An SVG's labels are not words of the message, whether it is read
+        // as text or kept as sanitized HTML.
+        let html = "<p>Hello</p><svg><text>drawn label</text></svg><p>Bye</p>";
+        assert_eq!(to_text(html), "Hello\n\nBye");
+        let clean = sanitize(html);
+        assert!(!clean.contains("drawn label"), "{clean}");
+    }
+
+    #[test]
     fn text_follows_paragraphs_and_line_breaks() {
         // The shape the desktop sends for what was typed.
         assert_eq!(

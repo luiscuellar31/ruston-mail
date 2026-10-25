@@ -682,6 +682,21 @@ fn a_saved_attachment_takes_the_first_free_name() {
 }
 
 #[test]
+fn a_file_that_could_not_be_written_in_full_is_removed() {
+    let folder = save_folder("half-written");
+    let path = folder.join("report.pdf");
+
+    let written = write_new_file_with(&path, |file| {
+        file.write_all(b"the first half")?;
+        Err(std::io::Error::other("the disk filled up"))
+    });
+
+    assert!(written.is_err());
+    assert!(!path.exists(), "half a file stayed behind");
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
 fn untrusted_attachment_names_stay_inside_the_folder() {
     let folder = save_folder("untrusted-names");
     for (untrusted, expected) in [
