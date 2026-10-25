@@ -30,7 +30,7 @@ fn deliver_demo_page(app: &mut App, request: RequestId, page: u32) {
 }
 
 fn deliver_latest_demo_page(app: &mut App, page: u32) {
-    let request = app.last_request;
+    let request = pending_list_request(app);
     deliver_demo_page(app, request, page);
 }
 
@@ -39,6 +39,28 @@ fn demo_service(app: &App) -> demo::DemoMailbox {
         Some(MailBackend::Demo(service)) => service.clone(),
         _ => panic!("expected demo backend"),
     }
+}
+
+/// The list request the open folder or search waits for, as its status
+/// says, so a test need not know the order requests were numbered in.
+fn pending_list_request(app: &App) -> RequestId {
+    app.mailbox()
+        .and_then(|mailbox| mailbox.status().request_in_flight())
+        .expect("a list request in flight")
+}
+
+/// The counts request the open mailbox waits for.
+fn pending_counts_request(app: &App) -> RequestId {
+    app.mailbox()
+        .and_then(Mailbox::counts_request)
+        .expect("a counts request in flight")
+}
+
+/// The request the inspection of `conversation_id` runs under.
+fn running_inspection(app: &App, conversation_id: &str) -> RequestId {
+    app.inspections
+        .running_request(conversation_id)
+        .expect("an inspection running")
 }
 
 fn pending_reader_request(app: &App) -> ReaderRequest {
@@ -68,7 +90,7 @@ fn deliver_demo_search(app: &mut App, query: &str) {
     let _ = app.update(Message::SearchChanged(query.to_owned()));
     let _ = app.update(Message::SearchSubmitted);
     let request = SearchRequest {
-        id: app.last_request,
+        id: pending_list_request(app),
         query: query.to_owned(),
         page: 0,
         page_size: demo::PAGE_SIZE,
@@ -79,7 +101,11 @@ fn deliver_demo_search(app: &mut App, query: &str) {
 
 fn deliver_folders(app: &mut App, result: Result<Vec<Folder>, MailboxError>) {
     let epoch = app.session_epoch;
-    let _ = app.update(Message::FoldersLoaded(epoch, result));
+    let places = result.map(|folders| crate::mail::OwnPlaces {
+        folders,
+        ..Default::default()
+    });
+    let _ = app.update(Message::FoldersLoaded(epoch, places));
 }
 
 fn deliver_attachment(app: &mut App, result: Result<PathBuf, SaveError>) {
@@ -95,6 +121,11 @@ fn deliver_logout(app: &mut App, result: Result<(), AuthError>) {
 fn deliver_send(app: &mut App, result: Result<(), SendError>) {
     let epoch = app.session_epoch;
     let _ = app.update(Message::Sent(epoch, result));
+}
+
+/// Whether the app neither confirms a saved file nor reports a failed save.
+fn nothing_said_about_saves(app: &App) -> bool {
+    app.notice().is_none() && app.failed_save().is_none()
 }
 
 #[test]
@@ -395,6 +426,45 @@ fn typing_clears_discard_prompt() {
 }
 
 #[test]
+fn asking_for_another_message_brings_the_open_one_forward_and_says_why() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-0");
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Plans".into()));
+    let draft = app.compose().unwrap().id();
+
+    for asked in [
+        Message::OpenCompose,
+        Message::Answer {
+            message_id: "demo-0-2".into(),
+            kind: AnswerKind::Reply,
+        },
+    ] {
+        let effects = app.update(asked);
+        let compose = app.compose().unwrap();
+        assert_eq!(compose.id(), draft, "the open message stays as it was");
+        assert!(compose.asked_again());
+        assert!(
+            effects
+                .into_iter()
+                .any(|effect| matches!(effect, Effect::Ui(UiEffect::RaiseComposer)))
+        );
+        let _ = app.update(Message::ComposeChanged(ComposeField::Body, "More".into()));
+        assert!(
+            !app.compose().unwrap().asked_again(),
+            "writing on answers it"
+        );
+    }
+
+    // In the reading pane the draft is already in view.
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::ReadingPane));
+    let effects = app.update(Message::OpenCompose);
+    assert!(app.compose().unwrap().asked_again());
+    assert_eq!(effects.units(), 0);
+}
+
+#[test]
 fn picking_compose_attachments_emits_ui_effect() {
     let mut app = loaded_demo_app();
     // When compose is closed, picking does nothing
@@ -618,7 +688,7 @@ fn a_save_in_flight_does_not_outlive_the_session() {
 
     let _ = app.update(Message::Logout);
     assert_eq!(app.saving_attachment(), None);
-    assert!(app.saved_attachment().is_none());
+    assert!(nothing_said_about_saves(&app));
 
     let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let _ = app.update(Message::SaveAttachment("demo-1".into(), "new-file".into()));
@@ -628,8 +698,32 @@ fn a_save_in_flight_does_not_outlive_the_session() {
         previous_request,
         Ok(PathBuf::from("/tmp/x.pdf")),
     ));
-    assert!(app.saved_attachment().is_none());
+    assert!(nothing_said_about_saves(&app));
     assert_eq!(app.saving_attachment(), Some("new-file"));
+}
+
+#[test]
+fn a_sent_message_and_a_saved_file_are_confirmed_until_their_notice_goes() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    deliver_send(&mut app, Ok(()));
+    assert_eq!(app.notice(), Some(&Notice::Sent));
+
+    let saved = PathBuf::from("/tmp/report.pdf");
+    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    deliver_attachment(&mut app, Ok(saved.clone()));
+    assert_eq!(app.notice(), Some(&Notice::Saved(saved.clone())));
+    // The time of an older notice running out takes nothing newer with it.
+    let _ = app.update(Message::DismissNotice(Notice::Sent));
+    assert_eq!(app.notice(), Some(&Notice::Saved(saved.clone())));
+    let _ = app.update(Message::DismissNotice(Notice::Saved(saved)));
+    assert_eq!(app.notice(), None);
+
+    // A failed save is kept for its own file instead.
+    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    deliver_attachment(&mut app, Err(SaveError::Failed));
+    assert_eq!(app.failed_save(), Some(("file", SaveError::Failed)));
+    assert_eq!(app.notice(), None);
 }
 
 #[test]
@@ -661,9 +755,55 @@ fn signing_out_takes_the_account_folders_with_it() {
     let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let _ = app.update(Message::FoldersLoaded(
         previous_epoch,
-        Ok(vec![Folder::custom("old", "Previous account")]),
+        Ok(crate::mail::OwnPlaces {
+            folders: vec![Folder::custom("old", "Previous account")],
+            ..Default::default()
+        }),
     ));
     assert!(app.folders().is_empty());
+}
+
+#[test]
+fn a_place_shows_as_its_list_says_until_the_session_ends() {
+    let mut app = loaded_demo_app();
+    let nested = Folder::custom("nested", "2024");
+    let label = Folder::label("work", "Work");
+    let looks = [
+        (
+            "nested",
+            crate::mail::PlaceLook {
+                depth: 1,
+                color: None,
+            },
+        ),
+        (
+            "work",
+            crate::mail::PlaceLook {
+                depth: 0,
+                color: Some([0, 102, 204]),
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(id, look)| (id.to_owned(), look))
+    .collect();
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::FoldersLoaded(
+        epoch,
+        Ok(crate::mail::OwnPlaces {
+            folders: vec![nested.clone(), label.clone()],
+            looks,
+        }),
+    ));
+    assert_eq!(app.place_look(&nested).depth, 1);
+    assert_eq!(app.place_look(&label).color, Some([0, 102, 204]));
+    assert_eq!(
+        app.place_look(&Folder::INBOX),
+        crate::mail::PlaceLook::default()
+    );
+
+    let _ = app.update(Message::Logout);
+    assert_eq!(app.place_look(&label), crate::mail::PlaceLook::default());
 }
 
 #[test]
@@ -809,6 +949,20 @@ fn copying_a_links_address_needs_no_prompt_and_only_takes_web_and_mail_links() {
 }
 
 #[test]
+fn copied_addresses_are_written_as_a_recipient_field_takes_them() {
+    let mut app = loaded_demo_app();
+    let effects = app.update(Message::CopyAddresses(vec![
+        "team@example.org".into(),
+        "ops@example.org".into(),
+    ]));
+    let effect = effects.into_iter().next().expect("a copy");
+    assert!(matches!(
+        effect,
+        Effect::Ui(UiEffect::CopyText(text)) if text == "team@example.org, ops@example.org"
+    ));
+}
+
+#[test]
 fn the_keyboard_walks_the_conversation_list() {
     let mut app = loaded_demo_app();
 
@@ -940,7 +1094,7 @@ fn a_folder_list_that_fails_to_load_keeps_the_open_folder_and_is_asked_again() {
         app.update(Message::RefreshMailbox).units(),
         PAGE_AND_COUNTS + 1
     );
-    let page_request = app.last_request - 1;
+    let page_request = pending_list_request(&app);
     deliver_demo_page(&mut app, page_request, 0);
     deliver_folders(&mut app, Ok(vec![invoices.clone()]));
     assert_eq!(app.folders(), [invoices]);
@@ -1013,7 +1167,7 @@ fn email_links_wait_through_login_and_open_only_an_editable_new_message() {
         assert!(app.compose().is_none(), "{auth:?}");
         assert_eq!(app.pending_mailto_count(), 1, "{auth:?}");
     }
-    app.open_mailbox(MailBackend::demo(), None, None);
+    let _ = app.open_mailbox(MailBackend::demo(), None, None);
     assert_eq!(app.update(Message::OpenPendingMailto).units(), 0);
     let compose = app.compose().unwrap();
     assert_eq!(compose.field(ComposeField::To), "team@example.org");
@@ -1027,36 +1181,36 @@ fn email_links_wait_through_login_and_open_only_an_editable_new_message() {
 #[test]
 fn email_links_never_replace_a_blank_written_or_sending_draft() {
     let mut app = loaded_demo_app();
-    app.update(Message::OpenCompose);
+    let _ = app.update(Message::OpenCompose);
     let id = app.compose().unwrap().id();
-    app.update(Message::ReceiveMailto(
+    let _ = app.update(Message::ReceiveMailto(
         crate::mailto::Request::parse("mailto:next@example.org?body=Next").unwrap(),
     ));
-    app.update(Message::OpenPendingMailto);
+    let _ = app.update(Message::OpenPendingMailto);
     assert_eq!(app.compose().unwrap().id(), id);
-    app.update(Message::ComposeChanged(
+    let _ = app.update(Message::ComposeChanged(
         ComposeField::To,
         "current@example.org".into(),
     ));
-    app.update(Message::ComposeChanged(
+    let _ = app.update(Message::ComposeChanged(
         ComposeField::Body,
         "My draft".into(),
     ));
-    app.update(Message::OpenPendingMailto);
+    let _ = app.update(Message::OpenPendingMailto);
     assert_eq!(app.compose().unwrap().field(ComposeField::Body), "My draft");
     let sending = app.update(Message::Send);
     assert!(sending.units() > 0);
     assert!(app.compose().unwrap().in_flight());
-    app.update(Message::DiscardCompose);
-    app.update(Message::OpenPendingMailto);
+    let _ = app.update(Message::DiscardCompose);
+    let _ = app.update(Message::OpenPendingMailto);
     assert_eq!(app.compose().unwrap().id(), id);
     assert_eq!(app.pending_mailto_count(), 1);
-    app.update(Message::Sent(
+    let _ = app.update(Message::Sent(
         app.session_epoch,
         Err(SendError::Unconfirmed),
     ));
-    app.update(Message::DiscardCompose);
-    app.update(Message::OpenPendingMailto);
+    let _ = app.update(Message::DiscardCompose);
+    let _ = app.update(Message::OpenPendingMailto);
     assert_ne!(app.compose().unwrap().id(), id);
     assert_eq!(
         app.compose().unwrap().field(ComposeField::To),
@@ -1067,19 +1221,19 @@ fn email_links_never_replace_a_blank_written_or_sending_draft() {
 #[test]
 fn internal_email_links_use_confirmation_and_the_same_local_queue() {
     let mut app = loaded_demo_app();
-    app.update(Message::LinkClicked(
+    let _ = app.update(Message::LinkClicked(
         "mailto:team@example.org?subject=Confirmed".into(),
     ));
     assert!(app.pending_link().is_some());
     assert_eq!(app.pending_mailto_count(), 0);
     assert_eq!(app.update(Message::OpenLink).units(), 0);
-    app.update(Message::OpenPendingMailto);
+    let _ = app.update(Message::OpenPendingMailto);
     assert_eq!(
         app.compose().unwrap().field(ComposeField::Subject),
         "Confirmed"
     );
-    app.update(Message::DiscardCompose);
-    app.update(Message::SetConfirmLinks(false));
+    let _ = app.update(Message::DiscardCompose);
+    let _ = app.update(Message::SetConfirmLinks(false));
     assert_eq!(
         app.update(Message::LinkClicked(
             "mailto:team@example.org?subject=Direct".into()
@@ -1087,13 +1241,13 @@ fn internal_email_links_use_confirmation_and_the_same_local_queue() {
         .units(),
         0
     );
-    app.update(Message::OpenPendingMailto);
+    let _ = app.update(Message::OpenPendingMailto);
     assert_eq!(
         app.compose().unwrap().field(ComposeField::Subject),
         "Direct"
     );
-    app.update(Message::DiscardCompose);
-    app.update(Message::LinkClicked(
+    let _ = app.update(Message::DiscardCompose);
+    let _ = app.update(Message::LinkClicked(
         "mailto:team@example.org?subject=%0AInjected".into(),
     ));
     assert!(app.compose().is_none());
@@ -1104,25 +1258,25 @@ fn internal_email_links_use_confirmation_and_the_same_local_queue() {
 #[test]
 fn email_links_are_bounded_dismissible_and_do_not_cross_a_closed_session() {
     let mut app = loaded_demo_app();
-    app.update(Message::ShowSettings(true));
+    let _ = app.update(Message::ShowSettings(true));
     for index in 0..crate::mailto::MAX_PENDING {
-        app.update(Message::ReceiveMailto(
+        let _ = app.update(Message::ReceiveMailto(
             crate::mailto::Request::parse(&format!("mailto:team@example.org?subject={index}"))
                 .unwrap(),
         ));
     }
-    app.update(Message::ReceiveMailto(
+    let _ = app.update(Message::ReceiveMailto(
         crate::mailto::Request::parse("mailto:overflow@example.org").unwrap(),
     ));
     assert!(app.mailto_error().is_some());
     assert_eq!(app.pending_mailto_count(), crate::mailto::MAX_PENDING);
-    app.update(Message::OpenPendingMailto);
+    let _ = app.update(Message::OpenPendingMailto);
     assert!(app.compose().is_none());
-    app.update(Message::DismissPendingMailto);
-    app.update(Message::DismissMailtoError);
+    let _ = app.update(Message::DismissPendingMailto);
+    let _ = app.update(Message::DismissMailtoError);
     assert!(app.mailto_error().is_none());
-    app.update(Message::ShowSettings(false));
-    app.update(Message::OpenPendingMailto);
+    let _ = app.update(Message::ShowSettings(false));
+    let _ = app.update(Message::OpenPendingMailto);
     assert_eq!(app.compose().unwrap().field(ComposeField::Subject), "1");
     app.close_mailbox(None);
     assert_eq!(app.pending_mailto_count(), 0);
@@ -1411,7 +1565,7 @@ fn automatic_refresh_updates_the_open_folder_and_invalidates_other_caches() {
         app.update(Message::AutoRefreshMailbox).units(),
         PAGE_AND_COUNTS
     );
-    let page_request = app.last_request - 1;
+    let page_request = pending_list_request(&app);
     deliver_demo_page(&mut app, page_request, 0);
 
     assert_eq!(
@@ -1599,7 +1753,7 @@ fn automatic_refresh_does_not_notify_when_inbox_unread_stays_same() {
         .unwrap();
 
     let _ = app.update(Message::AutoRefreshMailbox);
-    let counts_request = app.last_request;
+    let counts_request = pending_counts_request(&app);
 
     let new_counts: crate::mail::MailboxCounts =
         [(Folder::INBOX, initial_unread)].into_iter().collect();
@@ -1619,7 +1773,7 @@ fn manual_refresh_does_not_trigger_notification_when_unread_increases() {
         .unwrap();
 
     let _ = app.update(Message::RefreshMailbox);
-    let counts_request = app.last_request;
+    let counts_request = pending_counts_request(&app);
 
     let new_counts: crate::mail::MailboxCounts =
         [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
@@ -1642,7 +1796,7 @@ fn automatic_refresh_does_not_notify_when_desktop_notifications_disabled() {
         .unwrap();
 
     let _ = app.update(Message::AutoRefreshMailbox);
-    let counts_request = app.last_request;
+    let counts_request = pending_counts_request(&app);
 
     let new_counts: crate::mail::MailboxCounts =
         [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
@@ -1654,7 +1808,7 @@ fn automatic_refresh_does_not_notify_when_desktop_notifications_disabled() {
 fn a_mutation_during_refresh_is_followed_by_a_fresh_request() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::RefreshMailbox);
-    let page_request = app.last_request - 1;
+    let page_request = pending_list_request(&app);
     app.mailbox.as_mut().unwrap().invalidate_listings();
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
@@ -1809,7 +1963,7 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
     assert!(app.mailbox().unwrap().loaded_count() > 0);
 
     let request = SearchRequest {
-        id: app.last_request,
+        id: pending_list_request(&app),
         query: "Avery".into(),
         page: 0,
         page_size: demo::PAGE_SIZE,
@@ -1909,7 +2063,7 @@ fn cancelling_save_as_does_not_download_or_change_a_later_save() {
         0
     );
     assert!(app.saving_attachment().is_none());
-    assert!(app.saved_attachment().is_none());
+    assert!(nothing_said_about_saves(&app));
 
     let second = choose_attachment_destination(&mut app);
     assert_ne!(first, second);
@@ -1937,7 +2091,7 @@ fn cancelling_save_as_does_not_download_or_change_a_later_save() {
     ] {
         assert_eq!(app.update(stale).units(), 0, "{case}");
         assert_eq!(app.saving_attachment(), Some("file"), "{case}");
-        assert!(app.saved_attachment().is_none(), "{case}");
+        assert!(nothing_said_about_saves(&app), "{case}");
     }
 }
 
@@ -1965,7 +2119,7 @@ async fn chosen_destination_starts_one_download_and_failure_creates_no_file() {
     };
     let _ = app.update(task.await);
     assert!(app.saving_attachment().is_none());
-    assert_eq!(app.saved_attachment(), Some(Err(SaveError::NotFetched)));
+    assert_eq!(app.failed_save(), Some(("file", SaveError::NotFetched)));
     assert!(
         !path.exists(),
         "failed downloads must not create the selected file"
@@ -2234,36 +2388,87 @@ fn open_conversation(app: &mut App, id: &str) {
     deliver_selected_demo_detail(app);
 }
 
+/// Opens `id` while a draft covers the reader, as when a conversation asked
+/// for just before Continue writing arrives after it: it waits, unread, for
+/// the reader to show it.
+fn open_behind_the_draft(app: &mut App, id: &str) {
+    assert!(app.draft_covers_reader());
+    let _ = app.start_conversation_load(id.to_owned());
+    deliver_selected_demo_detail(app);
+    assert!(app.defer_read(id));
+}
+
 #[test]
-fn a_conversation_opened_behind_a_draft_stays_unread_until_it_shows() {
+fn a_conversation_chosen_while_writing_shows_with_the_draft_folded_above_it() {
     let mut app = loaded_demo_app();
     let id = unread_rows(&app).remove(0);
     let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Plans".into()));
+    let draft = app.compose().unwrap().id();
 
-    // A click in the list opens it behind the draft, where nobody reads it.
+    // A click in the list folds the draft and shows the conversation, which
+    // is read like any other.
     open_conversation(&mut app, &id);
     assert_eq!(app.mailbox().unwrap().selected_conversation(), Some(&*id));
+    assert!(app.compose().unwrap().folded());
+    assert!(!app.draft_covers_reader());
+    assert!(!is_unread(&app, &id));
+
+    // Continue writing brings the same draft back over the reader.
+    let _ = app.update(Message::ContinueWriting);
+    let compose = app.compose().unwrap();
+    assert_eq!(compose.id(), draft);
+    assert!(!compose.folded());
+    assert_eq!(compose.field(ComposeField::Body), "Plans");
+    assert!(app.draft_covers_reader());
+
+    // So does asking for another message, which says why none opened.
+    let _ = app.update(Message::SelectConversation(id));
+    assert!(app.compose().unwrap().folded());
+    let _ = app.update(Message::OpenCompose);
+    assert!(!app.compose().unwrap().folded());
+    assert!(app.compose().unwrap().asked_again());
+}
+
+#[test]
+fn a_folded_draft_leaves_the_keys_to_the_reader_it_shows() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Plans".into()));
+    open_conversation(&mut app, "demo-0");
+
+    // The list keys walk the mail the reader shows...
+    press(&mut app, Key::Character('j'));
+    assert_eq!(
+        app.mailbox().unwrap().selected_conversation(),
+        Some("demo-1")
+    );
+    // ...the send key does not send the folded draft...
+    press_command(&mut app, Key::Enter);
+    assert!(!app.compose().unwrap().in_flight());
+    // ...and Escape closes the conversation, not the draft.
+    press(&mut app, Key::Escape);
+    assert!(matches!(
+        app.mailbox().unwrap().reader_state(),
+        ReaderState::Empty
+    ));
+    let compose = app.compose().expect("the draft stays");
+    assert!(compose.folded());
+    assert!(!compose.confirming_discard());
+}
+
+#[test]
+fn a_conversation_that_arrived_behind_the_draft_is_read_once_shown() {
+    let mut app = loaded_demo_app();
+    let id = unread_rows(&app).remove(0);
+    let _ = app.update(Message::OpenCompose);
+    open_behind_the_draft(&mut app, &id);
     assert!(is_unread(&app, &id), "marked read behind the draft");
 
     // Putting the untouched draft away shows it, and so reads it.
     let _ = app.update(Message::CloseCompose);
     assert!(app.compose().is_none());
     assert!(!is_unread(&app, &id));
-}
-
-#[test]
-fn only_the_conversation_the_reader_shows_after_a_draft_is_read() {
-    let mut app = loaded_demo_app();
-    let unread = unread_rows(&app);
-    let (passed, kept) = (&unread[0], &unread[1]);
-    let _ = app.update(Message::OpenCompose);
-
-    open_conversation(&mut app, passed);
-    open_conversation(&mut app, kept);
-    let _ = app.update(Message::CloseCompose);
-
-    assert!(is_unread(&app, passed), "never shown, yet marked read");
-    assert!(!is_unread(&app, kept));
 }
 
 #[test]
@@ -2309,7 +2514,7 @@ fn a_conversation_left_behind_a_draft_is_never_marked_read() {
     let before = inbox_unread(&app);
     let id = unread_rows(&app).remove(0);
     let _ = app.update(Message::OpenCompose);
-    open_conversation(&mut app, &id);
+    open_behind_the_draft(&mut app, &id);
 
     // Another folder replaces it before the draft is put away.
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
@@ -2324,7 +2529,7 @@ fn moving_the_draft_to_its_own_window_shows_what_it_covered() {
     let mut app = loaded_demo_app();
     let id = unread_rows(&app).remove(0);
     let _ = app.update(Message::OpenCompose);
-    open_conversation(&mut app, &id);
+    open_behind_the_draft(&mut app, &id);
     assert!(is_unread(&app, &id));
 
     let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
@@ -2479,6 +2684,36 @@ fn a_demo_process_never_starts_a_proton_sign_in() {
     assert_eq!(app.auth_error, Some(AuthError::DemoSignInUnavailable));
     assert_eq!(app.auth_attempt, attempt);
     assert!(app.backend.is_none());
+}
+
+#[test]
+fn a_demo_process_refuses_an_email_link_once_its_mailbox_is_closed() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    let _ = app.update(Message::ReceiveMailto(
+        crate::mailto::Request::parse("mailto:team@example.org").unwrap(),
+    ));
+    assert_eq!(
+        app.pending_mailto_count(),
+        1,
+        "the demo mailbox takes links"
+    );
+    let _ = app.update(Message::DismissPendingMailto);
+
+    let _ = app.update(Message::Logout);
+    let _ = app.update(Message::ReceiveMailto(
+        crate::mailto::Request::parse("mailto:team@example.org").unwrap(),
+    ));
+
+    assert_eq!(
+        app.pending_mailto_count(),
+        0,
+        "no sign-in could ever open it"
+    );
+    assert!(
+        app.mailto_error()
+            .is_some_and(|error| error.contains("RUSTON_DEMO"))
+    );
 }
 
 #[test]
@@ -3277,21 +3512,73 @@ fn escape_puts_an_unsent_message_away() {
 }
 
 #[test]
-fn a_reply_needs_nobody_named_because_proton_knows() {
-    // Core addresses a reply from the message being answered, so the window
-    // must not refuse to send for want of a recipient.
+fn a_reply_opens_addressed_and_its_recipients_can_change() {
+    // A reply opens addressed to whom core would answer, Cc included for
+    // Reply all, and like any message it goes to whoever is typed.
     let mut app = loaded_demo_app();
     open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        kind: AnswerKind::Reply,
+        kind: AnswerKind::ReplyAll,
     });
 
     let writing = app.compose().expect("a reply is open");
-    assert!(!writing.asks_for_recipients());
+    let answering = writing.answering().expect("it answers a message").clone();
+    assert!(!answering.to.is_empty());
+    assert_eq!(writing.field(ComposeField::To), answering.to.join(", "));
+    assert_eq!(writing.field(ComposeField::Cc), answering.cc.join(", "));
+    assert_eq!(writing.showing_copies(), !answering.cc.is_empty());
     assert!(!writing.asks_for_subject());
+    assert!(writing.is_untouched(), "opening addressed is not writing");
+
+    let _ = app.update(Message::ComposeChanged(ComposeField::To, String::new()));
+    let _ = app.update(Message::ComposeChanged(ComposeField::Cc, String::new()));
+    assert_eq!(
+        app.compose().unwrap().not_ready(),
+        Some(compose::NotReady::NoRecipients)
+    );
+    assert_eq!(app.update(Message::Send).units(), 0, "it left unaddressed");
+
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::To,
+        "carol@example.com".into(),
+    ));
+    assert!(!app.compose().unwrap().is_untouched());
     assert_eq!(app.update(Message::Send).units(), 1);
+}
+
+#[test]
+fn an_answer_quotes_the_original_unless_told_not_to() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-0");
+    let _ = app.update(Message::Answer {
+        message_id: "demo-0-2".into(),
+        kind: AnswerKind::Reply,
+    });
+    assert_eq!(
+        app.compose().unwrap().quote(),
+        Some(ruston_core::Quote::Original)
+    );
+
+    let _ = app.update(Message::ToggleComposeQuote);
+    let writing = app.compose().unwrap();
+    assert_eq!(writing.quote(), Some(ruston_core::Quote::Omitted));
+    assert!(
+        writing.is_untouched(),
+        "leaving the quote out is not writing"
+    );
+    let _ = app.update(Message::ToggleComposeQuote);
+    assert_eq!(
+        app.compose().unwrap().quote(),
+        Some(ruston_core::Quote::Original)
+    );
+
+    // A new message answers nothing.
+    let _ = app.update(Message::CloseCompose);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ToggleComposeQuote);
+    assert_eq!(app.compose().unwrap().quote(), None);
 }
 
 #[test]
@@ -3305,7 +3592,7 @@ fn a_forward_still_has_to_be_addressed() {
     });
 
     let writing = app.compose().expect("a forward is open");
-    assert!(writing.asks_for_recipients());
+    assert!(writing.field(ComposeField::To).is_empty());
     // Core writes the subject, so the window does not ask for one.
     assert!(!writing.asks_for_subject());
     assert_eq!(app.update(Message::Send).units(), 0, "it left unaddressed");
@@ -3376,7 +3663,7 @@ fn inspection_candidates_do_not_spawn_an_unbounded_number_of_tasks() {
     page.inspect_candidates
         .extend(page.inspect_candidates.clone());
     let _ = app.update(Message::RefreshMailbox);
-    let request = app.last_request - 1;
+    let request = pending_list_request(&app);
     let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
     assert_eq!(effects.units(), INSPECTION_CONCURRENCY);
 }
@@ -3397,7 +3684,7 @@ fn inspection_queue_drains_with_bounded_deduplicated_work() {
     page.inspect_candidates
         .extend(page.inspect_candidates.clone());
     let _ = app.update(Message::RefreshMailbox);
-    let request = app.last_request - 1;
+    let request = pending_list_request(&app);
     let effects = app.update(Message::ConversationsLoaded(request, Ok(page)));
     let mut running: std::collections::VecDeque<_> = effects.into_iter().collect();
     let mut completed = std::collections::HashSet::new();
@@ -3443,7 +3730,7 @@ fn inspections_are_cancelled_when_the_context_changes() {
     ] {
         let mut app = loaded_demo_app();
         let effects = app.inspect_candidates(vec!["demo-0".into()]);
-        let request = app.last_request;
+        let request = running_inspection(&app, "demo-0");
         let Effect::Future(future) = effects.into_iter().next().unwrap() else {
             panic!("expected an inspection");
         };
@@ -3466,14 +3753,59 @@ fn inspections_are_cancelled_when_the_context_changes() {
 }
 
 #[test]
+fn an_inspection_asked_before_a_rename_still_frees_its_place() {
+    let mut app = loaded_demo_app();
+    let invoices = Folder::custom("kZ9", "Invoices");
+    let _ = app.update(Message::SelectFolder(invoices.clone()));
+    let page = ConversationPage {
+        conversations: vec![ConversationSummary {
+            id: "thread-1".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: Some("Invoice".into()),
+            correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: Some(100),
+            unread: false,
+            starred: false,
+            message_count: 2,
+            has_attachments: false,
+        }],
+        total: 1,
+        inspect_candidates: vec!["thread-1".into()],
+    };
+    let started = app.update(Message::ConversationsLoaded(
+        pending_list_request(&app),
+        Ok(page),
+    ));
+    assert_eq!(started.units(), 1, "the thread is inspected");
+    let request = running_inspection(&app, "thread-1");
+    deliver_folders(&mut app, Ok(vec![Folder::custom("kZ9", "Facturas")]));
+
+    // The answer names the folder as it was called when it was asked.
+    let _ = app.update(Message::ThreadInspected {
+        revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
+        epoch: app.session_epoch,
+        request,
+        folder: invoices,
+        conversation_id: "thread-1".into(),
+        result: Ok(None),
+    });
+    assert!(
+        !app.inspections.finish(request, "thread-1"),
+        "the renamed folder's inspection kept its place"
+    );
+}
+
+#[test]
 fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
     let mut app = loaded_demo_app();
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
-    let old_request = app.last_request;
+    let old_request = running_inspection(&app, "demo-0");
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
     let _ = app.update(Message::SelectFolder(Folder::INBOX));
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
-    let current_request = app.last_request;
+    let current_request = running_inspection(&app, "demo-0");
     let effects = app.update(Message::ThreadInspected {
         revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
         epoch: app.session_epoch,
@@ -3491,7 +3823,7 @@ fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
 fn conversations_loaded_with_candidates_starts_inspection_effects() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::RefreshMailbox);
-    let request = app.last_request - 1;
+    let request = pending_list_request(&app);
 
     let page = ConversationPage {
         conversations: vec![ConversationSummary {
@@ -3582,7 +3914,7 @@ fn thread_inspected_splits_conversation_when_successful() {
     let mut app = loaded_demo_app();
     let epoch = app.session_epoch;
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
-    let request = app.last_request;
+    let request = running_inspection(&app, "demo-0");
 
     let split_rows = vec![
         ConversationSummary {
@@ -3638,7 +3970,7 @@ fn thread_inspected_stale_epoch_or_folder_is_ignored() {
     let mut app = loaded_demo_app();
     let stale_epoch = app.session_epoch + 99;
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
-    let request = app.last_request;
+    let request = running_inspection(&app, "demo-0");
 
     let split_rows = vec![ConversationSummary {
         id: "split-ignored".into(),

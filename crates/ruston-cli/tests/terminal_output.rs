@@ -6,6 +6,10 @@ use std::process::{Command, Output};
 const ATTACK: &str =
     "mail\x1b]52;c;Y2xpcGJvYXJk\x07\u{9d}title\u{9c}\u{9b}2J\r\x08\u{202e}fdp.scr\u{2066}\0";
 
+/// What every demo command says on standard error.
+const DEMO_NOTICE: &str =
+    "note: offline demo (--demo or RUSTON_DEMO); nothing is sent to or changed on Proton\n";
+
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ruston-cli"))
         .args(args)
@@ -41,6 +45,127 @@ fn run_ok(args: &[&str]) -> Output {
 /// unit tests cover that.
 fn attack_argument() -> &'static str {
     ATTACK.trim_end_matches('\0')
+}
+
+#[test]
+fn a_folder_or_label_of_ones_own_is_named_as_people_see_it() {
+    let output = run_ok(&["--demo", "--json", "messages", "list", "--folder", "WORK"]);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let messages = listed["messages"].as_array().unwrap();
+    assert!(!messages.is_empty(), "{listed}");
+    for message in messages {
+        let labels = message["LabelIDs"].as_array().unwrap();
+        assert!(labels.contains(&"label-demo-work".into()), "{message}");
+    }
+
+    let unknown = run(&["--demo", "messages", "list", "--folder", "Nowhere"]);
+    assert!(!unknown.status.success());
+    let error = String::from_utf8(unknown.stderr).unwrap();
+    assert!(error.contains("folder or label not found"), "{error}");
+}
+
+#[test]
+fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
+    let json = |args: &[&str]| -> serde_json::Value {
+        let output = run_ok(&[&["--demo", "--json"][..], args].concat());
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    assert_eq!(
+        json(&["settings", "sign", "on"]),
+        serde_json::json!({"status": "ok", "setting": "sign", "value": true, "demo": true})
+    );
+    assert_eq!(
+        json(&["settings", "attach-public-key", "off"]),
+        serde_json::json!({
+            "status": "ok", "setting": "attach_public_key", "value": false, "demo": true
+        })
+    );
+    assert_eq!(
+        json(&["messages", "empty", "spam", "--yes"]),
+        serde_json::json!({"status": "ok", "action": "empty", "folder": "spam", "demo": true})
+    );
+    let text = assert_safe(&run_ok(&["--demo", "settings", "sign", "off"]).stdout);
+    assert_eq!(text, "Sign outgoing mail: off\n");
+    let text = assert_safe(&run_ok(&["--demo", "messages", "empty", "trash", "--yes"]).stdout);
+    assert_eq!(text, "Emptied Trash.\n");
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let file = std::env::temp_dir().join(format!(
+        "ruston-cli-body-{}-{unique}.txt",
+        std::process::id()
+    ));
+    let path = file.to_str().unwrap();
+    let written = json(&["messages", "read", "msg-demo-01", "--output", path]);
+    let bytes = std::fs::metadata(&file).unwrap().len();
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(
+        written,
+        serde_json::json!({"status": "ok", "bytes": bytes, "path": path, "demo": true})
+    );
+}
+
+#[test]
+fn each_action_is_named_after_its_command() {
+    for (args, action) in [
+        (&["messages", "mark", "read", "msg-demo-01"][..], "mark"),
+        (
+            &["messages", "move", "msg-demo-01", "--dest", "archive"],
+            "move",
+        ),
+        (
+            &["messages", "label", "add", "Work", "msg-demo-01"],
+            "label",
+        ),
+        (
+            &["messages", "label", "rm", "Work", "msg-demo-01"],
+            "unlabel",
+        ),
+        (&["messages", "undelete", "msg-demo-01"], "undelete"),
+        (&["messages", "unsubscribe", "msg-demo-01"], "unsubscribe"),
+        (&["messages", "receipt", "msg-demo-01"], "receipt"),
+        (
+            &["conversations", "move", "conv-demo-01", "--dest", "inbox"],
+            "move",
+        ),
+        (&["conversations", "mark", "unread", "conv-demo-01"], "mark"),
+        (&["conversations", "unsnooze", "conv-demo-01"], "unsnooze"),
+        (&["drafts", "delete", "draft-demo-01", "--yes"], "delete"),
+        (&["filters", "enable", "filter-demo-01"], "enable"),
+        (&["filters", "disable", "filter-demo-01"], "disable"),
+        (&["filters", "delete", "filter-demo-01"], "delete"),
+        (&["labels", "delete", "label-demo-work"], "delete"),
+    ] {
+        let output = run_ok(&[&["--demo", "--json"][..], args].concat());
+        let reported: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reported["action"], action, "{args:?}");
+    }
+}
+
+#[test]
+fn a_demo_page_far_past_the_end_lists_nothing() {
+    for list in ["messages", "conversations", "drafts", "contacts"] {
+        let args = [
+            "--demo",
+            "--json",
+            list,
+            "list",
+            "--page",
+            "4294967295",
+            "--page-size",
+            "100",
+        ];
+        let output = run_ok(&args);
+        let text = String::from_utf8(output.stdout).unwrap();
+        let listed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let rows = listed
+            .as_object()
+            .and_then(|object| object.values().find_map(serde_json::Value::as_array))
+            .unwrap_or_else(|| panic!("{list}: no rows in {text}"));
+        assert!(rows.is_empty(), "{list}: {text}");
+    }
 }
 
 #[test]
@@ -84,11 +209,31 @@ fn a_reader_that_stops_early_ends_the_command_quietly() {
             "{args:?} ended with {}",
             output.status
         );
-        assert!(
-            output.stderr.is_empty(),
-            "{args:?} wrote {}",
-            String::from_utf8_lossy(&output.stderr)
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            DEMO_NOTICE,
+            "{args:?} wrote more than the demo notice"
         );
+    }
+}
+
+#[test]
+fn a_demo_says_so_on_stderr_whatever_turned_it_on() {
+    let send: Vec<&str> = "messages send --to a@example.org --subject Hi --body Hello"
+        .split(' ')
+        .collect();
+    let flag = run_ok(&[&["--demo", "--json"][..], &send].concat());
+    // A variable left set from trying the desktop demo turns it on too.
+    let variable = Command::new(env!("CARGO_BIN_EXE_ruston-cli"))
+        .args(&send)
+        .env_remove("RUST_LOG")
+        .env("RUSTON_DEMO", "1")
+        .output()
+        .unwrap();
+
+    for output in [flag, variable] {
+        assert!(output.status.success(), "ended with {}", output.status);
+        assert_eq!(String::from_utf8_lossy(&output.stderr), DEMO_NOTICE);
     }
 }
 
@@ -135,6 +280,40 @@ fn a_second_demo_export_into_the_same_folder_resumes() {
 }
 
 #[test]
+fn a_demo_download_never_replaces_a_file_already_there() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let folder = std::env::temp_dir().join(format!(
+        "ruston-cli-download-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("translation_proposal.pdf"), b"mine").unwrap();
+
+    let output = run_ok(&[
+        "--demo",
+        "attachments",
+        "download",
+        "msg-demo-03",
+        "att-demo-01",
+        "--output-dir",
+        folder.to_str().unwrap(),
+    ]);
+    let kept = std::fs::read(folder.join("translation_proposal.pdf")).unwrap();
+    let saved = std::fs::read(folder.join("translation_proposal (1).pdf"));
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    assert_eq!(kept, b"mine");
+    assert!(saved.unwrap().starts_with(b"%PDF"));
+    // The demo reports a download as the real command does.
+    let text = assert_safe(&output.stdout);
+    assert!(text.contains("Downloaded 1 file(s):"), "{text}");
+    assert!(text.contains("translation_proposal (1).pdf"), "{text}");
+}
+
+#[test]
 fn a_saved_draft_is_reported_as_saved_not_sent() {
     let args = [
         "--demo",
@@ -157,8 +336,31 @@ fn a_saved_draft_is_reported_as_saved_not_sent() {
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(
         value,
-        serde_json::json!({"status": "ok", "id": "draft-demo-saved-01"})
+        serde_json::json!({"status": "ok", "id": "draft-demo-saved-01", "demo": true})
     );
+}
+
+#[test]
+fn demo_json_says_so_and_lists_come_as_objects() {
+    for (args, list) in [
+        (&["labels", "list"][..], "labels"),
+        (&["labels", "list", "--folders"], "folders"),
+        (&["counts"], "counts"),
+        (&["addresses", "list"], "addresses"),
+        (&["filters", "list"], "filters"),
+        (&["contacts", "emails"], "emails"),
+        (&["attachments", "list", "msg-demo-03"], "attachments"),
+        (&["messages", "list"], "messages"),
+    ] {
+        let output = run_ok(&[&["--demo", "--json"][..], args].concat());
+        let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(shown[list].is_array(), "{args:?}: {shown}");
+        assert_eq!(shown["demo"], true, "{args:?}");
+    }
+    // A message read in full says so too.
+    let output = run_ok(&["--demo", "--json", "messages", "read", "msg-demo-01"]);
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(shown["demo"], true);
 }
 
 #[test]

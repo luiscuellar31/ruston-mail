@@ -2,12 +2,12 @@ use chrono::{DateTime, Datelike, Local, TimeZone};
 use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
-use super::{UiState, UndoNotice, compose, reader, settings, theme};
+use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
 use crate::app::{
-    App, AuthState, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, UndoMove,
+    App, AuthState, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, Notice,
     compact_layout, panel_ratios, panel_widths,
 };
-use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError};
+use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError, PlaceLook};
 use crate::settings::{ComposePlacement, Panels, Settings};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
@@ -46,7 +46,7 @@ pub(super) fn show(
     let window_width = root.available_width();
     if compact_layout(window_width) {
         show_compact(root, app, settings_draft, state, messages);
-        undo_notice(&context, mailbox, state, None, messages);
+        bottom_notice(&context, app, mailbox, state, None, messages);
         return;
     }
     let widths = panel_widths(app.panels(), window_width);
@@ -95,7 +95,7 @@ pub(super) fn show(
         }
     };
 
-    undo_notice(&context, mailbox, state, conversations, messages);
+    bottom_notice(&context, app, mailbox, state, conversations, messages);
     let conversations = conversations.map(|list| list.width());
 
     let stored = app.panels();
@@ -126,7 +126,7 @@ fn show_compact(
     let mailbox = app.mailbox().expect("authenticated mailbox");
     let inset = theme::titlebar_inset(root.ctx());
     let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
-        && app.compose().is_some();
+        && app.compose().is_some_and(|draft| !draft.folded());
     let reader_available = writing || mailbox.selected_conversation().is_some();
     if state.compact_view == CompactView::Reader && !reader_available {
         state.compact_view = CompactView::Mail;
@@ -182,25 +182,46 @@ fn show_compact(
                     CompactView::Folders => {
                         sidebar(ui, app, mailbox, messages);
                     }
-                    CompactView::Mail => conversation_pane(ui, app, mailbox, state, messages),
+                    CompactView::Mail => compact_mail(ui, app, mailbox, state, messages),
                     CompactView::Reader => reading_pane(ui, app, state, messages),
                 }
             }
         });
 }
 
+/// The list on its own, as one column shows it. The reader, which says why
+/// an action failed, is a tab away there, so the list says it too.
+fn compact_mail(
+    ui: &mut egui::Ui,
+    app: &App,
+    mailbox: &Mailbox,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    if let Some(error) = mailbox.action_error() {
+        ui.label(egui::RichText::new(error.action_message()).color(theme::colors(ui).danger));
+        ui.add_space(4.0);
+    }
+    conversation_pane(ui, app, mailbox, state, messages);
+}
+
 fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mut Vec<Message>) {
-    if app.settings().compose_placement == ComposePlacement::ReadingPane
-        && let Some(writing) = app.compose()
-    {
+    let in_pane = app.settings().compose_placement == ComposePlacement::ReadingPane;
+    if in_pane && let Some(writing) = app.compose().filter(|draft| !draft.folded()) {
         compose::show_in_pane(ui, writing, messages);
     } else {
+        // A draft folded while a conversation was chosen waits above it.
+        if in_pane && let Some(folded) = app.compose() {
+            compose::folded_strip(ui, folded, messages);
+        }
         let view = reader::ReaderView {
             mailbox: app.mailbox().expect("authenticated mailbox"),
             places: app.folders(),
             actions_available: app.mailbox_actions_available(),
-            saving_attachment: app.saving_attachment(),
-            saved_attachment: app.saved_attachment(),
+            saves: reader::AttachmentSaves {
+                saving: app.saving_attachment(),
+                failed: app.failed_save(),
+            },
             reading: app.settings().reading(),
         };
         reader::show(ui, &view, state, messages);
@@ -223,9 +244,18 @@ fn sidebar(
                     ..Default::default()
                 }))
                 .show(ui, |ui| sidebar_account(ui, app, messages));
-            if account.response.rect.bottom() > available.bottom() + 1.0 {
-                // A bottom panel needs one measured frame before its height is
-                // known. Schedule that frame even if the pointer is stationary.
+            // A bottom panel needs one measured frame before its height is
+            // known. Schedule that frame even if the pointer is stationary,
+            // but only while the height is new: a block too tall to fit at
+            // all would otherwise ask for every frame.
+            let height = account.response.rect.height();
+            let measured = ui.id().with("sidebar-account-height");
+            let remeasured = ui.ctx().data_mut(|data| {
+                let changed = data.get_temp::<f32>(measured) != Some(height);
+                data.insert_temp(measured, height);
+                changed
+            });
+            if remeasured && account.response.rect.bottom() > available.bottom() + 1.0 {
                 ui.ctx().request_repaint();
             }
             ui.spacing_mut().scroll = theme::panel_scroll_style();
@@ -254,26 +284,40 @@ fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &m
 
     // Settings covers the mail panes, so it alone shows as chosen.
     let current = (!app.showing_settings()).then(|| mailbox.folder());
-    for folder in MailFolder::ALL.into_iter().map(Folder::System).chain(
-        app.folders()
-            .iter()
-            .filter(|folder| folder.kind() == Some(CustomKind::Folder))
-            .cloned(),
-    ) {
-        folder_button(ui, mailbox, current, folder, messages);
+    for folder in MailFolder::ALL.into_iter().map(Folder::System) {
+        folder_button(ui, mailbox, current, folder, PlaceLook::default(), messages);
     }
 
-    let labels: Vec<_> = app
-        .folders()
-        .iter()
-        .filter(|folder| folder.kind() == Some(CustomKind::Label))
-        .cloned()
-        .collect();
-    if !labels.is_empty() {
-        ui.add_space(14.0);
-        detail(ui, "LABELS");
-        for label in labels {
-            folder_button(ui, mailbox, current, label, messages);
+    // The account's own folders and labels each come under a heading, as
+    // in Proton's web client, so a folder of its own is not read as one of
+    // Proton's.
+    for (heading, kind) in [
+        ("FOLDERS", CustomKind::Folder),
+        ("LABELS", CustomKind::Label),
+    ] {
+        let places: Vec<_> = app
+            .folders()
+            .iter()
+            .filter(|folder| folder.kind() == Some(kind))
+            .cloned()
+            .collect();
+        if !places.is_empty() {
+            ui.add_space(14.0);
+            detail(ui, heading);
+            for place in places {
+                let look = app.place_look(&place);
+                if look.depth == 0 {
+                    folder_button(ui, mailbox, current, place, look, messages);
+                } else {
+                    // A subfolder sits under its parent, indented a step
+                    // for each folder it is in.
+                    let mut row = ui.available_rect_before_wrap();
+                    row.min.x += f32::from(look.depth) * SUBFOLDER_INDENT;
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
+                        folder_button(ui, mailbox, current, place, look, messages);
+                    });
+                }
+            }
         }
     }
 }
@@ -374,6 +418,7 @@ fn folder_button(
     mailbox: &Mailbox,
     current: Option<&Folder>,
     folder: Folder,
+    look: PlaceLook,
     messages: &mut Vec<Message>,
 ) {
     let selected = current == Some(&folder);
@@ -422,7 +467,7 @@ fn folder_button(
         })
         .inner;
     let icon_color = if icon == theme::Icon::Label {
-        theme::ACCENT
+        label_color(look)
     } else if selected {
         theme::colors(ui).selected_folder_text
     } else {
@@ -458,6 +503,13 @@ fn folder_button(
     }
 }
 
+/// The color a label's icon wears: the one it has in Proton, as Proton's own
+/// apps show it, or the accent for one Ruston cannot read.
+fn label_color(look: PlaceLook) -> Color32 {
+    look.color
+        .map_or(theme::ACCENT, |[r, g, b]| Color32::from_rgb(r, g, b))
+}
+
 pub(super) fn folder_icon(folder: &Folder) -> theme::Icon {
     match folder {
         Folder::System(MailFolder::Inbox) => theme::Icon::Inbox,
@@ -485,14 +537,24 @@ fn conversation_pane(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
+    // What the server found comes from every folder, not the one open.
+    let title = if mailbox.shown_search_query().is_some() {
+        "Search results"
+    } else {
+        mailbox.folder().name()
+    };
     ui.horizontal(|ui| {
-        ui.heading(
-            egui::RichText::new(mailbox.folder().name())
-                .size(21.0)
-                .strong(),
-        );
+        // Refresh takes its place first; a long name is shortened in the
+        // width left, with the whole name on hover, instead of widening the
+        // list or running under the button.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             refresh_button(ui, app, mailbox, messages);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(title).heading().size(21.0).strong())
+                        .truncate(),
+                );
+            });
         });
     });
     ui.add_space(6.0);
@@ -532,12 +594,21 @@ fn conversation_pane(
             messages.push(Message::SearchSubmitted);
         }
     });
-    if !mailbox.search_query().is_empty() {
-        detail(
-            ui,
-            &search_scope_label(mailbox.shown_search_query(), mailbox.loaded_count()),
-        );
-    }
+    // The line stays while nothing is typed, so the first key does not push
+    // the list down; text too long for it is shortened, whole on hover.
+    let scope = if mailbox.search_query().is_empty() {
+        String::new()
+    } else {
+        search_scope_label(mailbox.shown_search_query(), mailbox.loaded_count())
+    };
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(scope)
+                .small()
+                .color(theme::colors(ui).muted),
+        )
+        .truncate(),
+    );
     ui.add_space(4.0);
 
     let empty = mailbox.is_empty_visible();
@@ -649,76 +720,140 @@ fn failure_line(
     ui.add_space(4.0);
 }
 
-const UNDO_NOTICE_SECONDS: f64 = 6.0;
-const UNDO_NOTICE_MARGIN: f32 = 20.0;
+const NOTICE_SECONDS: f64 = 6.0;
+const NOTICE_MARGIN: f32 = 20.0;
 
-/// The offer to take back the last move. It sits at the foot of the list it
-/// was made from, `list`, rather than across the divider beside it; without
-/// a list on screen, at the foot of the window.
-fn undo_notice(
+#[cfg(target_os = "macos")]
+const REVEAL_LABEL: &str = "Show in Finder";
+#[cfg(target_os = "windows")]
+const REVEAL_LABEL: &str = "Show in Explorer";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const REVEAL_LABEL: &str = "Show in folder";
+
+/// Where the pointer is, for the bottom notice's time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pointer {
+    Away,
+    /// Resting on the notice, which keeps it until the pointer leaves.
+    OnNotice,
+}
+
+/// The notice at the foot of the list it is about, `list`, rather than
+/// across the divider beside it; without a list on screen, at the foot of
+/// the window. It offers to take back the last move or, with none to take
+/// back, confirms a message sent or a file saved.
+fn bottom_notice(
     context: &egui::Context,
+    app: &App,
     mailbox: &Mailbox,
     state: &mut UiState,
     list: Option<egui::Rect>,
     messages: &mut Vec<Message>,
 ) {
-    let Some(offer) = mailbox.undo() else {
-        state.undo_notice = None;
-        return;
+    let notice = match (mailbox.undo(), app.notice()) {
+        (Some(offer), _) => BottomNotice::Undo(Box::new(offer.clone())),
+        (None, Some(notice)) => BottomNotice::Confirmation(notice.clone()),
+        (None, None) => {
+            state.bottom_notice = None;
+            return;
+        }
     };
+    let id = egui::Id::new("bottom-notice");
     let now = context.input(|input| input.time);
-    let Some(remaining) = undo_notice_remaining(state, offer, now) else {
-        messages.push(Message::DismissUndo(offer.clone()));
+    // The notice is where it was laid out last frame.
+    let pointer = match (
+        context.memory(|memory| memory.area_rect(id)),
+        context.pointer_hover_pos(),
+    ) {
+        (Some(rect), Some(position)) if rect.contains(position) => Pointer::OnNotice,
+        _ => Pointer::Away,
+    };
+    let Some(remaining) = notice_remaining(state, &notice, now, pointer) else {
+        messages.push(match notice {
+            BottomNotice::Undo(offer) => Message::DismissUndo(*offer),
+            BottomNotice::Confirmation(notice) => Message::DismissNotice(notice),
+        });
         return;
     };
     context.request_repaint_after(remaining);
 
-    let area = egui::Area::new(egui::Id::new("undo-move-notice"));
+    let area = egui::Area::new(id);
     let area = match list {
         Some(list) => area
             .pivot(Align2::CENTER_BOTTOM)
-            .fixed_pos(list.center_bottom() - egui::vec2(0.0, UNDO_NOTICE_MARGIN)),
-        None => area.anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -UNDO_NOTICE_MARGIN)),
+            .fixed_pos(list.center_bottom() - egui::vec2(0.0, NOTICE_MARGIN)),
+        None => area.anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -NOTICE_MARGIN)),
     };
     let _ = area.order(egui::Order::Foreground).show(context, |ui| {
         theme::card(ui)
             .stroke(Stroke::new(1.0, theme::ACCENT))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(format!("Moved to {}.", offer.to.name()));
-                    // The move back waits while the list loads or loads more.
-                    let ready = mailbox.takes_actions();
-                    if ui
-                        .add_enabled(ready, theme::compact_button("Undo"))
-                        .clicked()
-                    {
-                        messages.push(Message::UndoMove);
-                    }
-                });
+                ui.horizontal(|ui| notice_content(ui, &notice, mailbox, messages));
             });
     });
 }
 
-fn undo_notice_remaining(
-    state: &mut UiState,
-    offer: &UndoMove,
-    now: f64,
-) -> Option<std::time::Duration> {
-    if state
-        .undo_notice
-        .as_ref()
-        .is_none_or(|notice| notice.offer != *offer)
-    {
-        state.undo_notice = Some(UndoNotice {
-            offer: offer.clone(),
-            expires_at: now + UNDO_NOTICE_SECONDS,
-        });
+/// What a bottom notice says, and what it offers to do.
+fn notice_content(
+    ui: &mut egui::Ui,
+    notice: &BottomNotice,
+    mailbox: &Mailbox,
+    messages: &mut Vec<Message>,
+) {
+    match notice {
+        BottomNotice::Undo(offer) => {
+            ui.label(format!("Moved to {}.", offer.to.name()));
+            // The move back waits while the list loads or loads more.
+            let ready = mailbox.takes_actions();
+            if ui
+                .add_enabled(ready, theme::compact_button("Undo"))
+                .clicked()
+            {
+                messages.push(Message::UndoMove);
+            }
+        }
+        BottomNotice::Confirmation(Notice::Sent) => {
+            ui.label("Message sent.");
+        }
+        BottomNotice::Confirmation(Notice::Saved(path)) => {
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            ui.label(format!("Saved {name}."))
+                .on_hover_text(path.display().to_string());
+            if ui.add(theme::compact_button(REVEAL_LABEL)).clicked() {
+                messages.push(Message::RevealAttachment(path.clone()));
+            }
+        }
     }
-    let remaining = state.undo_notice.as_ref()?.expires_at - now;
+}
+
+/// How long `notice` stays from `now`: its own time from when it first
+/// showed, started again while the pointer rests on it. `None` once it is up.
+fn notice_remaining(
+    state: &mut UiState,
+    notice: &BottomNotice,
+    now: f64,
+    pointer: Pointer,
+) -> Option<std::time::Duration> {
+    let timed = match &mut state.bottom_notice {
+        Some(timed) if timed.notice == *notice => timed,
+        other => other.insert(TimedNotice {
+            notice: notice.clone(),
+            expires_at: now + NOTICE_SECONDS,
+        }),
+    };
+    if pointer == Pointer::OnNotice {
+        timed.expires_at = now + NOTICE_SECONDS;
+    }
+    let remaining = timed.expires_at - now;
     (remaining > 0.0).then(|| std::time::Duration::from_secs_f64(remaining))
 }
 
 const FOLDER_HEIGHT: f32 = 31.0;
+/// How far each folder a subfolder sits in moves it right.
+const SUBFOLDER_INDENT: f32 = 14.0;
 /// Virtualized rows must draw at this height to stay aligned with scrolling.
 const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;
@@ -853,14 +988,16 @@ fn conversation_list(
             });
 
             // Explicit keyboard navigation takes precedence over restoring the
-            // viewport after a background listing update.
+            // viewport after a background listing update. Another folder or
+            // search starts at its top, not where the last one was left.
             if reveal.is_none()
-                && let Some(offset) = state
-                    .conversation_scroll
-                    .as_ref()
-                    .and_then(|saved| saved.offset_after_update(mailbox, scroll_id))
+                && let Some(saved) = state.conversation_scroll.as_ref()
             {
-                scroll = scroll.vertical_scroll_offset(offset);
+                if !saved.same_view(mailbox, scroll_id) {
+                    scroll = scroll.vertical_scroll_offset(0.0);
+                } else if let Some(offset) = saved.offset_after_update(mailbox, scroll_id) {
+                    scroll = scroll.vertical_scroll_offset(offset);
+                }
             }
 
             let output = scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
@@ -1213,12 +1350,10 @@ pub(super) fn detail(ui: &mut egui::Ui, text: &str) {
 fn search_scope_label(results: Option<&str>, loaded: usize) -> String {
     match (results, loaded) {
         (Some(query), _) => format!("Showing what the server found for “{query}”."),
-        (None, 1) => {
-            "Narrowing the 1 conversation loaded so far. Press Enter to search all mail.".to_owned()
+        (None, 1) => "Narrowing 1 loaded conversation · Enter searches all mail".to_owned(),
+        (None, loaded) => {
+            format!("Narrowing {loaded} loaded conversations · Enter searches all mail")
         }
-        (None, loaded) => format!(
-            "Narrowing the {loaded} conversations loaded so far. Press Enter to search all mail."
-        ),
     }
 }
 

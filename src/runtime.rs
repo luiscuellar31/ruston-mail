@@ -138,3 +138,45 @@ impl Drop for Runtime {
         }
     }
 }
+
+/// Starts `command` and waits for it to exit on a blocking worker. Openers
+/// such as `open` and `xdg-open` hand their work to another program and
+/// exit; on macOS and Linux a child nobody waits for stays a zombie process
+/// until Ruston quits.
+pub async fn run_to_exit(
+    mut command: std::process::Command,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut child = command.spawn()?;
+    tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_started_program_is_waited_for_until_it_exits() {
+        // Its exit code is known only once it has been waited for, which is
+        // what removes it from the process table.
+        let status = run_to_exit(exits_with(3)).await.unwrap();
+        assert_eq!(status.code(), Some(3));
+    }
+
+    /// A program that exits with `code` straight away.
+    #[cfg(target_os = "windows")]
+    fn exits_with(code: u8) -> std::process::Command {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", &format!("exit {code}")]);
+        command
+    }
+
+    /// A program that exits with `code` straight away.
+    #[cfg(not(target_os = "windows"))]
+    fn exits_with(code: u8) -> std::process::Command {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", &format!("exit {code}")]);
+        command
+    }
+}

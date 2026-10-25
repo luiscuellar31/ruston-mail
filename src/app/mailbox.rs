@@ -465,6 +465,12 @@ impl Mailbox {
         self.status
     }
 
+    /// The counts request in flight, if any.
+    #[cfg(test)]
+    pub fn counts_request(&self) -> Option<RequestId> {
+        self.counts_request
+    }
+
     #[cfg(test)]
     pub fn conversations(&self) -> &[ConversationSummary] {
         &self.conversations
@@ -1092,16 +1098,35 @@ impl Mailbox {
         let ReaderState::Loaded(reader) = &self.reader else {
             return None;
         };
-        let row = self.row(reader.conversation_id())?;
-        if !row.unread
-            || self.automatic_reads.contains_key(&row.id)
-            || self.read_change_queued(&row.id)
+        let row_id = reader.conversation_id().to_owned();
+        // A thread split into its messages while it was open has no row of
+        // its own any more: it is read as the thread it was, unread while
+        // any of its messages is, and in the folder that lists them.
+        let (unread, kind, listed) = match self.row(&row_id) {
+            Some(row) => (row.unread, row.kind, self.listed_in_folder(&row_id)),
+            None => {
+                let group = self.groups.splits.get(&row_id)?;
+                let members = || group.message_ids.iter();
+                (
+                    members().any(|message| self.row(message).is_some_and(|row| row.unread)),
+                    group.source.kind,
+                    members().any(|message| self.listed_in_folder(message)),
+                )
+            }
+        };
+        if !unread || self.automatic_reads.contains_key(&row_id) || self.read_change_queued(&row_id)
         {
             return None;
         }
-        let (row_id, kind) = (row.id.clone(), row.kind);
 
-        let request = self.new_action_request(request, row_id, kind, MailAction::SetUnread(false));
+        let request = ActionRequest {
+            id: request,
+            context: listed.then(|| self.folder.clone()),
+            row_id,
+            kind,
+            folder: self.folder.clone(),
+            action: MailAction::SetUnread(false),
+        };
         self.automatic_reads
             .insert(request.row_id.clone(), request.id);
         Some(request)
@@ -1170,10 +1195,19 @@ impl Mailbox {
         }
         self.invalidate_listings();
         // The row is only marked here while its folder is open, but Proton's
-        // counts changed wherever the person went meanwhile.
-        if request.folder == self.folder {
-            for row in self.row_copies(&request.row_id) {
-                row.unread = false;
+        // counts changed wherever the person went meanwhile. A thread split
+        // into its messages is read in them.
+        if self.shows(&request.folder) {
+            let members = self
+                .groups
+                .splits
+                .get(&request.row_id)
+                .map(|group| group.message_ids.clone())
+                .unwrap_or_default();
+            for row_id in std::iter::once(&request.row_id).chain(&members) {
+                for row in self.row_copies(row_id) {
+                    row.unread = false;
+                }
             }
         }
 
@@ -1368,7 +1402,7 @@ impl Mailbox {
             };
         }
         // After a folder switch these rows no longer contain the acted-on row.
-        if request.folder != self.folder {
+        if !self.shows(&request.folder) {
             return ActionFinish {
                 result: Ok(()),
                 next_action,
@@ -1439,13 +1473,13 @@ impl Mailbox {
             self.undo = None;
         }
         if let Some(before) =
-            before.filter(|_| request.folder == self.folder && !self.superseded(request))
+            before.filter(|_| self.shows(&request.folder) && !self.superseded(request))
         {
             self.record_action(&request.row_id, &before);
         }
         // A refused move that kept its row leaves its place unknown again.
         if request.action.destination().is_some()
-            && request.folder == self.folder
+            && self.shows(&request.folder)
             && !self.leaves_view(&self.folder, &request.action)
             && !self.superseded(request)
         {
@@ -1465,7 +1499,7 @@ impl Mailbox {
     /// Whether a refused action had taken its row out of the view on screen,
     /// so only a reload can bring it back.
     pub(super) fn took_out(&self, request: &ActionRequest) -> bool {
-        request.folder == self.folder && self.leaves_view(&self.folder, &request.action)
+        self.shows(&request.folder) && self.leaves_view(&self.folder, &request.action)
     }
 
     /// Whether a confirmed move belongs in the open view but its row is not
@@ -1551,6 +1585,12 @@ impl Mailbox {
         let last = self.visible_cache.len().checked_sub(1)?;
 
         self.visible_row(index.min(last)).map(|row| row.id.clone())
+    }
+
+    /// Whether `folder` is the one open, by its stable identity: work asked
+    /// for under a name the folder has since changed still belongs to it.
+    pub fn shows(&self, folder: &Folder) -> bool {
+        FolderKey::of(folder) == FolderKey::of(&self.folder)
     }
 
     /// Updates an account folder's name without reloading its stable id.
@@ -1802,7 +1842,7 @@ impl Mailbox {
         conversation_id: &str,
         split_rows: Vec<ConversationSummary>,
     ) {
-        if &self.folder == folder {
+        if self.shows(folder) {
             if self
                 .groups
                 .apply_split(&mut self.conversations, conversation_id, split_rows)
@@ -1904,7 +1944,7 @@ impl Mailbox {
         confirmed
             .into_iter()
             .chain(self.queued_actions().cloned())
-            .filter(|request| request.folder == self.folder)
+            .filter(|request| self.shows(&request.folder))
             .collect()
     }
 

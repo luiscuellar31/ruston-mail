@@ -3,10 +3,12 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align, Layout};
 
 use super::settings::ZoomStep;
-use super::{identity, mailbox::detail, reader, theme};
+use super::theme::{self, Emphasis};
+use super::{identity, mailbox::detail, reader};
 use crate::app::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
 use crate::settings::MIN_WINDOW_SIZE;
+use ruston_core::Quote;
 
 const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
 
@@ -143,18 +145,29 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     focus_new_draft(ui, compose);
 
     title_and_actions(ui, compose, leaving, send_label(&sending), messages);
+    // Why the last send failed, right under Send, where the person looks once
+    // they have pressed it.
+    if let Sending::Failed(error) = &sending {
+        ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
+    }
     ui.add_space(10.0);
-    if compose.confirming_discard() {
-        discard_prompt(ui, messages);
+    if compose.asked_again() {
+        ui.label("You are already writing a message. Send or discard it to start another.");
         ui.add_space(10.0);
     }
+    if compose.confirming_discard()
+        && let Some(answer) = discard_prompt(ui.ctx())
+    {
+        messages.push(answer);
+    }
     if let Some(answer) = compose.answering() {
-        answered(ui, answer, compose.asks_for_recipients());
+        answered(ui, answer);
+        if answer.quotes_original {
+            quote_choice(ui, compose, leaving, messages);
+        }
     }
-    if compose.asks_for_recipients() {
-        recipient_fields(ui, compose, leaving, messages);
-        ui.add_space(4.0);
-    }
+    recipient_fields(ui, compose, leaving, messages);
+    ui.add_space(4.0);
     if compose.asks_for_subject() {
         line(
             ui,
@@ -170,8 +183,14 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         attachment_list(ui, compose, leaving, messages);
         ui.add_space(4.0);
     }
+    if compose.forwarded().next().is_some() {
+        forwarded_list(ui, compose, leaving, messages);
+        ui.add_space(4.0);
+    }
     ui.add_space(6.0);
-    send_status(ui, compose, &sending);
+    if !matches!(sending, Sending::Failed(_)) {
+        not_ready(ui, compose);
+    }
     ui.add_space(6.0);
     body_editor(ui, compose, leaving, messages);
 }
@@ -227,33 +246,20 @@ fn send_label(sending: &Sending) -> &'static str {
     }
 }
 
-/// Asks whether to throw the written message away.
-fn discard_prompt(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
-    theme::card(ui)
-        .stroke(egui::Stroke::new(1.0, theme::colors(ui).danger))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    egui::RichText::new("Discard unsaved message?")
-                        .strong()
-                        .color(theme::colors(ui).danger),
-                );
-                ui.with_layout(
-                    Layout::right_to_left(Align::Center).with_main_wrap(true),
-                    |ui| {
-                        if ui
-                            .add(theme::danger(egui::Button::new("Discard")))
-                            .clicked()
-                        {
-                            messages.push(Message::DiscardCompose);
-                        }
-                        if ui.button("Keep writing").clicked() {
-                            messages.push(Message::CancelDiscard);
-                        }
-                    },
-                );
-            });
-        });
+/// Asks whether to throw the written message away, over the window the
+/// draft is in, so the form under the question stays where it is.
+fn discard_prompt(context: &egui::Context) -> Option<Message> {
+    theme::confirmation(
+        context,
+        "discard-draft",
+        "Discard unsaved message?",
+        "What you wrote will be lost.",
+        &[
+            ("Keep writing", Emphasis::Secondary, Message::CancelDiscard),
+            ("Discard", Emphasis::Danger, Message::DiscardCompose),
+        ],
+        Message::CancelDiscard,
+    )
 }
 
 /// To, and Cc and Bcc once asked for; what the typed addresses mean for how
@@ -329,18 +335,40 @@ fn attachment_list(
     }
 }
 
-/// Why the last send failed or, failing that, what still stops this one: a
-/// send result takes priority over validation hints.
-fn send_status(ui: &mut egui::Ui, compose: &Compose, sending: &Sending) {
-    match sending {
-        Sending::Failed(error) => {
-            ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
-        }
-        _ => {
-            if let Some(problem) = compose.not_ready().filter(|_| !compose.is_untouched()) {
-                detail(ui, &problem.message());
+/// The original's files that go with a forward, each of which can be left
+/// out.
+fn forwarded_list(
+    ui: &mut egui::Ui,
+    compose: &Compose,
+    leaving: bool,
+    messages: &mut Vec<Message>,
+) {
+    detail(ui, "Forwarded with it");
+    for file in compose.forwarded() {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "📎 {} ({})",
+                    file.name,
+                    reader::size_label(file.size)
+                ))
+                .color(ui.visuals().text_color()),
+            );
+            if ui
+                .add_enabled(!leaving, theme::compact_button("Remove"))
+                .clicked()
+            {
+                messages.push(Message::LeaveOutForwarded(file.id.clone()));
             }
-        }
+        });
+    }
+}
+
+/// What still stops this message from going, under the fields it is about.
+/// A failed send says why under Send instead, and takes priority.
+fn not_ready(ui: &mut egui::Ui, compose: &Compose) {
+    if let Some(problem) = compose.not_ready().filter(|_| !compose.is_untouched()) {
+        detail(ui, &problem.message());
     }
 }
 
@@ -367,8 +395,9 @@ fn body_editor(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &m
 }
 
 /// Puts the cursor where writing starts the first time a draft shows: in To
-/// for a new message or a forward, in the body for a reply. Asked before the
-/// fields are made, so they take it on this pass.
+/// while it is empty, as for a new message or a forward, or else in the body,
+/// as for a reply that opened addressed. Asked before the fields are made, so
+/// they take it on this pass.
 fn focus_new_draft(ui: &egui::Ui, compose: &Compose) {
     let shown = egui::Id::new("compose-focused-draft");
     let draft = compose.id();
@@ -376,12 +405,36 @@ fn focus_new_draft(ui: &egui::Ui, compose: &Compose) {
         return;
     }
     ui.data_mut(|data| data.insert_temp(shown, draft));
-    let field = if compose.asks_for_recipients() {
+    let field = if compose.field(ComposeField::To).trim().is_empty() {
         field_id(ComposeField::To, draft)
     } else {
         body_id(draft)
     };
     ui.memory_mut(|memory| memory.request_focus(field));
+}
+
+/// A draft folded above the reader: what it is, and the way back to it. A
+/// long subject is shortened, whole on hover, so the button stays in view.
+pub(super) fn folded_strip(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
+    let subject = compose.field(ComposeField::Subject).trim();
+    let about = if subject.is_empty() {
+        heading(compose)
+    } else {
+        subject
+    };
+    theme::card(ui).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::compact_button("Continue writing")).clicked() {
+                    messages.push(Message::ContinueWriting);
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(format!("Draft: {about}")).truncate());
+                });
+            });
+        });
+    });
+    ui.add_space(8.0);
 }
 
 fn heading(compose: &Compose) -> &'static str {
@@ -395,40 +448,36 @@ fn heading(compose: &Compose) -> &'static str {
     }
 }
 
-/// What is being answered and, for a reply, exactly where it goes.
-fn answered(ui: &mut egui::Ui, answer: &Answering, addressed_here: bool) {
+/// What is being answered, what goes with the text, and a Reply-To that
+/// addressed the reply to someone other than the sender.
+fn answered(ui: &mut egui::Ui, answer: &Answering) {
     detail(
         ui,
         &format!("Answering “{}” from {}.", answer.subject, answer.sender),
     );
-    // What goes out with the text, though the composer does not show it.
-    if answer.quotes_original {
-        detail(ui, "The original is quoted under your text.");
-    }
-    if !answer.forwarded.is_empty() {
-        detail(
-            ui,
-            &format!(
-                "Its attachments go with it: {}.",
-                answer.forwarded.join(", ")
-            ),
+    // A Reply-To header can send the answer somewhere the sender is not.
+    if let Some(sender) = &answer.redirected_from {
+        ui.label(
+            egui::RichText::new(format!(
+                "The message asks for replies to go to {}, not to its sender, {sender}.",
+                answer.to.join(", ")
+            ))
+            .color(theme::colors(ui).danger),
         );
     }
-    if !addressed_here {
-        detail(ui, &format!("To: {}", answer.to.join(", ")));
-        if !answer.cc.is_empty() {
-            detail(ui, &format!("Cc: {}", answer.cc.join(", ")));
-        }
-        // A Reply-To header can send the answer somewhere the sender is not.
-        if let Some(sender) = &answer.redirected_from {
-            ui.label(
-                egui::RichText::new(format!(
-                    "The message asks for replies to go to {}, not to its sender, {sender}.",
-                    answer.to.join(", ")
-                ))
-                .color(theme::colors(ui).danger),
-            );
-        }
+    ui.add_space(8.0);
+}
+
+/// Whether the original goes under the text, which the composer does not
+/// show; ticked to begin with.
+fn quote_choice(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &mut Vec<Message>) {
+    let mut quoted = compose.quote() == Some(Quote::Original);
+    let choice = ui.add_enabled(
+        !leaving,
+        theme::Checkbox::new(&mut quoted, "Quote the original under your text"),
+    );
+    if choice.changed() {
+        messages.push(Message::ToggleComposeQuote);
     }
     ui.add_space(8.0);
 }
@@ -508,569 +557,4 @@ pub(super) fn remembers_draft(context: &egui::Context, draft: ComposeId) -> bool
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn screen_readers_hear_each_field_by_its_name() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        context.enable_accesskit();
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        app.update(Message::ToggleComposeCopies);
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            show(ui, app.compose().unwrap(), &mut Vec::new());
-        });
-        let names = theme::text_field_names(&output);
-        output.drop_without_applying_deltas();
-
-        for name in ["To", "Cc", "Bcc", "Subject", "Message"] {
-            assert!(
-                names.iter().any(|heard| heard == name),
-                "{name} in {names:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_small_composer_keeps_actions_visible_and_fields_scrollable() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        app.update(Message::ToggleComposeCopies);
-        let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(410.0, 240.0));
-        let mut messages = Vec::new();
-        for _ in 0..3 {
-            let output = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(window),
-                    ..Default::default()
-                },
-                |ui| show(ui, app.compose().unwrap(), &mut messages),
-            );
-            for label in ["Send", "Discard", "Attach…"] {
-                let (rect, clip) = output
-                    .shapes
-                    .iter()
-                    .find_map(|clipped| {
-                        if let egui::epaint::Shape::Text(text) = &clipped.shape
-                            && text.galley.text() == label
-                        {
-                            return Some((
-                                egui::Rect::from_min_size(text.pos, text.galley.size()),
-                                clipped.clip_rect,
-                            ));
-                        }
-                        None
-                    })
-                    .unwrap();
-                assert!(
-                    window.contains_rect(rect) && clip.contains_rect(rect),
-                    "{label} is clipped: {rect:?} in {clip:?}"
-                );
-            }
-            output.drop_without_applying_deltas();
-        }
-        assert!(!messages.iter().any(|message| matches!(
-            message,
-            Message::Send | Message::CloseCompose | Message::ComposeChanged(_, _)
-        )));
-    }
-
-    #[test]
-    fn the_composer_offers_one_attach_button_and_writes_at_reading_size() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        let draft = app.compose().unwrap().id();
-        app.update(Message::AddComposeAttachments(
-            draft,
-            vec![std::path::PathBuf::from("/nonexistent/notes.txt")],
-        ));
-        app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            show(ui, app.compose().unwrap(), &mut Vec::new());
-        });
-        let texts: Vec<_> = output
-            .shapes
-            .iter()
-            .filter_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Text(text) => Some(text.galley.clone()),
-                _ => None,
-            })
-            .collect();
-        output.drop_without_applying_deltas();
-
-        let attach: Vec<_> = texts
-            .iter()
-            .map(|galley| galley.text())
-            .filter(|text| text.starts_with("Attach") && *text != "Attachments")
-            .collect();
-        assert_eq!(attach, ["Attach…"]);
-        let body = texts
-            .iter()
-            .find(|galley| galley.text() == "Hello")
-            .expect("the body should be drawn");
-        assert_eq!(body.job.sections[0].format.font_id.size, theme::BODY_SIZE);
-    }
-
-    #[test]
-    fn an_attachment_shows_its_size_once_read_away_from_the_interface() {
-        let file =
-            std::env::temp_dir().join(format!("ruston-attachment-size-{}.txt", std::process::id()));
-        std::fs::write(&file, [b'a'; 2048]).unwrap();
-        let context = egui::Context::default();
-        theme::install(&context);
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        let draft = app.compose().unwrap().id();
-        app.update(Message::AddComposeAttachments(draft, vec![file.clone()]));
-        let attachment_label = |app: &crate::app::App| {
-            let output = context.run_ui(egui::RawInput::default(), |ui| {
-                show(ui, app.compose().unwrap(), &mut Vec::new());
-            });
-            let label = output
-                .shapes
-                .iter()
-                .find_map(|clipped| match &clipped.shape {
-                    egui::epaint::Shape::Text(text) if text.galley.text().starts_with('📎') => {
-                        Some(text.galley.text().to_owned())
-                    }
-                    _ => None,
-                })
-                .expect("the attachment should be listed");
-            output.drop_without_applying_deltas();
-            label
-        };
-
-        // Drawing never asks the file system, which can hang on a share that
-        // went away; the size shows once the app has read it.
-        let unread = attachment_label(&app);
-        std::fs::remove_file(&file).unwrap();
-        assert!(!unread.contains('('), "{unread}");
-        app.update(Message::AttachmentSizesRead(
-            draft,
-            [(file, Some(2048))].into_iter().collect(),
-        ));
-        assert!(attachment_label(&app).ends_with(&format!("({})", reader::size_label(2048))));
-    }
-
-    #[test]
-    fn undo_in_a_new_draft_never_brings_back_an_earlier_one() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        let mut time = 0.0;
-        let mut frame = |app: &crate::app::App, events: Vec<egui::Event>| {
-            time += 1.5;
-            let mut messages = Vec::new();
-            context
-                .run_ui(
-                    egui::RawInput {
-                        events,
-                        time: Some(time),
-                        ..Default::default()
-                    },
-                    |ui| show(ui, app.compose().unwrap(), &mut messages),
-                )
-                .drop_without_applying_deltas();
-            messages
-        };
-        let body_id = |app: &crate::app::App| body_id(app.compose().unwrap().id());
-
-        app.update(Message::OpenCompose);
-        frame(&app, Vec::new());
-        context.memory_mut(|memory| memory.request_focus(body_id(&app)));
-        frame(&app, Vec::new());
-        for message in frame(&app, vec![egui::Event::Text("private draft".into())]) {
-            app.update(message);
-        }
-        // Pauses let the editor record what was typed as an undo step.
-        frame(&app, Vec::new());
-        frame(&app, Vec::new());
-        app.update(Message::CloseCompose);
-        app.update(Message::DiscardCompose);
-        assert!(app.compose().is_none());
-
-        app.update(Message::OpenCompose);
-        frame(&app, Vec::new());
-        context.memory_mut(|memory| memory.request_focus(body_id(&app)));
-        frame(&app, Vec::new());
-        let undo = egui::Event::Key {
-            key: egui::Key::Z,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::COMMAND,
-        };
-        let messages = frame(&app, vec![undo]);
-        assert!(
-            !messages
-                .iter()
-                .any(|message| matches!(message, Message::ComposeChanged(_, text) if text.contains("private draft"))),
-            "undo brought back another draft"
-        );
-    }
-
-    #[test]
-    fn forgetting_a_draft_drops_only_its_editor_memory() {
-        let context = egui::Context::default();
-        remember_draft(&context, 1);
-        remember_draft(&context, 2);
-
-        forget_draft(&context, 1);
-
-        assert!(!remembers_draft(&context, 1));
-        assert!(remembers_draft(&context, 2));
-    }
-
-    #[test]
-    fn forgetting_a_draft_drops_what_every_field_it_showed_kept() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        app.update(Message::ToggleComposeCopies);
-        let draft = app.compose().unwrap().id();
-        context
-            .run_ui(egui::RawInput::default(), |ui| {
-                show(ui, app.compose().unwrap(), &mut Vec::new());
-            })
-            .drop_without_applying_deltas();
-        let kept = || context.data(|data| data.count::<egui::text_edit::TextEditState>());
-        // To, Cc, Bcc, Subject and the body each keep their own memory.
-        assert_eq!(kept(), 5);
-
-        forget_draft(&context, draft);
-        assert_eq!(kept(), 0, "a field of the draft kept what was typed");
-    }
-
-    #[test]
-    fn a_reply_lists_its_recipients_and_warns_when_reply_to_redirects_it() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let answer = Answering {
-            sender: "Alex Rivera".into(),
-            subject: "Invoice".into(),
-            kind: AnswerKind::ReplyAll,
-            to: vec!["attacker@evil.example".into()],
-            cc: vec!["bob@corp.example".into()],
-            redirected_from: Some("alex@corp.example".into()),
-            quotes_original: true,
-            forwarded: Vec::new(),
-        };
-        let mut danger = egui::Color32::PLACEHOLDER;
-        let mut body = 0.0;
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            danger = theme::colors(ui).danger;
-            body = egui::TextStyle::Body.resolve(ui.style()).size;
-            answered(ui, &answer, false);
-        });
-        let texts: Vec<(String, bool)> = output
-            .shapes
-            .iter()
-            .filter_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Text(text) => Some((
-                    text.galley.text().to_owned(),
-                    text.galley.job.sections.iter().all(|section| {
-                        section.format.color == danger && section.format.font_id.size == body
-                    }),
-                )),
-                _ => None,
-            })
-            .collect();
-        output.drop_without_applying_deltas();
-
-        let shown = |wanted: &str| texts.iter().find(|(text, _)| text.contains(wanted));
-        assert!(shown("To: attacker@evil.example").is_some());
-        assert!(shown("Cc: bob@corp.example").is_some());
-        let warning = shown("not to its sender, alex@corp.example").expect("redirect warning");
-        assert!(warning.1, "the redirect warning stands out");
-    }
-
-    #[test]
-    fn a_forward_names_the_files_it_carries_and_the_quote() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let answer = Answering {
-            sender: "Alex Rivera".into(),
-            subject: "Invoice".into(),
-            kind: AnswerKind::Forward,
-            to: Vec::new(),
-            cc: Vec::new(),
-            redirected_from: None,
-            quotes_original: true,
-            forwarded: vec!["invoice.pdf".into(), "receipt.png".into()],
-        };
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            answered(ui, &answer, true);
-        });
-        let texts: Vec<String> = output
-            .shapes
-            .iter()
-            .filter_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
-                _ => None,
-            })
-            .collect();
-        output.drop_without_applying_deltas();
-
-        for wanted in [
-            "The original is quoted under your text.",
-            "Its attachments go with it: invoice.pdf, receipt.png.",
-        ] {
-            assert!(
-                texts.iter().any(|text| text == wanted),
-                "{wanted} in {texts:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_composer_names_recipients_whose_copy_is_not_encrypted() {
-        use crate::app::Effect;
-        use futures::executor::block_on;
-
-        let context = egui::Context::default();
-        theme::install(&context);
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        app.update(Message::ComposeChanged(
-            ComposeField::To,
-            "ada@proton.me, plain@example.com".into(),
-        ));
-        let shown = |app: &crate::app::App| {
-            let mut messages = Vec::new();
-            let mut danger = egui::Color32::PLACEHOLDER;
-            let mut body = 0.0;
-            let output = context.run_ui(egui::RawInput::default(), |ui| {
-                danger = theme::colors(ui).danger;
-                body = egui::TextStyle::Body.resolve(ui.style()).size;
-                show(ui, app.compose().unwrap(), &mut messages);
-            });
-            // The warning is named and drawn in the danger color at full
-            // size, not as a field label.
-            let found = output.shapes.iter().any(|clipped| {
-                matches!(&clipped.shape, egui::epaint::Shape::Text(text)
-                    if text.galley.text().contains("not end-to-end encrypt this message for: plain@example.com")
-                        && text.galley.job.sections.iter().all(|section| section.format.color == danger && section.format.font_id.size == body))
-            });
-            output.drop_without_applying_deltas();
-            found
-        };
-        assert!(!shown(&app));
-
-        let effect = app
-            .update(Message::ComposeRecipientsLeft)
-            .into_iter()
-            .next()
-            .unwrap();
-        let Effect::Future(lookup) = effect else {
-            panic!("the lookup runs off the UI thread");
-        };
-        app.update(block_on(lookup));
-
-        assert!(shown(&app));
-    }
-
-    #[test]
-    fn the_composer_shows_the_ascii_form_of_an_international_domain() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let shown = |accept_international_domains| {
-            let mut settings = crate::settings::Settings::default();
-            settings.accept_international_domains = accept_international_domains;
-            let (mut app, _) = crate::app::App::boot(true, settings);
-            app.update(Message::OpenCompose);
-            app.update(Message::ComposeChanged(
-                ComposeField::To,
-                "ceo@p\u{430}ypal.com".into(),
-            ));
-            let mut messages = Vec::new();
-            let mut danger = egui::Color32::PLACEHOLDER;
-            let mut body = 0.0;
-            let output = context.run_ui(egui::RawInput::default(), |ui| {
-                danger = theme::colors(ui).danger;
-                body = egui::TextStyle::Body.resolve(ui.style()).size;
-                show(ui, app.compose().unwrap(), &mut messages);
-            });
-            // The look-alike is named beside a form that is plainly not paypal.com.
-            let found = output.shapes.iter().any(|clipped| {
-                matches!(&clipped.shape, egui::epaint::Shape::Text(text)
-                    if text.galley.text().contains("p\u{430}ypal.com is sent as xn--pypal-4ve.com")
-                        && text.galley.job.sections.iter().all(|section| section.format.color == danger && section.format.font_id.size == body))
-            });
-            output.drop_without_applying_deltas();
-            found
-        };
-
-        assert!(!shown(false));
-        assert!(shown(true));
-    }
-
-    #[test]
-    fn a_new_draft_puts_the_cursor_where_writing_starts() {
-        use crate::mail::demo;
-
-        let context = egui::Context::default();
-        theme::install(&context);
-        let focused_after_showing = |app: &crate::app::App| {
-            context
-                .run_ui(egui::RawInput::default(), |ui| {
-                    show(ui, app.compose().unwrap(), &mut Vec::new());
-                })
-                .drop_without_applying_deltas();
-            context.memory(|memory| memory.focused())
-        };
-
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        let draft = app.compose().unwrap().id();
-        assert_eq!(
-            focused_after_showing(&app),
-            Some(field_id(ComposeField::To, draft))
-        );
-        // Given once: after that the cursor stays wherever the writer puts it.
-        context.memory_mut(|memory| memory.surrender_focus(field_id(ComposeField::To, draft)));
-        assert_eq!(focused_after_showing(&app), None);
-
-        // A reply knows its recipients, so it starts in the body.
-        app.update(Message::DiscardCompose);
-        let mailbox = demo::DemoMailbox::new();
-        let page = mailbox.list_conversations(
-            &crate::mail::Folder::INBOX,
-            0,
-            demo::PAGE_SIZE,
-            demo::now(),
-        );
-        app.update(Message::ConversationsLoaded(1, page));
-        app.update(Message::SelectConversation("demo-0".into()));
-        let crate::app::ReaderState::Loading {
-            conversation_id,
-            request,
-        } = app.mailbox().unwrap().reader_state()
-        else {
-            panic!("the conversation is loading");
-        };
-        let request = crate::app::ReaderRequest {
-            id: *request,
-            conversation_id: conversation_id.clone(),
-            kind: crate::mail::SummaryKind::Conversation,
-            messages: 1,
-        };
-        let detail = mailbox.conversation_detail(&request.conversation_id, demo::now());
-        app.update(Message::ConversationLoaded(request, detail));
-        app.update(Message::Answer {
-            message_id: "demo-0-2".into(),
-            kind: AnswerKind::Reply,
-        });
-        let reply = app.compose().expect("a reply is open").id();
-        assert_eq!(focused_after_showing(&app), Some(body_id(reply)));
-    }
-
-    #[test]
-    fn field_labels_are_drawn_at_body_size() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        let mut messages = Vec::new();
-        let mut body = 0.0;
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            body = egui::TextStyle::Body.resolve(ui.style()).size;
-            show(ui, app.compose().unwrap(), &mut messages);
-        });
-        let size_of = |label: &str| {
-            output
-                .shapes
-                .iter()
-                .find_map(|clipped| match &clipped.shape {
-                    egui::epaint::Shape::Text(text) if text.galley.text() == label => text
-                        .galley
-                        .job
-                        .sections
-                        .first()
-                        .map(|section| section.format.font_id.size),
-                    _ => None,
-                })
-        };
-
-        for label in ["To", "Subject"] {
-            assert_eq!(size_of(label), Some(body), "{label}");
-        }
-        output.drop_without_applying_deltas();
-    }
-
-    #[test]
-    fn leaving_a_recipient_field_asks_how_the_message_will_be_protected() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        app.update(Message::OpenCompose);
-        let frame = |events: Vec<egui::Event>| {
-            let mut messages = Vec::new();
-            context
-                .run_ui(
-                    egui::RawInput {
-                        events,
-                        ..Default::default()
-                    },
-                    |ui| show(ui, app.compose().unwrap(), &mut messages),
-                )
-                .drop_without_applying_deltas();
-            messages
-                .iter()
-                .any(|message| matches!(message, Message::ComposeRecipientsLeft))
-        };
-
-        frame(Vec::new());
-        let to = field_id(ComposeField::To, app.compose().unwrap().id());
-        context.memory_mut(|memory| memory.request_focus(to));
-        assert!(!frame(Vec::new()), "entering the field looks nothing up");
-        assert!(!frame(Vec::new()), "staying in the field looks nothing up");
-
-        let tab = egui::Event::Key {
-            key: egui::Key::Tab,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
-        // Focus moves during the frame that sees the key; the field reports it by the next one.
-        let asked = [frame(vec![tab]), frame(Vec::new())];
-        assert!(asked.contains(&true));
-        assert!(!frame(Vec::new()), "the lookup is asked for once");
-    }
-
-    #[test]
-    fn compose_fields_start_at_the_left_and_are_taller_than_the_default() {
-        let context = egui::Context::default();
-        let mut geometry = None;
-        context
-            .run_ui(egui::RawInput::default(), |ui| {
-                ui.set_width(400.0);
-                let left = ui.available_rect_before_wrap().left();
-                let mut messages = Vec::new();
-                let field = line(
-                    ui,
-                    "To",
-                    ComposeField::To,
-                    &Compose::default(),
-                    false,
-                    &mut messages,
-                );
-
-                let mut plain = String::new();
-                let plain = ui.add(egui::TextEdit::singleline(&mut plain));
-                geometry = Some((left, field.rect, plain.rect.height()));
-            })
-            .drop_without_applying_deltas();
-
-        let (left, field, plain_height) = geometry.expect("the field was laid out");
-        assert!((field.left() - left).abs() <= 1.0);
-        assert!(field.height() >= plain_height + 8.0);
-    }
-}
+mod tests;

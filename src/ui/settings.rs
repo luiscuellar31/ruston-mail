@@ -253,6 +253,19 @@ fn page(
             );
             ui.add_space(8.0);
         }
+        #[cfg(target_os = "linux")]
+        {
+            ui.add(theme::Checkbox::new(
+                &mut settings.show_unread_badge,
+                "Show unread count on the dock icon",
+            ));
+            description(
+                ui,
+                "Shows the number of unread messages in your inbox on docks that support it, \
+                 such as Ubuntu's dock and KDE's task manager.",
+            );
+            ui.add_space(8.0);
+        }
         ui.add(theme::Checkbox::new(
             &mut settings.desktop_notifications,
             "Show desktop notifications for new mail",

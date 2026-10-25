@@ -156,17 +156,27 @@ impl ConversationReader {
     }
 }
 
-/// One-line opening words, flattened before splitting to preserve punctuation.
+/// One-line opening words, flattened before splitting to preserve
+/// punctuation. Only as many lines are worked out as the words need: every
+/// message of a conversation gets one when it arrives, on the interface
+/// thread, and a body can be long.
 fn preview(body: &MessageBody) -> String {
-    let text = match body {
-        MessageBody::PlainText(content) => Cow::Borrowed(content.as_str()),
-        MessageBody::Rich(rich) => Cow::Owned(rich.plain_text()),
-        MessageBody::Unreadable => Cow::Borrowed(UNREADABLE_NOTICE),
+    let lines: Box<dyn Iterator<Item = Cow<'_, str>>> = match body {
+        MessageBody::PlainText(content) => {
+            Box::new(std::iter::once(Cow::Borrowed(content.as_str())))
+        }
+        MessageBody::Rich(rich) => Box::new(rich.plain_lines().map(Cow::Owned)),
+        MessageBody::Unreadable => Box::new(std::iter::once(Cow::Borrowed(UNREADABLE_NOTICE))),
     };
-    text.split_whitespace()
-        .take(PREVIEW_WORDS)
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut words: Vec<String> = Vec::new();
+    for line in lines {
+        let wanted = PREVIEW_WORDS - words.len();
+        words.extend(line.split_whitespace().take(wanted).map(str::to_owned));
+        if words.len() == PREVIEW_WORDS {
+            break;
+        }
+    }
+    words.join(" ")
 }
 
 #[cfg(test)]
@@ -214,6 +224,75 @@ mod tests {
             body,
             ..message(id, 10)
         }
+    }
+
+    /// A rich body of `count` blocks of every kind, quoted at every depth.
+    fn assorted_body(count: usize) -> RichBody {
+        let spans = |text: String| {
+            vec![RichSpan {
+                text,
+                ..RichSpan::default()
+            }]
+        };
+        RichBody {
+            blocks: (0..count)
+                .map(|index| RichBlock {
+                    kind: match index % 6 {
+                        0 => BlockKind::Paragraph(spans(format!("Para {index}\nnext line"))),
+                        1 => BlockKind::Heading {
+                            level: 2,
+                            spans: spans(format!("Title {index}")),
+                        },
+                        2 => BlockKind::ListItem {
+                            marker: "•".into(),
+                            depth: 0,
+                            spans: spans(format!("item {index}")),
+                        },
+                        3 => BlockKind::Preformatted(format!("  code {index}\n  more")),
+                        4 => BlockKind::Image {
+                            description: format!("chart {index}"),
+                        },
+                        _ => BlockKind::Rule,
+                    },
+                    quote_depth: (index % 3) as u8,
+                })
+                .collect(),
+        }
+    }
+
+    /// The preview as it was worked out before: the whole body flattened.
+    fn flattened_preview(rich: &RichBody) -> String {
+        rich.plain_text()
+            .split_whitespace()
+            .take(PREVIEW_WORDS)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_rich_preview_reads_only_as_far_as_its_words_and_says_the_same() {
+        for count in [0, 1, 5, 12, 400] {
+            let rich = assorted_body(count);
+            assert_eq!(
+                preview(&MessageBody::Rich(rich.clone())),
+                flattened_preview(&rich),
+                "{count} blocks"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual benchmark of previews for long rich bodies"]
+    fn measure_rich_previews() {
+        let rich = assorted_body(200_000);
+        let body = MessageBody::Rich(rich.clone());
+        let start = std::time::Instant::now();
+        let flattened = flattened_preview(&rich);
+        eprintln!("whole body flattened: {:?}", start.elapsed());
+        let start = std::time::Instant::now();
+        let read = preview(&body);
+        eprintln!("first words only: {:?}", start.elapsed());
+        assert_eq!(read, flattened);
     }
 
     #[test]

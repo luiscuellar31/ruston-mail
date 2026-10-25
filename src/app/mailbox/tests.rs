@@ -1227,6 +1227,54 @@ fn load_more_preserves_the_open_reader_on_success_and_failure() {
 }
 
 #[test]
+fn a_thread_split_while_open_is_still_marked_read() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(
+        request.id,
+        Ok(ConversationPage {
+            conversations: vec![
+                ConversationSummary {
+                    unread: true,
+                    ..dated("c1", 50)
+                },
+                dated("c2", 20),
+            ],
+            total: 2,
+            inspect_candidates: vec!["c1".into()],
+        }),
+    );
+    load_detail(&mut mailbox, "c1", detail("c1", &["m1", "m2"]), 3);
+    // The inspection answers once the thread is open: its messages take
+    // its row in the list.
+    mailbox.split_conversation(
+        &Folder::INBOX,
+        "c1",
+        vec![
+            ConversationSummary {
+                unread: true,
+                ..split_message("m1", 60)
+            },
+            ConversationSummary {
+                unread: true,
+                ..split_message("m2", 40)
+            },
+        ],
+    );
+
+    let read = mailbox
+        .start_mark_read(4)
+        .expect("the open thread is still read");
+    assert_eq!(read.row_id, "c1");
+    // Its messages are listed here, so the folder is still the context.
+    assert_eq!(read.context.as_ref(), Some(&Folder::INBOX));
+    assert!(mailbox.finish_mark_read(&read, Ok(())).read_confirmed);
+    for message in ["m1", "m2"] {
+        assert!(!mailbox.row(message).unwrap().unread, "{message}");
+    }
+    assert!(mailbox.row("c2").is_some());
+}
+
+#[test]
 fn load_more_and_read_completion_refresh_preserve_split_reader() {
     let (mut mailbox, first) = open();
     mailbox.finish_page(first.id, full_page(0, 120));
@@ -2684,6 +2732,30 @@ fn split_conversation_replaces_conversation_with_message_rows_and_updates_visibl
 
     assert_eq!(visible_ids(&mailbox), ["m1", "m2", "c2"]);
     assert_eq!(mailbox.visible_count(), 3);
+}
+
+#[test]
+fn work_asked_under_a_folder_s_old_name_still_lands_there() {
+    let invoices = Folder::custom("kZ9", "Invoices");
+    let mut mailbox = loaded_inbox(&["a"], 1);
+    let request = mailbox.select_folder(invoices.clone(), 2).unwrap();
+    mailbox.finish_page(
+        request.id,
+        Ok(ConversationPage {
+            conversations: vec![dated("c1", 50), dated("c2", 20)],
+            total: 2,
+            inspect_candidates: vec!["c1".into()],
+        }),
+    );
+    mailbox.rename_folder(Folder::custom("kZ9", "Facturas"));
+
+    // Proton knows the folder by its id, so a split asked for under the
+    // old name is still this folder's.
+    assert!(mailbox.shows(&invoices));
+    mailbox.split_conversation(&invoices, "c1", vec![split_message("m1", 60)]);
+    assert_eq!(visible_ids(&mailbox), ["m1", "c2"]);
+    // Another folder is not this one.
+    assert!(!mailbox.shows(&Folder::custom("wN2", "Facturas")));
 }
 
 #[test]

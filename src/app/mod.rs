@@ -9,7 +9,8 @@ mod mailto;
 mod notifications;
 mod reader;
 
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use futures::future::{AbortHandle, Abortable};
@@ -23,8 +24,9 @@ const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
-    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, ProtectionCheck,
-    ProtonMailService, ResumeOutcome, SendError, SignInOutcome, SignInPrompt, demo::DemoMailbox,
+    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, OwnPlaces, PlaceLook,
+    ProtectionCheck, ProtonMailService, ResumeOutcome, SendError, SignInOutcome, SignInPrompt,
+    demo::DemoMailbox,
 };
 
 use auth::LoginForm;
@@ -80,6 +82,9 @@ pub enum Message {
     DismissLink,
     /// Copies the address of a link in a message, from the link's menu.
     CopyLinkAddress(String),
+    /// Copies email addresses from a message header's menu, separated by
+    /// commas as the composer's fields take them.
+    CopyAddresses(Vec<String>),
     Logout,
     LogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
@@ -102,6 +107,8 @@ pub enum Message {
     UndoMove,
     /// Lets this temporary undo offer expire if it is still current.
     DismissUndo(UndoMove),
+    /// Lets this confirmation go if it is still the one shown.
+    DismissNotice(Notice),
     RefreshMailbox,
     /// Periodic refresh, every minute in the foreground and less often in the
     /// background. Unlike a manual refresh, this also marks the other folder
@@ -126,7 +133,7 @@ pub enum Message {
     ),
     /// The folders the account made, fetched when the mailbox opens and, if
     /// that fails, again with the next refresh.
-    FoldersLoaded(SessionEpoch, Result<Vec<Folder>, MailboxError>),
+    FoldersLoaded(SessionEpoch, Result<OwnPlaces, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
@@ -196,12 +203,18 @@ pub enum Message {
     },
     /// Puts an unsent message away. Untouched messages close; written ones ask first.
     CloseCompose,
+    /// Brings a draft folded over the reader back into the reading pane.
+    ContinueWriting,
     /// Discards an unsent message after confirmation.
     DiscardCompose,
     /// Cancels discard confirmation and returns to editing.
     CancelDiscard,
     /// Shows or hides the copy fields.
     ToggleComposeCopies,
+    /// Puts the original under an answer's text, or leaves it out.
+    ToggleComposeQuote,
+    /// Leaves one of the original's files, by ID, out of a forward.
+    LeaveOutForwarded(String),
     ComposeChanged(ComposeField, String),
     /// A recipient field lost focus; its addresses are complete enough to look up.
     ComposeRecipientsLeft,
@@ -218,6 +231,16 @@ pub enum Message {
     /// Hands the message over to be sent.
     Send,
     Sent(SessionEpoch, Result<(), SendError>),
+}
+
+/// A short confirmation shown at the foot of the mailbox until it times out
+/// or another takes its place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notice {
+    /// The message being written went to Proton.
+    Sent,
+    /// An attachment was saved at this path.
+    Saved(PathBuf),
 }
 
 pub struct App {
@@ -255,6 +278,8 @@ pub struct App {
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
     folders: Vec<Folder>,
+    /// How each of `folders` looks in the sidebar, by custom ID.
+    place_looks: HashMap<String, PlaceLook>,
     /// The folder list failed to load, so the next refresh asks again.
     refetch_folders: bool,
     /// The page a refresh the app started on its own asked for. The list
@@ -287,8 +312,10 @@ pub struct App {
     /// Changes for each opened draft so asynchronous attachment pickers from a
     /// closed or discarded draft cannot inject files into a subsequent draft.
     last_compose_id: ComposeId,
-    /// What became of the last attachment someone asked to save.
-    saved_attachment: Option<Result<PathBuf, SaveError>>,
+    /// The confirmation shown at the foot of the mailbox.
+    notice: Option<Notice>,
+    /// The attachment whose last save failed, by ID, and why; its row says so.
+    failed_save: Option<(String, SaveError)>,
     /// The attachment in flight, preventing duplicate downloads.
     saving_attachment: Option<AttachmentSave>,
     new_mail: notifications::NewMail,
@@ -329,6 +356,7 @@ impl App {
             inspections: Inspections::default(),
             reader_load: None,
             folders: Vec::new(),
+            place_looks: HashMap::new(),
             refetch_folders: false,
             automatic_refresh: None,
             settings,
@@ -342,7 +370,8 @@ impl App {
             parked_draft: None,
             read_once_shown: None,
             last_compose_id: 0,
-            saved_attachment: None,
+            notice: None,
+            failed_save: None,
             saving_attachment: None,
             new_mail: notifications::NewMail::default(),
         }
@@ -407,11 +436,16 @@ impl App {
             .map(|save| save.request.attachment_id.as_str())
     }
 
-    /// Where the last saved attachment landed, or why it did not.
-    pub fn saved_attachment(&self) -> Option<Result<&Path, SaveError>> {
-        self.saved_attachment
+    /// The confirmation to show at the foot of the mailbox.
+    pub fn notice(&self) -> Option<&Notice> {
+        self.notice.as_ref()
+    }
+
+    /// The attachment whose last save failed, by ID, and why.
+    pub fn failed_save(&self) -> Option<(&str, SaveError)> {
+        self.failed_save
             .as_ref()
-            .map(|outcome| outcome.as_deref().map_err(|error| *error))
+            .map(|(attachment_id, error)| (attachment_id.as_str(), *error))
     }
 
     /// Fetches an attachment and writes it off the UI thread.
@@ -430,7 +464,7 @@ impl App {
             message_id,
             attachment_id,
         };
-        self.saved_attachment = None;
+        self.failed_save = None;
         self.saving_attachment = Some(AttachmentSave {
             request: request.clone(),
             choosing_destination: suggested_name.is_some(),
@@ -509,6 +543,15 @@ impl App {
     /// The folders the account made.
     pub fn folders(&self) -> &[Folder] {
         &self.folders
+    }
+
+    /// How the sidebar shows `folder`: plain for Proton's own.
+    pub fn place_look(&self, folder: &Folder) -> PlaceLook {
+        folder
+            .custom_id()
+            .and_then(|id| self.place_looks.get(id))
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn showing_settings(&self) -> bool {
@@ -628,7 +671,12 @@ impl App {
             Message::Logout => return self.logout(),
             Message::LogoutFinished(epoch, result) => self.finish_logout(epoch, result),
             Message::SelectFolder(folder) => return self.select_folder(folder),
-            Message::SelectConversation(id) => return self.select_conversation(id),
+            Message::SelectConversation(id) => {
+                // A conversation chosen while writing shows, with the draft
+                // folded above it.
+                self.fold_compose();
+                return self.select_conversation(id);
+            }
             Message::RetryConversation => return self.retry_conversation(),
             Message::SearchChanged(query) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -663,6 +711,11 @@ impl App {
             Message::DismissUndo(offer) => {
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.dismiss_undo(&offer);
+                }
+            }
+            Message::DismissNotice(notice) => {
+                if self.notice.as_ref() == Some(&notice) {
+                    self.notice = None;
                 }
             }
             Message::RefreshMailbox => {
@@ -721,12 +774,14 @@ impl App {
                 conversation_id,
                 result,
             } => {
+                // Finishing first frees the answer's place even when the
+                // folder was renamed meanwhile, which keeps the folder.
                 if !self.is_current_session(epoch)
+                    || !self.inspections.finish(request, &conversation_id)
                     || !self
                         .mailbox
                         .as_ref()
-                        .is_some_and(|mailbox| mailbox.folder() == &folder)
-                    || !self.inspections.finish(request, &conversation_id)
+                        .is_some_and(|mailbox| mailbox.shows(&folder))
                 {
                     return Effects::none();
                 }
@@ -767,7 +822,10 @@ impl App {
                     return Effects::none();
                 }
                 match result {
-                    Ok(folders) => self.folders = folders,
+                    Ok(places) => {
+                        self.folders = places.folders;
+                        self.place_looks = places.looks;
+                    }
                     // Without them the sidebar shows Proton's own until the
                     // next refresh asks again. A list that did not arrive says
                     // nothing about the open folder, which stays open.
@@ -843,11 +901,14 @@ impl App {
                     return Effects::ui(UiEffect::CopyText(link.url));
                 }
             }
+            Message::CopyAddresses(addresses) => {
+                return Effects::ui(UiEffect::CopyText(addresses.join(", ")));
+            }
             Message::ReceiveMailto(request) => self.receive_mailto(request),
             Message::MailtoRejected => {
                 self.mailto_error = Some("This email link could not be opened.")
             }
-            Message::OpenPendingMailto => self.open_pending_mailto(),
+            Message::OpenPendingMailto => return self.open_pending_mailto(),
             Message::DismissPendingMailto => {
                 self.pending_mailto.pop_front();
             }
@@ -909,7 +970,10 @@ impl App {
                 // A save that landed after the session ended has nobody left
                 // to tell, and its news must not surface in the next one.
                 if self.mailbox.is_some() {
-                    self.saved_attachment = Some(outcome);
+                    match outcome {
+                        Ok(path) => self.notice = Some(Notice::Saved(path)),
+                        Err(error) => self.failed_save = Some((request.attachment_id, error)),
+                    }
                 }
             }
             Message::RevealAttachment(path) => return reveal_in_file_manager(path),
@@ -960,13 +1024,16 @@ impl App {
             }
             Message::OpenCompose => {
                 self.showing_settings = false;
-                self.open_compose();
+                return self.open_compose();
             }
-            Message::Answer { message_id, kind } => self.answer(&message_id, kind),
+            Message::Answer { message_id, kind } => return self.answer(&message_id, kind),
             Message::CloseCompose => self.close_compose(),
+            Message::ContinueWriting => self.continue_writing(),
             Message::DiscardCompose => self.discard_compose(),
             Message::CancelDiscard => self.cancel_discard(),
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
+            Message::ToggleComposeQuote => self.toggle_compose_quote(),
+            Message::LeaveOutForwarded(id) => self.leave_out_forwarded(&id),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
             Message::ComposeRecipientsLeft => return self.check_compose_protection(),
             Message::ComposeProtectionChecked(epoch, id, checks) => {
@@ -1501,7 +1568,7 @@ impl App {
         }
         self.showing_settings = false;
         self.pending_link = None;
-        self.saved_attachment = None;
+        self.failed_save = None;
         self.remember_folder(&folder);
         let request = self.next_request();
         let page = self
@@ -1643,8 +1710,13 @@ impl App {
         let folder = mailbox.folder().clone();
         let revision = mailbox.inspection_revision();
         let mut effects = Vec::new();
-        while let Some((id, registration)) = self.inspections.start(self.last_request + 1) {
+        // Each inspection takes the next request ID itself, asked for only
+        // when there is one to start, so no ID goes unused.
+        while self.inspections.can_start() {
             let request = self.next_request();
+            let Some((id, registration)) = self.inspections.start(request) else {
+                break;
+            };
             // A queued row may have been moved or removed before its turn.
             if !self
                 .mailbox
@@ -1862,57 +1934,15 @@ fn run_action(
 
 fn open_in_browser(url: String) -> Effects {
     Effects::background(async move {
-        let _ = open_url(&url);
+        let _ = open_url(&url).await;
     })
 }
 
 /// Opens `url` in the default browser without going through a shell.
-fn open_url(url: &str) -> std::io::Result<()> {
-    browser_opener()?.arg(url).spawn().map(drop)
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(target_os = "macos")]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    Ok(std::process::Command::new("open"))
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(target_os = "windows")]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    let mut command = std::process::Command::new(system_rundll32()?);
-    command.arg("url.dll,FileProtocolHandler");
-    Ok(command)
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    Ok(std::process::Command::new("xdg-open"))
-}
-
-/// rundll32 from System32. Windows looks for a program named without a
-/// folder beside this executable first, where a saved attachment could be.
-#[cfg(target_os = "windows")]
-fn system_rundll32() -> std::io::Result<PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
-
-    let mut buffer = [0_u16; 260];
-    // SAFETY: the length passed is the buffer's own; the API writes at most
-    // that many UTF-16 units and returns how many it wrote, or 0 on failure.
-    let length = unsafe {
-        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
-            buffer.as_mut_ptr(),
-            buffer.len() as u32,
-        )
-    } as usize;
-    if length == 0 || length >= buffer.len() {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])).join("rundll32.exe"))
+async fn open_url(url: &str) -> std::io::Result<()> {
+    let mut opener = ruston_core::browser::opener()?;
+    opener.arg(url);
+    crate::runtime::run_to_exit(opener).await.map(drop)
 }
 
 fn reveal_in_file_manager(path: PathBuf) -> Effects {

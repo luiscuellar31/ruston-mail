@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::Path;
 
 use chrono::{Local, TimeZone};
 use eframe::egui::text::LayoutJob;
@@ -30,19 +29,20 @@ const SIGNATURE_ICON_SIZE: f32 = 13.0;
 const SIGNATURE_ICON_INSET: f32 = SIGNATURE_ICON_SIZE + 4.0;
 /// The column left of a message header's text, which holds the chevron.
 const HEADER_TEXT_INSET: f32 = 22.0;
+/// Where the line under the sender's name starts in a header: the sender's
+/// address when it has a line of its own, or else the first recipients.
+const SECOND_LINE_TOP: f32 = 20.0;
+/// Where a folded header's preview starts.
+const PREVIEW_LINE_TOP: f32 = 22.0;
+/// The date a loading card keeps room for, at most a share of its header.
+const SKELETON_DATE_WIDTH: f32 = 122.0;
+const SKELETON_DATE_SHARE: f32 = 0.3;
 /// The space kept between a header's text and its date.
 const HEADER_DATE_GAP: f32 = 8.0;
 /// About six lines of a link's address before it scrolls.
 const LINK_ADDRESS_MAX_HEIGHT: f32 = 120.0;
 /// Code background padding, kept clear of adjacent lines.
 const CODE_PADDING: f32 = 2.5;
-
-#[cfg(target_os = "macos")]
-const REVEAL_LABEL: &str = "Show in Finder";
-#[cfg(target_os = "windows")]
-const REVEAL_LABEL: &str = "Show in Explorer";
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const REVEAL_LABEL: &str = "Show in folder";
 
 /// What the reader draws around the open conversation, borrowed from the app
 /// for one frame.
@@ -51,9 +51,17 @@ pub(super) struct ReaderView<'a> {
     /// The folders and labels a conversation can be moved to or given.
     pub(super) places: &'a [Folder],
     pub(super) actions_available: bool,
-    pub(super) saving_attachment: Option<&'a str>,
-    pub(super) saved_attachment: Option<Result<&'a Path, SaveError>>,
+    pub(super) saves: AttachmentSaves<'a>,
     pub(super) reading: Reading,
+}
+
+/// Where saving attachments stands, for the rows of the attachments.
+#[derive(Clone, Copy, Default)]
+pub(super) struct AttachmentSaves<'a> {
+    /// The attachment being fetched now, by ID.
+    pub(super) saving: Option<&'a str>,
+    /// The attachment whose last save failed, by ID, and why.
+    pub(super) failed: Option<(&'a str, SaveError)>,
 }
 
 pub(super) fn show(
@@ -62,26 +70,6 @@ pub(super) fn show(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    if let Some(outcome) = &view.saved_attachment {
-        match outcome {
-            Ok(path) => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("Saved to {}", path.display()))
-                            .small()
-                            .color(theme::colors(ui).success),
-                    );
-                    if ui.add(theme::compact_button(REVEAL_LABEL)).clicked() {
-                        messages.push(Message::RevealAttachment(path.to_path_buf()));
-                    }
-                });
-            }
-            Err(error) => {
-                ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
-            }
-        }
-        ui.separator();
-    }
     match view.mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
         ReaderState::Loading { .. } => conversation_skeleton(ui, view, state),
@@ -216,6 +204,17 @@ fn conversation_skeleton(ui: &mut egui::Ui, view: &ReaderView<'_>, state: &mut U
     });
 }
 
+/// A line a loading card's header keeps for text it does not have yet.
+struct SkeletonLine {
+    /// From the top of the header's text.
+    top: f32,
+    /// From the left of the header's text.
+    inset: f32,
+    /// How much of the rest of the line it takes.
+    share: f32,
+    height: f32,
+}
+
 fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> egui::Response {
     theme::card(ui)
         .show(ui, |ui| {
@@ -231,7 +230,7 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                 Sense::hover(),
             );
             paint_message_chevron(ui, header, expanded, None);
-            let date_width = 122.0_f32.min(header.width() * 0.3);
+            let date_width = SKELETON_DATE_WIDTH.min(header.width() * SKELETON_DATE_SHARE);
             let copy = header_copy_rect(header, date_width);
             let sender_height =
                 ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::ROW_TEXT_SIZE)));
@@ -250,30 +249,41 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                 fill,
             );
             let expanded_lines = [
-                (20.0, 0.85, detail_height),
-                (
-                    recipients_top(SenderLine::NameOverAddress),
-                    0.65,
-                    detail_height,
-                ),
+                // The address, right of the signature icon, as `paint_sender`
+                // lays it out.
+                SkeletonLine {
+                    top: SECOND_LINE_TOP,
+                    inset: SIGNATURE_ICON_INSET,
+                    share: 0.85,
+                    height: detail_height,
+                },
+                SkeletonLine {
+                    top: recipients_top(SenderLine::NameOverAddress),
+                    inset: 0.0,
+                    share: 0.65,
+                    height: detail_height,
+                },
             ];
-            let collapsed_lines = [(22.0, 0.85, sender_height)];
+            let collapsed_lines = [SkeletonLine {
+                top: PREVIEW_LINE_TOP,
+                inset: 0.0,
+                share: 0.85,
+                height: sender_height,
+            }];
             let lines = if expanded {
                 &expanded_lines[..]
             } else {
                 &collapsed_lines[..]
             };
-            for (offset, fraction, height) in lines {
-                let inset = if expanded && *offset == 20.0 {
-                    SIGNATURE_ICON_INSET
-                } else {
-                    0.0
-                };
+            for line in lines {
                 theme::paint_skeleton(
                     ui.painter(),
                     egui::Rect::from_min_size(
-                        copy.left_top() + egui::vec2(inset, *offset),
-                        egui::vec2((copy.width() - inset).max(0.0) * fraction, *height),
+                        copy.left_top() + egui::vec2(line.inset, line.top),
+                        egui::vec2(
+                            (copy.width() - line.inset).max(0.0) * line.share,
+                            line.height,
+                        ),
                     ),
                     fill,
                 );
@@ -360,7 +370,7 @@ fn reading_column(
             message,
             reader.preview_at(index),
             reader,
-            view.saving_attachment,
+            view.saves,
             view.reading,
             messages,
         );
@@ -740,19 +750,21 @@ fn message_card(
     message: &MailMessage,
     preview: &str,
     reader: &ConversationReader,
-    saving_attachment: Option<&str>,
+    saves: AttachmentSaves<'_>,
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
     let expanded = reader.is_expanded(&message.id, reading);
     ui.push_id(&message.id, |ui| {
         theme::card(ui).show(ui, |ui| {
-            if message_header(ui, message, preview, expanded).clicked() {
+            let header = message_header(ui, message, preview, expanded);
+            if header.clicked() {
                 messages.push(Message::ToggleMessageExpanded(message.id.clone()));
             }
+            header.context_menu(|ui| address_menu(ui, message, messages));
             if expanded {
                 for attachment in &message.attachments {
-                    attachment_row(ui, &message.id, attachment, saving_attachment, messages);
+                    attachment_row(ui, &message.id, attachment, saves, messages);
                 }
                 reply_toolbar(ui, Some(&message.id), messages);
                 ui.separator();
@@ -762,6 +774,26 @@ fn message_card(
             }
         });
     });
+}
+
+/// A header's right-click menu, which copies the addresses it names without
+/// their names, as the composer's fields take them.
+fn address_menu(ui: &mut egui::Ui, message: &MailMessage, messages: &mut Vec<Message>) {
+    let sender = &message.sender.address;
+    if !sender.is_empty() && ui.button("Copy sender's address").clicked() {
+        messages.push(Message::CopyAddresses(vec![sender.clone()]));
+        ui.close();
+    }
+    let recipients: Vec<String> = [&message.to, &message.cc, &message.bcc]
+        .into_iter()
+        .flatten()
+        .map(|recipient| recipient.address.clone())
+        .filter(|address| !address.is_empty())
+        .collect();
+    if !recipients.is_empty() && ui.button("Copy recipients' addresses").clicked() {
+        messages.push(Message::CopyAddresses(recipients));
+        ui.close();
+    }
 }
 
 fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec<Message>) {
@@ -926,8 +958,15 @@ fn paint_sender(
     copy_rect: egui::Rect,
 ) -> (egui::Rect, &'static str) {
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
-    let identity_top =
-        copy_rect.left_top() + egui::vec2(0.0, if line.separate_address() { 20.0 } else { 0.0 });
+    let identity_top = copy_rect.left_top()
+        + egui::vec2(
+            0.0,
+            if line.separate_address() {
+                SECOND_LINE_TOP
+            } else {
+                0.0
+            },
+        );
     let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
     let (icon, status, color) = message_status(ui, message);
     egui::Image::new(icon.source())
@@ -996,7 +1035,7 @@ fn paint_header_details(
     } else {
         theme::paint_truncated_text(
             painter,
-            copy_rect.left_top() + egui::vec2(0.0, 22.0),
+            copy_rect.left_top() + egui::vec2(0.0, PREVIEW_LINE_TOP),
             preview,
             FontId::proportional(theme::ROW_TEXT_SIZE),
             theme::colors(ui).muted,
@@ -1100,9 +1139,14 @@ fn recipient_lines(message: &MailMessage) -> Vec<String> {
     lines
 }
 
-/// How far below an open header's top its "To:" line starts.
+/// How far below an open header's top its "To:" line starts: one line under
+/// the sender's address when that has a line of its own.
 fn recipients_top(line: SenderLine) -> f32 {
-    if line.separate_address() { 39.0 } else { 20.0 }
+    if line.separate_address() {
+        SECOND_LINE_TOP + RECIPIENT_LINE_PITCH
+    } else {
+        SECOND_LINE_TOP
+    }
 }
 
 /// Paints a header's chevron, brighter while the pointer is over the header
@@ -1179,11 +1223,11 @@ fn attachment_row(
     ui: &mut egui::Ui,
     message_id: &str,
     attachment: &MailAttachment,
-    saving_attachment: Option<&str>,
+    saves: AttachmentSaves<'_>,
     messages: &mut Vec<Message>,
 ) {
-    let saving = saving_attachment.is_some();
-    let this_one = saving_attachment == Some(attachment.id.as_str());
+    let saving = saves.saving.is_some();
+    let this_one = saves.saving == Some(attachment.id.as_str());
     ui.horizontal_wrapped(|ui| {
         detail(ui, &format!("Attachment: {}", attachment.name));
         detail(ui, &size_label(attachment.size));
@@ -1210,6 +1254,11 @@ fn attachment_row(
             ));
         }
     });
+    // A failed save is told beside its own file, not above every
+    // conversation opened after it.
+    if let Some((_, error)) = saves.failed.filter(|(id, _)| *id == attachment.id) {
+        ui.label(egui::RichText::new(error.message()).color(theme::colors(ui).danger));
+    }
 }
 
 fn message_body(

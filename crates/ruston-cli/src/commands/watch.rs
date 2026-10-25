@@ -37,14 +37,12 @@ fn needs_index(report: &SyncReport, round: Round) -> bool {
 }
 
 /// Whether `error` may pass if `watch` tries again later: the network,
-/// Proton being busy or down, or the cache changing during a sync, which the
-/// core reports as [`Error::is_retryable_cache_error`]. Anything else, a
-/// refused session first, stops it.
+/// Proton being busy or down, or the cache changing during a sync. Anything
+/// else, a refused session first, stops it.
 fn is_transient(error: &Error) -> bool {
     match error {
-        Error::Http(_) => true,
+        Error::Http(_) | Error::CacheChanged(_) => true,
         Error::Api(api) => api.may_pass(),
-        Error::Cache(_) => error.is_retryable_cache_error(),
         _ => false,
     }
 }
@@ -59,6 +57,10 @@ fn retry_delay(interval: Duration, failures: u32) -> Duration {
 
 pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()> {
     let client = resume(&ctx.profile).await?;
+    let folder = match folder {
+        Some(folder) => Some(client.folder_id(&folder).await?),
+        None => None,
+    };
     terminal::eprintln!("watching (every {interval}s; Ctrl-C to stop)…");
     let interval = Duration::from_secs(interval);
     let mut round = Round::First;
@@ -125,8 +127,8 @@ mod tests {
         for status in [429, 500, 503] {
             assert!(is_transient(&api(status)), "{status}");
         }
-        assert!(is_transient(&Error::Cache(
-            "mailbox changed during resync; retry".into()
+        assert!(is_transient(&Error::CacheChanged(
+            "mailbox changed during resync".into()
         )));
         // A refused session, or a request Proton will refuse again, stops it.
         for status in [401, 403, 422] {

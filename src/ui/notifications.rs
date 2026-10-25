@@ -52,6 +52,8 @@ impl Status {
 pub(super) struct Notifications {
     enabled: Arc<AtomicBool>,
     status: Arc<AtomicU8>,
+    #[cfg(target_os = "linux")]
+    shown: linux::Shown,
 }
 
 impl Notifications {
@@ -81,14 +83,8 @@ impl Notifications {
         self.enabled.store(false, Ordering::Release);
         self.enabled = Arc::new(AtomicBool::new(enabled));
         self.status = Arc::new(AtomicU8::new(Status::Off as u8));
-        // Windows keeps delivered toasts in its notification center; take
-        // them away with the account, on a thread of their own for COM. Tests
-        // must not clear the toasts of the Ruston Mail the machine runs.
-        #[cfg(all(target_os = "windows", not(test)))]
         if !enabled {
-            let _ = std::thread::Builder::new()
-                .name("ruston-toast-clear".into())
-                .spawn(windows::clear);
+            self.withdraw();
         }
         if enabled {
             #[cfg(target_os = "macos")]
@@ -100,6 +96,43 @@ impl Notifications {
             }
         }
     }
+
+    /// Takes the notifications already delivered away with the account:
+    /// Windows keeps them in its notification center, on a thread of their
+    /// own for COM. Tests must not clear the toasts of the Ruston Mail the
+    /// machine runs.
+    #[cfg(all(target_os = "windows", not(test)))]
+    fn withdraw(&self) {
+        let _ = std::thread::Builder::new()
+            .name("ruston-toast-clear".into())
+            .spawn(windows::clear);
+    }
+
+    /// Takes the notifications already delivered away with the account: on
+    /// Linux, the last one, which stays until it is dismissed. The request
+    /// runs on a thread of its own, as on Windows.
+    #[cfg(target_os = "linux")]
+    fn withdraw(&self) {
+        if !self.shown.is_some() {
+            return;
+        }
+        let shown = self.shown.clone();
+        let _ = std::thread::Builder::new()
+            .name("ruston-notification-close".into())
+            .spawn(move || {
+                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    runtime.block_on(linux::close(shown));
+                }
+            });
+    }
+
+    /// macOS keeps what it delivered after signing out, and tests on Windows
+    /// leave the machine's toasts alone.
+    #[cfg(not(any(target_os = "linux", all(target_os = "windows", not(test)))))]
+    fn withdraw(&self) {}
 
     pub(super) fn show(
         &self,
@@ -131,12 +164,14 @@ impl Notifications {
             let enabled = self.enabled.clone();
             let status = self.status.clone();
             let context = context.clone();
+            #[cfg(target_os = "linux")]
+            let shown = self.shown.clone();
             runtime.spawn_message(async move {
                 if !enabled.load(Ordering::Acquire) {
                     return None;
                 }
                 #[cfg(target_os = "linux")]
-                let result = linux::show(&sender, &subject, enabled).await;
+                let result = linux::show(&sender, &subject, enabled, shown).await;
                 #[cfg(target_os = "windows")]
                 let result = tokio::task::spawn_blocking({
                     let context = context.clone();

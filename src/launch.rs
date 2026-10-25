@@ -1,5 +1,7 @@
 //! Per-user desktop activation. Only bounded, authenticated mailto requests
-//! cross the loopback connection; message contents never reach the filesystem.
+//! cross the connection between launches, a socket in the private activation
+//! directory on Unix and loopback TCP on Windows; message contents never reach
+//! the filesystem.
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -9,6 +11,8 @@ mod tests;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -24,9 +28,13 @@ use crate::mailto::{MAX_PENDING, MAX_URL_BYTES, Request};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a connection may take to authenticate. Any local user can connect
-/// to the loopback port and the worker serves one connection at a time, so
-/// idle connections must not use up a later launch's retries.
+/// to a loopback port and the worker serves one connection at a time, so idle
+/// connections must not use up a later launch's retries.
 const HEADER_TIMEOUT: Duration = Duration::from_millis(200);
+/// The socket a Unix instance listens on, inside the private activation
+/// directory, so no other user can reach it.
+#[cfg(unix)]
+const SOCKET: &str = "socket";
 const MAGIC: &[u8; 4] = b"RM01";
 /// Forwarded in place of a mailto link over the size limit, which the
 /// receiving process would drop without an answer. Every version refuses to
@@ -79,7 +87,8 @@ pub struct Instance {
     // another process could otherwise lock a different inode at the same path.
     _lock: File,
     endpoint: PathBuf,
-    address: SocketAddr,
+    /// Wakes the worker's blocking accept, and removes the socket file after.
+    waker: Waker,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     receiver: mpsc::Receiver<Event>,
@@ -135,8 +144,11 @@ impl Instance {
                 return Ok(Start::Forwarded);
             }
         };
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let address = listener.local_addr()?;
+        let Listening {
+            acceptor,
+            port,
+            waker,
+        } = listen(folder)?;
         let mut token = [0_u8; 32];
         getrandom::fill(&mut token).map_err(|error| io::Error::other(error.to_string()))?;
         let (events, receiver) = mpsc::sync_channel(MAX_PENDING);
@@ -151,19 +163,20 @@ impl Instance {
         let worker = thread::Builder::new()
             .name("ruston-activation".into())
             .spawn(move || {
-                for connection in listener.incoming() {
+                loop {
+                    let connection = acceptor.accept_channel();
                     if worker_stop.load(Ordering::Relaxed) {
                         break;
                     }
                     if let Ok(mut stream) = connection {
-                        let _ = receive(&mut stream, &token, &worker_sender);
+                        let _ = receive(stream.as_mut(), &token, &worker_sender);
                     }
                 }
             })?;
         let instance = Self {
             _lock: lock,
             endpoint,
-            address,
+            waker,
             stop,
             worker: Some(worker),
             receiver,
@@ -178,7 +191,7 @@ impl Instance {
                 .send(argument.request.map_or(Event::Rejected, Event::Mailto));
         }
         let record = EndpointRecord {
-            port: address.port(),
+            port,
             token,
             process: std::process::id(),
         };
@@ -210,12 +223,166 @@ impl Drop for Instance {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         // Wake blocking accept without leaving a polling thread behind.
-        let _ = TcpStream::connect_timeout(&self.address, TIMEOUT);
+        self.waker.wake();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
         let _ = fs::remove_file(&self.endpoint);
+        self.waker.remove_socket();
     }
+}
+
+/// One end of a connection between two launches.
+trait Channel: Read + Write + Send {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+}
+
+impl Channel for TcpStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_read_timeout(self, timeout)
+    }
+
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_write_timeout(self, timeout)
+    }
+}
+
+#[cfg(unix)]
+impl Channel for UnixStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        UnixStream::set_read_timeout(self, timeout)
+    }
+
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        UnixStream::set_write_timeout(self, timeout)
+    }
+}
+
+/// What the worker accepts later launches' connections from.
+trait Acceptor: Send {
+    fn accept_channel(&self) -> io::Result<Box<dyn Channel>>;
+}
+
+impl Acceptor for TcpListener {
+    fn accept_channel(&self) -> io::Result<Box<dyn Channel>> {
+        Ok(Box::new(self.accept()?.0))
+    }
+}
+
+#[cfg(unix)]
+impl Acceptor for UnixListener {
+    fn accept_channel(&self) -> io::Result<Box<dyn Channel>> {
+        Ok(Box::new(self.accept()?.0))
+    }
+}
+
+/// Where an instance listens: what accepts connections, the port its
+/// endpoint record publishes (0 for the socket in the activation directory),
+/// and what wakes the worker when the instance closes.
+struct Listening {
+    acceptor: Box<dyn Acceptor>,
+    port: u16,
+    waker: Waker,
+}
+
+/// Reaches the listener an instance's worker waits on, to wake it when the
+/// instance closes, and knows what the listener leaves on disk.
+struct Waker {
+    wake: Box<dyn Fn() + Send>,
+    /// The socket file, removed once the worker has stopped.
+    socket: Option<PathBuf>,
+}
+
+impl Waker {
+    fn wake(&self) {
+        (self.wake)();
+    }
+
+    fn remove_socket(&self) {
+        if let Some(path) = &self.socket {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// Listens on a socket in `folder`, which only its owner can enter, so no
+/// other user can reach it. A path longer than the system allows for a
+/// socket, as a long home folder can make one on macOS, listens on loopback
+/// TCP instead.
+#[cfg(unix)]
+fn listen(folder: &Path) -> io::Result<Listening> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = folder.join(SOCKET);
+    // A crashed instance's socket; this launch holds the lock now.
+    match fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let listener = match UnixListener::bind(&path) {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => return listen_tcp(),
+        Err(error) => return Err(error),
+    };
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    let wake = path.clone();
+    Ok(Listening {
+        acceptor: Box::new(listener),
+        port: 0,
+        waker: Waker {
+            wake: Box::new(move || {
+                let _ = UnixStream::connect(&wake);
+            }),
+            socket: Some(path),
+        },
+    })
+}
+
+/// Windows has no socket in a private directory to listen on: loopback TCP,
+/// whose port any local user can reach, guarded by the token.
+#[cfg(not(unix))]
+fn listen(_folder: &Path) -> io::Result<Listening> {
+    listen_tcp()
+}
+
+fn listen_tcp() -> io::Result<Listening> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    let address = listener.local_addr()?;
+    Ok(Listening {
+        acceptor: Box::new(listener),
+        port: address.port(),
+        waker: Waker {
+            wake: Box::new(move || {
+                let _ = TcpStream::connect_timeout(&address, TIMEOUT);
+            }),
+            socket: None,
+        },
+    })
+}
+
+/// Opens a connection to the instance `record` describes: its socket in
+/// `folder` when it publishes no port.
+#[cfg(unix)]
+fn open_channel(folder: &Path, record: &EndpointRecord) -> io::Result<Box<dyn Channel>> {
+    if record.port == 0 {
+        Ok(Box::new(UnixStream::connect(folder.join(SOCKET))?))
+    } else {
+        open_tcp(record.port)
+    }
+}
+
+#[cfg(not(unix))]
+fn open_channel(_folder: &Path, record: &EndpointRecord) -> io::Result<Box<dyn Channel>> {
+    open_tcp(record.port)
+}
+
+fn open_tcp(port: u16) -> io::Result<Box<dyn Channel>> {
+    Ok(Box::new(TcpStream::connect_timeout(
+        &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        TIMEOUT,
+    )?))
 }
 
 fn private_directory(path: &Path) -> io::Result<()> {
@@ -266,9 +433,9 @@ fn private_file(path: &Path, truncate: bool) -> io::Result<File> {
     Ok(file)
 }
 
-/// What a later launch reads to reach the running instance. Launches of other
-/// versions read it too, so its layout stays fixed: the port, the token and
-/// the process ID, big-endian.
+/// What a later launch reads to reach the running instance: the port, the
+/// token and the process ID, big-endian. A port of 0 means the socket in the
+/// activation directory.
 struct EndpointRecord {
     port: u16,
     token: [u8; 32],
@@ -340,7 +507,7 @@ fn claim(folder: &Path, endpoint: &Path) -> io::Result<Option<File>> {
 /// instance to hand its links to.
 enum Found {
     Lock(File),
-    Primary(TcpStream),
+    Primary(Box<dyn Channel>),
 }
 
 /// Takes the instance lock, or connects to the instance that holds it. That
@@ -353,7 +520,7 @@ fn find_primary(folder: &Path, endpoint: &Path) -> io::Result<Found> {
         if let Some(lock) = claim(folder, endpoint)? {
             return Ok(Found::Lock(lock));
         }
-        match connect(endpoint) {
+        match connect(folder, endpoint) {
             Ok(stream) => return Ok(Found::Primary(stream)),
             Err(error) if Instant::now() >= deadline => return Err(error),
             Err(_) => thread::sleep(Duration::from_millis(25)),
@@ -362,9 +529,10 @@ fn find_primary(folder: &Path, endpoint: &Path) -> io::Result<Found> {
 }
 
 /// Hands this launch's links, or a plain activation, to the running instance.
-fn forward_to_primary(mut stream: TcpStream, urls: Vec<Argument>) -> io::Result<()> {
+fn forward_to_primary(mut stream: Box<dyn Channel>, urls: Vec<Argument>) -> io::Result<()> {
+    let stream = stream.as_mut();
     if urls.is_empty() {
-        return forward(&mut stream, "");
+        return forward(stream, "");
     }
     for argument in urls {
         let url = if argument.url.len() > MAX_URL_BYTES {
@@ -372,17 +540,14 @@ fn forward_to_primary(mut stream: TcpStream, urls: Vec<Argument>) -> io::Result<
         } else {
             &argument.url
         };
-        forward(&mut stream, url)?;
+        forward(stream, url)?;
     }
     Ok(())
 }
 
-fn connect(endpoint: &Path) -> io::Result<TcpStream> {
+fn connect(folder: &Path, endpoint: &Path) -> io::Result<Box<dyn Channel>> {
     let record = EndpointRecord::read(endpoint)?;
-    let mut stream = TcpStream::connect_timeout(
-        &SocketAddr::from((Ipv4Addr::LOCALHOST, record.port)),
-        TIMEOUT,
-    )?;
+    let mut stream = open_channel(folder, &record)?;
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
     stream.write_all(MAGIC)?;
@@ -404,7 +569,7 @@ fn connect(endpoint: &Path) -> io::Result<TcpStream> {
     Ok(stream)
 }
 
-fn forward(stream: &mut TcpStream, url: &str) -> io::Result<()> {
+fn forward(stream: &mut dyn Channel, url: &str) -> io::Result<()> {
     stream.write_all(&(url.len() as u32).to_be_bytes())?;
     stream.write_all(url.as_bytes())?;
     let mut response = [0];
@@ -418,7 +583,7 @@ fn forward(stream: &mut TcpStream, url: &str) -> io::Result<()> {
     }
 }
 
-fn receive(stream: &mut TcpStream, token: &[u8; 32], sender: &Sender) -> io::Result<()> {
+fn receive(stream: &mut dyn Channel, token: &[u8; 32], sender: &Sender) -> io::Result<()> {
     let deadline = Instant::now() + TIMEOUT;
     stream.set_write_timeout(Some(TIMEOUT))?;
     let header_deadline = Instant::now() + HEADER_TIMEOUT;
@@ -477,7 +642,11 @@ fn same_token(received: &[u8; 32], token: &[u8; 32]) -> bool {
 
 /// A total deadline prevents a slow peer from extending read_exact indefinitely
 /// by sending one byte before each socket timeout, including during shutdown.
-fn read_until(stream: &mut TcpStream, mut buffer: &mut [u8], deadline: Instant) -> io::Result<()> {
+fn read_until(
+    stream: &mut dyn Channel,
+    mut buffer: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
     while !buffer.is_empty() {
         let remaining = deadline
             .checked_duration_since(Instant::now())

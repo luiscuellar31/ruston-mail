@@ -402,6 +402,77 @@ fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     );
 }
 
+#[test]
+fn a_headers_menu_copies_the_senders_or_the_recipients_addresses() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.cc = vec![address(Some("Ops"), "ops@example.org")];
+    message.bcc = vec![address(None, "audit@example.org")];
+    let mut reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    reader.toggle("message");
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_width(420.0);
+                message_card(
+                    ui,
+                    &reader.detail().messages[0],
+                    reader.preview_at(0),
+                    &reader,
+                    AttachmentSaves::default(),
+                    Reading::default(),
+                    &mut messages,
+                );
+            },
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+    let click = |pos, button| {
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+    };
+    let choose = |item: &str| {
+        let (shapes, _) = frame(Vec::new());
+        let header = text_rect(&shapes, "Preview");
+        let (_, asked) = frame(click(header.center(), egui::PointerButton::Secondary));
+        assert!(asked.is_empty(), "a right click leaves the card as it is");
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = frame(Vec::new()).0;
+        }
+        let item = text_rect(&shapes, item);
+        frame(click(item.center(), egui::PointerButton::Primary)).1
+    };
+
+    assert!(matches!(
+        choose("Copy sender's address").as_slice(),
+        [Message::CopyAddresses(addresses)] if addresses == &["alex@example.com"]
+    ));
+    assert!(matches!(
+        choose("Copy recipients' addresses").as_slice(),
+        [Message::CopyAddresses(addresses)]
+            if addresses == &["team@example.org", "ops@example.org", "audit@example.org"]
+    ));
+}
+
 /// Every icon painted, as the rectangles their textures fill.
 fn icons(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
     shapes
@@ -746,8 +817,7 @@ fn reader_frame(
             mailbox,
             places,
             actions_available: true,
-            saving_attachment: None,
-            saved_attachment: None,
+            saves: AttachmentSaves::default(),
             reading,
         };
         show(ui, &view, state, &mut messages);
@@ -817,22 +887,30 @@ fn assert_reader_geometry(
             scale,
         );
     }
+    // Each loaded text has a loading bar whose corner is where the text
+    // goes, whatever order the bars are drawn in.
     let bars = rounded_rects(loading, 4);
+    let bar_at = |label: &str, corner: fn(&egui::Rect) -> egui::Pos2, point: egui::Pos2| {
+        *bars
+            .iter()
+            .find(|bar| {
+                let delta = (corner(bar) - point).abs() * scale;
+                delta.x <= 0.5 && delta.y <= 0.5
+            })
+            .unwrap_or_else(|| panic!("no bar for {label} at {point:?}, scale={scale}: {bars:?}"))
+    };
     let sender = text_rect(loaded, "Alex Rivera");
-    assert_same_pixel_position("sender", bars[0].left_top(), sender.left_top(), scale);
-    assert!((bars[0].height() - sender.height()).abs() * scale <= 0.5);
-    let date_index = if expanded { 3 } else { 2 };
+    let sender_bar = bar_at("sender", egui::Rect::left_top, sender.left_top());
+    assert!((sender_bar.height() - sender.height()).abs() * scale <= 0.5);
     let date = text_rect(loaded, &format_message_time(1_791_327_600, &Local));
-    assert_same_pixel_position(
-        "date",
-        bars[date_index].right_top(),
-        date.right_top(),
-        scale,
-    );
+    bar_at("date", egui::Rect::right_top, date.right_top());
     if expanded {
-        for (index, label) in [(1, "alex@example.com"), (2, "To: team@example.org")] {
-            let text = text_rect(loaded, label);
-            assert_same_pixel_position(label, bars[index].left_top(), text.left_top(), scale);
+        for label in ["alex@example.com", "To: team@example.org"] {
+            bar_at(
+                label,
+                egui::Rect::left_top,
+                text_rect(loaded, label).left_top(),
+            );
         }
         for label in ["Reply", "Reply all", "Forward"] {
             assert_same_pixel_position(
@@ -854,13 +932,12 @@ fn assert_reader_geometry(
                 }
             })
             .unwrap();
-        assert_same_pixel_position("body start", bars[4].left_top(), body, scale);
+        bar_at("body start", egui::Rect::left_top, body);
     } else {
-        assert_same_pixel_position(
+        bar_at(
             "preview",
-            bars[1].left_top(),
+            egui::Rect::left_top,
             text_rect(loaded, "Hello.").left_top(),
-            scale,
         );
     }
 }
@@ -1679,7 +1756,7 @@ fn an_expanded_message_card_only_uses_its_content_height() {
                     &reader.detail().messages[0],
                     reader.preview_at(0),
                     &reader,
-                    None,
+                    AttachmentSaves::default(),
                     Reading::default(),
                     &mut Vec::new(),
                 );
@@ -1819,7 +1896,7 @@ fn rendered_card(
                 &reader.detail().messages[0],
                 reader.preview_at(0),
                 reader,
-                None,
+                AttachmentSaves::default(),
                 Reading::default(),
                 &mut Vec::new(),
             );
@@ -1958,26 +2035,48 @@ fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
 }
 
 #[test]
-fn a_saved_attachment_renders_notice_and_reveal_button() {
-    let path = std::path::PathBuf::from("/tmp/report.pdf");
-    let context = egui::Context::default();
-    let mut messages = Vec::new();
-
-    let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
-    context
-        .run_ui(egui::RawInput::default(), |ui| {
-            ui.set_width(680.0);
-            let view = ReaderView {
-                mailbox: &mailbox,
-                places: &[],
-                actions_available: true,
-                saving_attachment: None,
-                saved_attachment: Some(Ok(&path)),
-                reading: Reading::default(),
-            };
-            show(ui, &view, &mut UiState::default(), &mut messages);
+fn a_failed_save_is_told_beside_its_own_file() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.attachments = ["report.pdf", "photo.jpg"]
+        .into_iter()
+        .map(|name| MailAttachment {
+            id: name.into(),
+            name: name.into(),
+            size: 1_024,
         })
-        .drop_without_applying_deltas();
+        .collect();
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    let context = egui::Context::default();
+    theme::install(&context);
+    let saves = AttachmentSaves {
+        saving: None,
+        failed: Some(("photo.jpg", crate::downloads::SaveError::Failed)),
+    };
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        ui.set_width(680.0);
+        message_card(
+            ui,
+            &reader.detail().messages[0],
+            reader.preview_at(0),
+            &reader,
+            saves,
+            Reading::default(),
+            &mut Vec::new(),
+        );
+    });
 
-    assert!(messages.is_empty());
+    let error = text_rect(&output.shapes, "Ruston Mail could not save the file.");
+    let report = text_rect(&output.shapes, "Attachment: report.pdf");
+    let photo = text_rect(&output.shapes, "Attachment: photo.jpg");
+    assert!(
+        photo.bottom() <= error.top() && error.top() - photo.bottom() < 20.0,
+        "the error belongs under its file: {photo:?} then {error:?}"
+    );
+    assert!(report.bottom() <= photo.top(), "not under the other file");
+    output.drop_without_applying_deltas();
 }

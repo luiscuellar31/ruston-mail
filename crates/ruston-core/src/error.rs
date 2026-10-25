@@ -61,8 +61,10 @@ fn is_proton_host(host: &str) -> bool {
 pub mod exit_status {
     /// Any other error.
     pub const OTHER: i32 = 1;
-    /// A session that is missing, expired or refused.
-    pub const SESSION: i32 = 2;
+    /// A session that is missing, expired or refused. Its own status, apart
+    /// from the 2 argument parsers such as clap give a usage error, so a
+    /// script can tell that signing in again would help.
+    pub const SESSION: i32 = 6;
     /// Something the request named was not found.
     pub const NOT_FOUND: i32 = 3;
     /// An ambiguous reference, or a conflict Proton reports.
@@ -221,14 +223,41 @@ pub enum Error {
     #[error("session error: {0}")]
     Session(String),
 
+    /// The saved session names an API address other than the one it was
+    /// created for, so its tokens are not sent there.
+    #[error(
+        "session error: saved session does not match the API address it was created for; sign in again"
+    )]
+    SessionAddressMismatch,
+
+    /// The account has a separate mailbox password, and the login was given
+    /// none and could not ask for one.
+    #[error(
+        "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password"
+    )]
+    MailboxPasswordRequired,
+
+    /// The account's second factor is a security key (FIDO2/WebAuthn), which
+    /// is not supported.
+    #[error(
+        "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet supported — enable a TOTP authenticator app, or use an app/bridge password"
+    )]
+    SecurityKeyRequired,
+
+    /// None of the account's user keys opened: a wrong mailbox password, or a
+    /// saved session from before the password changed.
+    #[error("crypto error: no user key could be unlocked (wrong password?)")]
+    UserKeysLocked,
+
     /// A local cache read or write failed.
-    ///
-    /// When the cache or Proton's listing changed while the operation ran,
-    /// for example because another process moved the sync cursor, the
-    /// message ends in `; retry` and trying again later may succeed:
-    /// [`Error::is_retryable_cache_error`] recognizes these.
     #[error("cache error: {0}")]
     Cache(String),
+
+    /// The cache, or Proton's listing, changed while an operation ran, for
+    /// example because another process moved the sync cursor, so nothing was
+    /// applied and trying again later may succeed. The text says what changed.
+    #[error("cache error: {0}; retry")]
+    CacheChanged(String),
 
     /// A filesystem or other I/O operation failed.
     #[error("io error: {0}")]
@@ -256,9 +285,6 @@ impl From<reqwest::Error> for Error {
     }
 }
 
-/// How a cache error says that trying again later may succeed.
-const CACHE_CHANGED_SUFFIX: &str = "; retry";
-
 impl Error {
     /// Map this error to the CLI's process exit status: an API error by its
     /// HTTP status, and any other [`exit_status::OTHER`] unless it names a
@@ -276,13 +302,13 @@ impl Error {
     /// A cache error for an operation that found the cache, or Proton's
     /// listing, changed under it; `reason` says what changed.
     pub(crate) fn cache_changed(reason: &str) -> Self {
-        Error::Cache(format!("{reason}{CACHE_CHANGED_SUFFIX}"))
+        Error::CacheChanged(reason.to_owned())
     }
 
     /// Whether this is a cache error that may pass if the operation is tried
     /// again later, because the cache changed while it ran.
     pub fn is_retryable_cache_error(&self) -> bool {
-        matches!(self, Error::Cache(message) if message.ends_with(CACHE_CHANGED_SUFFIX))
+        matches!(self, Error::CacheChanged(_))
     }
 }
 
@@ -409,8 +435,9 @@ mod tests {
 
     #[test]
     fn exit_codes_map_status() {
-        assert_eq!(api(401).exit_code(), 2);
-        assert_eq!(api(403).exit_code(), 2);
+        // 2 is clap's, for a usage error.
+        assert_eq!(api(401).exit_code(), 6);
+        assert_eq!(api(403).exit_code(), 6);
         assert_eq!(api(404).exit_code(), 3);
         assert_eq!(api(409).exit_code(), 4);
         assert_eq!(api(422).exit_code(), 4);
@@ -434,7 +461,7 @@ mod tests {
     #[test]
     fn error_exit_code_delegates() {
         assert_eq!(Error::Api(api(404)).exit_code(), 3);
-        assert_eq!(Error::Unauthorized.exit_code(), 2);
+        assert_eq!(Error::Unauthorized.exit_code(), 6);
         assert_eq!(
             Error::NotFound {
                 kind: "message".into()
@@ -457,6 +484,33 @@ mod tests {
         assert!(
             !Error::Cache("database disk image is malformed".into()).is_retryable_cache_error()
         );
+        // The kind of error says so, whatever its text says.
+        assert!(!Error::Cache("cursor moved; retry".into()).is_retryable_cache_error());
         assert!(!Error::Session("sync cursor changed; retry".into()).is_retryable_cache_error());
+    }
+
+    #[test]
+    fn sign_in_failures_have_kinds_of_their_own_and_read_as_before() {
+        for (error, text) in [
+            (
+                Error::MailboxPasswordRequired,
+                "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password",
+            ),
+            (
+                Error::SecurityKeyRequired,
+                "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet supported — enable a TOTP authenticator app, or use an app/bridge password",
+            ),
+            (
+                Error::UserKeysLocked,
+                "crypto error: no user key could be unlocked (wrong password?)",
+            ),
+            (
+                Error::SessionAddressMismatch,
+                "session error: saved session does not match the API address it was created for; sign in again",
+            ),
+        ] {
+            assert_eq!(error.to_string(), text);
+            assert_eq!(error.exit_code(), exit_status::OTHER);
+        }
     }
 }

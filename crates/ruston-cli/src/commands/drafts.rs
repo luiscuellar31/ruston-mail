@@ -27,7 +27,7 @@ pub async fn run(ctx: &Ctx, cmd: DraftsCmd) -> Result<()> {
             let body = read_body(&args.body)?;
             let opts = args.into_send_options(body);
             client.update_draft(&id, &opts).await?;
-            render::action_result(ctx.json, "draft updated", &[id]);
+            render::action_result(ctx.json, "edit", &[id]);
         }
         DraftsCmd::Delete { ids, yes } => {
             if !yes {
@@ -47,7 +47,7 @@ pub async fn run(ctx: &Ctx, cmd: DraftsCmd) -> Result<()> {
                 }
             }
             client.delete_draft(&ids).await?;
-            render::action_result(ctx.json, "draft deleted", &ids);
+            render::action_result(ctx.json, "delete", &ids);
         }
     }
     Ok(())

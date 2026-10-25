@@ -456,59 +456,14 @@ fn open_browser(url: &str) -> std::io::Result<()> {
     browser_command(url)?.spawn().map(|_| ())
 }
 
-/// The system's way to open `url` in the default browser. No shell reads the
-/// address: `cmd /C start` would cut it at the first `&`.
+/// The system's way to open `url` in the default browser, from core.
 fn browser_command(url: &str) -> std::io::Result<std::process::Command> {
-    let mut cmd = browser_opener()?;
+    let mut cmd = ruston_core::browser::opener()?;
     cmd.arg(url);
     cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     without_secrets(&mut cmd);
     Ok(cmd)
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(target_os = "macos")]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    Ok(std::process::Command::new("open"))
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(target_os = "windows")]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    let mut command = std::process::Command::new(system_rundll32()?);
-    command.arg("url.dll,FileProtocolHandler");
-    Ok(command)
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    Ok(std::process::Command::new("xdg-open"))
-}
-
-/// rundll32 from System32. Windows looks for a program named without a
-/// folder beside this executable first, where a download could be waiting.
-#[cfg(target_os = "windows")]
-fn system_rundll32() -> std::io::Result<PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
-
-    let mut buffer = [0_u16; 260];
-    // SAFETY: the length passed is the buffer's own; the API writes at most
-    // that many UTF-16 units and returns how many it wrote, or 0 on failure.
-    let length = unsafe {
-        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
-            buffer.as_mut_ptr(),
-            buffer.len() as u32,
-        )
-    } as usize;
-    if length == 0 || length >= buffer.len() {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])).join("rundll32.exe"))
 }
 
 /// A browser started now may outlive the CLI, so it gets none of the

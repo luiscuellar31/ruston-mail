@@ -3,14 +3,14 @@
 use crate::cli::Ctx;
 use crate::cli::{DraftArgs, EmptyFolder, LabelAction, MessagesCmd, ReadFormat, SendArgs};
 use crate::commands::prompt::{can_prompt, confirm, confirm_deletion, require_consent};
-use crate::commands::{read_body, resolve_all, resume};
+use crate::commands::{read_body, resolve_all, resume, search_options};
 use crate::render;
 use crate::terminal;
 use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::{
     BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
-use ruston_core::{AddressInfo, Client, Error, LocalCache, Result, SendOptions};
+use ruston_core::{AddressInfo, Client, Error, LocalCache, Quote, Result, SendOptions};
 use std::cell::Cell;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -164,8 +164,9 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                     .await?
                     .messages_page(&folder, unread, page, page_size)?
             } else {
-                resume(&ctx.profile)
-                    .await?
+                let client = resume(&ctx.profile).await?;
+                let folder = client.folder_id(&folder).await?;
+                client
                     .list_messages(&folder, page, page_size, unread)
                     .await?
             };
@@ -174,7 +175,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::Search(args) => {
             let client = resume(&ctx.profile).await?;
-            let opts = args.into();
+            let opts = search_options(&client, args.into()).await?;
             let msgs = client.search_messages(&opts).await?;
             render::messages_list(ctx.json, msgs.len() as u32, &msgs);
             Ok(())
@@ -192,6 +193,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             from,
             body,
             attach,
+            no_quote,
         } => {
             let client = resume(&ctx.profile).await?;
             let body = read_body(&body)?;
@@ -199,6 +201,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 from,
                 body,
                 attachments: attach,
+                quote: quote(no_quote),
                 ..Default::default()
             };
             let id = client.reply(&reference, all, &opts).await?;
@@ -211,6 +214,8 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             from,
             body,
             attach,
+            no_quote,
+            leave_out,
         } => {
             let client = resume(&ctx.profile).await?;
             let body = read_body(&body)?;
@@ -219,6 +224,8 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 from,
                 body,
                 attachments: attach,
+                quote: quote(no_quote),
+                leave_out,
                 ..Default::default()
             };
             let id = client.forward(&reference, &opts).await?;
@@ -233,6 +240,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::Move { references, dest } => {
             organize(ctx, &references, "move", move |c, ids| async move {
+                let dest = c.folder_id(&dest).await?;
                 c.move_messages(&ids, &dest).await
             })
             .await
@@ -279,7 +287,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             let client = resume(&ctx.profile).await?;
             let id = client.resolve_ref(&reference).await?;
             client.unsubscribe(&id).await?;
-            render::action_result(ctx.json, "unsubscribed", std::slice::from_ref(&id));
+            render::action_result(ctx.json, "unsubscribe", std::slice::from_ref(&id));
             Ok(())
         }
         MessagesCmd::Empty { folder, yes } => empty(ctx, folder, yes).await,
@@ -293,6 +301,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 LabelAction::Rm => "unlabel",
             };
             organize(ctx, &references, name, move |c, ids| async move {
+                let label_id = c.folder_id(&label_id).await?;
                 match action {
                     LabelAction::Add => c.apply_label(&ids, &label_id).await,
                     LabelAction::Rm => c.remove_label(&ids, &label_id).await,
@@ -303,16 +312,25 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         MessagesCmd::Undelete { ids } => {
             let client = resume(&ctx.profile).await?;
             client.undelete_messages(&ids).await?;
-            render::action_result(ctx.json, "undeleted", &ids);
+            render::action_result(ctx.json, "undelete", &ids);
             Ok(())
         }
         MessagesCmd::Receipt { reference } => {
             let client = resume(&ctx.profile).await?;
             let id = client.resolve_ref(&reference).await?;
             client.send_read_receipt(&id).await?;
-            render::action_result(ctx.json, "receipt sent", std::slice::from_ref(&id));
+            render::action_result(ctx.json, "receipt", std::slice::from_ref(&id));
             Ok(())
         }
+    }
+}
+
+/// What `--no-quote` asks of an answer.
+fn quote(no_quote: bool) -> Quote {
+    if no_quote {
+        Quote::Omitted
+    } else {
+        Quote::Original
     }
 }
 
@@ -330,9 +348,7 @@ async fn read(
     let msg = client.read_message(&id).await?;
     if let Some(path) = output {
         write_private(path, msg.body.as_bytes())?;
-        if !ctx.json {
-            terminal::println!("Wrote {} bytes to {}", msg.body.len(), path.display());
-        }
+        render::body_written(ctx.json, msg.body.len(), path);
     } else {
         render::full_message(
             ctx.json,
@@ -432,7 +448,7 @@ async fn empty(ctx: &Ctx, folder: EmptyFolder, yes: bool) -> Result<()> {
     }
     let client = resume(&ctx.profile).await?;
     client.empty_folder(folder.as_str()).await?;
-    render::action_result(ctx.json, "emptied", &[folder.as_str().to_owned()]);
+    render::folder_emptied(ctx.json, folder);
     Ok(())
 }
 

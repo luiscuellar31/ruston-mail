@@ -29,6 +29,9 @@ const ENCODED_WORD_BYTES: usize = 36;
 const FILENAME_SECTION_BYTES: usize = 40;
 /// The longest address an export writes; a longer one is refused.
 const MAX_ADDRESS_LEN: usize = 512;
+/// The longest message ID an export writes, which keeps each of its lines
+/// within RFC 5322's 998 characters; a longer one is left out.
+const MAX_MESSAGE_ID_LEN: usize = 900;
 /// The longest MIME type an export trusts: RFC 6838 allows 127 characters on
 /// each side of the slash.
 const MAX_MIME_TYPE_LEN: usize = 255;
@@ -144,10 +147,10 @@ impl Client {
         let mut file = BufWriter::new(create_export_file(&temp)?);
 
         let result = async {
-            let mut eml = EmlWriter::new(&mut file, &full)?;
+            let mut eml = EmlWriter::new(&mut file, &full, message.header.as_deref())?;
             for attachment in &message.attachments {
                 let (_, bytes) = self
-                    .download_attachment_from_message(&message, attachment)
+                    .download_listed_attachment(&message.meta, attachment)
                     .await?;
                 eml.attachment(attachment, &bytes)?;
             }
@@ -202,7 +205,12 @@ fn is_about_the_message(error: &Error) -> bool {
         | Error::Json(_)
         | Error::Srp(_)
         | Error::Session(_)
+        | Error::SessionAddressMismatch
+        | Error::MailboxPasswordRequired
+        | Error::SecurityKeyRequired
+        | Error::UserKeysLocked
         | Error::Cache(_)
+        | Error::CacheChanged(_)
         | Error::Io(_)
         | Error::NotFound { .. }
         | Error::Ambiguous(_) => false,
@@ -361,16 +369,24 @@ struct EmlWriter<W: Write> {
 
 impl<W: Write> EmlWriter<W> {
     /// Starts the export of `message`: writes its headers and its body, so
-    /// only its attachments and the end are left to write.
-    fn new(mut out: W, message: &FullMessage) -> Result<Self> {
+    /// only its attachments and the end are left to write. `original_headers`
+    /// are the message's own headers as Proton keeps them, which name the
+    /// messages it answers.
+    fn new(mut out: W, message: &FullMessage, original_headers: Option<&str>) -> Result<Self> {
         write_address_header(&mut out, "From", std::slice::from_ref(&message.meta.sender))?;
         write_address_header(&mut out, "To", &message.meta.to_list)?;
         write_address_header(&mut out, "Cc", &message.meta.cc_list)?;
         write_address_header(&mut out, "Bcc", &message.meta.bcc_list)?;
+        write_reply_to(&mut out, message)?;
         write_encoded_header(&mut out, "Subject", &message.meta.subject)?;
         let date = chrono::DateTime::from_timestamp(message.meta.time, 0)
             .unwrap_or(chrono::DateTime::UNIX_EPOCH);
         write!(out, "Date: {}\r\n", date.to_rfc2822())?;
+        write_thread_headers(
+            &mut out,
+            message.meta.external_id.as_deref(),
+            original_headers,
+        )?;
         out.write_all(b"MIME-Version: 1.0\r\n")?;
 
         let multipart = !message.attachments.is_empty();
@@ -454,6 +470,81 @@ fn write_address_header<W: Write>(out: &mut W, field: &str, addresses: &[Recipie
     }
     out.write_all(b"\r\n")?;
     Ok(())
+}
+
+/// Reply-To, when it names someone besides the sender. An address that
+/// cannot be written safely is left out, not the message.
+fn write_reply_to<W: Write>(out: &mut W, message: &FullMessage) -> Result<()> {
+    let reply_tos: Vec<Recipient> = message
+        .reply_tos
+        .iter()
+        .filter(|recipient| checked_address(&recipient.address).is_ok())
+        .cloned()
+        .collect();
+    let sender = &message.meta.sender.address;
+    if reply_tos
+        .iter()
+        .all(|recipient| recipient.address.eq_ignore_ascii_case(sender))
+    {
+        return Ok(());
+    }
+    write_address_header(out, "Reply-To", &reply_tos)
+}
+
+/// Message-ID, In-Reply-To and References, so a mail program that imports
+/// the file can place it in its conversation. `external_id` is Proton's copy
+/// of the Message-ID; `original_headers` name the messages it answers.
+fn write_thread_headers<W: Write>(
+    out: &mut W,
+    external_id: Option<&str>,
+    original_headers: Option<&str>,
+) -> Result<()> {
+    let original = original_headers
+        .and_then(|headers| mail_parser::MessageParser::default().parse_headers(headers));
+    let message_id =
+        external_id.or_else(|| original.as_ref().and_then(|original| original.message_id()));
+    write_message_ids(out, "Message-ID", message_id)?;
+    if let Some(original) = &original {
+        for (field, ids) in [
+            ("In-Reply-To", original.in_reply_to()),
+            ("References", original.references()),
+        ] {
+            let ids = ids.as_text_list().unwrap_or_default();
+            write_message_ids(out, field, ids.iter().map(|id| id.as_ref()))?;
+        }
+    }
+    Ok(())
+}
+
+/// A header of message IDs, one to a line; an ID that could break the header
+/// is left out, and with no ID left, so is the header.
+fn write_message_ids<'a, W: Write>(
+    out: &mut W,
+    field: &str,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut ids = ids.into_iter().filter_map(checked_message_id);
+    let Some(first) = ids.next() else {
+        return Ok(());
+    };
+    write!(out, "{field}: <{first}>")?;
+    for id in ids {
+        write!(out, "\r\n <{id}>")?;
+    }
+    out.write_all(b"\r\n")?;
+    Ok(())
+}
+
+/// `id` without angle brackets, when it can go between them: printable ASCII
+/// with no bracket, short enough for its line.
+fn checked_message_id(id: &str) -> Option<&str> {
+    let id = id.trim();
+    let id = id
+        .strip_prefix('<')
+        .and_then(|id| id.strip_suffix('>'))
+        .unwrap_or(id);
+    let printable = |c: char| c.is_ascii_graphic() && c != '<' && c != '>';
+    (!id.is_empty() && id.len() <= MAX_MESSAGE_ID_LEN && id.chars().all(printable)).then_some(id)
 }
 
 fn write_encoded_header<W: Write>(out: &mut W, field: &str, value: &str) -> Result<()> {
@@ -615,305 +706,4 @@ fn write_base64_text<W: Write>(out: &mut W, text: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::message::{MessageMetadata, Recipient};
-    use mail_parser::{MessageParser, MimeHeaders};
-
-    fn message() -> FullMessage {
-        FullMessage {
-            meta: MessageMetadata {
-                subject: "Café résumé".into(),
-                sender: Recipient {
-                    name: "Alícia".into(),
-                    address: "alice@example.test".into(),
-                    ..Default::default()
-                },
-                to_list: vec![Recipient::new("bob@example.test")],
-                time: 1_700_000_000,
-                ..Default::default()
-            },
-            body: "first\nsecond".into(),
-            mime_type: "text/plain".into(),
-            verdict: crate::crypto::Verdict::Verified,
-            attachments: vec![],
-            reply_tos: vec![],
-        }
-    }
-
-    #[test]
-    fn distinct_message_ids_have_distinct_filenames() {
-        assert_ne!(export_filename("a+b"), export_filename("a/b"));
-        assert!(!export_filename("a/b").contains('/'));
-    }
-
-    #[test]
-    fn subject_cannot_inject_a_second_header() {
-        let mut full = message();
-        full.meta.subject = "Hello\r\nBcc: attacker@example.test".into();
-        full.meta.sender.name = "Alice\r\nX-Injected: yes".into();
-        let eml = EmlWriter::new(Vec::new(), &full).unwrap().finish().unwrap();
-        assert!(!eml.windows(6).any(|window| window == b"\r\nBcc:"));
-        assert!(!eml.windows(13).any(|window| window == b"\r\nX-Injected:"));
-        let parsed = MessageParser::default().parse(&eml).unwrap();
-        assert_eq!(parsed.subject(), Some("Hello  Bcc: attacker@example.test"));
-        assert_eq!(
-            parsed.from().unwrap().first().unwrap().name.as_deref(),
-            Some("Alice  X-Injected: yes")
-        );
-    }
-
-    #[test]
-    fn eml_round_trips_unicode_headers_body_and_attachment() {
-        let mut full = message();
-        let attachment = Attachment {
-            name: "résumé très long 2026.pdf".into(),
-            mime_type: Some("application/pdf".into()),
-            ..Default::default()
-        };
-        full.attachments.push(attachment.clone());
-        let bytes: Vec<u8> = (0..200).map(|value| value as u8).collect();
-        let mut writer = EmlWriter::new(Vec::new(), &full).unwrap();
-        writer.attachment(&attachment, &bytes).unwrap();
-        let eml = writer.finish().unwrap();
-
-        let parsed = MessageParser::default().parse(&eml).unwrap();
-        assert_eq!(parsed.subject(), Some("Café résumé"));
-        assert_eq!(
-            parsed.from().unwrap().first().unwrap().name.as_deref(),
-            Some("Alícia")
-        );
-        assert_eq!(parsed.body_text(0).as_deref(), Some("first\r\nsecond"));
-        assert_eq!(parsed.attachment_count(), 1);
-        let attached = parsed.attachment(0).unwrap();
-        assert_eq!(
-            attached.attachment_name(),
-            Some("résumé très long 2026.pdf")
-        );
-        assert_eq!(attached.contents(), bytes);
-    }
-
-    #[test]
-    fn base64_lines_hold_76_characters_and_text_ends_lines_with_crlf() {
-        let mut bytes = Vec::new();
-        write_base64_bytes(&mut bytes, &[0u8; 200]).unwrap();
-        let lines: Vec<usize> = String::from_utf8(bytes)
-            .unwrap()
-            .split_terminator("\r\n")
-            .map(str::len)
-            .collect();
-        // 200 bytes: three lines of 57, then 29.
-        assert_eq!(lines, [76, 76, 76, 40]);
-
-        let mut text = Vec::new();
-        write_base64_text(&mut text, "a\rb\nc\r\nd").unwrap();
-        let encoded = String::from_utf8(text).unwrap();
-        let decoded = STANDARD.decode(encoded.trim_end()).unwrap();
-        assert_eq!(decoded, b"a\r\nb\r\nc\r\nd");
-    }
-
-    #[test]
-    fn eml_without_attachments_has_a_single_text_part() {
-        let eml = EmlWriter::new(Vec::new(), &message())
-            .unwrap()
-            .finish()
-            .unwrap();
-        let parsed = MessageParser::default().parse(&eml).unwrap();
-        assert_eq!(parsed.body_text(0).as_deref(), Some("first\r\nsecond"));
-        assert_eq!(parsed.attachment_count(), 0);
-    }
-
-    #[test]
-    fn existing_export_is_not_overwritten() {
-        let dir = std::env::temp_dir().join(format!(
-            "ruston-export-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&dir).unwrap();
-        let path = dir.join(export_filename("a+b"));
-        std::fs::write(&path, b"existing").unwrap();
-        assert!(matches!(
-            create_export_file(&path),
-            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
-        ));
-        assert_eq!(std::fs::read(&path).unwrap(), b"existing");
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    /// The access list of `path` in SDDL, as icacls would read it.
-    #[cfg(windows)]
-    fn access_list(path: &Path) -> String {
-        use windows_sys::Win32::Foundation::LocalFree;
-        use windows_sys::Win32::Security::Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
-            SDDL_REVISION_1, SE_FILE_OBJECT,
-        };
-        use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
-
-        let name = verbatim(path).unwrap();
-        let mut descriptor = std::ptr::null_mut();
-        let mut text = std::ptr::null_mut();
-        let mut length = 0;
-        // SAFETY: `name` is NUL-terminated; both outputs are freed below.
-        unsafe {
-            assert_eq!(
-                GetNamedSecurityInfoW(
-                    name.as_ptr(),
-                    SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    &mut descriptor,
-                ),
-                0
-            );
-            assert_ne!(
-                ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                    descriptor,
-                    SDDL_REVISION_1,
-                    DACL_SECURITY_INFORMATION,
-                    &mut text,
-                    &mut length,
-                ),
-                0
-            );
-            let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(text, length as usize));
-            LocalFree(text.cast());
-            LocalFree(descriptor);
-            sddl.trim_end_matches('\0').to_owned()
-        }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn a_private_file_on_windows_takes_nothing_from_its_folder() {
-        use windows_sys::Win32::Security::Authorization::{
-            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-        };
-        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-        use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
-
-        // A folder that lets everyone read what it holds, as a shared one can.
-        let dir = std::env::temp_dir().join(format!(
-            "ruston-private-file-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let shared: Vec<u16> = "D:(A;OICI;FA;;;WD)".encode_utf16().chain([0]).collect();
-        let mut descriptor = std::ptr::null_mut();
-        // SAFETY: both strings are NUL-terminated; the descriptor lives until
-        // the folder is created and is left to the test process to reclaim.
-        unsafe {
-            assert_ne!(
-                ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    shared.as_ptr(),
-                    SDDL_REVISION_1,
-                    &mut descriptor,
-                    std::ptr::null_mut(),
-                ),
-                0
-            );
-            let attributes = SECURITY_ATTRIBUTES {
-                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-                lpSecurityDescriptor: descriptor,
-                bInheritHandle: 0,
-            };
-            assert_ne!(
-                CreateDirectoryW(verbatim(&dir).unwrap().as_ptr(), &attributes),
-                0
-            );
-        }
-
-        let ordinary = dir.join("ordinary.eml");
-        std::fs::write(&ordinary, b"").unwrap();
-        assert!(access_list(&ordinary).contains(";WD)"));
-
-        let private = dir.join("private.eml");
-        drop(create_private(&private).unwrap());
-        assert_eq!(access_list(&private), PRIVATE_FILE_ACCESS);
-        assert_eq!(
-            create_private(&private).unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-
-        // Past MAX_PATH, as std allows.
-        let deep = dir.join("a".repeat(120)).join("b".repeat(120));
-        std::fs::create_dir_all(&deep).unwrap();
-        let long = deep.join("private.eml");
-        assert!(long.as_os_str().len() > 260);
-        drop(create_private(&long).unwrap());
-        assert_eq!(access_list(&long), PRIVATE_FILE_ACCESS);
-
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn placing_an_export_never_replaces_what_is_there() {
-        let dir = std::env::temp_dir().join(format!(
-            "ruston-export-place-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&dir).unwrap();
-        let temp = dir.join(".message.eml.tmp");
-        let path = dir.join("message.eml");
-
-        std::fs::write(&temp, b"first").unwrap();
-        let first = place_export(&temp, &path).unwrap();
-        std::fs::remove_file(&temp).unwrap();
-        std::fs::write(&temp, b"second").unwrap();
-        let second = place_export(&temp, &path).unwrap();
-        // A dangling symbolic link is a name already taken, not a target.
-        #[cfg(unix)]
-        let through_link = {
-            let link = dir.join("link.eml");
-            std::os::unix::fs::symlink(dir.join("missing.eml"), &link).unwrap();
-            place_export(&temp, &link).unwrap()
-        };
-        let kept = std::fs::read(&path).unwrap();
-        let missing_created = dir.join("missing.eml").exists();
-        std::fs::remove_dir_all(dir).unwrap();
-
-        assert!(first);
-        assert!(!second);
-        assert_eq!(kept, b"first");
-        #[cfg(unix)]
-        assert!(!through_link);
-        assert!(!missing_created);
-    }
-
-    #[test]
-    fn invalid_address_and_mime_type_cannot_inject_headers() {
-        let mut full = message();
-        full.meta.sender.address = "alice@example.test\r\nBcc: attacker@example.test".into();
-        assert!(EmlWriter::new(Vec::new(), &full).is_err());
-
-        let mut full = message();
-        let attachment = Attachment {
-            name: "report.pdf".into(),
-            mime_type: Some("application/pdf\r\nX-Injected: yes".into()),
-            ..Default::default()
-        };
-        full.attachments.push(attachment.clone());
-        let mut writer = EmlWriter::new(Vec::new(), &full).unwrap();
-        writer.attachment(&attachment, b"file").unwrap();
-        let eml = writer.finish().unwrap();
-        assert!(!eml.windows(13).any(|window| window == b"\r\nX-Injected:"));
-        assert!(
-            eml.windows(b"Content-Type: application/octet-stream".len())
-                .any(|window| window == b"Content-Type: application/octet-stream")
-        );
-    }
-}
+mod tests;

@@ -164,11 +164,7 @@ async fn second_factor(
     totp_prompt: Option<&TotpPrompt>,
 ) -> Result<()> {
     if enabled & two_factor::TOTP == 0 && enabled & two_factor::SECURITY_KEY != 0 {
-        return Err(Error::Other(
-            "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet \
-             supported — enable a TOTP authenticator app, or use an app/bridge password"
-                .into(),
-        ));
+        return Err(Error::SecurityKeyRequired);
     }
     if enabled & two_factor::TOTP == 0 {
         return Ok(());
@@ -310,7 +306,7 @@ mod tests {
         let mut http = HttpClient::new(server.uri(), "Other");
         let saved = Arc::new(AtomicUsize::new(0));
         let saves = saved.clone();
-        http.set_refresh_persist_fallible(Arc::new(move |_, _, _| {
+        http.set_refresh_persist_fallible(Arc::new(move |_| {
             saves.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }));

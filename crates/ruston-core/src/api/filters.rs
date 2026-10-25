@@ -1,10 +1,11 @@
 //! Sieve filters API (`/mail/v4/filters`).
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::enums::filter;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
+use serde_json::Value;
 
 /// A server-side (Sieve) filter.
 #[derive(Debug, Clone, Deserialize)]
@@ -63,13 +64,50 @@ pub async fn create<D: Doer>(d: &D, name: &str, sieve: &str) -> Result<Filter> {
     Ok(r.filter)
 }
 
-/// Validate a Sieve script (does not create a filter).
+/// What Proton's check says about a script. The form of `Issues` is not
+/// documented, so it is read loosely.
+#[derive(Deserialize)]
+struct CheckResp {
+    #[serde(rename = "Issues", default)]
+    issues: serde_json::Value,
+}
+
+/// Validate a Sieve script (does not create a filter). Problems Proton
+/// reports in it come back as an error that lists them.
 pub async fn check<D: Doer>(d: &D, sieve: &str) -> Result<()> {
     let body = serde_json::json!({ "Sieve": sieve, "Version": filter::SIEVE_VERSION });
-    let _: IgnoredAny = d
+    let r: CheckResp = d
         .decode(Request::put("/mail/v4/filters/check").json(body))
         .await?;
-    Ok(())
+    let issues = issue_texts(&r.issues);
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Other(format!(
+            "Proton reports problems in the Sieve script: {}",
+            issues.join("; ")
+        )))
+    }
+}
+
+/// Each issue's text: its message when it has one, otherwise the issue as
+/// JSON, so nothing Proton reports is lost whatever form it takes.
+fn issue_texts(issues: &Value) -> Vec<String> {
+    let text = |issue: &Value| match issue {
+        Value::String(text) => text.clone(),
+        Value::Object(fields) => ["message", "Message"]
+            .iter()
+            .find_map(|key| fields.get(*key)?.as_str().map(str::to_owned))
+            .unwrap_or_else(|| issue.to_string()),
+        other => other.to_string(),
+    };
+    match issues {
+        Value::Null => Vec::new(),
+        Value::Array(list) => list.iter().map(text).collect(),
+        Value::Object(fields) if fields.is_empty() => Vec::new(),
+        Value::String(text) if text.is_empty() => Vec::new(),
+        other => vec![text(other)],
+    }
 }
 
 /// Delete a filter by ID.
@@ -140,6 +178,41 @@ mod tests {
         let http = HttpClient::new(server.uri(), "Other");
 
         check(&http, "keep;").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_script_proton_finds_problems_in_is_refused_with_them() {
+        let checked = |issues: serde_json::Value| async move {
+            let server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .and(path("/mail/v4/filters/check"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Code": 1000, "Issues": issues
+                })))
+                .mount(&server)
+                .await;
+            check(&HttpClient::new(server.uri(), "Other"), "kep;").await
+        };
+
+        let refused = checked(serde_json::json!([
+            {"message": "unknown command 'kep'", "from": {"line": 1}},
+            {"Unexpected": true},
+            "line 2: missing semicolon",
+        ]))
+        .await
+        .unwrap_err()
+        .to_string();
+        for said in [
+            "unknown command 'kep'",
+            r#"{"Unexpected":true}"#,
+            "line 2: missing semicolon",
+        ] {
+            assert!(refused.contains(said), "{refused}");
+        }
+
+        for none in [serde_json::json!([]), serde_json::json!(null)] {
+            assert!(checked(none).await.is_ok());
+        }
     }
 
     #[test]

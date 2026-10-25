@@ -135,6 +135,25 @@ impl Folder {
     }
 }
 
+/// How the sidebar shows a place the account made, kept apart from its
+/// [`Folder`], whose equality and saved form name only the place.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlaceLook {
+    /// How many folders a folder sits inside: 0 at the top.
+    pub depth: u8,
+    /// A label's color, when Proton gives it as `#RRGGBB`.
+    pub color: Option<[u8; 3]>,
+}
+
+/// The account's own folders and labels, in the order the sidebar lists
+/// them, a folder's subfolders right after it, and how each one looks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OwnPlaces {
+    pub folders: Vec<Folder>,
+    /// By custom ID; a place without one looks plain.
+    pub looks: HashMap<String, PlaceLook>,
+}
+
 impl From<MailFolder> for Folder {
     fn from(folder: MailFolder) -> Self {
         Self::System(folder)
@@ -238,7 +257,18 @@ impl RichBody {
     /// dropped; structure is kept with markers and quote prefixes.
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
-        for block in &self.blocks {
+        for line in self.plain_lines() {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// The lines of [`Self::plain_text`], each block worked out only once
+    /// the lines before it are read, so taking the first few is cheap
+    /// however long the body is.
+    pub fn plain_lines(&self) -> impl Iterator<Item = String> + '_ {
+        self.blocks.iter().flat_map(|block| {
             let text = match &block.kind {
                 BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => join(spans),
                 BlockKind::ListItem { marker, spans, .. } if marker.is_empty() => join(spans),
@@ -248,14 +278,10 @@ impl RichBody {
                 BlockKind::Rule => "---".to_owned(),
             };
             let quote = "> ".repeat(usize::from(block.quote_depth));
-            for line in text.lines() {
-                out.push_str(&quote);
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-
-        out
+            text.lines()
+                .map(|line| format!("{quote}{line}"))
+                .collect::<Vec<_>>()
+        })
     }
 }
 

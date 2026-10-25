@@ -100,14 +100,6 @@ mod tests {
             profile: "test".into(),
             json: true,
             demo: false,
-            api_url: None,
-            app_version: None,
-            totp: None,
-            mailbox_password: None,
-            captcha_token: None,
-            client: None,
-            user_agent: None,
-            captcha_chrome: false,
         };
         assert!(require_consent(&ctx, false).is_err());
         assert!(require_consent(&ctx, true).is_ok());

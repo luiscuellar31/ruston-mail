@@ -116,8 +116,9 @@ fn looks_like_id(reference: &str) -> bool {
 /// Extract the display part from a decrypted MIME body: every part of its HTML
 /// version, in order, or of its text version when it has no HTML one. A body
 /// of several parts, such as text, an image and more text, is all of them.
-fn extract_mime(raw: &str) -> (String, String) {
-    let parsed = mail_parser::MessageParser::default().parse(raw.as_bytes());
+/// It is parsed from its bytes, so each part is decoded in its own charset.
+fn extract_mime(raw: &[u8]) -> (String, String) {
+    let parsed = mail_parser::MessageParser::default().parse(raw);
     if let Some(msg) = parsed {
         let html: Vec<_> = (0..msg.html_body_count())
             .filter_map(|part| msg.body_html(part))
@@ -132,7 +133,10 @@ fn extract_mime(raw: &str) -> (String, String) {
             return (text.join("\n"), "text/plain".to_string());
         }
     }
-    (raw.to_string(), "text/plain".to_string())
+    (
+        String::from_utf8_lossy(raw).into_owned(),
+        "text/plain".to_string(),
+    )
 }
 
 impl Client {
@@ -412,7 +416,8 @@ fn open_body(
     sender_pubs: &[String],
 ) -> Result<FullMessage> {
     let provider = crypto::provider();
-    let (body, verdict) = crypto::decrypt_body(&provider, addr, sender_pubs, &m.body)?;
+    let (body, verdict) =
+        crypto::message::decrypt_body_bytes(&provider, addr, sender_pubs, &m.body)?;
     let (body, mime_type) = if m.mime_type.starts_with("multipart/") {
         extract_mime(&body)
     } else {
@@ -421,7 +426,7 @@ fn open_body(
         } else {
             m.mime_type
         };
-        (body, mime_type)
+        (crypto::message::utf8_text(body), mime_type)
     };
     // Sanitize HTML bodies (strip scripts / active content) for safe rendering.
     let body = if crate::html::is_html_mime(&mime_type) {
@@ -989,17 +994,52 @@ mod tests {
             --b\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\
             Content-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n\
             --b\r\nContent-Type: text/plain\r\n\r\nSecond part\r\n--b--\r\n";
-        let (body, _) = extract_mime(mixed);
+        let (body, _) = extract_mime(mixed.as_bytes());
         assert!(body.contains("First part"), "{body}");
         assert!(body.contains("Second part"), "{body}");
 
         let alternative = "Content-Type: multipart/alternative; boundary=a\r\n\r\n\
             --a\r\nContent-Type: text/plain\r\n\r\nPlain version\r\n\
             --a\r\nContent-Type: text/html\r\n\r\n<p>Rich version</p>\r\n--a--\r\n";
-        let (body, mime_type) = extract_mime(alternative);
+        let (body, mime_type) = extract_mime(alternative.as_bytes());
         assert_eq!(mime_type, "text/html");
         assert!(body.contains("Rich version"), "{body}");
         assert!(!body.contains("Plain version"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_pgp_mime_part_reads_in_its_own_charset() {
+        use proton_crypto::crypto::{
+            DataEncoding, Encryptor, EncryptorSync, PGPMessage, PGPProviderSync,
+        };
+
+        let server = wiremock::MockServer::start().await;
+        let (_, address, public) = conversation_client(&server);
+        let provider = crypto::provider();
+        let public = provider
+            .public_key_import(public.as_bytes(), DataEncoding::Armor)
+            .unwrap();
+        // An 8-bit Latin-1 part, as a PGP/MIME sender may write it: its
+        // bytes are not UTF-8 until its charset decodes them.
+        let mime = b"Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+            --b\r\nContent-Type: text/plain; charset=iso-8859-1\r\n\
+            Content-Transfer-Encoding: 8bit\r\n\r\nCaf\xe9 au lait\r\n--b--\r\n";
+        let armored = provider
+            .new_encryptor()
+            .with_encryption_key(&public)
+            .encrypt(mime)
+            .unwrap()
+            .armor()
+            .unwrap();
+        let message = Message {
+            body: String::from_utf8(armored).unwrap(),
+            mime_type: "multipart/mixed".into(),
+            ..Message::default()
+        };
+
+        let full = open_body(&address, message, &[]).unwrap();
+
+        assert_eq!(full.body.trim_end(), "Café au lait");
     }
 
     #[test]

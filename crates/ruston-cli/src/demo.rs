@@ -8,9 +8,10 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use ruston_core::mail::attachments::safe_attachment_name;
+use ruston_core::mail::attachments::save_under_free_name;
+use ruston_core::mail::organize::folder_id_among;
 use ruston_core::model::ConversationLabel;
-use ruston_core::model::enums::{filter, label_ids, label_type, resolve_folder};
+use ruston_core::model::enums::{filter, label_ids, label_type};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
     Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
@@ -19,9 +20,16 @@ use serde_json::json;
 
 use crate::cli::{
     AddressesCmd, AttachmentsCmd, Command, ContactsCmd, ConversationsCmd, Ctx, DraftsCmd,
-    FiltersCmd, LabelsCmd, MessagesCmd, SettingsCmd,
+    FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd,
 };
+use crate::commands::contacts;
 use crate::render;
+
+/// Said on standard error before every demo command, so a fictional send,
+/// move or deletion is not taken for a real one. `RUSTON_DEMO` left set in
+/// the environment turns the demo on without `--demo`.
+const NOTICE: &str =
+    "note: offline demo (--demo or RUSTON_DEMO); nothing is sent to or changed on Proton";
 
 /// Fictional user details.
 const DEMO_EMAIL: &str = "demo@example.com";
@@ -638,12 +646,25 @@ fn demo_filters() -> Vec<Filter> {
     }]
 }
 
+/// Page `page` of `items`, `page_size` to a page: empty past the end, as a
+/// real listing is, however far past it the page is asked for.
+fn page_of<T>(items: Vec<T>, page: u32, page_size: u32) -> Vec<T> {
+    let start = u64::from(page) * u64::from(page_size);
+    items
+        .into_iter()
+        .skip(usize::try_from(start).unwrap_or(usize::MAX))
+        .take(page_size as usize)
+        .collect()
+}
+
 /// Dispatcher for CLI commands in offline demo mode.
 pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
+    terminal::eprintln!("{NOTICE}");
+    render::mark_demo();
     let (fixtures_messages, fixtures_convs) = fixtures();
 
     match cmd {
-        Command::Login => {
+        Command::Login(_) => {
             if ctx.json {
                 render::json_out(&json!({
                     "status": "ok",
@@ -685,7 +706,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 unread,
                 cached: _,
             } => {
-                let target_label = resolve_folder(&folder);
+                let target_label = folder_id_among(&demo_labels(), &folder)?;
                 let is_all = target_label == label_ids::ALL_MAIL
                     || folder.eq_ignore_ascii_case("all")
                     || folder.eq_ignore_ascii_case("allmail");
@@ -699,12 +720,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
 
                 matching.sort_by_key(|a| std::cmp::Reverse(a.time));
                 let total = matching.len() as u32;
-                let start = (page * page_size) as usize;
-                let paged: Vec<MessageMetadata> = matching
-                    .into_iter()
-                    .skip(start)
-                    .take(page_size as usize)
-                    .collect();
+                let paged = page_of(matching, page, page_size);
 
                 render::messages_list(ctx.json, total, &paged);
                 Ok(())
@@ -784,9 +800,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let full = msg.to_full();
                 if let Some(path) = output {
                     fs::write(&path, &full.body)?;
-                    if !ctx.json {
-                        terminal::println!("Wrote {} bytes to {}", full.body.len(), path.display());
-                    }
+                    render::body_written(ctx.json, full.body.len(), &path);
                 } else {
                     render::full_message(
                         ctx.json,
@@ -852,7 +866,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::Empty { folder, .. } => {
-                render::action_result(ctx.json, &format!("empty-{}", folder.as_str()), &[]);
+                render::folder_emptied(ctx.json, folder);
                 Ok(())
             }
             MessagesCmd::Label {
@@ -860,7 +874,12 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 label_id,
                 references,
             } => {
-                render::action_result(ctx.json, &format!("{action:?}-{label_id}"), &references);
+                folder_id_among(&demo_labels(), &label_id)?;
+                let action = match action {
+                    LabelAction::Add => "label",
+                    LabelAction::Rm => "unlabel",
+                };
+                render::action_result(ctx.json, action, &references);
                 Ok(())
             }
             MessagesCmd::Undelete { ids } => {
@@ -872,11 +891,15 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::Move { references, dest } => {
-                render::action_result(ctx.json, &format!("move-to-{dest}"), &references);
+                folder_id_among(&demo_labels(), &dest)?;
+                render::action_result(ctx.json, "move", &references);
                 Ok(())
             }
-            MessagesCmd::Mark { state, references } => {
-                render::action_result(ctx.json, &format!("mark-{state:?}"), &references);
+            MessagesCmd::Mark {
+                state: _,
+                references,
+            } => {
+                render::action_result(ctx.json, "mark", &references);
                 Ok(())
             }
             MessagesCmd::Star { references } => {
@@ -895,7 +918,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 page_size,
                 unread,
             } => {
-                let target_label = resolve_folder(&folder);
+                let target_label = folder_id_among(&demo_labels(), &folder)?;
                 let is_all = target_label == label_ids::ALL_MAIL
                     || folder.eq_ignore_ascii_case("all")
                     || folder.eq_ignore_ascii_case("allmail");
@@ -913,12 +936,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
 
                 matching.sort_by_key(|a| std::cmp::Reverse(a.time));
                 let total = matching.len() as u32;
-                let start = (page * page_size) as usize;
-                let paged: Vec<Conversation> = matching
-                    .into_iter()
-                    .skip(start)
-                    .take(page_size as usize)
-                    .collect();
+                let paged = page_of(matching, page, page_size);
 
                 render::conversations_list(ctx.json, total, &paged);
                 Ok(())
@@ -970,7 +988,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             ConversationsCmd::Move { ids, dest } => {
-                render::action_result(ctx.json, &format!("move-to-{dest}"), &ids);
+                folder_id_among(&demo_labels(), &dest)?;
+                render::action_result(ctx.json, "move", &ids);
                 Ok(())
             }
             ConversationsCmd::Trash { ids } => {
@@ -978,11 +997,12 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             ConversationsCmd::Mark {
-                state,
-                folder: _,
+                state: _,
+                folder,
                 ids,
             } => {
-                render::action_result(ctx.json, &format!("mark-{state:?}"), &ids);
+                folder_id_among(&demo_labels(), &folder)?;
+                render::action_result(ctx.json, "mark", &ids);
                 Ok(())
             }
             ConversationsCmd::Star { ids } => {
@@ -999,7 +1019,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 relative,
             } => {
                 // Refuse what the live command refuses.
-                crate::commands::conversations::snooze_time(until, relative.as_deref(), 0)?;
+                crate::commands::conversations::snooze_time(until, relative, 0)?;
                 render::action_result(ctx.json, "snooze", &ids);
                 Ok(())
             }
@@ -1050,26 +1070,18 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let out_dir = output_dir.unwrap_or_else(|| PathBuf::from("."));
                 fs::create_dir_all(&out_dir)?;
 
+                // Saved as the real command saves: never over a file or
+                // through a link already there.
+                let mut written = Vec::new();
                 for a in &atts {
-                    let filename = safe_attachment_name(&a.name);
-                    let target = out_dir.join(filename);
                     let sample_content = format!(
                         "%PDF-1.4\n% Demo simulated attachment content for {}\n",
                         a.name
                     );
-                    fs::write(&target, sample_content.as_bytes())?;
-                    if !ctx.json {
-                        terminal::println!("Saved attachment '{}' to {}", a.name, target.display());
-                    }
+                    let path = save_under_free_name(&out_dir, &a.name, sample_content.as_bytes())?;
+                    written.push(path.to_string_lossy().to_string());
                 }
-
-                if ctx.json {
-                    render::json_out(&json!({
-                        "status": "ok",
-                        "downloaded": atts.len(),
-                        "directory": out_dir.display().to_string(),
-                    }));
-                }
+                render::downloaded(ctx.json, &written);
                 Ok(())
             }
         },
@@ -1082,12 +1094,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     .collect();
 
                 let total = drafts.len() as u32;
-                let start = (page * page_size) as usize;
-                let paged: Vec<MessageMetadata> = drafts
-                    .into_iter()
-                    .skip(start)
-                    .take(page_size as usize)
-                    .collect();
+                let paged = page_of(drafts, page, page_size);
 
                 render::messages_list(ctx.json, total, &paged);
                 Ok(())
@@ -1105,7 +1112,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             DraftsCmd::Delete { ids, .. } => {
-                render::action_result(ctx.json, "delete-draft", &ids);
+                render::action_result(ctx.json, "delete", &ids);
                 Ok(())
             }
         },
@@ -1133,15 +1140,15 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             FiltersCmd::Delete { id } => {
-                render::action_result(ctx.json, "delete-filter", &[id]);
+                render::action_result(ctx.json, "delete", &[id]);
                 Ok(())
             }
             FiltersCmd::Enable { id } => {
-                render::action_result(ctx.json, "enable-filter", &[id]);
+                render::action_result(ctx.json, "enable", &[id]);
                 Ok(())
             }
             FiltersCmd::Disable { id } => {
-                render::action_result(ctx.json, "disable-filter", &[id]);
+                render::action_result(ctx.json, "disable", &[id]);
                 Ok(())
             }
         },
@@ -1149,12 +1156,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             ContactsCmd::List { page, page_size } => {
                 let contacts = demo_contacts();
                 let total = contacts.len() as u32;
-                let start = (page * page_size) as usize;
-                let paged: Vec<Contact> = contacts
-                    .into_iter()
-                    .skip(start)
-                    .take(page_size as usize)
-                    .collect();
+                let paged = page_of(contacts, page, page_size);
                 render::contacts_list(ctx.json, total, &paged);
                 Ok(())
             }
@@ -1206,21 +1208,16 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             SettingsCmd::Sign { value } => {
-                if ctx.json {
-                    render::json_out(&json!({ "status": "ok", "sign": value.as_bool() }));
-                } else {
-                    terminal::println!("Set sign outgoing mail to: {value:?}");
-                }
+                render::setting_changed(ctx.json, "sign", contacts::SIGN, value.as_bool());
                 Ok(())
             }
             SettingsCmd::AttachPublicKey { value } => {
-                if ctx.json {
-                    render::json_out(
-                        &json!({ "status": "ok", "attach_public_key": value.as_bool() }),
-                    );
-                } else {
-                    terminal::println!("Set attach public key to: {value:?}");
-                }
+                render::setting_changed(
+                    ctx.json,
+                    "attach_public_key",
+                    contacts::ATTACH_PUBLIC_KEY,
+                    value.as_bool(),
+                );
                 Ok(())
             }
         },
@@ -1262,17 +1259,17 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             LabelsCmd::Delete { ids } => {
-                render::action_result(ctx.json, "delete-label", &ids);
+                render::action_result(ctx.json, "delete", &ids);
                 Ok(())
             }
             LabelsCmd::Update { id, .. } => {
-                render::action_result(ctx.json, "update-label", &[id]);
+                render::action_result(ctx.json, "update", &[id]);
                 Ok(())
             }
         },
         Command::Export { folder, out, max } => {
             fs::create_dir_all(&out)?;
-            let target_label = resolve_folder(&folder);
+            let target_label = folder_id_among(&demo_labels(), &folder)?;
             let is_all = target_label == label_ids::ALL_MAIL || folder.eq_ignore_ascii_case("all");
 
             let exported: Vec<&DemoMessage> = fixtures_messages

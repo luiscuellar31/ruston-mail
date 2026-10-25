@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
+use zeroize::Zeroizing;
 
 /// Maximum response body for ordinary API requests (32 MiB).
 pub const MAX_API_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -35,7 +36,7 @@ const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 const REFRESH_ATTEMPTS: u8 = 2;
 
 /// Request body.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Body {
     /// No request body.
     Empty,
@@ -45,8 +46,20 @@ pub enum Body {
     Bytes(Vec<u8>),
 }
 
+// Bodies carry refresh tokens, password proofs and session keys, so their
+// debug form names the kind of body, never its content.
+impl std::fmt::Debug for Body {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("Empty"),
+            Self::Json(_) => f.write_str("Json(..)"),
+            Self::Bytes(bytes) => write!(f, "Bytes({} bytes)", bytes.len()),
+        }
+    }
+}
+
 /// A transport-level request.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Request {
     /// HTTP method.
     pub method: Method,
@@ -71,6 +84,25 @@ pub struct Request {
     pub max_response_bytes: usize,
     /// Total deadline for each HTTP attempt, including response-body reading.
     pub timeout: Duration,
+}
+
+// The human-verification token stays out of the debug form, as the body does.
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field("query", &self.query)
+            .field("body", &self.body)
+            .field("content_type", &self.content_type)
+            .field("hv_type", &self.hv.as_ref().map(|(_, kind)| kind))
+            .field("skip_refresh", &self.skip_refresh)
+            .field("omit_auth", &self.omit_auth)
+            .field("enforce_unauth", &self.enforce_unauth)
+            .field("max_response_bytes", &self.max_response_bytes)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 impl Request {
@@ -195,11 +227,12 @@ impl AuthState {
     }
 }
 
-/// Callback invoked after a successful token refresh (uid, access, refresh) —
-/// use [`FallibleRefreshPersist`] when storage can fail.
-pub type RefreshPersist = Arc<dyn Fn(&str, &str, &str) + Send + Sync>;
+/// Callback invoked after a successful token refresh with the rotated tokens,
+/// which it borrows, so saving them needs no copy in the clear — use
+/// [`FallibleRefreshPersist`] when storage can fail.
+pub type RefreshPersist = Arc<dyn Fn(&Tokens) + Send + Sync>;
 /// A token-refresh callback whose persistence failure is returned to the request.
-pub type FallibleRefreshPersist = Arc<dyn Fn(&str, &str, &str) -> Result<()> + Send + Sync>;
+pub type FallibleRefreshPersist = Arc<dyn Fn(&Tokens) -> Result<()> + Send + Sync>;
 type RefreshLoad = Arc<dyn Fn() -> Result<(File, Option<Tokens>)> + Send + Sync>;
 /// Resolver for human-verification challenges (returns token, token-type).
 pub type HvResolver =
@@ -307,8 +340,8 @@ impl HttpClient {
     }
     /// Register a callback invoked with rotated tokens after each refresh.
     pub fn set_refresh_persist(&mut self, cb: RefreshPersist) {
-        self.on_refresh = Some(Arc::new(move |uid, access, refresh| {
-            cb(uid, access, refresh);
+        self.on_refresh = Some(Arc::new(move |tokens| {
+            cb(tokens);
             Ok(())
         }));
     }
@@ -536,15 +569,23 @@ impl Rotation {
             #[serde(rename = "RefreshToken")]
             refresh_token: String,
         }
-        let parsed: RefreshResp = serde_json::from_slice(&resp.body)?;
-        a.access = Some(SecretString::from(parsed.access_token.clone()));
-        a.refresh = Some(SecretString::from(parsed.refresh_token.clone()));
+        // The body holds the pair in the clear: it is wiped once read, and
+        // the tokens move into secrets rather than being copied.
+        let body = Zeroizing::new(resp.body);
+        let parsed: RefreshResp = serde_json::from_slice(&body)?;
+        let tokens = Tokens {
+            uid,
+            access: SecretString::from(parsed.access_token),
+            refresh: SecretString::from(parsed.refresh_token),
+        };
+        a.access = Some(tokens.access.clone());
+        a.refresh = Some(tokens.refresh.clone());
         if self.on_refresh.is_some() {
             self.refresh_unsaved.store(true, Ordering::Release);
         }
         drop(a);
         if let Some(cb) = &self.on_refresh {
-            cb(&uid, &parsed.access_token, &parsed.refresh_token)?;
+            cb(&tokens)?;
             self.refresh_unsaved.store(false, Ordering::Release);
         }
         Ok(())
@@ -754,6 +795,20 @@ mod tests {
 
     fn client(base: &str) -> HttpClient {
         HttpClient::new(base, "Other")
+    }
+
+    #[test]
+    fn a_request_debug_form_shows_neither_its_body_nor_its_verification_token() {
+        let request = Request::post("/auth/v4/refresh")
+            .json(serde_json::json!({"RefreshToken": "refresh-secret"}))
+            .with_hv("hv-secret", "captcha");
+        let shown = format!("{request:?}");
+        assert!(shown.contains("/auth/v4/refresh"), "{shown}");
+        assert!(shown.contains("Json(..)"), "{shown}");
+        assert!(shown.contains("captcha"), "{shown}");
+        assert!(!shown.contains("secret"), "{shown}");
+        let raw = format!("{:?}", Body::Bytes(b"session-key-secret".to_vec()));
+        assert_eq!(raw, "Bytes(18 bytes)");
     }
 
     async fn read_get_request(socket: &mut tokio::net::TcpStream) {
@@ -1319,7 +1374,7 @@ mod tests {
             SecretString::from("old-ref"),
         )
         .await;
-        c.set_refresh_persist_fallible(Arc::new(|_, _, _| {
+        c.set_refresh_persist_fallible(Arc::new(|_| {
             Err(Error::Session("keyring unavailable".into()))
         }));
         let err = c
@@ -1425,7 +1480,7 @@ mod tests {
             .await;
         crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
         // Only saving is made to fail; loading stays the client's own.
-        client.set_refresh_persist_fallible(Arc::new(|_, _, _| {
+        client.set_refresh_persist_fallible(Arc::new(|_| {
             Err(Error::Session("keyring unavailable".into()))
         }));
         assert!(matches!(
@@ -1480,8 +1535,11 @@ mod tests {
         let mut http = HttpClient::new(server.uri(), "Other");
         let saved = Arc::new(std::sync::Mutex::new(None));
         let saves = saved.clone();
-        http.set_refresh_persist_fallible(Arc::new(move |_, access, refresh| {
-            *saves.lock().unwrap() = Some((access.to_owned(), refresh.to_owned()));
+        http.set_refresh_persist_fallible(Arc::new(move |tokens: &Tokens| {
+            *saves.lock().unwrap() = Some((
+                tokens.access.expose_secret().to_owned(),
+                tokens.refresh.expose_secret().to_owned(),
+            ));
             Ok(())
         }));
         http.set_tokens(

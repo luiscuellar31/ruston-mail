@@ -6,7 +6,14 @@ impl Directory {
     fn new() -> Self {
         let mut random = [0; 8];
         getrandom::fill(&mut random).unwrap();
-        Self(std::env::temp_dir().join(format!(
+        // macOS's temporary folder, under /var/folders, makes a socket's path
+        // longer than its 104 bytes, and activation would fall back to TCP.
+        let base = if cfg!(target_os = "macos") {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        Self(base.join(format!(
             "ruston-activation-test-{}-{}",
             std::process::id(),
             u64::from_be_bytes(random)
@@ -33,6 +40,26 @@ fn launch(folder: &Path, urls: Vec<String>) -> io::Result<Start> {
 
 fn mailto_event(url: &str) -> Event {
     Event::Mailto(Request::parse(url).unwrap())
+}
+
+/// A connection to `instance` that has not authenticated yet.
+fn raw(folder: &Path, instance: &Instance) -> Box<dyn Channel> {
+    open_channel(folder, &EndpointRecord::read(&instance.endpoint).unwrap()).unwrap()
+}
+
+/// Two handles on one connection to `instance` that has not authenticated,
+/// one to write with while the other reads.
+#[cfg(unix)]
+fn raw_pair(folder: &Path, _instance: &Instance) -> (Box<dyn Channel>, Box<dyn Channel>) {
+    let stream = UnixStream::connect(folder.join(SOCKET)).unwrap();
+    (Box::new(stream.try_clone().unwrap()), Box::new(stream))
+}
+
+#[cfg(not(unix))]
+fn raw_pair(_folder: &Path, instance: &Instance) -> (Box<dyn Channel>, Box<dyn Channel>) {
+    let port = EndpointRecord::read(&instance.endpoint).unwrap().port;
+    let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+    (Box::new(stream.try_clone().unwrap()), Box::new(stream))
 }
 
 #[test]
@@ -161,14 +188,14 @@ fn the_endpoint_record_keeps_the_layout_other_versions_read() {
 fn unauthenticated_and_oversized_requests_are_rejected_before_delivery() {
     let directory = Directory::new();
     let instance = primary(&directory.0, Vec::new());
-    let mut bad = TcpStream::connect(instance.address).unwrap();
+    let mut bad = raw(&directory.0, &instance);
     bad.set_read_timeout(Some(TIMEOUT)).unwrap();
     bad.write_all(MAGIC).unwrap();
     bad.write_all(&[0; 32]).unwrap();
     let mut reply = [0];
     assert!(bad.read_exact(&mut reply).is_err());
     assert!(instance.drain().is_empty());
-    let mut oversized = connect(&instance.endpoint).unwrap();
+    let mut oversized = connect(&directory.0, &instance.endpoint).unwrap();
     oversized
         .write_all(&((MAX_URL_BYTES + 1) as u32).to_be_bytes())
         .unwrap();
@@ -176,13 +203,13 @@ fn unauthenticated_and_oversized_requests_are_rejected_before_delivery() {
     assert!(instance.drain().is_empty());
     drop(oversized);
     // A mailto link this version cannot open is reported, never delivered.
-    let mut invalid = connect(&instance.endpoint).unwrap();
-    assert!(forward(&mut invalid, "mailto:a@example.org?subject=%0AInjected").is_ok());
+    let mut invalid = connect(&directory.0, &instance.endpoint).unwrap();
+    assert!(forward(invalid.as_mut(), "mailto:a@example.org?subject=%0AInjected").is_ok());
     assert_eq!(instance.drain(), vec![Event::Rejected]);
     drop(invalid);
     // Anything else is refused.
-    let mut foreign = connect(&instance.endpoint).unwrap();
-    assert!(forward(&mut foreign, "https://example.org").is_err());
+    let mut foreign = connect(&directory.0, &instance.endpoint).unwrap();
+    assert!(forward(foreign.as_mut(), "https://example.org").is_err());
     assert!(instance.drain().is_empty());
 }
 
@@ -260,9 +287,8 @@ fn arguments_cannot_be_used_as_command_options_or_arbitrary_urls() {
 fn a_slow_peer_cannot_keep_the_activation_worker_or_shutdown_busy_indefinitely() {
     let directory = Directory::new();
     let instance = primary(&directory.0, Vec::new());
-    let mut stream = TcpStream::connect(instance.address).unwrap();
+    let (mut stream, mut writer) = raw_pair(&directory.0, &instance);
     stream.set_read_timeout(Some(TIMEOUT * 3)).unwrap();
-    let mut writer = stream.try_clone().unwrap();
     let slow = thread::spawn(move || {
         for byte in MAGIC.iter().copied().chain([0; 32]) {
             if writer.write_all(&[byte]).is_err() {
@@ -285,11 +311,9 @@ fn a_slow_peer_cannot_keep_the_activation_worker_or_shutdown_busy_indefinitely()
 fn idle_connections_from_another_local_user_cannot_block_a_later_launch() {
     let directory = Directory::new();
     let instance = primary(&directory.0, Vec::new());
-    // Anyone on the machine can connect to the loopback port. The worker
+    // Anyone on the machine can connect to a loopback port. The worker
     // serves one connection at a time, and these never send a header.
-    let idle: Vec<_> = (0..4)
-        .map(|_| TcpStream::connect(instance.address).unwrap())
-        .collect();
+    let idle: Vec<_> = (0..4).map(|_| raw(&directory.0, &instance)).collect();
     assert!(matches!(
         launch(&directory.0, vec!["mailto:team@example.org".into()]).unwrap(),
         Start::Forwarded
@@ -339,4 +363,47 @@ fn activation_files_are_private_and_symlink_targets_are_never_modified() {
     assert!(private_file(&link, true).is_err());
     assert_eq!(fs::read(&target).unwrap(), b"keep");
     drop(instance);
+}
+
+#[cfg(unix)]
+#[test]
+fn on_unix_launches_meet_on_a_socket_only_this_user_can_reach() {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    let directory = Directory::new();
+    let instance = primary(&directory.0, Vec::new());
+    // No port: the record points at the socket in the private directory.
+    assert_eq!(EndpointRecord::read(&instance.endpoint).unwrap().port, 0);
+    let socket = directory.0.join(SOCKET);
+    let metadata = fs::symlink_metadata(&socket).unwrap();
+    assert!(metadata.file_type().is_socket());
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    assert!(matches!(
+        launch(&directory.0, vec!["mailto:team@example.org".into()]).unwrap(),
+        Start::Forwarded
+    ));
+    assert_eq!(
+        instance.drain(),
+        vec![mailto_event("mailto:team@example.org")]
+    );
+    drop(instance);
+    assert!(!socket.exists(), "the socket outlived its instance");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_too_deep_for_a_socket_falls_back_to_loopback() {
+    let directory = Directory::new();
+    // Longer than any system's socket path, 104 bytes on macOS.
+    let folder = directory.0.join("x".repeat(120));
+    let instance = primary(&folder, Vec::new());
+    assert_ne!(EndpointRecord::read(&instance.endpoint).unwrap().port, 0);
+    assert!(!folder.join(SOCKET).exists());
+    assert!(matches!(
+        launch(&folder, vec!["mailto:team@example.org".into()]).unwrap(),
+        Start::Forwarded
+    ));
+    assert_eq!(
+        instance.drain(),
+        vec![mailto_event("mailto:team@example.org")]
+    );
 }

@@ -49,7 +49,9 @@ FIDO2 and WebAuthn security keys are not supported yet.
 ## Finding mail
 
 The sidebar contains Proton's standard folders, followed by your custom folders
-and labels. Unread counts update as mail changes. If your folders and labels
+and labels, each under a heading of its own. A subfolder comes right after the
+folder it is in, indented a step for each level, and each label shows its tag
+in the color it has in Proton. Unread counts update as mail changes. If your folders and labels
 cannot be loaded, the open folder stays open and the next refresh tries again.
 Folders and labels scroll independently when they do not fit. The account,
 Settings, and sign-out actions remain at the bottom of the sidebar.
@@ -77,14 +79,18 @@ toasts under Ruston's identity, and UserNotifications on macOS. Use the installe
 macOS `.app` bundle and allow the system permission prompt. Settings shows the
 permission/service status. System notification preferences and Do Not Disturb
 still determine presentation; macOS normally suppresses banners while Ruston
-is in the foreground. On Windows, Ruston creates a per-user Start menu shortcut
-if needed. Clicking a transient toast while Ruston is running restores and
-focuses the mailbox window.
+is in the foreground. On Windows and Linux, a new notification replaces the
+previous one, and signing out or turning notifications off takes Ruston's away.
+On Windows, Ruston creates a per-user Start menu shortcut if needed. Clicking a
+transient toast while Ruston is running restores and focuses the mailbox
+window.
 
 Typing in the search field narrows the conversations already loaded, and the
 open conversation stays open even when it no longer matches. Press `Enter` to
 ask Proton to search the whole mailbox; while the folder is still loading, the
-search starts once it has loaded. Clear the field to return to the open folder.
+search starts once it has loaded. What Proton finds is titled **Search
+results**, since it comes from every folder. Clear the field to return to the
+open folder.
 
 Folder lists and server search load 50 conversations at a time. Use **Load more**
 at the end of the list to request another page when available. Loading another
@@ -118,13 +124,14 @@ Each message shows its body signature status, even when folded: verified,
 unsigned, not verified, or invalid. Folded messages keep the sender's address
 next to the name the sender chose, because a signature vouches for the address,
 not for the name. An invalid signature is highlighted in red;
-treat that message's contents with caution. The status applies to the body,
-not to its attachments. Verification uses available sender keys, never one
-Proton marks as compromised, and does not establish the sender's identity
-independently. If the sender's keys cannot be fetched, the message shows as not
-verified. Signatures are checked, and yours are dated, by Proton's clock once
-Proton has answered, so a computer clock that is set wrong does not make good
-signatures look invalid.
+treat that message's contents with caution. A signature that none of the
+sender's keys made is invalid too, since anyone could have made it. The status
+applies to the body, not to its attachments. Verification uses available
+sender keys, never one Proton marks as compromised, and does not establish the
+sender's identity independently. If the sender's keys cannot be fetched, the
+message shows as not verified. Signatures are checked, and yours are dated, by
+Proton's clock once Proton has answered, so a computer clock that is set wrong
+does not make good signatures look invalid.
 
 A message that cannot be decrypted, for example because it was encrypted to a
 key your account no longer has, shows a notice instead of its text, whether it
@@ -147,7 +154,8 @@ The reader can:
 - Move it into one of your folders, or back to the Inbox, with **Move to…**.
 - Add or remove a custom label from the tag button, which is filled while the
   conversation carries one.
-- Undo the latest move while its notice remains visible. Under a label,
+- Undo the latest move while its notice remains visible at the foot of the
+  list; it stays while the pointer rests on it. Under a label,
   Starred, or in search results the conversation's folder is not known, so a
   move made there offers no undo until you have moved it once from that view;
   **Move to…** can still put it back.
@@ -177,6 +185,9 @@ remove folders and labels yet.
 
 Right-click a link in a message for **Open link…**, which asks first like a
 click does, or **Copy link**, which copies its address without opening it.
+Right-click a message's header for **Copy sender's address** or **Copy
+recipients' addresses**, which copy the addresses without names, separated by
+commas, ready to paste into a recipient field.
 
 Web links open in the system browser. A confirmation dialog over the window
 shows the destination first by default; a long address scrolls inside it, and
@@ -226,14 +237,16 @@ filename: this action also never replaces an existing file, even if the native
 dialog offers replacement. If the destination exists, Ruston shows an error
 and you can choose another name.
 
-The app can reveal a saved attachment in the file manager. Use **Attach…**
+A saved attachment is confirmed at the foot of the list, with a button that
+reveals it in the file manager; a save that fails says why under the
+attachment itself. Use **Attach…**
 beside **Send** in the composer to add local files to an outgoing message, or
 drop files on the window that shows the message being written. Dropping files
 is not available on Wayland.
 On Linux, **Show in folder** asks the file manager to select the saved file;
 if the desktop does not support selection, it opens the containing folder.
 
-Received attachments larger than 50 MiB cannot be opened.
+Received attachments larger than 49 MiB cannot be opened.
 
 When an incoming attachment carries a signature, Ruston verifies it before
 saving the file. An invalid or malformed signature, or missing verification
@@ -268,26 +281,33 @@ warning, such as `münchen.de is sent as xn--mnchen-3ya.de`; a fake
 composer still refuse these domains, whatever the setting says.
 
 After you leave a recipient field, the composer shows how Proton will protect
-the new message: end-to-end encrypted for every recipient, or a warning that
+the message: end-to-end encrypted for every recipient, or a warning that
 names the addresses that will not get an end-to-end encrypted copy. That
 includes a Proton address whose owner turned end-to-end encryption off, for
 example because it forwards mail to another provider. Addresses
 are looked up once per draft and only after the field loses focus. If a lookup
-fails, the warning names that address too and claims nothing about it. Replies
-show no notice; their recipients come from the original message. Turn off **Check
+fails, the warning names that address too and claims nothing about it. A reply
+opens with its recipients filled in, so their notice shows once you leave one of
+its recipient fields. Turn off **Check
 recipient encryption while writing** under Settings → Advanced to ask Proton
 nothing until you send; the notice is not shown then.
 
 The composer opens in the reading pane by default, so folders and conversations
 stay visible. Settings can open it in a separate window instead. The same choice
-applies to new messages, replies, and forwards. It opens with the cursor in
+applies to new messages, replies, and forwards. One message is written at a
+time: asking for another while one is open brings the open one forward and
+says why. It opens with the cursor in
 **To** for a new message or a forward, and in the message for a reply. While it
 fills the reading pane, the list keys (`j`, `k`, the arrows and `Enter`) wait,
 so they never open a conversation out of sight. A conversation clicked in the
-list meanwhile opens behind the draft and stays unread until the reader shows
-it.
+list meanwhile shows in the reader, with the draft folded into a strip above it;
+**Continue writing**, **New message** or **Reply** brings the draft back. While
+the draft is folded, the list keys and `Esc` act on the conversation shown.
 The composer scrolls vertically when its fields or attachments exceed the
-available height, in either placement.
+available height, in either placement. Closing it with something written asks
+first, in a dialog over its window: **Keep writing** or **Discard**. Once a
+message is sent, the composer closes and the foot of the list says so; when a
+send fails, the reason shows right under **Send**.
 
 Closing the main window asks before discarding a written message, whether the
 composer is in the reading pane or a separate window. Choose **Keep writing**
@@ -316,17 +336,20 @@ working with `Cmd+Z` and `Shift+Cmd+Z`. **View** has **Actual Size**
 interface scale from Settings, and **Enter Full Screen**. **Window > Minimize**
 (`Cmd+M`), **Zoom** and the list of open windows work as in other Mac apps.
 
-The reader also offers **Reply**, **Reply all**, and **Forward**. A reply goes
-to the addresses the original message asks replies to go to (its Reply-To), or
-to its sender; **Reply all** also copies in its other recipients, except your
-own addresses. Replying to a message you sent continues with the people you sent
-it to. The composer lists these recipients, and warns when the
-message's Reply-To sends the reply somewhere other than its sender. The subject
+The reader also offers **Reply**, **Reply all**, and **Forward**. A reply opens
+addressed to the addresses the original message asks replies to go to (its
+Reply-To), or to its sender; **Reply all** also copies in its other recipients,
+except your own addresses. Replying to a message you sent continues with the
+people you sent it to. These recipients are in the composer's **To** and **Cc**
+fields, where you can add or remove anyone before sending, and the composer
+warns when the message's Reply-To sends the reply somewhere other than its
+sender. The subject
 is written for you. Replies and forwards are sent from the address the original
 message reached. The original's text is quoted under yours when it can be
-opened, and a forward also carries the original's files, images in its body
-included; the composer says when the original is quoted and lists the
-attachments a forward sends.
+opened, unless you untick **Quote the original under your text** in the
+composer; a forward also carries the original's files, images in its body
+included. The composer lists the attachments a forward sends, each with
+**Remove** to leave it out; images in the body always go.
 
 Messages can be sent as plain text or HTML. The editor remains plain text in
 both modes: text that looks like an HTML tag is sent as text, not executed as
@@ -367,9 +390,10 @@ Settings control:
 - Optional system interface font, with Ruston's fonts retained as fallback.
 - A button to reset the window and pane sizes to their defaults immediately.
 - On macOS, whether the Dock icon shows the unread inbox count; on Windows,
-  whether the taskbar button does. Windows shows it only while badges are on
-  in its taskbar settings (Settings › Personalization › Taskbar › Taskbar
-  behaviors).
+  whether the taskbar button does; on Linux, whether the dock icon does, on
+  docks that show counts, such as Ubuntu's dock and KDE's task manager.
+  Windows shows it only while badges are on in its taskbar settings (Settings
+  › Personalization › Taskbar › Taskbar behaviors).
 
 Window size and pane widths are remembered automatically. Use **Reset window and
 pane sizes** under Settings → Interface to restore the defaults; this action
@@ -436,7 +460,7 @@ with one, keep **Settings** › **Writing** on **Reading pane**, the default.
 
 On Windows, turning off **Animation effects** (Windows Settings ›
 Accessibility › Visual effects) holds Ruston still too: no fades or gliding
-scrolls, and loading placeholders and spinners that do not move.
+scrolls, and loading placeholders and a waiting ring that do not pulse.
 
 Screen readers announce each conversation row with what it shows: whether it is
 unread, who and what it is about, its date, its star, how many messages it has
@@ -472,6 +496,11 @@ The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with
 `--profile default`. `NAME` must be a single path component without separators.
 
+`messages reply` and `messages forward` quote the original under the body,
+as the desktop does; `--no-quote` leaves it out, while a forward still carries
+its attachments. `messages forward --leave-out ID` leaves out one of them, by
+the ID `attachments list` shows; repeat it for more.
+
 When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached
 through a published PGP key get an HTML body as plain text.
@@ -479,7 +508,10 @@ through a published PGP key get an HTML body as plain text.
 `login` asks for the account password, and for a TOTP code or a separate
 mailbox password when the account needs them, without showing what you type.
 Give them as `PROTON_PASSWORD`, `PROTON_TOTP` and `PROTON_MAILBOX_PASSWORD` in
-scripts rather than as options, which other programs can read. Likewise,
+scripts rather than as options, which other programs can read; `PROTON_USER`
+gives the username. The options that shape a sign-in, such as `--api-url`,
+`--client` and `--captcha-chrome`, belong to `login` alone: `ruston-cli login
+--help` lists them, and another command refuses them. Likewise,
 `messages send --eo-password` without a value asks twice for the password that
 protects the message. `messages send --send-at` reports the message as
 scheduled, with the time Proton sends it, since it has not left yet; its JSON
@@ -493,8 +525,22 @@ address, since they are encrypted to it. A draft keeps no delivery time,
 expiration, or message password: `--send-at`, `--expires`, and
 `--eo-password` are options of `messages send`.
 
+Options that take a folder, such as `--folder` and `--dest`, and the label of
+`messages label`, accept a system folder (`inbox`, `sent`, `archive`, `all`…),
+or one of your folders or labels by its name or path (`Taxes/2024`), ignoring
+case, or by its ID. A name two folders share is refused; give its path. Reading
+the local cache with `messages list --cached` works offline, so it takes only
+system folders and IDs.
+
 Output can be piped into tools that stop reading early, such as `head`: the
-CLI then ends quietly with exit status 0.
+CLI then ends quietly with exit status 0. A script can tell a refused or
+missing session, exit status 6, which signing in again fixes, from a mistake in
+the command, exit status 2; `--help` lists them all. With `--json`, a command
+that acts on messages, conversations, drafts, labels or filters reports
+`{"status": "ok", "action": …, "count": …, "ids": […]}`, where `action` is the
+command's own name, such as `move`, `undelete` or `enable`. Lists come as an
+object too, the list under its name (`{"labels": […]}`, `{"counts": […]}`), and
+the demo's JSON adds `"demo": true`.
 
 Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
 seconds. Commands with multiple requests or a rate-limit retry can take longer.
@@ -508,10 +554,15 @@ resumes it, skipping the messages already there, so use an empty directory to
 start over. A message that cannot be decrypted, or whose attachments cannot,
 is skipped and listed, the rest are still exported, and the command then exits
 with an error. A network or session failure stops the export; run it again to
-continue. The export does not preserve the original wire message or every
-original header; see [Privacy and local data](PRIVACY.md) for details.
+continue. Each file keeps the headers a mail program needs to place it in its
+conversation (Message-ID, In-Reply-To and References) and a Reply-To that
+names someone besides the sender. The export does not preserve the original
+wire message or every original header; see [Privacy and local data](PRIVACY.md)
+for details.
 
 `index` builds an optional local search index for `search`. It stores
 decrypted message bodies in a SQLite database that Ruston Mail does not
 encrypt. A network, session, or rate-limit failure stops `index` with an
-error and keeps what was already indexed; run it again to continue.
+error and keeps what was already indexed; run it again to continue. Running it
+again downloads only the bodies it does not hold yet, and drafts, which can
+change; the count it prints includes the messages already indexed.

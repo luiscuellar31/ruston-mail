@@ -5,7 +5,7 @@ use crate::api;
 use crate::api::messages::{ListQuery, is_last_page};
 use crate::cache::{BatchCounts, Cache, CacheIdentity};
 use crate::error::{Error, Result};
-use crate::model::enums::{resolve_folder, response_code};
+use crate::model::enums::{message_flag, resolve_folder, response_code};
 use crate::model::message::MessageMetadata;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
 use crate::transport::Doer;
@@ -62,14 +62,24 @@ impl SyncReport {
     }
 }
 
-async fn rebuild_cache<D: Doer>(
+/// What a resync leaves: the cache it rebuilt, handed back to its caller, the
+/// cursor it now holds, and how many messages it lists.
+struct Rebuilt<C> {
+    cache: C,
+    cursor: String,
+    count: usize,
+}
+
+/// Relists every message into `cache`. Like the other cache operations, it
+/// takes the cache by value, so no reference to it lives across a request.
+async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
     http: &D,
-    cache: &Cache,
+    cache: C,
     previous_cursor: &str,
     page_size: u32,
-) -> Result<(String, usize)> {
+) -> Result<Rebuilt<C>> {
     let cursor = api::events::get_latest_event_id(http).await?;
-    cache.begin_rebuild()?;
+    cache.borrow().begin_rebuild()?;
     let mut expected_total = None;
     let mut page = 0;
     let total = loop {
@@ -89,27 +99,36 @@ async fn rebuild_cache<D: Doer>(
                 "incomplete mailbox listing during resync",
             ));
         }
-        cache.stage_rebuild_page(&messages)?;
+        cache.borrow().stage_rebuild_page(&messages)?;
         if listed_before + u64::from(page_size) >= u64::from(total) {
             break total;
         }
         page += 1;
     };
-    let rebuilt = cache.finish_rebuild(previous_cursor, &cursor, total)?;
-    Ok((cursor, rebuilt))
+    let count = cache
+        .borrow()
+        .finish_rebuild(previous_cursor, &cursor, total)?;
+    Ok(Rebuilt {
+        cache,
+        cursor,
+        count,
+    })
 }
 
-async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
-    let mut cursor = match cache.last_event_id()? {
+/// Applies Proton's events since the cached cursor. The cache comes by value
+/// so the future stays `Send`: SQLite connections are not `Sync`.
+async fn sync_cache<D: Doer, C: Borrow<Cache>>(http: &D, mut cache: C) -> Result<SyncReport> {
+    let saved = cache.borrow().last_event_id()?;
+    let mut cursor = match saved {
         Some(cursor) => cursor,
         None => {
             // Bootstrap: record the current cursor; deltas flow from here.
             let latest = api::events::get_latest_event_id(http).await?;
-            if cache.initialize_cursor(&latest)? {
+            if cache.borrow().initialize_cursor(&latest)? {
                 tracing::info!(target: "ruston_core::sync", event_id = %latest, "sync initialized cursor");
                 return Ok(SyncReport::initialized(latest));
             }
-            cache.last_event_id()?.ok_or_else(|| {
+            cache.borrow().last_event_id()?.ok_or_else(|| {
                 Error::cache_changed("sync cursor disappeared during initialization")
             })?
         }
@@ -123,17 +142,17 @@ async fn sync_cache<D: Doer>(http: &D, cache: &Cache) -> Result<SyncReport> {
             if rebuilt.is_some() {
                 return Err(Error::cache_changed("server requested another resync"));
             }
-            let (rebuilt_cursor, count) =
-                rebuild_cache(http, cache, &cursor, RESYNC_PAGE_SIZE).await?;
-            tracing::warn!(target: "ruston_core::sync", rebuilt = count, "server requested full resync — cache rebuilt");
-            cursor = rebuilt_cursor;
-            rebuilt = Some(count);
+            let resynced = rebuild_cache(http, cache, &cursor, RESYNC_PAGE_SIZE).await?;
+            tracing::warn!(target: "ruston_core::sync", rebuilt = resynced.count, "server requested full resync — cache rebuilt");
+            cache = resynced.cache;
+            cursor = resynced.cursor;
+            rebuilt = Some(resynced.count);
             // What earlier batches changed is part of the rebuild, which
             // `rebuilt` reports.
             counts = BatchCounts::default();
             continue;
         }
-        counts += cache.apply_event_batch(&cursor, &batch)?;
+        counts += cache.borrow().apply_event_batch(&cursor, &batch)?;
         cursor = batch.event_id;
         if !batch.more {
             break;
@@ -219,9 +238,25 @@ where
             break;
         }
         let listed = msgs.len();
+        // Mail sent or received keeps its body, so one indexed before stays
+        // and only its metadata is brought up to date; a draft may have been
+        // edited, so it is read again.
+        let mut kept = Vec::new();
+        let mut to_read = Vec::with_capacity(listed);
+        for meta in msgs {
+            if !is_draft(&meta) && cache.borrow().has_indexed_body(&meta.id)? {
+                kept.push(meta);
+            } else {
+                to_read.push(meta);
+            }
+        }
+        if !kept.is_empty() {
+            cache.borrow().store_metadata_page(Some(&cursor), &kept)?;
+            n += kept.len();
+        }
         // A few bodies download at once, and are saved in listing order, so
         // a stop leaves exactly the messages before it saved.
-        let mut reads = stream::iter(msgs)
+        let mut reads = stream::iter(to_read)
             .map(|meta| read_message(meta.id.clone()).map(move |read| (meta, read)))
             .buffered(INDEX_BODY_FETCH_CONCURRENCY);
         while let Some((meta, read)) = reads.next().await {
@@ -257,6 +292,12 @@ where
     Ok(n)
 }
 
+/// Whether `meta` is a draft, whose body may still change: Proton marks the
+/// mail it sent or received, and a draft is neither.
+fn is_draft(meta: &MessageMetadata) -> bool {
+    !message_flag::has(meta.flags, message_flag::RECEIVED | message_flag::SENT)
+}
+
 /// Whether reading a body failed because of the message itself: it is gone,
 /// or its body cannot be decrypted or parsed, so reading it again would fail
 /// the same way. A lost connection, an expired session or rate limiting says
@@ -280,8 +321,13 @@ fn is_definitive_read_failure(error: &Error) -> bool {
         | Error::HumanVerification(_)
         | Error::Http(_)
         | Error::Session(_)
+        | Error::SessionAddressMismatch
+        | Error::MailboxPasswordRequired
+        | Error::SecurityKeyRequired
+        | Error::UserKeysLocked
         | Error::Io(_)
         | Error::Cache(_)
+        | Error::CacheChanged(_)
         | Error::Srp(_) => false,
         // A body read never fails these ways. Should that change, stop rather
         // than drop bodies.
@@ -375,8 +421,7 @@ impl Client {
 
     /// Apply incremental events from the cached cursor into the local cache.
     pub async fn sync(&self) -> Result<SyncReport> {
-        let cache = self.open_cache()?;
-        sync_cache(self.http(), &cache).await
+        sync_cache(self.http(), self.open_cache()?).await
     }
 
     /// Backfill a folder into the cache by paging the API (bounded by `max_pages`).
@@ -409,7 +454,9 @@ impl Client {
     }
 
     /// Build the local full-text search index: page a folder, decrypt each
-    /// message body, and index it (bounded by `max_pages`).
+    /// message body, and index it (bounded by `max_pages`). A body indexed
+    /// before is kept rather than downloaded again, unless it is a draft's,
+    /// which may have changed; the count includes the bodies kept.
     /// A message that is gone, or whose body cannot be decrypted, loses any
     /// body indexed before. Any other failed read, such as a lost connection
     /// or rate limiting, stops indexing with its error and leaves that
@@ -706,10 +753,11 @@ mod tests {
     }
 
     #[test]
-    fn folder_cache_futures_remain_send() {
+    fn cache_futures_remain_send() {
         fn require_send(_: impl Future + Send) {}
         // Type-check the public futures without polling or signing in.
         let _check = |client: &Client| {
+            require_send(client.sync());
             require_send(client.cache_folder("inbox", 1, 10));
             require_send(client.index_folder("inbox", 1, 10));
         };
@@ -901,6 +949,68 @@ mod tests {
         assert_eq!(indexed.unwrap(), 5);
         assert_eq!(peak.load(SeqCst), 3);
         assert_eq!(cache.search("downloadedbody", 10).unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn index_reads_again_only_drafts_and_bodies_it_does_not_hold() {
+        use crate::model::enums::message_flag;
+
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        let received = |id: &str| MessageMetadata {
+            flags: message_flag::RECEIVED,
+            unread: 1,
+            ..cached_message(id)
+        };
+        // Indexed by an earlier run: mail received, and a draft, whose body
+        // may have been edited since.
+        for meta in [received("kept"), cached_message("draft")] {
+            cache
+                .store_index_result(Some("old"), &meta, Some("earlierbody"))
+                .unwrap();
+        }
+        let http = ListingDoer {
+            pages: vec![vec![
+                // Read since, which the listing brings.
+                MessageMetadata {
+                    unread: 0,
+                    ..received("kept")
+                },
+                cached_message("draft"),
+                received("new"),
+            ]],
+            gate: Semaphore::new(1),
+        };
+        let reads = std::sync::Mutex::new(Vec::new());
+
+        let indexed = index_cache(&http, &cache, "inbox", 1, 10, |id| {
+            reads.lock().unwrap().push(id.clone());
+            async move { Ok(full_message(received(&id))) }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(*reads.lock().unwrap(), ["draft", "new"]);
+        assert_eq!(indexed, 3, "every message listed is searchable");
+        let found = |word| -> Vec<String> {
+            let mut ids: Vec<String> = cache
+                .search(word, 10)
+                .unwrap()
+                .into_iter()
+                .map(|meta| meta.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(found("earlierbody"), ["kept"]);
+        assert_eq!(found("downloadedbody"), ["draft", "new"]);
+        let kept = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .find(|meta| meta.id == "kept")
+            .unwrap();
+        assert_eq!(kept.unread, 0, "the listing's metadata is stored");
     }
 
     #[tokio::test]
@@ -1297,7 +1407,7 @@ mod tests {
 
         let cache = Cache::open(Path::new(":memory:")).unwrap();
         cache.set_last_event_id("old").unwrap();
-        let (cursor, count) =
+        let Rebuilt { cursor, count, .. } =
             rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2)
                 .await
                 .unwrap();
@@ -1312,7 +1422,7 @@ mod tests {
     async fn rebuild_with_second_page(
         totals: [u32; 2],
         second_page: Vec<serde_json::Value>,
-    ) -> Result<(String, usize)> {
+    ) -> Result<usize> {
         let [first_total, second_total] = totals;
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1341,7 +1451,9 @@ mod tests {
             .await;
         let cache = Cache::open(Path::new(":memory:")).unwrap();
         cache.set_last_event_id("old").unwrap();
-        rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2).await
+        rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2)
+            .await
+            .map(|rebuilt| rebuilt.count)
     }
 
     #[tokio::test]
@@ -1349,13 +1461,13 @@ mod tests {
         let changed = rebuild_with_second_page([3, 4], vec![message("m3")]).await;
         assert!(matches!(
             changed,
-            Err(Error::Cache(ref reason)) if reason.starts_with("mailbox changed during resync")
+            Err(Error::CacheChanged(ref reason)) if reason.starts_with("mailbox changed during resync")
         ));
         // An empty page before the total is reached ends the rebuild there.
         let short = rebuild_with_second_page([5, 5], Vec::new()).await;
         assert!(matches!(
             short,
-            Err(Error::Cache(ref reason))
+            Err(Error::CacheChanged(ref reason))
                 if reason.starts_with("incomplete mailbox listing during resync")
         ));
     }

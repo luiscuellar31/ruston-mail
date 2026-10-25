@@ -33,18 +33,18 @@ pub async fn reveal(path: &Path) -> std::io::Result<()> {
     #[cfg(not(target_os = "windows"))]
     {
         #[cfg(target_os = "macos")]
-        let mut command = {
+        let command = {
             let mut command = Command::new("open");
             command.arg("-R").arg(path);
             command
         };
         #[cfg(not(target_os = "macos"))]
-        let mut command = {
+        let command = {
             let mut command = Command::new("xdg-open");
             command.arg(path.parent().unwrap_or(path));
             command
         };
-        command.spawn().map(drop)
+        crate::runtime::run_to_exit(command).await.map(drop)
     }
 }
 

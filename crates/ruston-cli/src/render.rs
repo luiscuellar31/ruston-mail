@@ -4,8 +4,9 @@ mod html;
 
 use crate::terminal::{self, BodyFormat};
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::cli::ReadFormat;
+use crate::cli::{EmptyFolder, ReadFormat};
 use ruston_core::model::enums::label_ids;
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Filter,
@@ -16,7 +17,7 @@ use serde_json::json;
 /// Render per-label counts.
 pub fn counts(json_mode: bool, counts: &[LabelCount]) {
     if json_mode {
-        json_out(&counts);
+        json_out(&json!({ "counts": counts }));
         return;
     }
     for c in counts {
@@ -49,7 +50,7 @@ pub fn contacts_list(json_mode: bool, total: u32, contacts: &[Contact]) {
 /// Render contact email entries.
 pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
     if json_mode {
-        json_out(&emails);
+        json_out(&json!({ "emails": emails }));
         return;
     }
     terminal::println!("{} email(s)", emails.len());
@@ -61,7 +62,7 @@ pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
 /// Render the account's sending addresses.
 pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
     if json_mode {
-        json_out(&addrs);
+        json_out(&json!({ "addresses": addrs }));
         return;
     }
     terminal::println!("{} address(es)", addrs.len());
@@ -73,7 +74,8 @@ pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
 /// Render a filter list.
 pub fn filters_list(json_mode: bool, filters: &[Filter]) {
     if json_mode {
-        json_out(&filters.iter().map(filter_json).collect::<Vec<_>>());
+        let filters: Vec<_> = filters.iter().map(filter_json).collect();
+        json_out(&json!({ "filters": filters }));
         return;
     }
     terminal::println!("{} filter(s)", filters.len());
@@ -100,9 +102,33 @@ fn filter_json(f: &Filter) -> serde_json::Value {
     json!({ "ID": f.id, "Name": f.name, "Status": f.status, "Version": f.version })
 }
 
-/// Serialize a value as pretty JSON to stdout.
+/// Set for the offline demo, whose JSON says `"demo": true`, so a script
+/// cannot take its fictional mail for real.
+static DEMO: AtomicBool = AtomicBool::new(false);
+
+/// Marks this run's JSON as the demo's.
+pub fn mark_demo() {
+    DEMO.store(true, Ordering::Relaxed);
+}
+
+/// Serialize a value as pretty JSON to stdout; in the demo, an object also
+/// says `"demo": true`.
 pub fn json_out<T: serde::Serialize + ?Sized>(value: &T) {
-    terminal::write_json(value);
+    if !DEMO.load(Ordering::Relaxed) {
+        terminal::write_json(value);
+        return;
+    }
+    // Demo data is small, so building it once more to carry the mark costs
+    // nothing; real output is written as it is serialized.
+    match serde_json::to_value(value) {
+        Ok(mut marked) => {
+            if let Some(object) = marked.as_object_mut() {
+                object.insert("demo".into(), true.into());
+            }
+            terminal::write_json(&marked);
+        }
+        Err(_) => terminal::write_json(value),
+    }
 }
 
 fn fmt_addr(r: &Recipient) -> String {
@@ -361,19 +387,25 @@ pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[ConversationMe
         };
         print_message_header(&m.meta, verdict_name(m.verdict), &m.mime_type);
         terminal::println!();
-        terminal::print_body(&m.body, BodyFormat::Readable);
+        terminal::print_body(&thread_body(m), BodyFormat::Readable);
     }
 }
 
+/// What a thread shows of an opened message: what `messages read` shows by
+/// default, HTML as text and a huge body cut short.
+fn thread_body(message: &FullMessage) -> Cow<'_, str> {
+    displayed_body(&message.body, &message.mime_type, ReadFormat::Text)
+}
+
 pub fn labels_list(json: bool, labels: &[Label], kind: LabelKind) {
-    if json {
-        json_out(labels);
-        return;
-    }
     let noun = match kind {
         LabelKind::Labels => "label",
         LabelKind::Folders => "folder",
     };
+    if json {
+        json_out(&json!({ format!("{noun}s"): labels }));
+        return;
+    }
     terminal::println!("{} {noun}(s)", labels.len());
     for l in labels {
         let parent = l
@@ -395,7 +427,7 @@ pub fn label_created(json: bool, label: &Label) {
 
 pub fn attachments_list(json: bool, atts: &[Attachment]) {
     if json {
-        json_out(atts);
+        json_out(&json!({ "attachments": atts }));
         return;
     }
     terminal::println!("{} attachment(s)", atts.len());
@@ -406,13 +438,54 @@ pub fn attachments_list(json: bool, atts: &[Attachment]) {
     }
 }
 
-/// Report the outcome of a bulk organize action.
+/// Report the attachment files a download wrote, where each one landed.
+pub fn downloaded(json: bool, files: &[String]) {
+    if json {
+        json_out(&json!({ "status": "ok", "count": files.len(), "files": files }));
+        return;
+    }
+    terminal::println!("Downloaded {} file(s):", files.len());
+    for file in files {
+        terminal::println!("  {file}");
+    }
+}
+
+/// Report what a command did to the items `ids` names; `action` is the
+/// command's own name, as typed (`move`, `undelete`, `enable`...).
 pub fn action_result(json: bool, action: &str, ids: &[String]) {
     if json {
         json_out(&json!({ "status": "ok", "action": action, "count": ids.len(), "ids": ids }));
         return;
     }
     terminal::println!("{action}: {} item(s)", ids.len());
+}
+
+/// Report a setting turned on or off: `setting` names it in JSON, and
+/// `label` in text.
+pub fn setting_changed(json: bool, setting: &str, label: &str, on: bool) {
+    if json {
+        json_out(&json!({ "status": "ok", "setting": setting, "value": on }));
+        return;
+    }
+    terminal::println!("{label}: {}", if on { "on" } else { "off" });
+}
+
+/// Report a folder whose messages were all deleted for good.
+pub fn folder_emptied(json: bool, folder: EmptyFolder) {
+    if json {
+        json_out(&json!({ "status": "ok", "action": "empty", "folder": folder.as_str() }));
+        return;
+    }
+    terminal::println!("Emptied {}.", folder.name());
+}
+
+/// Report a message body written to a file instead of shown.
+pub fn body_written(json: bool, bytes: usize, path: &std::path::Path) {
+    if json {
+        json_out(&json!({ "status": "ok", "bytes": bytes, "path": path.display().to_string() }));
+        return;
+    }
+    terminal::println!("Wrote {bytes} bytes to {}", path.display());
 }
 
 /// Report a successful send, with the sent message's ID.
@@ -531,6 +604,27 @@ mod tests {
         assert_eq!(label_name("16"), "snoozed");
         // Unknown / custom label ids pass through unchanged.
         assert_eq!(label_name("custom-xyz"), "custom-xyz");
+    }
+
+    #[test]
+    fn a_thread_shows_html_as_text_and_cuts_a_huge_body_short() {
+        let message = |body: String| FullMessage {
+            meta: MessageMetadata::default(),
+            body,
+            mime_type: "text/html".into(),
+            verdict: ruston_core::Verdict::Verified,
+            attachments: Vec::new(),
+            reply_tos: Vec::new(),
+        };
+        let read = thread_body(&message("<p>Hi <b>team</b></p>".into())).into_owned();
+        assert!(read.contains("Hi"), "{read}");
+        assert!(!read.contains("<p>"), "{read}");
+
+        let huge = format!("<p>{}</p>", "x".repeat(2 * 1024 * 1024));
+        let huge_message = message(huge.clone());
+        let read = thread_body(&huge_message);
+        assert!(read.len() < huge.len());
+        assert!(read.contains("[Message truncated."));
     }
 
     #[test]

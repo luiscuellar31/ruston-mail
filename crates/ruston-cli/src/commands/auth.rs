@@ -1,6 +1,6 @@
 //! Authentication commands: login, logout, whoami.
 
-use crate::cli::{ClientPreset, Ctx};
+use crate::cli::{ClientPreset, Ctx, LoginArgs};
 use crate::commands::prompt::prompt_line;
 use crate::commands::resume;
 use crate::render;
@@ -17,7 +17,7 @@ fn env_nonempty(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
-pub async fn login(ctx: &Ctx) -> Result<()> {
+pub async fn login(ctx: &Ctx, args: LoginArgs) -> Result<()> {
     let username = match env_nonempty("PROTON_USER") {
         Some(u) => u,
         None => prompt_line("Proton username/email: ")?,
@@ -28,27 +28,25 @@ pub async fn login(ctx: &Ctx) -> Result<()> {
     };
 
     // Explicit flags win; otherwise fall back to a --client preset.
-    let app_version = ctx
+    let app_version = args
         .app_version
-        .clone()
-        .or_else(|| ctx.client.map(|c| c.app_version().to_string()));
-    let user_agent = resolve_user_agent(ctx.user_agent.clone(), ctx.client);
+        .or_else(|| args.client.map(|c| c.app_version().to_string()));
+    let user_agent = resolve_user_agent(args.user_agent, args.client);
 
     let opts = LoginOptions {
         username,
         password: SecretString::from(password),
-        totp: ctx.totp.clone().map(SecretString::from),
-        mailbox_password: ctx.mailbox_password.clone().map(SecretString::from),
+        totp: args.totp.map(SecretString::from),
+        mailbox_password: args.mailbox_password.map(SecretString::from),
         profile: ctx.profile.clone(),
-        base_url: ctx.api_url.clone(),
+        base_url: args.api_url.clone(),
         app_version,
         user_agent: Some(user_agent),
         hv: Some(crate::hv::resolver(
-            ctx.captcha_token.clone(),
-            ctx.api_url
-                .clone()
+            args.captcha_token,
+            args.api_url
                 .unwrap_or_else(|| "https://mail.proton.me/api".to_string()),
-            ctx.captcha_chrome,
+            args.captcha_chrome,
         )),
     };
 

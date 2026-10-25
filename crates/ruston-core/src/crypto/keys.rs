@@ -126,11 +126,10 @@ pub struct AddressKeys {
     pub keys: Vec<StoredKey>,
 }
 
-/// All unlocked keys for the account.
+/// The account's unlocked address keys. User keys only open address keys,
+/// so none is kept once they have.
 #[derive(Clone)]
 pub struct KeyStore {
-    /// Unlocked user keys.
-    pub user_keys: Vec<StoredKey>,
     /// Unlocked keys per address, ascending by API `Order` (default-first).
     pub addresses: Vec<AddressKeys>,
 }
@@ -194,13 +193,17 @@ pub fn unlock<P: PGPProviderSync>(
     salts: &[KeySalt],
 ) -> Result<(KeyStore, SecretString)> {
     unlock_inner(provider, user, addresses, |k| {
-        let salt_b64 = salts
-            .iter()
-            .find(|s| s.id == k.id)
-            .and_then(|s| s.key_salt.clone())
-            .or_else(|| salts.first().and_then(|s| s.key_salt.clone()))
-            .ok_or_else(|| Error::Crypto("no key salt available".into()))?;
-        kdf::derive_key_passphrase(password, &salt_b64)
+        // A key without an entry of its own borrows the first salt. One
+        // without a salt, from before key passwords were salted, opens with
+        // the password itself, as in Proton's own clients.
+        let salt = match salts.iter().find(|s| s.id == k.id) {
+            Some(own) => own.key_salt.as_deref(),
+            None => salts.first().and_then(|s| s.key_salt.as_deref()),
+        };
+        match salt.filter(|salt| !salt.is_empty()) {
+            Some(salt_b64) => kdf::derive_key_passphrase(password, salt_b64),
+            None => Ok(password.clone()),
+        }
     })
 }
 
@@ -234,72 +237,65 @@ fn unlock_inner<P: PGPProviderSync>(
     }
     tracing::info!(target: "ruston_core::crypto", addresses = addresses.len(), "key hierarchy unlocked");
 
-    let key_password = user_keys.key_password().clone();
-    Ok((
-        KeyStore {
-            user_keys: user_keys.stored,
-            addresses,
-        },
-        key_password,
-    ))
+    Ok((KeyStore { addresses }, user_keys.key_password))
 }
 
-/// The account's unlocked user keys: as kept in the `KeyStore`, imported to
-/// open address key tokens, and their public halves to check the tokens'
-/// signatures.
+/// The account's unlocked user keys, imported to open address key tokens,
+/// their public halves to check the tokens' signatures, and the key password
+/// that opens legacy address keys. They go once address keys are open.
 struct UserKeys<P: PGPProviderSync> {
-    stored: Vec<StoredKey>,
     privs: Vec<P::PrivateKey>,
     pubs: Vec<P::PublicKey>,
-}
-
-impl<P: PGPProviderSync> UserKeys<P> {
-    /// The key password: the passphrase of the first user key that opened.
-    fn key_password(&self) -> &SecretString {
-        &self.stored[0].passphrase
-    }
+    /// The passphrase of the first user key that opened.
+    key_password: SecretString,
 }
 
 /// Opens each active user key with the passphrase `passphrase_for` gives it.
-/// A key that does not open is left out; none opening is an error.
+/// A key that does not open, or whose passphrase cannot be worked out, is
+/// left out; none opening is an error.
 fn unlock_user_keys<P: PGPProviderSync>(
     provider: &P,
     user: &User,
     passphrase_for: impl Fn(&ApiKey) -> Result<SecretString>,
 ) -> Result<UserKeys<P>> {
-    let mut stored = Vec::new();
+    let mut key_password = None;
     let mut privs = Vec::new();
     for key in user.keys.iter().filter(|key| key.is_active()) {
-        let passphrase = passphrase_for(key)?;
-        if let Ok(imported) = provider.private_key_import(
-            key.private_key.as_bytes(),
-            passphrase.expose_secret().as_bytes(),
-            DataEncoding::Armor,
-        ) {
+        let passphrase = match passphrase_for(key) {
+            Ok(passphrase) => passphrase,
+            Err(error) => {
+                tracing::warn!(target: "ruston_core::crypto", key_id = %key.id, error = %error, "user key passphrase unavailable — key left out");
+                continue;
+            }
+        };
+        if let Ok(imported) = provider
+            .private_key_import(
+                key.private_key.as_bytes(),
+                passphrase.expose_secret().as_bytes(),
+                DataEncoding::Armor,
+            )
+            .inspect_err(|error| {
+                // Another user key opening is enough, so this alone is no fault.
+                tracing::debug!(target: "ruston_core::crypto", key_id = %key.id, error = %error, "user key did not unlock — key left out");
+            })
+        {
             tracing::trace!(target: "ruston_core::crypto", key_id = %key.id, "unlocked user key");
             privs.push(imported);
-            stored.push(StoredKey {
-                armored: key.private_key.clone(),
-                passphrase,
-                // Only address keys encrypt, sign and decrypt mail.
-                unlocked: None,
-            });
+            key_password.get_or_insert(passphrase);
         }
     }
-    if privs.is_empty() {
-        return Err(Error::Crypto(
-            "no user key could be unlocked (wrong password?)".into(),
-        ));
-    }
+    let Some(key_password) = key_password else {
+        return Err(Error::UserKeysLocked);
+    };
     tracing::debug!(target: "ruston_core::crypto", count = privs.len(), "user keys unlocked");
     let pubs = privs
         .iter()
         .filter_map(|private| provider.private_key_to_public_key(private).ok())
         .collect();
     Ok(UserKeys {
-        stored,
         privs,
         pubs,
+        key_password,
     })
 }
 
@@ -320,11 +316,16 @@ fn unlock_address_keys<P: PGPProviderSync>(
         let Some(passphrase) = address_key_passphrase(provider, user_keys, address, key) else {
             continue;
         };
-        if let Ok(imported) = provider.private_key_import(
-            key.private_key.as_bytes(),
-            passphrase.expose_secret().as_bytes(),
-            DataEncoding::Armor,
-        ) {
+        if let Ok(imported) = provider
+            .private_key_import(
+                key.private_key.as_bytes(),
+                passphrase.expose_secret().as_bytes(),
+                DataEncoding::Armor,
+            )
+            .inspect_err(|error| {
+                tracing::warn!(target: "ruston_core::crypto", address = %address.email, key_id = %key.id, error = %error, "address key did not unlock — skipping key");
+            })
+        {
             keys.push(StoredKey {
                 armored: key.private_key.clone(),
                 passphrase,
@@ -358,7 +359,7 @@ fn address_key_passphrase<P: PGPProviderSync>(
 ) -> Option<SecretString> {
     let (Some(token), Some(signature)) = (&key.token, &key.signature) else {
         tracing::trace!(target: "ruston_core::crypto", address = %address.email, key_id = %key.id, "address key: legacy skp passphrase");
-        return Some(user_keys.key_password().clone());
+        return Some(user_keys.key_password.clone());
     };
     tracing::trace!(target: "ruston_core::crypto", address = %address.email, key_id = %key.id, "address key: decrypting token + verifying signature against user keys");
     decrypt_token(
@@ -389,7 +390,9 @@ fn decrypt_token<P: PGPProviderSync>(
         .with_decryption_keys(user_privs.iter())
         .decrypt(token_armored.as_bytes(), DataEncoding::Armor)
         .map_err(|e| Error::Crypto(format!("token decrypt failed: {e}")))?;
-    let bytes = verified.as_bytes().to_vec();
+    // The token is the address key's passphrase: moved out, not copied, and
+    // wiped once the passphrase holds it.
+    let bytes = Zeroizing::new(verified.into_vec());
 
     let result = provider
         .new_verifier()
@@ -568,7 +571,6 @@ mod tests {
         // `addresses` is built ascending-by-`Order` during unlock, so the
         // primary/default sending address is simply the first entry.
         let ks = KeyStore {
-            user_keys: vec![],
             addresses: vec![
                 AddressKeys {
                     address_id: "1".into(),
@@ -745,13 +747,8 @@ mod tests {
         )
         .unwrap();
 
+        // The inactive user key, listed first, would have set the key password.
         assert_eq!(key_password.expose_secret(), user_password);
-        let user_keys: Vec<&str> = store
-            .user_keys
-            .iter()
-            .map(|key| key.armored.as_str())
-            .collect();
-        assert_eq!(user_keys, [user_key.private_key.as_str()]);
         let address_keys: Vec<(&str, &str)> = store.addresses[0]
             .keys
             .iter()
@@ -766,11 +763,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_user_key_without_a_salt_of_its_own_borrows_the_first_one() {
-        let user_password = derived(&salt(3));
-        let (user_key, _) = listed_key("user-key", "user@proton.me", &user_password, 1, None);
-        let (legacy, _) = listed_key("legacy", "me@proton.me", &user_password, 1, None);
+    /// An account whose one user key and one address key are locked with
+    /// `passphrase`, the address key as legacy keys are.
+    fn account_locked_with(passphrase: &str) -> (User, [Address; 1]) {
+        let (user_key, _) = listed_key("user-key", "user@proton.me", passphrase, 1, None);
+        let (legacy, _) = listed_key("legacy", "me@proton.me", passphrase, 1, None);
         let user = User {
             id: "user".into(),
             keys: vec![user_key],
@@ -781,39 +778,89 @@ mod tests {
             order: 1,
             keys: vec![legacy],
         }];
+        (user, addresses)
+    }
+
+    #[test]
+    fn a_user_key_without_an_entry_of_its_own_borrows_the_first_salt() {
+        let user_password = derived(&salt(3));
+        let (user, addresses) = account_locked_with(&user_password);
         let provider = crate::crypto::provider();
         let password = SecretString::from(MAILBOX_PASSWORD);
 
-        let salts = [key_salt("first", Some(salt(3))), key_salt("user-key", None)];
+        let salts = [key_salt("first", Some(salt(3)))];
         let Ok((_, key_password)) = unlock(&provider, &user, &addresses, &password, &salts) else {
             panic!("the first salt opens the user key");
         };
         assert_eq!(key_password.expose_secret(), user_password);
+    }
 
-        let no_salt = unlock(&provider, &user, &addresses, &password, &[]);
-        assert!(
-            matches!(no_salt, Err(Error::Crypto(ref message)) if message == "no key salt available")
-        );
+    #[test]
+    fn a_user_key_without_a_salt_opens_with_the_password_itself() {
+        // Keys from before key passwords were salted open with the mailbox
+        // password as it is, as Proton's own clients open them.
+        let (user, addresses) = account_locked_with(MAILBOX_PASSWORD);
+        let provider = crate::crypto::provider();
+        let password = SecretString::from(MAILBOX_PASSWORD);
+
+        for salts in [
+            vec![key_salt("first", Some(salt(3))), key_salt("user-key", None)],
+            vec![key_salt("user-key", Some(String::new()))],
+            Vec::new(),
+        ] {
+            let Ok((_, key_password)) = unlock(&provider, &user, &addresses, &password, &salts)
+            else {
+                panic!("the password opens a key without a salt, with salts {salts:?}");
+            };
+            assert_eq!(key_password.expose_secret(), MAILBOX_PASSWORD);
+        }
+    }
+
+    #[test]
+    fn a_salt_that_cannot_be_read_leaves_out_only_its_key() {
+        let user_password = derived(&salt(4));
+        let (mut user, addresses) = account_locked_with(&user_password);
+        let (unreadable, _) = listed_key("unreadable", "user@proton.me", &user_password, 0, None);
+        user.keys.insert(0, unreadable);
+        let provider = crate::crypto::provider();
+        let password = SecretString::from(MAILBOX_PASSWORD);
+
+        let salts = [
+            key_salt("unreadable", Some("not base64!".into())),
+            key_salt("user-key", Some(salt(4))),
+        ];
+        let Ok((store, key_password)) = unlock(&provider, &user, &addresses, &password, &salts)
+        else {
+            panic!("the key with a readable salt still opens");
+        };
+        assert_eq!(key_password.expose_secret(), user_password);
+        assert_eq!(store.addresses[0].keys.len(), 1);
     }
 
     #[test]
     fn the_key_password_is_the_first_user_keys_that_opens() {
         let second_password = derived(&salt(5));
+        let third_password = derived(&salt(6));
         // The primary user key is listed first, but no longer opens.
         let (stale, _) = listed_key("stale", "user@proton.me", "changed since", 1, None);
         let (second, _) = listed_key("second", "user@proton.me", &second_password, 0, None);
-        // A later key that opens too does not change it.
-        let (third, _) = listed_key("third", "user@proton.me", &derived(&salt(6)), 0, None);
+        // A later key that opens too does not change it, but still opens the
+        // address keys whose tokens it holds.
+        let (third, _) = listed_key("third", "user@proton.me", &third_password, 0, None);
         let (legacy, _) = listed_key("legacy", "me@proton.me", &second_password, 1, None);
+        let (mut by_third, _) = listed_key("by-third", "me@proton.me", "third's token", 0, None);
+        let third_side = (&third, third_password.as_str());
+        let (sealed, signature) = token("third's token", third_side, third_side);
+        (by_third.token, by_third.signature) = (Some(sealed), Some(signature));
         let user = User {
             id: "user".into(),
-            keys: vec![stale, second.clone(), third.clone()],
+            keys: vec![stale, second, third.clone()],
         };
         let address = Address {
             id: "address".into(),
             email: "me@proton.me".into(),
             order: 1,
-            keys: vec![legacy.clone()],
+            keys: vec![legacy.clone(), by_third.clone()],
         };
         let salts = [
             key_salt("stale", Some(salt(4))),
@@ -832,16 +879,15 @@ mod tests {
         };
 
         assert_eq!(key_password.expose_secret(), second_password);
-        let user_keys: Vec<&str> = store
-            .user_keys
+        let address_keys: Vec<&str> = store.addresses[0]
+            .keys
             .iter()
             .map(|key| key.armored.as_str())
             .collect();
         assert_eq!(
-            user_keys,
-            [second.private_key.as_str(), third.private_key.as_str()]
+            address_keys,
+            [legacy.private_key.as_str(), by_third.private_key.as_str()]
         );
-        assert_eq!(store.addresses[0].keys[0].armored, legacy.private_key);
     }
 
     #[test]
@@ -864,15 +910,98 @@ mod tests {
         let provider = crate::crypto::provider();
 
         let wrong = unlock_with_skp(&provider, &user, &addresses, &SecretString::from("wrong"));
-        assert!(matches!(
-            wrong,
-            Err(Error::Crypto(ref message))
-                if message == "no user key could be unlocked (wrong password?)"
-        ));
+        assert!(matches!(wrong, Err(Error::UserKeysLocked)));
         let none_opens = unlock_with_skp(&provider, &user, &addresses, &SecretString::from("skp"));
         assert!(matches!(
             none_opens,
             Err(Error::Crypto(ref message)) if message == "no address key could be unlocked"
         ));
+    }
+
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_key_that_does_not_unlock_is_logged_with_why() {
+        use std::sync::{Arc, Mutex};
+
+        let user_password = derived(&salt(7));
+        let (stale, _) = listed_key("stale", "user@proton.me", "changed since", 1, None);
+        let (user_key, _) = listed_key("user-key", "user@proton.me", &user_password, 0, None);
+        let (legacy, _) = listed_key("legacy", "me@proton.me", &user_password, 1, None);
+        // Its token checks out, but the key is locked with another passphrase.
+        let (mut mismatched, _) = listed_key("mismatched", "me@proton.me", "another", 0, None);
+        let user_side = (&user_key, user_password.as_str());
+        let (sealed, signature) = token("the token's", user_side, user_side);
+        (mismatched.token, mismatched.signature) = (Some(sealed), Some(signature));
+        let user = User {
+            id: "user".into(),
+            keys: vec![stale, user_key.clone()],
+        };
+        let address = Address {
+            id: "address".into(),
+            email: "me@proton.me".into(),
+            order: 1,
+            keys: vec![legacy, mismatched],
+        };
+        let salts = [
+            key_salt("stale", Some(salt(8))),
+            key_salt("user-key", Some(salt(7))),
+        ];
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(move || Capture(writer.clone()))
+            .finish();
+        // While only one dispatcher is registered, tracing asks the default of
+        // whichever thread first reaches a callsite whether it is wanted, so
+        // one another test reached first would stay unwanted here. With a
+        // second one registered, it asks every registered dispatcher.
+        let _second = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+
+        let unlocked = tracing::subscriber::with_default(subscriber, || {
+            unlock(
+                &crate::crypto::provider(),
+                &user,
+                &[address],
+                &SecretString::from(MAILBOX_PASSWORD),
+                &salts,
+            )
+        });
+
+        let Ok((store, _)) = unlocked else {
+            panic!("the other user key and address key open");
+        };
+        assert_eq!(store.addresses[0].keys.len(), 1);
+        let log = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        let line = |key_id: &str| {
+            log.lines()
+                .find(|line| line.contains(&format!("key_id={key_id}")) && line.contains("error="))
+                .unwrap_or_else(|| panic!("no line for {key_id} in:\n{log}"))
+                .to_owned()
+        };
+        // Another user key opening is enough, so a user key is only noted.
+        let stale = line("stale");
+        assert!(
+            stale.contains("DEBUG") && stale.contains("user key did not unlock"),
+            "{stale}"
+        );
+        let mismatched = line("mismatched");
+        assert!(
+            mismatched.contains("WARN") && mismatched.contains("address key did not unlock"),
+            "{mismatched}"
+        );
     }
 }

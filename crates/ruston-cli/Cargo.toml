@@ -18,7 +18,7 @@ path = "src/main.rs"
 ruston-core = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 serde_json = { workspace = true }
 html5ever = { workspace = true }
 getrandom = { workspace = true }
@@ -27,9 +27,6 @@ rpassword = { workspace = true }
 secrecy = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
 
 [build-dependencies]
 winresource = { version = "0.1.31", default-features = false }

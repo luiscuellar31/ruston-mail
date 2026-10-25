@@ -40,13 +40,17 @@ Remove-Item Env:RUSTON_DEMO
 Sent demo messages stay inside the process and disappear when it exits.
 Demo preferences are kept in `settings-demo.json`, apart from your own.
 **Exit demo** closes the fictional mailbox, but a process started in demo mode
-refuses to sign in. Close it and start Ruston Mail without `RUSTON_DEMO` to use
-an account.
+refuses to sign in, and to open email links once its mailbox is closed. Close it
+and start Ruston Mail without `RUSTON_DEMO` to use an account.
 The CLI has its own fictional demo data:
 
 ```sh
 cargo run -p ruston-cli -- --demo messages list
 ```
+
+`RUSTON_DEMO` turns the CLI demo on as well, so every demo command first says
+on standard error that nothing reaches Proton, and its JSON says `"demo": true`,
+so a script cannot take fictional mail for real. Text output stays as it is.
 
 ## Checks
 
@@ -170,7 +174,8 @@ try {
   title bar is in Ruston's appearance again. Choose **System** in Settings and
   switch the Windows app mode: Ruston follows it.
 - Turn off Animation effects under Windows Settings › Accessibility › Visual
-  effects: loading placeholders and the spinner hold still and scrolls jump.
+  effects: loading placeholders and the waiting ring hold still and scrolls
+  jump.
   Turn them back on: they move again.
 - Check the UI at Windows display scaling of 100% and 150%. If two monitors are
   available, move the window between different display scales and check text,
@@ -492,8 +497,9 @@ It deletes Ruston's handler and capabilities and only Ruston's value under
 default, Windows asks for another app at the next link.
 
 Automated tests cover URI decoding/injection, login/draft/modal guards, real
-loopback forwarding, lock takeover, overflow, private Unix permissions, idle
-and slow peers. Windows CI additionally runs the registration script twice
+forwarding over the Unix socket and over loopback (Windows, and a socket path
+too long on Unix), lock takeover, overflow, private Unix permissions, idle and
+slow peers. Windows CI additionally runs the registration script twice
 with an executable path containing spaces, then the removal script, and
 verifies that another app's registration and the default association are
 unchanged. Native desktop smoke checks still require each platform:
@@ -646,16 +652,22 @@ with WARP, as a virtual machine would.
 
 To publish a release:
 
-1. Set the version in `[workspace.package]` of `Cargo.toml`, run
-   `cargo update --workspace` for `Cargo.lock`, commit, and push to `main`.
-2. Tag that commit and push the tag:
+1. On `dev`, set the version in `[workspace.package]` of `Cargo.toml`, run
+   `cargo update --workspace` for `Cargo.lock`, and commit.
+2. Open a pull request from `dev` to `main` and, once CI passes, merge it with
+   **Create a merge commit**, keeping GitHub's default message
+   (`Merge pull request #N from …`). The release notes skip merge commits, and
+   the commits it brings in keep their own messages and hashes. Keep `dev`.
+3. Tag the merge commit on `main` and push the tag:
 
    ```sh
+   git switch main
+   git pull --ff-only
    git tag -a v<version> -m "Ruston Mail <version>"
    git push origin v<version>
    ```
 
-3. The workflow checks that the tag names the workspace version and is on
+4. The workflow checks that the tag names the workspace version and is on
    `main`, builds everything again, and creates a draft release with the files,
    `SHA256SUMS.txt`, build provenance attestations, and notes written by
    [`release-notes.sh`](../packaging/release-notes.sh) from the commits since the
@@ -664,7 +676,7 @@ To publish a release:
    in a short Maintenance list. Re-running the workflow for the tag keeps the
    draft's notes, which may have been edited, and stops if the draft already has
    files: delete them, or the draft, and run it again.
-4. Edit the introduction at the top of the draft, check the files, and publish
+5. Edit the introduction at the top of the draft, check the files, and publish
    it. Once a release is published, the workflow refuses to replace its files.
 
 `./packaging/release-notes.sh --tag <tag> --version <version>` prints the same

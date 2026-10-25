@@ -10,10 +10,11 @@ on:
 permissions:
   contents: read
 
-# A newer push makes the run before it irrelevant.
+# A newer push to a pull request makes its earlier run irrelevant. On main
+# every run finishes, so each commit there keeps its result; a newer one waits.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,6 +23,9 @@ jobs:
   check:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # About three times the slowest run so far, a cold cache included; a hung
+    # step stops here instead of after GitHub's six hours.
+    timeout-minutes: 60
     defaults:
       run:
         # GitHub provides Bash on Windows too; keep fail-fast command handling
@@ -162,6 +166,7 @@ jobs:
   deny:
     name: Dependency & license integrity
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -173,6 +178,7 @@ jobs:
   unused-deps:
     name: Unused dependencies
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

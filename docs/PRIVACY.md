@@ -45,12 +45,16 @@ they are erased when the form is cleared. The sign-in screen measures its
 layout without them. The interface library still makes short-lived copies of a
 field's text while drawing it, which are freed without being erased.
 
-Desktop activation listens only on IPv4 loopback, at a randomly assigned port,
-while Ruston is running. It accepts bounded email-link requests after a random
-256-bit token handshake; it exposes no account or mailbox data and cannot send
-mail. The private `activation` directory under Ruston's configuration directory
-contains an OS lock file and an endpoint record with the port, token, and process
-ID. Unix permissions are 0700 for the directory and 0600 for the files. Windows
+While Ruston is running, desktop activation listens on Linux and macOS on a
+Unix socket inside its private `activation` directory, which other users cannot
+enter, and on Windows on IPv4 loopback, at a randomly assigned port that any
+local user could connect to. A path too long for a socket, as a long macOS home
+folder can make, falls back to loopback. Either way it accepts bounded
+email-link requests after a random 256-bit token handshake; it exposes no
+account or mailbox data and cannot send mail. The `activation` directory under
+Ruston's configuration directory contains an OS lock file, the socket, and an
+endpoint record with the port (0 for the socket), token, and process ID. Unix
+permissions are 0700 for the directory and 0600 for the files and the socket. Windows
 keeps the directory in the local, non-roaming application data,
 `%LOCALAPPDATA%\Ruston Mail\data\activation`, with the access rules it inherits
 from the user's profile.
@@ -64,11 +68,13 @@ applications launched as URL handlers.
 When desktop notifications are enabled, a new-mail notification can show the
 sender and subject. A pending notification result is discarded during sign-out
 or after the session changes. Disabling the option also invalidates pending
-detection and native delivery work. On Windows, a new notification replaces
-the previous one, and signing out or turning notifications off removes
-Ruston's notifications from the notification center. Elsewhere, once handed
-to the operating system, notifications can remain in its notification
-history; signing out does not remove notifications already delivered. No
+detection and native delivery work. On Windows and Linux, a new notification
+replaces the previous one. Signing out or turning notifications off removes
+Ruston's notifications from the Windows notification center, and on Linux
+closes the one on screen; a notification server that also keeps a history may
+keep its own copy there. On macOS, once handed to the operating system,
+notifications can remain in its notification history; signing out does not
+remove notifications already delivered. No
 email content is logged by the
 notification integration. Headers are bounded and treated as literal text,
 without controls or invisible direction marks; notification delivery does not
@@ -341,15 +347,16 @@ downloads, including bulk downloads and EML export. Unsigned attachments remain
 downloadable without a signature-based authenticity guarantee. Body signature
 status is shown beside the sender's address in the desktop reader: a closed lock
 means the body signature verified against an available sender key; an open lock
-means unsigned or unverified, and a red warning means invalid. Hover over the
+means unsigned or unverified, and a red warning means invalid: altered, or
+made by a key that is not one of the sender's. Hover over the
 icon for the specific result. The sender's email domain does not determine this
 status; it does not authenticate the sender's identity independently
 or describe an attachment's verification status.
 The application's own HTTP safety limits are 32 MiB for ordinary responses and
 64 MiB for an encrypted attachment response; they are not Proton Mail's
-attachment quotas. A received attachment can be opened up to 50 MiB, the most
-decryption accepts; one Proton reports as larger than the response limit is
-refused without being downloaded.
+attachment quotas. A received attachment can be opened up to 49 MiB, which
+leaves room for the packet around it under the 50 MiB that decryption accepts;
+one Proton reports as larger is refused without being downloaded.
 The CLI downloads and saves `--all` attachments one at a time. If a later
 attachment fails, files saved earlier in that command remain in the destination.
 The core API that returns all attachment bytes has a 128 MiB total limit.

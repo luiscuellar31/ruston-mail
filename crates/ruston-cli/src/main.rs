@@ -57,7 +57,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
         return demo::dispatch(&ctx, cli.command).await;
     }
     match cli.command {
-        Command::Login => commands::auth::login(&ctx).await,
+        Command::Login(args) => commands::auth::login(&ctx, args).await,
         Command::Logout => commands::auth::logout(&ctx).await,
         Command::Whoami => commands::auth::whoami(&ctx).await,
         Command::Messages { cmd } => commands::messages::run(&ctx, cmd).await,

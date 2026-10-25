@@ -39,17 +39,18 @@
 //! - [`cache`] — the local SQLite cache and FTS index.
 //! - [`error`] — the crate [`Error`] and [`Result`] alias.
 //! - [`html`] — sanitization of HTML message bodies.
+//! - [`browser`] — the system's opener for web addresses, which both apps use.
 //!
 //! # Example
 //!
-//! Resume a session created by `ruston-cli login` and print the default
-//! sending address:
+//! Resume the session `ruston-cli login` or the desktop app saved, under the
+//! profile they share by default, and print the default sending address:
 //!
 //! ```no_run
 //! # async fn demo() -> ruston_core::Result<()> {
-//! use ruston_core::Client;
+//! use ruston_core::{Client, DEFAULT_SESSION_PROFILE};
 //!
-//! let client = Client::resume("default").await?;
+//! let client = Client::resume(DEFAULT_SESSION_PROFILE).await?;
 //! println!("default sending address: {:?}", client.primary_email());
 //! # Ok(())
 //! # }
@@ -61,6 +62,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod browser;
 pub mod cache;
 pub mod crypto;
 pub mod error;
@@ -102,7 +104,7 @@ pub use mail::contacts::AddressInfo;
 pub use mail::export::ExportReport;
 pub use mail::read::{ConversationMessage, FullMessage, SearchOpts, UnreadableMessage};
 pub use mail::send::{
-    RecipientProtection, ReplyRecipients, SendOptions, reply_recipients, reply_redirected,
+    Quote, RecipientProtection, ReplyRecipients, SendOptions, reply_recipients, reply_redirected,
 };
 pub use mail::sync::{LocalCache, SyncReport};
 pub use mail::{Client, LoginOptions, LoginPrompts, MailboxPasswordPrompt};
@@ -112,28 +114,6 @@ pub use transport::{AuthState, Body, Doer, HttpClient, HvResolver, Request, Resp
 /// The crate's package version (from `CARGO_PKG_VERSION`).
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-/// Initialize stderr tracing. `verbose`: 0=warn, 1=debug (our crates),
-/// 2=trace (core), 3+=trace (everything). `RUST_LOG`, if set, overrides.
-pub fn init_tracing(verbose: u8) {
-    use tracing_subscriber::EnvFilter;
-    let filter = if std::env::var("RUST_LOG").is_ok() {
-        EnvFilter::from_default_env()
-    } else {
-        let spec = match verbose {
-            0 => "warn",
-            1 => "info,ruston_core=debug,ruston_cli=debug",
-            2 => "info,ruston_core=trace,ruston_cli=debug",
-            _ => "trace",
-        };
-        EnvFilter::new(spec)
-    };
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_target(true)
-        .try_init();
 }
 
 #[cfg(test)]

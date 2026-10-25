@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use ruston_core::Quote;
+
 use crate::mail::{
-    BodyFormat, Domains, InternationalDomain, MailMessage, MailboxError, MessageBody, Outgoing,
-    OutgoingKind, Protection, ProtectionCheck, Recipients, SendError, recipients,
+    BodyFormat, Domains, InternationalDomain, MailAttachment, MailMessage, MailboxError,
+    MessageBody, Outgoing, OutgoingKind, Protection, ProtectionCheck, Recipients, SendError,
+    recipients,
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
@@ -138,26 +141,33 @@ impl AnswerKind {
             AnswerKind::Reply => OutgoingKind::Reply {
                 message_id,
                 everyone: false,
+                quote: Quote::Original,
             },
             AnswerKind::ReplyAll => OutgoingKind::Reply {
                 message_id,
                 everyone: true,
+                quote: Quote::Original,
             },
-            AnswerKind::Forward => OutgoingKind::Forward { message_id },
+            AnswerKind::Forward => OutgoingKind::Forward {
+                message_id,
+                quote: Quote::Original,
+                leave_out: Vec::new(),
+            },
         }
     }
 }
 
-/// The message being answered. Core writes the subject and, for a reply,
-/// sends to the recipients shown here.
+/// The message being answered. Core writes the subject; a reply's recipient
+/// fields open with whom core would answer, and the writer may change them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answering {
     pub sender: String,
     pub subject: String,
     pub kind: AnswerKind,
-    /// Where a reply goes; empty for a forward, whose recipients are typed.
+    /// Whom a reply opens addressed to; empty for a forward, whose
+    /// recipients are typed.
     pub to: Vec<String>,
-    /// What Reply all copies in.
+    /// Whom Reply all opens copying in.
     pub cc: Vec<String>,
     /// The sender's address when the message's Reply-To sends the reply
     /// somewhere else, so the composer can say so.
@@ -167,7 +177,7 @@ pub struct Answering {
     pub quotes_original: bool,
     /// The files a forward carries from the original, as the reader lists
     /// them; a reply carries none.
-    pub forwarded: Vec<String>,
+    pub forwarded: Vec<MailAttachment>,
 }
 
 /// A message being written.
@@ -179,6 +189,10 @@ pub struct Compose {
     to: String,
     cc: String,
     bcc: String,
+    /// What To and Cc opened with: for a reply, whom core would answer.
+    /// Leaving them as they were is not writing.
+    opened_to: String,
+    opened_cc: String,
     subject: String,
     body: String,
     attachments: Vec<PathBuf>,
@@ -197,6 +211,12 @@ pub struct Compose {
     copies_shown: bool,
     state: Sending,
     confirming_discard: bool,
+    /// Another message was asked for while this one is open, so the
+    /// composer says why none opened, until this one is edited.
+    asked_again: bool,
+    /// Folded into a strip over the reader, which shows the conversation
+    /// chosen while writing; only a draft in the reading pane folds.
+    folded: bool,
 }
 
 /// What the recipient fields came to. They are read again only when a field
@@ -301,6 +321,7 @@ impl Compose {
     /// stays until the user knows whether the message went.
     fn edited(&mut self) {
         self.confirming_discard = false;
+        self.asked_again = false;
         if matches!(&self.state, Sending::Failed(error) if *error != SendError::Unconfirmed) {
             self.state = Sending::Writing;
         }
@@ -330,14 +351,20 @@ impl Compose {
         self.confirming_discard
     }
 
+    /// Whether another message was asked for while this one is open.
+    pub fn asked_again(&self) -> bool {
+        self.asked_again
+    }
+
+    /// Whether the draft is folded into a strip over the reader.
+    pub fn folded(&self) -> bool {
+        self.folded
+    }
+
     /// What to say about protection, once every typed recipient was looked
     /// up. Silent while an address is still unchecked, so a partial answer
-    /// never reads as the whole one. Replies stay silent: core chooses
-    /// their recipients when it sends them.
+    /// never reads as the whole one.
     pub fn protection_notice(&self) -> Option<ProtectionNotice> {
-        if !self.asks_for_recipients() {
-            return None;
-        }
         let typed = &self.typed.addresses;
         let mut checked = Vec::with_capacity(typed.len());
         for address in typed {
@@ -423,9 +450,41 @@ impl Compose {
         self.answering.as_ref()
     }
 
-    /// Whether the window asks who the message goes to.
-    pub fn asks_for_recipients(&self) -> bool {
-        Outgoing::needs_recipients(&self.kind)
+    /// For an answer, whether the original goes under the text.
+    pub fn quote(&self) -> Option<Quote> {
+        match &self.kind {
+            OutgoingKind::New => None,
+            OutgoingKind::Reply { quote, .. } | OutgoingKind::Forward { quote, .. } => Some(*quote),
+        }
+    }
+
+    /// The files of the original that go with a forward: those the reader
+    /// listed, less the ones left out.
+    pub fn forwarded(&self) -> impl Iterator<Item = &MailAttachment> {
+        let leave_out = self.kind.leave_out();
+        self.answering
+            .iter()
+            .flat_map(|answering| &answering.forwarded)
+            .filter(move |file| !leave_out.contains(&file.id))
+    }
+
+    fn leave_out_forwarded(&mut self, id: &str) {
+        if let OutgoingKind::Forward { leave_out, .. } = &mut self.kind
+            && !leave_out.iter().any(|known| known == id)
+        {
+            leave_out.push(id.to_owned());
+        }
+    }
+
+    fn toggle_quote(&mut self) {
+        if let OutgoingKind::Reply { quote, .. } | OutgoingKind::Forward { quote, .. } =
+            &mut self.kind
+        {
+            *quote = match quote {
+                Quote::Original => Quote::Omitted,
+                Quote::Omitted => Quote::Original,
+            };
+        }
     }
 
     /// Whether the window asks for a subject. Core writes one for an answer.
@@ -442,10 +501,11 @@ impl Compose {
     }
 
     /// Whether anything has been typed. Closing an untouched message needs no
-    /// second thought; closing a written one does.
+    /// second thought; closing a written one does. A reply still addressed
+    /// as it opened is untouched.
     pub fn is_untouched(&self) -> bool {
-        self.to.trim().is_empty()
-            && self.cc.trim().is_empty()
+        self.to.trim() == self.opened_to
+            && self.cc.trim() == self.opened_cc
             && self.bcc.trim().is_empty()
             && self.subject.trim().is_empty()
             && self.body.trim().is_empty()
@@ -470,7 +530,7 @@ impl Compose {
                 NotReady::BadAddresses(rejected)
             });
         }
-        if Outgoing::needs_recipients(&self.kind) && self.typed.addresses.is_empty() {
+        if self.typed.addresses.is_empty() {
             return Err(NotReady::NoRecipients);
         }
         Ok(())
@@ -505,11 +565,7 @@ fn answering_for(kind: AnswerKind, message: &MailMessage, subject: Option<&str>)
     let redirected_from = (!to.is_empty() && message.reply_redirected && !sender.is_empty())
         .then(|| sender.to_owned());
     let forwarded = match kind {
-        AnswerKind::Forward => message
-            .attachments
-            .iter()
-            .map(|attachment| attachment.name.clone())
-            .collect(),
+        AnswerKind::Forward => message.attachments.clone(),
         AnswerKind::Reply | AnswerKind::ReplyAll => Vec::new(),
     };
     Answering {
@@ -596,6 +652,7 @@ impl App {
         }
         let mut compose = parked.compose;
         compose.id = self.next_compose_id();
+        compose.folded = false;
         compose
             .protection
             .retain(|_, checked| *checked != Checked::Checking);
@@ -603,22 +660,58 @@ impl App {
         self.check_compose_protection()
     }
 
-    pub(super) fn open_compose(&mut self) {
-        if self.compose.is_none() {
-            let id = self.next_compose_id();
-            self.compose = Some(Compose {
-                id,
-                domains: self.settings.recipient_domains(),
-                ..Compose::default()
-            });
+    /// Folds a draft that covers the reader, so a conversation chosen while
+    /// writing shows; the draft waits in a strip above it.
+    pub(super) fn fold_compose(&mut self) {
+        if self.draft_covers_reader()
+            && let Some(compose) = self.compose.as_mut()
+        {
+            compose.folded = true;
+        }
+    }
+
+    /// Brings a folded draft back over the reader.
+    pub(super) fn continue_writing(&mut self) {
+        if let Some(compose) = self.compose.as_mut() {
+            compose.folded = false;
+        }
+    }
+
+    pub(super) fn open_compose(&mut self) -> Effects {
+        if self.compose.is_some() {
+            return self.ask_for_another_message();
+        }
+        let id = self.next_compose_id();
+        self.compose = Some(Compose {
+            id,
+            domains: self.settings.recipient_domains(),
+            ..Compose::default()
+        });
+        Effects::none()
+    }
+
+    /// One message is written at a time: asking for another leaves the open
+    /// one as it is, says why, and brings it back into view, unfolded or with
+    /// its window forward.
+    fn ask_for_another_message(&mut self) -> Effects {
+        let in_window = self.draft_in_window();
+        let Some(compose) = self.compose.as_mut() else {
+            return Effects::none();
+        };
+        compose.asked_again = true;
+        compose.folded = false;
+        if in_window {
+            Effects::ui(UiEffect::RaiseComposer)
+        } else {
+            Effects::none()
         }
     }
 
     /// Answers the message with the given id in the open conversation.
-    pub(super) fn answer(&mut self, message_id: &str, kind: AnswerKind) {
+    pub(super) fn answer(&mut self, message_id: &str, kind: AnswerKind) -> Effects {
         let Some(ReaderState::Loaded(reader)) = self.mailbox().map(super::Mailbox::reader_state)
         else {
-            return;
+            return Effects::none();
         };
         let Some(message) = reader
             .detail()
@@ -626,28 +719,38 @@ impl App {
             .iter()
             .find(|message| message.id == message_id)
         else {
-            return;
+            return Effects::none();
         };
         // Read what the composer shows while the reader still holds the
         // message, rather than copying its decrypted body and attachments.
         let answering = answering_for(kind, message, reader.detail().subject.as_deref());
-        self.open_answer(kind.outgoing(message_id), answering);
+        self.open_answer(kind.outgoing(message_id), answering)
     }
 
-    /// Answers or forwards a message. Core addresses replies itself; the
-    /// composer shows where they go.
-    fn open_answer(&mut self, kind: OutgoingKind, answering: Answering) {
+    /// Answers or forwards a message. A reply opens addressed to whom core
+    /// would answer, in fields the writer may change, Cc on show when Reply
+    /// all copies anyone in.
+    fn open_answer(&mut self, kind: OutgoingKind, answering: Answering) -> Effects {
         if self.compose.is_some() {
-            return;
+            return self.ask_for_another_message();
         }
         let id = self.next_compose_id();
-        self.compose = Some(Compose {
+        let (to, cc) = (answering.to.join(", "), answering.cc.join(", "));
+        let mut compose = Compose {
             id,
             kind,
             answering: Some(answering),
+            copies_shown: !cc.is_empty(),
+            opened_to: to.clone(),
+            opened_cc: cc.clone(),
+            to,
+            cc,
             domains: self.settings.recipient_domains(),
             ..Compose::default()
-        });
+        };
+        compose.reread_recipients();
+        self.compose = Some(compose);
+        Effects::none()
     }
 
     /// Puts an unsent message away. Untouched messages close at once;
@@ -685,6 +788,21 @@ impl App {
     pub(super) fn change_compose(&mut self, field: ComposeField, value: String) {
         if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
             compose.set(field, value);
+        }
+    }
+
+    /// Leaves one of the original's files out of the forward being written.
+    pub(super) fn leave_out_forwarded(&mut self, id: &str) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
+            compose.leave_out_forwarded(id);
+        }
+    }
+
+    /// Puts the original under the text of the answer being written, or
+    /// takes it away.
+    pub(super) fn toggle_compose_quote(&mut self) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
+            compose.toggle_quote();
         }
     }
 
@@ -775,11 +893,7 @@ impl App {
             return Effects::none();
         }
         let epoch = self.session_epoch;
-        let Some(compose) = self
-            .compose
-            .as_mut()
-            .filter(|c| !c.in_flight() && c.asks_for_recipients())
-        else {
+        let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) else {
             return Effects::none();
         };
         let unchecked: Vec<String> = compose
@@ -863,9 +977,11 @@ impl App {
             return Effects::none();
         };
         match result {
-            // Gone. The window closes, and the folder it landed in catches up.
+            // Gone. The window closes, the mailbox says so, and the folder it
+            // landed in catches up.
             Ok(()) => {
                 self.compose = None;
+                self.notice = Some(super::Notice::Sent);
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.invalidate_listings();
                     mailbox.invalidate_reader_cache();
@@ -1100,8 +1216,13 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_says_nothing_about_protection() {
+    fn a_reply_says_how_its_recipients_are_protected_like_any_message() {
         let mut compose = written("ada@proton.me");
+        compose.kind = OutgoingKind::Reply {
+            message_id: "message".into(),
+            everyone: false,
+            quote: Quote::Original,
+        };
         compose
             .protection
             .insert("ada@proton.me".into(), Checked::Known(Protection::EndToEnd));
@@ -1109,12 +1230,6 @@ mod tests {
             compose.protection_notice(),
             Some(ProtectionNotice::Encrypted)
         );
-
-        compose.kind = OutgoingKind::Reply {
-            message_id: "message".into(),
-            everyone: false,
-        };
-        assert_eq!(compose.protection_notice(), None);
     }
 
     #[test]
@@ -1174,6 +1289,37 @@ mod tests {
     }
 
     #[test]
+    fn a_forward_leaves_each_file_out_once_and_a_reply_has_none_to_leave() {
+        let mut message = answered_message("alex@corp.example");
+        message.attachments = ["a1", "a2"]
+            .map(|id| crate::mail::MailAttachment {
+                id: id.into(),
+                name: format!("{id}.pdf"),
+                size: 1,
+            })
+            .to_vec();
+        let mut forward = Compose {
+            kind: AnswerKind::Forward.outgoing("message"),
+            answering: Some(answering(AnswerKind::Forward, &message)),
+            ..Compose::default()
+        };
+        forward.leave_out_forwarded("a1");
+        forward.leave_out_forwarded("a1");
+        assert_eq!(forward.kind.leave_out(), ["a1"]);
+        let left: Vec<&str> = forward.forwarded().map(|file| file.id.as_str()).collect();
+        assert_eq!(left, ["a2"]);
+
+        let mut reply = Compose {
+            kind: AnswerKind::Reply.outgoing("message"),
+            answering: Some(answering(AnswerKind::Reply, &message)),
+            ..Compose::default()
+        };
+        reply.leave_out_forwarded("a1");
+        assert!(reply.kind.leave_out().is_empty());
+        assert_eq!(reply.forwarded().count(), 0);
+    }
+
+    #[test]
     fn an_answer_says_what_goes_out_with_its_text() {
         let mut message = answered_message("alex@corp.example");
         message.attachments = vec![crate::mail::MailAttachment {
@@ -1183,7 +1329,7 @@ mod tests {
         }];
 
         let forward = answering(AnswerKind::Forward, &message);
-        assert_eq!(forward.forwarded, ["invoice.pdf"]);
+        assert_eq!(forward.forwarded, message.attachments);
         assert!(forward.quotes_original);
         for kind in [AnswerKind::Reply, AnswerKind::ReplyAll] {
             let reply = answering(kind, &message);
@@ -1451,7 +1597,7 @@ mod tests {
     #[test]
     fn closing_an_untouched_message_discards_immediately() {
         let mut app = App::new(crate::settings::Settings::default());
-        app.open_compose();
+        let _ = app.open_compose();
         assert!(app.compose().is_some());
 
         app.close_compose();
@@ -1461,7 +1607,7 @@ mod tests {
     #[test]
     fn closing_a_written_message_asks_for_confirmation() {
         let mut app = App::new(crate::settings::Settings::default());
-        app.open_compose();
+        let _ = app.open_compose();
         app.change_compose(ComposeField::Body, "Draft content".to_owned());
 
         app.close_compose();

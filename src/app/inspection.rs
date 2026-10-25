@@ -30,6 +30,12 @@ impl Inspections {
         }
     }
 
+    /// Whether [`Self::start`] has a conversation to start now: one waits
+    /// and a slot is free.
+    pub fn can_start(&self) -> bool {
+        self.running.len() < INSPECTION_CONCURRENCY && !self.queued.is_empty()
+    }
+
     pub fn start(&mut self, request: RequestId) -> Option<(String, AbortRegistration)> {
         if self.running.len() == INSPECTION_CONCURRENCY {
             return None;
@@ -38,6 +44,12 @@ impl Inspections {
         let (handle, registration) = AbortHandle::new_pair();
         self.running.insert(id.clone(), (request, handle));
         Some((id, registration))
+    }
+
+    /// The request `id`'s inspection runs under, if it runs.
+    #[cfg(test)]
+    pub fn running_request(&self, id: &str) -> Option<RequestId> {
+        self.running.get(id).map(|(request, _)| *request)
     }
 
     /// Only the exact running request may release a slot and apply its result.
@@ -79,11 +91,15 @@ mod tests {
     #[test]
     fn bounds_and_deduplicates_work_across_pages() {
         let mut inspections = Inspections::default();
+        assert!(!inspections.can_start(), "nothing waits");
         inspections.enqueue((0..200).flat_map(|i| [i.to_string(), i.to_string()]));
         assert_eq!(inspections.admitted.len(), CAPACITY);
         for request in 1..=4 {
+            assert!(inspections.can_start());
             assert!(inspections.start(request).is_some());
         }
+        // Every slot is taken: an ID asked for now would go unused.
+        assert!(!inspections.can_start());
         assert!(inspections.start(5).is_none());
         inspections.enqueue(["0".into(), "extra".into()]);
         assert_eq!(inspections.admitted.len(), CAPACITY);

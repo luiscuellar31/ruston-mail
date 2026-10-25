@@ -16,7 +16,8 @@ pub use auth::{AuthError, LoginRequest};
 pub use model::{
     BlockKind, ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder,
     IncomingMail, MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
-    MailboxError, MessageBody, RichBlock, RichBody, RichSpan, SummaryKind, UNREADABLE_NOTICE,
+    MailboxError, MessageBody, OwnPlaces, PlaceLook, RichBlock, RichBody, RichSpan, SummaryKind,
+    UNREADABLE_NOTICE,
 };
 pub use outgoing::{
     BodyFormat, Domains, InternationalDomain, Outgoing, OutgoingKind, Protection, ProtectionCheck,
@@ -116,10 +117,10 @@ impl MailBackend {
     }
 
     /// Account folders and labels; demo mode has neither.
-    pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
+    pub async fn list_folders(&self) -> Result<OwnPlaces, MailboxError> {
         match self {
             Self::Proton(service) => service.list_folders().await,
-            Self::Demo(_) => Ok(Vec::new()),
+            Self::Demo(_) => Ok(OwnPlaces::default()),
         }
     }
 

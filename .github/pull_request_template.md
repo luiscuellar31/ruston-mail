@@ -1,3 +1,6 @@
+<!-- Open this pull request against `dev`, with a Conventional Commits title
+such as `fix(cli): keep --page-size between 1 and 100` (see CONTRIBUTING.md). -->
+
 ## Why
 
 <!-- What problem does this solve? Link an issue if relevant. -->

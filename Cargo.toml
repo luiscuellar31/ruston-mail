@@ -8,7 +8,7 @@ members = [
 default-members = ["."]
 
 [workspace.package]
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
@@ -17,13 +17,13 @@ authors = ["Luis Cuellar <luiscuellar31@proton.me>"]
 
 [workspace.dependencies]
 ruston-core = { path = "crates/ruston-core" }
-proton-crypto = { version = "0.12", default-features = false, features = ["rustpgp"] }
+proton-crypto = { version = "0.14", default-features = false, features = ["rustpgp"] }
 proton-srp = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["json", "cookies", "rustls", "gzip", "system-proxy"] }
 # reqwest's own rustls, declared for a feature its defaults leave off: TLS then
 # offers the X25519MLKEM768 post-quantum hybrid key exchange first.
 rustls = { version = "0.23", default-features = false, features = ["prefer-post-quantum"] }
-tokio = { version = "1", features = ["full"] }
+tokio = "1"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -42,7 +42,7 @@ getrandom = "0.4"
 chrono = "0.4"
 futures = "0.3"
 urlencoding = "2"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 ammonia = "4.1.7"
 html5ever = "0.39"
 url = "2"
@@ -84,7 +84,7 @@ secrecy = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 skrifa = "0.44"
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 url = { workspace = true }
 urlencoding = { workspace = true }
@@ -108,7 +108,7 @@ winresource = { version = "0.1.31", default-features = false }
 # renderer, where there is no GPU; OpenGL stays as the fallback.
 eframe = { version = "0.36", default-features = false, features = ["wgpu_no_default_features"] }
 wgpu = { version = "30", default-features = false, features = ["dx12"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "Foundation", "Win32_System_WinRT", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]

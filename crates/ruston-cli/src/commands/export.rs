@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 pub async fn run(ctx: &Ctx, folder: String, out: PathBuf, max: u32) -> Result<()> {
     let client = resume(&ctx.profile).await?;
+    let folder = client.folder_id(&folder).await?;
     let report = client.export_folder_report(&folder, &out, max).await?;
     if ctx.json {
         let skipped: Vec<_> = report

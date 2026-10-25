@@ -4,15 +4,16 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use ruston_core::{SearchOpts, SendOptions};
 use std::path::PathBuf;
 
-/// What each exit status means, shown at the end of `--help`. Statuses 1 to
-/// 5 are `ruston_core::error::exit_status`.
+/// What each exit status means, shown at the end of `--help`. Status 2 is
+/// clap's; the others are `ruston_core::error::exit_status`.
 const EXIT_STATUS: &str = "Exit status:
   0  Success, also when the reader of the output stops early (as `| head` does)
   1  Any other error
-  2  A usage error, or a session that is missing, expired or refused
+  2  A usage error
   3  Not found
   4  An ambiguous reference, or a conflict Proton reports (409, 422)
-  5  A Proton server error";
+  5  A Proton server error
+  6  A session that is missing, expired or refused: sign in again";
 
 /// Environment variables that may carry sign-in secrets. Programs the CLI
 /// starts, such as a browser for human verification, never inherit them.
@@ -45,53 +46,56 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Override the API base URL (login only).
-    #[arg(long, global = true)]
-    pub api_url: Option<String>,
-
-    /// Override the app-version header (login only).
-    #[arg(long, global = true)]
-    pub app_version: Option<String>,
-
-    // Secrets read from the environment: help names the variable, never its value.
-    /// TOTP two-factor code (prompted for when required if omitted).
-    #[arg(long, global = true, env = "PROTON_TOTP", hide_env_values = true)]
-    pub totp: Option<String>,
-
-    /// Separate mailbox password (two-password accounts). On a terminal it is
-    /// asked for, hidden, when the account has one and it is not given.
-    #[arg(
-        long,
-        global = true,
-        env = "PROTON_MAILBOX_PASSWORD",
-        hide_env_values = true
-    )]
-    pub mailbox_password: Option<String>,
-
-    /// Pre-solved human-verification (CAPTCHA) token, skips the interactive flow.
-    #[arg(long, global = true, env = "PROTON_HV_TOKEN", hide_env_values = true)]
-    pub captcha_token: Option<String>,
-
-    /// Present as an official client (sets app-version + User-Agent unless overridden).
-    #[arg(long, global = true, value_enum)]
-    pub client: Option<ClientPreset>,
-
-    /// Override the User-Agent header (login only; default `ruston-cli/<version> (<os>)`).
-    #[arg(long, global = true)]
-    pub user_agent: Option<String>,
-
-    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window, or
-    /// Chromium, Brave or Edge (throwaway profile); press Enter once verified
-    /// and the window is closed.
-    #[arg(long, global = true)]
-    pub captcha_chrome: bool,
-
-    /// Run in offline demo mode using fictional data without contacting Proton.
+    /// Run in offline demo mode using fictional data without contacting Proton;
+    /// `RUSTON_DEMO=1` turns it on too.
     #[arg(long, global = true)]
     pub demo: bool,
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// What `login` alone takes: where and as which client to sign in, and the
+/// secrets a sign-in may ask for. The username and password come from
+/// `PROTON_USER` and `PROTON_PASSWORD`, or are asked for.
+#[derive(Debug, Args)]
+pub struct LoginArgs {
+    /// Override the API base URL: https, or plain http to this machine for a
+    /// local test server.
+    #[arg(long, value_parser = parse_api_url)]
+    pub api_url: Option<String>,
+
+    /// Override the app-version header.
+    #[arg(long)]
+    pub app_version: Option<String>,
+
+    // Secrets read from the environment: help names the variable, never its value.
+    /// TOTP two-factor code (prompted for when required if omitted).
+    #[arg(long, env = "PROTON_TOTP", hide_env_values = true)]
+    pub totp: Option<String>,
+
+    /// Separate mailbox password (two-password accounts). On a terminal it is
+    /// asked for, hidden, when the account has one and it is not given.
+    #[arg(long, env = "PROTON_MAILBOX_PASSWORD", hide_env_values = true)]
+    pub mailbox_password: Option<String>,
+
+    /// Pre-solved human-verification (CAPTCHA) token, skips the interactive flow.
+    #[arg(long, env = "PROTON_HV_TOKEN", hide_env_values = true)]
+    pub captcha_token: Option<String>,
+
+    /// Present as an official client (sets app-version + User-Agent unless overridden).
+    #[arg(long, value_enum)]
+    pub client: Option<ClientPreset>,
+
+    /// Override the User-Agent header (default `ruston-cli/<version> (<os>)`).
+    #[arg(long)]
+    pub user_agent: Option<String>,
+
+    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window, or
+    /// Chromium, Brave or Edge (throwaway profile); press Enter once verified
+    /// and the window is closed.
+    #[arg(long)]
+    pub captcha_chrome: bool,
 }
 
 fn parse_profile(value: &str) -> std::result::Result<String, String> {
@@ -103,6 +107,74 @@ fn parse_search_date(value: &str) -> std::result::Result<String, String> {
     ruston_core::mail::read::validate_search_date(value)
         .map_err(|_| "expected a date as YYYY-MM-DD".to_owned())?;
     Ok(value.to_owned())
+}
+
+/// The largest `--page-size`: the most Ruston itself asks Proton for at once.
+/// A page Proton returns short marks the end of a listing, so a page larger
+/// than Proton serves would end paging after the first page.
+const MAX_PAGE_SIZE: i64 = 100;
+
+/// Page sizes from 1 to [`MAX_PAGE_SIZE`].
+fn page_size() -> clap::builder::RangedI64ValueParser<u32> {
+    clap::value_parser!(u32).range(1..=MAX_PAGE_SIZE)
+}
+
+/// An API address the sign-in may send credentials to: https, or plain http
+/// only to this machine, where a local test server listens.
+fn parse_api_url(value: &str) -> std::result::Result<String, String> {
+    let url = url::Url::parse(value).map_err(|error| format!("not a URL: {error}"))?;
+    let this_machine = match url.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    match url.scheme() {
+        "https" => Ok(value.to_owned()),
+        "http" if this_machine => Ok(value.to_owned()),
+        _ => Err("expected an https URL, or http to this machine".to_owned()),
+    }
+}
+
+/// A Unix time in seconds that has not passed yet.
+fn parse_future_time(value: &str) -> std::result::Result<i64, String> {
+    let time: i64 = value
+        .parse()
+        .map_err(|_| "expected a Unix time in seconds".to_owned())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        });
+    if time <= now {
+        return Err("that time has already passed".to_owned());
+    }
+    Ok(time)
+}
+
+/// `30m`, `2h`, `1d`, `45s` or bare seconds, as a positive number of seconds.
+pub(crate) fn parse_duration_secs(value: &str) -> std::result::Result<i64, String> {
+    let value = value.trim();
+    let split = value
+        .find(|c: char| c.is_alphabetic())
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let number: i64 = number
+        .parse()
+        .map_err(|_| format!("bad duration: {value}"))?;
+    if number <= 0 {
+        return Err(format!("bad duration: {value} (must be more than zero)"));
+    }
+    let seconds = match unit {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        other => return Err(format!("bad duration unit: {other}")),
+    };
+    number
+        .checked_mul(seconds)
+        .ok_or_else(|| format!("duration too long: {value}"))
 }
 
 /// Official-client presets for `--client`.
@@ -139,14 +211,6 @@ pub struct Ctx {
     pub profile: String,
     pub json: bool,
     pub demo: bool,
-    pub api_url: Option<String>,
-    pub app_version: Option<String>,
-    pub totp: Option<String>,
-    pub mailbox_password: Option<String>,
-    pub captcha_token: Option<String>,
-    pub client: Option<ClientPreset>,
-    pub user_agent: Option<String>,
-    pub captcha_chrome: bool,
 }
 
 impl From<&Cli> for Ctx {
@@ -158,22 +222,15 @@ impl From<&Cli> for Ctx {
             profile: c.profile.clone(),
             json: c.json,
             demo: c.demo || env_demo,
-            api_url: c.api_url.clone(),
-            app_version: c.app_version.clone(),
-            totp: c.totp.clone(),
-            mailbox_password: c.mailbox_password.clone(),
-            captcha_token: c.captcha_token.clone(),
-            client: c.client,
-            user_agent: c.user_agent.clone(),
-            captcha_chrome: c.captcha_chrome,
         }
     }
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Log in to Proton Mail (prompts for credentials unless given via env).
-    Login,
+    /// Log in to Proton Mail. The username and password come from
+    /// `PROTON_USER` and `PROTON_PASSWORD`, or are asked for.
+    Login(LoginArgs),
     /// Revoke the server session and clear local state. A session that can no
     /// longer be resumed is still cleared from this device.
     Logout,
@@ -231,6 +288,8 @@ pub enum Command {
     /// directory resumes. Messages that cannot be decrypted are skipped and
     /// listed, and the command then exits with an error.
     Export {
+        /// A system folder (all, inbox, sent…), or one of your folders or
+        /// labels by its name, path or ID.
         #[arg(long, default_value = "all")]
         folder: String,
         /// Output directory.
@@ -259,7 +318,7 @@ pub enum Command {
         folder: String,
         #[arg(long = "max-pages", default_value_t = 3)]
         max_pages: u32,
-        #[arg(long = "page-size", default_value_t = 50)]
+        #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
     /// Full-text search the local index (message bodies; private + offline).
@@ -276,7 +335,7 @@ pub enum Command {
         backfill: Option<String>,
         #[arg(long = "max-pages", default_value_t = 4)]
         max_pages: u32,
-        #[arg(long = "page-size", default_value_t = 50)]
+        #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
     /// Label and folder operations.
@@ -307,7 +366,8 @@ pub struct SearchArgs {
     /// Only results on/before this date (YYYY-MM-DD, a day in UTC), including it.
     #[arg(long, value_parser = parse_search_date)]
     pub before: Option<String>,
-    /// Restrict to a folder/label.
+    /// Restrict to a folder or label: a system folder, or one of yours by
+    /// its name, path or ID.
     #[arg(long)]
     pub folder: Option<String>,
     /// Only unread results.
@@ -463,11 +523,14 @@ impl EmptyFolder {
 pub enum MessagesCmd {
     /// List messages in a folder.
     List {
+        /// A system folder (inbox, sent, archive…), or one of your folders or
+        /// labels by its name, path or ID; with --cached, a system folder or
+        /// an ID.
         #[arg(long, default_value = "inbox")]
         folder: String,
         #[arg(long, default_value_t = 0)]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 25)]
+        #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
         #[arg(long)]
         unread: bool,
@@ -506,6 +569,9 @@ pub enum MessagesCmd {
         body: String,
         #[arg(long = "attach")]
         attach: Vec<PathBuf>,
+        /// Send the reply without the original quoted under the body.
+        #[arg(long)]
+        no_quote: bool,
     },
     /// Forward a message.
     Forward {
@@ -519,13 +585,27 @@ pub enum MessagesCmd {
         body: String,
         #[arg(long = "attach")]
         attach: Vec<PathBuf>,
+        /// Forward without the original's text quoted under the body; its
+        /// attachments still go.
+        #[arg(long)]
+        no_quote: bool,
+        /// An attachment of the original, by ID, that does not go with the
+        /// forward (repeatable); `attachments list` shows their IDs.
+        #[arg(long = "leave-out", value_name = "ATTACHMENT_ID")]
+        leave_out: Vec<String>,
     },
     /// Cancel a scheduled send.
     CancelSend { reference: String },
     /// Report messages as spam (move to Spam).
-    Spam { references: Vec<String> },
+    Spam {
+        #[arg(required = true)]
+        references: Vec<String>,
+    },
     /// Report messages as not-spam (move to Inbox).
-    Ham { references: Vec<String> },
+    Ham {
+        #[arg(required = true)]
+        references: Vec<String>,
+    },
     /// One-click unsubscribe from a mailing list.
     Unsubscribe { reference: String },
     /// Permanently delete every message in Trash or Spam. Asks first; outside
@@ -541,19 +621,24 @@ pub enum MessagesCmd {
     Label {
         #[arg(value_enum)]
         action: LabelAction,
-        /// Label ID.
+        /// The label, by its name, path or ID.
         label_id: String,
         /// Message references.
+        #[arg(required = true)]
         references: Vec<String>,
     },
     /// Restore permanently-deleted messages (by ID).
-    Undelete { ids: Vec<String> },
+    Undelete {
+        #[arg(required = true)]
+        ids: Vec<String>,
+    },
     /// Send a read receipt for a message.
     Receipt { reference: String },
     /// Move messages to a folder.
     Move {
         #[arg(required = true)]
         references: Vec<String>,
+        /// A system folder, or one of your folders by its name, path or ID.
         #[arg(long)]
         dest: String,
     },
@@ -593,11 +678,13 @@ pub enum MessagesCmd {
 pub enum ConversationsCmd {
     /// List conversations in a folder.
     List {
+        /// A system folder (inbox, sent, archive…), or one of your folders or
+        /// labels by its name, path or ID.
         #[arg(long, default_value = "inbox")]
         folder: String,
         #[arg(long, default_value_t = 0)]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 25)]
+        #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
         #[arg(long)]
         unread: bool,
@@ -613,6 +700,7 @@ pub enum ConversationsCmd {
     Move {
         #[arg(required = true)]
         ids: Vec<String>,
+        /// A system folder, or one of your folders by its name, path or ID.
         #[arg(long)]
         dest: String,
     },
@@ -644,13 +732,18 @@ pub enum ConversationsCmd {
     Snooze {
         #[arg(required = true)]
         ids: Vec<String>,
-        /// Unix time in seconds; used instead of --in if both are given.
-        #[arg(long)]
+        /// Unix time in seconds, still to come.
+        #[arg(
+            long,
+            value_parser = parse_future_time,
+            conflicts_with = "relative",
+            required_unless_present = "relative"
+        )]
         until: Option<i64>,
         /// A positive duration from now: seconds, or a number with s, m, h or
         /// d, e.g. `30m`, `2h`, `1d`.
-        #[arg(long = "in")]
-        relative: Option<String>,
+        #[arg(long = "in", value_parser = parse_duration_secs)]
+        relative: Option<i64>,
     },
     /// Unsnooze conversations.
     Unsnooze {
@@ -673,7 +766,7 @@ pub enum AttachmentsCmd {
         /// Message reference (ID or free-text).
         message: String,
         /// Specific attachment ID (omit with --all).
-        #[arg(required_unless_present = "all")]
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
         attachment: Option<String>,
         #[arg(long = "output-dir")]
         output_dir: Option<PathBuf>,
@@ -691,7 +784,7 @@ pub enum DraftsCmd {
     List {
         #[arg(long, default_value_t = 0)]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 25)]
+        #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
     },
     /// Save a new draft with its attachments (does not send). A delivery
@@ -767,7 +860,7 @@ pub enum ContactsCmd {
     List {
         #[arg(long, default_value_t = 0)]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 50)]
+        #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
     /// List contact email addresses (optionally filter by an email).
@@ -857,9 +950,10 @@ mod tests {
 
     #[test]
     fn help_never_shows_secrets_read_from_the_environment() {
-        let command = Cli::command();
+        let mut command = Cli::command();
+        let login = command.find_subcommand_mut("login").unwrap();
         for id in ["totp", "mailbox_password", "captcha_token"] {
-            let arg = command
+            let arg = login
                 .get_arguments()
                 .find(|arg| arg.get_id() == id)
                 .unwrap();
@@ -869,6 +963,39 @@ mod tests {
                 "help would print the value of {id}"
             );
         }
+    }
+
+    #[test]
+    fn sign_in_options_belong_to_login_alone() {
+        // Elsewhere they would be read and ignored.
+        for args in [
+            &["ruston-cli", "messages", "list", "--mailbox-password", "x"][..],
+            &[
+                "ruston-cli",
+                "--api-url",
+                "https://mail.example/api",
+                "whoami",
+            ],
+            &["ruston-cli", "logout", "--captcha-chrome"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?} was taken");
+        }
+        let Command::Login(login) = parse(&[
+            "ruston-cli",
+            "login",
+            "--api-url",
+            "https://mail.example/api",
+            "--client",
+            "web",
+            "--captcha-chrome",
+        ])
+        .command
+        else {
+            panic!("not a login");
+        };
+        assert_eq!(login.api_url.as_deref(), Some("https://mail.example/api"));
+        assert!(matches!(login.client, Some(ClientPreset::Web)));
+        assert!(login.captcha_chrome);
     }
 
     #[test]
@@ -1249,12 +1376,134 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");
         }
+        // An ID beside --all would be ignored, so the two are refused.
+        let both = Cli::try_parse_from([
+            "ruston-cli",
+            "attachments",
+            "download",
+            "msg",
+            "att",
+            "--all",
+        ])
+        .unwrap_err();
+        assert_eq!(both.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn commands_that_act_on_messages_need_at_least_one() {
+        for args in [
+            &["ruston-cli", "messages", "spam"][..],
+            &["ruston-cli", "messages", "ham"],
+            &["ruston-cli", "messages", "undelete"],
+            &["ruston-cli", "messages", "label", "add", "label-1"],
+        ] {
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{args:?}"
+            );
+        }
+        for args in [
+            &["ruston-cli", "messages", "spam", "m1"][..],
+            &["ruston-cli", "messages", "ham", "m1"],
+            &["ruston-cli", "messages", "undelete", "m1"],
+            &["ruston-cli", "messages", "label", "add", "label-1", "m1"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");
+        }
+    }
+
+    #[test]
+    fn a_snooze_takes_one_end_still_to_come() {
+        let snooze = |extra: &[&str]| {
+            let mut args = vec!["ruston-cli", "conversations", "snooze", "c1"];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        // 2100-01-01, and a moment long gone.
+        assert!(snooze(&["--until", "4102444800"]).is_ok());
+        assert!(snooze(&["--in", "2h"]).is_ok());
+        for refused in [
+            &[][..],
+            &["--until", "4102444800", "--in", "2h"],
+            &["--until", "1"],
+            &["--until", "soon"],
+            &["--in", "0"],
+        ] {
+            assert!(snooze(refused).is_err(), "{refused:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn snooze_durations_are_positive_and_never_wrap() {
+        for (duration, seconds) in [("30m", 1800), ("1d", 86_400), ("+5m", 300), ("45", 45)] {
+            assert_eq!(
+                parse_duration_secs(duration).unwrap(),
+                seconds,
+                "{duration}"
+            );
+        }
+        for duration in [
+            "-5m",
+            "0",
+            "0d",
+            "106751991167301d",
+            "9223372036854775807h",
+            "5w",
+        ] {
+            assert!(parse_duration_secs(duration).is_err(), "{duration}");
+        }
+    }
+
+    #[test]
+    fn page_sizes_stay_within_what_paging_can_follow() {
+        for command in [
+            &["ruston-cli", "messages", "list"][..],
+            &["ruston-cli", "conversations", "list"],
+            &["ruston-cli", "drafts", "list"],
+            &["ruston-cli", "contacts", "list"],
+            &["ruston-cli", "index"],
+            &["ruston-cli", "sync"],
+        ] {
+            let with = |size: &str| {
+                let mut args = command.to_vec();
+                args.extend_from_slice(&["--page-size", size]);
+                Cli::try_parse_from(args)
+            };
+            assert!(with("1").is_ok(), "{command:?}");
+            assert!(with("100").is_ok(), "{command:?}");
+            for refused in ["0", "101", "1000"] {
+                assert!(with(refused).is_err(), "{command:?} took {refused}");
+            }
+            assert!(Cli::try_parse_from(command).is_ok(), "{command:?} default");
+        }
+    }
+
+    #[test]
+    fn credentials_go_over_https_or_to_this_machine() {
+        for accepted in [
+            "https://mail.proton.me/api",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080/api",
+            "http://[::1]:8080",
+        ] {
+            assert!(parse_api_url(accepted).is_ok(), "{accepted} was refused");
+        }
+        for refused in [
+            "http://mail.proton.me/api",
+            "http://10.0.0.2",
+            "ftp://mail.proton.me",
+            "mail.proton.me",
+        ] {
+            assert!(parse_api_url(refused).is_err(), "{refused} was accepted");
+        }
     }
 
     #[test]
     fn help_explains_every_exit_status() {
         let help = Cli::command().render_help().to_string();
-        for status in ["0  ", "1  ", "2  ", "3  ", "4  ", "5  "] {
+        for status in ["0  ", "1  ", "2  ", "3  ", "4  ", "5  ", "6  "] {
             assert!(help.contains(status), "status {status}is not explained");
         }
     }
