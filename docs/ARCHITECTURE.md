@@ -997,7 +997,11 @@ Indexing a folder stores decrypted message bodies in that local database;
 it is not encrypted at rest
 by this code. It keeps no signature verdicts, so it decrypts without looking up
 sender keys. Up to three bodies download at once and are saved in listing
-order, so a stop leaves exactly the messages before it indexed. On Unix, core creates the cache directory and database with
+order, so a stop leaves exactly the messages before it indexed. Mail sent or
+received keeps its body, so a message already in the index is not downloaded
+again: only its listed metadata is stored. A draft, which has neither of
+Proton's received and sent flags, is read again, since it may have been
+edited. On Unix, core creates the cache directory and database with
 private permissions and tightens older cache permissions before opening them;
 explicit cache paths require a private parent directory. Cache writes and index
 maintenance live in [`cache.rs`](../crates/ruston-core/src/cache.rs), which

@@ -579,6 +579,14 @@ impl Cache {
         Ok(tx)
     }
 
+    /// Whether a body of the message `id` is indexed.
+    pub(crate) fn has_indexed_body(&self, id: &str) -> Result<bool> {
+        self.conn
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM msg_fts_rows WHERE message_id=?1)")
+            .and_then(|mut statement| statement.query_row([id], |row| row.get(0)))
+            .map_err(map)
+    }
+
     /// Commit a downloaded page only if sync has not changed since its request.
     pub(crate) fn store_metadata_page(
         &self,

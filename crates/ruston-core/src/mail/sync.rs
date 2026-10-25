@@ -5,7 +5,7 @@ use crate::api;
 use crate::api::messages::{ListQuery, is_last_page};
 use crate::cache::{BatchCounts, Cache, CacheIdentity};
 use crate::error::{Error, Result};
-use crate::model::enums::{resolve_folder, response_code};
+use crate::model::enums::{message_flag, resolve_folder, response_code};
 use crate::model::message::MessageMetadata;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
 use crate::transport::Doer;
@@ -238,9 +238,25 @@ where
             break;
         }
         let listed = msgs.len();
+        // Mail sent or received keeps its body, so one indexed before stays
+        // and only its metadata is brought up to date; a draft may have been
+        // edited, so it is read again.
+        let mut kept = Vec::new();
+        let mut to_read = Vec::with_capacity(listed);
+        for meta in msgs {
+            if !is_draft(&meta) && cache.borrow().has_indexed_body(&meta.id)? {
+                kept.push(meta);
+            } else {
+                to_read.push(meta);
+            }
+        }
+        if !kept.is_empty() {
+            cache.borrow().store_metadata_page(Some(&cursor), &kept)?;
+            n += kept.len();
+        }
         // A few bodies download at once, and are saved in listing order, so
         // a stop leaves exactly the messages before it saved.
-        let mut reads = stream::iter(msgs)
+        let mut reads = stream::iter(to_read)
             .map(|meta| read_message(meta.id.clone()).map(move |read| (meta, read)))
             .buffered(INDEX_BODY_FETCH_CONCURRENCY);
         while let Some((meta, read)) = reads.next().await {
@@ -274,6 +290,12 @@ where
     }
     tracing::info!(target: "ruston_core::sync", folder, indexed = n, "local search index built");
     Ok(n)
+}
+
+/// Whether `meta` is a draft, whose body may still change: Proton marks the
+/// mail it sent or received, and a draft is neither.
+fn is_draft(meta: &MessageMetadata) -> bool {
+    !message_flag::has(meta.flags, message_flag::RECEIVED | message_flag::SENT)
 }
 
 /// Whether reading a body failed because of the message itself: it is gone,
@@ -432,7 +454,9 @@ impl Client {
     }
 
     /// Build the local full-text search index: page a folder, decrypt each
-    /// message body, and index it (bounded by `max_pages`).
+    /// message body, and index it (bounded by `max_pages`). A body indexed
+    /// before is kept rather than downloaded again, unless it is a draft's,
+    /// which may have changed; the count includes the bodies kept.
     /// A message that is gone, or whose body cannot be decrypted, loses any
     /// body indexed before. Any other failed read, such as a lost connection
     /// or rate limiting, stops indexing with its error and leaves that
@@ -925,6 +949,68 @@ mod tests {
         assert_eq!(indexed.unwrap(), 5);
         assert_eq!(peak.load(SeqCst), 3);
         assert_eq!(cache.search("downloadedbody", 10).unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn index_reads_again_only_drafts_and_bodies_it_does_not_hold() {
+        use crate::model::enums::message_flag;
+
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        let received = |id: &str| MessageMetadata {
+            flags: message_flag::RECEIVED,
+            unread: 1,
+            ..cached_message(id)
+        };
+        // Indexed by an earlier run: mail received, and a draft, whose body
+        // may have been edited since.
+        for meta in [received("kept"), cached_message("draft")] {
+            cache
+                .store_index_result(Some("old"), &meta, Some("earlierbody"))
+                .unwrap();
+        }
+        let http = ListingDoer {
+            pages: vec![vec![
+                // Read since, which the listing brings.
+                MessageMetadata {
+                    unread: 0,
+                    ..received("kept")
+                },
+                cached_message("draft"),
+                received("new"),
+            ]],
+            gate: Semaphore::new(1),
+        };
+        let reads = std::sync::Mutex::new(Vec::new());
+
+        let indexed = index_cache(&http, &cache, "inbox", 1, 10, |id| {
+            reads.lock().unwrap().push(id.clone());
+            async move { Ok(full_message(received(&id))) }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(*reads.lock().unwrap(), ["draft", "new"]);
+        assert_eq!(indexed, 3, "every message listed is searchable");
+        let found = |word| -> Vec<String> {
+            let mut ids: Vec<String> = cache
+                .search(word, 10)
+                .unwrap()
+                .into_iter()
+                .map(|meta| meta.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(found("earlierbody"), ["kept"]);
+        assert_eq!(found("downloadedbody"), ["draft", "new"]);
+        let kept = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .find(|meta| meta.id == "kept")
+            .unwrap();
+        assert_eq!(kept.unread, 0, "the listing's metadata is stored");
     }
 
     #[tokio::test]
