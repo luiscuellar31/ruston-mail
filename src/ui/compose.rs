@@ -377,6 +377,30 @@ fn focus_new_draft(ui: &egui::Ui, compose: &Compose) {
     ui.memory_mut(|memory| memory.request_focus(field));
 }
 
+/// A draft folded above the reader: what it is, and the way back to it. A
+/// long subject is shortened, whole on hover, so the button stays in view.
+pub(super) fn folded_strip(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
+    let subject = compose.field(ComposeField::Subject).trim();
+    let about = if subject.is_empty() {
+        heading(compose)
+    } else {
+        subject
+    };
+    theme::card(ui).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::compact_button("Continue writing")).clicked() {
+                    messages.push(Message::ContinueWriting);
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(format!("Draft: {about}")).truncate());
+                });
+            });
+        });
+    });
+    ui.add_space(8.0);
+}
+
 fn heading(compose: &Compose) -> &'static str {
     match compose.answering() {
         None => "New message",

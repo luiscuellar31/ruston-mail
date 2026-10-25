@@ -200,6 +200,9 @@ pub struct Compose {
     /// Another message was asked for while this one is open, so the
     /// composer says why none opened, until this one is edited.
     asked_again: bool,
+    /// Folded into a strip over the reader, which shows the conversation
+    /// chosen while writing; only a draft in the reading pane folds.
+    folded: bool,
 }
 
 /// What the recipient fields came to. They are read again only when a field
@@ -337,6 +340,11 @@ impl Compose {
     /// Whether another message was asked for while this one is open.
     pub fn asked_again(&self) -> bool {
         self.asked_again
+    }
+
+    /// Whether the draft is folded into a strip over the reader.
+    pub fn folded(&self) -> bool {
+        self.folded
     }
 
     /// What to say about protection, once every typed recipient was looked
@@ -605,11 +613,29 @@ impl App {
         }
         let mut compose = parked.compose;
         compose.id = self.next_compose_id();
+        compose.folded = false;
         compose
             .protection
             .retain(|_, checked| *checked != Checked::Checking);
         self.compose = Some(compose);
         self.check_compose_protection()
+    }
+
+    /// Folds a draft that covers the reader, so a conversation chosen while
+    /// writing shows; the draft waits in a strip above it.
+    pub(super) fn fold_compose(&mut self) {
+        if self.draft_covers_reader()
+            && let Some(compose) = self.compose.as_mut()
+        {
+            compose.folded = true;
+        }
+    }
+
+    /// Brings a folded draft back over the reader.
+    pub(super) fn continue_writing(&mut self) {
+        if let Some(compose) = self.compose.as_mut() {
+            compose.folded = false;
+        }
     }
 
     pub(super) fn open_compose(&mut self) -> Effects {
@@ -626,13 +652,15 @@ impl App {
     }
 
     /// One message is written at a time: asking for another leaves the open
-    /// one as it is, says why, and brings its window forward.
+    /// one as it is, says why, and brings it back into view, unfolded or with
+    /// its window forward.
     fn ask_for_another_message(&mut self) -> Effects {
         let in_window = self.draft_in_window();
         let Some(compose) = self.compose.as_mut() else {
             return Effects::none();
         };
         compose.asked_again = true;
+        compose.folded = false;
         if in_window {
             Effects::ui(UiEffect::RaiseComposer)
         } else {

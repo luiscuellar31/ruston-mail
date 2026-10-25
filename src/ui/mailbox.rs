@@ -126,7 +126,7 @@ fn show_compact(
     let mailbox = app.mailbox().expect("authenticated mailbox");
     let inset = theme::titlebar_inset(root.ctx());
     let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
-        && app.compose().is_some();
+        && app.compose().is_some_and(|draft| !draft.folded());
     let reader_available = writing || mailbox.selected_conversation().is_some();
     if state.compact_view == CompactView::Reader && !reader_available {
         state.compact_view = CompactView::Mail;
@@ -206,11 +206,14 @@ fn compact_mail(
 }
 
 fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mut Vec<Message>) {
-    if app.settings().compose_placement == ComposePlacement::ReadingPane
-        && let Some(writing) = app.compose()
-    {
+    let in_pane = app.settings().compose_placement == ComposePlacement::ReadingPane;
+    if in_pane && let Some(writing) = app.compose().filter(|draft| !draft.folded()) {
         compose::show_in_pane(ui, writing, messages);
     } else {
+        // A draft folded while a conversation was chosen waits above it.
+        if in_pane && let Some(folded) = app.compose() {
+            compose::folded_strip(ui, folded, messages);
+        }
         let view = reader::ReaderView {
             mailbox: app.mailbox().expect("authenticated mailbox"),
             places: app.folders(),

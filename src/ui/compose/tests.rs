@@ -489,6 +489,48 @@ fn field_labels_are_drawn_at_body_size() {
     output.drop_without_applying_deltas();
 }
 
+#[test]
+fn a_folded_draft_waits_in_a_strip_with_the_way_back() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+    app.update(Message::OpenCompose);
+    app.update(Message::ComposeChanged(
+        ComposeField::Subject,
+        "Plans for Friday".into(),
+    ));
+    let frame = |events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| folded_strip(ui, app.compose().unwrap(), &mut messages),
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+
+    let (shapes, _) = frame(Vec::new());
+    crate::ui::test_support::text_rect(&shapes, "Draft: Plans for Friday");
+    let back = crate::ui::test_support::text_rect(&shapes, "Continue writing").center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: back,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    let (_, asked) = frame(vec![
+        egui::Event::PointerMoved(back),
+        press(true),
+        press(false),
+    ]);
+
+    assert!(matches!(asked.as_slice(), [Message::ContinueWriting]));
+}
+
 #[tokio::test]
 async fn a_failed_send_is_told_right_under_send() {
     let context = egui::Context::default();

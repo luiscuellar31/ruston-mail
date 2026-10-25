@@ -201,6 +201,8 @@ pub enum Message {
     },
     /// Puts an unsent message away. Untouched messages close; written ones ask first.
     CloseCompose,
+    /// Brings a draft folded over the reader back into the reading pane.
+    ContinueWriting,
     /// Discards an unsent message after confirmation.
     DiscardCompose,
     /// Cancels discard confirmation and returns to editing.
@@ -651,7 +653,12 @@ impl App {
             Message::Logout => return self.logout(),
             Message::LogoutFinished(epoch, result) => self.finish_logout(epoch, result),
             Message::SelectFolder(folder) => return self.select_folder(folder),
-            Message::SelectConversation(id) => return self.select_conversation(id),
+            Message::SelectConversation(id) => {
+                // A conversation chosen while writing shows, with the draft
+                // folded above it.
+                self.fold_compose();
+                return self.select_conversation(id);
+            }
             Message::RetryConversation => return self.retry_conversation(),
             Message::SearchChanged(query) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -998,6 +1005,7 @@ impl App {
             }
             Message::Answer { message_id, kind } => return self.answer(&message_id, kind),
             Message::CloseCompose => self.close_compose(),
+            Message::ContinueWriting => self.continue_writing(),
             Message::DiscardCompose => self.discard_compose(),
             Message::CancelDiscard => self.cancel_discard(),
             Message::ToggleComposeCopies => self.toggle_compose_copies(),

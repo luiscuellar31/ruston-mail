@@ -582,6 +582,44 @@ fn high_zoom_uses_the_available_width_without_overwriting_panel_preferences() {
 }
 
 #[test]
+fn a_conversation_chosen_while_writing_shows_under_the_folded_draft() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    app.update(Message::OpenCompose);
+    app.update(Message::ComposeChanged(
+        crate::app::ComposeField::Subject,
+        "Plans".into(),
+    ));
+    let draw = |app: &App| {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            (_, shapes) = mailbox_frame(
+                &context,
+                app,
+                &mut state,
+                egui::vec2(1100.0, 700.0),
+                None,
+                Default::default(),
+            );
+        }
+        shapes
+    };
+    assert!(visible_text_rect(&draw(&app), "To").is_some(), "writing");
+
+    app.update(Message::SelectConversation("demo-0".into()));
+    let shapes = draw(&app);
+
+    assert!(visible_text_rect(&shapes, "Draft: Plans").is_some());
+    assert!(visible_text_rect(&shapes, "Continue writing").is_some());
+    assert!(
+        visible_text_rect(&shapes, "To").is_none(),
+        "the composer is folded away"
+    );
+}
+
+#[test]
 fn one_column_says_why_an_action_failed_over_the_list() {
     let mut mailbox = pagination_mailbox(false);
     let start = mailbox

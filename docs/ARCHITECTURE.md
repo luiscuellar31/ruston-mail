@@ -444,9 +444,13 @@ message keeps Proton's unread flag, so its first unread message, or else the
 newest, opens and is scrolled into view once, on the pass after the
 conversation opens, never on a refresh. Only the
 answer the reader waits for marks a conversation read, so a late one cannot
-mark the conversation on screen. Nothing is marked while a draft covers the
-reader: once a message uncovers it, `App::update` marks the conversation
-opened behind the draft, if it is still the open one. The desktop
+mark the conversation on screen. A conversation chosen while a draft fills the
+reading pane folds the draft (`Compose::folded`) into a strip over the reader,
+so it shows and is read as usual; `Message::ContinueWriting`, or asking for
+another message, unfolds it. Nothing is marked while a draft covers the
+reader, as when a conversation arrives after the draft was unfolded again:
+once a message uncovers it, `App::update` marks the conversation opened behind
+the draft, if it is still the open one. The desktop
 adapter converts sanitized HTML into the native rich-body model in
 [`mail/html.rs`](../src/mail/html.rs). It appends visible text in runs instead
 of comparing styles and link targets for every character. Styled spans share

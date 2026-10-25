@@ -295,8 +295,9 @@ says why. It opens with the cursor in
 **To** for a new message or a forward, and in the message for a reply. While it
 fills the reading pane, the list keys (`j`, `k`, the arrows and `Enter`) wait,
 so they never open a conversation out of sight. A conversation clicked in the
-list meanwhile opens behind the draft and stays unread until the reader shows
-it.
+list meanwhile shows in the reader, with the draft folded into a strip above it;
+**Continue writing**, **New message** or **Reply** brings the draft back. While
+the draft is folded, the list keys and `Esc` act on the conversation shown.
 The composer scrolls vertically when its fields or attachments exceed the
 available height, in either placement. Closing it with something written asks
 first, in a dialog over its window: **Keep writing** or **Discard**. Once a

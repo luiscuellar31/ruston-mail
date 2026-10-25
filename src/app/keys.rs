@@ -87,8 +87,13 @@ impl KeyPress {
 }
 
 impl App {
+    /// Whether a draft fills the reading pane; a folded one leaves the reader
+    /// in view.
     pub(super) fn draft_covers_reader(&self) -> bool {
-        self.compose.is_some() && self.settings.compose_placement == ComposePlacement::ReadingPane
+        self.compose
+            .as_ref()
+            .is_some_and(|compose| !compose.folded())
+            && self.settings.compose_placement == ComposePlacement::ReadingPane
     }
 
     /// A draft in its own window takes that window's Escape and Send keys;
@@ -149,8 +154,9 @@ impl App {
                     self.showing_settings = false;
                     return Effects::none();
                 }
-                // In-flight messages cannot be dismissed.
-                if !self.draft_in_window()
+                // In-flight messages cannot be dismissed, and a folded draft
+                // leaves the key to the reader it shows.
+                if self.draft_covers_reader()
                     && let Some(compose) = self.compose().filter(|c| !c.in_flight())
                 {
                     if compose.confirming_discard() {
@@ -178,13 +184,14 @@ impl App {
             }
             Shortcut::Compose => self.open_compose(),
             Shortcut::Send => {
-                if self.compose.is_some() && !self.draft_in_window() {
+                if self.draft_covers_reader() {
                     return self.send_compose();
                 }
                 Effects::none()
             }
             Shortcut::Trash => {
-                if self.compose.is_some() {
+                // The conversation a folded draft leaves in view can go.
+                if self.compose().is_some_and(|compose| !compose.folded()) {
                     return Effects::none();
                 }
                 let trash = crate::mail::Folder::System(crate::mail::MailFolder::Trash);

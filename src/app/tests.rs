@@ -2316,36 +2316,87 @@ fn open_conversation(app: &mut App, id: &str) {
     deliver_selected_demo_detail(app);
 }
 
+/// Opens `id` while a draft covers the reader, as when a conversation asked
+/// for just before Continue writing arrives after it: it waits, unread, for
+/// the reader to show it.
+fn open_behind_the_draft(app: &mut App, id: &str) {
+    assert!(app.draft_covers_reader());
+    let _ = app.start_conversation_load(id.to_owned());
+    deliver_selected_demo_detail(app);
+    assert!(app.defer_read(id));
+}
+
 #[test]
-fn a_conversation_opened_behind_a_draft_stays_unread_until_it_shows() {
+fn a_conversation_chosen_while_writing_shows_with_the_draft_folded_above_it() {
     let mut app = loaded_demo_app();
     let id = unread_rows(&app).remove(0);
     let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Plans".into()));
+    let draft = app.compose().unwrap().id();
 
-    // A click in the list opens it behind the draft, where nobody reads it.
+    // A click in the list folds the draft and shows the conversation, which
+    // is read like any other.
     open_conversation(&mut app, &id);
     assert_eq!(app.mailbox().unwrap().selected_conversation(), Some(&*id));
+    assert!(app.compose().unwrap().folded());
+    assert!(!app.draft_covers_reader());
+    assert!(!is_unread(&app, &id));
+
+    // Continue writing brings the same draft back over the reader.
+    let _ = app.update(Message::ContinueWriting);
+    let compose = app.compose().unwrap();
+    assert_eq!(compose.id(), draft);
+    assert!(!compose.folded());
+    assert_eq!(compose.field(ComposeField::Body), "Plans");
+    assert!(app.draft_covers_reader());
+
+    // So does asking for another message, which says why none opened.
+    let _ = app.update(Message::SelectConversation(id));
+    assert!(app.compose().unwrap().folded());
+    let _ = app.update(Message::OpenCompose);
+    assert!(!app.compose().unwrap().folded());
+    assert!(app.compose().unwrap().asked_again());
+}
+
+#[test]
+fn a_folded_draft_leaves_the_keys_to_the_reader_it_shows() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Plans".into()));
+    open_conversation(&mut app, "demo-0");
+
+    // The list keys walk the mail the reader shows...
+    press(&mut app, Key::Character('j'));
+    assert_eq!(
+        app.mailbox().unwrap().selected_conversation(),
+        Some("demo-1")
+    );
+    // ...the send key does not send the folded draft...
+    press_command(&mut app, Key::Enter);
+    assert!(!app.compose().unwrap().in_flight());
+    // ...and Escape closes the conversation, not the draft.
+    press(&mut app, Key::Escape);
+    assert!(matches!(
+        app.mailbox().unwrap().reader_state(),
+        ReaderState::Empty
+    ));
+    let compose = app.compose().expect("the draft stays");
+    assert!(compose.folded());
+    assert!(!compose.confirming_discard());
+}
+
+#[test]
+fn a_conversation_that_arrived_behind_the_draft_is_read_once_shown() {
+    let mut app = loaded_demo_app();
+    let id = unread_rows(&app).remove(0);
+    let _ = app.update(Message::OpenCompose);
+    open_behind_the_draft(&mut app, &id);
     assert!(is_unread(&app, &id), "marked read behind the draft");
 
     // Putting the untouched draft away shows it, and so reads it.
     let _ = app.update(Message::CloseCompose);
     assert!(app.compose().is_none());
     assert!(!is_unread(&app, &id));
-}
-
-#[test]
-fn only_the_conversation_the_reader_shows_after_a_draft_is_read() {
-    let mut app = loaded_demo_app();
-    let unread = unread_rows(&app);
-    let (passed, kept) = (&unread[0], &unread[1]);
-    let _ = app.update(Message::OpenCompose);
-
-    open_conversation(&mut app, passed);
-    open_conversation(&mut app, kept);
-    let _ = app.update(Message::CloseCompose);
-
-    assert!(is_unread(&app, passed), "never shown, yet marked read");
-    assert!(!is_unread(&app, kept));
 }
 
 #[test]
@@ -2391,7 +2442,7 @@ fn a_conversation_left_behind_a_draft_is_never_marked_read() {
     let before = inbox_unread(&app);
     let id = unread_rows(&app).remove(0);
     let _ = app.update(Message::OpenCompose);
-    open_conversation(&mut app, &id);
+    open_behind_the_draft(&mut app, &id);
 
     // Another folder replaces it before the draft is put away.
     let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
@@ -2406,7 +2457,7 @@ fn moving_the_draft_to_its_own_window_shows_what_it_covered() {
     let mut app = loaded_demo_app();
     let id = unread_rows(&app).remove(0);
     let _ = app.update(Message::OpenCompose);
-    open_conversation(&mut app, &id);
+    open_behind_the_draft(&mut app, &id);
     assert!(is_unread(&app, &id));
 
     let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
