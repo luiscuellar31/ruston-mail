@@ -965,6 +965,11 @@ mod tests {
             .with_ansi(false)
             .with_writer(move || Capture(writer.clone()))
             .finish();
+        // While only one dispatcher is registered, tracing asks the default of
+        // whichever thread first reaches a callsite whether it is wanted, so
+        // one another test reached first would stay unwanted here. With a
+        // second one registered, it asks every registered dispatcher.
+        let _second = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
 
         let unlocked = tracing::subscriber::with_default(subscriber, || {
             unlock(
