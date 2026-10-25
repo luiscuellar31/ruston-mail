@@ -158,6 +158,65 @@ impl SecretStore for SlowStore {
     }
 }
 
+#[tokio::test]
+async fn a_saved_session_resumes_with_its_keys_unlocked() {
+    use proton_crypto::crypto::{
+        DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
+    };
+
+    // Keys locked with the session's key passphrase, as Proton keeps them.
+    let provider = crypto::provider();
+    let key = |id: &str, email: &str| {
+        let generated = provider
+            .new_key_generator()
+            .with_user_id("Test", email)
+            .with_algorithm(KeyGeneratorAlgorithm::ECC)
+            .generate()
+            .unwrap();
+        let armored = provider
+            .private_key_export(&generated, "logout-skp", DataEncoding::Armor)
+            .unwrap();
+        serde_json::json!({
+            "ID": id,
+            "PrivateKey": String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+            "Primary": 1,
+        })
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/core/v4/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Code": 1000,
+            "User": {"ID": "user", "Keys": [key("user-key", "user@proton.me")]},
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/core/v4/addresses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Code": 1000,
+            "Addresses": [{
+                "ID": "address",
+                "Email": "me@proton.me",
+                "Order": 1,
+                "Keys": [key("address-key", "me@proton.me")],
+            }],
+        })))
+        .mount(&server)
+        .await;
+    let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
+    let (saved, base) = saved_logout_client(&server.uri(), store.clone()).await;
+
+    let resumed = Client::resume_from("test", saved.paths.clone(), store)
+        .await
+        .unwrap();
+
+    let address = &resumed.keys().addresses[0];
+    assert_eq!(address.email, "me@proton.me");
+    assert!(address.keys[0].unlocked.is_some(), "its key opened");
+    let _ = std::fs::remove_dir_all(base);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_slow_credential_store_leaves_the_async_runtime_free() {
     let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());

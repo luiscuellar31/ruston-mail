@@ -263,10 +263,10 @@ impl Client {
         app_version: String,
         store: Arc<dyn SecretStore>,
     ) -> Result<(KeyStore, Paths, CacheIdentity)> {
-        let provider = crypto::provider();
         let (salts, (user, addresses)) =
             tokio::try_join!(api::keys::get_key_salts(http), account(http))?;
         let cache_identity = CacheIdentity::new(base_url, &user.id)?;
+        let user_id = user.id.clone();
 
         let mut asked = None;
         let mailbox_pw = if login.password_mode == password_mode::TWO_PASSWORDS {
@@ -281,7 +281,13 @@ impl Client {
         };
 
         tracing::debug!(target: "ruston_core::mail", addresses = addresses.len(), password_mode = login.password_mode, "login: fetched salts + user + addresses; unlocking keys");
-        let (keys, skp) = crypto::keys::unlock(&provider, &user, &addresses, mailbox_pw, &salts)?;
+        // Each key's passphrase is derived with bcrypt, slow by design, so the
+        // unlocking runs where it holds no async worker; resuming does too.
+        let mailbox_pw = mailbox_pw.clone();
+        let (keys, skp) = off_thread(move || {
+            crypto::keys::unlock(&crypto::provider(), &user, &addresses, &mailbox_pw, &salts)
+        })
+        .await?;
 
         let session = Session {
             uid: login.tokens.uid.clone(),
@@ -289,7 +295,7 @@ impl Client {
             base_url: base_url.to_owned(),
             password_mode: login.password_mode,
             user_agent: opts.user_agent.clone(),
-            user_id: Some(user.id.clone()),
+            user_id: Some(user_id),
         };
         let paths = Paths::system()?;
         let (saved_in, profile, tokens) =
@@ -337,15 +343,19 @@ impl Client {
         http.set_tokens(uid, access, refresh).await;
         Self::wire_refresh(&mut http, store.clone(), paths.clone(), profile);
 
-        let provider = crypto::provider();
         let (user, addresses) = account(&http).await?;
         let cache_identity = CacheIdentity::new(&loaded.session.base_url, &user.id)?;
-        let keys = crypto::keys::unlock_with_skp(&provider, &user, &addresses, &loaded.skp)?;
-        if loaded.session.user_id.as_deref() != Some(user.id.as_str()) {
+        let user_id = user.id.clone();
+        let skp = loaded.skp;
+        let keys = off_thread(move || {
+            crypto::keys::unlock_with_skp(&crypto::provider(), &user, &addresses, &skp)
+        })
+        .await?;
+        if loaded.session.user_id.as_deref() != Some(user_id.as_str()) {
             // A session saved without its account ID records it now, so its
             // cache opens offline next time. Nothing else depends on it.
             let (paths, profile) = (paths.clone(), profile.to_owned());
-            let (uid, user_id) = (loaded.session.uid.clone(), user.id.clone());
+            let uid = loaded.session.uid.clone();
             let recorded =
                 off_thread(move || Session::record_user_id(&paths, &profile, &uid, &user_id)).await;
             if let Err(error) = recorded {
