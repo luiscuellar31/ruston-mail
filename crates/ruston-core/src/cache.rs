@@ -382,6 +382,28 @@ fn ensure_fts_rowid_index(conn: &Connection) -> Result<()> {
     tx.commit().map_err(map)
 }
 
+/// The `meta` key the sync cursor is kept under.
+const CURSOR_KEY: &str = "last_event_id";
+
+/// The sync cursor, or `None` before the first sync stores one.
+fn read_cursor(conn: &Connection) -> Result<Option<String>> {
+    conn.query_row("SELECT value FROM meta WHERE key=?1", [CURSOR_KEY], |row| {
+        row.get(0)
+    })
+    .optional()
+    .map_err(map)
+}
+
+/// Stores `cursor` as the sync cursor, in place of any other.
+fn write_cursor(conn: &Connection, cursor: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)",
+        [CURSOR_KEY, cursor],
+    )
+    .map_err(map)?;
+    Ok(())
+}
+
 /// The account a cache is bound to, if it is bound yet.
 fn account_owner(conn: &Connection) -> Result<Option<String>> {
     conn.query_row(
@@ -592,16 +614,7 @@ impl Cache {
 
     /// The stored sync cursor, or `None` if not yet initialized.
     pub fn last_event_id(&self) -> Result<Option<String>> {
-        let r = self.conn.query_row(
-            "SELECT value FROM meta WHERE key='last_event_id'",
-            [],
-            |row| row.get::<_, String>(0),
-        );
-        match r {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(map(e)),
-        }
+        read_cursor(&self.conn)
     }
 
     /// Claim an uninitialized cursor without replacing another sync's cursor.
@@ -611,30 +624,28 @@ impl Cache {
         Ok(self
             .conn
             .execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES('last_event_id', ?1)",
-                [id],
+                "INSERT OR IGNORE INTO meta(key, value) VALUES(?1, ?2)",
+                [CURSOR_KEY, id],
             )
             .map_err(map)?
             == 1)
     }
 
-    fn transaction_at_cursor(&self, expected: Option<&str>) -> Result<Transaction<'_>> {
+    /// A write transaction, held only while the cursor is still `expected`,
+    /// the one a request was made under: a sync that moved it since may have
+    /// deleted what the request fetched, so writing it would bring that mail
+    /// back. `changed` says what was under way when it moved.
+    fn transaction_at_cursor(
+        &self,
+        expected: Option<&str>,
+        changed: &'static str,
+    ) -> Result<Transaction<'_>> {
         // Claim the SQLite write lock before checking; other processes cannot
         // advance the cursor between this check and the commit.
         let tx =
             Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(map)?;
-        let current: Option<String> = tx
-            .query_row(
-                "SELECT value FROM meta WHERE key='last_event_id'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(map)?;
-        if current.as_deref() != expected {
-            return Err(Error::cache_changed(
-                "sync cursor changed during cache download",
-            ));
+        if read_cursor(&tx)?.as_deref() != expected {
+            return Err(Error::cache_changed(changed));
         }
         Ok(tx)
     }
@@ -653,7 +664,8 @@ impl Cache {
         expected_cursor: Option<&str>,
         messages: &[MessageMetadata],
     ) -> Result<()> {
-        let tx = self.transaction_at_cursor(expected_cursor)?;
+        let tx = self
+            .transaction_at_cursor(expected_cursor, "sync cursor changed during cache download")?;
         for m in messages {
             upsert_message(&tx, m)?;
         }
@@ -670,7 +682,8 @@ impl Cache {
         m: &MessageMetadata,
         body: Option<&str>,
     ) -> Result<()> {
-        let tx = self.transaction_at_cursor(expected_cursor)?;
+        let tx = self
+            .transaction_at_cursor(expected_cursor, "sync cursor changed during cache download")?;
         replace_index(&tx, m, body)?;
         tx.commit().map_err(map)
     }
@@ -682,31 +695,15 @@ impl Cache {
         previous_cursor: &str,
         batch: &EventBatch,
     ) -> Result<BatchCounts> {
-        let tx =
-            Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(map)?;
-        let current_cursor: Option<String> = tx
-            .query_row(
-                "SELECT value FROM meta WHERE key='last_event_id'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(map)?;
-        if current_cursor.as_deref() != Some(previous_cursor) {
-            return Err(Error::cache_changed(
-                "sync cursor changed during incremental sync",
-            ));
-        }
-
+        let tx = self.transaction_at_cursor(
+            Some(previous_cursor),
+            "sync cursor changed during incremental sync",
+        )?;
         let mut counts = BatchCounts::default();
         for event in &batch.messages {
             apply_message_event(&tx, event, &mut counts)?;
         }
-        tx.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
-            [&batch.event_id],
-        )
-        .map_err(map)?;
+        write_cursor(&tx, &batch.event_id)?;
         tx.commit().map_err(map)?;
         Ok(counts)
     }
@@ -791,18 +788,7 @@ impl Cache {
         expected_total: u32,
     ) -> Result<usize> {
         let tx =
-            Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(map)?;
-        let current_cursor: Option<String> = tx
-            .query_row(
-                "SELECT value FROM meta WHERE key='last_event_id'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(map)?;
-        if current_cursor.as_deref() != Some(previous_cursor) {
-            return Err(Error::cache_changed("sync cursor changed during resync"));
-        }
+            self.transaction_at_cursor(Some(previous_cursor), "sync cursor changed during resync")?;
         let staged: i64 = tx
             .query_row("SELECT COUNT(*) FROM resync_messages", [], |row| row.get(0))
             .map_err(map)?;
@@ -829,11 +815,7 @@ impl Cache {
         ))
         .map_err(map)?;
         ensure_fts_secure_delete(&tx)?;
-        tx.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
-            [new_cursor],
-        )
-        .map_err(map)?;
+        write_cursor(&tx, new_cursor)?;
         tx.commit().map_err(map)?;
         Ok(expected_total as usize)
     }
@@ -878,13 +860,7 @@ impl Cache {
 impl Cache {
     /// Store the sync cursor.
     pub(crate) fn set_last_event_id(&self, id: &str) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
-                [id],
-            )
-            .map_err(map)?;
-        Ok(())
+        write_cursor(&self.conn, id)
     }
 
     /// Insert or replace cached metadata and labels, keeping searchable headers
