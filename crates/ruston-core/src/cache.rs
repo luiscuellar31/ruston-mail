@@ -238,6 +238,10 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
     tx.commit().map_err(map)
 }
 
+/// The full-text table's columns: the message ID, left out of the index, and
+/// the text searched.
+const FTS_COLUMNS: &str = "id UNINDEXED, subject, body, participants";
+
 /// FTS5 keeps a deleted body's words in its index until segments merge;
 /// secure-delete removes them with the row. FTS5 keeps the setting, so its
 /// settings table is only read here, to write the setting once.
@@ -513,12 +517,12 @@ impl Cache {
         // Deleted and replaced rows, decrypted bodies among them, are
         // overwritten instead of lingering in the file's free space.
         conn.execute_batch("PRAGMA secure_delete=ON").map_err(map)?;
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
              CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
              CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
-             CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(id UNINDEXED, subject, body, participants);",
-        )
+             CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5({FTS_COLUMNS});",
+        ))
         .map_err(map)?;
         ensure_label_time_index(&conn)?;
         ensure_fts_rowid_index(&conn)?;
@@ -740,8 +744,13 @@ impl Cache {
             ));
         }
 
-        tx.execute_batch(
-            "DELETE FROM msg_fts_index;
+        // The index starts over. Deleting its rows one by one under FTS5's
+        // secure-delete took seconds per thousand bodies, all of it holding
+        // the write lock; dropping the table frees its pages, which
+        // secure_delete overwrites, at once.
+        tx.execute_batch(&format!(
+            "DROP TABLE msg_fts_index;
+             CREATE VIRTUAL TABLE msg_fts_index USING fts5({FTS_COLUMNS});
              DELETE FROM msg_fts_rows;
              DELETE FROM message_labels;
              DELETE FROM messages;
@@ -749,8 +758,9 @@ impl Cache {
              SELECT id, time, unread, json FROM resync_messages;
              INSERT INTO message_labels(message_id, label_id, time)
              SELECT message_id, label_id, time FROM resync_labels;",
-        )
+        ))
         .map_err(map)?;
+        ensure_fts_secure_delete(&tx)?;
         tx.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
             [new_cursor],
@@ -1710,6 +1720,80 @@ mod tests {
         assert_eq!(c.last_event_id().unwrap().as_deref(), Some("old"));
         assert_eq!(c.list("0", false, 10, 0).unwrap()[0].id, "keep");
         assert_eq!(c.search("privatebody", 10).unwrap()[0].id, "keep");
+    }
+
+    /// A cache on disk with `count` indexed bodies of `words` more words
+    /// each, its cursor at "old" and a rebuild of the same messages staged.
+    fn staged_resync(path: &Path, count: i64, words: i64) -> Cache {
+        let cache = Cache::open(path).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        let messages: Vec<_> = (0..count)
+            .map(|index| meta(&format!("m{index}"), "0", 0, index))
+            .collect();
+        for (index, message) in (0..).zip(&messages) {
+            let filler: Vec<_> = (0..words)
+                .map(|word| format!("w{}", (index * 31 + word * 7) % 5000))
+                .collect();
+            let body = format!("ibexcanary body {} {}", message.id, filler.join(" "));
+            cache.index_message(message, &body).unwrap();
+        }
+        cache.begin_rebuild().unwrap();
+        cache.stage_rebuild_page(&messages).unwrap();
+        cache
+    }
+
+    #[test]
+    fn a_resync_leaves_no_indexed_body_in_the_file_and_search_working() {
+        let dir = temp_cache_dir();
+        let path = dir.join("cache.db");
+        let cache = staged_resync(&path, 50, 0);
+
+        assert_eq!(cache.finish_rebuild("old", "fresh", 50).unwrap(), 50);
+        assert!(cache.search("ibexcanary", 10).unwrap().is_empty());
+        assert_eq!(cache.list("0", false, 100, 0).unwrap().len(), 50);
+        // Bodies indexed again are found, and stay wiped once deleted.
+        cache
+            .index_message(&meta("m7", "0", 0, 7), "newbody")
+            .unwrap();
+        assert_eq!(cache.search("newbody", 10).unwrap()[0].id, "m7");
+        assert_fts_rowid_map_matches(&cache.conn);
+        let secure_delete: i64 = cache
+            .conn
+            .query_row(
+                "SELECT v FROM msg_fts_index_config WHERE k='secure-delete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(secure_delete, 1);
+        drop(cache);
+
+        let file = std::fs::read(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            !file
+                .windows("ibexcanary".len())
+                .any(|window| window == b"ibexcanary"),
+            "a body indexed before the resync is still in the cache file"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual benchmark of a resync over a full index"]
+    fn measure_resync_index_reset() {
+        for count in [1000, 2000, 4000] {
+            let dir = temp_cache_dir();
+            // About the words of a short email each.
+            let cache = staged_resync(&dir.join("cache.db"), count, 300);
+            let start = std::time::Instant::now();
+            cache.finish_rebuild("old", "fresh", count as u32).unwrap();
+            eprintln!(
+                "Cache::finish_rebuild: {count} indexed messages in {:?}",
+                start.elapsed()
+            );
+            drop(cache);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]

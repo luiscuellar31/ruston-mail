@@ -1013,7 +1013,10 @@ requests a full refresh, sync pages through all message metadata into temporary
 SQLite tables, then replaces the cache and event cursor in one transaction. A
 failed rebuild leaves the cached offline data and cursor intact. Sync catches up
 on events from the new cursor after the replacement. The full refresh clears
-the local body index; run CLI `index` again to rebuild search. See
+the local body index by dropping and recreating its FTS5 table in that
+transaction: `secure_delete` overwrites the freed pages at once, where deleting
+the rows one by one under FTS5's `secure-delete` took seconds per thousand
+bodies while holding the write lock. Run CLI `index` again to rebuild search. See
 [Privacy and local data](PRIVACY.md) before changing storage or diagnostics.
 Demo modes use fictional data and do not contact Proton. A desktop process
 started in demo mode keeps that promise after **Exit demo**: `App` remembers how
