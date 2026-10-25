@@ -206,6 +206,7 @@ fn is_about_the_message(error: &Error) -> bool {
         | Error::Srp(_)
         | Error::Session(_)
         | Error::Cache(_)
+        | Error::CacheChanged(_)
         | Error::Io(_)
         | Error::NotFound { .. }
         | Error::Ambiguous(_) => false,

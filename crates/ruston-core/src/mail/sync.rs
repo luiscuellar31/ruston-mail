@@ -282,6 +282,7 @@ fn is_definitive_read_failure(error: &Error) -> bool {
         | Error::Session(_)
         | Error::Io(_)
         | Error::Cache(_)
+        | Error::CacheChanged(_)
         | Error::Srp(_) => false,
         // A body read never fails these ways. Should that change, stop rather
         // than drop bodies.
@@ -1349,13 +1350,13 @@ mod tests {
         let changed = rebuild_with_second_page([3, 4], vec![message("m3")]).await;
         assert!(matches!(
             changed,
-            Err(Error::Cache(ref reason)) if reason.starts_with("mailbox changed during resync")
+            Err(Error::CacheChanged(ref reason)) if reason.starts_with("mailbox changed during resync")
         ));
         // An empty page before the total is reached ends the rebuild there.
         let short = rebuild_with_second_page([5, 5], Vec::new()).await;
         assert!(matches!(
             short,
-            Err(Error::Cache(ref reason))
+            Err(Error::CacheChanged(ref reason))
                 if reason.starts_with("incomplete mailbox listing during resync")
         ));
     }

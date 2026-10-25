@@ -222,13 +222,14 @@ pub enum Error {
     Session(String),
 
     /// A local cache read or write failed.
-    ///
-    /// When the cache or Proton's listing changed while the operation ran,
-    /// for example because another process moved the sync cursor, the
-    /// message ends in `; retry` and trying again later may succeed:
-    /// [`Error::is_retryable_cache_error`] recognizes these.
     #[error("cache error: {0}")]
     Cache(String),
+
+    /// The cache, or Proton's listing, changed while an operation ran, for
+    /// example because another process moved the sync cursor, so nothing was
+    /// applied and trying again later may succeed. The text says what changed.
+    #[error("cache error: {0}; retry")]
+    CacheChanged(String),
 
     /// A filesystem or other I/O operation failed.
     #[error("io error: {0}")]
@@ -256,9 +257,6 @@ impl From<reqwest::Error> for Error {
     }
 }
 
-/// How a cache error says that trying again later may succeed.
-const CACHE_CHANGED_SUFFIX: &str = "; retry";
-
 impl Error {
     /// Map this error to the CLI's process exit status: an API error by its
     /// HTTP status, and any other [`exit_status::OTHER`] unless it names a
@@ -276,13 +274,13 @@ impl Error {
     /// A cache error for an operation that found the cache, or Proton's
     /// listing, changed under it; `reason` says what changed.
     pub(crate) fn cache_changed(reason: &str) -> Self {
-        Error::Cache(format!("{reason}{CACHE_CHANGED_SUFFIX}"))
+        Error::CacheChanged(reason.to_owned())
     }
 
     /// Whether this is a cache error that may pass if the operation is tried
     /// again later, because the cache changed while it ran.
     pub fn is_retryable_cache_error(&self) -> bool {
-        matches!(self, Error::Cache(message) if message.ends_with(CACHE_CHANGED_SUFFIX))
+        matches!(self, Error::CacheChanged(_))
     }
 }
 
@@ -457,6 +455,8 @@ mod tests {
         assert!(
             !Error::Cache("database disk image is malformed".into()).is_retryable_cache_error()
         );
+        // The kind of error says so, whatever its text says.
+        assert!(!Error::Cache("cursor moved; retry".into()).is_retryable_cache_error());
         assert!(!Error::Session("sync cursor changed; retry".into()).is_retryable_cache_error());
     }
 }

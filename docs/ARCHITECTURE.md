@@ -954,8 +954,9 @@ recreates it, and the next newer open drops it again. The event stream in
 [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs)
 invalidates an indexed body on a full message update. Each incremental event
 batch and its cursor commit together only if the stored cursor still matches
-the one used to fetch the batch; a competing sync causes a retry error without
-applying stale data. On a cache with no cursor yet, backfill and indexing first
+the one used to fetch the batch; a competing sync causes a retry error,
+`Error::CacheChanged`, without applying stale data. On a cache with no cursor
+yet, backfill and indexing first
 pin one to Proton's latest event, so the next sync applies every change made
 after their listing; rows stored without a cursor were never reconciled before.
 They capture that cursor before each page request and retain it for all body
