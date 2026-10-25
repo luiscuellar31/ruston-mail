@@ -244,9 +244,18 @@ fn sidebar(
                     ..Default::default()
                 }))
                 .show(ui, |ui| sidebar_account(ui, app, messages));
-            if account.response.rect.bottom() > available.bottom() + 1.0 {
-                // A bottom panel needs one measured frame before its height is
-                // known. Schedule that frame even if the pointer is stationary.
+            // A bottom panel needs one measured frame before its height is
+            // known. Schedule that frame even if the pointer is stationary,
+            // but only while the height is new: a block too tall to fit at
+            // all would otherwise ask for every frame.
+            let height = account.response.rect.height();
+            let measured = ui.id().with("sidebar-account-height");
+            let remeasured = ui.ctx().data_mut(|data| {
+                let changed = data.get_temp::<f32>(measured) != Some(height);
+                data.insert_temp(measured, height);
+                changed
+            });
+            if remeasured && account.response.rect.bottom() > available.bottom() + 1.0 {
                 ui.ctx().request_repaint();
             }
             ui.spacing_mut().scroll = theme::panel_scroll_style();

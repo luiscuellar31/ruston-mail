@@ -332,6 +332,38 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
 }
 
 #[test]
+fn an_account_block_that_cannot_fit_stops_asking_for_frames() {
+    use std::time::Duration;
+
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (app, _) = App::boot(true, Settings::default());
+    // Lower than the account block, as a short window at a large zoom is.
+    let size = egui::vec2(410.0, 60.0);
+    let mut delays = Vec::new();
+    for second in 0..5 {
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                // Time goes on, so the scroll bar's fade finishes.
+                time: Some(f64::from(second)),
+                ..Default::default()
+            },
+            |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    sidebar(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+                });
+            },
+        );
+        delays.push(output.viewport_output[&egui::ViewportId::ROOT].repaint_delay);
+        output.drop_without_applying_deltas();
+    }
+    // The first frames measure the block; once its height holds, nothing
+    // is left to draw again.
+    assert_eq!(delays.last(), Some(&Duration::MAX), "{delays:?}");
+}
+
+#[test]
 fn the_accounts_own_folders_and_labels_come_under_headings() {
     let context = egui::Context::default();
     theme::install(&context);

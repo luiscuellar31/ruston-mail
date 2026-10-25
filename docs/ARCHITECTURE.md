@@ -412,7 +412,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   that says what a search covers is kept, empty, while nothing is typed, and
   is shortened rather than wrapped, so typing never moves the list.
   The sidebar scrolls its folders and labels independently, reserving the
-  account, Settings, and sign-out actions at the bottom;
+  account, Settings, and sign-out actions at the bottom; that block asks for
+  one more frame only while its measured height is new, so a window too short
+  for it does not redraw on every frame;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.
   Closing a written draft asks with the shared confirmation over the window
   the draft is in, so the form under the question does not move. Why a send
