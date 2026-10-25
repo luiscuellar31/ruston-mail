@@ -35,6 +35,9 @@
     <key>NSHighResolutionCapable</key>
     <true/>
 
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+
     <key>NSRequiresAquaSystemAppearance</key>
     <false/>
 

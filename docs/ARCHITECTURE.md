@@ -102,7 +102,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   OpenGL when `RUSTON_RENDERER=opengl`. If DirectX 12 fails before the app is
   created, `ui::run` opens the window again with OpenGL. The activation
   instance waits in a `Cell` until the app takes it, so the retry keeps the
-  single-instance lock and link hand-off.
+  single-instance lock and link hand-off. On macOS, glutin asks for OpenGL
+  renderers that may sit offline and the bundle's
+  [`Info.plist`](../assets/macos/Info.plist) sets
+  `NSSupportsAutomaticGraphicsSwitching`, as Apple requires both, so a Mac with
+  two GPUs can keep Ruston on the integrated one.
 - The Inbox unread count goes on the Dock tile on macOS and, through
   [`ui/taskbar.rs`](../src/ui/taskbar.rs), over the Windows taskbar button as
   an overlay icon: a red disc with the count, up to "99+", drawn in Segoe UI
