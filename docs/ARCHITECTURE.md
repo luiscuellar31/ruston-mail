@@ -467,7 +467,8 @@ The reader shows body signature status beside the sender's address, including
 collapsed cards, where the address follows the sender's display name and the
 name is truncated first: a closed lock only for verified signatures, an open lock for
 unsigned or unverified bodies, and a danger-colored warning for invalid
-signatures.
+signatures. Core counts a signature that none of the sender's keys made as
+invalid, not unverified, which it keeps for a sender with no keys to check.
 Hover text and accessibility labels explain the verdict. The sender's domain
 does not determine the icon. This verdict applies to the body alone, not its
 attachments. A message core could not decrypt keeps its headers and reply

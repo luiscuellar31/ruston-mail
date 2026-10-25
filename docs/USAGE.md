@@ -121,13 +121,14 @@ Each message shows its body signature status, even when folded: verified,
 unsigned, not verified, or invalid. Folded messages keep the sender's address
 next to the name the sender chose, because a signature vouches for the address,
 not for the name. An invalid signature is highlighted in red;
-treat that message's contents with caution. The status applies to the body,
-not to its attachments. Verification uses available sender keys, never one
-Proton marks as compromised, and does not establish the sender's identity
-independently. If the sender's keys cannot be fetched, the message shows as not
-verified. Signatures are checked, and yours are dated, by Proton's clock once
-Proton has answered, so a computer clock that is set wrong does not make good
-signatures look invalid.
+treat that message's contents with caution. A signature that none of the
+sender's keys made is invalid too, since anyone could have made it. The status
+applies to the body, not to its attachments. Verification uses available
+sender keys, never one Proton marks as compromised, and does not establish the
+sender's identity independently. If the sender's keys cannot be fetched, the
+message shows as not verified. Signatures are checked, and yours are dated, by
+Proton's clock once Proton has answered, so a computer clock that is set wrong
+does not make good signatures look invalid.
 
 A message that cannot be decrypted, for example because it was encrypted to a
 key your account no longer has, shows a notice instead of its text, whether it

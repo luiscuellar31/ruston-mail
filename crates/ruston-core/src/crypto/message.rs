@@ -20,7 +20,8 @@ pub enum Verdict {
     Unsigned,
     /// Signature presence could not be checked (no verification keys supplied).
     Unverified,
-    /// A signature was present but failed verification.
+    /// A signature was present but failed verification: altered, or made by
+    /// a key that is not one of the sender's.
     Invalid,
 }
 
@@ -166,7 +167,8 @@ pub fn decrypt_body<P: PGPProviderSync>(
         match verified.verification_result() {
             Ok(_) => Verdict::Verified,
             Err(VerificationError::NotSigned(_)) => Verdict::Unsigned,
-            Err(VerificationError::NoVerifier(_)) => Verdict::Unverified,
+            // A signature none of the sender's keys made may be anyone's, as
+            // a forged one is: it fails like an altered one.
             Err(_) => Verdict::Invalid,
         }
     } else {
@@ -501,6 +503,19 @@ mod tests {
         let (body, verdict) = decrypt_body(&provider, &addr, &[], &armored).unwrap();
         assert_eq!(body, "secret");
         assert_eq!(verdict, Verdict::Unverified);
+    }
+
+    #[test]
+    fn a_signature_by_a_key_the_sender_lacks_fails_verification() {
+        let provider = proton_crypto::new_pgp_provider();
+        let (addr, _pub) = make_address(&provider, "me@proton.me");
+        let (_, sender_pub) = make_address(&provider, "sender@proton.me");
+        let armored = encrypt_self_draft(&provider, &addr, "trust me").unwrap();
+        let (body, verdict) = decrypt_body(&provider, &addr, &[sender_pub], &armored).unwrap();
+        assert_eq!(body, "trust me");
+        // Signed, but not by the sender: it must not read like a message
+        // whose sender had no keys to check against.
+        assert_eq!(verdict, Verdict::Invalid);
     }
 
     #[test]
