@@ -45,8 +45,9 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Override the API base URL (login only).
-    #[arg(long, global = true)]
+    /// Override the API base URL (login only): https, or plain http to this
+    /// machine for a local test server.
+    #[arg(long, global = true, value_parser = parse_api_url)]
     pub api_url: Option<String>,
 
     /// Override the app-version header (login only).
@@ -103,6 +104,64 @@ fn parse_search_date(value: &str) -> std::result::Result<String, String> {
     ruston_core::mail::read::validate_search_date(value)
         .map_err(|_| "expected a date as YYYY-MM-DD".to_owned())?;
     Ok(value.to_owned())
+}
+
+/// An API address the sign-in may send credentials to: https, or plain http
+/// only to this machine, where a local test server listens.
+fn parse_api_url(value: &str) -> std::result::Result<String, String> {
+    let url = url::Url::parse(value).map_err(|error| format!("not a URL: {error}"))?;
+    let this_machine = match url.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    match url.scheme() {
+        "https" => Ok(value.to_owned()),
+        "http" if this_machine => Ok(value.to_owned()),
+        _ => Err("expected an https URL, or http to this machine".to_owned()),
+    }
+}
+
+/// A Unix time in seconds that has not passed yet.
+fn parse_future_time(value: &str) -> std::result::Result<i64, String> {
+    let time: i64 = value
+        .parse()
+        .map_err(|_| "expected a Unix time in seconds".to_owned())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        });
+    if time <= now {
+        return Err("that time has already passed".to_owned());
+    }
+    Ok(time)
+}
+
+/// `30m`, `2h`, `1d`, `45s` or bare seconds, as a positive number of seconds.
+pub(crate) fn parse_duration_secs(value: &str) -> std::result::Result<i64, String> {
+    let value = value.trim();
+    let split = value
+        .find(|c: char| c.is_alphabetic())
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let number: i64 = number
+        .parse()
+        .map_err(|_| format!("bad duration: {value}"))?;
+    if number <= 0 {
+        return Err(format!("bad duration: {value} (must be more than zero)"));
+    }
+    let seconds = match unit {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        other => return Err(format!("bad duration unit: {other}")),
+    };
+    number
+        .checked_mul(seconds)
+        .ok_or_else(|| format!("duration too long: {value}"))
 }
 
 /// Official-client presets for `--client`.
@@ -523,9 +582,15 @@ pub enum MessagesCmd {
     /// Cancel a scheduled send.
     CancelSend { reference: String },
     /// Report messages as spam (move to Spam).
-    Spam { references: Vec<String> },
+    Spam {
+        #[arg(required = true)]
+        references: Vec<String>,
+    },
     /// Report messages as not-spam (move to Inbox).
-    Ham { references: Vec<String> },
+    Ham {
+        #[arg(required = true)]
+        references: Vec<String>,
+    },
     /// One-click unsubscribe from a mailing list.
     Unsubscribe { reference: String },
     /// Permanently delete every message in Trash or Spam. Asks first; outside
@@ -544,10 +609,14 @@ pub enum MessagesCmd {
         /// Label ID.
         label_id: String,
         /// Message references.
+        #[arg(required = true)]
         references: Vec<String>,
     },
     /// Restore permanently-deleted messages (by ID).
-    Undelete { ids: Vec<String> },
+    Undelete {
+        #[arg(required = true)]
+        ids: Vec<String>,
+    },
     /// Send a read receipt for a message.
     Receipt { reference: String },
     /// Move messages to a folder.
@@ -644,13 +713,18 @@ pub enum ConversationsCmd {
     Snooze {
         #[arg(required = true)]
         ids: Vec<String>,
-        /// Unix time in seconds; used instead of --in if both are given.
-        #[arg(long)]
+        /// Unix time in seconds, still to come.
+        #[arg(
+            long,
+            value_parser = parse_future_time,
+            conflicts_with = "relative",
+            required_unless_present = "relative"
+        )]
         until: Option<i64>,
         /// A positive duration from now: seconds, or a number with s, m, h or
         /// d, e.g. `30m`, `2h`, `1d`.
-        #[arg(long = "in")]
-        relative: Option<String>,
+        #[arg(long = "in", value_parser = parse_duration_secs)]
+        relative: Option<i64>,
     },
     /// Unsnooze conversations.
     Unsnooze {
@@ -673,7 +747,7 @@ pub enum AttachmentsCmd {
         /// Message reference (ID or free-text).
         message: String,
         /// Specific attachment ID (omit with --all).
-        #[arg(required_unless_present = "all")]
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
         attachment: Option<String>,
         #[arg(long = "output-dir")]
         output_dir: Option<PathBuf>,
@@ -1248,6 +1322,104 @@ mod tests {
             &["ruston-cli", "attachments", "download", "msg", "--all"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");
+        }
+        // An ID beside --all would be ignored, so the two are refused.
+        let both = Cli::try_parse_from([
+            "ruston-cli",
+            "attachments",
+            "download",
+            "msg",
+            "att",
+            "--all",
+        ])
+        .unwrap_err();
+        assert_eq!(both.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn commands_that_act_on_messages_need_at_least_one() {
+        for args in [
+            &["ruston-cli", "messages", "spam"][..],
+            &["ruston-cli", "messages", "ham"],
+            &["ruston-cli", "messages", "undelete"],
+            &["ruston-cli", "messages", "label", "add", "label-1"],
+        ] {
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{args:?}"
+            );
+        }
+        for args in [
+            &["ruston-cli", "messages", "spam", "m1"][..],
+            &["ruston-cli", "messages", "ham", "m1"],
+            &["ruston-cli", "messages", "undelete", "m1"],
+            &["ruston-cli", "messages", "label", "add", "label-1", "m1"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");
+        }
+    }
+
+    #[test]
+    fn a_snooze_takes_one_end_still_to_come() {
+        let snooze = |extra: &[&str]| {
+            let mut args = vec!["ruston-cli", "conversations", "snooze", "c1"];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        // 2100-01-01, and a moment long gone.
+        assert!(snooze(&["--until", "4102444800"]).is_ok());
+        assert!(snooze(&["--in", "2h"]).is_ok());
+        for refused in [
+            &[][..],
+            &["--until", "4102444800", "--in", "2h"],
+            &["--until", "1"],
+            &["--until", "soon"],
+            &["--in", "0"],
+        ] {
+            assert!(snooze(refused).is_err(), "{refused:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn snooze_durations_are_positive_and_never_wrap() {
+        for (duration, seconds) in [("30m", 1800), ("1d", 86_400), ("+5m", 300), ("45", 45)] {
+            assert_eq!(
+                parse_duration_secs(duration).unwrap(),
+                seconds,
+                "{duration}"
+            );
+        }
+        for duration in [
+            "-5m",
+            "0",
+            "0d",
+            "106751991167301d",
+            "9223372036854775807h",
+            "5w",
+        ] {
+            assert!(parse_duration_secs(duration).is_err(), "{duration}");
+        }
+    }
+
+    #[test]
+    fn credentials_go_over_https_or_to_this_machine() {
+        for accepted in [
+            "https://mail.proton.me/api",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080/api",
+            "http://[::1]:8080",
+        ] {
+            assert!(parse_api_url(accepted).is_ok(), "{accepted} was refused");
+        }
+        for refused in [
+            "http://mail.proton.me/api",
+            "http://10.0.0.2",
+            "ftp://mail.proton.me",
+            "mail.proton.me",
+        ] {
+            assert!(parse_api_url(refused).is_err(), "{refused} was accepted");
         }
     }
 

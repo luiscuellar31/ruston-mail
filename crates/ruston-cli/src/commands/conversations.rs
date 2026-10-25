@@ -58,7 +58,7 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
             until,
             relative,
         } => {
-            let ts = snooze_time(until, relative.as_deref(), now_unix())?;
+            let ts = snooze_time(until, relative, now_unix())?;
             client.snooze_conversations(&ids, ts).await?;
             render::action_result(ctx.json, "snoozed", &ids);
         }
@@ -77,47 +77,18 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// When a snooze ends: `--until` as given, which wins over `--in`, or `now`
-/// plus the `--in` duration.
-pub(crate) fn snooze_time(until: Option<i64>, relative: Option<&str>, now: i64) -> Result<i64> {
+/// When a snooze ends: at `--until`, or `--in` seconds after `now`. The
+/// arguments already refuse both together, neither, and a time gone by.
+pub(crate) fn snooze_time(until: Option<i64>, relative: Option<i64>, now: i64) -> Result<i64> {
     match (until, relative) {
         (Some(until), _) => Ok(until),
-        (None, Some(duration)) => now
-            .checked_add(parse_duration_secs(duration)?)
-            .ok_or_else(|| ruston_core::Error::Other(format!("duration too long: {duration}"))),
+        (None, Some(seconds)) => now
+            .checked_add(seconds)
+            .ok_or_else(|| ruston_core::Error::Other("duration too long".into())),
         (None, None) => Err(ruston_core::Error::Other(
             "provide --until <unix> or --in <duration>".into(),
         )),
     }
-}
-
-/// Parse `30m`, `2h`, `1d`, `45s` (or bare seconds) into a positive number
-/// of seconds.
-fn parse_duration_secs(s: &str) -> Result<i64> {
-    let s = s.trim();
-    let split = s.find(|c: char| c.is_alphabetic()).unwrap_or(s.len());
-    let (num, unit) = s.split_at(split);
-    let n: i64 = num
-        .parse()
-        .map_err(|_| ruston_core::Error::Other(format!("bad duration: {s}")))?;
-    if n <= 0 {
-        return Err(ruston_core::Error::Other(format!(
-            "bad duration: {s} (must be more than zero)"
-        )));
-    }
-    let mult = match unit {
-        "" | "s" => 1,
-        "m" => 60,
-        "h" => 3600,
-        "d" => 86400,
-        other => {
-            return Err(ruston_core::Error::Other(format!(
-                "bad duration unit: {other}"
-            )));
-        }
-    };
-    n.checked_mul(mult)
-        .ok_or_else(|| ruston_core::Error::Other(format!("duration too long: {s}")))
 }
 
 #[cfg(test)]
@@ -125,33 +96,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snooze_durations_are_positive_and_never_wrap() {
-        for (duration, seconds) in [("30m", 1800), ("1d", 86_400), ("+5m", 300), ("45", 45)] {
-            assert_eq!(
-                parse_duration_secs(duration).unwrap(),
-                seconds,
-                "{duration}"
-            );
-        }
-        for duration in [
-            "-5m",
-            "0",
-            "0d",
-            "106751991167301d",
-            "9223372036854775807h",
-            "5w",
-        ] {
-            assert!(parse_duration_secs(duration).is_err(), "{duration}");
-        }
-    }
-
-    #[test]
-    fn snooze_time_keeps_until_first_and_never_wraps() {
+    fn snooze_time_never_wraps() {
         let now = 1_700_000_000;
-        // --until wins, as it always has, without reading --in.
-        assert_eq!(snooze_time(Some(42), Some("garbage"), now).unwrap(), 42);
-        assert_eq!(snooze_time(None, Some("1h"), now).unwrap(), now + 3600);
-        assert!(snooze_time(None, Some("9223372036854775807"), now).is_err());
+        assert_eq!(
+            snooze_time(Some(1_800_000_000), None, now).unwrap(),
+            1_800_000_000
+        );
+        assert_eq!(snooze_time(None, Some(3600), now).unwrap(), now + 3600);
+        assert!(snooze_time(None, Some(i64::MAX), now).is_err());
         assert!(snooze_time(None, None, now).is_err());
     }
 }

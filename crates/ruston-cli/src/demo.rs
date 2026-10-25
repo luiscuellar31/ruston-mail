@@ -1006,7 +1006,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 relative,
             } => {
                 // Refuse what the live command refuses.
-                crate::commands::conversations::snooze_time(until, relative.as_deref(), 0)?;
+                crate::commands::conversations::snooze_time(until, relative, 0)?;
                 render::action_result(ctx.json, "snooze", &ids);
                 Ok(())
             }
