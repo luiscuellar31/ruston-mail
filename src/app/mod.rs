@@ -1687,8 +1687,13 @@ impl App {
         let folder = mailbox.folder().clone();
         let revision = mailbox.inspection_revision();
         let mut effects = Vec::new();
-        while let Some((id, registration)) = self.inspections.start(self.last_request + 1) {
+        // Each inspection takes the next request ID itself, asked for only
+        // when there is one to start, so no ID goes unused.
+        while self.inspections.can_start() {
             let request = self.next_request();
+            let Some((id, registration)) = self.inspections.start(request) else {
+                break;
+            };
             // A queued row may have been moved or removed before its turn.
             if !self
                 .mailbox

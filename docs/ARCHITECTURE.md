@@ -196,7 +196,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   accepted refreshes, and sign-out cancel running futures and clear waiting IDs;
   dropping the owner does too.
   Completion must match its session, folder, and unique running request before
-  applying results or releasing a slot. A confirmed local read or organizing
+  applying results or releasing a slot. Each inspection is registered under
+  the request ID `App` hands out for it, asked for only when
+  `Inspections::can_start` says one will start. A confirmed local read or organizing
   mutation advances the mailbox's inspection revision. Older inspection data
   cannot overwrite that mutation, but completion still releases its slot and
   admits queued work. Cancelled responses cannot affect a later visit to the
