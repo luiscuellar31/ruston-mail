@@ -215,6 +215,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Changed conversations invalidate their old members before using the new server
   row. Inspection replaces all prior members together, with fresh metadata and
   unique IDs, and can update an already displayed split without collapsing it.
+  A thread split while it is open has no row of its own, so marking it read
+  goes by the split's record: the thread is read while any member is unread,
+  in the folder that lists its members, and a confirmed read clears them all.
   Grouping records are pruned with their loaded rows; no disk storage is added.
   Ordinary appended pages do not rebuild or scan the grouping index; refresh
   uses an ID-to-row index to move existing metadata into the new listing.

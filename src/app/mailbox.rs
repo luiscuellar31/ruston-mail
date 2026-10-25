@@ -1092,16 +1092,35 @@ impl Mailbox {
         let ReaderState::Loaded(reader) = &self.reader else {
             return None;
         };
-        let row = self.row(reader.conversation_id())?;
-        if !row.unread
-            || self.automatic_reads.contains_key(&row.id)
-            || self.read_change_queued(&row.id)
+        let row_id = reader.conversation_id().to_owned();
+        // A thread split into its messages while it was open has no row of
+        // its own any more: it is read as the thread it was, unread while
+        // any of its messages is, and in the folder that lists them.
+        let (unread, kind, listed) = match self.row(&row_id) {
+            Some(row) => (row.unread, row.kind, self.listed_in_folder(&row_id)),
+            None => {
+                let group = self.groups.splits.get(&row_id)?;
+                let members = || group.message_ids.iter();
+                (
+                    members().any(|message| self.row(message).is_some_and(|row| row.unread)),
+                    group.source.kind,
+                    members().any(|message| self.listed_in_folder(message)),
+                )
+            }
+        };
+        if !unread || self.automatic_reads.contains_key(&row_id) || self.read_change_queued(&row_id)
         {
             return None;
         }
-        let (row_id, kind) = (row.id.clone(), row.kind);
 
-        let request = self.new_action_request(request, row_id, kind, MailAction::SetUnread(false));
+        let request = ActionRequest {
+            id: request,
+            context: listed.then(|| self.folder.clone()),
+            row_id,
+            kind,
+            folder: self.folder.clone(),
+            action: MailAction::SetUnread(false),
+        };
         self.automatic_reads
             .insert(request.row_id.clone(), request.id);
         Some(request)
@@ -1170,10 +1189,19 @@ impl Mailbox {
         }
         self.invalidate_listings();
         // The row is only marked here while its folder is open, but Proton's
-        // counts changed wherever the person went meanwhile.
+        // counts changed wherever the person went meanwhile. A thread split
+        // into its messages is read in them.
         if self.shows(&request.folder) {
-            for row in self.row_copies(&request.row_id) {
-                row.unread = false;
+            let members = self
+                .groups
+                .splits
+                .get(&request.row_id)
+                .map(|group| group.message_ids.clone())
+                .unwrap_or_default();
+            for row_id in std::iter::once(&request.row_id).chain(&members) {
+                for row in self.row_copies(row_id) {
+                    row.unread = false;
+                }
             }
         }
 
