@@ -5,6 +5,14 @@ use crate::mailto::{MAX_PENDING, Request};
 
 impl App {
     pub(super) fn receive_mailto(&mut self, request: Request) {
+        // A demo process never signs in, so once its fictional mailbox is
+        // closed a link would wait for a sign-in that cannot happen.
+        if self.demo_process && !self.auth_state.is_authenticated() {
+            self.mailto_error = Some(
+                "This window was started as a demo and cannot open email links. Close it and start Ruston Mail without RUSTON_DEMO.",
+            );
+            return;
+        }
         if self.pending_mailto.len() == MAX_PENDING {
             self.mailto_error = Some("Too many email links are waiting. Please try again later.");
             return;

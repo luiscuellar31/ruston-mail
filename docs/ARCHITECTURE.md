@@ -979,6 +979,9 @@ the local body index; run CLI `index` again to rebuild search. See
 Demo modes use fictional data and do not contact Proton. A desktop process
 started in demo mode keeps that promise after **Exit demo**: `App` remembers how
 it was booted and [`app/auth.rs`](../src/app/auth.rs) refuses to start a sign-in.
+An email link that reaches such a process with its mailbox closed is refused
+with a notice by [`app/mailto.rs`](../src/app/mailto.rs), instead of waiting
+for a sign-in that cannot happen.
 
 CLI [`watch --folder`](../crates/ruston-cli/src/commands/watch.rs) backfills
 metadata and indexes the selected folder on its first tick. Later ticks use

@@ -2564,6 +2564,36 @@ fn a_demo_process_never_starts_a_proton_sign_in() {
 }
 
 #[test]
+fn a_demo_process_refuses_an_email_link_once_its_mailbox_is_closed() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    let _ = app.update(Message::ReceiveMailto(
+        crate::mailto::Request::parse("mailto:team@example.org").unwrap(),
+    ));
+    assert_eq!(
+        app.pending_mailto_count(),
+        1,
+        "the demo mailbox takes links"
+    );
+    let _ = app.update(Message::DismissPendingMailto);
+
+    let _ = app.update(Message::Logout);
+    let _ = app.update(Message::ReceiveMailto(
+        crate::mailto::Request::parse("mailto:team@example.org").unwrap(),
+    ));
+
+    assert_eq!(
+        app.pending_mailto_count(),
+        0,
+        "no sign-in could ever open it"
+    );
+    assert!(
+        app.mailto_error()
+            .is_some_and(|error| error.contains("RUSTON_DEMO"))
+    );
+}
+
+#[test]
 fn a_demo_process_keeps_its_notice_while_the_form_is_edited() {
     let (mut app, _) = App::boot(true, Settings::default());
     deliver_demo_page(&mut app, OPENING_PAGE, 0);

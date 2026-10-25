@@ -40,8 +40,8 @@ Remove-Item Env:RUSTON_DEMO
 Sent demo messages stay inside the process and disappear when it exits.
 Demo preferences are kept in `settings-demo.json`, apart from your own.
 **Exit demo** closes the fictional mailbox, but a process started in demo mode
-refuses to sign in. Close it and start Ruston Mail without `RUSTON_DEMO` to use
-an account.
+refuses to sign in, and to open email links once its mailbox is closed. Close it
+and start Ruston Mail without `RUSTON_DEMO` to use an account.
 The CLI has its own fictional demo data:
 
 ```sh
