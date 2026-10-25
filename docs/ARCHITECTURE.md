@@ -657,8 +657,9 @@ instead of an unknown outcome.
   unless another is named; a draft with attachments, which are keyed to that
   address, cannot change it.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
-  commands and uses the shared attachment filename policy. The desktop has its
-  own demo mailbox in `src/mail/demo.rs`.
+  commands and uses the shared attachment filename policy. Each demo command
+  first writes a note to standard error, since `RUSTON_DEMO` alone turns the
+  demo on. The desktop has its own demo mailbox in `src/mail/demo.rs`.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`
   operations, including read, send, organize, drafts, and sync. The public API
   is summarized in [`lib.rs`](../crates/ruston-core/src/lib.rs).

@@ -48,6 +48,10 @@ The CLI has its own fictional demo data:
 cargo run -p ruston-cli -- --demo messages list
 ```
 
+`RUSTON_DEMO` turns the CLI demo on as well, so every demo command first says
+on standard error that nothing reaches Proton; standard output and JSON stay as
+they are.
+
 ## Checks
 
 Run the main workspace checks used by CI before sending a code change:

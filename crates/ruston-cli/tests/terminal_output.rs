@@ -6,6 +6,10 @@ use std::process::{Command, Output};
 const ATTACK: &str =
     "mail\x1b]52;c;Y2xpcGJvYXJk\x07\u{9d}title\u{9c}\u{9b}2J\r\x08\u{202e}fdp.scr\u{2066}\0";
 
+/// What every demo command says on standard error.
+const DEMO_NOTICE: &str =
+    "note: offline demo (--demo or RUSTON_DEMO); nothing is sent to or changed on Proton\n";
+
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ruston-cli"))
         .args(args)
@@ -84,11 +88,31 @@ fn a_reader_that_stops_early_ends_the_command_quietly() {
             "{args:?} ended with {}",
             output.status
         );
-        assert!(
-            output.stderr.is_empty(),
-            "{args:?} wrote {}",
-            String::from_utf8_lossy(&output.stderr)
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            DEMO_NOTICE,
+            "{args:?} wrote more than the demo notice"
         );
+    }
+}
+
+#[test]
+fn a_demo_says_so_on_stderr_whatever_turned_it_on() {
+    let send: Vec<&str> = "messages send --to a@example.org --subject Hi --body Hello"
+        .split(' ')
+        .collect();
+    let flag = run_ok(&[&["--demo", "--json"][..], &send].concat());
+    // A variable left set from trying the desktop demo turns it on too.
+    let variable = Command::new(env!("CARGO_BIN_EXE_ruston-cli"))
+        .args(&send)
+        .env_remove("RUST_LOG")
+        .env("RUSTON_DEMO", "1")
+        .output()
+        .unwrap();
+
+    for output in [flag, variable] {
+        assert!(output.status.success(), "ended with {}", output.status);
+        assert_eq!(String::from_utf8_lossy(&output.stderr), DEMO_NOTICE);
     }
 }
 

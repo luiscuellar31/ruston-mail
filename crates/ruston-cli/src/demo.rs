@@ -23,6 +23,12 @@ use crate::cli::{
 };
 use crate::render;
 
+/// Said on standard error before every demo command, so a fictional send,
+/// move or deletion is not taken for a real one. `RUSTON_DEMO` left set in
+/// the environment turns the demo on without `--demo`.
+const NOTICE: &str =
+    "note: offline demo (--demo or RUSTON_DEMO); nothing is sent to or changed on Proton";
+
 /// Fictional user details.
 const DEMO_EMAIL: &str = "demo@example.com";
 const DEMO_NAME: &str = "Demo User";
@@ -640,6 +646,7 @@ fn demo_filters() -> Vec<Filter> {
 
 /// Dispatcher for CLI commands in offline demo mode.
 pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
+    terminal::eprintln!("{NOTICE}");
     let (fixtures_messages, fixtures_convs) = fixtures();
 
     match cmd {
