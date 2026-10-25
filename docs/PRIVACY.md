@@ -45,12 +45,16 @@ they are erased when the form is cleared. The sign-in screen measures its
 layout without them. The interface library still makes short-lived copies of a
 field's text while drawing it, which are freed without being erased.
 
-Desktop activation listens only on IPv4 loopback, at a randomly assigned port,
-while Ruston is running. It accepts bounded email-link requests after a random
-256-bit token handshake; it exposes no account or mailbox data and cannot send
-mail. The private `activation` directory under Ruston's configuration directory
-contains an OS lock file and an endpoint record with the port, token, and process
-ID. Unix permissions are 0700 for the directory and 0600 for the files. Windows
+While Ruston is running, desktop activation listens on Linux and macOS on a
+Unix socket inside its private `activation` directory, which other users cannot
+enter, and on Windows on IPv4 loopback, at a randomly assigned port that any
+local user could connect to. A path too long for a socket, as a long macOS home
+folder can make, falls back to loopback. Either way it accepts bounded
+email-link requests after a random 256-bit token handshake; it exposes no
+account or mailbox data and cannot send mail. The `activation` directory under
+Ruston's configuration directory contains an OS lock file, the socket, and an
+endpoint record with the port (0 for the socket), token, and process ID. Unix
+permissions are 0700 for the directory and 0600 for the files and the socket. Windows
 keeps the directory in the local, non-roaming application data,
 `%LOCALAPPDATA%\Ruston Mail\data\activation`, with the access rules it inherits
 from the user's profile.

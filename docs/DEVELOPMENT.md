@@ -497,8 +497,9 @@ It deletes Ruston's handler and capabilities and only Ruston's value under
 default, Windows asks for another app at the next link.
 
 Automated tests cover URI decoding/injection, login/draft/modal guards, real
-loopback forwarding, lock takeover, overflow, private Unix permissions, idle
-and slow peers. Windows CI additionally runs the registration script twice
+forwarding over the Unix socket and over loopback (Windows, and a socket path
+too long on Unix), lock takeover, overflow, private Unix permissions, idle and
+slow peers. Windows CI additionally runs the registration script twice
 with an executable path containing spaces, then the removal script, and
 verifies that another app's registration and the default association are
 unchanged. Native desktop smoke checks still require each platform:
