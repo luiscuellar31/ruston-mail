@@ -39,6 +39,7 @@
 //! - [`cache`] — the local SQLite cache and FTS index.
 //! - [`error`] — the crate [`Error`] and [`Result`] alias.
 //! - [`html`] — sanitization of HTML message bodies.
+//! - [`browser`] — the system's opener for web addresses, which both apps use.
 //!
 //! # Example
 //!
@@ -61,6 +62,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod browser;
 pub mod cache;
 pub mod crypto;
 pub mod error;

@@ -1902,53 +1902,9 @@ fn open_in_browser(url: String) -> Effects {
 
 /// Opens `url` in the default browser without going through a shell.
 async fn open_url(url: &str) -> std::io::Result<()> {
-    let mut opener = browser_opener()?;
+    let mut opener = ruston_core::browser::opener()?;
     opener.arg(url);
     crate::runtime::run_to_exit(opener).await.map(drop)
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(target_os = "macos")]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    Ok(std::process::Command::new("open"))
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(target_os = "windows")]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    let mut command = std::process::Command::new(system_rundll32()?);
-    command.arg("url.dll,FileProtocolHandler");
-    Ok(command)
-}
-
-/// The program that opens an address in the default browser, with no shell
-/// to read the address.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn browser_opener() -> std::io::Result<std::process::Command> {
-    Ok(std::process::Command::new("xdg-open"))
-}
-
-/// rundll32 from System32. Windows looks for a program named without a
-/// folder beside this executable first, where a saved attachment could be.
-#[cfg(target_os = "windows")]
-fn system_rundll32() -> std::io::Result<PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
-
-    let mut buffer = [0_u16; 260];
-    // SAFETY: the length passed is the buffer's own; the API writes at most
-    // that many UTF-16 units and returns how many it wrote, or 0 on failure.
-    let length = unsafe {
-        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
-            buffer.as_mut_ptr(),
-            buffer.len() as u32,
-        )
-    } as usize;
-    if length == 0 || length >= buffer.len() {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length])).join("rundll32.exe"))
 }
 
 fn reveal_in_file_manager(path: PathBuf) -> Effects {

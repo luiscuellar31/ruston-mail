@@ -413,9 +413,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   dispatches `OpenSourceCode` through `App`, which opens the package repository
   using the existing background browser effect. That effect, like the CLI's
   human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
-  the address to the system's opener without a shell: `open`, `xdg-open`, or
-  on Windows `rundll32 url.dll,FileProtocolHandler` from System32, never a
-  `rundll32` that Windows would first look for beside the executable. The
+  the address to the system's opener without a shell, which both take from
+  core's [`browser::opener`](../crates/ruston-core/src/browser.rs): `open`,
+  `xdg-open`, or on Windows `rundll32 url.dll,FileProtocolHandler` from
+  System32, never a `rundll32` that Windows would first look for beside the
+  executable. The
   desktop waits for the opener on a blocking worker with
   [`runtime::run_to_exit`](../src/runtime.rs), so on macOS and Linux it does
   not stay behind as a zombie process. Both
