@@ -48,6 +48,30 @@ fn attack_argument() -> &'static str {
 }
 
 #[test]
+fn a_demo_page_far_past_the_end_lists_nothing() {
+    for list in ["messages", "conversations", "drafts", "contacts"] {
+        let args = [
+            "--demo",
+            "--json",
+            list,
+            "list",
+            "--page",
+            "4294967295",
+            "--page-size",
+            "100",
+        ];
+        let output = run_ok(&args);
+        let text = String::from_utf8(output.stdout).unwrap();
+        let listed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let rows = listed
+            .as_object()
+            .and_then(|object| object.values().find_map(serde_json::Value::as_array))
+            .unwrap_or_else(|| panic!("{list}: no rows in {text}"));
+        assert!(rows.is_empty(), "{list}: {text}");
+    }
+}
+
+#[test]
 fn human_output_filters_untrusted_label_names() {
     let attack = attack_argument();
     let output = run_ok(&["--demo", "labels", "create", "--name", attack]);

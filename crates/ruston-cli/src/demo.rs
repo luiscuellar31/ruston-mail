@@ -644,6 +644,17 @@ fn demo_filters() -> Vec<Filter> {
     }]
 }
 
+/// Page `page` of `items`, `page_size` to a page: empty past the end, as a
+/// real listing is, however far past it the page is asked for.
+fn page_of<T>(items: Vec<T>, page: u32, page_size: u32) -> Vec<T> {
+    let start = u64::from(page) * u64::from(page_size);
+    items
+        .into_iter()
+        .skip(usize::try_from(start).unwrap_or(usize::MAX))
+        .take(page_size as usize)
+        .collect()
+}
+
 /// Dispatcher for CLI commands in offline demo mode.
 pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
     terminal::eprintln!("{NOTICE}");
@@ -706,12 +717,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
 
                 matching.sort_by_key(|a| std::cmp::Reverse(a.time));
                 let total = matching.len() as u32;
-                let start = (page * page_size) as usize;
-                let paged: Vec<MessageMetadata> = matching
-                    .into_iter()
-                    .skip(start)
-                    .take(page_size as usize)
-                    .collect();
+                let paged = page_of(matching, page, page_size);
 
                 render::messages_list(ctx.json, total, &paged);
                 Ok(())
@@ -920,12 +926,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
 
                 matching.sort_by_key(|a| std::cmp::Reverse(a.time));
                 let total = matching.len() as u32;
-                let start = (page * page_size) as usize;
-                let paged: Vec<Conversation> = matching
-                    .into_iter()
-                    .skip(start)
-                    .take(page_size as usize)
-                    .collect();
+                let paged = page_of(matching, page, page_size);
 
                 render::conversations_list(ctx.json, total, &paged);
                 Ok(())
@@ -1081,12 +1082,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     .collect();
 
                 let total = drafts.len() as u32;
-                let start = (page * page_size) as usize;
-                let paged: Vec<MessageMetadata> = drafts
-                    .into_iter()
-                    .skip(start)
-                    .take(page_size as usize)
-                    .collect();
+                let paged = page_of(drafts, page, page_size);
 
                 render::messages_list(ctx.json, total, &paged);
                 Ok(())
@@ -1148,12 +1144,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             ContactsCmd::List { page, page_size } => {
                 let contacts = demo_contacts();
                 let total = contacts.len() as u32;
-                let start = (page * page_size) as usize;
-                let paged: Vec<Contact> = contacts
-                    .into_iter()
-                    .skip(start)
-                    .take(page_size as usize)
-                    .collect();
+                let paged = page_of(contacts, page, page_size);
                 render::contacts_list(ctx.json, total, &paged);
                 Ok(())
             }
