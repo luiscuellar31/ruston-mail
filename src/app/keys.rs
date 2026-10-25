@@ -93,7 +93,7 @@ impl App {
 
     /// A draft in its own window takes that window's Escape and Send keys;
     /// the keys handled here come from the mailbox window.
-    fn draft_in_window(&self) -> bool {
+    pub(super) fn draft_in_window(&self) -> bool {
         self.compose.is_some() && self.settings.compose_placement == ComposePlacement::Window
     }
 
@@ -176,10 +176,7 @@ impl App {
                 self.showing_settings = !self.showing_settings;
                 Effects::none()
             }
-            Shortcut::Compose => {
-                self.open_compose();
-                Effects::none()
-            }
+            Shortcut::Compose => self.open_compose(),
             Shortcut::Send => {
                 if self.compose.is_some() && !self.draft_in_window() {
                     return self.send_compose();

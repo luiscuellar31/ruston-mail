@@ -514,7 +514,11 @@ collects input; [`app/compose.rs`](../src/app/compose.rs) manages the draft in
 memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`mail/proton.rs`](../src/mail/proton.rs) calls
 [`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
-result returns to the app as a message.
+result returns to the app as a message. One draft is open at a time: asking
+for a new message, a reply or a forward while one is open leaves it as it is,
+marks it so the composer says why, and, in its own window, returns
+`UiEffect::RaiseComposer`, which the shell turns into un-minimizing and
+focusing that window.
 
 A draft never crosses into another account's session. When Proton ends the
 session (`AuthError::SessionExpired`, a refused send included),

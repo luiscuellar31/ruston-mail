@@ -490,6 +490,28 @@ fn field_labels_are_drawn_at_body_size() {
 }
 
 #[test]
+fn a_draft_says_why_asking_for_another_message_opened_none() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+    app.update(Message::OpenCompose);
+    app.update(Message::ComposeChanged(
+        ComposeField::Subject,
+        "Plans".into(),
+    ));
+    let _ = app.update(Message::OpenCompose);
+
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        show(ui, app.compose().unwrap(), &mut Vec::new());
+    });
+    crate::ui::test_support::text_rect(
+        &output.shapes,
+        "You are already writing a message. Send or discard it to start another.",
+    );
+    output.drop_without_applying_deltas();
+}
+
+#[test]
 fn asking_to_discard_a_written_message_leaves_its_form_in_place() {
     let context = egui::Context::default();
     theme::install(&context);

@@ -283,7 +283,9 @@ nothing until you send; the notice is not shown then.
 
 The composer opens in the reading pane by default, so folders and conversations
 stay visible. Settings can open it in a separate window instead. The same choice
-applies to new messages, replies, and forwards. It opens with the cursor in
+applies to new messages, replies, and forwards. One message is written at a
+time: asking for another while one is open brings the open one forward and
+says why. It opens with the cursor in
 **To** for a new message or a forward, and in the message for a reply. While it
 fills the reading pane, the list keys (`j`, `k`, the arrows and `Enter`) wait,
 so they never open a conversation out of sight. A conversation clicked in the

@@ -966,9 +966,9 @@ impl App {
             }
             Message::OpenCompose => {
                 self.showing_settings = false;
-                self.open_compose();
+                return self.open_compose();
             }
-            Message::Answer { message_id, kind } => self.answer(&message_id, kind),
+            Message::Answer { message_id, kind } => return self.answer(&message_id, kind),
             Message::CloseCompose => self.close_compose(),
             Message::DiscardCompose => self.discard_compose(),
             Message::CancelDiscard => self.cancel_discard(),

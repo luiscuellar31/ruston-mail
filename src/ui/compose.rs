@@ -145,6 +145,10 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
 
     title_and_actions(ui, compose, leaving, send_label(&sending), messages);
     ui.add_space(10.0);
+    if compose.asked_again() {
+        ui.label("You are already writing a message. Send or discard it to start another.");
+        ui.add_space(10.0);
+    }
     if compose.confirming_discard()
         && let Some(answer) = discard_prompt(ui.ctx())
     {

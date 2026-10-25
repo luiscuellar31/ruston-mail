@@ -395,6 +395,45 @@ fn typing_clears_discard_prompt() {
 }
 
 #[test]
+fn asking_for_another_message_brings_the_open_one_forward_and_says_why() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-0");
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Plans".into()));
+    let draft = app.compose().unwrap().id();
+
+    for asked in [
+        Message::OpenCompose,
+        Message::Answer {
+            message_id: "demo-0-2".into(),
+            kind: AnswerKind::Reply,
+        },
+    ] {
+        let effects = app.update(asked);
+        let compose = app.compose().unwrap();
+        assert_eq!(compose.id(), draft, "the open message stays as it was");
+        assert!(compose.asked_again());
+        assert!(
+            effects
+                .into_iter()
+                .any(|effect| matches!(effect, Effect::Ui(UiEffect::RaiseComposer)))
+        );
+        let _ = app.update(Message::ComposeChanged(ComposeField::Body, "More".into()));
+        assert!(
+            !app.compose().unwrap().asked_again(),
+            "writing on answers it"
+        );
+    }
+
+    // In the reading pane the draft is already in view.
+    let _ = app.update(Message::SetComposePlacement(ComposePlacement::ReadingPane));
+    let effects = app.update(Message::OpenCompose);
+    assert!(app.compose().unwrap().asked_again());
+    assert_eq!(effects.units(), 0);
+}
+
+#[test]
 fn picking_compose_attachments_emits_ui_effect() {
     let mut app = loaded_demo_app();
     // When compose is closed, picking does nothing

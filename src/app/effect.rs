@@ -28,6 +28,9 @@ pub enum UiEffect {
         subject: String,
     },
     PickComposeAttachments(ComposeId),
+    /// Brings the composer's own window forward, out of the Dock or taskbar
+    /// if it was minimized.
+    RaiseComposer,
     PickAttachmentDestination {
         request: AttachmentSaveRequest,
         suggested_name: String,

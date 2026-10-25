@@ -595,6 +595,11 @@ impl DesktopApp {
                     self.notifications
                         .show(&sender, &subject, &self.runtime, context);
                 }
+                UiEffect::RaiseComposer => {
+                    let composer = compose::viewport_id();
+                    context.send_viewport_cmd_to(composer, egui::ViewportCommand::Minimized(false));
+                    context.send_viewport_cmd_to(composer, egui::ViewportCommand::Focus);
+                }
                 UiEffect::PickComposeAttachments(id) => {
                     self.file_dialog_open = true;
                     let parent = self.main_window.clone();

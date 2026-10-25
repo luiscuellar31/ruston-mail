@@ -197,6 +197,9 @@ pub struct Compose {
     copies_shown: bool,
     state: Sending,
     confirming_discard: bool,
+    /// Another message was asked for while this one is open, so the
+    /// composer says why none opened, until this one is edited.
+    asked_again: bool,
 }
 
 /// What the recipient fields came to. They are read again only when a field
@@ -301,6 +304,7 @@ impl Compose {
     /// stays until the user knows whether the message went.
     fn edited(&mut self) {
         self.confirming_discard = false;
+        self.asked_again = false;
         if matches!(&self.state, Sending::Failed(error) if *error != SendError::Unconfirmed) {
             self.state = Sending::Writing;
         }
@@ -328,6 +332,11 @@ impl Compose {
 
     pub fn confirming_discard(&self) -> bool {
         self.confirming_discard
+    }
+
+    /// Whether another message was asked for while this one is open.
+    pub fn asked_again(&self) -> bool {
+        self.asked_again
     }
 
     /// What to say about protection, once every typed recipient was looked
@@ -603,22 +612,39 @@ impl App {
         self.check_compose_protection()
     }
 
-    pub(super) fn open_compose(&mut self) {
-        if self.compose.is_none() {
-            let id = self.next_compose_id();
-            self.compose = Some(Compose {
-                id,
-                domains: self.settings.recipient_domains(),
-                ..Compose::default()
-            });
+    pub(super) fn open_compose(&mut self) -> Effects {
+        if self.compose.is_some() {
+            return self.ask_for_another_message();
+        }
+        let id = self.next_compose_id();
+        self.compose = Some(Compose {
+            id,
+            domains: self.settings.recipient_domains(),
+            ..Compose::default()
+        });
+        Effects::none()
+    }
+
+    /// One message is written at a time: asking for another leaves the open
+    /// one as it is, says why, and brings its window forward.
+    fn ask_for_another_message(&mut self) -> Effects {
+        let in_window = self.draft_in_window();
+        let Some(compose) = self.compose.as_mut() else {
+            return Effects::none();
+        };
+        compose.asked_again = true;
+        if in_window {
+            Effects::ui(UiEffect::RaiseComposer)
+        } else {
+            Effects::none()
         }
     }
 
     /// Answers the message with the given id in the open conversation.
-    pub(super) fn answer(&mut self, message_id: &str, kind: AnswerKind) {
+    pub(super) fn answer(&mut self, message_id: &str, kind: AnswerKind) -> Effects {
         let Some(ReaderState::Loaded(reader)) = self.mailbox().map(super::Mailbox::reader_state)
         else {
-            return;
+            return Effects::none();
         };
         let Some(message) = reader
             .detail()
@@ -626,19 +652,19 @@ impl App {
             .iter()
             .find(|message| message.id == message_id)
         else {
-            return;
+            return Effects::none();
         };
         // Read what the composer shows while the reader still holds the
         // message, rather than copying its decrypted body and attachments.
         let answering = answering_for(kind, message, reader.detail().subject.as_deref());
-        self.open_answer(kind.outgoing(message_id), answering);
+        self.open_answer(kind.outgoing(message_id), answering)
     }
 
     /// Answers or forwards a message. Core addresses replies itself; the
     /// composer shows where they go.
-    fn open_answer(&mut self, kind: OutgoingKind, answering: Answering) {
+    fn open_answer(&mut self, kind: OutgoingKind, answering: Answering) -> Effects {
         if self.compose.is_some() {
-            return;
+            return self.ask_for_another_message();
         }
         let id = self.next_compose_id();
         self.compose = Some(Compose {
@@ -648,6 +674,7 @@ impl App {
             domains: self.settings.recipient_domains(),
             ..Compose::default()
         });
+        Effects::none()
     }
 
     /// Puts an unsent message away. Untouched messages close at once;
