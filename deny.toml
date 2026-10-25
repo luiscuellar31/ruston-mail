@@ -22,6 +22,12 @@ ignore = [
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
+    # crypto-bigint 0.5 can branch on secret values; only 0.7.6 fixes it.
+    # pgp reaches 0.5.5 through cx448 and elliptic-curve 0.13 (Ed448, X448,
+    # NIST and secp256k1 curves), and proton-srp through its sign-in math.
+    # Neither pgp 0.21 nor proton-crypto 0.14 has moved yet. Remove this once
+    # proton-crypto brings crypto-bigint 0.7.6 or later.
+    "RUSTSEC-2026-0387",
 ]
 
 [licenses]
