@@ -947,6 +947,9 @@ gone or its body cannot be opened. Any other failed read stops indexing with
 its error and writes nothing for that message.
 No database transaction is held during a network request or decryption, and
 completed pages or messages remain cached if a later result is rejected.
+`Cache`'s public methods only open and read; every write goes through one of
+these checks, and the unchecked writes tests set up data with exist only in
+test builds.
 Initial cursor creation is also conditional. When Proton
 requests a full refresh, sync pages through all message metadata into temporary
 SQLite tables, then replaces the cache and event cursor in one transaction. A

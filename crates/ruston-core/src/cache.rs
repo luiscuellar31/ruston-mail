@@ -540,17 +540,6 @@ impl Cache {
         }
     }
 
-    /// Store the sync cursor.
-    pub fn set_last_event_id(&self, id: &str) -> Result<()> {
-        self.conn
-            .execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
-                [id],
-            )
-            .map_err(map)?;
-        Ok(())
-    }
-
     /// Claim an uninitialized cursor without replacing another sync's cursor.
     /// Returns whether this call stored `id`: `false` means another sync had
     /// already stored one.
@@ -650,40 +639,6 @@ impl Cache {
         Ok(counts)
     }
 
-    /// Insert or replace cached metadata and labels, keeping searchable headers
-    /// current for a body that has already been indexed.
-    pub fn upsert_message(&self, m: &MessageMetadata) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
-        upsert_message(&tx, m)?;
-        tx.commit().map_err(map)?;
-        Ok(())
-    }
-
-    /// Writes a message's flags and labels, leaving its indexed headers and
-    /// body as they are. Unlike sync's `apply_event_batch`, it does not check
-    /// the sync cursor.
-    pub fn upsert_message_flags(&self, m: &MessageMetadata) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
-        upsert_metadata(&tx, m)?;
-        tx.commit().map_err(map)?;
-        Ok(())
-    }
-
-    /// Remove a message, its labels, and its active full-text index entry.
-    pub fn delete_message(&self, id: &str) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
-        delete_message(&tx, id)?;
-        tx.commit().map_err(map)?;
-        Ok(())
-    }
-
-    /// Drops a message's indexed body, so a changed one is indexed again.
-    /// Unlike sync's `apply_event_batch`, it does not check the sync cursor.
-    pub fn invalidate_index(&self, id: &str) -> Result<()> {
-        self.conn.execute(DELETE_INDEX_SQL, [id]).map_err(map)?;
-        Ok(())
-    }
-
     /// Cached messages in a label, newest first.
     pub fn list(
         &self,
@@ -715,19 +670,6 @@ impl Cache {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
             })
             .map_err(map)
-    }
-
-    /// Drop all cached messages and indexed bodies.
-    pub fn clear(&self) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
-        // Bulk resets do not need to materialize the compatibility view's bodies.
-        tx.execute_batch(
-            "DELETE FROM msg_fts_index; DELETE FROM msg_fts_rows;
-             DELETE FROM message_labels; DELETE FROM messages;",
-        )
-        .map_err(map)?;
-        tx.commit().map_err(map)?;
-        Ok(())
     }
 
     /// Start a full metadata rebuild without changing the visible cache.
@@ -818,14 +760,6 @@ impl Cache {
         Ok(expected_total as usize)
     }
 
-    /// Index a message's decrypted body for local full-text search.
-    pub fn index_message(&self, m: &MessageMetadata, body: &str) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
-        replace_index(&tx, m, Some(body))?;
-        tx.commit().map_err(map)?;
-        Ok(())
-    }
-
     /// Full-text search the local index. Tokens are AND-ed; punctuation-safe.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
         let expr = query
@@ -855,6 +789,77 @@ impl Cache {
             }
         }
         Ok(out)
+    }
+}
+
+/// Writes that leave the sync cursor unchecked, for setting up tests. The
+/// library writes through sync, the rebuild, `store_metadata_page` and
+/// `store_index_result`, which refuse data fetched under a cursor that
+/// another sync has moved since.
+#[cfg(test)]
+impl Cache {
+    /// Store the sync cursor.
+    pub(crate) fn set_last_event_id(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES('last_event_id', ?1)",
+                [id],
+            )
+            .map_err(map)?;
+        Ok(())
+    }
+
+    /// Insert or replace cached metadata and labels, keeping searchable headers
+    /// current for a body that has already been indexed.
+    pub(crate) fn upsert_message(&self, m: &MessageMetadata) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        upsert_message(&tx, m)?;
+        tx.commit().map_err(map)?;
+        Ok(())
+    }
+
+    /// Writes a message's flags and labels, leaving its indexed headers and
+    /// body as they are.
+    pub(crate) fn upsert_message_flags(&self, m: &MessageMetadata) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        upsert_metadata(&tx, m)?;
+        tx.commit().map_err(map)?;
+        Ok(())
+    }
+
+    /// Remove a message, its labels, and its active full-text index entry.
+    pub(crate) fn delete_message(&self, id: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        delete_message(&tx, id)?;
+        tx.commit().map_err(map)?;
+        Ok(())
+    }
+
+    /// Drops a message's indexed body, so a changed one is indexed again.
+    pub(crate) fn invalidate_index(&self, id: &str) -> Result<()> {
+        self.conn.execute(DELETE_INDEX_SQL, [id]).map_err(map)?;
+        Ok(())
+    }
+
+    /// Drop all cached messages and indexed bodies.
+    pub(crate) fn clear(&self) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        // Bulk resets do not need to materialize the compatibility view's bodies.
+        tx.execute_batch(
+            "DELETE FROM msg_fts_index; DELETE FROM msg_fts_rows;
+             DELETE FROM message_labels; DELETE FROM messages;",
+        )
+        .map_err(map)?;
+        tx.commit().map_err(map)?;
+        Ok(())
+    }
+
+    /// Index a message's decrypted body for local full-text search.
+    pub(crate) fn index_message(&self, m: &MessageMetadata, body: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        replace_index(&tx, m, Some(body))?;
+        tx.commit().map_err(map)?;
+        Ok(())
     }
 }
 
