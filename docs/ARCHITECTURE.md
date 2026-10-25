@@ -459,7 +459,10 @@ load is kept: opening another conversation, changing folders or ending the
 session aborts the one in flight, and the reader ignores its answer. Each
 message keeps Proton's unread flag, so its first unread message, or else the
 newest, opens and is scrolled into view once, on the pass after the
-conversation opens, never on a refresh. Only the
+conversation opens, never on a refresh. The reader keeps each message's first
+40 words for its folded header; they are read from `RichBody::plain_lines`
+only as far as the words go, so a long body costs the interface thread no
+more than a short one when a conversation arrives. Only the
 answer the reader waits for marks a conversation read, so a late one cannot
 mark the conversation on screen. A conversation chosen while a draft fills the
 reading pane folds the draft (`Compose::folded`) into a strip over the reader,

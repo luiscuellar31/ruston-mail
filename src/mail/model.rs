@@ -238,7 +238,18 @@ impl RichBody {
     /// dropped; structure is kept with markers and quote prefixes.
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
-        for block in &self.blocks {
+        for line in self.plain_lines() {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// The lines of [`Self::plain_text`], each block worked out only once
+    /// the lines before it are read, so taking the first few is cheap
+    /// however long the body is.
+    pub fn plain_lines(&self) -> impl Iterator<Item = String> + '_ {
+        self.blocks.iter().flat_map(|block| {
             let text = match &block.kind {
                 BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => join(spans),
                 BlockKind::ListItem { marker, spans, .. } if marker.is_empty() => join(spans),
@@ -248,14 +259,10 @@ impl RichBody {
                 BlockKind::Rule => "---".to_owned(),
             };
             let quote = "> ".repeat(usize::from(block.quote_depth));
-            for line in text.lines() {
-                out.push_str(&quote);
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-
-        out
+            text.lines()
+                .map(|line| format!("{quote}{line}"))
+                .collect::<Vec<_>>()
+        })
     }
 }
 
