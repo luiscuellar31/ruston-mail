@@ -9,6 +9,7 @@ mod mailto;
 mod notifications;
 mod reader;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -23,8 +24,9 @@ const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
-    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, ProtectionCheck,
-    ProtonMailService, ResumeOutcome, SendError, SignInOutcome, SignInPrompt, demo::DemoMailbox,
+    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, OwnPlaces, PlaceLook,
+    ProtectionCheck, ProtonMailService, ResumeOutcome, SendError, SignInOutcome, SignInPrompt,
+    demo::DemoMailbox,
 };
 
 use auth::LoginForm;
@@ -131,7 +133,7 @@ pub enum Message {
     ),
     /// The folders the account made, fetched when the mailbox opens and, if
     /// that fails, again with the next refresh.
-    FoldersLoaded(SessionEpoch, Result<Vec<Folder>, MailboxError>),
+    FoldersLoaded(SessionEpoch, Result<OwnPlaces, MailboxError>),
     ActionFinished(ActionRequest, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
@@ -276,6 +278,8 @@ pub struct App {
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
     folders: Vec<Folder>,
+    /// How each of `folders` looks in the sidebar, by custom ID.
+    place_looks: HashMap<String, PlaceLook>,
     /// The folder list failed to load, so the next refresh asks again.
     refetch_folders: bool,
     /// The page a refresh the app started on its own asked for. The list
@@ -352,6 +356,7 @@ impl App {
             inspections: Inspections::default(),
             reader_load: None,
             folders: Vec::new(),
+            place_looks: HashMap::new(),
             refetch_folders: false,
             automatic_refresh: None,
             settings,
@@ -538,6 +543,15 @@ impl App {
     /// The folders the account made.
     pub fn folders(&self) -> &[Folder] {
         &self.folders
+    }
+
+    /// How the sidebar shows `folder`: plain for Proton's own.
+    pub fn place_look(&self, folder: &Folder) -> PlaceLook {
+        folder
+            .custom_id()
+            .and_then(|id| self.place_looks.get(id))
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn showing_settings(&self) -> bool {
@@ -808,7 +822,10 @@ impl App {
                     return Effects::none();
                 }
                 match result {
-                    Ok(folders) => self.folders = folders,
+                    Ok(places) => {
+                        self.folders = places.folders;
+                        self.place_looks = places.looks;
+                    }
                     // Without them the sidebar shows Proton's own until the
                     // next refresh asks again. A list that did not arrive says
                     // nothing about the open folder, which stays open.

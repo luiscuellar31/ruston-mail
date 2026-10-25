@@ -421,7 +421,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   that says what a search covers is kept, empty, while nothing is typed, and
   is shortened rather than wrapped, so typing never moves the list.
   The sidebar scrolls its folders and labels independently, reserving the
-  account, Settings, and sign-out actions at the bottom; that block asks for
+  account, Settings, and sign-out actions at the bottom. The Proton adapter
+  lists the account's folders in tree order, each before its subfolders and
+  in Proton's order among siblings, and sends with them an `OwnPlaces` map of
+  `PlaceLook`s: a folder's depth, from its `ParentID`, and a label's color.
+  `App` keeps those looks apart from the `Folder`s, whose equality and saved
+  form stay the place alone, and the sidebar indents and colors by them; that block asks for
   one more frame only while its measured height is new, so a window too short
   for it does not redraw on every frame;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.

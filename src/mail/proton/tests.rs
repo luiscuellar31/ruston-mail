@@ -1104,3 +1104,64 @@ fn attachments_of_messages_read_lately_are_kept_ready_to_save() {
     assert!(listed.find("m1", "a1").is_some());
     assert!(listed.find("newest", "last").is_some());
 }
+
+fn place(id: &str, name: &str, parent: Option<&str>, color: &str) -> Label {
+    Label {
+        id: id.into(),
+        name: name.into(),
+        parent_id: parent.map(str::to_owned),
+        color: color.into(),
+        ..Label::default()
+    }
+}
+
+#[test]
+fn folders_follow_their_parents_and_labels_keep_their_colors() {
+    let folders = vec![
+        place("trips-2024", "2024", Some("trips"), ""),
+        place("taxes", "Taxes", None, ""),
+        place("trips", "Trips", None, ""),
+        place("taxes-2024", "2024", Some("taxes"), ""),
+        place("receipts", "Receipts", Some("taxes-2024"), ""),
+        place("orphan", "Orphan", Some("deleted"), ""),
+        // Two folders each the other's parent reach the list all the same.
+        place("loop-a", "Loop A", Some("loop-b"), ""),
+        place("loop-b", "Loop B", Some("loop-a"), ""),
+    ];
+    let labels = vec![
+        place("work", "Work", None, "#0066cc"),
+        place("odd", "Odd", None, "blue"),
+    ];
+
+    let places = own_places(folders, labels);
+
+    let listed: Vec<(&str, u8)> = places
+        .folders
+        .iter()
+        .map(|folder| {
+            let id = folder.custom_id().unwrap();
+            (id, places.looks.get(id).map_or(0, |look| look.depth))
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("taxes", 0),
+            ("taxes-2024", 1),
+            ("receipts", 2),
+            ("trips", 0),
+            ("trips-2024", 1),
+            ("orphan", 0),
+            ("loop-a", 0),
+            ("loop-b", 0),
+            ("work", 0),
+            ("odd", 0),
+        ]
+    );
+    assert_eq!(places.looks["work"].color, Some([0x00, 0x66, 0xcc]));
+    assert!(!places.looks.contains_key("odd"), "a color it cannot read");
+    assert_eq!(hex_color("#FFa500"), Some([0xff, 0xa5, 0x00]));
+    for odd in ["", "#fff", "#gg0000", "#ééé"] {
+        assert_eq!(hex_color(odd), None, "{odd}");
+    }
+}

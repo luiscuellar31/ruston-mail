@@ -243,9 +243,12 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
     let (mut app, _) = App::boot(true, Settings::default());
     app.update(Message::FoldersLoaded(
         1,
-        Ok((0..30)
-            .map(|n| Folder::label(format!("label-{n}"), format!("Label {n}")))
-            .collect()),
+        Ok(crate::mail::OwnPlaces {
+            folders: (0..30)
+                .map(|n| Folder::label(format!("label-{n}"), format!("Label {n}")))
+                .collect(),
+            ..Default::default()
+        }),
     ));
     let size = egui::vec2(410.0, 240.0);
     let mut scroll_id = egui::Id::NULL;
@@ -369,7 +372,13 @@ fn the_accounts_own_folders_and_labels_come_under_headings() {
     theme::install(&context);
     let draw = |places: Vec<Folder>| {
         let (mut app, _) = App::boot(true, Settings::default());
-        app.update(Message::FoldersLoaded(1, Ok(places)));
+        app.update(Message::FoldersLoaded(
+            1,
+            Ok(crate::mail::OwnPlaces {
+                folders: places,
+                ..Default::default()
+            }),
+        ));
         let output = context.run_ui(egui::RawInput::default(), |root| {
             egui::CentralPanel::default().show(root, |ui| {
                 sidebar_content(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
@@ -696,7 +705,13 @@ fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
     let (mut app, _) = App::boot(true, Settings::default());
     let name = "Receipts from every trip we took together across three continents";
     let folder = Folder::custom("trips", name);
-    app.update(Message::FoldersLoaded(1, Ok(vec![folder.clone()])));
+    app.update(Message::FoldersLoaded(
+        1,
+        Ok(crate::mail::OwnPlaces {
+            folders: vec![folder.clone()],
+            ..Default::default()
+        }),
+    ));
     let _ = app.update(Message::SelectFolder(folder));
     let mut state = UiState::default();
     let mut asked = Vec::new();
@@ -1692,6 +1707,7 @@ fn selected_folder_name_gets_an_extra_text_pass() {
                 &mailbox,
                 Some(mailbox.folder()),
                 Folder::INBOX,
+                crate::mail::PlaceLook::default(),
                 &mut Vec::new(),
             );
         });
@@ -1749,6 +1765,7 @@ fn a_folder_under_the_pointer_takes_a_quiet_tint() {
                     &mailbox,
                     Some(mailbox.folder()),
                     drafts.clone(),
+                    crate::mail::PlaceLook::default(),
                     &mut Vec::new(),
                 );
                 place = ui.min_rect();
@@ -1788,7 +1805,14 @@ fn an_open_settings_page_leaves_no_folder_marked_as_chosen() {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(240.0);
             soft = theme::colors(ui).accent_soft;
-            folder_button(ui, &mailbox, current, Folder::INBOX, &mut Vec::new());
+            folder_button(
+                ui,
+                &mailbox,
+                current,
+                Folder::INBOX,
+                crate::mail::PlaceLook::default(),
+                &mut Vec::new(),
+            );
         });
         let marked = rect_fills(&output).iter().any(|(fill, _)| *fill == soft);
         output.drop_without_applying_deltas();
@@ -1999,6 +2023,7 @@ fn a_long_folder_name_stays_on_one_row() {
                 &mailbox,
                 Some(mailbox.folder()),
                 label.clone(),
+                crate::mail::PlaceLook::default(),
                 &mut Vec::new(),
             );
             used = ui.min_rect();
@@ -2255,4 +2280,70 @@ fn long_correspondents_cannot_widen_the_conversation_pane() {
     });
 
     assert!(clicked);
+}
+
+#[test]
+fn subfolders_sit_under_their_parent_and_labels_wear_their_color() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut app, _) = App::boot(true, Settings::default());
+    let color = [0, 102, 204];
+    let looks = [
+        ("taxes", crate::mail::PlaceLook::default()),
+        (
+            "taxes-2024",
+            crate::mail::PlaceLook {
+                depth: 1,
+                color: None,
+            },
+        ),
+        (
+            "work",
+            crate::mail::PlaceLook {
+                depth: 0,
+                color: Some(color),
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(id, look)| (id.to_owned(), look))
+    .collect();
+    app.update(Message::FoldersLoaded(
+        1,
+        Ok(crate::mail::OwnPlaces {
+            folders: vec![
+                Folder::custom("taxes", "Taxes"),
+                Folder::custom("taxes-2024", "2024"),
+                Folder::label("work", "Work"),
+            ],
+            looks,
+        }),
+    ));
+
+    let output = context.run_ui(egui::RawInput::default(), |root| {
+        egui::CentralPanel::default().show(root, |ui| {
+            sidebar_content(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+        });
+    });
+    let shapes = output.shapes.clone();
+    output.drop_without_applying_deltas();
+
+    let parent = crate::ui::test_support::text_rect(&shapes, "Taxes");
+    let child = crate::ui::test_support::text_rect(&shapes, "2024");
+    assert!(
+        child.left() >= parent.left() + SUBFOLDER_INDENT - 0.5,
+        "{child:?} is not indented under {parent:?}"
+    );
+    assert!(
+        child.top() > parent.top(),
+        "the subfolder comes after its parent"
+    );
+    assert_eq!(
+        label_color(app.place_look(&Folder::label("work", "Work"))),
+        egui::Color32::from_rgb(color[0], color[1], color[2])
+    );
+    assert_eq!(
+        label_color(crate::mail::PlaceLook::default()),
+        theme::ACCENT
+    );
 }

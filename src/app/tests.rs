@@ -101,7 +101,11 @@ fn deliver_demo_search(app: &mut App, query: &str) {
 
 fn deliver_folders(app: &mut App, result: Result<Vec<Folder>, MailboxError>) {
     let epoch = app.session_epoch;
-    let _ = app.update(Message::FoldersLoaded(epoch, result));
+    let places = result.map(|folders| crate::mail::OwnPlaces {
+        folders,
+        ..Default::default()
+    });
+    let _ = app.update(Message::FoldersLoaded(epoch, places));
 }
 
 fn deliver_attachment(app: &mut App, result: Result<PathBuf, SaveError>) {
@@ -751,9 +755,55 @@ fn signing_out_takes_the_account_folders_with_it() {
     let _ = app.open_mailbox(MailBackend::demo(), None, None);
     let _ = app.update(Message::FoldersLoaded(
         previous_epoch,
-        Ok(vec![Folder::custom("old", "Previous account")]),
+        Ok(crate::mail::OwnPlaces {
+            folders: vec![Folder::custom("old", "Previous account")],
+            ..Default::default()
+        }),
     ));
     assert!(app.folders().is_empty());
+}
+
+#[test]
+fn a_place_shows_as_its_list_says_until_the_session_ends() {
+    let mut app = loaded_demo_app();
+    let nested = Folder::custom("nested", "2024");
+    let label = Folder::label("work", "Work");
+    let looks = [
+        (
+            "nested",
+            crate::mail::PlaceLook {
+                depth: 1,
+                color: None,
+            },
+        ),
+        (
+            "work",
+            crate::mail::PlaceLook {
+                depth: 0,
+                color: Some([0, 102, 204]),
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|(id, look)| (id.to_owned(), look))
+    .collect();
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::FoldersLoaded(
+        epoch,
+        Ok(crate::mail::OwnPlaces {
+            folders: vec![nested.clone(), label.clone()],
+            looks,
+        }),
+    ));
+    assert_eq!(app.place_look(&nested).depth, 1);
+    assert_eq!(app.place_look(&label).color, Some([0, 102, 204]));
+    assert_eq!(
+        app.place_look(&Folder::INBOX),
+        crate::mail::PlaceLook::default()
+    );
+
+    let _ = app.update(Message::Logout);
+    assert_eq!(app.place_look(&label), crate::mail::PlaceLook::default());
 }
 
 #[test]

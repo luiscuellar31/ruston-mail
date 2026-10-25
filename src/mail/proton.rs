@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,7 +21,7 @@ use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
     LoginRequest, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
-    MailboxError, MessageBody, SummaryKind, html,
+    MailboxError, MessageBody, OwnPlaces, PlaceLook, SummaryKind, html,
 };
 use super::{INSPECTION_CONCURRENCY, MailAction};
 
@@ -328,17 +328,14 @@ impl ProtonMailService {
     }
 
     /// Lists account-owned folders and labels for the sidebar.
-    pub async fn list_folders(&self) -> Result<Vec<Folder>, MailboxError> {
+    pub async fn list_folders(&self) -> Result<OwnPlaces, MailboxError> {
         // Neither request needs the other, so both are in flight at once.
         let (folders, labels) = futures::try_join!(
             timed(self.client.list_folders()),
             timed(self.client.list_labels())
         )?;
 
-        Ok(custom_places(folders, Folder::custom)
-            .into_iter()
-            .chain(custom_places(labels, Folder::label))
-            .collect())
+        Ok(own_places(folders, labels))
     }
 
     /// Sends a message. Proton answers with the sent message's ID, which
@@ -1217,12 +1214,80 @@ fn map_counts(counts: &[LabelCount], folders: &[Folder]) -> MailboxCounts {
         .collect()
 }
 
-/// Maps one Proton folder/label batch into sidebar entries.
-fn custom_places(labels: Vec<Label>, make: fn(String, String) -> Folder) -> Vec<Folder> {
-    labels
-        .into_iter()
-        .map(|label| make(label.id, label.name))
-        .collect()
+/// Folders sit inside folders at most this deep in the sidebar; Proton
+/// keeps fewer levels than this.
+const MAX_FOLDER_DEPTH: u8 = 8;
+
+/// The account's folders, each followed by its subfolders, in Proton's order
+/// among siblings, then its labels with their colors.
+fn own_places(folders: Vec<Label>, labels: Vec<Label>) -> OwnPlaces {
+    let mut places = OwnPlaces::default();
+    let known: HashSet<&str> = folders.iter().map(|folder| folder.id.as_str()).collect();
+    // A folder whose parent is not listed shows at the top.
+    let is_top = |folder: &Label| {
+        folder
+            .parent_id
+            .as_deref()
+            .is_none_or(|parent| !known.contains(parent))
+    };
+    let mut placed = HashSet::new();
+    let mut stack: Vec<(&Label, u8)> = folders
+        .iter()
+        .filter(|folder| is_top(folder))
+        .rev()
+        .map(|folder| (folder, 0))
+        .collect();
+    while let Some((folder, depth)) = stack.pop() {
+        // A cycle in the parents would come back here.
+        if !placed.insert(folder.id.as_str()) {
+            continue;
+        }
+        places
+            .folders
+            .push(Folder::custom(&folder.id, &folder.name));
+        places
+            .looks
+            .insert(folder.id.clone(), PlaceLook { depth, color: None });
+        let child_depth = (depth + 1).min(MAX_FOLDER_DEPTH);
+        stack.extend(
+            folders
+                .iter()
+                .filter(|child| child.parent_id.as_deref() == Some(folder.id.as_str()))
+                .rev()
+                .map(|child| (child, child_depth)),
+        );
+    }
+    // Folders in a cycle of parents, which no top folder reaches.
+    for folder in &folders {
+        if placed.insert(folder.id.as_str()) {
+            places
+                .folders
+                .push(Folder::custom(&folder.id, &folder.name));
+        }
+    }
+    for label in labels {
+        if let Some(color) = hex_color(&label.color) {
+            places.looks.insert(
+                label.id.clone(),
+                PlaceLook {
+                    depth: 0,
+                    color: Some(color),
+                },
+            );
+        }
+        places.folders.push(Folder::label(label.id, label.name));
+    }
+    places
+}
+
+/// A color written `#RRGGBB`, as Proton writes a label's.
+fn hex_color(text: &str) -> Option<[u8; 3]> {
+    let digits = text.trim().strip_prefix('#')?;
+    if digits.len() != 6 || !digits.is_ascii() {
+        return None;
+    }
+    let channel = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).ok();
+    Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
 fn map_mailbox_error(error: Error) -> MailboxError {

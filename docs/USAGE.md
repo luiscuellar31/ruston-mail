@@ -49,8 +49,9 @@ FIDO2 and WebAuthn security keys are not supported yet.
 ## Finding mail
 
 The sidebar contains Proton's standard folders, followed by your custom folders
-and labels, each under a heading of its own. Unread counts update as mail
-changes. If your folders and labels
+and labels, each under a heading of its own. A subfolder comes right after the
+folder it is in, indented a step for each level, and each label shows its tag
+in the color it has in Proton. Unread counts update as mail changes. If your folders and labels
 cannot be loaded, the open folder stays open and the next refresh tries again.
 Folders and labels scroll independently when they do not fit. The account,
 Settings, and sign-out actions remain at the bottom of the sidebar.

@@ -7,7 +7,7 @@ use crate::app::{
     App, AuthState, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, Notice,
     compact_layout, panel_ratios, panel_widths,
 };
-use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError};
+use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError, PlaceLook};
 use crate::settings::{ComposePlacement, Panels, Settings};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
@@ -285,7 +285,7 @@ fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &m
     // Settings covers the mail panes, so it alone shows as chosen.
     let current = (!app.showing_settings()).then(|| mailbox.folder());
     for folder in MailFolder::ALL.into_iter().map(Folder::System) {
-        folder_button(ui, mailbox, current, folder, messages);
+        folder_button(ui, mailbox, current, folder, PlaceLook::default(), messages);
     }
 
     // The account's own folders and labels each come under a heading, as
@@ -305,7 +305,18 @@ fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &m
             ui.add_space(14.0);
             detail(ui, heading);
             for place in places {
-                folder_button(ui, mailbox, current, place, messages);
+                let look = app.place_look(&place);
+                if look.depth == 0 {
+                    folder_button(ui, mailbox, current, place, look, messages);
+                } else {
+                    // A subfolder sits under its parent, indented a step
+                    // for each folder it is in.
+                    let mut row = ui.available_rect_before_wrap();
+                    row.min.x += f32::from(look.depth) * SUBFOLDER_INDENT;
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
+                        folder_button(ui, mailbox, current, place, look, messages);
+                    });
+                }
             }
         }
     }
@@ -407,6 +418,7 @@ fn folder_button(
     mailbox: &Mailbox,
     current: Option<&Folder>,
     folder: Folder,
+    look: PlaceLook,
     messages: &mut Vec<Message>,
 ) {
     let selected = current == Some(&folder);
@@ -455,7 +467,7 @@ fn folder_button(
         })
         .inner;
     let icon_color = if icon == theme::Icon::Label {
-        theme::ACCENT
+        label_color(look)
     } else if selected {
         theme::colors(ui).selected_folder_text
     } else {
@@ -489,6 +501,13 @@ fn folder_button(
     if response.clicked() {
         messages.push(Message::SelectFolder(folder));
     }
+}
+
+/// The color a label's icon wears: the one it has in Proton, as Proton's own
+/// apps show it, or the accent for one Ruston cannot read.
+fn label_color(look: PlaceLook) -> Color32 {
+    look.color
+        .map_or(theme::ACCENT, |[r, g, b]| Color32::from_rgb(r, g, b))
 }
 
 pub(super) fn folder_icon(folder: &Folder) -> theme::Icon {
@@ -833,6 +852,8 @@ fn notice_remaining(
 }
 
 const FOLDER_HEIGHT: f32 = 31.0;
+/// How far each folder a subfolder sits in moves it right.
+const SUBFOLDER_INDENT: f32 = 14.0;
 /// Virtualized rows must draw at this height to stay aligned with scrolling.
 const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;

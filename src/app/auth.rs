@@ -471,6 +471,7 @@ impl App {
         self.showing_settings = false;
         // Never show one account's folders in the next session.
         self.folders.clear();
+        self.place_looks.clear();
         // A file one session saved is not news for the next one.
         self.failed_save = None;
         self.notice = None;
