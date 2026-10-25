@@ -3,6 +3,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use ruston_core::model::enums::message_flag;
+
 use super::outgoing::{Outgoing, OutgoingKind, SendError};
 use super::{
     ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAddress, MailFolder,
@@ -1074,28 +1076,32 @@ fn message(
             .collect();
     }
 
-    // The fictional mail sets no Reply-To; answers follow core's rule, which
-    // continues the demo user's own messages with the people they went to.
-    let demo_address = demo_user().address;
-    let (reply_to, reply_all_cc) = if from_demo_user && !recipients.is_empty() {
-        let to = recipients
-            .iter()
-            .map(|recipient| recipient.address.clone())
-            .collect();
-        (to, Vec::new())
+    // The fictional mail sets no Reply-To, and answers come from core's rule
+    // as the Proton adapter's do, told by the flags Proton would set: the
+    // demo user sent it, received it, or only wrote it, as a draft.
+    let flags = if !from_demo_user {
+        message_flag::RECEIVED
+    } else if fixture.folder == MailFolder::Drafts && newer == 0 {
+        0
     } else {
-        let cc = recipients
-            .iter()
-            .map(|recipient| recipient.address.clone())
-            .filter(|address| !address.eq_ignore_ascii_case(&demo_address))
-            .collect();
-        (vec![sender.address.clone()], cc)
+        message_flag::SENT
     };
+    let core_recipient = |person: &MailAddress| ruston_core::Recipient {
+        address: person.address.clone(),
+        ..ruston_core::Recipient::default()
+    };
+    let meta = ruston_core::MessageMetadata {
+        flags,
+        sender: core_recipient(&sender),
+        to_list: recipients.iter().map(core_recipient).collect(),
+        ..ruston_core::MessageMetadata::default()
+    };
+    let reply = ruston_core::reply_recipients(&meta, &[], &[demo_user().address]);
     MailMessage {
         id: format!("demo-{index}-{position}"),
         verdict: super::Verdict::Unverified,
-        reply_to,
-        reply_all_cc,
+        reply_to: reply.to,
+        reply_all_cc: reply.cc,
         reply_redirected: false,
         sender,
         // The fictional mail goes to its people directly, never as a copy.

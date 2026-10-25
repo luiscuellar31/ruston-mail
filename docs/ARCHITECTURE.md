@@ -316,7 +316,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - [`src/mail/`](../src/mail/) translates between the desktop mailbox model and
   either [`ProtonMailService`](../src/mail/proton.rs), backed by `ruston-core`, or
   the local [`DemoMailbox`](../src/mail/demo.rs). Its
-  [`model.rs`](../src/mail/model.rs) defines the types the desktop uses.
+  [`model.rs`](../src/mail/model.rs) defines the types the desktop uses. The
+  demo answers its fictional mail with core's `reply_recipients`, given the
+  flags Proton would set (received, sent, or a draft never sent), so a reply
+  goes where it would with an account; its tests find conversations by what
+  they are, not by their place among the fixtures.
   Actions on a conversation row use Proton's conversation endpoints, one
   request each: a move, a star or a custom label applies to every message in
   the conversation, as in Proton's web client. A sign-in has two minutes of

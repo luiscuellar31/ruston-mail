@@ -70,6 +70,30 @@ fn detail(index: usize) -> ConversationDetail {
         .unwrap()
 }
 
+/// The ID of the one demo conversation `wanted` picks, found by what it is
+/// rather than where it sits among the fixtures, so adding one moves none.
+fn conversation(wanted: impl Fn(&Fixture) -> bool) -> String {
+    let found: Vec<_> = fixtures()
+        .iter()
+        .enumerate()
+        .filter(|(_, fixture)| wanted(fixture))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(found.len(), 1, "not one demo conversation: {found:?}");
+    format!("demo-{}", found[0])
+}
+
+/// The demo conversation whose subject is `subject`.
+fn called(subject: &str) -> impl Fn(&Fixture) -> bool + '_ {
+    move |fixture| fixture.subject == subject
+}
+
+fn detail_of(wanted: impl Fn(&Fixture) -> bool) -> ConversationDetail {
+    DemoMailbox::new()
+        .conversation_detail(&conversation(wanted), NOW)
+        .unwrap()
+}
+
 #[test]
 fn counts_are_deterministic() {
     let counts = DemoMailbox::new().counts();
@@ -289,10 +313,46 @@ fn a_reply_goes_back_to_the_sender_with_the_thread_under_it() {
 }
 
 #[test]
+fn answers_go_where_core_sends_them_for_mail_received_and_drafts() {
+    // Received mail is answered to its sender; Reply all adds the others,
+    // never the demo user.
+    let thread = detail_of(called(
+        "Re: Offsite agenda, please add your topics by Friday",
+    ));
+    let received = thread
+        .messages
+        .iter()
+        .find(|message| message.sender.address != DEMO_USER_ADDRESS)
+        .expect("someone else wrote to the demo user");
+    assert_eq!(
+        received.reply_to,
+        std::slice::from_ref(&received.sender.address)
+    );
+    assert!(!received.reply_all_cc.is_empty());
+    assert!(
+        received
+            .reply_all_cc
+            .iter()
+            .all(|address| address != DEMO_USER_ADDRESS && *address != received.sender.address)
+    );
+
+    // A draft was never sent, so core answers it like mail received: to its
+    // sender, the demo user, not to the people it is meant for.
+    let drafts = detail_of(|fixture| {
+        fixture.folder == MailFolder::Drafts
+            && fixture.subject == "Re: Draft proposal for the translation workflow"
+    });
+    let draft = drafts.messages.last().unwrap();
+    assert_eq!(draft.sender.address, DEMO_USER_ADDRESS);
+    assert_eq!(draft.reply_to, [DEMO_USER_ADDRESS.to_owned()]);
+}
+
+#[test]
 fn a_reply_to_the_demo_user_s_own_message_goes_to_its_recipients() {
     let mailbox = DemoMailbox::new();
-    let answered = mailbox.conversation_detail("demo-37", NOW).unwrap();
-    assert_eq!(answered.subject.as_deref(), Some("Re: Offsite agenda"));
+    let answered = mailbox
+        .conversation_detail(&conversation(called("Re: Offsite agenda")), NOW)
+        .unwrap();
     let own = &answered.messages[0];
     assert_eq!(own.sender.address, DEMO_USER_ADDRESS);
     let recipients: Vec<String> = own
@@ -409,10 +469,12 @@ fn summaries_keep_only_a_bounded_preview() {
     let summary = state_page(&DemoMailbox::new(), MailFolder::Inbox)
         .conversations
         .into_iter()
-        .find(|conversation| conversation.id == "demo-5")
+        .find(|row| row.id == conversation(|fixture| fixture.bodies == [LONG_BODY]))
         .unwrap();
     let preview = summary.preview.unwrap();
-    let MessageBody::PlainText(body) = &detail(5).messages[0].body else {
+    let MessageBody::PlainText(body) =
+        &detail_of(|fixture| fixture.bodies == [LONG_BODY]).messages[0].body
+    else {
         panic!("demo bodies are plain text");
     };
 
@@ -422,26 +484,29 @@ fn summaries_keep_only_a_bounded_preview() {
 
 #[test]
 fn details_cover_reader_edge_cases() {
-    let noreply = &detail(1).messages[0];
+    let noreply = &detail_of(called("Your weekly storage summary")).messages[0];
     assert_eq!(noreply.sender.name, None);
     assert_eq!(noreply.sender.display_name(), Some("noreply@example.org"));
 
-    let unknown = &detail(22).messages[0];
+    let unknown = &detail_of(called("Automated message without a sender name")).messages[0];
     assert_eq!(unknown.sender.display_name(), None);
 
-    let garden = &detail(6).messages[0];
+    let garden =
+        &detail_of(called("Volunteer schedule for the spring planting weekend")).messages[0];
     assert_eq!(garden.to.len(), GARDEN_VOLUNTEERS.len());
 
-    let long = &detail(5).messages[0];
+    let long = &detail_of(|fixture| fixture.bodies == [LONG_BODY]).messages[0];
     assert_eq!(long.body, MessageBody::PlainText(LONG_BODY.to_owned()));
 
-    assert_eq!(detail(3).subject, None);
+    let untitled =
+        detail_of(|fixture| fixture.folder == MailFolder::Inbox && fixture.subject.is_empty());
+    assert_eq!(untitled.subject, None);
 }
 
 #[test]
 fn threads_alternate_with_the_demo_user() {
-    let inbox = detail(0);
-    let sent = detail(36);
+    let inbox = detail_of(called("Design review notes for the settings screen"));
+    let sent = detail_of(called("Re: Design review notes for the settings screen"));
 
     assert_eq!(
         inbox.messages[2].sender.name.as_deref(),
