@@ -242,6 +242,63 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
 /// the text searched.
 const FTS_COLUMNS: &str = "id UNINDEXED, subject, body, participants";
 
+/// The schema this version writes, kept in SQLite's `user_version`; a cache
+/// from before it was kept reads 0. Opening an older cache brings it up to
+/// date, and one a newer version wrote is refused: this version cannot know
+/// what that one expects of it.
+const SCHEMA_VERSION: i64 = 1;
+
+/// Whether opening has to migrate the cache: it is older than
+/// [`SCHEMA_VERSION`], or an older version put back the label-only index the
+/// migration drops. Only reads, so it never waits for a writer.
+fn needs_migration(conn: &Connection) -> Result<bool> {
+    let version = schema_version(conn)?;
+    if version < SCHEMA_VERSION {
+        return Ok(true);
+    }
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='idx_ml_label')",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(map)
+}
+
+/// The cache's schema version, refusing one newer than this version's.
+fn schema_version(conn: &Connection) -> Result<i64> {
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(map)?;
+    if version > SCHEMA_VERSION {
+        return Err(Error::Cache(format!(
+            "cache was written by a newer version of Ruston Mail (schema {version}); update Ruston Mail to use it"
+        )));
+    }
+    Ok(version)
+}
+
+/// Brings the cache to [`SCHEMA_VERSION`]. Each step looks at what it finds
+/// and holds the write lock only while it works, so processes opening the
+/// cache at once take turns, and a step that fails leaves what it found.
+fn migrate(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+         CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
+         CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
+         CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5({FTS_COLUMNS});",
+    ))
+    .map_err(map)?;
+    ensure_label_time_index(conn)?;
+    ensure_fts_rowid_index(conn)?;
+    ensure_fts_secure_delete(conn)?;
+    // A newer version may have migrated it further meanwhile.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    schema_version(&tx)?;
+    tx.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION}"))
+        .map_err(map)?;
+    tx.commit().map_err(map)
+}
+
 /// FTS5 keeps a deleted body's words in its index until segments merge;
 /// secure-delete removes them with the row. FTS5 keeps the setting, so its
 /// settings table is only read here, to write the setting once.
@@ -323,6 +380,17 @@ fn ensure_fts_rowid_index(conn: &Connection) -> Result<()> {
     )
     .map_err(map)?;
     tx.commit().map_err(map)
+}
+
+/// The account a cache is bound to, if it is bound yet.
+fn account_owner(conn: &Connection) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key='account_identity_v1'",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(map)
 }
 
 /// Authenticated account identity, independent of session tokens and addresses.
@@ -451,18 +519,15 @@ impl Cache {
     /// immutable: another account, or unbound existing data, is rejected.
     pub(crate) fn open_for_account(path: &Path, identity: &CacheIdentity) -> Result<Cache> {
         let cache = Self::open(path)?;
+        let expected = identity.serialized()?;
+        // A binding never changes once made, so finding this account's needs
+        // no lock, and opening a bound cache never waits for a writer.
+        if account_owner(&cache.conn)?.is_some_and(|owner| owner == expected) {
+            return Ok(cache);
+        }
         let tx =
             Transaction::new_unchecked(&cache.conn, TransactionBehavior::Immediate).map_err(map)?;
-        let expected = identity.serialized()?;
-        let owner: Option<String> = tx
-            .query_row(
-                "SELECT value FROM meta WHERE key='account_identity_v1'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(map)?;
-        match owner {
+        match account_owner(&tx)? {
             Some(owner) if owner == expected => {}
             Some(_) => return Err(Error::Cache("cache belongs to a different account".into())),
             None => {
@@ -517,16 +582,11 @@ impl Cache {
         // Deleted and replaced rows, decrypted bodies among them, are
         // overwritten instead of lingering in the file's free space.
         conn.execute_batch("PRAGMA secure_delete=ON").map_err(map)?;
-        conn.execute_batch(&format!(
-            "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-             CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
-             CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
-             CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5({FTS_COLUMNS});",
-        ))
-        .map_err(map)?;
-        ensure_label_time_index(&conn)?;
-        ensure_fts_rowid_index(&conn)?;
-        ensure_fts_secure_delete(&conn)?;
+        // A cache that needs no migration opens without the write lock, so a
+        // command that only reads never waits for another process's sync.
+        if needs_migration(&conn)? {
+            migrate(&conn)?;
+        }
         Ok(Cache { conn })
     }
 

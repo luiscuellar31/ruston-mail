@@ -134,6 +134,60 @@ fn reopening_keeps_search_secure_delete_without_rewriting_it() {
 }
 
 #[test]
+fn a_cache_keeps_its_schema_version_and_one_from_a_newer_version_is_refused() {
+    let dir = temp_cache_dir();
+    let path = dir.join("cache.db");
+    let version = || -> i64 {
+        Connection::open(&path)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap()
+    };
+    drop(Cache::open(&path).unwrap());
+    assert_eq!(version(), SCHEMA_VERSION);
+
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(&format!("PRAGMA user_version={}", SCHEMA_VERSION + 1))
+        .unwrap();
+    let Err(Error::Cache(message)) = Cache::open(&path) else {
+        panic!("a cache from a newer version opened");
+    };
+    assert!(message.contains("newer version"), "{message}");
+    assert_eq!(version(), SCHEMA_VERSION + 1, "it was left as it was");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn opening_a_cache_that_needs_nothing_does_not_wait_for_a_writer() {
+    let dir = temp_cache_dir();
+    let path = dir.join("cache.db");
+    let identity = || CacheIdentity::new("https://mail.example", "user").unwrap();
+    drop(Cache::open_for_account(&path, &identity()).unwrap());
+    // Another process holds the write lock, as a long sync does.
+    let writer = Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let (done, opened) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let read = Cache::open_for_account(&path, &identity())
+                .and_then(|cache| cache.count("0"))
+                .map_err(|error| error.to_string());
+            done.send(read).unwrap();
+        }
+    });
+    let read = opened.recv_timeout(Duration::from_secs(5));
+    writer.execute_batch("COMMIT").unwrap();
+    reader.join().unwrap();
+
+    assert_eq!(read, Ok(Ok((0, 0))), "opening waited for the writer");
+    drop(writer);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn first_sync_claims_cursor_only_once() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
     assert!(cache.initialize_cursor("first").unwrap());
@@ -679,6 +733,11 @@ fn existing_cache_backfills_label_times_and_uses_ordered_index() {
         .map(|row| row.unwrap())
         .collect();
     assert_eq!(old_reader_ids, ["newer", "older"]);
+    let version: i64 = cache
+        .conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
     drop(cache);
     let reopened = Cache::open(&path).unwrap();
     assert_eq!(reopened.list("0", false, 1, 0).unwrap()[0].id, "newer");

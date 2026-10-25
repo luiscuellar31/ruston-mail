@@ -992,7 +992,13 @@ the complete account identity stored in SQLite before using the database. A
 test pins the identity's JSON and the file name it yields: changing either
 would leave every existing cache, and its decrypted bodies, orphaned.
 An empty database is bound under an immediate transaction; an unexpected owner
-or unbound data causes an error. Account bindings are never reassigned, so a
+or unbound data causes an error. A binding never changes, so opening a cache
+already bound to the account reads it without a lock. The schema version lives
+in SQLite's `user_version`: a cache at this version, without the label-only
+index an older process may put back, opens without taking the write lock, so a
+command that only reads never waits for another process's sync. An older cache
+is migrated step by step, each step under its own immediate transaction, and
+one that a newer version wrote is refused rather than used. Account bindings are never reassigned, so a
 pending index or sync for one account cannot write into another account's cache.
 Signing in again to the same account and server reuses its cache. Legacy
 `<profile>.db` caches have no verified owner and are left untouched and unused;
