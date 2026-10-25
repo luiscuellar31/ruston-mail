@@ -268,11 +268,17 @@ fn unlock_user_keys<P: PGPProviderSync>(
                 continue;
             }
         };
-        if let Ok(imported) = provider.private_key_import(
-            key.private_key.as_bytes(),
-            passphrase.expose_secret().as_bytes(),
-            DataEncoding::Armor,
-        ) {
+        if let Ok(imported) = provider
+            .private_key_import(
+                key.private_key.as_bytes(),
+                passphrase.expose_secret().as_bytes(),
+                DataEncoding::Armor,
+            )
+            .inspect_err(|error| {
+                // Another user key opening is enough, so this alone is no fault.
+                tracing::debug!(target: "ruston_core::crypto", key_id = %key.id, error = %error, "user key did not unlock — key left out");
+            })
+        {
             tracing::trace!(target: "ruston_core::crypto", key_id = %key.id, "unlocked user key");
             privs.push(imported);
             key_password.get_or_insert(passphrase);
@@ -310,11 +316,16 @@ fn unlock_address_keys<P: PGPProviderSync>(
         let Some(passphrase) = address_key_passphrase(provider, user_keys, address, key) else {
             continue;
         };
-        if let Ok(imported) = provider.private_key_import(
-            key.private_key.as_bytes(),
-            passphrase.expose_secret().as_bytes(),
-            DataEncoding::Armor,
-        ) {
+        if let Ok(imported) = provider
+            .private_key_import(
+                key.private_key.as_bytes(),
+                passphrase.expose_secret().as_bytes(),
+                DataEncoding::Armor,
+            )
+            .inspect_err(|error| {
+                tracing::warn!(target: "ruston_core::crypto", address = %address.email, key_id = %key.id, error = %error, "address key did not unlock — skipping key");
+            })
+        {
             keys.push(StoredKey {
                 armored: key.private_key.clone(),
                 passphrase,
@@ -905,5 +916,87 @@ mod tests {
             none_opens,
             Err(Error::Crypto(ref message)) if message == "no address key could be unlocked"
         ));
+    }
+
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_key_that_does_not_unlock_is_logged_with_why() {
+        use std::sync::{Arc, Mutex};
+
+        let user_password = derived(&salt(7));
+        let (stale, _) = listed_key("stale", "user@proton.me", "changed since", 1, None);
+        let (user_key, _) = listed_key("user-key", "user@proton.me", &user_password, 0, None);
+        let (legacy, _) = listed_key("legacy", "me@proton.me", &user_password, 1, None);
+        // Its token checks out, but the key is locked with another passphrase.
+        let (mut mismatched, _) = listed_key("mismatched", "me@proton.me", "another", 0, None);
+        let user_side = (&user_key, user_password.as_str());
+        let (sealed, signature) = token("the token's", user_side, user_side);
+        (mismatched.token, mismatched.signature) = (Some(sealed), Some(signature));
+        let user = User {
+            id: "user".into(),
+            keys: vec![stale, user_key.clone()],
+        };
+        let address = Address {
+            id: "address".into(),
+            email: "me@proton.me".into(),
+            order: 1,
+            keys: vec![legacy, mismatched],
+        };
+        let salts = [
+            key_salt("stale", Some(salt(8))),
+            key_salt("user-key", Some(salt(7))),
+        ];
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(move || Capture(writer.clone()))
+            .finish();
+
+        let unlocked = tracing::subscriber::with_default(subscriber, || {
+            unlock(
+                &crate::crypto::provider(),
+                &user,
+                &[address],
+                &SecretString::from(MAILBOX_PASSWORD),
+                &salts,
+            )
+        });
+
+        let Ok((store, _)) = unlocked else {
+            panic!("the other user key and address key open");
+        };
+        assert_eq!(store.addresses[0].keys.len(), 1);
+        let log = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        let line = |key_id: &str| {
+            log.lines()
+                .find(|line| line.contains(&format!("key_id={key_id}")) && line.contains("error="))
+                .unwrap_or_else(|| panic!("no line for {key_id} in:\n{log}"))
+                .to_owned()
+        };
+        // Another user key opening is enough, so a user key is only noted.
+        let stale = line("stale");
+        assert!(
+            stale.contains("DEBUG") && stale.contains("user key did not unlock"),
+            "{stale}"
+        );
+        let mismatched = line("mismatched");
+        assert!(
+            mismatched.contains("WARN") && mismatched.contains("address key did not unlock"),
+            "{mismatched}"
+        );
     }
 }
