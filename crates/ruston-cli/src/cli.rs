@@ -106,6 +106,16 @@ fn parse_search_date(value: &str) -> std::result::Result<String, String> {
     Ok(value.to_owned())
 }
 
+/// The largest `--page-size`: the most Ruston itself asks Proton for at once.
+/// A page Proton returns short marks the end of a listing, so a page larger
+/// than Proton serves would end paging after the first page.
+const MAX_PAGE_SIZE: i64 = 100;
+
+/// Page sizes from 1 to [`MAX_PAGE_SIZE`].
+fn page_size() -> clap::builder::RangedI64ValueParser<u32> {
+    clap::value_parser!(u32).range(1..=MAX_PAGE_SIZE)
+}
+
 /// An API address the sign-in may send credentials to: https, or plain http
 /// only to this machine, where a local test server listens.
 fn parse_api_url(value: &str) -> std::result::Result<String, String> {
@@ -318,7 +328,7 @@ pub enum Command {
         folder: String,
         #[arg(long = "max-pages", default_value_t = 3)]
         max_pages: u32,
-        #[arg(long = "page-size", default_value_t = 50)]
+        #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
     /// Full-text search the local index (message bodies; private + offline).
@@ -335,7 +345,7 @@ pub enum Command {
         backfill: Option<String>,
         #[arg(long = "max-pages", default_value_t = 4)]
         max_pages: u32,
-        #[arg(long = "page-size", default_value_t = 50)]
+        #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
     /// Label and folder operations.
@@ -526,7 +536,7 @@ pub enum MessagesCmd {
         folder: String,
         #[arg(long, default_value_t = 0)]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 25)]
+        #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
         #[arg(long)]
         unread: bool,
@@ -666,7 +676,7 @@ pub enum ConversationsCmd {
         folder: String,
         #[arg(long, default_value_t = 0)]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 25)]
+        #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
         #[arg(long)]
         unread: bool,
@@ -765,7 +775,7 @@ pub enum DraftsCmd {
     List {
         #[arg(long, default_value_t = 0)]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 25)]
+        #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
     },
     /// Save a new draft with its attachments (does not send). A delivery
@@ -841,7 +851,7 @@ pub enum ContactsCmd {
     List {
         #[arg(long, default_value_t = 0)]
         page: u32,
-        #[arg(long = "page-size", default_value_t = 50)]
+        #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
     /// List contact email addresses (optionally filter by an email).
@@ -1400,6 +1410,30 @@ mod tests {
             "5w",
         ] {
             assert!(parse_duration_secs(duration).is_err(), "{duration}");
+        }
+    }
+
+    #[test]
+    fn page_sizes_stay_within_what_paging_can_follow() {
+        for command in [
+            &["ruston-cli", "messages", "list"][..],
+            &["ruston-cli", "conversations", "list"],
+            &["ruston-cli", "drafts", "list"],
+            &["ruston-cli", "contacts", "list"],
+            &["ruston-cli", "index"],
+            &["ruston-cli", "sync"],
+        ] {
+            let with = |size: &str| {
+                let mut args = command.to_vec();
+                args.extend_from_slice(&["--page-size", size]);
+                Cli::try_parse_from(args)
+            };
+            assert!(with("1").is_ok(), "{command:?}");
+            assert!(with("100").is_ok(), "{command:?}");
+            for refused in ["0", "101", "1000"] {
+                assert!(with(refused).is_err(), "{command:?} took {refused}");
+            }
+            assert!(Cli::try_parse_from(command).is_ok(), "{command:?} default");
         }
     }
 

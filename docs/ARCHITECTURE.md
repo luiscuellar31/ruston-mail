@@ -682,8 +682,10 @@ instead of an unknown outcome.
   `attachments download` with neither an ID nor `--all`, or with both; `spam`,
   `ham`, `undelete` and `label` without a message; a snooze with both
   `--until` and `--in`, neither, a time already gone or a duration that is not
-  positive; and an `--api-url` that is not https, which only an address on
-  this machine may skip, for a local test server.
+  positive; a `--page-size` outside 1 to 100, the most Ruston asks Proton for
+  at once, since paging takes a short page for the last one; and an
+  `--api-url` that is not https, which only an address on this machine may
+  skip, for a local test server.
 - [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs)
   offers a numbered sender choice when `messages send` runs in a terminal with
   multiple account addresses and no `--from`. Noninteractive and JSON sends
