@@ -5,6 +5,8 @@ mod dialogs;
 mod fonts;
 mod graphics;
 mod identity;
+#[cfg(any(target_os = "linux", test))]
+mod launcher;
 mod login;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -1357,9 +1359,9 @@ pub(crate) fn unread_badge_count(app: &App) -> Option<u32> {
     inbox_unread(app).filter(|&count| count > 0)
 }
 
-/// Shows the unread count on the Dock icon, or on Windows the taskbar
-/// button. Returns false while the window cannot show it yet, so the next
-/// pass tries again.
+/// Shows the unread count on the Dock icon, on Windows the taskbar button,
+/// and on Linux the dock or panel icon. Returns false while the window cannot
+/// show it yet, so the next pass tries again.
 #[cfg(target_os = "macos")]
 fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
     use objc2_app_kit::NSApplication;
@@ -1379,7 +1381,13 @@ fn set_unread_badge(window: Option<&winit::window::Window>, count: Option<u32>) 
     window.is_none_or(|window| taskbar::show_unread(window, count))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
+    launcher::show_unread(count);
+    true
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn set_unread_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> bool {
     true
 }

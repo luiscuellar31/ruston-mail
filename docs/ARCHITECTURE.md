@@ -113,8 +113,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
 - The Inbox unread count goes on the Dock tile on macOS and, through
   [`ui/taskbar.rs`](../src/ui/taskbar.rs), over the Windows taskbar button as
   an overlay icon: a red disc with the count, up to "99+", drawn in Segoe UI
-  with GDI, and the count as its description. The shell sets it once the
-  window is visible and again when the count or the Settings option changes.
+  with GDI, and the count as its description. On Linux,
+  [`ui/launcher.rs`](../src/ui/launcher.rs) sends it as Unity's
+  `com.canonical.Unity.LauncherEntry` `Update` signal for the desktop entry,
+  which Ubuntu's dock, Dash to Dock and KDE's task manager read, from a thread
+  of its own so the interface never waits for the session bus. The shell sets
+  it once the window is visible and again when the count or the Settings
+  option changes.
 - [`ui/identity.rs`](../src/ui/identity.rs) supplies the shared logo and app ID
   to the mailbox and composer viewports. It sets the Windows process identity
   before native windows are created. The ID matches the existing macOS bundle
