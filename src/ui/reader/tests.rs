@@ -887,22 +887,30 @@ fn assert_reader_geometry(
             scale,
         );
     }
+    // Each loaded text has a loading bar whose corner is where the text
+    // goes, whatever order the bars are drawn in.
     let bars = rounded_rects(loading, 4);
+    let bar_at = |label: &str, corner: fn(&egui::Rect) -> egui::Pos2, point: egui::Pos2| {
+        *bars
+            .iter()
+            .find(|bar| {
+                let delta = (corner(bar) - point).abs() * scale;
+                delta.x <= 0.5 && delta.y <= 0.5
+            })
+            .unwrap_or_else(|| panic!("no bar for {label} at {point:?}, scale={scale}: {bars:?}"))
+    };
     let sender = text_rect(loaded, "Alex Rivera");
-    assert_same_pixel_position("sender", bars[0].left_top(), sender.left_top(), scale);
-    assert!((bars[0].height() - sender.height()).abs() * scale <= 0.5);
-    let date_index = if expanded { 3 } else { 2 };
+    let sender_bar = bar_at("sender", egui::Rect::left_top, sender.left_top());
+    assert!((sender_bar.height() - sender.height()).abs() * scale <= 0.5);
     let date = text_rect(loaded, &format_message_time(1_791_327_600, &Local));
-    assert_same_pixel_position(
-        "date",
-        bars[date_index].right_top(),
-        date.right_top(),
-        scale,
-    );
+    bar_at("date", egui::Rect::right_top, date.right_top());
     if expanded {
-        for (index, label) in [(1, "alex@example.com"), (2, "To: team@example.org")] {
-            let text = text_rect(loaded, label);
-            assert_same_pixel_position(label, bars[index].left_top(), text.left_top(), scale);
+        for label in ["alex@example.com", "To: team@example.org"] {
+            bar_at(
+                label,
+                egui::Rect::left_top,
+                text_rect(loaded, label).left_top(),
+            );
         }
         for label in ["Reply", "Reply all", "Forward"] {
             assert_same_pixel_position(
@@ -924,13 +932,12 @@ fn assert_reader_geometry(
                 }
             })
             .unwrap();
-        assert_same_pixel_position("body start", bars[4].left_top(), body, scale);
+        bar_at("body start", egui::Rect::left_top, body);
     } else {
-        assert_same_pixel_position(
+        bar_at(
             "preview",
-            bars[1].left_top(),
+            egui::Rect::left_top,
             text_rect(loaded, "Hello.").left_top(),
-            scale,
         );
     }
 }
