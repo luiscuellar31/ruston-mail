@@ -644,7 +644,8 @@ instead of an unknown outcome.
   formatting in the CLI; put shared mail behavior in the core. Output helpers
   are in [`render.rs`](../crates/ruston-cli/src/render.rs). Its
   [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) converts HTML
-  messages to readable Markdown-style text for the default read format. It
+  messages to readable Markdown-style text for the default read format, and
+  for every message `conversations read` shows. It
   represents at most eight levels of quotes and lists and caps converted output
   at 1 MiB, including a truncation notice. Output is accumulated directly in a
   bounded buffer; staging text, span metadata, and link targets also have a byte

@@ -361,8 +361,14 @@ pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[ConversationMe
         };
         print_message_header(&m.meta, verdict_name(m.verdict), &m.mime_type);
         terminal::println!();
-        terminal::print_body(&m.body, BodyFormat::Readable);
+        terminal::print_body(&thread_body(m), BodyFormat::Readable);
     }
+}
+
+/// What a thread shows of an opened message: what `messages read` shows by
+/// default, HTML as text and a huge body cut short.
+fn thread_body(message: &FullMessage) -> Cow<'_, str> {
+    displayed_body(&message.body, &message.mime_type, ReadFormat::Text)
 }
 
 pub fn labels_list(json: bool, labels: &[Label], kind: LabelKind) {
@@ -543,6 +549,27 @@ mod tests {
         assert_eq!(label_name("16"), "snoozed");
         // Unknown / custom label ids pass through unchanged.
         assert_eq!(label_name("custom-xyz"), "custom-xyz");
+    }
+
+    #[test]
+    fn a_thread_shows_html_as_text_and_cuts_a_huge_body_short() {
+        let message = |body: String| FullMessage {
+            meta: MessageMetadata::default(),
+            body,
+            mime_type: "text/html".into(),
+            verdict: ruston_core::Verdict::Verified,
+            attachments: Vec::new(),
+            reply_tos: Vec::new(),
+        };
+        let read = thread_body(&message("<p>Hi <b>team</b></p>".into())).into_owned();
+        assert!(read.contains("Hi"), "{read}");
+        assert!(!read.contains("<p>"), "{read}");
+
+        let huge = format!("<p>{}</p>", "x".repeat(2 * 1024 * 1024));
+        let huge_message = message(huge.clone());
+        let read = thread_body(&huge_message);
+        assert!(read.len() < huge.len());
+        assert!(read.contains("[Message truncated."));
     }
 
     #[test]
