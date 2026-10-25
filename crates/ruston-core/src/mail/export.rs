@@ -150,7 +150,7 @@ impl Client {
             let mut eml = EmlWriter::new(&mut file, &full, message.header.as_deref())?;
             for attachment in &message.attachments {
                 let (_, bytes) = self
-                    .download_attachment_from_message(&message, attachment)
+                    .download_listed_attachment(&message.meta, attachment)
                     .await?;
                 eml.attachment(attachment, &bytes)?;
             }

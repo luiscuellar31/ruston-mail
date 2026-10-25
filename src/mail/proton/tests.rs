@@ -1047,3 +1047,60 @@ fn expired_session_errors_are_distinguished() {
         MailboxError::Unavailable
     );
 }
+
+fn listed_message(id: &str, attachments: &[(&str, Option<&str>)]) -> FullMessage {
+    FullMessage {
+        meta: MessageMetadata {
+            id: id.into(),
+            ..MessageMetadata::default()
+        },
+        body: String::new(),
+        mime_type: "text/plain".into(),
+        verdict: Verdict::Unsigned,
+        attachments: attachments
+            .iter()
+            .map(|(id, disposition)| Attachment {
+                id: (*id).into(),
+                key_packets: Some(format!("packets of {id}")),
+                disposition: disposition.map(str::to_owned),
+                ..Attachment::default()
+            })
+            .collect(),
+        reply_tos: Vec::new(),
+    }
+}
+
+#[test]
+fn attachments_of_messages_read_lately_are_kept_ready_to_save() {
+    let listed = ListedAttachments::default();
+    listed.remember(&listed_message(
+        "message",
+        &[("file", Some("attachment")), ("logo", Some("inline"))],
+    ));
+
+    let (meta, attachment) = listed.find("message", "file").expect("kept");
+    assert_eq!(meta.id, "message");
+    assert_eq!(attachment.key_packets.as_deref(), Some("packets of file"));
+    // Inline parts are the body's own, and the reader offers none.
+    assert!(listed.find("message", "logo").is_none());
+    // An attachment is known only with its own message.
+    assert!(listed.find("other", "file").is_none());
+
+    // Reading the message again keeps it once.
+    listed.remember(&listed_message("message", &[("file", None)]));
+    assert_eq!(listed.0.lock().unwrap().len(), 1);
+    for index in 1..LISTED_ATTACHMENTS {
+        listed.remember(&listed_message(
+            &format!("m{index}"),
+            &[(&format!("a{index}"), None)],
+        ));
+    }
+    assert!(listed.find("message", "file").is_some());
+    listed.remember(&listed_message("newest", &[("last", None)]));
+    assert!(
+        listed.find("message", "file").is_none(),
+        "the oldest went first"
+    );
+    assert!(listed.find("m1", "a1").is_some());
+    assert!(listed.find("newest", "last").is_some());
+}

@@ -803,7 +803,12 @@ instead of an unknown outcome.
   malformed signatures, and mismatches return `AttachmentVerificationFailed`
   before any bytes reach a caller or saving callback; discarded plaintext is
   zeroized. Unsigned attachments retain their existing behavior. All download
-  methods and EML export share this check. The desktop preserves the typed
+  methods and EML export share this check. `Client::download_attachment`
+  fetches the message for the attachment's key packets;
+  `download_listed_attachment` starts from a message already read. The desktop
+  adapter remembers the last 256 attachments of the messages it read, each
+  with its message's metadata, so saving one from the reader fetches no
+  message; one it has forgotten takes the longer way. The desktop preserves the typed
   failure through its adapter and shows that the file was not saved; the CLI
   reports the core error. Low-level crypto decryption remains separate from
   signature verification for compatibility.

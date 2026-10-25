@@ -4,7 +4,7 @@ use super::Client;
 use crate::api;
 use crate::crypto;
 use crate::error::{Error, Result};
-use crate::model::message::{Attachment, Message};
+use crate::model::message::{Attachment, MessageMetadata};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
@@ -234,12 +234,16 @@ impl Client {
             .ok_or_else(|| Error::NotFound {
                 kind: "attachment".into(),
             })?;
-        self.download_attachment_from_message(&msg, att).await
+        self.download_listed_attachment(&msg.meta, att).await
     }
 
-    pub(super) async fn download_attachment_from_message(
+    /// Download + decrypt one attachment of a message already read, from the
+    /// message's metadata and the attachment as that read listed it, with
+    /// its key packets. Unlike [`Self::download_attachment`], it does not
+    /// fetch the message again. The same signature rules apply.
+    pub async fn download_listed_attachment(
         &self,
-        msg: &Message,
+        meta: &MessageMetadata,
         att: &Attachment,
     ) -> Result<(String, Vec<u8>)> {
         let too_large = || Error::AttachmentTooLarge {
@@ -254,7 +258,7 @@ impl Client {
             .as_deref()
             .ok_or_else(|| Error::Crypto("attachment has no key packets".into()))?;
         let addr = self
-            .keys_for_message(&msg.meta.address_id)
+            .keys_for_message(&meta.address_id)
             .ok_or_else(|| Error::Crypto("no address key for attachment".into()))?;
 
         // Resolve verifier keys before allocating and decrypting attachment data.
@@ -262,7 +266,7 @@ impl Client {
         let signature = att.signature.as_deref().filter(|sig| !sig.is_empty());
         let sender_pubs = if signature.is_some() {
             // A failed lookup is reported as itself, so it can be retried.
-            let keys = self.sender_pubkeys(&msg.meta.sender.address).await?;
+            let keys = self.sender_pubkeys(&meta.sender.address).await?;
             if keys.is_empty() {
                 return Err(Error::AttachmentVerificationFailed);
             }
@@ -310,7 +314,7 @@ impl Client {
         let msg = api::messages::get_message(self.http(), message_id).await?;
         for att in &msg.attachments {
             if include_inline || !att.is_inline() {
-                let (name, bytes) = self.download_attachment_from_message(&msg, att).await?;
+                let (name, bytes) = self.download_listed_attachment(&msg.meta, att).await?;
                 receive(name, bytes)?;
             }
         }

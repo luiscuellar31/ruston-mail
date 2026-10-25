@@ -2,6 +2,7 @@ use super::*;
 use crate::crypto::{AddressKeys, StoredKey};
 use crate::mail::test_support;
 use crate::model::enums::key_flag;
+use crate::model::message::Message;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use proton_crypto::crypto::{
     ArmorerSync, DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync,
@@ -101,7 +102,7 @@ async fn an_attachment_too_large_to_open_is_not_downloaded() {
     attachment.size = api::attachments::MAX_ATTACHMENT_RESPONSE_BYTES as u64 + 1;
 
     let error = client
-        .download_attachment_from_message(&message, &attachment)
+        .download_listed_attachment(&message.meta, &attachment)
         .await
         .unwrap_err();
     assert!(
@@ -114,7 +115,7 @@ async fn an_attachment_too_large_to_open_is_not_downloaded() {
     attachment.size = api::attachments::MAX_ATTACHMENT_RESPONSE_BYTES as u64;
     assert!(
         client
-            .download_attachment_from_message(&message, &attachment)
+            .download_listed_attachment(&message.meta, &attachment)
             .await
             .is_ok()
     );
@@ -135,7 +136,7 @@ async fn attachment_with_a_malformed_signature_is_not_returned() {
     };
     assert!(
         client
-            .download_attachment_from_message(&message, &attachment)
+            .download_listed_attachment(&message.meta, &attachment)
             .await
             .is_err(),
         "plaintext must not be returned without checking a present signature"
@@ -163,7 +164,7 @@ async fn verified_and_unsigned_attachments_remain_downloadable() {
     for signature in [attachment.signature.clone(), None, Some(String::new())] {
         attachment.signature = signature;
         let (name, bytes) = client
-            .download_attachment_from_message(&message, &attachment)
+            .download_listed_attachment(&message.meta, &attachment)
             .await
             .unwrap();
         assert_eq!(name, "file.txt");
@@ -177,6 +178,29 @@ async fn verified_and_unsigned_attachments_remain_downloadable() {
             .filter(|request| request.url.path() == "/core/v4/keys/all")
             .count(),
         1
+    );
+}
+
+#[tokio::test]
+async fn an_attachment_listed_by_a_read_downloads_without_its_message() {
+    let server = MockServer::start().await;
+    let (client, attachment) = attachment_client(&server).await;
+    let message = message_with_attachment(attachment.clone());
+    Mock::given(method("GET"))
+        .and(path("/mail/v4/messages/message"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let (name, bytes) = client
+        .download_listed_attachment(&message.meta, &attachment)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (name.as_str(), bytes.as_slice()),
+        ("file.txt", &b"attachment payload"[..])
     );
 }
 
@@ -197,7 +221,7 @@ async fn signed_attachment_without_sender_keys_is_rejected_before_download() {
         .await;
     assert!(matches!(
         client
-            .download_attachment_from_message(&message, &message.attachments[0])
+            .download_listed_attachment(&message.meta, &message.attachments[0])
             .await,
         Err(Error::AttachmentVerificationFailed)
     ));
@@ -219,7 +243,7 @@ async fn a_compromised_sender_key_never_verifies() {
     let mut message = message_with_attachment(attachment);
     assert!(matches!(
         client
-            .download_attachment_from_message(&message, &message.attachments[0])
+            .download_listed_attachment(&message.meta, &message.attachments[0])
             .await,
         Err(Error::AttachmentVerificationFailed)
     ));
@@ -249,7 +273,7 @@ async fn a_failed_sender_key_lookup_is_reported_as_itself() {
     // Not a verification failure: the lookup can be retried.
     assert!(matches!(
         client
-            .download_attachment_from_message(&message, &message.attachments[0])
+            .download_listed_attachment(&message.meta, &message.attachments[0])
             .await,
         Err(Error::Api(ref error)) if error.http_status == 503
     ));

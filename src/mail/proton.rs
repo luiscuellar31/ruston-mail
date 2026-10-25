@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,10 +33,13 @@ pub const PAGE_SIZE: u32 = 50;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How many recipients' keys a draft's protection check asks for at once.
 const PROTECTION_CONCURRENCY: usize = 4;
-/// Saving an attachment fetches its message and the sender's keys, then the
-/// file itself, which may take core's whole transfer deadline.
+/// Saving an attachment may fetch its message, then the sender's keys and
+/// the file itself, which may take core's whole transfer deadline.
 const ATTACHMENT_SAVE_TIMEOUT: Duration = ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT
     .saturating_add(REQUEST_TIMEOUT.saturating_mul(2));
+/// How many attachments of the messages read lately are kept ready to save:
+/// more than a reader shows, with the conversations kept for going back.
+const LISTED_ATTACHMENTS: usize = 256;
 /// A complete authentication attempt must eventually release its credentials
 /// even when the server stops responding. The time a person spends on a
 /// prompt, solving a CAPTCHA or finding a code, does not count.
@@ -126,6 +129,46 @@ pub struct ProtonMailService {
     email: Option<String>,
     own_addresses: OwnAddresses,
     inspection_limiter: Arc<Semaphore>,
+    listed: ListedAttachments,
+}
+
+/// The attachments of the messages read lately, each with its message's
+/// metadata, as core needs them to download one without fetching its whole
+/// message again. The oldest are forgotten first; saving one of those
+/// fetches its message, as before.
+#[derive(Default)]
+struct ListedAttachments(Mutex<VecDeque<(MessageMetadata, Attachment)>>);
+
+impl ListedAttachments {
+    /// Keeps the attachments of a message just read, except the inline parts
+    /// of its body, which the reader does not offer.
+    fn remember(&self, message: &FullMessage) {
+        let Ok(mut listed) = self.0.lock() else {
+            return;
+        };
+        for attachment in message.attachments.iter().filter(|a| !a.is_inline()) {
+            listed.retain(|(_, known)| known.id != attachment.id);
+            if listed.len() == LISTED_ATTACHMENTS {
+                listed.pop_front();
+            }
+            listed.push_back((message.meta.clone(), attachment.clone()));
+        }
+    }
+
+    fn find(&self, message_id: &str, attachment_id: &str) -> Option<(MessageMetadata, Attachment)> {
+        self.0
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(meta, attachment)| meta.id == message_id && attachment.id == attachment_id)
+            .cloned()
+    }
+
+    fn remember_opened(&self, message: &ConversationMessage) {
+        if let ConversationMessage::Opened(message) = message {
+            self.remember(message);
+        }
+    }
 }
 
 impl ProtonMailService {
@@ -379,6 +422,9 @@ impl ProtonMailService {
             map_mailbox_error,
         )
         .await?;
+        for message in &messages {
+            self.listed.remember_opened(message);
+        }
         let labels = conversation
             .labels
             .into_iter()
@@ -406,6 +452,7 @@ impl ProtonMailService {
             map_mailbox_error,
         )
         .await?;
+        self.listed.remember_opened(&message);
         Ok(single_message_detail(id, message, &self.own_addresses))
     }
 
@@ -441,14 +488,31 @@ impl ProtonMailService {
     }
 
     /// Fetches and decrypts one attachment, returning the name the sender gave
-    /// it and its contents. Nothing is written to disk here.
+    /// it and its contents. Nothing is written to disk here. An attachment of
+    /// a message read lately downloads from what that read listed; any other
+    /// fetches its message first.
     pub async fn download_attachment(
         &self,
         message_id: &str,
         attachment_id: &str,
     ) -> Result<(String, Vec<u8>), MailboxError> {
+        let listed = self.listed.find(message_id, attachment_id);
+        let download = async {
+            match &listed {
+                Some((meta, attachment)) => {
+                    self.client
+                        .download_listed_attachment(meta, attachment)
+                        .await
+                }
+                None => {
+                    self.client
+                        .download_attachment(message_id, attachment_id)
+                        .await
+                }
+            }
+        };
         timed_with(
-            self.client.download_attachment(message_id, attachment_id),
+            download,
             ATTACHMENT_SAVE_TIMEOUT,
             MailboxError::Connection,
             map_mailbox_error,
@@ -521,6 +585,7 @@ impl ProtonMailService {
             email,
             own_addresses,
             inspection_limiter: Arc::new(Semaphore::new(INSPECTION_CONCURRENCY)),
+            listed: ListedAttachments::default(),
         }
     }
 }
