@@ -195,10 +195,7 @@ async fn invalid_attachments_are_rejected_before_draft_creation() {
         .unwrap();
     let client = Client {
         http: HttpClient::new(server.uri(), "Other"),
-        keys: crypto::keys::KeyStore {
-            user_keys: vec![],
-            addresses: vec![],
-        },
+        keys: crypto::keys::KeyStore { addresses: vec![] },
         paths: crate::session::Paths::with_base(path.with_extension("session")),
         profile: "test".into(),
         session_uid: "test".into(),

@@ -14,10 +14,7 @@ use wiremock::MockServer;
 pub(crate) fn client(server: &MockServer, addresses: Vec<AddressKeys>) -> Client {
     Client {
         http: HttpClient::new(server.uri(), "Other"),
-        keys: KeyStore {
-            user_keys: Vec::new(),
-            addresses,
-        },
+        keys: KeyStore { addresses },
         paths: Paths::with_base(std::env::temp_dir()),
         profile: "test".into(),
         session_uid: "test".into(),

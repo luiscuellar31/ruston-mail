@@ -126,11 +126,10 @@ pub struct AddressKeys {
     pub keys: Vec<StoredKey>,
 }
 
-/// All unlocked keys for the account.
+/// The account's unlocked address keys. User keys only open address keys,
+/// so none is kept once they have.
 #[derive(Clone)]
 pub struct KeyStore {
-    /// Unlocked user keys.
-    pub user_keys: Vec<StoredKey>,
     /// Unlocked keys per address, ascending by API `Order` (default-first).
     pub addresses: Vec<AddressKeys>,
 }
@@ -238,30 +237,17 @@ fn unlock_inner<P: PGPProviderSync>(
     }
     tracing::info!(target: "ruston_core::crypto", addresses = addresses.len(), "key hierarchy unlocked");
 
-    let key_password = user_keys.key_password().clone();
-    Ok((
-        KeyStore {
-            user_keys: user_keys.stored,
-            addresses,
-        },
-        key_password,
-    ))
+    Ok((KeyStore { addresses }, user_keys.key_password))
 }
 
-/// The account's unlocked user keys: as kept in the `KeyStore`, imported to
-/// open address key tokens, and their public halves to check the tokens'
-/// signatures.
+/// The account's unlocked user keys, imported to open address key tokens,
+/// their public halves to check the tokens' signatures, and the key password
+/// that opens legacy address keys. They go once address keys are open.
 struct UserKeys<P: PGPProviderSync> {
-    stored: Vec<StoredKey>,
     privs: Vec<P::PrivateKey>,
     pubs: Vec<P::PublicKey>,
-}
-
-impl<P: PGPProviderSync> UserKeys<P> {
-    /// The key password: the passphrase of the first user key that opened.
-    fn key_password(&self) -> &SecretString {
-        &self.stored[0].passphrase
-    }
+    /// The passphrase of the first user key that opened.
+    key_password: SecretString,
 }
 
 /// Opens each active user key with the passphrase `passphrase_for` gives it.
@@ -272,7 +258,7 @@ fn unlock_user_keys<P: PGPProviderSync>(
     user: &User,
     passphrase_for: impl Fn(&ApiKey) -> Result<SecretString>,
 ) -> Result<UserKeys<P>> {
-    let mut stored = Vec::new();
+    let mut key_password = None;
     let mut privs = Vec::new();
     for key in user.keys.iter().filter(|key| key.is_active()) {
         let passphrase = match passphrase_for(key) {
@@ -289,26 +275,21 @@ fn unlock_user_keys<P: PGPProviderSync>(
         ) {
             tracing::trace!(target: "ruston_core::crypto", key_id = %key.id, "unlocked user key");
             privs.push(imported);
-            stored.push(StoredKey {
-                armored: key.private_key.clone(),
-                passphrase,
-                // Only address keys encrypt, sign and decrypt mail.
-                unlocked: None,
-            });
+            key_password.get_or_insert(passphrase);
         }
     }
-    if privs.is_empty() {
+    let Some(key_password) = key_password else {
         return Err(Error::UserKeysLocked);
-    }
+    };
     tracing::debug!(target: "ruston_core::crypto", count = privs.len(), "user keys unlocked");
     let pubs = privs
         .iter()
         .filter_map(|private| provider.private_key_to_public_key(private).ok())
         .collect();
     Ok(UserKeys {
-        stored,
         privs,
         pubs,
+        key_password,
     })
 }
 
@@ -367,7 +348,7 @@ fn address_key_passphrase<P: PGPProviderSync>(
 ) -> Option<SecretString> {
     let (Some(token), Some(signature)) = (&key.token, &key.signature) else {
         tracing::trace!(target: "ruston_core::crypto", address = %address.email, key_id = %key.id, "address key: legacy skp passphrase");
-        return Some(user_keys.key_password().clone());
+        return Some(user_keys.key_password.clone());
     };
     tracing::trace!(target: "ruston_core::crypto", address = %address.email, key_id = %key.id, "address key: decrypting token + verifying signature against user keys");
     decrypt_token(
@@ -579,7 +560,6 @@ mod tests {
         // `addresses` is built ascending-by-`Order` during unlock, so the
         // primary/default sending address is simply the first entry.
         let ks = KeyStore {
-            user_keys: vec![],
             addresses: vec![
                 AddressKeys {
                     address_id: "1".into(),
@@ -756,13 +736,8 @@ mod tests {
         )
         .unwrap();
 
+        // The inactive user key, listed first, would have set the key password.
         assert_eq!(key_password.expose_secret(), user_password);
-        let user_keys: Vec<&str> = store
-            .user_keys
-            .iter()
-            .map(|key| key.armored.as_str())
-            .collect();
-        assert_eq!(user_keys, [user_key.private_key.as_str()]);
         let address_keys: Vec<(&str, &str)> = store.addresses[0]
             .keys
             .iter()
@@ -848,27 +823,33 @@ mod tests {
             panic!("the key with a readable salt still opens");
         };
         assert_eq!(key_password.expose_secret(), user_password);
-        assert_eq!(store.user_keys.len(), 1);
+        assert_eq!(store.addresses[0].keys.len(), 1);
     }
 
     #[test]
     fn the_key_password_is_the_first_user_keys_that_opens() {
         let second_password = derived(&salt(5));
+        let third_password = derived(&salt(6));
         // The primary user key is listed first, but no longer opens.
         let (stale, _) = listed_key("stale", "user@proton.me", "changed since", 1, None);
         let (second, _) = listed_key("second", "user@proton.me", &second_password, 0, None);
-        // A later key that opens too does not change it.
-        let (third, _) = listed_key("third", "user@proton.me", &derived(&salt(6)), 0, None);
+        // A later key that opens too does not change it, but still opens the
+        // address keys whose tokens it holds.
+        let (third, _) = listed_key("third", "user@proton.me", &third_password, 0, None);
         let (legacy, _) = listed_key("legacy", "me@proton.me", &second_password, 1, None);
+        let (mut by_third, _) = listed_key("by-third", "me@proton.me", "third's token", 0, None);
+        let third_side = (&third, third_password.as_str());
+        let (sealed, signature) = token("third's token", third_side, third_side);
+        (by_third.token, by_third.signature) = (Some(sealed), Some(signature));
         let user = User {
             id: "user".into(),
-            keys: vec![stale, second.clone(), third.clone()],
+            keys: vec![stale, second, third.clone()],
         };
         let address = Address {
             id: "address".into(),
             email: "me@proton.me".into(),
             order: 1,
-            keys: vec![legacy.clone()],
+            keys: vec![legacy.clone(), by_third.clone()],
         };
         let salts = [
             key_salt("stale", Some(salt(4))),
@@ -887,16 +868,15 @@ mod tests {
         };
 
         assert_eq!(key_password.expose_secret(), second_password);
-        let user_keys: Vec<&str> = store
-            .user_keys
+        let address_keys: Vec<&str> = store.addresses[0]
+            .keys
             .iter()
             .map(|key| key.armored.as_str())
             .collect();
         assert_eq!(
-            user_keys,
-            [second.private_key.as_str(), third.private_key.as_str()]
+            address_keys,
+            [legacy.private_key.as_str(), by_third.private_key.as_str()]
         );
-        assert_eq!(store.addresses[0].keys[0].armored, legacy.private_key);
     }
 
     #[test]

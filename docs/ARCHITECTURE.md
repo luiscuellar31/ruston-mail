@@ -876,6 +876,8 @@ instead of an unknown outcome.
   message cryptography. Each address key is unlocked once per session and kept
   as an unlocked export in zeroized memory, so later operations skip its
   passphrase derivation; the armored key and passphrase stay as a fallback.
+  User keys only open address keys, so `KeyStore` keeps none of them: unlocking
+  returns the key password for the saved session and lets the rest go.
   An address's keys are kept primary first, then those Proton has not marked
   compromised or obsolete, whatever order the API lists them in; messages are
   signed and drafts encrypted with the first. OpenPGP dates and checks

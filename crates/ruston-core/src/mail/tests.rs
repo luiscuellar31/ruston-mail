@@ -83,7 +83,6 @@ async fn saved_logout_client(base_url: &str, store: Arc<dyn SecretStore>) -> (Cl
         Client {
             http,
             keys: KeyStore {
-                user_keys: Vec::new(),
                 addresses: Vec::new(),
             },
             paths,
