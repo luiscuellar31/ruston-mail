@@ -115,7 +115,14 @@ docs: map the workspace architecture
 ```
 
 For a breaking change, use `!` after the type or scope and explain the impact
-and migration in the commit body with a `BREAKING CHANGE:` footer.
+and migration in the commit body with a `BREAKING CHANGE:` footer. The release
+notes show only the footer's first line, so make that line a short, complete
+sentence, and put any further detail on the lines after it:
+
+```text
+BREAKING CHANGE: the CLI exits with 6 when the session is refused.
+Scripts that read 2 for any failure should also handle 6.
+```
 
 The release notes list each subject line, grouped by type and by the area of
 its scope, so choose the type by who notices the change:
