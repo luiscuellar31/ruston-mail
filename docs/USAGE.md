@@ -507,7 +507,10 @@ through a published PGP key get an HTML body as plain text.
 `login` asks for the account password, and for a TOTP code or a separate
 mailbox password when the account needs them, without showing what you type.
 Give them as `PROTON_PASSWORD`, `PROTON_TOTP` and `PROTON_MAILBOX_PASSWORD` in
-scripts rather than as options, which other programs can read. Likewise,
+scripts rather than as options, which other programs can read; `PROTON_USER`
+gives the username. The options that shape a sign-in, such as `--api-url`,
+`--client` and `--captcha-chrome`, belong to `login` alone: `ruston-cli login
+--help` lists them, and another command refuses them. Likewise,
 `messages send --eo-password` without a value asks twice for the password that
 protects the message. `messages send --send-at` reports the message as
 scheduled, with the time Proton sends it, since it has not left yet; its JSON

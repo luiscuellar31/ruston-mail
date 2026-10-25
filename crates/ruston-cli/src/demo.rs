@@ -663,7 +663,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
     let (fixtures_messages, fixtures_convs) = fixtures();
 
     match cmd {
-        Command::Login => {
+        Command::Login(_) => {
             if ctx.json {
                 render::json_out(&json!({
                     "status": "ok",

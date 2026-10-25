@@ -46,54 +46,56 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Override the API base URL (login only): https, or plain http to this
-    /// machine for a local test server.
-    #[arg(long, global = true, value_parser = parse_api_url)]
-    pub api_url: Option<String>,
-
-    /// Override the app-version header (login only).
-    #[arg(long, global = true)]
-    pub app_version: Option<String>,
-
-    // Secrets read from the environment: help names the variable, never its value.
-    /// TOTP two-factor code (prompted for when required if omitted).
-    #[arg(long, global = true, env = "PROTON_TOTP", hide_env_values = true)]
-    pub totp: Option<String>,
-
-    /// Separate mailbox password (two-password accounts). On a terminal it is
-    /// asked for, hidden, when the account has one and it is not given.
-    #[arg(
-        long,
-        global = true,
-        env = "PROTON_MAILBOX_PASSWORD",
-        hide_env_values = true
-    )]
-    pub mailbox_password: Option<String>,
-
-    /// Pre-solved human-verification (CAPTCHA) token, skips the interactive flow.
-    #[arg(long, global = true, env = "PROTON_HV_TOKEN", hide_env_values = true)]
-    pub captcha_token: Option<String>,
-
-    /// Present as an official client (sets app-version + User-Agent unless overridden).
-    #[arg(long, global = true, value_enum)]
-    pub client: Option<ClientPreset>,
-
-    /// Override the User-Agent header (login only; default `ruston-cli/<version> (<os>)`).
-    #[arg(long, global = true)]
-    pub user_agent: Option<String>,
-
-    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window, or
-    /// Chromium, Brave or Edge (throwaway profile); press Enter once verified
-    /// and the window is closed.
-    #[arg(long, global = true)]
-    pub captcha_chrome: bool,
-
-    /// Run in offline demo mode using fictional data without contacting Proton.
+    /// Run in offline demo mode using fictional data without contacting Proton;
+    /// `RUSTON_DEMO=1` turns it on too.
     #[arg(long, global = true)]
     pub demo: bool,
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// What `login` alone takes: where and as which client to sign in, and the
+/// secrets a sign-in may ask for. The username and password come from
+/// `PROTON_USER` and `PROTON_PASSWORD`, or are asked for.
+#[derive(Debug, Args)]
+pub struct LoginArgs {
+    /// Override the API base URL: https, or plain http to this machine for a
+    /// local test server.
+    #[arg(long, value_parser = parse_api_url)]
+    pub api_url: Option<String>,
+
+    /// Override the app-version header.
+    #[arg(long)]
+    pub app_version: Option<String>,
+
+    // Secrets read from the environment: help names the variable, never its value.
+    /// TOTP two-factor code (prompted for when required if omitted).
+    #[arg(long, env = "PROTON_TOTP", hide_env_values = true)]
+    pub totp: Option<String>,
+
+    /// Separate mailbox password (two-password accounts). On a terminal it is
+    /// asked for, hidden, when the account has one and it is not given.
+    #[arg(long, env = "PROTON_MAILBOX_PASSWORD", hide_env_values = true)]
+    pub mailbox_password: Option<String>,
+
+    /// Pre-solved human-verification (CAPTCHA) token, skips the interactive flow.
+    #[arg(long, env = "PROTON_HV_TOKEN", hide_env_values = true)]
+    pub captcha_token: Option<String>,
+
+    /// Present as an official client (sets app-version + User-Agent unless overridden).
+    #[arg(long, value_enum)]
+    pub client: Option<ClientPreset>,
+
+    /// Override the User-Agent header (default `ruston-cli/<version> (<os>)`).
+    #[arg(long)]
+    pub user_agent: Option<String>,
+
+    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window, or
+    /// Chromium, Brave or Edge (throwaway profile); press Enter once verified
+    /// and the window is closed.
+    #[arg(long)]
+    pub captcha_chrome: bool,
 }
 
 fn parse_profile(value: &str) -> std::result::Result<String, String> {
@@ -209,14 +211,6 @@ pub struct Ctx {
     pub profile: String,
     pub json: bool,
     pub demo: bool,
-    pub api_url: Option<String>,
-    pub app_version: Option<String>,
-    pub totp: Option<String>,
-    pub mailbox_password: Option<String>,
-    pub captcha_token: Option<String>,
-    pub client: Option<ClientPreset>,
-    pub user_agent: Option<String>,
-    pub captcha_chrome: bool,
 }
 
 impl From<&Cli> for Ctx {
@@ -228,22 +222,15 @@ impl From<&Cli> for Ctx {
             profile: c.profile.clone(),
             json: c.json,
             demo: c.demo || env_demo,
-            api_url: c.api_url.clone(),
-            app_version: c.app_version.clone(),
-            totp: c.totp.clone(),
-            mailbox_password: c.mailbox_password.clone(),
-            captcha_token: c.captcha_token.clone(),
-            client: c.client,
-            user_agent: c.user_agent.clone(),
-            captcha_chrome: c.captcha_chrome,
         }
     }
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Log in to Proton Mail (prompts for credentials unless given via env).
-    Login,
+    /// Log in to Proton Mail. The username and password come from
+    /// `PROTON_USER` and `PROTON_PASSWORD`, or are asked for.
+    Login(LoginArgs),
     /// Revoke the server session and clear local state. A session that can no
     /// longer be resumed is still cleared from this device.
     Logout,
@@ -963,9 +950,10 @@ mod tests {
 
     #[test]
     fn help_never_shows_secrets_read_from_the_environment() {
-        let command = Cli::command();
+        let mut command = Cli::command();
+        let login = command.find_subcommand_mut("login").unwrap();
         for id in ["totp", "mailbox_password", "captcha_token"] {
-            let arg = command
+            let arg = login
                 .get_arguments()
                 .find(|arg| arg.get_id() == id)
                 .unwrap();
@@ -975,6 +963,39 @@ mod tests {
                 "help would print the value of {id}"
             );
         }
+    }
+
+    #[test]
+    fn sign_in_options_belong_to_login_alone() {
+        // Elsewhere they would be read and ignored.
+        for args in [
+            &["ruston-cli", "messages", "list", "--mailbox-password", "x"][..],
+            &[
+                "ruston-cli",
+                "--api-url",
+                "https://mail.example/api",
+                "whoami",
+            ],
+            &["ruston-cli", "logout", "--captcha-chrome"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?} was taken");
+        }
+        let Command::Login(login) = parse(&[
+            "ruston-cli",
+            "login",
+            "--api-url",
+            "https://mail.example/api",
+            "--client",
+            "web",
+            "--captcha-chrome",
+        ])
+        .command
+        else {
+            panic!("not a login");
+        };
+        assert_eq!(login.api_url.as_deref(), Some("https://mail.example/api"));
+        assert!(matches!(login.client, Some(ClientPreset::Web)));
+        assert!(login.captcha_chrome);
     }
 
     #[test]
