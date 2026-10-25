@@ -4,6 +4,7 @@ mod html;
 
 use crate::terminal::{self, BodyFormat};
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cli::{EmptyFolder, ReadFormat};
 use ruston_core::model::enums::label_ids;
@@ -16,7 +17,7 @@ use serde_json::json;
 /// Render per-label counts.
 pub fn counts(json_mode: bool, counts: &[LabelCount]) {
     if json_mode {
-        json_out(&counts);
+        json_out(&json!({ "counts": counts }));
         return;
     }
     for c in counts {
@@ -49,7 +50,7 @@ pub fn contacts_list(json_mode: bool, total: u32, contacts: &[Contact]) {
 /// Render contact email entries.
 pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
     if json_mode {
-        json_out(&emails);
+        json_out(&json!({ "emails": emails }));
         return;
     }
     terminal::println!("{} email(s)", emails.len());
@@ -61,7 +62,7 @@ pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
 /// Render the account's sending addresses.
 pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
     if json_mode {
-        json_out(&addrs);
+        json_out(&json!({ "addresses": addrs }));
         return;
     }
     terminal::println!("{} address(es)", addrs.len());
@@ -73,7 +74,8 @@ pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
 /// Render a filter list.
 pub fn filters_list(json_mode: bool, filters: &[Filter]) {
     if json_mode {
-        json_out(&filters.iter().map(filter_json).collect::<Vec<_>>());
+        let filters: Vec<_> = filters.iter().map(filter_json).collect();
+        json_out(&json!({ "filters": filters }));
         return;
     }
     terminal::println!("{} filter(s)", filters.len());
@@ -100,9 +102,33 @@ fn filter_json(f: &Filter) -> serde_json::Value {
     json!({ "ID": f.id, "Name": f.name, "Status": f.status, "Version": f.version })
 }
 
-/// Serialize a value as pretty JSON to stdout.
+/// Set for the offline demo, whose JSON says `"demo": true`, so a script
+/// cannot take its fictional mail for real.
+static DEMO: AtomicBool = AtomicBool::new(false);
+
+/// Marks this run's JSON as the demo's.
+pub fn mark_demo() {
+    DEMO.store(true, Ordering::Relaxed);
+}
+
+/// Serialize a value as pretty JSON to stdout; in the demo, an object also
+/// says `"demo": true`.
 pub fn json_out<T: serde::Serialize + ?Sized>(value: &T) {
-    terminal::write_json(value);
+    if !DEMO.load(Ordering::Relaxed) {
+        terminal::write_json(value);
+        return;
+    }
+    // Demo data is small, so building it once more to carry the mark costs
+    // nothing; real output is written as it is serialized.
+    match serde_json::to_value(value) {
+        Ok(mut marked) => {
+            if let Some(object) = marked.as_object_mut() {
+                object.insert("demo".into(), true.into());
+            }
+            terminal::write_json(&marked);
+        }
+        Err(_) => terminal::write_json(value),
+    }
 }
 
 fn fmt_addr(r: &Recipient) -> String {
@@ -372,14 +398,14 @@ fn thread_body(message: &FullMessage) -> Cow<'_, str> {
 }
 
 pub fn labels_list(json: bool, labels: &[Label], kind: LabelKind) {
-    if json {
-        json_out(labels);
-        return;
-    }
     let noun = match kind {
         LabelKind::Labels => "label",
         LabelKind::Folders => "folder",
     };
+    if json {
+        json_out(&json!({ format!("{noun}s"): labels }));
+        return;
+    }
     terminal::println!("{} {noun}(s)", labels.len());
     for l in labels {
         let parent = l
@@ -401,7 +427,7 @@ pub fn label_created(json: bool, label: &Label) {
 
 pub fn attachments_list(json: bool, atts: &[Attachment]) {
     if json {
-        json_out(atts);
+        json_out(&json!({ "attachments": atts }));
         return;
     }
     terminal::println!("{} attachment(s)", atts.len());

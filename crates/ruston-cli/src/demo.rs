@@ -660,6 +660,7 @@ fn page_of<T>(items: Vec<T>, page: u32, page_size: u32) -> Vec<T> {
 /// Dispatcher for CLI commands in offline demo mode.
 pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
     terminal::eprintln!("{NOTICE}");
+    render::mark_demo();
     let (fixtures_messages, fixtures_convs) = fixtures();
 
     match cmd {

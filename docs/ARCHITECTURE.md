@@ -763,7 +763,9 @@ instead of an unknown outcome.
   commands and saves its sample attachments as the live command does, with
   core's `save_under_free_name`: never over a file or through a link already
   there, and reported the same way. Its commands report through the same
-  `render` functions, with the same action names, as the live ones. Each demo
+  `render` functions, with the same action names, as the live ones, and
+  `render::mark_demo` makes `json_out` add `"demo": true` to every JSON object
+  it writes; lists are objects in both modes, so they can carry it. Each demo
   command first writes a note to standard error, since `RUSTON_DEMO` alone
   turns the demo on. The desktop has its own demo mailbox in `src/mail/demo.rs`.
 - [`mail/`](../crates/ruston-core/src/mail/) exposes the high-level `Client`

@@ -49,8 +49,8 @@ cargo run -p ruston-cli -- --demo messages list
 ```
 
 `RUSTON_DEMO` turns the CLI demo on as well, so every demo command first says
-on standard error that nothing reaches Proton; standard output and JSON stay as
-they are.
+on standard error that nothing reaches Proton, and its JSON says `"demo": true`,
+so a script cannot take fictional mail for real. Text output stays as it is.
 
 ## Checks
 

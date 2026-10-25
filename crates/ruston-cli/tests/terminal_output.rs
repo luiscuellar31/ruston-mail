@@ -72,15 +72,17 @@ fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
     };
     assert_eq!(
         json(&["settings", "sign", "on"]),
-        serde_json::json!({"status": "ok", "setting": "sign", "value": true})
+        serde_json::json!({"status": "ok", "setting": "sign", "value": true, "demo": true})
     );
     assert_eq!(
         json(&["settings", "attach-public-key", "off"]),
-        serde_json::json!({"status": "ok", "setting": "attach_public_key", "value": false})
+        serde_json::json!({
+            "status": "ok", "setting": "attach_public_key", "value": false, "demo": true
+        })
     );
     assert_eq!(
         json(&["messages", "empty", "spam", "--yes"]),
-        serde_json::json!({"status": "ok", "action": "empty", "folder": "spam"})
+        serde_json::json!({"status": "ok", "action": "empty", "folder": "spam", "demo": true})
     );
     let text = assert_safe(&run_ok(&["--demo", "settings", "sign", "off"]).stdout);
     assert_eq!(text, "Sign outgoing mail: off\n");
@@ -101,7 +103,7 @@ fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
     std::fs::remove_file(&file).unwrap();
     assert_eq!(
         written,
-        serde_json::json!({"status": "ok", "bytes": bytes, "path": path})
+        serde_json::json!({"status": "ok", "bytes": bytes, "path": path, "demo": true})
     );
 }
 
@@ -334,8 +336,31 @@ fn a_saved_draft_is_reported_as_saved_not_sent() {
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(
         value,
-        serde_json::json!({"status": "ok", "id": "draft-demo-saved-01"})
+        serde_json::json!({"status": "ok", "id": "draft-demo-saved-01", "demo": true})
     );
+}
+
+#[test]
+fn demo_json_says_so_and_lists_come_as_objects() {
+    for (args, list) in [
+        (&["labels", "list"][..], "labels"),
+        (&["labels", "list", "--folders"], "folders"),
+        (&["counts"], "counts"),
+        (&["addresses", "list"], "addresses"),
+        (&["filters", "list"], "filters"),
+        (&["contacts", "emails"], "emails"),
+        (&["attachments", "list", "msg-demo-03"], "attachments"),
+        (&["messages", "list"], "messages"),
+    ] {
+        let output = run_ok(&[&["--demo", "--json"][..], args].concat());
+        let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(shown[list].is_array(), "{args:?}: {shown}");
+        assert_eq!(shown["demo"], true, "{args:?}");
+    }
+    // A message read in full says so too.
+    let output = run_ok(&["--demo", "--json", "messages", "read", "msg-demo-01"]);
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(shown["demo"], true);
 }
 
 #[test]

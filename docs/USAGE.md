@@ -538,7 +538,9 @@ missing session, exit status 6, which signing in again fixes, from a mistake in
 the command, exit status 2; `--help` lists them all. With `--json`, a command
 that acts on messages, conversations, drafts, labels or filters reports
 `{"status": "ok", "action": …, "count": …, "ids": […]}`, where `action` is the
-command's own name, such as `move`, `undelete` or `enable`.
+command's own name, such as `move`, `undelete` or `enable`. Lists come as an
+object too, the list under its name (`{"labels": […]}`, `{"counts": […]}`), and
+the demo's JSON adds `"demo": true`.
 
 Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
 seconds. Commands with multiple requests or a rate-limit retry can take longer.
