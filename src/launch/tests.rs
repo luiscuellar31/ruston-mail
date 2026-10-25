@@ -6,7 +6,14 @@ impl Directory {
     fn new() -> Self {
         let mut random = [0; 8];
         getrandom::fill(&mut random).unwrap();
-        Self(std::env::temp_dir().join(format!(
+        // macOS's temporary folder, under /var/folders, makes a socket's path
+        // longer than its 104 bytes, and activation would fall back to TCP.
+        let base = if cfg!(target_os = "macos") {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        Self(base.join(format!(
             "ruston-activation-test-{}-{}",
             std::process::id(),
             u64::from_be_bytes(random)
