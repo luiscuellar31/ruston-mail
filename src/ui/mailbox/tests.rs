@@ -135,6 +135,52 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
 }
 
 #[test]
+fn typing_a_search_leaves_the_list_where_it_was() {
+    for (size, zoom) in [
+        (egui::vec2(1100.0, 700.0), 1.0),
+        (egui::vec2(469.0, 400.0), 1.75),
+    ] {
+        let drawn = |query: &str| {
+            let context = egui::Context::default();
+            theme::install(&context);
+            context.set_zoom_factor(zoom);
+            let (mut app, _) = App::boot(true, Settings::default());
+            app.update(Message::ConversationsLoaded(
+                1,
+                Ok(pagination_page(0, 50, 120)),
+            ));
+            app.update(Message::SearchChanged(query.into()));
+            let mut state = UiState::default();
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                (_, shapes) =
+                    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+            }
+            shapes
+        };
+
+        let first_row = |shapes: &[egui::epaint::ClippedShape]| {
+            visible_text_rect(shapes, "p0")
+                .expect("the first row is in view")
+                .top()
+        };
+        let searching = drawn("p");
+        assert_eq!(first_row(&drawn("")), first_row(&searching), "at {size:?}");
+        if zoom == 1.0 {
+            let scope = search_scope_label(None, 50);
+            let whole = searching.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Text(text)
+                    if text.galley.text() == scope && !text.galley.elided)
+            });
+            assert!(
+                whole,
+                "the scope fits its line beside a list of the usual width"
+            );
+        }
+    }
+}
+
+#[test]
 fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
     let context = egui::Context::default();
     theme::install(&context);
@@ -1592,9 +1638,9 @@ fn an_open_settings_page_leaves_no_folder_marked_as_chosen() {
 #[test]
 fn search_scope_says_what_the_list_is_showing() {
     let narrowing = search_scope_label(None, 50);
-    assert!(narrowing.contains("50 conversations loaded so far"));
+    assert!(narrowing.contains("50 loaded conversations"));
     assert!(narrowing.contains("Enter"));
-    assert!(search_scope_label(None, 1).contains("1 conversation loaded"));
+    assert!(search_scope_label(None, 1).contains("1 loaded conversation "));
     let found = search_scope_label(Some("invoice"), 50);
     assert!(found.contains("invoice"));
     assert!(!found.contains("Enter"));

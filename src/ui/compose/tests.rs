@@ -490,6 +490,37 @@ fn field_labels_are_drawn_at_body_size() {
 }
 
 #[test]
+fn asking_to_discard_a_written_message_leaves_its_form_in_place() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+    app.update(Message::OpenCompose);
+    app.update(Message::ComposeChanged(
+        ComposeField::Subject,
+        "Plans".into(),
+    ));
+    let draw = |app: &crate::app::App| {
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                show(ui, app.compose().unwrap(), &mut Vec::new());
+            });
+            shapes = output.shapes.clone();
+            output.drop_without_applying_deltas();
+        }
+        shapes
+    };
+
+    let before = crate::ui::test_support::text_rect(&draw(&app), "To");
+    app.update(Message::CloseCompose);
+    assert!(app.compose().unwrap().confirming_discard());
+    let asking = draw(&app);
+
+    assert_eq!(crate::ui::test_support::text_rect(&asking, "To"), before);
+    crate::ui::test_support::text_rect(&asking, "Discard unsaved message?");
+}
+
+#[test]
 fn leaving_a_recipient_field_asks_how_the_message_will_be_protected() {
     let context = egui::Context::default();
     theme::install(&context);

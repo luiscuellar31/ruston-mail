@@ -290,7 +290,8 @@ so they never open a conversation out of sight. A conversation clicked in the
 list meanwhile opens behind the draft and stays unread until the reader shows
 it.
 The composer scrolls vertically when its fields or attachments exceed the
-available height, in either placement.
+available height, in either placement. Closing it with something written asks
+first, in a dialog over its window: **Keep writing** or **Discard**.
 
 Closing the main window asks before discarding a written message, whether the
 composer is in the reading pane or a separate window. Choose **Keep writing**

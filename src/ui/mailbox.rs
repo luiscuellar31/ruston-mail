@@ -541,12 +541,21 @@ fn conversation_pane(
             messages.push(Message::SearchSubmitted);
         }
     });
-    if !mailbox.search_query().is_empty() {
-        detail(
-            ui,
-            &search_scope_label(mailbox.shown_search_query(), mailbox.loaded_count()),
-        );
-    }
+    // The line stays while nothing is typed, so the first key does not push
+    // the list down; text too long for it is shortened, whole on hover.
+    let scope = if mailbox.search_query().is_empty() {
+        String::new()
+    } else {
+        search_scope_label(mailbox.shown_search_query(), mailbox.loaded_count())
+    };
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(scope)
+                .small()
+                .color(theme::colors(ui).muted),
+        )
+        .truncate(),
+    );
     ui.add_space(4.0);
 
     let empty = mailbox.is_empty_visible();
@@ -1222,12 +1231,10 @@ pub(super) fn detail(ui: &mut egui::Ui, text: &str) {
 fn search_scope_label(results: Option<&str>, loaded: usize) -> String {
     match (results, loaded) {
         (Some(query), _) => format!("Showing what the server found for “{query}”."),
-        (None, 1) => {
-            "Narrowing the 1 conversation loaded so far. Press Enter to search all mail.".to_owned()
+        (None, 1) => "Narrowing 1 loaded conversation · Enter searches all mail".to_owned(),
+        (None, loaded) => {
+            format!("Narrowing {loaded} loaded conversations · Enter searches all mail")
         }
-        (None, loaded) => format!(
-            "Narrowing the {loaded} conversations loaded so far. Press Enter to search all mail."
-        ),
     }
 }
 

@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align, Layout};
 
 use super::settings::ZoomStep;
-use super::{identity, mailbox::detail, reader, theme};
+use super::theme::{self, Emphasis};
+use super::{identity, mailbox::detail, reader};
 use crate::app::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
 use crate::settings::MIN_WINDOW_SIZE;
@@ -144,9 +145,10 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
 
     title_and_actions(ui, compose, leaving, send_label(&sending), messages);
     ui.add_space(10.0);
-    if compose.confirming_discard() {
-        discard_prompt(ui, messages);
-        ui.add_space(10.0);
+    if compose.confirming_discard()
+        && let Some(answer) = discard_prompt(ui.ctx())
+    {
+        messages.push(answer);
     }
     if let Some(answer) = compose.answering() {
         answered(ui, answer, compose.asks_for_recipients());
@@ -227,33 +229,20 @@ fn send_label(sending: &Sending) -> &'static str {
     }
 }
 
-/// Asks whether to throw the written message away.
-fn discard_prompt(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
-    theme::card(ui)
-        .stroke(egui::Stroke::new(1.0, theme::colors(ui).danger))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    egui::RichText::new("Discard unsaved message?")
-                        .strong()
-                        .color(theme::colors(ui).danger),
-                );
-                ui.with_layout(
-                    Layout::right_to_left(Align::Center).with_main_wrap(true),
-                    |ui| {
-                        if ui
-                            .add(theme::danger(egui::Button::new("Discard")))
-                            .clicked()
-                        {
-                            messages.push(Message::DiscardCompose);
-                        }
-                        if ui.button("Keep writing").clicked() {
-                            messages.push(Message::CancelDiscard);
-                        }
-                    },
-                );
-            });
-        });
+/// Asks whether to throw the written message away, over the window the
+/// draft is in, so the form under the question stays where it is.
+fn discard_prompt(context: &egui::Context) -> Option<Message> {
+    theme::confirmation(
+        context,
+        "discard-draft",
+        "Discard unsaved message?",
+        "What you wrote will be lost.",
+        &[
+            ("Keep writing", Emphasis::Secondary, Message::CancelDiscard),
+            ("Discard", Emphasis::Danger, Message::DiscardCompose),
+        ],
+        Message::CancelDiscard,
+    )
 }
 
 /// To, and Cc and Bcc once asked for; what the typed addresses mean for how

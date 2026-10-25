@@ -451,10 +451,6 @@ pub fn primary(button: egui::Button<'_>) -> impl Widget + '_ {
     emphasized(button, Emphasis::Primary)
 }
 
-pub fn danger(button: egui::Button<'_>) -> impl Widget + '_ {
-    emphasized(button, Emphasis::Danger)
-}
-
 /// Gives the buttons in `ui` the solid accent and white text. A disabled one
 /// keeps the look at egui's faded opacity.
 pub fn primary_visuals(ui: &mut egui::Ui) {

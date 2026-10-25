@@ -379,10 +379,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   keep list and reader scroll/expansion state when their parent pane changes.
   Search controls reserve one horizontal row in both layouts, leaving the
   remaining height for visible, selectable conversations. Centered controls
-  must not allocate the list's full remaining height.
+  must not allocate the list's full remaining height. The line under them
+  that says what a search covers is kept, empty, while nothing is typed, and
+  is shortened rather than wrapped, so typing never moves the list.
   The sidebar scrolls its folders and labels independently, reserving the
   account, Settings, and sign-out actions at the bottom;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.
+  Closing a written draft asks with the shared confirmation over the window
+  the draft is in, so the form under the question does not move.
   eframe 0.36 connects AccessKit only to the main window, so screen readers
   find nothing in the composer's own window; Settings says so beside the
   placement, whose default is the reading pane.
