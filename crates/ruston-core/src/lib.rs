@@ -43,14 +43,14 @@
 //!
 //! # Example
 //!
-//! Resume a session created by `ruston-cli login` and print the default
-//! sending address:
+//! Resume the session `ruston-cli login` or the desktop app saved, under the
+//! profile they share by default, and print the default sending address:
 //!
 //! ```no_run
 //! # async fn demo() -> ruston_core::Result<()> {
-//! use ruston_core::Client;
+//! use ruston_core::{Client, DEFAULT_SESSION_PROFILE};
 //!
-//! let client = Client::resume("default").await?;
+//! let client = Client::resume(DEFAULT_SESSION_PROFILE).await?;
 //! println!("default sending address: {:?}", client.primary_email());
 //! # Ok(())
 //! # }
