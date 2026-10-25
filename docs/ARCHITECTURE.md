@@ -327,7 +327,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   called on a blocking worker in a single-threaded COM apartment, which takes
   the path whole where Explorer's command line splits it at commas. Linux
   bounds connection and reply to three seconds and falls back to opening the
-  containing folder with `xdg-open`.
+  containing folder with `xdg-open`. Finder's `open -R` and that `xdg-open`
+  are waited for like the browser opener below.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
   to egui visuals and custom-painted widget colors; egui gives each window's
   title bar the same theme when it changes. Following the system sets egui's
@@ -402,7 +403,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
   the address to the system's opener without a shell: `open`, `xdg-open`, or
   on Windows `rundll32 url.dll,FileProtocolHandler` from System32, never a
-  `rundll32` that Windows would first look for beside the executable. Both
+  `rundll32` that Windows would first look for beside the executable. The
+  desktop waits for the opener on a blocking worker with
+  [`runtime::run_to_exit`](../src/runtime.rs), so on macOS and Linux it does
+  not stay behind as a zombie process. Both
   apps take that page from core's `HvChallenge::verification_url`, which keeps
   the host a challenge names only when it is one of Proton's own over https,
   and ask `HvChallenge::offers_captcha` whether a CAPTCHA answers it.

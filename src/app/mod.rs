@@ -1862,13 +1862,15 @@ fn run_action(
 
 fn open_in_browser(url: String) -> Effects {
     Effects::background(async move {
-        let _ = open_url(&url);
+        let _ = open_url(&url).await;
     })
 }
 
 /// Opens `url` in the default browser without going through a shell.
-fn open_url(url: &str) -> std::io::Result<()> {
-    browser_opener()?.arg(url).spawn().map(drop)
+async fn open_url(url: &str) -> std::io::Result<()> {
+    let mut opener = browser_opener()?;
+    opener.arg(url);
+    crate::runtime::run_to_exit(opener).await.map(drop)
 }
 
 /// The program that opens an address in the default browser, with no shell
