@@ -78,9 +78,11 @@ toasts under Ruston's identity, and UserNotifications on macOS. Use the installe
 macOS `.app` bundle and allow the system permission prompt. Settings shows the
 permission/service status. System notification preferences and Do Not Disturb
 still determine presentation; macOS normally suppresses banners while Ruston
-is in the foreground. On Windows, Ruston creates a per-user Start menu shortcut
-if needed. Clicking a transient toast while Ruston is running restores and
-focuses the mailbox window.
+is in the foreground. On Windows and Linux, a new notification replaces the
+previous one, and signing out or turning notifications off takes Ruston's away.
+On Windows, Ruston creates a per-user Start menu shortcut if needed. Clicking a
+transient toast while Ruston is running restores and focuses the mailbox
+window.
 
 Typing in the search field narrows the conversations already loaded, and the
 open conversation stays open even when it no longer matches. Press `Enter` to

@@ -542,7 +542,10 @@ service survives the open desktop process or authenticated session.
 permission/service status shown in Settings. Revocable activation flags and
 separate status allocations keep queued native work and callbacks from becoming
 valid again in a later activation. Linux sends bounded D-Bus Notify requests
-with the desktop identity and escaped body text. Windows uses WinRT toasts,
+with the desktop identity and escaped body text, each replacing the one before
+through the ID the server returned; when notifications stop for an account, a
+thread of its own sends `CloseNotification` for the one on screen, and one that
+arrives after they stopped is closed as it arrives. Windows uses WinRT toasts,
 literal XML text nodes, an AUMID-bearing per-user Start menu shortcut, and an
 in-memory activation callback to restore/focus the running mailbox. The toast
 on screen is kept with that callback, and the process's multithreaded
