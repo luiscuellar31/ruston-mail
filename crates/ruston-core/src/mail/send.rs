@@ -352,6 +352,9 @@ pub struct SendOptions {
     /// For a reply or a forward, whether the original goes under the text; a
     /// new message answers nothing.
     pub quote: Quote,
+    /// For a forward, the original's attachments, by ID, that do not go with
+    /// it; it carries all the others.
+    pub leave_out: Vec<String>,
 }
 
 impl SendOptions {
@@ -745,7 +748,8 @@ impl Client {
         .await
     }
 
-    /// Forward a message (carries the original's attachments).
+    /// Forward a message, with the original's attachments except those
+    /// `opts` leaves out.
     pub async fn forward(&self, reference: &str, opts: &SendOptions) -> Result<String> {
         let (parent_id, parent) = self.fetch_parent(reference).await?;
         let mut answer = self.answer_options(&parent, opts).await;
@@ -753,6 +757,7 @@ impl Client {
         let inherited: Vec<(String, String)> = parent
             .attachments
             .iter()
+            .filter(|a| !opts.leave_out.contains(&a.id))
             .filter_map(|a| a.key_packets.clone().map(|kp| (a.id.clone(), kp)))
             .collect();
         let src_addr_id = parent.meta.address_id.clone();

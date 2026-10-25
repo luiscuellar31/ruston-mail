@@ -215,6 +215,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             body,
             attach,
             no_quote,
+            leave_out,
         } => {
             let client = resume(&ctx.profile).await?;
             let body = read_body(&body)?;
@@ -224,6 +225,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 body,
                 attachments: attach,
                 quote: quote(no_quote),
+                leave_out,
                 ..Default::default()
             };
             let id = client.forward(&reference, &opts).await?;

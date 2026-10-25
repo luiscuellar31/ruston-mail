@@ -353,6 +353,7 @@ impl ProtonMailService {
             html: outgoing.is_html(),
             attachments: outgoing.attachments.clone(),
             quote: outgoing.kind.quote(),
+            leave_out: outgoing.kind.leave_out().to_vec(),
             // ruston-core picks the sender: the primary address, or for an
             // answer the address the original reached.
             // Scheduling and self-destruct are not offered yet.

@@ -578,6 +578,72 @@ async fn forwarded_attachments_are_keyed_for_every_recipient() {
     assert_eq!(clear["Algorithm"], "aes256");
 }
 
+#[tokio::test]
+async fn a_forward_leaves_out_the_attachments_it_is_told_to() {
+    let server = MockServer::start().await;
+    let (me, _) = test_address("me@proton.me", "address-1");
+    let original = crypto::encrypt_attachment(&crypto::provider(), &me, b"payload").unwrap();
+    let key_packets = STANDARD.encode(&original.key_packet);
+    let parent_id = format!("{}==", "p".repeat(60));
+    Mock::given(method("GET"))
+        .and(path(format!("/mail/v4/messages/{parent_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Code": 1000,
+            "Message": {
+                "ID": parent_id, "AddressID": "address-1", "Subject": "Report",
+                "Sender": {"Address": "boss@proton.me"},
+                "Attachments": [
+                    {"ID": "keep", "Name": "report.pdf", "KeyPackets": key_packets},
+                    {"ID": "drop", "Name": "photo.jpg", "KeyPackets": key_packets}
+                ]
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages/draft-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+        .mount(&server)
+        .await;
+
+    let client = test_support::client(&server, vec![me]);
+    let opts = SendOptions {
+        to: vec!["friend@example.com".into()],
+        body: "FYI".into(),
+        leave_out: vec!["drop".into()],
+        ..SendOptions::default()
+    };
+    client.forward(&parent_id, &opts).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let draft = requests
+        .iter()
+        .find(|request| request.url.path() == "/mail/v4/messages")
+        .unwrap();
+    let draft: Value = serde_json::from_slice(&draft.body).unwrap();
+    let carried: Vec<&String> = draft["AttachmentKeyPackets"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(carried, ["keep"]);
+}
+
 /// The body a send package carries, opened with `material`.
 fn read_package(package: &Value, material: &SessionKeyMaterial) -> String {
     use proton_crypto::crypto::{

@@ -281,40 +281,6 @@ fn a_reply_warns_when_reply_to_redirects_it() {
 }
 
 #[test]
-fn a_forward_names_the_files_it_carries() {
-    let context = egui::Context::default();
-    theme::install(&context);
-    let answer = Answering {
-        sender: "Alex Rivera".into(),
-        subject: "Invoice".into(),
-        kind: AnswerKind::Forward,
-        to: Vec::new(),
-        cc: Vec::new(),
-        redirected_from: None,
-        quotes_original: true,
-        forwarded: vec!["invoice.pdf".into(), "receipt.png".into()],
-    };
-    let output = context.run_ui(egui::RawInput::default(), |ui| {
-        answered(ui, &answer);
-    });
-    let texts: Vec<String> = output
-        .shapes
-        .iter()
-        .filter_map(|clipped| match &clipped.shape {
-            egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
-            _ => None,
-        })
-        .collect();
-    output.drop_without_applying_deltas();
-
-    let wanted = "Its attachments go with it: invoice.pdf, receipt.png.";
-    assert!(
-        texts.iter().any(|text| text == wanted),
-        "{wanted} in {texts:?}"
-    );
-}
-
-#[test]
 fn the_composer_names_recipients_whose_copy_is_not_encrypted() {
     use crate::app::Effect;
     use futures::executor::block_on;
@@ -422,14 +388,14 @@ fn a_new_draft_puts_the_cursor_where_writing_starts() {
 
     // A reply knows its recipients, so it starts in the body.
     app.update(Message::DiscardCompose);
-    answer(&mut app, AnswerKind::Reply);
+    answer(&mut app, AnswerKind::Reply, Vec::new());
     let reply = app.compose().expect("a reply is open").id();
     assert_eq!(focused_after_showing(&app), Some(body_id(reply)));
 }
 
-/// Opens the demo's first conversation in `app` and answers its last
-/// message `kind`.
-fn answer(app: &mut crate::app::App, kind: AnswerKind) {
+/// Opens the demo's first conversation in `app`, its last message carrying
+/// `files`, and answers that message `kind`.
+fn answer(app: &mut crate::app::App, kind: AnswerKind, files: Vec<crate::mail::MailAttachment>) {
     use crate::mail::demo;
 
     let mailbox = demo::DemoMailbox::new();
@@ -450,7 +416,12 @@ fn answer(app: &mut crate::app::App, kind: AnswerKind) {
         kind: crate::mail::SummaryKind::Conversation,
         messages: 1,
     };
-    let detail = mailbox.conversation_detail(&request.conversation_id, demo::now());
+    let detail = mailbox
+        .conversation_detail(&request.conversation_id, demo::now())
+        .map(|mut detail| {
+            detail.messages.last_mut().unwrap().attachments = files;
+            detail
+        });
     app.update(Message::ConversationLoaded(request, detail));
     app.update(Message::Answer {
         message_id: "demo-0-2".into(),
@@ -478,7 +449,7 @@ fn an_answer_offers_to_leave_the_original_out() {
 
     for kind in [AnswerKind::Reply, AnswerKind::Forward] {
         let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
-        answer(&mut app, kind);
+        answer(&mut app, kind, Vec::new());
         let (shapes, _) = frame(&app, Vec::new());
         let choice =
             crate::ui::test_support::text_rect(&shapes, "Quote the original under your text")
@@ -747,4 +718,77 @@ fn compose_fields_start_at_the_left_and_are_taller_than_the_default() {
     let (left, field, plain_height) = geometry.expect("the field was laid out");
     assert!((field.left() - left).abs() <= 1.0);
     assert!(field.height() >= plain_height + 8.0);
+}
+
+#[test]
+fn a_forward_lists_the_files_it_carries_and_each_can_be_left_out() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |app: &crate::app::App, events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| show(ui, app.compose().unwrap(), &mut messages),
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+    let file = |id: &str, name: &str| crate::mail::MailAttachment {
+        id: id.into(),
+        name: name.into(),
+        size: 2048,
+    };
+    let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+    answer(
+        &mut app,
+        AnswerKind::Forward,
+        vec![
+            file("invoice", "invoice.pdf"),
+            file("receipt", "receipt.png"),
+        ],
+    );
+
+    let (shapes, _) = frame(&app, Vec::new());
+    crate::ui::test_support::text_rect(&shapes, "Forwarded with it");
+    crate::ui::test_support::text_rect(&shapes, "📎 invoice.pdf (2.0 KB)");
+    crate::ui::test_support::text_rect(&shapes, "📎 receipt.png (2.0 KB)");
+    // The first Remove is the invoice's.
+    let remove = crate::ui::test_support::text_rect(&shapes, "Remove").center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: remove,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    let (_, asked) = frame(
+        &app,
+        vec![egui::Event::PointerMoved(remove), press(true), press(false)],
+    );
+    // Leaving To for the button also says the field was left.
+    let left_out: Vec<&String> = asked
+        .iter()
+        .filter_map(|message| match message {
+            Message::LeaveOutForwarded(id) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(left_out, ["invoice"]);
+    let id = left_out[0];
+
+    app.update(Message::LeaveOutForwarded(id.clone()));
+    let left: Vec<&str> = app
+        .compose()
+        .unwrap()
+        .forwarded()
+        .map(|file| file.name.as_str())
+        .collect();
+    assert_eq!(left, ["receipt.png"]);
+    let (shapes, _) = frame(&app, Vec::new());
+    assert!(
+        crate::ui::test_support::visible_text_rect(&shapes, "📎 invoice.pdf (2.0 KB)").is_none()
+    );
 }

@@ -763,7 +763,9 @@ instead of an unknown outcome.
   fetched once and decrypted for its text alone, so quoting looks up no sender
   keys; `SendOptions::quote` set to `Quote::Omitted` leaves it out without
   decrypting it, which the composer's quote choice and the CLI's `--no-quote`
-  ask for. One function,
+  ask for. A forward re-keys the original's attachments for the draft, except
+  those `SendOptions::leave_out` names by ID, which the composer's Remove and
+  the CLI's `--leave-out` fill. One function,
   `reply_recipients`, decides where an answer goes when `Client::reply` is
   given no recipients; mail the account sent, without also receiving it, is
   answered to its recipients rather than to the account itself. Given any

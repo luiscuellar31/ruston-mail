@@ -601,6 +601,10 @@ pub enum MessagesCmd {
         /// attachments still go.
         #[arg(long)]
         no_quote: bool,
+        /// An attachment of the original, by ID, that does not go with the
+        /// forward (repeatable); `attachments list` shows their IDs.
+        #[arg(long = "leave-out", value_name = "ATTACHMENT_ID")]
+        leave_out: Vec<String>,
     },
     /// Cancel a scheduled send.
     CancelSend { reference: String },

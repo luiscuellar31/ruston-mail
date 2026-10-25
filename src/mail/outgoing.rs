@@ -36,6 +36,8 @@ pub enum OutgoingKind {
         /// Whether the original's text goes under the text; its files go
         /// either way.
         quote: Quote,
+        /// The original's attachments, by ID, that do not go with it.
+        leave_out: Vec<String>,
     },
 }
 
@@ -46,6 +48,14 @@ impl OutgoingKind {
         match self {
             Self::New => Quote::default(),
             Self::Reply { quote, .. } | Self::Forward { quote, .. } => *quote,
+        }
+    }
+
+    /// The original's attachments, by ID, that a forward leaves out.
+    pub fn leave_out(&self) -> &[String] {
+        match self {
+            Self::Forward { leave_out, .. } => leave_out,
+            Self::New | Self::Reply { .. } => &[],
         }
     }
 }

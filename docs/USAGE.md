@@ -347,7 +347,8 @@ is written for you. Replies and forwards are sent from the address the original
 message reached. The original's text is quoted under yours when it can be
 opened, unless you untick **Quote the original under your text** in the
 composer; a forward also carries the original's files, images in its body
-included, and the composer lists the attachments it sends.
+included. The composer lists the attachments a forward sends, each with
+**Remove** to leave it out; images in the body always go.
 
 Messages can be sent as plain text or HTML. The editor remains plain text in
 both modes: text that looks like an HTML tag is sent as text, not executed as
@@ -495,7 +496,8 @@ want a separate login; an existing CLI `default` session remains available with
 
 `messages reply` and `messages forward` quote the original under the body,
 as the desktop does; `--no-quote` leaves it out, while a forward still carries
-its attachments.
+its attachments. `messages forward --leave-out ID` leaves out one of them, by
+the ID `attachments list` shows; repeat it for more.
 
 When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached

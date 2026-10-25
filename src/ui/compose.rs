@@ -183,6 +183,10 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         attachment_list(ui, compose, leaving, messages);
         ui.add_space(4.0);
     }
+    if compose.forwarded().next().is_some() {
+        forwarded_list(ui, compose, leaving, messages);
+        ui.add_space(4.0);
+    }
     ui.add_space(6.0);
     if !matches!(sending, Sending::Failed(_)) {
         not_ready(ui, compose);
@@ -331,6 +335,35 @@ fn attachment_list(
     }
 }
 
+/// The original's files that go with a forward, each of which can be left
+/// out.
+fn forwarded_list(
+    ui: &mut egui::Ui,
+    compose: &Compose,
+    leaving: bool,
+    messages: &mut Vec<Message>,
+) {
+    detail(ui, "Forwarded with it");
+    for file in compose.forwarded() {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "📎 {} ({})",
+                    file.name,
+                    reader::size_label(file.size)
+                ))
+                .color(ui.visuals().text_color()),
+            );
+            if ui
+                .add_enabled(!leaving, theme::compact_button("Remove"))
+                .clicked()
+            {
+                messages.push(Message::LeaveOutForwarded(file.id.clone()));
+            }
+        });
+    }
+}
+
 /// What still stops this message from going, under the fields it is about.
 /// A failed send says why under Send instead, and takes priority.
 fn not_ready(ui: &mut egui::Ui, compose: &Compose) {
@@ -422,16 +455,6 @@ fn answered(ui: &mut egui::Ui, answer: &Answering) {
         ui,
         &format!("Answering “{}” from {}.", answer.subject, answer.sender),
     );
-    // What goes out with the text, though the composer does not show it.
-    if !answer.forwarded.is_empty() {
-        detail(
-            ui,
-            &format!(
-                "Its attachments go with it: {}.",
-                answer.forwarded.join(", ")
-            ),
-        );
-    }
     // A Reply-To header can send the answer somewhere the sender is not.
     if let Some(sender) = &answer.redirected_from {
         ui.label(

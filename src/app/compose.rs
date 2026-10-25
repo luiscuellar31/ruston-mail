@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use ruston_core::Quote;
 
 use crate::mail::{
-    BodyFormat, Domains, InternationalDomain, MailMessage, MailboxError, MessageBody, Outgoing,
-    OutgoingKind, Protection, ProtectionCheck, Recipients, SendError, recipients,
+    BodyFormat, Domains, InternationalDomain, MailAttachment, MailMessage, MailboxError,
+    MessageBody, Outgoing, OutgoingKind, Protection, ProtectionCheck, Recipients, SendError,
+    recipients,
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
@@ -150,6 +151,7 @@ impl AnswerKind {
             AnswerKind::Forward => OutgoingKind::Forward {
                 message_id,
                 quote: Quote::Original,
+                leave_out: Vec::new(),
             },
         }
     }
@@ -175,7 +177,7 @@ pub struct Answering {
     pub quotes_original: bool,
     /// The files a forward carries from the original, as the reader lists
     /// them; a reply carries none.
-    pub forwarded: Vec<String>,
+    pub forwarded: Vec<MailAttachment>,
 }
 
 /// A message being written.
@@ -456,6 +458,24 @@ impl Compose {
         }
     }
 
+    /// The files of the original that go with a forward: those the reader
+    /// listed, less the ones left out.
+    pub fn forwarded(&self) -> impl Iterator<Item = &MailAttachment> {
+        let leave_out = self.kind.leave_out();
+        self.answering
+            .iter()
+            .flat_map(|answering| &answering.forwarded)
+            .filter(move |file| !leave_out.contains(&file.id))
+    }
+
+    fn leave_out_forwarded(&mut self, id: &str) {
+        if let OutgoingKind::Forward { leave_out, .. } = &mut self.kind
+            && !leave_out.iter().any(|known| known == id)
+        {
+            leave_out.push(id.to_owned());
+        }
+    }
+
     fn toggle_quote(&mut self) {
         if let OutgoingKind::Reply { quote, .. } | OutgoingKind::Forward { quote, .. } =
             &mut self.kind
@@ -545,11 +565,7 @@ fn answering_for(kind: AnswerKind, message: &MailMessage, subject: Option<&str>)
     let redirected_from = (!to.is_empty() && message.reply_redirected && !sender.is_empty())
         .then(|| sender.to_owned());
     let forwarded = match kind {
-        AnswerKind::Forward => message
-            .attachments
-            .iter()
-            .map(|attachment| attachment.name.clone())
-            .collect(),
+        AnswerKind::Forward => message.attachments.clone(),
         AnswerKind::Reply | AnswerKind::ReplyAll => Vec::new(),
     };
     Answering {
@@ -772,6 +788,13 @@ impl App {
     pub(super) fn change_compose(&mut self, field: ComposeField, value: String) {
         if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
             compose.set(field, value);
+        }
+    }
+
+    /// Leaves one of the original's files out of the forward being written.
+    pub(super) fn leave_out_forwarded(&mut self, id: &str) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
+            compose.leave_out_forwarded(id);
         }
     }
 
@@ -1266,6 +1289,37 @@ mod tests {
     }
 
     #[test]
+    fn a_forward_leaves_each_file_out_once_and_a_reply_has_none_to_leave() {
+        let mut message = answered_message("alex@corp.example");
+        message.attachments = ["a1", "a2"]
+            .map(|id| crate::mail::MailAttachment {
+                id: id.into(),
+                name: format!("{id}.pdf"),
+                size: 1,
+            })
+            .to_vec();
+        let mut forward = Compose {
+            kind: AnswerKind::Forward.outgoing("message"),
+            answering: Some(answering(AnswerKind::Forward, &message)),
+            ..Compose::default()
+        };
+        forward.leave_out_forwarded("a1");
+        forward.leave_out_forwarded("a1");
+        assert_eq!(forward.kind.leave_out(), ["a1"]);
+        let left: Vec<&str> = forward.forwarded().map(|file| file.id.as_str()).collect();
+        assert_eq!(left, ["a2"]);
+
+        let mut reply = Compose {
+            kind: AnswerKind::Reply.outgoing("message"),
+            answering: Some(answering(AnswerKind::Reply, &message)),
+            ..Compose::default()
+        };
+        reply.leave_out_forwarded("a1");
+        assert!(reply.kind.leave_out().is_empty());
+        assert_eq!(reply.forwarded().count(), 0);
+    }
+
+    #[test]
     fn an_answer_says_what_goes_out_with_its_text() {
         let mut message = answered_message("alex@corp.example");
         message.attachments = vec![crate::mail::MailAttachment {
@@ -1275,7 +1329,7 @@ mod tests {
         }];
 
         let forward = answering(AnswerKind::Forward, &message);
-        assert_eq!(forward.forwarded, ["invoice.pdf"]);
+        assert_eq!(forward.forwarded, message.attachments);
         assert!(forward.quotes_original);
         for kind in [AnswerKind::Reply, AnswerKind::ReplyAll] {
             let reply = answering(kind, &message);

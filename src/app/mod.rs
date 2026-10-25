@@ -211,6 +211,8 @@ pub enum Message {
     ToggleComposeCopies,
     /// Puts the original under an answer's text, or leaves it out.
     ToggleComposeQuote,
+    /// Leaves one of the original's files, by ID, out of a forward.
+    LeaveOutForwarded(String),
     ComposeChanged(ComposeField, String),
     /// A recipient field lost focus; its addresses are complete enough to look up.
     ComposeRecipientsLeft,
@@ -1014,6 +1016,7 @@ impl App {
             Message::CancelDiscard => self.cancel_discard(),
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
             Message::ToggleComposeQuote => self.toggle_compose_quote(),
+            Message::LeaveOutForwarded(id) => self.leave_out_forwarded(&id),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
             Message::ComposeRecipientsLeft => return self.check_compose_protection(),
             Message::ComposeProtectionChecked(epoch, id, checks) => {

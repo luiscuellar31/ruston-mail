@@ -451,6 +451,7 @@ fn a_forward_keeps_the_recipients_it_was_given() {
             kind: OutgoingKind::Forward {
                 message_id: answered.messages[0].id.clone(),
                 quote: Quote::Original,
+                leave_out: Vec::new(),
             },
             subject: String::new(),
             ..outgoing("ignored")
