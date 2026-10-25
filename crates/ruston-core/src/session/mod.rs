@@ -8,13 +8,19 @@ pub use secret_store::{KeyringStore, MemoryStore, SecretStore};
 use crate::error::{Error, Result};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 const K_TOKENS: &str = "auth_tokens_v1";
 const K_SKP: &str = "skp";
 const K_BASE_URL: &str = "api_base_url_v1";
+/// How long to wait for another process to let go of a profile, as long as
+/// SQLite waits for the cache.
+const PROFILE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a waiting process tries the profile lock again.
+const PROFILE_LOCK_RETRY: Duration = Duration::from_millis(50);
 
 /// Reject empty profile names, path syntax, and control characters.
 pub fn validate_profile_name(profile: &str) -> Result<()> {
@@ -139,6 +145,13 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
 
 impl Session {
     fn lock(paths: &Paths, profile: &str) -> Result<File> {
+        Self::lock_within(paths, profile, PROFILE_LOCK_TIMEOUT)
+    }
+
+    /// Takes the profile lock, giving up after `timeout`: a process that
+    /// holds it, stopped with Ctrl-Z or waiting on an unanswered keychain
+    /// prompt, must not stall every other one for good.
+    fn lock_within(paths: &Paths, profile: &str, timeout: Duration) -> Result<File> {
         validate_profile_name(profile)?;
         let dir = paths.sessions_dir();
         std::fs::create_dir_all(&dir)?;
@@ -151,8 +164,21 @@ impl Session {
             .truncate(false)
             .open(&path)?;
         set_mode(&path, PRIVATE_FILE_MODE)?;
-        file.lock()?;
-        Ok(file)
+        let deadline = Instant::now() + timeout;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(PROFILE_LOCK_RETRY);
+                }
+                Err(TryLockError::WouldBlock) => {
+                    return Err(Error::Session(format!(
+                        "profile {profile} is busy in another Ruston process; try again"
+                    )));
+                }
+                Err(TryLockError::Error(error)) => return Err(error.into()),
+            }
+        }
     }
 
     pub(crate) fn lock_and_load(
@@ -406,6 +432,25 @@ mod tests {
             nanos,
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    #[test]
+    fn a_profile_held_elsewhere_is_given_up_on_after_a_while() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        let held = Session::lock(&paths, "default").unwrap();
+
+        let started = Instant::now();
+        let busy = Session::lock_within(&paths, "default", Duration::from_millis(200));
+        assert!(
+            matches!(busy, Err(Error::Session(ref message)) if message.contains("busy")),
+            "{busy:?}"
+        );
+        assert!(started.elapsed() >= Duration::from_millis(200));
+
+        drop(held);
+        Session::lock_within(&paths, "default", Duration::from_millis(200)).unwrap();
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

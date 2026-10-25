@@ -888,7 +888,9 @@ separately in `Ruston Mail`'s config directory. Core
 [`session/`](../crates/ruston-core/src/session/) stores access and refresh
 tokens as one keychain entry and the session's API address as another; loading
 rejects metadata whose address differs from it. Session writes and token refresh use a per-profile
-file lock. Sign-in and resume read and save the session on Tokio's blocking
+file lock. A process waits at most 30 seconds for it, trying again every 50 ms,
+and then fails with a "profile is busy" session error, so another process
+stopped while holding it cannot stall it for good. Sign-in and resume read and save the session on Tokio's blocking
 pool, since the keychain may wait for the person to unlock it and the lock for
 another process; a deadline around them still ends on time. They unlock the
 account's keys there too, since deriving each key's passphrase is slow by
