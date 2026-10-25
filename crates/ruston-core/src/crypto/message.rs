@@ -150,6 +150,19 @@ pub fn decrypt_body<P: PGPProviderSync>(
     verify_pubs_armored: &[String],
     armored_body: &str,
 ) -> Result<(String, Verdict)> {
+    let (body, verdict) = decrypt_body_bytes(provider, addr, verify_pubs_armored, armored_body)?;
+    Ok((utf8_text(body), verdict))
+}
+
+/// [`decrypt_body`] as the bytes that were encrypted, so the parts of a MIME
+/// body keep their own charsets until it is parsed. They are wiped when
+/// dropped.
+pub(crate) fn decrypt_body_bytes<P: PGPProviderSync>(
+    provider: &P,
+    addr: &AddressKeys,
+    verify_pubs_armored: &[String],
+    armored_body: &str,
+) -> Result<(Zeroizing<Vec<u8>>, Verdict)> {
     let privs = import_privs(provider, addr)?;
     let pubs = import_public_keys(provider, verify_pubs_armored);
     tracing::debug!(target: "ruston_core::crypto", address = %addr.email, decrypt_keys = privs.len(), verify_keys = pubs.len(), armored_len = armored_body.len(), "decrypting message body");
@@ -174,9 +187,22 @@ pub fn decrypt_body<P: PGPProviderSync>(
     } else {
         Verdict::Unverified
     };
-    let body = String::from_utf8_lossy(verified.as_bytes()).into_owned();
+    // Moved out rather than copied, so no second plaintext is freed unwiped.
+    let body = Zeroizing::new(verified.into_vec());
     tracing::debug!(target: "ruston_core::crypto", verdict = ?verdict, plaintext_len = body.len(), "message body decrypted");
     Ok((body, verdict))
+}
+
+/// Decrypted `bytes` as text: moved into the string when they are UTF-8, or
+/// else copied with U+FFFD for what is not, and wiped.
+pub(crate) fn utf8_text(mut bytes: Zeroizing<Vec<u8>>) -> String {
+    match String::from_utf8(std::mem::take(&mut *bytes)) {
+        Ok(text) => text,
+        Err(error) => {
+            let bytes = Zeroizing::new(error.into_bytes());
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    }
 }
 
 /// Decrypt an attachment: recover the session key from its key packet, then
@@ -517,6 +543,18 @@ mod tests {
         // Signed, but not by the sender: it must not read like a message
         // whose sender had no keys to check against.
         assert_eq!(verdict, Verdict::Invalid);
+    }
+
+    #[test]
+    fn decrypted_text_keeps_utf8_and_marks_what_is_not() {
+        assert_eq!(
+            utf8_text(Zeroizing::new("Café".as_bytes().to_vec())),
+            "Café"
+        );
+        assert_eq!(
+            utf8_text(Zeroizing::new(b"Caf\xe9".to_vec())),
+            "Caf\u{FFFD}"
+        );
     }
 
     #[test]
