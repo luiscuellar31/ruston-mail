@@ -402,6 +402,77 @@ fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     );
 }
 
+#[test]
+fn a_headers_menu_copies_the_senders_or_the_recipients_addresses() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.cc = vec![address(Some("Ops"), "ops@example.org")];
+    message.bcc = vec![address(None, "audit@example.org")];
+    let mut reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    reader.toggle("message");
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_width(420.0);
+                message_card(
+                    ui,
+                    &reader.detail().messages[0],
+                    reader.preview_at(0),
+                    &reader,
+                    None,
+                    Reading::default(),
+                    &mut messages,
+                );
+            },
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+    let click = |pos, button| {
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+    };
+    let choose = |item: &str| {
+        let (shapes, _) = frame(Vec::new());
+        let header = text_rect(&shapes, "Preview");
+        let (_, asked) = frame(click(header.center(), egui::PointerButton::Secondary));
+        assert!(asked.is_empty(), "a right click leaves the card as it is");
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            shapes = frame(Vec::new()).0;
+        }
+        let item = text_rect(&shapes, item);
+        frame(click(item.center(), egui::PointerButton::Primary)).1
+    };
+
+    assert!(matches!(
+        choose("Copy sender's address").as_slice(),
+        [Message::CopyAddresses(addresses)] if addresses == &["alex@example.com"]
+    ));
+    assert!(matches!(
+        choose("Copy recipients' addresses").as_slice(),
+        [Message::CopyAddresses(addresses)]
+            if addresses == &["team@example.org", "ops@example.org", "audit@example.org"]
+    ));
+}
+
 /// Every icon painted, as the rectangles their textures fill.
 fn icons(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
     shapes

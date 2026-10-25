@@ -177,6 +177,9 @@ remove folders and labels yet.
 
 Right-click a link in a message for **Open link…**, which asks first like a
 click does, or **Copy link**, which copies its address without opening it.
+Right-click a message's header for **Copy sender's address** or **Copy
+recipients' addresses**, which copy the addresses without names, separated by
+commas, ready to paste into a recipient field.
 
 Web links open in the system browser. A confirmation dialog over the window
 shows the destination first by default; a long address scrolls inside it, and

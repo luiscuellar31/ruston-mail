@@ -809,6 +809,20 @@ fn copying_a_links_address_needs_no_prompt_and_only_takes_web_and_mail_links() {
 }
 
 #[test]
+fn copied_addresses_are_written_as_a_recipient_field_takes_them() {
+    let mut app = loaded_demo_app();
+    let effects = app.update(Message::CopyAddresses(vec![
+        "team@example.org".into(),
+        "ops@example.org".into(),
+    ]));
+    let effect = effects.into_iter().next().expect("a copy");
+    assert!(matches!(
+        effect,
+        Effect::Ui(UiEffect::CopyText(text)) if text == "team@example.org, ops@example.org"
+    ));
+}
+
+#[test]
 fn the_keyboard_walks_the_conversation_list() {
     let mut app = loaded_demo_app();
 

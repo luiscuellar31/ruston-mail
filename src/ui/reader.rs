@@ -747,9 +747,11 @@ fn message_card(
     let expanded = reader.is_expanded(&message.id, reading);
     ui.push_id(&message.id, |ui| {
         theme::card(ui).show(ui, |ui| {
-            if message_header(ui, message, preview, expanded).clicked() {
+            let header = message_header(ui, message, preview, expanded);
+            if header.clicked() {
                 messages.push(Message::ToggleMessageExpanded(message.id.clone()));
             }
+            header.context_menu(|ui| address_menu(ui, message, messages));
             if expanded {
                 for attachment in &message.attachments {
                     attachment_row(ui, &message.id, attachment, saving_attachment, messages);
@@ -762,6 +764,26 @@ fn message_card(
             }
         });
     });
+}
+
+/// A header's right-click menu, which copies the addresses it names without
+/// their names, as the composer's fields take them.
+fn address_menu(ui: &mut egui::Ui, message: &MailMessage, messages: &mut Vec<Message>) {
+    let sender = &message.sender.address;
+    if !sender.is_empty() && ui.button("Copy sender's address").clicked() {
+        messages.push(Message::CopyAddresses(vec![sender.clone()]));
+        ui.close();
+    }
+    let recipients: Vec<String> = [&message.to, &message.cc, &message.bcc]
+        .into_iter()
+        .flatten()
+        .map(|recipient| recipient.address.clone())
+        .filter(|address| !address.is_empty())
+        .collect();
+    if !recipients.is_empty() && ui.button("Copy recipients' addresses").clicked() {
+        messages.push(Message::CopyAddresses(recipients));
+        ui.close();
+    }
 }
 
 fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec<Message>) {

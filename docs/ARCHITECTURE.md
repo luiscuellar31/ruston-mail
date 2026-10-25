@@ -243,7 +243,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   moves and flags, built by `reader::moves` and `reader::flags`. Both reach
   `App::apply_row_action`, which acts through the demo service or
   `Mailbox::start_action_on`, so a row acted on from its menu is never opened
-  or read automatically.
+  or read automatically. A message header's context menu copies its sender's
+  or its recipients' addresses through `Message::CopyAddresses`, which `App`
+  joins with commas for the clipboard.
   An action shows as soon as it is asked for. A move out of the view takes the
   row away, offers its undo and names the row to open in its place. Starred and
   labels list mail wherever it sits, so a move to another folder keeps the row

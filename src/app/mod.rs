@@ -80,6 +80,9 @@ pub enum Message {
     DismissLink,
     /// Copies the address of a link in a message, from the link's menu.
     CopyLinkAddress(String),
+    /// Copies email addresses from a message header's menu, separated by
+    /// commas as the composer's fields take them.
+    CopyAddresses(Vec<String>),
     Logout,
     LogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
@@ -842,6 +845,9 @@ impl App {
                 if let Some(link) = PendingLink::parse(&target) {
                     return Effects::ui(UiEffect::CopyText(link.url));
                 }
+            }
+            Message::CopyAddresses(addresses) => {
+                return Effects::ui(UiEffect::CopyText(addresses.join(", ")));
             }
             Message::ReceiveMailto(request) => self.receive_mailto(request),
             Message::MailtoRejected => {
