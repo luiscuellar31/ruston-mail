@@ -221,6 +221,32 @@ pub enum Error {
     #[error("session error: {0}")]
     Session(String),
 
+    /// The saved session names an API address other than the one it was
+    /// created for, so its tokens are not sent there.
+    #[error(
+        "session error: saved session does not match the API address it was created for; sign in again"
+    )]
+    SessionAddressMismatch,
+
+    /// The account has a separate mailbox password, and the login was given
+    /// none and could not ask for one.
+    #[error(
+        "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password"
+    )]
+    MailboxPasswordRequired,
+
+    /// The account's second factor is a security key (FIDO2/WebAuthn), which
+    /// is not supported.
+    #[error(
+        "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet supported — enable a TOTP authenticator app, or use an app/bridge password"
+    )]
+    SecurityKeyRequired,
+
+    /// None of the account's user keys opened: a wrong mailbox password, or a
+    /// saved session from before the password changed.
+    #[error("crypto error: no user key could be unlocked (wrong password?)")]
+    UserKeysLocked,
+
     /// A local cache read or write failed.
     #[error("cache error: {0}")]
     Cache(String),
@@ -458,5 +484,30 @@ mod tests {
         // The kind of error says so, whatever its text says.
         assert!(!Error::Cache("cursor moved; retry".into()).is_retryable_cache_error());
         assert!(!Error::Session("sync cursor changed; retry".into()).is_retryable_cache_error());
+    }
+
+    #[test]
+    fn sign_in_failures_have_kinds_of_their_own_and_read_as_before() {
+        for (error, text) in [
+            (
+                Error::MailboxPasswordRequired,
+                "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password",
+            ),
+            (
+                Error::SecurityKeyRequired,
+                "this account requires a security key (FIDO2/WebAuthn) for 2FA, which is not yet supported — enable a TOTP authenticator app, or use an app/bridge password",
+            ),
+            (
+                Error::UserKeysLocked,
+                "crypto error: no user key could be unlocked (wrong password?)",
+            ),
+            (
+                Error::SessionAddressMismatch,
+                "session error: saved session does not match the API address it was created for; sign in again",
+            ),
+        ] {
+            assert_eq!(error.to_string(), text);
+            assert_eq!(error.exit_code(), exit_status::OTHER);
+        }
     }
 }

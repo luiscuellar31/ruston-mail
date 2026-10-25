@@ -325,12 +325,7 @@ impl Session {
             // Sessions saved before the address was bound used the default API
             // unless a login chose another one.
             None if session.base_url == crate::DEFAULT_BASE_URL => {}
-            _ => {
-                return Err(Error::Session(
-                    "saved session does not match the API address it was created for; sign in again"
-                        .into(),
-                ));
-            }
+            _ => return Err(Error::SessionAddressMismatch),
         }
         let tokens = Tokens {
             uid: session.uid.clone(),
@@ -756,7 +751,7 @@ mod tests {
             rewrite_base_url(&paths, &session, edited);
             assert!(matches!(
                 Session::load(&paths, "default", &store),
-                Err(Error::Session(_))
+                Err(Error::SessionAddressMismatch)
             ));
         }
 
@@ -776,7 +771,7 @@ mod tests {
         store.delete(K_BASE_URL).unwrap();
         assert!(matches!(
             Session::load(&paths, "default", &store),
-            Err(Error::Session(_))
+            Err(Error::SessionAddressMismatch)
         ));
         std::fs::remove_dir_all(base).unwrap();
     }
@@ -793,7 +788,7 @@ mod tests {
         rewrite_base_url(&paths, &session, "https://example.test/api");
         assert!(matches!(
             Session::load(&paths, "default", &store),
-            Err(Error::Session(_))
+            Err(Error::SessionAddressMismatch)
         ));
         std::fs::remove_dir_all(base).unwrap();
     }
@@ -986,7 +981,10 @@ mod tests {
 
         // An address the store does not vouch for is still refused.
         rewrite_base_url(&paths, &session, "https://elsewhere.example/api");
-        assert!(matches!(refresh_tokens(), Err(Error::Session(_))));
+        assert!(matches!(
+            refresh_tokens(),
+            Err(Error::SessionAddressMismatch)
+        ));
         std::fs::remove_dir_all(base).unwrap();
     }
 }

@@ -540,20 +540,14 @@ fn replies_are_delivered_once_or_cancelled() {
 
 #[test]
 fn missing_mailbox_password_has_a_structured_outcome() {
-    let outcome = map_sign_in_error(
-        Error::Other(MAILBOX_PASSWORD_REQUIRED.into()),
-        Supplied::default(),
-    );
+    let outcome = map_sign_in_error(Error::MailboxPasswordRequired, Supplied::default());
 
     assert!(matches!(outcome, SignInOutcome::NeedsMailboxPassword));
 }
 
 #[test]
 fn security_key_requirement_is_supported_failure() {
-    let outcome = map_sign_in_error(
-        Error::Other(SECURITY_KEY_REQUIRED.into()),
-        Supplied::default(),
-    );
+    let outcome = map_sign_in_error(Error::SecurityKeyRequired, Supplied::default());
 
     assert!(matches!(
         outcome,
@@ -580,7 +574,7 @@ fn unauthorized_totp_retry_is_an_invalid_code() {
 #[test]
 fn failed_mailbox_unlock_is_an_invalid_mailbox_password() {
     let outcome = map_sign_in_error(
-        Error::Crypto(format!("{USER_KEY_UNLOCK_FAILED} (wrong password?)")),
+        Error::UserKeysLocked,
         Supplied {
             mailbox_password: true,
             ..Supplied::default()
@@ -1020,15 +1014,12 @@ fn counts_map_only_known_folders() {
 
 #[test]
 fn a_session_that_cannot_be_read_or_saved_is_named_as_such() {
-    for message in [
-        "keyring get: locked".to_owned(),
-        "keyring set: access denied".to_owned(),
-        format!("saved session {SESSION_ADDRESS_MISMATCH}"),
+    for error in [
+        Error::Session("keyring get: locked".to_owned()),
+        Error::Session("keyring set: access denied".to_owned()),
+        Error::SessionAddressMismatch,
     ] {
-        assert_eq!(
-            map_mailbox_error(Error::Session(message)),
-            MailboxError::SessionUnavailable
-        );
+        assert_eq!(map_mailbox_error(error), MailboxError::SessionUnavailable);
     }
     // Reading a file to attach has nothing to do with the session.
     assert_eq!(

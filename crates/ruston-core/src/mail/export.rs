@@ -205,6 +205,10 @@ fn is_about_the_message(error: &Error) -> bool {
         | Error::Json(_)
         | Error::Srp(_)
         | Error::Session(_)
+        | Error::SessionAddressMismatch
+        | Error::MailboxPasswordRequired
+        | Error::SecurityKeyRequired
+        | Error::UserKeysLocked
         | Error::Cache(_)
         | Error::CacheChanged(_)
         | Error::Io(_)

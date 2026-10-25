@@ -118,7 +118,7 @@ pub struct LoginPrompts {
 
 /// The mailbox password of an account that has a separate one: the one
 /// `given`, or else what `prompt` asks for now, kept in `asked`. Without
-/// either, the error says how to give it, in words the desktop recognizes.
+/// either, [`Error::MailboxPasswordRequired`].
 async fn mailbox_password<'a>(
     given: Option<&'a SecretString>,
     prompt: Option<&MailboxPasswordPrompt>,
@@ -128,9 +128,7 @@ async fn mailbox_password<'a>(
         return Ok(password);
     }
     let Some(prompt) = prompt else {
-        return Err(Error::Other(
-            "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password".into(),
-        ));
+        return Err(Error::MailboxPasswordRequired);
     };
     Ok(asked.insert(prompt().await?))
 }

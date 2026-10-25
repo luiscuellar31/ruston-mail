@@ -298,9 +298,7 @@ fn unlock_user_keys<P: PGPProviderSync>(
         }
     }
     if privs.is_empty() {
-        return Err(Error::Crypto(
-            "no user key could be unlocked (wrong password?)".into(),
-        ));
+        return Err(Error::UserKeysLocked);
     }
     tracing::debug!(target: "ruston_core::crypto", count = privs.len(), "user keys unlocked");
     let pubs = privs
@@ -921,11 +919,7 @@ mod tests {
         let provider = crate::crypto::provider();
 
         let wrong = unlock_with_skp(&provider, &user, &addresses, &SecretString::from("wrong"));
-        assert!(matches!(
-            wrong,
-            Err(Error::Crypto(ref message))
-                if message == "no user key could be unlocked (wrong password?)"
-        ));
+        assert!(matches!(wrong, Err(Error::UserKeysLocked)));
         let none_opens = unlock_with_skp(&provider, &user, &addresses, &SecretString::from("skp"));
         assert!(matches!(
             none_opens,

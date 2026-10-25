@@ -309,7 +309,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   password prompts wait for the person, and running out is a timeout of its
   own, not a failed connection. The mailbox password of a two-password account
   is a prompt of the same sign-in, through core's `LoginPrompts`, so the
-  password and code are not entered or checked twice. Resuming the saved
+  password and code are not entered or checked twice. The adapter tells the
+  sign-in failures apart by core's error kinds, not by their text: a mailbox
+  password needed, a security key the account requires, user keys that do not
+  open, and a session saved for another API address each have their own.
+  Resuming the saved
   session at startup has the same two minutes. A failure that may pass, such
   as no network, Proton being busy or down by core's `ApiError` rule, or
   locked password storage, keeps the session saved, and `App` offers the sign-in screen's **Try again**,

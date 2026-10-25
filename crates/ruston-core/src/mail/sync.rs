@@ -280,6 +280,10 @@ fn is_definitive_read_failure(error: &Error) -> bool {
         | Error::HumanVerification(_)
         | Error::Http(_)
         | Error::Session(_)
+        | Error::SessionAddressMismatch
+        | Error::MailboxPasswordRequired
+        | Error::SecurityKeyRequired
+        | Error::UserKeysLocked
         | Error::Io(_)
         | Error::Cache(_)
         | Error::CacheChanged(_)

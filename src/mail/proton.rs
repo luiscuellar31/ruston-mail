@@ -50,10 +50,6 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
 const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
-const MAILBOX_PASSWORD_REQUIRED: &str = "this account uses a separate mailbox password";
-const SECURITY_KEY_REQUIRED: &str = "FIDO2/WebAuthn";
-const USER_KEY_UNLOCK_FAILED: &str = "no user key could be unlocked";
-const SESSION_ADDRESS_MISMATCH: &str = "does not match the API address it was created for";
 const MAX_LISTED_CORRESPONDENTS: usize = 3;
 
 #[derive(Clone)]
@@ -1169,7 +1165,7 @@ fn map_mailbox_error(error: Error) -> MailboxError {
         Error::Api(_) | Error::HumanVerification(_) => MailboxError::Service,
         // Loading or saving the session while renewing its tokens: a locked
         // password storage, or a session saved for another server.
-        Error::Session(_) => MailboxError::SessionUnavailable,
+        Error::Session(_) | Error::SessionAddressMismatch => MailboxError::SessionUnavailable,
         _ => MailboxError::Unavailable,
     }
 }
@@ -1188,7 +1184,9 @@ async fn resume_within(
         Ok(client) => {
             ResumeOutcome::Authenticated(Arc::new(ProtonMailService::from_client(client)))
         }
-        Err(Error::Unauthorized | Error::Crypto(_) | Error::Srp(_)) => ResumeOutcome::SignedOut,
+        Err(Error::Unauthorized | Error::Crypto(_) | Error::UserKeysLocked | Error::Srp(_)) => {
+            ResumeOutcome::SignedOut
+        }
         Err(Error::Api(error)) if matches!(error.http_status, 401 | 403) => {
             ResumeOutcome::SignedOut
         }
@@ -1209,12 +1207,8 @@ fn verification_error(challenge: &HvChallenge) -> AuthError {
 
 fn map_sign_in_error(error: Error, supplied: Supplied) -> SignInOutcome {
     match error {
-        Error::Other(message) if message.contains(MAILBOX_PASSWORD_REQUIRED) => {
-            SignInOutcome::NeedsMailboxPassword
-        }
-        Error::Other(message) if message.contains(SECURITY_KEY_REQUIRED) => {
-            SignInOutcome::Failed(AuthError::SecurityKeyUnsupported)
-        }
+        Error::MailboxPasswordRequired => SignInOutcome::NeedsMailboxPassword,
+        Error::SecurityKeyRequired => SignInOutcome::Failed(AuthError::SecurityKeyUnsupported),
         Error::HumanVerification(challenge) => {
             SignInOutcome::Failed(verification_error(&challenge))
         }
@@ -1228,9 +1222,7 @@ fn map_sign_in_error(error: Error, supplied: Supplied) -> SignInOutcome {
         {
             SignInOutcome::Failed(AuthError::InvalidCredentials)
         }
-        Error::Crypto(message)
-            if supplied.mailbox_password && message.contains(USER_KEY_UNLOCK_FAILED) =>
-        {
+        Error::UserKeysLocked if supplied.mailbox_password => {
             SignInOutcome::Failed(AuthError::InvalidMailboxPassword)
         }
         error => SignInOutcome::Failed(map_auth_error(error)),
@@ -1241,17 +1233,13 @@ fn map_auth_error(error: Error) -> AuthError {
     match error {
         Error::HumanVerification(challenge) => verification_error(&challenge),
         Error::Http(_) => AuthError::Connection,
-        Error::Session(message) if message.contains(SESSION_ADDRESS_MISMATCH) => {
-            AuthError::SessionAddressMismatch
-        }
+        Error::SessionAddressMismatch => AuthError::SessionAddressMismatch,
         Error::Session(_) | Error::Io(_) => AuthError::SessionUnavailable,
         Error::Api(error) => AuthError::Service {
             http_status: error.http_status,
             code: error.code,
         },
-        Error::Other(message) if message.contains(SECURITY_KEY_REQUIRED) => {
-            AuthError::SecurityKeyUnsupported
-        }
+        Error::SecurityKeyRequired => AuthError::SecurityKeyUnsupported,
         _ => AuthError::AuthenticationUnavailable,
     }
 }
