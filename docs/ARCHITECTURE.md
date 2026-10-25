@@ -524,7 +524,10 @@ The composer's protection notice takes the same path. When a recipient field
 loses focus, [`app/compose.rs`](../src/app/compose.rs) asks the backend about
 addresses it has not looked up for this draft;
 [`mail/proton.rs`](../src/mail/proton.rs) calls core's `recipient_protection`,
-which classifies the key lookup the way sending picks a package. Answers carry
+which classifies the key lookup the way sending picks a package. It looks up
+four addresses at a time, in their order, and the whole batch shares one
+request deadline; an address still waiting when it runs out reads as a failed
+lookup. Answers carry
 the session epoch and draft ID, and an address removed meanwhile is ignored.
 The `check_recipient_protection` preference in
 [`settings.rs`](../src/settings.rs) turns the lookup off; turning it off also

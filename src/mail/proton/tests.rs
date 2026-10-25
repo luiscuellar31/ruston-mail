@@ -52,6 +52,48 @@ async fn a_sign_in_runs_out_of_time_once_its_own_time_is_used_up() {
     assert_eq!(started.elapsed(), SIGN_IN_TIMEOUT);
 }
 
+#[tokio::test(start_paused = true)]
+async fn recipients_are_looked_up_together_within_one_deadline() {
+    let addresses: Vec<String> = (0..8).map(|n| format!("person{n}@proton.me")).collect();
+
+    // Each lookup takes ten seconds: one after the other, eighty.
+    let started = tokio::time::Instant::now();
+    let checks = protection_of(&addresses, |_| async {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        Ok(RecipientProtection::EndToEnd)
+    })
+    .await;
+    assert_eq!(started.elapsed(), Duration::from_secs(20));
+    let found: Vec<ProtectionCheck> = addresses
+        .iter()
+        .map(|address| (address.clone(), Ok(Protection::EndToEnd)))
+        .collect();
+    assert_eq!(checks, found);
+
+    // Lookups Proton never answers all end with the batch's one deadline.
+    let started = tokio::time::Instant::now();
+    let checks = protection_of(&addresses, |_| std::future::pending()).await;
+    assert_eq!(started.elapsed(), REQUEST_TIMEOUT);
+    let unanswered: Vec<ProtectionCheck> = addresses
+        .iter()
+        .map(|address| (address.clone(), Err(MailboxError::Connection)))
+        .collect();
+    assert_eq!(checks, unanswered);
+
+    // A failed lookup counts for its own address only.
+    let checks = protection_of(&addresses[..3], |address| async move {
+        if address == "person1@proton.me" {
+            Err(Error::Other("refused".into()))
+        } else {
+            Ok(RecipientProtection::Pgp)
+        }
+    })
+    .await;
+    assert_eq!(checks[0], (addresses[0].clone(), Ok(Protection::Pgp)));
+    assert!(checks[1].1.is_err());
+    assert_eq!(checks[2], (addresses[2].clone(), Ok(Protection::Pgp)));
+}
+
 #[tokio::test]
 async fn inspection_deadline_includes_waiting_for_a_permit() {
     let limiter = Semaphore::new(1);

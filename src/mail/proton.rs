@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
-use futures::SinkExt;
 use futures::channel::{mpsc, oneshot};
+use futures::{SinkExt, StreamExt, stream};
 use ruston_core::model::enums::{human_verification, label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
@@ -31,6 +31,8 @@ pub const PAGE_SIZE: u32 = 50;
 /// Longest wait for any Proton request a view is waiting on. Without it a
 /// stuck call leaves the view loading forever, with no way back.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How many recipients' keys a draft's protection check asks for at once.
+const PROTECTION_CONCURRENCY: usize = 4;
 /// Saving an attachment fetches its message and the sender's keys, then the
 /// file itself, which may take core's whole transfer deadline.
 const ATTACHMENT_SAVE_TIMEOUT: Duration = ruston_core::api::attachments::ATTACHMENT_REQUEST_TIMEOUT
@@ -346,22 +348,14 @@ impl ProtonMailService {
         .map(|_| ())
     }
 
-    /// Asks Proton for each address's keys, one request at a time. A failed
-    /// lookup is reported for its own address and does not stop the others.
+    /// Asks Proton for each address's keys, a few at a time and all within
+    /// one `REQUEST_TIMEOUT`. A failed lookup is reported for its own address
+    /// and does not stop the others.
     pub async fn protection(&self, addresses: &[String]) -> Vec<ProtectionCheck> {
-        let mut checks = Vec::with_capacity(addresses.len());
-        for address in addresses {
-            let protection =
-                timed(self.client.recipient_protection(address))
-                    .await
-                    .map(|protection| match protection {
-                        RecipientProtection::EndToEnd => Protection::EndToEnd,
-                        RecipientProtection::Pgp => Protection::Pgp,
-                        RecipientProtection::Unencrypted => Protection::Unencrypted,
-                    });
-            checks.push((address.clone(), protection));
-        }
-        checks
+        protection_of(addresses, |address| {
+            self.client.recipient_protection(address)
+        })
+        .await
     }
 
     pub async fn conversation_counts(
@@ -581,6 +575,46 @@ async fn timed<T>(call: impl Future<Output = ruston_core::Result<T>>) -> Result<
         map_mailbox_error,
     )
     .await
+}
+
+/// Each address's protection through `lookup`, in the addresses' order, with
+/// a few lookups at a time. The batch shares one `REQUEST_TIMEOUT`: a lookup
+/// still waiting when it runs out, or not started by then, reports a failed
+/// connection.
+async fn protection_of<'a, F>(
+    addresses: &'a [String],
+    lookup: impl Fn(&'a str) -> F,
+) -> Vec<ProtectionCheck>
+where
+    F: Future<Output = ruston_core::Result<RecipientProtection>>,
+{
+    let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+    let lookup = &lookup;
+    // Built before the await: with the closure kept in a stream across it,
+    // the compiler cannot show that the future is `Send`.
+    let checks: Vec<_> = addresses
+        .iter()
+        .map(|address| async move {
+            let protection = if tokio::time::Instant::now() < deadline {
+                tokio::time::timeout_at(deadline, lookup(address))
+                    .await
+                    .map_err(|_| MailboxError::Connection)
+                    .and_then(|result| result.map_err(map_mailbox_error))
+                    .map(|protection| match protection {
+                        RecipientProtection::EndToEnd => Protection::EndToEnd,
+                        RecipientProtection::Pgp => Protection::Pgp,
+                        RecipientProtection::Unencrypted => Protection::Unencrypted,
+                    })
+            } else {
+                Err(MailboxError::Connection)
+            };
+            (address.clone(), protection)
+        })
+        .collect();
+    stream::iter(checks)
+        .buffered(PROTECTION_CONCURRENCY)
+        .collect()
+        .await
 }
 
 /// Applies the timeout to calls with non-mailbox error types.
