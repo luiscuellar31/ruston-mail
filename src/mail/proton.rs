@@ -39,9 +39,9 @@ const ATTACHMENT_SAVE_TIMEOUT: Duration = ruston_core::api::attachments::ATTACHM
 /// even when the server stops responding. The time a person spends on a
 /// prompt, solving a CAPTCHA or finding a code, does not count.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(120);
-/// Sending is several requests: a draft, a key for every recipient, then the
-/// message. It is given longer than a request that only reads; uploads add
-/// their own time (see `send_deadline`).
+/// Sending is several requests: the keys of every recipient, a draft, then
+/// the message. It is given longer than a request that only reads; uploads
+/// add their own time (see `send_deadline`).
 const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Per-inspection deadline, including semaphore wait; timeouts keep Proton grouping.

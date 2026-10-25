@@ -569,6 +569,11 @@ Desktop Proton sends rely on that core preflight inside the existing send
 deadline, rather than checking files outside the timeout. The local demo backend
 uses the same validator before accepting a fictional send.
 
+After that preflight and before the draft, core asks Proton for every
+recipient's keys, four lookups at a time and kept in the recipients' order, so
+a recipient Proton refuses ends the send before a draft exists or a file is
+uploaded.
+
 Each password-protected (encrypted-outside) recipient gets its own SRP verifier,
 token, and body and attachment keys wrapped with the message password. Each of
 those takes a costly key derivation, so a recipient's entry is built on the

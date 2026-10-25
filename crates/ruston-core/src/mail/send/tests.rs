@@ -220,6 +220,106 @@ async fn invalid_attachments_are_rejected_before_draft_creation() {
 }
 
 #[tokio::test]
+async fn a_refused_recipient_stops_the_send_before_any_draft_or_upload() {
+    use wiremock::matchers::query_param;
+    let server = MockServer::start().await;
+    let (me, _) = test_address("me@proton.me", "address-1");
+    let attachment = attachment_path();
+    std::fs::write(&attachment, b"quarterly numbers").unwrap();
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .and(query_param("Email", "plain@example.com"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .and(query_param("Email", "nobody@proton.me"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+            "Code": 33102, "Error": "address does not exist"
+        })))
+        .mount(&server)
+        .await;
+
+    let result = test_support::client(&server, vec![me])
+        .send(&SendOptions {
+            to: vec!["plain@example.com".into(), "nobody@proton.me".into()],
+            body: "Numbers attached".into(),
+            attachments: vec![attachment.clone()],
+            ..SendOptions::default()
+        })
+        .await;
+
+    assert!(
+        matches!(&result, Err(Error::Api(api)) if api.code == 33102),
+        "{result:?}"
+    );
+    let paths: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect();
+    assert!(
+        paths.iter().all(|path| path == "/core/v4/keys/all"),
+        "no draft, upload or clean-up: {paths:?}"
+    );
+    std::fs::remove_file(attachment).unwrap();
+}
+
+#[tokio::test]
+async fn recipients_keys_are_asked_for_together() {
+    let server = MockServer::start().await;
+    let (me, _) = test_address("me@proton.me", "address-1");
+    // Each lookup takes a second: one after the other, three seconds.
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"Code": 1000, "RecipientType": 2}))
+                .set_delay(Duration::from_secs(1)),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages/draft-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let started = std::time::Instant::now();
+    test_support::client(&server, vec![me])
+        .send(&SendOptions {
+            to: vec!["ada@example.org".into(), "bob@example.org".into()],
+            cc: vec!["cy@example.org".into()],
+            body: "Hello".into(),
+            ..SendOptions::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "took {:?}",
+        started.elapsed()
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn blocking_attachment_jobs_keep_their_slot_after_cancellation() {
     // Isolate this saturation test from other tests preparing real files.
     static SLOTS: Semaphore = Semaphore::const_new(2);
@@ -1104,6 +1204,13 @@ async fn a_draft_attachment_without_a_key_stops_the_send() {
         .and(path("/mail/v4/messages/delete"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
         .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+        )
         .mount(&server)
         .await;
 

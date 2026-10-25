@@ -1,4 +1,5 @@
-//! Sending: draft → upload → package → send, plus reply / forward.
+//! Sending: recipient keys → draft → upload → package → send, plus reply /
+//! forward.
 
 use super::Client;
 use super::drafts::draft_message_json;
@@ -9,6 +10,7 @@ use crate::model::enums::{message_action, message_flag, package_type};
 use crate::model::message::{Message, MessageMetadata, Recipient};
 use crate::transport::{Doer, Request};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use futures::{StreamExt, TryStreamExt, stream};
 use proton_srp::{SRPAuth, SRPVerifierB64};
 use serde_json::{Map, Value, json};
 use std::borrow::Cow;
@@ -25,6 +27,8 @@ pub const MAX_OUTGOING_ATTACHMENT_TOTAL_BYTES: usize = 128 * 1024 * 1024;
 // Bound memory across concurrent clients and sends, including blocking work
 // that continues after its caller is cancelled. Sequential files share this cap.
 static ATTACHMENT_SLOTS: Semaphore = Semaphore::const_new(2);
+/// How many recipients' keys a send asks Proton for at once.
+const RECIPIENT_KEY_CONCURRENCY: usize = 4;
 
 async fn attachment_work<T: Send + 'static>(
     slots: &'static Semaphore,
@@ -336,6 +340,22 @@ fn dedupe(lists: &[&[String]]) -> Vec<String> {
     out
 }
 
+/// Each recipient's keys, in the recipients' order, asked for a few at a
+/// time.
+async fn look_up_recipients<D: Doer>(
+    http: &D,
+    recipients: Vec<String>,
+) -> Result<Vec<(String, api::keys::RecipientKeys)>> {
+    stream::iter(recipients)
+        .map(|email| async move {
+            let keys = api::keys::get_all_public_keys(http, &email).await?;
+            Ok::<_, Error>((email, keys))
+        })
+        .buffered(RECIPIENT_KEY_CONCURRENCY)
+        .try_collect()
+        .await
+}
+
 pub(crate) fn recipient_list(addrs: &[String]) -> Value {
     Value::Array(
         addrs
@@ -613,11 +633,16 @@ impl Client {
         validate_attachments(&opts.attachments).await?;
         let provider = crypto::provider();
         let addr = self.sender_keys(opts.from.as_deref())?;
-        let mime_type = opts.body_mime_type();
-        tracing::info!(target: "ruston_core::send", from = %addr.email, to = opts.to.len(), cc = opts.cc.len(), bcc = opts.bcc.len(), attachments = opts.attachments.len(), mime = mime_type, "send: starting pipeline");
+        tracing::info!(target: "ruston_core::send", from = %addr.email, to = opts.to.len(), cc = opts.cc.len(), bcc = opts.bcc.len(), attachments = opts.attachments.len(), mime = opts.body_mime_type(), "send: starting pipeline");
 
-        // 1. create draft (self-encrypted body).
-        tracing::debug!(target: "ruston_core::send", "send step 1: creating encrypted draft (POST /mail/v4/messages)");
+        // 1. every recipient's keys before anything is created or uploaded,
+        // so a recipient Proton refuses leaves no draft to clean up.
+        let recipients = dedupe(&[&opts.to, &opts.cc, &opts.bcc]);
+        tracing::debug!(target: "ruston_core::send", recipients = recipients.len(), "send step 1: looking up recipient keys");
+        let recipients = look_up_recipients(self.http(), recipients).await?;
+
+        // 2. create draft (self-encrypted body).
+        tracing::debug!(target: "ruston_core::send", "send step 2: creating encrypted draft (POST /mail/v4/messages)");
         let mut draft = draft_message_json(addr, opts)?;
         if let Some(p) = parent_id {
             draft["ParentID"] = json!(p);
@@ -644,7 +669,7 @@ impl Client {
 
         // Clean up only when the failure proves the message was not sent.
         match self
-            .finish_send(&provider, addr, &created, mime_type, opts, eo)
+            .finish_send(&provider, addr, &created, &recipients, opts, eo)
             .await
         {
             Ok(()) => {
@@ -663,12 +688,13 @@ impl Client {
         provider: &P,
         addr: &AddressKeys,
         draft: &Message,
-        mime_type: &str,
+        recipients: &[(String, api::keys::RecipientKeys)],
         opts: &SendOptions,
         eo: Option<&(String, String)>,
     ) -> Result<()> {
         let message_id = draft.meta.id.as_str();
-        // 2. attachments: those the draft already carries (a forward's copies
+        let mime_type = opts.body_mime_type();
+        // 3. attachments: those the draft already carries (a forward's copies
         // of the original's) are keyed for recipients like new uploads.
         let mut attachment_keys: Vec<AttachmentKey> = Vec::new();
         for attachment in &draft.attachments {
@@ -687,17 +713,16 @@ impl Client {
         attachment_keys.extend(uploaded);
 
         if !attachment_keys.is_empty() {
-            tracing::debug!(target: "ruston_core::send", count = attachment_keys.len(), "send step 2: attachments uploaded");
+            tracing::debug!(target: "ruston_core::send", count = attachment_keys.len(), "send step 3: attachments uploaded");
         }
 
-        // 3. encrypt the transport body, then build each recipient's entry
+        // 4. encrypt the transport body, then build each recipient's entry
         // and the packages they go in.
         let transport_body = EncryptedBody::encrypt(provider, addr, &opts.body)?;
         let body_algorithm = crypto::algo_name(transport_body.session_key.algo);
 
         // Each recipient's entry, by how their copy is protected.
-        let recipients = dedupe(&[&opts.to, &opts.cc, &opts.bcc]);
-        tracing::debug!(target: "ruston_core::send", recipients = recipients.len(), "send step 3: resolving recipient keys + building packages");
+        tracing::debug!(target: "ruston_core::send", recipients = recipients.len(), "send step 4: building packages");
         let mut internal_addrs = Map::new();
         let mut pgp_addrs = Map::new();
         let mut eo_addrs = Map::new();
@@ -734,8 +759,7 @@ impl Client {
                 Ok(entry)
             };
 
-        for email in &recipients {
-            let rk = api::keys::get_all_public_keys(self.http(), email).await?;
+        for (email, rk) in recipients {
             // Internal = Proton-verified keys present → Type 1 (E2E).
             // External with a published PGP/WKD key → Type 8 (PGP-inline).
             // Otherwise → Type 4 (cleartext, with a warning). A key whose
@@ -856,7 +880,7 @@ impl Client {
             packages.push(pkg);
         }
 
-        // 4. send.
+        // 5. send.
         let mut send_request = json!({
             "ExpirationTime": Value::Null,
             "AutoSaveContacts": 0,
@@ -868,7 +892,7 @@ impl Client {
         if let Some(s) = opts.expires_in {
             send_request["ExpiresIn"] = json!(s);
         }
-        tracing::debug!(target: "ruston_core::send", packages = packages.len(), "send step 4: submitting (POST /mail/v4/messages/{{id}})");
+        tracing::debug!(target: "ruston_core::send", packages = packages.len(), "send step 5: submitting (POST /mail/v4/messages/{{id}})");
         submit_send(self.http(), message_id, send_request).await
     }
 }
