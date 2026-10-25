@@ -400,7 +400,9 @@ fn decrypt_token<P: PGPProviderSync>(
         .with_decryption_keys(user_privs.iter())
         .decrypt(token_armored.as_bytes(), DataEncoding::Armor)
         .map_err(|e| Error::Crypto(format!("token decrypt failed: {e}")))?;
-    let bytes = verified.as_bytes().to_vec();
+    // The token is the address key's passphrase: moved out, not copied, and
+    // wiped once the passphrase holds it.
+    let bytes = Zeroizing::new(verified.into_vec());
 
     let result = provider
         .new_verifier()

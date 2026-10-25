@@ -35,7 +35,7 @@ const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 const REFRESH_ATTEMPTS: u8 = 2;
 
 /// Request body.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Body {
     /// No request body.
     Empty,
@@ -45,8 +45,20 @@ pub enum Body {
     Bytes(Vec<u8>),
 }
 
+// Bodies carry refresh tokens, password proofs and session keys, so their
+// debug form names the kind of body, never its content.
+impl std::fmt::Debug for Body {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("Empty"),
+            Self::Json(_) => f.write_str("Json(..)"),
+            Self::Bytes(bytes) => write!(f, "Bytes({} bytes)", bytes.len()),
+        }
+    }
+}
+
 /// A transport-level request.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Request {
     /// HTTP method.
     pub method: Method,
@@ -71,6 +83,25 @@ pub struct Request {
     pub max_response_bytes: usize,
     /// Total deadline for each HTTP attempt, including response-body reading.
     pub timeout: Duration,
+}
+
+// The human-verification token stays out of the debug form, as the body does.
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field("query", &self.query)
+            .field("body", &self.body)
+            .field("content_type", &self.content_type)
+            .field("hv_type", &self.hv.as_ref().map(|(_, kind)| kind))
+            .field("skip_refresh", &self.skip_refresh)
+            .field("omit_auth", &self.omit_auth)
+            .field("enforce_unauth", &self.enforce_unauth)
+            .field("max_response_bytes", &self.max_response_bytes)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 impl Request {
@@ -754,6 +785,20 @@ mod tests {
 
     fn client(base: &str) -> HttpClient {
         HttpClient::new(base, "Other")
+    }
+
+    #[test]
+    fn a_request_debug_form_shows_neither_its_body_nor_its_verification_token() {
+        let request = Request::post("/auth/v4/refresh")
+            .json(serde_json::json!({"RefreshToken": "refresh-secret"}))
+            .with_hv("hv-secret", "captcha");
+        let shown = format!("{request:?}");
+        assert!(shown.contains("/auth/v4/refresh"), "{shown}");
+        assert!(shown.contains("Json(..)"), "{shown}");
+        assert!(shown.contains("captcha"), "{shown}");
+        assert!(!shown.contains("secret"), "{shown}");
+        let raw = format!("{:?}", Body::Bytes(b"session-key-secret".to_vec()));
+        assert_eq!(raw, "Bytes(18 bytes)");
     }
 
     async fn read_get_request(socket: &mut tokio::net::TcpStream) {

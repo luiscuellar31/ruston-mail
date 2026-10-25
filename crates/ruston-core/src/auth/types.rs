@@ -4,7 +4,7 @@ use crate::model::enums::password_mode;
 use serde::Deserialize;
 
 /// Response from creating an unauthenticated session (UID + initial tokens).
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct SessionResp {
     /// Session UID identifying this (initially unauthenticated) session.
@@ -14,6 +14,15 @@ pub struct SessionResp {
     pub access_token: String,
     /// Refresh token used to mint new access tokens.
     pub refresh_token: String,
+}
+
+// The tokens stay out of the debug form.
+impl std::fmt::Debug for SessionResp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionResp")
+            .field("uid", &self.uid)
+            .finish_non_exhaustive()
+    }
 }
 
 /// SRP challenge parameters returned by the auth-info endpoint.
@@ -44,7 +53,7 @@ pub struct TwoFa {
 }
 
 /// Response from completing SRP authentication (tokens, server proof, 2FA/scope).
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct AuthResponse {
     /// Session UID for the now-authenticated session.
@@ -66,6 +75,18 @@ pub struct AuthResponse {
     /// Granted scope string, if returned.
     #[serde(default)]
     pub scope: Option<String>,
+}
+
+// The tokens stay out of the debug form.
+impl std::fmt::Debug for AuthResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthResponse")
+            .field("uid", &self.uid)
+            .field("two_fa", &self.two_fa)
+            .field("password_mode", &self.password_mode)
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
 }
 
 fn one_password() -> u8 {
@@ -95,6 +116,19 @@ mod tests {
         });
         let r: AuthResponse = serde_json::from_value(json).unwrap();
         assert_eq!(r.password_mode, 1);
+    }
+
+    #[test]
+    fn tokens_stay_out_of_the_debug_form() {
+        let tokens = serde_json::json!({
+            "UID": "uid-1", "AccessToken": "access-secret", "RefreshToken": "refresh-secret"
+        });
+        let session: SessionResp = serde_json::from_value(tokens.clone()).unwrap();
+        let auth: AuthResponse = serde_json::from_value(tokens).unwrap();
+        for shown in [format!("{session:?}"), format!("{auth:?}")] {
+            assert!(shown.contains("uid-1"), "{shown}");
+            assert!(!shown.contains("secret"), "{shown}");
+        }
     }
 
     #[test]

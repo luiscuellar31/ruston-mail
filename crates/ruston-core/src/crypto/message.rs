@@ -198,7 +198,8 @@ pub fn decrypt_attachment<P: PGPProviderSync>(
         .with_session_key(sk)
         .decrypt(data_packet, DataEncoding::Bytes)
         .map_err(|e| Error::Crypto(format!("attachment data decrypt failed: {e}")))?;
-    Ok(out.as_bytes().to_vec())
+    // Moved out rather than copied, so no second plaintext is freed unwiped.
+    Ok(out.into_vec())
 }
 
 /// Verify a detached armored attachment signature against the sender's keys.
