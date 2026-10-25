@@ -99,7 +99,8 @@ async fn an_attachment_too_large_to_open_is_not_downloaded() {
         },
         ..Default::default()
     };
-    attachment.size = api::attachments::MAX_ATTACHMENT_RESPONSE_BYTES as u64 + 1;
+    // Below the response limit, but above what decryption leaves room for.
+    attachment.size = MAX_ATTACHMENT_PLAINTEXT_BYTES as u64 + 1;
 
     let error = client
         .download_listed_attachment(&message.meta, &attachment)
@@ -111,8 +112,8 @@ async fn an_attachment_too_large_to_open_is_not_downloaded() {
     );
     assert!(server.received_requests().await.unwrap().is_empty());
 
-    // Up to the response limit it is fetched as before.
-    attachment.size = api::attachments::MAX_ATTACHMENT_RESPONSE_BYTES as u64;
+    // Up to the limit it is fetched as before.
+    attachment.size = MAX_ATTACHMENT_PLAINTEXT_BYTES as u64;
     assert!(
         client
             .download_listed_attachment(&message.meta, &attachment)

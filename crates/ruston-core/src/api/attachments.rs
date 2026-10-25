@@ -5,7 +5,7 @@ use crate::transport::{Doer, Request};
 use serde::Deserialize;
 use std::time::Duration;
 
-/// Maximum encrypted attachment response (64 MiB). Decryption accepts at most
+/// Maximum encrypted attachment response (64 MiB). Core opens at most
 /// [`MAX_ATTACHMENT_PLAINTEXT_BYTES`]; the rest leaves room for OpenPGP's
 /// overhead, under 1% with usual encodings and about a quarter with the
 /// smallest AEAD chunks.

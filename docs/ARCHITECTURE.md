@@ -880,9 +880,10 @@ instead of an unknown outcome.
   The application's own safety limits are 32 MiB for ordinary responses and
   64 MiB for encrypted attachment responses. These are transport limits, not
   Proton Mail attachment quotas. The attachment limit leaves room for OpenPGP
-  overhead above the 50 MiB plaintext that decryption accepts (proton-rpgp's
-  reading limit); core refuses an attachment Proton reports above it before
-  downloading, and reports both cases as `AttachmentTooLarge`. They count decompressed bytes, so a
+  overhead above the 50 MiB that decryption accepts (proton-rpgp's reading
+  limit, which also counts the packet around the file). Core opens at most
+  49 MiB, refuses an attachment Proton reports above that before downloading,
+  and reports it, or a response over its limit, as `AttachmentTooLarge`. They count decompressed bytes, so a
   compressed response cannot exceed them. A response that states its length
   within the limit has that length reserved before it is read; a compressed one
   states none and grows as it arrives. Complete attachment multipart uploads also

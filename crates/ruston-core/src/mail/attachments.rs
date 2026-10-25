@@ -13,9 +13,11 @@ use zeroize::Zeroizing;
 /// Maximum combined plaintext returned by `download_all_attachments` (128 MiB).
 pub const MAX_BULK_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
 
-/// The largest attachment that can be opened (50 MiB): proton-rpgp's default
-/// reading limit, which proton-crypto applies to every decrypted plaintext.
-pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: usize = 50 * 1024 * 1024;
+/// The largest attachment that can be opened (49 MiB). proton-crypto stops
+/// reading a decrypted plaintext at proton-rpgp's default limit, 50 MiB, which
+/// for the usual encryption also counts the packet around the file (its name,
+/// chunk lengths and integrity check); the last 1 MiB is left for that.
+pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: usize = 49 * 1024 * 1024;
 
 /// The longest name kept, in UTF-8 bytes. NTFS allows 255 UTF-16 units and
 /// Linux and macOS file systems 255 bytes; this leaves room for the number
@@ -250,7 +252,7 @@ impl Client {
             limit: MAX_ATTACHMENT_PLAINTEXT_BYTES,
         };
         // Decryption would refuse it, so it is not worth downloading.
-        if att.size > api::attachments::MAX_ATTACHMENT_RESPONSE_BYTES as u64 {
+        if att.size > MAX_ATTACHMENT_PLAINTEXT_BYTES as u64 {
             return Err(too_large());
         }
         let key_packets = att
@@ -278,7 +280,7 @@ impl Client {
             Err(Error::ResponseTooLarge { .. }) => return Err(too_large()),
             result => result?,
         };
-        // Decrypting and verifying up to 50 MiB is CPU work for the blocking pool.
+        // Decrypting and verifying up to 49 MiB is CPU work for the blocking pool.
         let (addr, key_packets) = (addr.clone(), key_packets.to_owned());
         let signature = signature.map(str::to_owned);
         let plain = super::off_thread(move || {
