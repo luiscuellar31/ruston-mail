@@ -761,7 +761,9 @@ instead of an unknown outcome.
   "Fw: " unless it already starts with "Re:", "Fw:" or "Fwd:", and the draft
   tells Proton whether it replies, replies to all, or forwards. The original is
   fetched once and decrypted for its text alone, so quoting looks up no sender
-  keys. One function,
+  keys; `SendOptions::quote` set to `Quote::Omitted` leaves it out without
+  decrypting it, which the composer's quote choice and the CLI's `--no-quote`
+  ask for. One function,
   `reply_recipients`, decides where an answer goes when `Client::reply` is
   given no recipients; mail the account sent, without also receiving it, is
   answered to its recipients rather than to the account itself. Given any

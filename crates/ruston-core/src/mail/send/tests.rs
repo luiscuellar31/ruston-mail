@@ -1454,7 +1454,11 @@ async fn an_answer_quotes_the_original_it_already_fetched() {
 /// The text of the draft that answering a message from the boss writes,
 /// where `parent_body` is the original's body as Proton returns it: a
 /// reply when `reply`, else a forward to a friend.
-async fn answer_text(reply: bool, parent_body: impl FnOnce(&AddressKeys) -> String) -> String {
+async fn answer_text(
+    reply: bool,
+    quote: Quote,
+    parent_body: impl FnOnce(&AddressKeys) -> String,
+) -> String {
     let server = MockServer::start().await;
     let (me, _) = test_address("me@proton.me", "address-1");
     let parent_id = format!("{}==", "p".repeat(60));
@@ -1495,6 +1499,7 @@ async fn answer_text(reply: bool, parent_body: impl FnOnce(&AddressKeys) -> Stri
     if reply {
         let thanks = SendOptions {
             body: "Thanks".into(),
+            quote,
             ..SendOptions::default()
         };
         client.reply(&parent_id, false, &thanks).await.unwrap();
@@ -1502,6 +1507,7 @@ async fn answer_text(reply: bool, parent_body: impl FnOnce(&AddressKeys) -> Stri
         let forward = SendOptions {
             to: vec!["friend@example.com".into()],
             body: "FYI".into(),
+            quote,
             ..SendOptions::default()
         };
         client.forward(&parent_id, &forward).await.unwrap();
@@ -1526,7 +1532,7 @@ async fn answer_text(reply: bool, parent_body: impl FnOnce(&AddressKeys) -> Stri
 
 #[tokio::test]
 async fn a_reply_quotes_the_original_under_its_own_text() {
-    let text = answer_text(true, |me| {
+    let text = answer_text(true, Quote::Original, |me| {
         crypto::encrypt_self_draft(&crypto::provider(), me, "Numbers attached").unwrap()
     })
     .await;
@@ -1535,9 +1541,24 @@ async fn a_reply_quotes_the_original_under_its_own_text() {
 }
 
 #[tokio::test]
+async fn an_answer_can_leave_the_original_out() {
+    for reply in [true, false] {
+        let text = answer_text(reply, Quote::Omitted, |me| {
+            crypto::encrypt_self_draft(&crypto::provider(), me, "Numbers attached").unwrap()
+        })
+        .await;
+        let own = if reply { "Thanks" } else { "FYI" };
+        assert_eq!(text, own, "the original went with it");
+    }
+}
+
+#[tokio::test]
 async fn an_original_that_does_not_open_is_answered_without_a_quote() {
     for reply in [true, false] {
-        let text = answer_text(reply, |_| "not an encrypted message".to_owned()).await;
+        let text = answer_text(reply, Quote::Original, |_| {
+            "not an encrypted message".to_owned()
+        })
+        .await;
         let own = if reply { "Thanks" } else { "FYI" };
         assert_eq!(text, own, "the answer still goes, unquoted");
     }

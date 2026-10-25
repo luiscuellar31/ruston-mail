@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use ruston_core::Quote;
+
 use crate::mail::{
     BodyFormat, Domains, InternationalDomain, MailMessage, MailboxError, MessageBody, Outgoing,
     OutgoingKind, Protection, ProtectionCheck, Recipients, SendError, recipients,
@@ -138,12 +140,17 @@ impl AnswerKind {
             AnswerKind::Reply => OutgoingKind::Reply {
                 message_id,
                 everyone: false,
+                quote: Quote::Original,
             },
             AnswerKind::ReplyAll => OutgoingKind::Reply {
                 message_id,
                 everyone: true,
+                quote: Quote::Original,
             },
-            AnswerKind::Forward => OutgoingKind::Forward { message_id },
+            AnswerKind::Forward => OutgoingKind::Forward {
+                message_id,
+                quote: Quote::Original,
+            },
         }
     }
 }
@@ -439,6 +446,25 @@ impl Compose {
     /// What is being answered, when something is.
     pub fn answering(&self) -> Option<&Answering> {
         self.answering.as_ref()
+    }
+
+    /// For an answer, whether the original goes under the text.
+    pub fn quote(&self) -> Option<Quote> {
+        match &self.kind {
+            OutgoingKind::New => None,
+            OutgoingKind::Reply { quote, .. } | OutgoingKind::Forward { quote, .. } => Some(*quote),
+        }
+    }
+
+    fn toggle_quote(&mut self) {
+        if let OutgoingKind::Reply { quote, .. } | OutgoingKind::Forward { quote, .. } =
+            &mut self.kind
+        {
+            *quote = match quote {
+                Quote::Original => Quote::Omitted,
+                Quote::Omitted => Quote::Original,
+            };
+        }
     }
 
     /// Whether the window asks for a subject. Core writes one for an answer.
@@ -746,6 +772,14 @@ impl App {
     pub(super) fn change_compose(&mut self, field: ComposeField, value: String) {
         if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
             compose.set(field, value);
+        }
+    }
+
+    /// Puts the original under the text of the answer being written, or
+    /// takes it away.
+    pub(super) fn toggle_compose_quote(&mut self) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
+            compose.toggle_quote();
         }
     }
 
@@ -1164,6 +1198,7 @@ mod tests {
         compose.kind = OutgoingKind::Reply {
             message_id: "message".into(),
             everyone: false,
+            quote: Quote::Original,
         };
         compose
             .protection

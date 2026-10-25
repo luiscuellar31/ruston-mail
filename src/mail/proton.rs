@@ -352,6 +352,7 @@ impl ProtonMailService {
             body: outgoing.wire_body(),
             html: outgoing.is_html(),
             attachments: outgoing.attachments.clone(),
+            quote: outgoing.kind.quote(),
             // ruston-core picks the sender: the primary address, or for an
             // answer the address the original reached.
             // Scheduling and self-destruct are not offered yet.
@@ -367,8 +368,9 @@ impl ProtonMailService {
                 OutgoingKind::Reply {
                     message_id,
                     everyone,
+                    ..
                 } => self.client.reply(message_id, *everyone, &options).await,
-                OutgoingKind::Forward { message_id } => {
+                OutgoingKind::Forward { message_id, .. } => {
                     self.client.forward(message_id, &options).await
                 }
             }

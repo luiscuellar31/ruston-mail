@@ -8,6 +8,7 @@ use super::{identity, mailbox::detail, reader};
 use crate::app::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
 use crate::settings::MIN_WINDOW_SIZE;
+use ruston_core::Quote;
 
 const WINDOW_SIZE: [f32; 2] = [640.0, 600.0];
 
@@ -161,6 +162,9 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
     }
     if let Some(answer) = compose.answering() {
         answered(ui, answer);
+        if answer.quotes_original {
+            quote_choice(ui, compose, leaving, messages);
+        }
     }
     recipient_fields(ui, compose, leaving, messages);
     ui.add_space(4.0);
@@ -419,9 +423,6 @@ fn answered(ui: &mut egui::Ui, answer: &Answering) {
         &format!("Answering “{}” from {}.", answer.subject, answer.sender),
     );
     // What goes out with the text, though the composer does not show it.
-    if answer.quotes_original {
-        detail(ui, "The original is quoted under your text.");
-    }
     if !answer.forwarded.is_empty() {
         detail(
             ui,
@@ -440,6 +441,20 @@ fn answered(ui: &mut egui::Ui, answer: &Answering) {
             ))
             .color(theme::colors(ui).danger),
         );
+    }
+    ui.add_space(8.0);
+}
+
+/// Whether the original goes under the text, which the composer does not
+/// show; ticked to begin with.
+fn quote_choice(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &mut Vec<Message>) {
+    let mut quoted = compose.quote() == Some(Quote::Original);
+    let choice = ui.add_enabled(
+        !leaving,
+        theme::Checkbox::new(&mut quoted, "Quote the original under your text"),
+    );
+    if choice.changed() {
+        messages.push(Message::ToggleComposeQuote);
     }
     ui.add_space(8.0);
 }

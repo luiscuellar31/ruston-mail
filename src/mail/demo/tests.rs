@@ -281,6 +281,7 @@ fn a_reply_goes_back_to_the_sender_with_the_thread_under_it() {
             kind: OutgoingKind::Reply {
                 message_id: parent.id.clone(),
                 everyone: false,
+                quote: Quote::Original,
             },
             to: Vec::new(),
             subject: String::new(),
@@ -313,6 +314,35 @@ fn a_reply_goes_back_to_the_sender_with_the_thread_under_it() {
 }
 
 #[test]
+fn a_reply_can_go_without_the_message_it_answers() {
+    let mailbox = DemoMailbox::new();
+    let answered = mailbox.conversation_detail("demo-0", NOW).unwrap();
+
+    mailbox
+        .send_now(&Outgoing {
+            kind: OutgoingKind::Reply {
+                message_id: answered.messages[0].id.clone(),
+                everyone: false,
+                quote: Quote::Omitted,
+            },
+            to: Vec::new(),
+            subject: String::new(),
+            ..outgoing("ignored")
+        })
+        .unwrap();
+
+    let row = state_page(&mailbox, MailFolder::Sent)
+        .conversations
+        .into_iter()
+        .max_by_key(|row| row.time)
+        .expect("the reply is in Sent");
+    let sent = mailbox.conversation_detail(&row.id, NOW).unwrap();
+    let body = sent.messages[0].body.plain_text();
+    assert!(body.contains("See you Thursday."), "{body}");
+    assert!(!body.contains("> "), "the original went with it: {body}");
+}
+
+#[test]
 fn a_reply_goes_to_the_recipients_typed_rather_than_its_sender() {
     let mailbox = DemoMailbox::new();
     let answered = mailbox.conversation_detail("demo-0", NOW).unwrap();
@@ -323,6 +353,7 @@ fn a_reply_goes_to_the_recipients_typed_rather_than_its_sender() {
             kind: OutgoingKind::Reply {
                 message_id: parent.id.clone(),
                 everyone: false,
+                quote: Quote::Original,
             },
             to: vec!["carol@example.com".into()],
             subject: String::new(),
@@ -395,6 +426,7 @@ fn a_reply_to_the_demo_user_s_own_message_goes_to_its_recipients() {
             kind: OutgoingKind::Reply {
                 message_id: own.id.clone(),
                 everyone: false,
+                quote: Quote::Original,
             },
             to: own.reply_to.clone(),
             ..outgoing("ignored")
@@ -418,6 +450,7 @@ fn a_forward_keeps_the_recipients_it_was_given() {
         .send_now(&Outgoing {
             kind: OutgoingKind::Forward {
                 message_id: answered.messages[0].id.clone(),
+                quote: Quote::Original,
             },
             subject: String::new(),
             ..outgoing("ignored")

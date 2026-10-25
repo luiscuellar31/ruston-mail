@@ -104,7 +104,7 @@ pub use mail::contacts::AddressInfo;
 pub use mail::export::ExportReport;
 pub use mail::read::{ConversationMessage, FullMessage, SearchOpts, UnreadableMessage};
 pub use mail::send::{
-    RecipientProtection, ReplyRecipients, SendOptions, reply_recipients, reply_redirected,
+    Quote, RecipientProtection, ReplyRecipients, SendOptions, reply_recipients, reply_redirected,
 };
 pub use mail::sync::{LocalCache, SyncReport};
 pub use mail::{Client, LoginOptions, LoginPrompts, MailboxPasswordPrompt};

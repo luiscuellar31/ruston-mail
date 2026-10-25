@@ -281,7 +281,7 @@ fn a_reply_warns_when_reply_to_redirects_it() {
 }
 
 #[test]
-fn a_forward_names_the_files_it_carries_and_the_quote() {
+fn a_forward_names_the_files_it_carries() {
     let context = egui::Context::default();
     theme::install(&context);
     let answer = Answering {
@@ -307,15 +307,11 @@ fn a_forward_names_the_files_it_carries_and_the_quote() {
         .collect();
     output.drop_without_applying_deltas();
 
-    for wanted in [
-        "The original is quoted under your text.",
-        "Its attachments go with it: invoice.pdf, receipt.png.",
-    ] {
-        assert!(
-            texts.iter().any(|text| text == wanted),
-            "{wanted} in {texts:?}"
-        );
-    }
+    let wanted = "Its attachments go with it: invoice.pdf, receipt.png.";
+    assert!(
+        texts.iter().any(|text| text == wanted),
+        "{wanted} in {texts:?}"
+    );
 }
 
 #[test]
@@ -402,8 +398,6 @@ fn the_composer_shows_the_ascii_form_of_an_international_domain() {
 
 #[test]
 fn a_new_draft_puts_the_cursor_where_writing_starts() {
-    use crate::mail::demo;
-
     let context = egui::Context::default();
     theme::install(&context);
     let focused_after_showing = |app: &crate::app::App| {
@@ -428,6 +422,16 @@ fn a_new_draft_puts_the_cursor_where_writing_starts() {
 
     // A reply knows its recipients, so it starts in the body.
     app.update(Message::DiscardCompose);
+    answer(&mut app, AnswerKind::Reply);
+    let reply = app.compose().expect("a reply is open").id();
+    assert_eq!(focused_after_showing(&app), Some(body_id(reply)));
+}
+
+/// Opens the demo's first conversation in `app` and answers its last
+/// message `kind`.
+fn answer(app: &mut crate::app::App, kind: AnswerKind) {
+    use crate::mail::demo;
+
     let mailbox = demo::DemoMailbox::new();
     let page =
         mailbox.list_conversations(&crate::mail::Folder::INBOX, 0, demo::PAGE_SIZE, demo::now());
@@ -450,10 +454,60 @@ fn a_new_draft_puts_the_cursor_where_writing_starts() {
     app.update(Message::ConversationLoaded(request, detail));
     app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        kind: AnswerKind::Reply,
+        kind,
     });
-    let reply = app.compose().expect("a reply is open").id();
-    assert_eq!(focused_after_showing(&app), Some(body_id(reply)));
+}
+
+#[test]
+fn an_answer_offers_to_leave_the_original_out() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |app: &crate::app::App, events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| show(ui, app.compose().unwrap(), &mut messages),
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+
+    for kind in [AnswerKind::Reply, AnswerKind::Forward] {
+        let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+        answer(&mut app, kind);
+        let (shapes, _) = frame(&app, Vec::new());
+        let choice =
+            crate::ui::test_support::text_rect(&shapes, "Quote the original under your text")
+                .center();
+        let press = |pressed| egui::Event::PointerButton {
+            pos: choice,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let (_, asked) = frame(
+            &app,
+            vec![egui::Event::PointerMoved(choice), press(true), press(false)],
+        );
+        assert!(
+            matches!(asked.as_slice(), [Message::ToggleComposeQuote]),
+            "{kind:?} asked for {} messages",
+            asked.len()
+        );
+    }
+
+    // A new message answers nothing, so it offers nothing to quote.
+    let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+    app.update(Message::OpenCompose);
+    let (shapes, _) = frame(&app, Vec::new());
+    assert!(!shapes.iter().any(|clipped| matches!(
+        &clipped.shape,
+        egui::epaint::Shape::Text(text) if text.galley.text().contains("Quote the original")
+    )));
 }
 
 #[test]

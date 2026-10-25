@@ -3499,6 +3499,39 @@ fn a_reply_opens_addressed_and_its_recipients_can_change() {
 }
 
 #[test]
+fn an_answer_quotes_the_original_unless_told_not_to() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-0");
+    let _ = app.update(Message::Answer {
+        message_id: "demo-0-2".into(),
+        kind: AnswerKind::Reply,
+    });
+    assert_eq!(
+        app.compose().unwrap().quote(),
+        Some(ruston_core::Quote::Original)
+    );
+
+    let _ = app.update(Message::ToggleComposeQuote);
+    let writing = app.compose().unwrap();
+    assert_eq!(writing.quote(), Some(ruston_core::Quote::Omitted));
+    assert!(
+        writing.is_untouched(),
+        "leaving the quote out is not writing"
+    );
+    let _ = app.update(Message::ToggleComposeQuote);
+    assert_eq!(
+        app.compose().unwrap().quote(),
+        Some(ruston_core::Quote::Original)
+    );
+
+    // A new message answers nothing.
+    let _ = app.update(Message::CloseCompose);
+    let _ = app.update(Message::OpenCompose);
+    let _ = app.update(Message::ToggleComposeQuote);
+    assert_eq!(app.compose().unwrap().quote(), None);
+}
+
+#[test]
 fn a_forward_still_has_to_be_addressed() {
     let mut app = loaded_demo_app();
     open_conversation(&mut app, "demo-0");

@@ -209,6 +209,8 @@ pub enum Message {
     CancelDiscard,
     /// Shows or hides the copy fields.
     ToggleComposeCopies,
+    /// Puts the original under an answer's text, or leaves it out.
+    ToggleComposeQuote,
     ComposeChanged(ComposeField, String),
     /// A recipient field lost focus; its addresses are complete enough to look up.
     ComposeRecipientsLeft,
@@ -1011,6 +1013,7 @@ impl App {
             Message::DiscardCompose => self.discard_compose(),
             Message::CancelDiscard => self.cancel_discard(),
             Message::ToggleComposeCopies => self.toggle_compose_copies(),
+            Message::ToggleComposeQuote => self.toggle_compose_quote(),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
             Message::ComposeRecipientsLeft => return self.check_compose_protection(),
             Message::ComposeProtectionChecked(epoch, id, checks) => {

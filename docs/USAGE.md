@@ -345,9 +345,9 @@ warns when the message's Reply-To sends the reply somewhere other than its
 sender. The subject
 is written for you. Replies and forwards are sent from the address the original
 message reached. The original's text is quoted under yours when it can be
-opened, and a forward also carries the original's files, images in its body
-included; the composer says when the original is quoted and lists the
-attachments a forward sends.
+opened, unless you untick **Quote the original under your text** in the
+composer; a forward also carries the original's files, images in its body
+included, and the composer lists the attachments it sends.
 
 Messages can be sent as plain text or HTML. The editor remains plain text in
 both modes: text that looks like an HTML tag is sent as text, not executed as
@@ -492,6 +492,10 @@ every command, and `ruston-cli <command> --help` its options.
 The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with
 `--profile default`. `NAME` must be a single path component without separators.
+
+`messages reply` and `messages forward` quote the original under the body,
+as the desktop does; `--no-quote` leaves it out, while a forward still carries
+its attachments.
 
 When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached

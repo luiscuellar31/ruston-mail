@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use ruston_core::Quote;
 use ruston_core::html::escape_text;
 
 use super::MailboxError;
@@ -27,10 +28,26 @@ pub enum OutgoingKind {
         message_id: String,
         /// Everyone the message reached, rather than only whoever sent it.
         everyone: bool,
+        /// Whether the original goes under the text.
+        quote: Quote,
     },
     Forward {
         message_id: String,
+        /// Whether the original's text goes under the text; its files go
+        /// either way.
+        quote: Quote,
     },
+}
+
+impl OutgoingKind {
+    /// Whether the original goes under the text; a new message answers
+    /// nothing, so it says nothing either way.
+    pub fn quote(&self) -> Quote {
+        match self {
+            Self::New => Quote::default(),
+            Self::Reply { quote, .. } | Self::Forward { quote, .. } => *quote,
+        }
+    }
 }
 
 /// How Proton will protect a new message for one recipient.

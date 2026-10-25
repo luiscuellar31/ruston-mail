@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use ruston_core::Quote;
 use ruston_core::model::enums::message_flag;
 
 use super::outgoing::{Outgoing, OutgoingKind, SendError};
@@ -267,9 +268,11 @@ impl DemoMailbox {
             starred: false,
             // What would have gone on the wire, so choosing HTML shows in the
             // demo what choosing HTML does.
-            bodies: vec![match &answered {
-                Some(parent) => format!("{}\n\n{}", outgoing.wire_body(), parent.quoted),
-                None => outgoing.wire_body(),
+            bodies: vec![match (&answered, outgoing.kind.quote()) {
+                (Some(parent), Quote::Original) => {
+                    format!("{}\n\n{}", outgoing.wire_body(), parent.quoted)
+                }
+                _ => outgoing.wire_body(),
             }],
             html: outgoing.is_html(),
             to: everyone,
@@ -923,7 +926,9 @@ struct Answered {
 fn answered_message(fixtures: &[Fixture], kind: &OutgoingKind, now: i64) -> Option<Answered> {
     let message_id = match kind {
         OutgoingKind::New => return None,
-        OutgoingKind::Reply { message_id, .. } | OutgoingKind::Forward { message_id } => message_id,
+        OutgoingKind::Reply { message_id, .. } | OutgoingKind::Forward { message_id, .. } => {
+            message_id
+        }
     };
     let (index, position) = message_place(message_id)?;
     let detail = detail_from(fixtures, &format!("demo-{index}"), now)?;

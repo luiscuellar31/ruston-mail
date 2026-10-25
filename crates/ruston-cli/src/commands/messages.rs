@@ -10,7 +10,7 @@ use html5ever::tendril::StrTendril;
 use html5ever::tokenizer::{
     BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
-use ruston_core::{AddressInfo, Client, Error, LocalCache, Result, SendOptions};
+use ruston_core::{AddressInfo, Client, Error, LocalCache, Quote, Result, SendOptions};
 use std::cell::Cell;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -193,6 +193,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             from,
             body,
             attach,
+            no_quote,
         } => {
             let client = resume(&ctx.profile).await?;
             let body = read_body(&body)?;
@@ -200,6 +201,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 from,
                 body,
                 attachments: attach,
+                quote: quote(no_quote),
                 ..Default::default()
             };
             let id = client.reply(&reference, all, &opts).await?;
@@ -212,6 +214,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             from,
             body,
             attach,
+            no_quote,
         } => {
             let client = resume(&ctx.profile).await?;
             let body = read_body(&body)?;
@@ -220,6 +223,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                 from,
                 body,
                 attachments: attach,
+                quote: quote(no_quote),
                 ..Default::default()
             };
             let id = client.forward(&reference, &opts).await?;
@@ -316,6 +320,15 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             render::action_result(ctx.json, "receipt sent", std::slice::from_ref(&id));
             Ok(())
         }
+    }
+}
+
+/// What `--no-quote` asks of an answer.
+fn quote(no_quote: bool) -> Quote {
+    if no_quote {
+        Quote::Omitted
+    } else {
+        Quote::Original
     }
 }
 

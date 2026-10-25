@@ -581,6 +581,9 @@ pub enum MessagesCmd {
         body: String,
         #[arg(long = "attach")]
         attach: Vec<PathBuf>,
+        /// Send the reply without the original quoted under the body.
+        #[arg(long)]
+        no_quote: bool,
     },
     /// Forward a message.
     Forward {
@@ -594,6 +597,10 @@ pub enum MessagesCmd {
         body: String,
         #[arg(long = "attach")]
         attach: Vec<PathBuf>,
+        /// Forward without the original's text quoted under the body; its
+        /// attachments still go.
+        #[arg(long)]
+        no_quote: bool,
     },
     /// Cancel a scheduled send.
     CancelSend { reference: String },

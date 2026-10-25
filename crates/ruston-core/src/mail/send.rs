@@ -313,6 +313,16 @@ pub fn reply_redirected(meta: &MessageMetadata, reply_tos: &[Recipient]) -> bool
             .any(|r| !r.address.trim().eq_ignore_ascii_case(sender))
 }
 
+/// Whether an answer carries the message it answers under its own text.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Quote {
+    /// The original goes under the text, when it can be opened.
+    #[default]
+    Original,
+    /// The answer goes without the original.
+    Omitted,
+}
+
 /// Options for composing a message.
 #[derive(Debug, Default, Clone)]
 pub struct SendOptions {
@@ -339,6 +349,9 @@ pub struct SendOptions {
     pub send_at: Option<i64>,
     /// Self-destruct lifetime in seconds.
     pub expires_in: Option<i64>,
+    /// For a reply or a forward, whether the original goes under the text; a
+    /// new message answers nothing.
+    pub quote: Quote,
 }
 
 impl SendOptions {
@@ -762,16 +775,20 @@ impl Client {
 
     /// `opts` as an answer to `parent`: sent from the address the original
     /// reached unless another is chosen, with the original quoted under the
-    /// text. Only the text is quoted, so the original is opened as it was
-    /// fetched, without asking for its sender's keys, and one that does not
-    /// open is answered without a quote rather than not at all.
+    /// text unless `opts` leaves it out. Only the text is quoted, so the
+    /// original is opened as it was fetched, without asking for its sender's
+    /// keys, and one that does not open is answered without a quote rather
+    /// than not at all.
     async fn answer_options(&self, parent: &Message, opts: &SendOptions) -> SendOptions {
+        let mut answer = opts.clone();
+        answer.from = answer.from.or_else(|| self.receiving_address(parent));
+        if opts.quote == Quote::Omitted {
+            return answer;
+        }
         let quoted = self
             .open_message_with(parent.clone(), Vec::new())
             .await
             .ok();
-        let mut answer = opts.clone();
-        answer.from = answer.from.or_else(|| self.receiving_address(parent));
         if let Some(original) = quoted {
             answer.body = format!(
                 "{}\n\n{}",
