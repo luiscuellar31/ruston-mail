@@ -456,6 +456,15 @@ impl DesktopApp {
         context.request_repaint();
     }
 
+    /// Whether something owns the window until it is answered: a
+    /// confirmation, or a native file dialog, whose result is what releases
+    /// its slot. Shortcuts, menus, dropped files and activations wait for it.
+    fn prompt_open(&self) -> bool {
+        self.pending_discard.is_some()
+            || self.pending_settings_exit.is_some()
+            || self.file_dialog_open
+    }
+
     /// Whether the open settings page has changes that are not applied yet.
     fn has_unapplied_settings(&self) -> bool {
         self.app.showing_settings()
@@ -527,10 +536,7 @@ impl DesktopApp {
         match action {
             macos::Action::Quit => self.request_window_close(context),
             macos::Action::Settings | macos::Action::NewMessage
-                if self.app.auth_state().is_authenticated()
-                    && self.pending_discard.is_none()
-                    && self.pending_settings_exit.is_none()
-                    && !self.file_dialog_open =>
+                if self.app.auth_state().is_authenticated() && !self.prompt_open() =>
             {
                 self.dispatch(
                     match action {
@@ -750,11 +756,7 @@ impl DesktopApp {
     /// file dialog or a confirmation owns the window: a dialog's own result
     /// is what releases its slot.
     fn attach_dropped(&mut self, paths: Vec<std::path::PathBuf>, context: &egui::Context) {
-        if paths.is_empty()
-            || self.file_dialog_open
-            || self.pending_discard.is_some()
-            || self.pending_settings_exit.is_some()
-        {
+        if paths.is_empty() || self.prompt_open() {
             return;
         }
         if let Some(draft) = self.app.compose().map(crate::app::Compose::id) {
@@ -776,8 +778,7 @@ impl DesktopApp {
 
     fn keyboard_shortcuts(&mut self, context: &egui::Context) {
         if !self.app.auth_state().is_authenticated()
-            || self.pending_discard.is_some()
-            || self.pending_settings_exit.is_some()
+            || self.prompt_open()
             || self.deferred_leave.waiting().is_some()
         {
             return;
@@ -1023,10 +1024,7 @@ impl DesktopApp {
     }
 
     fn activation_blocked(&self) -> bool {
-        self.window_close_approved
-            || self.pending_discard.is_some()
-            || self.pending_settings_exit.is_some()
-            || self.file_dialog_open
+        self.window_close_approved || self.prompt_open()
     }
 }
 
@@ -1055,12 +1053,7 @@ impl eframe::App for DesktopApp {
             }
             if let Some(menu) = &self.native_menu {
                 menu.adopt_windows();
-                menu.set_enabled(
-                    self.app.auth_state().is_authenticated()
-                        && self.pending_discard.is_none()
-                        && self.pending_settings_exit.is_none()
-                        && !self.file_dialog_open,
-                );
+                menu.set_enabled(self.app.auth_state().is_authenticated() && !self.prompt_open());
             }
         }
         self.check_window_close(context);

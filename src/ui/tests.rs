@@ -306,6 +306,45 @@ fn pending_send_cannot_be_discarded_by_a_window_close_decision() {
 }
 
 #[test]
+fn the_send_key_waits_while_a_file_dialog_is_choosing_attachments() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    theme::install(&context);
+    desktop.dispatch(Message::OpenCompose, &context);
+    desktop.dispatch(
+        Message::ComposeChanged(crate::app::ComposeField::To, "alex@example.com".into()),
+        &context,
+    );
+    let command_enter = || egui::RawInput {
+        events: vec![
+            egui::Event::ModifiersChanged(egui::Modifiers::COMMAND),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+        ],
+        ..Default::default()
+    };
+
+    // The composer's own window may have its picker open while the main
+    // window takes the key: the files still to come would be left out.
+    desktop.file_dialog_open = true;
+    context
+        .run_ui(command_enter(), |ui| desktop.keyboard_shortcuts(ui.ctx()))
+        .drop_without_applying_deltas();
+    assert!(!desktop.app.compose().unwrap().in_flight());
+
+    desktop.file_dialog_open = false;
+    context
+        .run_ui(command_enter(), |ui| desktop.keyboard_shortcuts(ui.ctx()))
+        .drop_without_applying_deltas();
+    assert!(desktop.app.compose().unwrap().in_flight());
+}
+
+#[test]
 fn signing_out_asks_before_discarding_a_written_message() {
     let context = egui::Context::default();
     let mut desktop = DesktopApp::with_context(&context, true, Settings::default());

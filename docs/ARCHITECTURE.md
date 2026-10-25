@@ -181,6 +181,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   composer's own, which hands them back like its zoom keys, join it through the
   same message, but only while no file dialog or confirmation is open, so a
   drop never releases a dialog's slot. winit delivers no drops on Wayland.
+  The shell's `prompt_open` names that state, a confirmation or a file dialog
+  owning the window, and the keyboard shortcuts, the macOS menu, dropped files
+  and activations all wait for it: the send key in the main window cannot send
+  a draft whose own window is still choosing files.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine.
