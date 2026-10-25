@@ -3629,6 +3629,48 @@ fn inspections_are_cancelled_when_the_context_changes() {
 }
 
 #[test]
+fn an_inspection_asked_before_a_rename_still_frees_its_place() {
+    let mut app = loaded_demo_app();
+    let invoices = Folder::custom("kZ9", "Invoices");
+    let _ = app.update(Message::SelectFolder(invoices.clone()));
+    let page = ConversationPage {
+        conversations: vec![ConversationSummary {
+            id: "thread-1".into(),
+            kind: crate::mail::SummaryKind::Conversation,
+            subject: Some("Invoice".into()),
+            correspondents: None,
+            participants: Vec::new(),
+            preview: None,
+            time: Some(100),
+            unread: false,
+            starred: false,
+            message_count: 2,
+            has_attachments: false,
+        }],
+        total: 1,
+        inspect_candidates: vec!["thread-1".into()],
+    };
+    let started = app.update(Message::ConversationsLoaded(app.last_request, Ok(page)));
+    assert_eq!(started.units(), 1, "the thread is inspected");
+    let request = app.last_request;
+    deliver_folders(&mut app, Ok(vec![Folder::custom("kZ9", "Facturas")]));
+
+    // The answer names the folder as it was called when it was asked.
+    let _ = app.update(Message::ThreadInspected {
+        revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
+        epoch: app.session_epoch,
+        request,
+        folder: invoices,
+        conversation_id: "thread-1".into(),
+        result: Ok(None),
+    });
+    assert!(
+        !app.inspections.finish(request, "thread-1"),
+        "the renamed folder's inspection kept its place"
+    );
+}
+
+#[test]
 fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
     let mut app = loaded_demo_app();
     let _ = app.inspect_candidates(vec!["demo-0".into()]);

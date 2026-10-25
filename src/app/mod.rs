@@ -756,12 +756,14 @@ impl App {
                 conversation_id,
                 result,
             } => {
+                // Finishing first frees the answer's place even when the
+                // folder was renamed meanwhile, which keeps the folder.
                 if !self.is_current_session(epoch)
+                    || !self.inspections.finish(request, &conversation_id)
                     || !self
                         .mailbox
                         .as_ref()
-                        .is_some_and(|mailbox| mailbox.folder() == &folder)
-                    || !self.inspections.finish(request, &conversation_id)
+                        .is_some_and(|mailbox| mailbox.shows(&folder))
                 {
                     return Effects::none();
                 }

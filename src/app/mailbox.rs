@@ -1171,7 +1171,7 @@ impl Mailbox {
         self.invalidate_listings();
         // The row is only marked here while its folder is open, but Proton's
         // counts changed wherever the person went meanwhile.
-        if request.folder == self.folder {
+        if self.shows(&request.folder) {
             for row in self.row_copies(&request.row_id) {
                 row.unread = false;
             }
@@ -1368,7 +1368,7 @@ impl Mailbox {
             };
         }
         // After a folder switch these rows no longer contain the acted-on row.
-        if request.folder != self.folder {
+        if !self.shows(&request.folder) {
             return ActionFinish {
                 result: Ok(()),
                 next_action,
@@ -1439,13 +1439,13 @@ impl Mailbox {
             self.undo = None;
         }
         if let Some(before) =
-            before.filter(|_| request.folder == self.folder && !self.superseded(request))
+            before.filter(|_| self.shows(&request.folder) && !self.superseded(request))
         {
             self.record_action(&request.row_id, &before);
         }
         // A refused move that kept its row leaves its place unknown again.
         if request.action.destination().is_some()
-            && request.folder == self.folder
+            && self.shows(&request.folder)
             && !self.leaves_view(&self.folder, &request.action)
             && !self.superseded(request)
         {
@@ -1465,7 +1465,7 @@ impl Mailbox {
     /// Whether a refused action had taken its row out of the view on screen,
     /// so only a reload can bring it back.
     pub(super) fn took_out(&self, request: &ActionRequest) -> bool {
-        request.folder == self.folder && self.leaves_view(&self.folder, &request.action)
+        self.shows(&request.folder) && self.leaves_view(&self.folder, &request.action)
     }
 
     /// Whether a confirmed move belongs in the open view but its row is not
@@ -1551,6 +1551,12 @@ impl Mailbox {
         let last = self.visible_cache.len().checked_sub(1)?;
 
         self.visible_row(index.min(last)).map(|row| row.id.clone())
+    }
+
+    /// Whether `folder` is the one open, by its stable identity: work asked
+    /// for under a name the folder has since changed still belongs to it.
+    pub fn shows(&self, folder: &Folder) -> bool {
+        FolderKey::of(folder) == FolderKey::of(&self.folder)
     }
 
     /// Updates an account folder's name without reloading its stable id.
@@ -1802,7 +1808,7 @@ impl Mailbox {
         conversation_id: &str,
         split_rows: Vec<ConversationSummary>,
     ) {
-        if &self.folder == folder {
+        if self.shows(folder) {
             if self
                 .groups
                 .apply_split(&mut self.conversations, conversation_id, split_rows)
@@ -1904,7 +1910,7 @@ impl Mailbox {
         confirmed
             .into_iter()
             .chain(self.queued_actions().cloned())
-            .filter(|request| request.folder == self.folder)
+            .filter(|request| self.shows(&request.folder))
             .collect()
     }
 

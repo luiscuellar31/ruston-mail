@@ -2687,6 +2687,30 @@ fn split_conversation_replaces_conversation_with_message_rows_and_updates_visibl
 }
 
 #[test]
+fn work_asked_under_a_folder_s_old_name_still_lands_there() {
+    let invoices = Folder::custom("kZ9", "Invoices");
+    let mut mailbox = loaded_inbox(&["a"], 1);
+    let request = mailbox.select_folder(invoices.clone(), 2).unwrap();
+    mailbox.finish_page(
+        request.id,
+        Ok(ConversationPage {
+            conversations: vec![dated("c1", 50), dated("c2", 20)],
+            total: 2,
+            inspect_candidates: vec!["c1".into()],
+        }),
+    );
+    mailbox.rename_folder(Folder::custom("kZ9", "Facturas"));
+
+    // Proton knows the folder by its id, so a split asked for under the
+    // old name is still this folder's.
+    assert!(mailbox.shows(&invoices));
+    mailbox.split_conversation(&invoices, "c1", vec![split_message("m1", 60)]);
+    assert_eq!(visible_ids(&mailbox), ["m1", "c2"]);
+    // Another folder is not this one.
+    assert!(!mailbox.shows(&Folder::custom("wN2", "Facturas")));
+}
+
+#[test]
 fn split_conversation_ignores_nonexistent_or_empty() {
     let (mut mailbox, request) = open();
     mailbox.finish_page(request.id, page(&["c1"], 1));

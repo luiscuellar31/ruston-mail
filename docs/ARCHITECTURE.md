@@ -298,7 +298,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Proton adapter requests the two lists at the same time. A list
   that arrives renames the open custom folder or, once it is gone, falls back
   to Inbox. A failed request changes neither the open nor the remembered
-  folder, and the next refresh asks for the list again.
+  folder, and the next refresh asks for the list again. Work under way keeps
+  the folder as it was named when it started, so `Mailbox::shows` compares
+  folders by their stable key, Proton's ID for a custom one: an action, a
+  read or an inspection that answers after a rename still lands in the folder,
+  and an inspection's answer frees its place before anything else is checked.
 - [`src/runtime.rs`](../src/runtime.rs) runs asynchronous effects off the UI
   thread and sends their results back as messages. UI drawing does not wait for
   network operations.
