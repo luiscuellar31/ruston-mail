@@ -406,6 +406,18 @@ pub fn attachments_list(json: bool, atts: &[Attachment]) {
     }
 }
 
+/// Report the attachment files a download wrote, where each one landed.
+pub fn downloaded(json: bool, files: &[String]) {
+    if json {
+        json_out(&json!({ "status": "ok", "count": files.len(), "files": files }));
+        return;
+    }
+    terminal::println!("Downloaded {} file(s):", files.len());
+    for file in files {
+        terminal::println!("  {file}");
+    }
+}
+
 /// Report the outcome of a bulk organize action.
 pub fn action_result(json: bool, action: &str, ids: &[String]) {
     if json {

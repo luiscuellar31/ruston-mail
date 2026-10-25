@@ -159,6 +159,40 @@ fn a_second_demo_export_into_the_same_folder_resumes() {
 }
 
 #[test]
+fn a_demo_download_never_replaces_a_file_already_there() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let folder = std::env::temp_dir().join(format!(
+        "ruston-cli-download-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("translation_proposal.pdf"), b"mine").unwrap();
+
+    let output = run_ok(&[
+        "--demo",
+        "attachments",
+        "download",
+        "msg-demo-03",
+        "att-demo-01",
+        "--output-dir",
+        folder.to_str().unwrap(),
+    ]);
+    let kept = std::fs::read(folder.join("translation_proposal.pdf")).unwrap();
+    let saved = std::fs::read(folder.join("translation_proposal (1).pdf"));
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    assert_eq!(kept, b"mine");
+    assert!(saved.unwrap().starts_with(b"%PDF"));
+    // The demo reports a download as the real command does.
+    let text = assert_safe(&output.stdout);
+    assert!(text.contains("Downloaded 1 file(s):"), "{text}");
+    assert!(text.contains("translation_proposal (1).pdf"), "{text}");
+}
+
+#[test]
 fn a_saved_draft_is_reported_as_saved_not_sent() {
     let args = [
         "--demo",

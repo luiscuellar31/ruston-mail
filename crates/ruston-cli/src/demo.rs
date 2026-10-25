@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use ruston_core::mail::attachments::safe_attachment_name;
+use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::model::ConversationLabel;
 use ruston_core::model::enums::{filter, label_ids, label_type, resolve_folder};
 use ruston_core::{
@@ -1057,26 +1057,18 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let out_dir = output_dir.unwrap_or_else(|| PathBuf::from("."));
                 fs::create_dir_all(&out_dir)?;
 
+                // Saved as the real command saves: never over a file or
+                // through a link already there.
+                let mut written = Vec::new();
                 for a in &atts {
-                    let filename = safe_attachment_name(&a.name);
-                    let target = out_dir.join(filename);
                     let sample_content = format!(
                         "%PDF-1.4\n% Demo simulated attachment content for {}\n",
                         a.name
                     );
-                    fs::write(&target, sample_content.as_bytes())?;
-                    if !ctx.json {
-                        terminal::println!("Saved attachment '{}' to {}", a.name, target.display());
-                    }
+                    let path = save_under_free_name(&out_dir, &a.name, sample_content.as_bytes())?;
+                    written.push(path.to_string_lossy().to_string());
                 }
-
-                if ctx.json {
-                    render::json_out(&json!({
-                        "status": "ok",
-                        "downloaded": atts.len(),
-                        "directory": out_dir.display().to_string(),
-                    }));
-                }
+                render::downloaded(ctx.json, &written);
                 Ok(())
             }
         },
