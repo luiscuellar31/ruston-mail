@@ -17,8 +17,8 @@ pub enum BodyFormat {
     Html,
 }
 
-/// Whether mail is new or answers an existing message.
-/// Core supplies reply recipients, subjects and forwarded attachments.
+/// Whether mail is new or answers an existing message. Core supplies the
+/// subjects and forwarded attachments; the recipients are the ones typed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum OutgoingKind {
     #[default]
@@ -71,12 +71,6 @@ impl Outgoing {
 
     pub fn is_html(&self) -> bool {
         self.format == BodyFormat::Html
-    }
-
-    /// Whether the sender has to say where this goes. A reply already knows,
-    /// from the message it answers.
-    pub fn needs_recipients(kind: &OutgoingKind) -> bool {
-        !matches!(kind, OutgoingKind::Reply { .. })
     }
 }
 

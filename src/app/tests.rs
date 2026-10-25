@@ -3462,20 +3462,39 @@ fn escape_puts_an_unsent_message_away() {
 }
 
 #[test]
-fn a_reply_needs_nobody_named_because_proton_knows() {
-    // Core addresses a reply from the message being answered, so the window
-    // must not refuse to send for want of a recipient.
+fn a_reply_opens_addressed_and_its_recipients_can_change() {
+    // A reply opens addressed to whom core would answer, Cc included for
+    // Reply all, and like any message it goes to whoever is typed.
     let mut app = loaded_demo_app();
     open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::Answer {
         message_id: "demo-0-2".into(),
-        kind: AnswerKind::Reply,
+        kind: AnswerKind::ReplyAll,
     });
 
     let writing = app.compose().expect("a reply is open");
-    assert!(!writing.asks_for_recipients());
+    let answering = writing.answering().expect("it answers a message").clone();
+    assert!(!answering.to.is_empty());
+    assert_eq!(writing.field(ComposeField::To), answering.to.join(", "));
+    assert_eq!(writing.field(ComposeField::Cc), answering.cc.join(", "));
+    assert_eq!(writing.showing_copies(), !answering.cc.is_empty());
     assert!(!writing.asks_for_subject());
+    assert!(writing.is_untouched(), "opening addressed is not writing");
+
+    let _ = app.update(Message::ComposeChanged(ComposeField::To, String::new()));
+    let _ = app.update(Message::ComposeChanged(ComposeField::Cc, String::new()));
+    assert_eq!(
+        app.compose().unwrap().not_ready(),
+        Some(compose::NotReady::NoRecipients)
+    );
+    assert_eq!(app.update(Message::Send).units(), 0, "it left unaddressed");
+
+    let _ = app.update(Message::ComposeChanged(
+        ComposeField::To,
+        "carol@example.com".into(),
+    ));
+    assert!(!app.compose().unwrap().is_untouched());
     assert_eq!(app.update(Message::Send).units(), 1);
 }
 
@@ -3490,7 +3509,7 @@ fn a_forward_still_has_to_be_addressed() {
     });
 
     let writing = app.compose().expect("a forward is open");
-    assert!(writing.asks_for_recipients());
+    assert!(writing.field(ComposeField::To).is_empty());
     // Core writes the subject, so the window does not ask for one.
     assert!(!writing.asks_for_subject());
     assert_eq!(app.update(Message::Send).units(), 0, "it left unaddressed");

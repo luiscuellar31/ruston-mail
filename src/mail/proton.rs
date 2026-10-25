@@ -315,8 +315,9 @@ impl ProtonMailService {
             ..SendOptions::default()
         };
 
-        // Core addresses answers, writes their subjects and keys forwarded
-        // attachments for the draft; Proton threads them.
+        // Core writes the subjects of answers and keys forwarded attachments
+        // for the draft, and Proton threads them; a reply goes to the
+        // recipients typed, which opened with whom core would answer.
         let call = async {
             match &outgoing.kind {
                 OutgoingKind::New => self.client.send(&options).await,

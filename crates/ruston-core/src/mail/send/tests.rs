@@ -1274,6 +1274,106 @@ async fn answers_tell_proton_how_they_answer_and_mark_the_subject_once() {
 }
 
 #[tokio::test]
+async fn a_reply_goes_where_its_writer_chose_or_else_where_the_original_asks() {
+    let server = MockServer::start().await;
+    let (me, _) = test_address("me@proton.me", "address-1");
+    let parent_id = format!("{}==", "p".repeat(60));
+    Mock::given(method("GET"))
+        .and(path(format!("/mail/v4/messages/{parent_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Code": 1000,
+            "Message": {
+                "ID": parent_id, "AddressID": "address-1", "Subject": "Plans",
+                "Sender": {"Name": "Boss", "Address": "boss@corp.example"},
+                "ToList": [{"Name": "Me", "Address": "me@proton.me"}],
+                "CCList": [{"Name": "Team", "Address": "team@corp.example"}]
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages/draft-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+        .mount(&server)
+        .await;
+
+    let client = test_support::client(&server, vec![me]);
+    let unaddressed = SendOptions {
+        body: "Thanks".into(),
+        ..SendOptions::default()
+    };
+    client.reply(&parent_id, true, &unaddressed).await.unwrap();
+    // Someone added, someone left out: the writer's list is the one used.
+    let chosen = SendOptions {
+        to: vec!["carol@corp.example".into()],
+        bcc: vec!["dave@corp.example".into()],
+        ..unaddressed.clone()
+    };
+    client.reply(&parent_id, true, &chosen).await.unwrap();
+    let copy_only = SendOptions {
+        cc: vec!["erin@corp.example".into()],
+        ..unaddressed
+    };
+    client.reply(&parent_id, false, &copy_only).await.unwrap();
+
+    let addressed: Vec<[Vec<String>; 3]> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == "/mail/v4/messages")
+        .map(|request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            ["ToList", "CCList", "BCCList"].map(|list| {
+                body["Message"][list]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|recipient| recipient["Address"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+        })
+        .collect();
+    let list = |addresses: &[&str]| -> Vec<String> {
+        addresses
+            .iter()
+            .map(|address| (*address).to_owned())
+            .collect()
+    };
+    assert_eq!(
+        addressed,
+        [
+            [
+                list(&["boss@corp.example"]),
+                list(&["team@corp.example"]),
+                list(&[])
+            ],
+            [
+                list(&["carol@corp.example"]),
+                list(&[]),
+                list(&["dave@corp.example"])
+            ],
+            [list(&[]), list(&["erin@corp.example"]), list(&[])],
+        ]
+    );
+}
+
+#[tokio::test]
 async fn an_answer_quotes_the_original_it_already_fetched() {
     use wiremock::matchers::query_param;
 

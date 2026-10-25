@@ -564,7 +564,9 @@ collects input; [`app/compose.rs`](../src/app/compose.rs) manages the draft in
 memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`mail/proton.rs`](../src/mail/proton.rs) calls
 [`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
-result returns to the app as a message. One draft is open at a time: asking
+result returns to the app as a message. A reply opens with To, and Cc for
+Reply all, filled in as core would address it; whatever the fields then hold
+is sent, as for a new message or a forward. One draft is open at a time: asking
 for a new message, a reply or a forward while one is open leaves it as it is,
 marks it so the composer says why, and, in its own window, returns
 `UiEffect::RaiseComposer`, which the shell turns into un-minimizing and
@@ -747,11 +749,13 @@ instead of an unknown outcome.
   tells Proton whether it replies, replies to all, or forwards. The original is
   fetched once and decrypted for its text alone, so quoting looks up no sender
   keys. One function,
-  `reply_recipients`, decides where `Client::reply` sends an answer; mail the
-  account sent, without also receiving it, is answered to its recipients
-  rather than to the account itself. Read messages carry their Reply-To
-  addresses so the desktop composer can show the same recipients before
-  sending, and `reply_redirected` flags a Reply-To that bypasses the sender.
+  `reply_recipients`, decides where an answer goes when `Client::reply` is
+  given no recipients; mail the account sent, without also receiving it, is
+  answered to its recipients rather than to the account itself. Given any
+  recipients, `Client::reply` sends to exactly those, as their writer chose
+  them. Read messages carry their Reply-To addresses so the desktop composer
+  opens a reply with the same recipients in its fields, where they can be
+  changed, and `reply_redirected` flags a Reply-To that bypasses the sender.
   Conversation reads fetch missing bodies with at most three requests in flight,
   then decrypt them in oldest-first order before returning the complete thread
   to either frontend. The keys of every distinct sender are asked for together

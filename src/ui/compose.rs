@@ -160,12 +160,10 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
         messages.push(answer);
     }
     if let Some(answer) = compose.answering() {
-        answered(ui, answer, compose.asks_for_recipients());
+        answered(ui, answer);
     }
-    if compose.asks_for_recipients() {
-        recipient_fields(ui, compose, leaving, messages);
-        ui.add_space(4.0);
-    }
+    recipient_fields(ui, compose, leaving, messages);
+    ui.add_space(4.0);
     if compose.asks_for_subject() {
         line(
             ui,
@@ -360,8 +358,9 @@ fn body_editor(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &m
 }
 
 /// Puts the cursor where writing starts the first time a draft shows: in To
-/// for a new message or a forward, in the body for a reply. Asked before the
-/// fields are made, so they take it on this pass.
+/// while it is empty, as for a new message or a forward, or else in the body,
+/// as for a reply that opened addressed. Asked before the fields are made, so
+/// they take it on this pass.
 fn focus_new_draft(ui: &egui::Ui, compose: &Compose) {
     let shown = egui::Id::new("compose-focused-draft");
     let draft = compose.id();
@@ -369,7 +368,7 @@ fn focus_new_draft(ui: &egui::Ui, compose: &Compose) {
         return;
     }
     ui.data_mut(|data| data.insert_temp(shown, draft));
-    let field = if compose.asks_for_recipients() {
+    let field = if compose.field(ComposeField::To).trim().is_empty() {
         field_id(ComposeField::To, draft)
     } else {
         body_id(draft)
@@ -412,8 +411,9 @@ fn heading(compose: &Compose) -> &'static str {
     }
 }
 
-/// What is being answered and, for a reply, exactly where it goes.
-fn answered(ui: &mut egui::Ui, answer: &Answering, addressed_here: bool) {
+/// What is being answered, what goes with the text, and a Reply-To that
+/// addressed the reply to someone other than the sender.
+fn answered(ui: &mut egui::Ui, answer: &Answering) {
     detail(
         ui,
         &format!("Answering “{}” from {}.", answer.subject, answer.sender),
@@ -431,21 +431,15 @@ fn answered(ui: &mut egui::Ui, answer: &Answering, addressed_here: bool) {
             ),
         );
     }
-    if !addressed_here {
-        detail(ui, &format!("To: {}", answer.to.join(", ")));
-        if !answer.cc.is_empty() {
-            detail(ui, &format!("Cc: {}", answer.cc.join(", ")));
-        }
-        // A Reply-To header can send the answer somewhere the sender is not.
-        if let Some(sender) = &answer.redirected_from {
-            ui.label(
-                egui::RichText::new(format!(
-                    "The message asks for replies to go to {}, not to its sender, {sender}.",
-                    answer.to.join(", ")
-                ))
-                .color(theme::colors(ui).danger),
-            );
-        }
+    // A Reply-To header can send the answer somewhere the sender is not.
+    if let Some(sender) = &answer.redirected_from {
+        ui.label(
+            egui::RichText::new(format!(
+                "The message asks for replies to go to {}, not to its sender, {sender}.",
+                answer.to.join(", ")
+            ))
+            .color(theme::colors(ui).danger),
+        );
     }
     ui.add_space(8.0);
 }

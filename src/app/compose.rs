@@ -148,16 +148,17 @@ impl AnswerKind {
     }
 }
 
-/// The message being answered. Core writes the subject and, for a reply,
-/// sends to the recipients shown here.
+/// The message being answered. Core writes the subject; a reply's recipient
+/// fields open with whom core would answer, and the writer may change them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answering {
     pub sender: String,
     pub subject: String,
     pub kind: AnswerKind,
-    /// Where a reply goes; empty for a forward, whose recipients are typed.
+    /// Whom a reply opens addressed to; empty for a forward, whose
+    /// recipients are typed.
     pub to: Vec<String>,
-    /// What Reply all copies in.
+    /// Whom Reply all opens copying in.
     pub cc: Vec<String>,
     /// The sender's address when the message's Reply-To sends the reply
     /// somewhere else, so the composer can say so.
@@ -179,6 +180,10 @@ pub struct Compose {
     to: String,
     cc: String,
     bcc: String,
+    /// What To and Cc opened with: for a reply, whom core would answer.
+    /// Leaving them as they were is not writing.
+    opened_to: String,
+    opened_cc: String,
     subject: String,
     body: String,
     attachments: Vec<PathBuf>,
@@ -349,12 +354,8 @@ impl Compose {
 
     /// What to say about protection, once every typed recipient was looked
     /// up. Silent while an address is still unchecked, so a partial answer
-    /// never reads as the whole one. Replies stay silent: core chooses
-    /// their recipients when it sends them.
+    /// never reads as the whole one.
     pub fn protection_notice(&self) -> Option<ProtectionNotice> {
-        if !self.asks_for_recipients() {
-            return None;
-        }
         let typed = &self.typed.addresses;
         let mut checked = Vec::with_capacity(typed.len());
         for address in typed {
@@ -440,11 +441,6 @@ impl Compose {
         self.answering.as_ref()
     }
 
-    /// Whether the window asks who the message goes to.
-    pub fn asks_for_recipients(&self) -> bool {
-        Outgoing::needs_recipients(&self.kind)
-    }
-
     /// Whether the window asks for a subject. Core writes one for an answer.
     pub fn asks_for_subject(&self) -> bool {
         matches!(self.kind, OutgoingKind::New)
@@ -459,10 +455,11 @@ impl Compose {
     }
 
     /// Whether anything has been typed. Closing an untouched message needs no
-    /// second thought; closing a written one does.
+    /// second thought; closing a written one does. A reply still addressed
+    /// as it opened is untouched.
     pub fn is_untouched(&self) -> bool {
-        self.to.trim().is_empty()
-            && self.cc.trim().is_empty()
+        self.to.trim() == self.opened_to
+            && self.cc.trim() == self.opened_cc
             && self.bcc.trim().is_empty()
             && self.subject.trim().is_empty()
             && self.body.trim().is_empty()
@@ -487,7 +484,7 @@ impl Compose {
                 NotReady::BadAddresses(rejected)
             });
         }
-        if Outgoing::needs_recipients(&self.kind) && self.typed.addresses.is_empty() {
+        if self.typed.addresses.is_empty() {
             return Err(NotReady::NoRecipients);
         }
         Ok(())
@@ -688,20 +685,29 @@ impl App {
         self.open_answer(kind.outgoing(message_id), answering)
     }
 
-    /// Answers or forwards a message. Core addresses replies itself; the
-    /// composer shows where they go.
+    /// Answers or forwards a message. A reply opens addressed to whom core
+    /// would answer, in fields the writer may change, Cc on show when Reply
+    /// all copies anyone in.
     fn open_answer(&mut self, kind: OutgoingKind, answering: Answering) -> Effects {
         if self.compose.is_some() {
             return self.ask_for_another_message();
         }
         let id = self.next_compose_id();
-        self.compose = Some(Compose {
+        let (to, cc) = (answering.to.join(", "), answering.cc.join(", "));
+        let mut compose = Compose {
             id,
             kind,
             answering: Some(answering),
+            copies_shown: !cc.is_empty(),
+            opened_to: to.clone(),
+            opened_cc: cc.clone(),
+            to,
+            cc,
             domains: self.settings.recipient_domains(),
             ..Compose::default()
-        });
+        };
+        compose.reread_recipients();
+        self.compose = Some(compose);
         Effects::none()
     }
 
@@ -830,11 +836,7 @@ impl App {
             return Effects::none();
         }
         let epoch = self.session_epoch;
-        let Some(compose) = self
-            .compose
-            .as_mut()
-            .filter(|c| !c.in_flight() && c.asks_for_recipients())
-        else {
+        let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) else {
             return Effects::none();
         };
         let unchecked: Vec<String> = compose
@@ -1157,8 +1159,12 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_says_nothing_about_protection() {
+    fn a_reply_says_how_its_recipients_are_protected_like_any_message() {
         let mut compose = written("ada@proton.me");
+        compose.kind = OutgoingKind::Reply {
+            message_id: "message".into(),
+            everyone: false,
+        };
         compose
             .protection
             .insert("ada@proton.me".into(), Checked::Known(Protection::EndToEnd));
@@ -1166,12 +1172,6 @@ mod tests {
             compose.protection_notice(),
             Some(ProtectionNotice::Encrypted)
         );
-
-        compose.kind = OutgoingKind::Reply {
-            message_id: "message".into(),
-            everyone: false,
-        };
-        assert_eq!(compose.protection_notice(), None);
     }
 
     #[test]

@@ -313,6 +313,33 @@ fn a_reply_goes_back_to_the_sender_with_the_thread_under_it() {
 }
 
 #[test]
+fn a_reply_goes_to_the_recipients_typed_rather_than_its_sender() {
+    let mailbox = DemoMailbox::new();
+    let answered = mailbox.conversation_detail("demo-0", NOW).unwrap();
+    let parent = &answered.messages[0];
+
+    mailbox
+        .send_now(&Outgoing {
+            kind: OutgoingKind::Reply {
+                message_id: parent.id.clone(),
+                everyone: false,
+            },
+            to: vec!["carol@example.com".into()],
+            subject: String::new(),
+            ..outgoing("ignored")
+        })
+        .unwrap();
+
+    let row = state_page(&mailbox, MailFolder::Sent)
+        .conversations
+        .into_iter()
+        .max_by_key(|row| row.time)
+        .expect("the reply is in Sent");
+    assert_ne!(parent.sender.address, "carol@example.com");
+    assert_eq!(row.correspondents.as_deref(), Some("carol@example.com"));
+}
+
+#[test]
 fn answers_go_where_core_sends_them_for_mail_received_and_drafts() {
     // Received mail is answered to its sender; Reply all adds the others,
     // never the demo user.

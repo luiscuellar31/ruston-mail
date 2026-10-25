@@ -238,7 +238,7 @@ fn forgetting_a_draft_drops_what_every_field_it_showed_kept() {
 }
 
 #[test]
-fn a_reply_lists_its_recipients_and_warns_when_reply_to_redirects_it() {
+fn a_reply_warns_when_reply_to_redirects_it() {
     let context = egui::Context::default();
     theme::install(&context);
     let answer = Answering {
@@ -256,7 +256,7 @@ fn a_reply_lists_its_recipients_and_warns_when_reply_to_redirects_it() {
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         danger = theme::colors(ui).danger;
         body = egui::TextStyle::Body.resolve(ui.style()).size;
-        answered(ui, &answer, false);
+        answered(ui, &answer);
     });
     let texts: Vec<(String, bool)> = output
         .shapes
@@ -274,8 +274,8 @@ fn a_reply_lists_its_recipients_and_warns_when_reply_to_redirects_it() {
     output.drop_without_applying_deltas();
 
     let shown = |wanted: &str| texts.iter().find(|(text, _)| text.contains(wanted));
-    assert!(shown("To: attacker@evil.example").is_some());
-    assert!(shown("Cc: bob@corp.example").is_some());
+    // The recipients are in the fields, where they can be changed.
+    assert!(shown("To: ").is_none() && shown("Cc: ").is_none());
     let warning = shown("not to its sender, alex@corp.example").expect("redirect warning");
     assert!(warning.1, "the redirect warning stands out");
 }
@@ -295,7 +295,7 @@ fn a_forward_names_the_files_it_carries_and_the_quote() {
         forwarded: vec!["invoice.pdf".into(), "receipt.png".into()],
     };
     let output = context.run_ui(egui::RawInput::default(), |ui| {
-        answered(ui, &answer, true);
+        answered(ui, &answer);
     });
     let texts: Vec<String> = output
         .shapes

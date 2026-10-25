@@ -278,13 +278,14 @@ warning, such as `münchen.de is sent as xn--mnchen-3ya.de`; a fake
 composer still refuse these domains, whatever the setting says.
 
 After you leave a recipient field, the composer shows how Proton will protect
-the new message: end-to-end encrypted for every recipient, or a warning that
+the message: end-to-end encrypted for every recipient, or a warning that
 names the addresses that will not get an end-to-end encrypted copy. That
 includes a Proton address whose owner turned end-to-end encryption off, for
 example because it forwards mail to another provider. Addresses
 are looked up once per draft and only after the field loses focus. If a lookup
-fails, the warning names that address too and claims nothing about it. Replies
-show no notice; their recipients come from the original message. Turn off **Check
+fails, the warning names that address too and claims nothing about it. A reply
+opens with its recipients filled in, so their notice shows once you leave one of
+its recipient fields. Turn off **Check
 recipient encryption while writing** under Settings → Advanced to ask Proton
 nothing until you send; the notice is not shown then.
 
@@ -332,12 +333,14 @@ working with `Cmd+Z` and `Shift+Cmd+Z`. **View** has **Actual Size**
 interface scale from Settings, and **Enter Full Screen**. **Window > Minimize**
 (`Cmd+M`), **Zoom** and the list of open windows work as in other Mac apps.
 
-The reader also offers **Reply**, **Reply all**, and **Forward**. A reply goes
-to the addresses the original message asks replies to go to (its Reply-To), or
-to its sender; **Reply all** also copies in its other recipients, except your
-own addresses. Replying to a message you sent continues with the people you sent
-it to. The composer lists these recipients, and warns when the
-message's Reply-To sends the reply somewhere other than its sender. The subject
+The reader also offers **Reply**, **Reply all**, and **Forward**. A reply opens
+addressed to the addresses the original message asks replies to go to (its
+Reply-To), or to its sender; **Reply all** also copies in its other recipients,
+except your own addresses. Replying to a message you sent continues with the
+people you sent it to. These recipients are in the composer's **To** and **Cc**
+fields, where you can add or remove anyone before sending, and the composer
+warns when the message's Reply-To sends the reply somewhere other than its
+sender. The subject
 is written for you. Replies and forwards are sent from the address the original
 message reached. The original's text is quoted under yours when it can be
 opened, and a forward also carries the original's files, images in its body

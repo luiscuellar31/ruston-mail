@@ -226,12 +226,17 @@ impl DemoMailbox {
             return Err(SendError::DemoLimitReached);
         }
 
-        // Mirror core's subject, quote and reply-recipient behavior.
+        // Mirror core's subject, quote and reply-recipient behavior: a reply
+        // goes to the recipients typed, or to whom it asks when none were.
         let answered = answered_message(&fixtures, &outgoing.kind, now);
+        let named_nobody =
+            outgoing.to.is_empty() && outgoing.cc.is_empty() && outgoing.bcc.is_empty();
         let (prefix, back_to) = match (&outgoing.kind, &answered) {
-            (OutgoingKind::Reply { .. }, Some(parent)) => ("Re: ", parent.reply_to.clone()),
+            (OutgoingKind::Reply { .. }, Some(parent)) if named_nobody => {
+                ("Re: ", parent.reply_to.clone())
+            }
+            (OutgoingKind::Reply { .. }, _) => ("Re: ", Vec::new()),
             (OutgoingKind::Forward { .. }, _) => ("Fw: ", Vec::new()),
-            (OutgoingKind::Reply { .. }, None) => ("Re: ", Vec::new()),
             (OutgoingKind::New, _) => ("", Vec::new()),
         };
 

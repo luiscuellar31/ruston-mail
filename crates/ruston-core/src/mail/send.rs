@@ -697,20 +697,24 @@ impl Client {
             .await
     }
 
-    /// Reply to a message.
+    /// Reply to a message. It goes to the recipients `opts` names, when it
+    /// names any, as its writer chose them; otherwise to whoever
+    /// [`reply_recipients`] picks, with its Cc too when `all`.
     pub async fn reply(&self, reference: &str, all: bool, opts: &SendOptions) -> Result<String> {
         let (parent_id, parent) = self.fetch_parent(reference).await?;
         let mut answer = self.answer_options(&parent, opts).await;
-        let own: Vec<String> = self
-            .keys()
-            .addresses
-            .iter()
-            .map(|a| a.email.clone())
-            .collect();
-        let recipients = reply_recipients(&parent.meta, &parent.reply_tos, &own);
-        answer.to = recipients.to;
-        if all {
-            answer.cc = recipients.cc;
+        if opts.to.is_empty() && opts.cc.is_empty() && opts.bcc.is_empty() {
+            let own: Vec<String> = self
+                .keys()
+                .addresses
+                .iter()
+                .map(|a| a.email.clone())
+                .collect();
+            let recipients = reply_recipients(&parent.meta, &parent.reply_tos, &own);
+            answer.to = recipients.to;
+            if all {
+                answer.cc = recipients.cc;
+            }
         }
         answer.subject = reply_subject(&parent.meta.subject);
         let action = if all {
