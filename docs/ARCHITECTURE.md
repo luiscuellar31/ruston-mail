@@ -641,7 +641,8 @@ instead of an unknown outcome.
   second time as text. Explicit `raw` and `html` bodies retain
   their contents when redirected, but are filtered on a terminal. File exports,
   attachment writes, and the CAPTCHA helper's HTTP responses bypass this display
-  layer. Core and the desktop retain their own logging setup. Standard output
+  layer. The CLI and the desktop each install their own logging; core only
+  emits `tracing` events and installs none. Standard output
   goes through one writer: when its reader closes the pipe early, as `| head`
   does, the command exits quietly with status 0, and any other write failure
   ends it with status 1. Diagnostics on standard error are best effort. A

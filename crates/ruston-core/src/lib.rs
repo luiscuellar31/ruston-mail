@@ -114,28 +114,6 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Initialize stderr tracing. `verbose`: 0=warn, 1=debug (our crates),
-/// 2=trace (core), 3+=trace (everything). `RUST_LOG`, if set, overrides.
-pub fn init_tracing(verbose: u8) {
-    use tracing_subscriber::EnvFilter;
-    let filter = if std::env::var("RUST_LOG").is_ok() {
-        EnvFilter::from_default_env()
-    } else {
-        let spec = match verbose {
-            0 => "warn",
-            1 => "info,ruston_core=debug,ruston_cli=debug",
-            2 => "info,ruston_core=trace,ruston_cli=debug",
-            _ => "trace",
-        };
-        EnvFilter::new(spec)
-    };
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_target(true)
-        .try_init();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
