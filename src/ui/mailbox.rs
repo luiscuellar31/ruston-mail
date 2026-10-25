@@ -958,14 +958,16 @@ fn conversation_list(
             });
 
             // Explicit keyboard navigation takes precedence over restoring the
-            // viewport after a background listing update.
+            // viewport after a background listing update. Another folder or
+            // search starts at its top, not where the last one was left.
             if reveal.is_none()
-                && let Some(offset) = state
-                    .conversation_scroll
-                    .as_ref()
-                    .and_then(|saved| saved.offset_after_update(mailbox, scroll_id))
+                && let Some(saved) = state.conversation_scroll.as_ref()
             {
-                scroll = scroll.vertical_scroll_offset(offset);
+                if !saved.same_view(mailbox, scroll_id) {
+                    scroll = scroll.vertical_scroll_offset(0.0);
+                } else if let Some(offset) = saved.offset_after_update(mailbox, scroll_id) {
+                    scroll = scroll.vertical_scroll_offset(offset);
+                }
             }
 
             let output = scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {

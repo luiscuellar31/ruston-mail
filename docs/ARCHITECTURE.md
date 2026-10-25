@@ -246,7 +246,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   visible representative at the previous screen position, using egui's scroll
   state. A message anchor survives a temporary grouped parent. A list at offset
   zero stays at the top during startup and inspection. A new mailbox view resets
-  native scroll and animation state left by a previous session. Explicit reveal
+  native scroll and animation state left by a previous session, and another
+  folder or search opens at the top of its list rather than at the offset the
+  last one was left at. Explicit reveal
   requests take precedence, and sign-out clears the anchors. No complete listing snapshot or
   persistent scroll data is added.
   The reader's buttons act on the open row (`Message::ApplyAction`); a row's

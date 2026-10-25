@@ -929,6 +929,28 @@ fn set_list_offset(context: &egui::Context, state: &UiState, offset: f32) {
 }
 
 #[test]
+fn another_folder_or_a_search_opens_at_the_top_of_its_list() {
+    for search in [false, true] {
+        let mut mailbox = pagination_mailbox(false);
+        let (context, mut state, scrolled) = pagination_view(&mailbox);
+        assert!(scrolled.offset > 0.0, "the folder was scrolled down");
+
+        if search {
+            mailbox.set_search_query("needle".into());
+            let request = mailbox.start_search(10).unwrap();
+            mailbox.finish_search(&request, Ok(pagination_page(0, 50, 120)));
+        } else {
+            let request = mailbox
+                .select_folder(Folder::System(crate::mail::MailFolder::Archive), 10)
+                .unwrap();
+            mailbox.finish_page(request.id, Ok(pagination_page(0, 50, 120)));
+        }
+        let frame = pagination_frame(&context, &mailbox, &mut state, Default::default());
+        assert_eq!(frame.offset, 0.0, "search: {search}");
+    }
+}
+
+#[test]
 fn load_more_keeps_reader_and_viewport_while_waiting_and_after_success_or_failure() {
     for search in [false, true] {
         for failed in [false, true] {
