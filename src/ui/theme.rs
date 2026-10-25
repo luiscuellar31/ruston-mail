@@ -24,8 +24,6 @@ pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
 /// How long a looping animation waits before asking for its next frame.
 const ANIMATION_FRAME: Duration = Duration::from_millis(50);
-/// How much of its circle the loading spinner's arc covers.
-const SPINNER_SWEEP_DEGREES: f64 = 240.0;
 const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const DIALOG_BUTTON_HEIGHT: f32 = 32.0;
 const ICON_SIZE: f32 = 16.0;
@@ -625,8 +623,8 @@ fn gliding_scroll() -> egui::style::ScrollAnimation {
 }
 
 /// Holds the interface still while the system asks for less motion: no
-/// fades or gliding scrolls, and loading pulses and spinners that keep the
-/// still picture an unfocused window gets.
+/// fades or gliding scrolls, and loading pulses that keep the still picture
+/// an unfocused window gets.
 pub fn reduce_motion(context: &egui::Context, reduced: bool) {
     let (animation_time, scroll) = if reduced {
         (0.0, egui::style::ScrollAnimation::none())
@@ -766,27 +764,19 @@ pub fn skeleton_fill(ui: &egui::Ui) -> Color32 {
     skeleton_fill_at(animation_time(ui), colors(ui))
 }
 
-/// A loading spinner drawn like egui's, which asks for a new frame on every
-/// frame. This one keeps to the skeletons' clock, so a screen that only waits
-/// stays cheap and holds still in the background.
+/// The loading mark of the screens that only wait: a ring whose ink pulses
+/// on the skeletons' clock. An arc turning once a second jumped 18° on each
+/// of that clock's frames; a pulse changes too little between them to jump.
 pub fn spinner(ui: &mut egui::Ui) -> Response {
     let size = ui.style().spacing.interact_size.y;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     response.widget_info(|| WidgetInfo::new(WidgetType::ProgressIndicator));
     if ui.is_rect_visible(rect) {
-        let start = animation_time(ui) * std::f64::consts::TAU;
-        let sweep = SPINNER_SWEEP_DEGREES.to_radians();
+        let colors = colors(ui);
+        let ink = pulse(animation_time(ui), colors.skeleton_high, colors.muted);
         let radius = rect.height().min(rect.width()) / 2.0 - 2.0;
-        let segments = (radius.round() as u32).clamp(8, 128);
-        let points: Vec<egui::Pos2> = (0..=segments)
-            .map(|index| {
-                let angle = start + sweep * f64::from(index) / f64::from(segments);
-                let (sin, cos) = angle.sin_cos();
-                rect.center() + radius * egui::vec2(cos as f32, sin as f32)
-            })
-            .collect();
-        let stroke = Stroke::new(3.0, ui.visuals().strong_text_color());
-        ui.painter().add(egui::Shape::line(points, stroke));
+        ui.painter()
+            .circle_stroke(rect.center(), radius, Stroke::new(3.0, ink));
     }
     response
 }
@@ -796,13 +786,19 @@ pub fn paint_skeleton(painter: &egui::Painter, rect: egui::Rect, fill: Color32) 
 }
 
 fn skeleton_fill_at(time: f64, colors: Colors) -> Color32 {
+    pulse(time, colors.skeleton_low, colors.skeleton_high)
+}
+
+/// A colour that rises from `low` to `high` and back over the skeletons'
+/// period.
+fn pulse(time: f64, low: Color32, high: Color32) -> Color32 {
     let wave = ((time * std::f64::consts::TAU / SKELETON_PERIOD_SECONDS).sin() as f32 + 1.0) * 0.5;
     let channel =
         |low: u8, high: u8| (low as f32 + (high as f32 - low as f32) * wave).round() as u8;
     Color32::from_rgb(
-        channel(colors.skeleton_low.r(), colors.skeleton_high.r()),
-        channel(colors.skeleton_low.g(), colors.skeleton_high.g()),
-        channel(colors.skeleton_low.b(), colors.skeleton_high.b()),
+        channel(low.r(), high.r()),
+        channel(low.g(), high.g()),
+        channel(low.b(), high.b()),
     )
 }
 

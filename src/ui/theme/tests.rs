@@ -536,6 +536,44 @@ fn appearance_switches_visuals_and_custom_colors() {
 }
 
 #[test]
+fn the_waiting_mark_pulses_in_place_without_jumping() {
+    let context = egui::Context::default();
+    install(&context);
+    let drawn = |time: f64| {
+        let raw = egui::RawInput {
+            focused: true,
+            time: Some(time),
+            ..Default::default()
+        };
+        let output = context.run_ui(raw, |ui| {
+            spinner(ui);
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        shapes
+            .into_iter()
+            .find_map(|clipped| match clipped.shape {
+                egui::Shape::Circle(ring) => Some(ring),
+                _ => None,
+            })
+            .expect("the waiting mark")
+    };
+
+    // One frame of its clock apart.
+    let (now, next) = (drawn(1.0), drawn(1.0 + ANIMATION_FRAME.as_secs_f64()));
+    assert_eq!((now.center, now.radius), (next.center, next.radius));
+    let step = [
+        now.stroke.color.r().abs_diff(next.stroke.color.r()),
+        now.stroke.color.g().abs_diff(next.stroke.color.g()),
+        now.stroke.color.b().abs_diff(next.stroke.color.b()),
+    ];
+    assert!(step.iter().all(|change| *change <= 16), "{step:?}");
+    // Half a period later, it has pulsed.
+    let later = drawn(1.0 + SKELETON_PERIOD_SECONDS / 2.0);
+    assert_ne!(now.stroke.color, later.stroke.color);
+}
+
+#[test]
 fn reduced_motion_holds_loading_still_and_gives_animations_back() {
     let context = egui::Context::default();
     install(&context);

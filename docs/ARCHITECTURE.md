@@ -349,8 +349,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   own, so an older version still reads a scheme it knows. winit 0.30 reports
   no system theme on Linux, so Settings offers the choice on macOS and Windows.
   With Windows' Animation effects off, read on every pass, `theme` sets egui's
-  animation time to zero and scrolls without gliding, so loading pulses and
-  spinners keep the still picture of an unfocused window. macOS's and Linux's
+  animation time to zero and scrolls without gliding, so loading pulses keep
+  the still picture of an unfocused window. macOS's and Linux's
   reduced-motion settings are not read yet. winit gives a Windows title bar
   the Windows theme again whenever Windows announces a changed setting, so
   `theme::TitleBar` repeats egui's request for the main and composer windows
@@ -468,9 +468,10 @@ text, and the header says the message could not be decrypted.
 Loading and loaded readers share the scroll container, bounded column, heading,
 and toolbar layout. Loading uses the listing's subject and message count and
 disables actions; unknown message fields remain skeletons. Skeletons and the
-spinner of the waiting screens (opening, signing out) share one clock in
+ring of the waiting screens (opening, signing out) pulse on one clock in
 [`ui/theme.rs`](../src/ui/theme.rs): with focus they ask for a frame every
-50 ms, and without focus they hold still and ask for none. The first skeleton
+50 ms, and without focus they hold still and ask for none. A pulse changes too
+little in 50 ms to jump, where a turning arc stepped 18° a frame. The first skeleton
 card follows the initial expansion preference and reserves the real header,
 sender icon inset, and reply area before its body markers. The scroll reset for
 a new selection is applied during loading rather than waiting for the response.
