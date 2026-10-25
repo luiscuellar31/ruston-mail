@@ -652,16 +652,22 @@ with WARP, as a virtual machine would.
 
 To publish a release:
 
-1. Set the version in `[workspace.package]` of `Cargo.toml`, run
-   `cargo update --workspace` for `Cargo.lock`, commit, and push to `main`.
-2. Tag that commit and push the tag:
+1. On `dev`, set the version in `[workspace.package]` of `Cargo.toml`, run
+   `cargo update --workspace` for `Cargo.lock`, and commit.
+2. Open a pull request from `dev` to `main` and, once CI passes, merge it with
+   **Create a merge commit**, keeping GitHub's default message
+   (`Merge pull request #N from …`). The release notes skip merge commits, and
+   the commits it brings in keep their own messages and hashes. Keep `dev`.
+3. Tag the merge commit on `main` and push the tag:
 
    ```sh
+   git switch main
+   git pull --ff-only
    git tag -a v<version> -m "Ruston Mail <version>"
    git push origin v<version>
    ```
 
-3. The workflow checks that the tag names the workspace version and is on
+4. The workflow checks that the tag names the workspace version and is on
    `main`, builds everything again, and creates a draft release with the files,
    `SHA256SUMS.txt`, build provenance attestations, and notes written by
    [`release-notes.sh`](../packaging/release-notes.sh) from the commits since the
@@ -670,7 +676,7 @@ To publish a release:
    in a short Maintenance list. Re-running the workflow for the tag keeps the
    draft's notes, which may have been edited, and stops if the draft already has
    files: delete them, or the draft, and run it again.
-4. Edit the introduction at the top of the draft, check the files, and publish
+5. Edit the introduction at the top of the draft, check the files, and publish
    it. Once a release is published, the workflow refuses to replace its files.
 
 `./packaging/release-notes.sh --tag <tag> --version <version>` prints the same

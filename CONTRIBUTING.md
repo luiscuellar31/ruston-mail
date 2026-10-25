@@ -54,6 +54,12 @@ Thanks for helping with Ruston Mail. The
 
 ## Pull requests and AI assistance
 
+Branch from `dev` and open the pull request against `dev`; only the maintainer
+brings `dev` into `main`, when preparing a version (see the
+[release steps](docs/DEVELOPMENT.md#releases)). Give the pull request a title in
+the [Conventional Commits](#commits) format, since it can become the commit
+that lands on `dev`.
+
 AI tools are welcome. Please review the full diff yourself and make sure you
 understand what you are submitting.
 
@@ -124,7 +130,3 @@ Write the subject as the effect, not the mechanism: `fix(app): take over from
 an instance that is closing` rather than `fix(app): retry the instance lock
 while connecting`. The body, which the release notes do not show, can explain
 how.
-
-A merge commit keeps GitHub's default message, `Merge pull request #N from
-…`. The release notes skip merge commits, and the commits a merge brings in
-keep their own messages and hashes.
