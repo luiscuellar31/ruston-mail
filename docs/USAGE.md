@@ -519,7 +519,7 @@ and ends with status 2.
 | `z` | Show or hide quoted text |
 | Ctrl+R | Refresh the folders and the list |
 | `?` | Show or hide the keys |
-| Esc | Close the keys |
+| Esc | Close the keys, or go back a pane |
 | `q`, Ctrl+C | Quit |
 | Ctrl+Z | Suspend to the shell, on Linux and macOS |
 

@@ -111,7 +111,8 @@ pub(crate) enum Message {
     ToggleQuotes,
     Refresh,
     ToggleHelp,
-    CloseHelp,
+    /// Closes the list of keys, or else goes back a pane.
+    Back,
     Quit,
     PlacesLoaded(Result<Vec<Place>, String>),
     ConversationsLoaded {
@@ -189,9 +190,15 @@ impl App {
         match message {
             Message::Quit => self.quit = true,
             Message::ToggleHelp => self.help = !self.help,
-            Message::CloseHelp => self.help = false,
+            Message::Back if self.help => self.help = false,
             // The open list of keys covers the panes, so they keep still.
             _ if self.help && is_key(&message) => {}
+            // Back from the list or the reader to the pane before it; the
+            // folders come first, so nothing is before them.
+            Message::Back if self.focus != Pane::Folders => {
+                self.focus = self.focus.previous();
+            }
+            Message::Back => {}
             Message::NextPane => self.focus = self.focus.next(),
             Message::PreviousPane => self.focus = self.focus.previous(),
             Message::Up => self.step(-1),
@@ -284,6 +291,12 @@ impl App {
             }
         }
         Vec::new()
+    }
+
+    /// Whether the listed place's first page came with no conversations,
+    /// rather than being on its way.
+    pub(crate) fn listed_nothing(&self) -> bool {
+        self.next_page > 0 && self.conversations.is_empty()
     }
 
     /// Moves down a row, and at the last row of a list with more to it,
@@ -453,7 +466,7 @@ impl Message {
         match key.code {
             KeyCode::Char('q') => Some(Self::Quit),
             KeyCode::Char('?') => Some(Self::ToggleHelp),
-            KeyCode::Esc => Some(Self::CloseHelp),
+            KeyCode::Esc => Some(Self::Back),
             KeyCode::Tab => Some(Self::NextPane),
             KeyCode::BackTab => Some(Self::PreviousPane),
             KeyCode::Up | KeyCode::Char('k') => Some(Self::Up),
@@ -996,6 +1009,40 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         press(&mut app, KeyCode::Char('?'));
         assert!(!app.help);
+    }
+
+    #[test]
+    fn esc_closes_the_keys_first_then_goes_back_a_pane() {
+        let mut app = loaded();
+        app.focus = Pane::Reader;
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!((app.help, app.focus), (false, Pane::Reader));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus, Pane::Conversations);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus, Pane::Folders);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focus, Pane::Folders);
+    }
+
+    #[test]
+    fn an_empty_folder_leaves_a_way_back_to_the_folders() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        // Its first page is on its way: the Inbox's rows still show.
+        assert!(!app.listed_nothing());
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((0, Vec::new())),
+        });
+        assert!(app.listed_nothing());
+        assert_eq!(app.focus, Pane::Conversations);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Up);
+        assert_eq!((app.focus, app.selected_place), (Pane::Folders, 0));
     }
 
     #[test]

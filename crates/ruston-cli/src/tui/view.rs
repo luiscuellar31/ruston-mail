@@ -35,7 +35,7 @@ const KEYS: [(&str, &str); 10] = [
     ("z", "show or hide quoted text"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
-    ("Esc", "close these keys"),
+    ("Esc", "close these keys, or go back a pane"),
     ("q, Ctrl+C", "quit"),
 ];
 
@@ -109,6 +109,17 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 ListItem::new(Line::from(spans))
             });
             draw_list(frame, items, app.selected_place, focused, block, area);
+        }
+        // Without this, the keys would seem to do nothing in an empty list.
+        Pane::Conversations if app.listed_nothing() => {
+            let hint = vec![
+                Line::raw(format!("No conversations in {}.", screen_line(&app.listed))),
+                Line::raw("Esc goes back to the folders."),
+            ];
+            let hint = Paragraph::new(hint)
+                .style(Style::new().add_modifier(Modifier::DIM))
+                .wrap(Wrap { trim: true });
+            frame.render_widget(hint.block(block), area);
         }
         Pane::Conversations => {
             let items = app.conversations.iter().map(conversation_row);
@@ -311,6 +322,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use super::super::app::Message;
     use super::super::reading::Reading;
     use super::*;
     use crate::mailbox::{Place, PlaceKind};
@@ -529,6 +541,24 @@ mod tests {
             status.contains("Inbox · 1 of 120 conversation(s)"),
             "{status}"
         );
+    }
+
+    #[test]
+    fn an_empty_list_says_so_and_how_to_go_back() {
+        let mut app = App::new("me@example.test".into());
+        // Still loading: nothing to say yet.
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(!screen.contains("No conversations"), "{screen}");
+
+        app.listed = "Personal".into();
+        app.update(Message::ConversationsLoaded {
+            request: 0,
+            page: 0,
+            result: Ok((0, Vec::new())),
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains("No conversations in Personal."), "{screen}");
+        assert!(screen.contains("Esc goes back to the folders."), "{screen}");
     }
 
     #[test]
