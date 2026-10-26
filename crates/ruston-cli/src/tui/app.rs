@@ -77,6 +77,8 @@ pub(crate) struct App {
     pub(crate) reading: Option<Reading>,
     /// How many rows down the reader is scrolled.
     pub(crate) scroll: u16,
+    /// Whether the reader shows quoted passages instead of folding them.
+    pub(crate) show_quotes: bool,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
@@ -103,6 +105,7 @@ pub(crate) enum Message {
     Top,
     Bottom,
     Open,
+    ToggleQuotes,
     Refresh,
     ToggleHelp,
     CloseHelp,
@@ -152,6 +155,7 @@ impl App {
             selected_conversation: 0,
             reading: None,
             scroll: 0,
+            show_quotes: false,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
@@ -185,6 +189,7 @@ impl App {
             Message::Top => self.step(isize::MIN),
             Message::Bottom => self.step(isize::MAX),
             Message::Open => return self.open(),
+            Message::ToggleQuotes => self.show_quotes = !self.show_quotes,
             Message::Refresh => {
                 let (id, name) = (self.listed_id.clone(), self.listed.clone());
                 return vec![Effect::Places, self.list(id, name)];
@@ -399,6 +404,7 @@ impl Message {
             KeyCode::Home | KeyCode::Char('g') => Some(Self::Top),
             KeyCode::End | KeyCode::Char('G') => Some(Self::Bottom),
             KeyCode::Enter => Some(Self::Open),
+            KeyCode::Char('z') => Some(Self::ToggleQuotes),
             _ => None,
         }
     }
@@ -539,6 +545,7 @@ mod tests {
         Reading {
             subject: "Plans".into(),
             lines: (0..lines).map(|n| format!("line {n}")).collect(),
+            quotes: Vec::new(),
         }
     }
 
@@ -601,6 +608,15 @@ mod tests {
         assert_eq!(app.scroll, 0);
         press(&mut app, KeyCode::Up);
         assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn z_shows_quoted_text_and_hides_it_again() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('z'));
+        assert!(app.show_quotes);
+        press(&mut app, KeyCode::Char('z'));
+        assert!(!app.show_quotes);
     }
 
     #[test]

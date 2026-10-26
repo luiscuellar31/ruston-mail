@@ -26,12 +26,13 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 9] = [
+const KEYS: [(&str, &str); 10] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
     ("g, G, Home, End", "go to the top or the bottom"),
     ("Enter", "open the folder or conversation"),
+    ("z", "show or hide quoted text"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys"),
@@ -137,8 +138,9 @@ fn draw_list<'a>(
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// The open conversation, wrapped to the pane and scrolled as far as the
-/// state asks, within what there is. Since only the drawing knows how many
+/// The open conversation, its quoted passages folded into a line each
+/// unless the state shows them, wrapped to the pane and scrolled as far as
+/// the state asks, within what there is. Since only the drawing knows how many
 /// rows the text wraps to, it tells the state how far it can scroll.
 fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
     let inner = block.inner(area);
@@ -158,7 +160,20 @@ fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
         ),
         Line::default(),
     ];
-    lines.extend(reading.lines.iter().map(|line| Line::raw(line.as_str())));
+    if app.show_quotes {
+        lines.extend(raw(&reading.lines));
+    } else {
+        let mut rest = 0;
+        for quote in &reading.quotes {
+            lines.extend(raw(&reading.lines[rest..quote.start]));
+            lines.push(Line::styled(
+                format!("… {} quoted lines (z shows them)", quote.len()),
+                Style::new().add_modifier(Modifier::DIM),
+            ));
+            rest = quote.end;
+        }
+        lines.extend(raw(&reading.lines[rest..]));
+    }
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     let rows = paragraph.line_count(inner.width);
     let bottom = u16::try_from(rows.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
@@ -168,6 +183,11 @@ fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
         paragraph.scroll((app.scroll.min(bottom), 0)).block(block),
         area,
     );
+}
+
+/// Each of `lines` as it is, without a style.
+fn raw(lines: &[String]) -> impl Iterator<Item = Line<'_>> {
+    lines.iter().map(|line| Line::raw(line.as_str()))
 }
 
 /// One row of the list: whether it is unread (•), starred (★) or has
@@ -412,6 +432,7 @@ mod tests {
         app.reading = Some(Reading {
             subject: "Plans for May".into(),
             lines: (0..100).map(|n| format!("line {n}")).collect(),
+            quotes: Vec::new(),
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(screen.contains("Plans for May"), "{screen}");
@@ -431,11 +452,43 @@ mod tests {
     }
 
     #[test]
+    fn the_reader_folds_quoted_passages_until_they_are_shown() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let lines = [
+            "Thanks!", "", "> a", "", "> b", "> c", "", "Then:", "> d", "> e", "> f", "", "Bye",
+        ];
+        app.reading = Some(Reading {
+            subject: "Plans".into(),
+            lines: lines.map(str::to_owned).to_vec(),
+            quotes: vec![2..6, 8..11],
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        for shown in [
+            "… 4 quoted lines (z shows them)",
+            "Then:",
+            "… 3 quoted lines (z shows them)",
+            "Bye",
+        ] {
+            assert!(screen.contains(shown), "{shown:?} missing:\n{screen}");
+        }
+        assert!(
+            !screen.contains("> b") && !screen.contains("> e"),
+            "{screen}"
+        );
+
+        app.show_quotes = true;
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains("> b") && screen.contains("> e"), "{screen}");
+        assert!(!screen.contains("quoted lines"), "{screen}");
+    }
+
+    #[test]
     fn long_reader_lines_wrap_to_the_pane() {
         let mut app = with_mail("alex@example.test", "Quarterly report");
         app.reading = Some(Reading {
             subject: "Long".into(),
             lines: vec!["word ".repeat(60)],
+            quotes: Vec::new(),
         });
         let _ = drawn(120, 30, &app, &Theme::new(false));
         // 300 columns wrap into several rows of the 46-column pane.

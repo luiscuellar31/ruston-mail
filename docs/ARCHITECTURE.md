@@ -715,7 +715,9 @@ instead of an unknown outcome.
   an opened conversation into the reader's lines, each message's headers,
   verdict and body as `conversations read` shows it, inside the task that
   loads it, since a large HTML body takes a while; reading it does not mark
-  it read.
+  it read. It also notes where each body quotes another message, in lines
+  that start with `>`, which the view folds into a line each, as the desktop
+  does, until `z` shows them.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with

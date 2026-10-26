@@ -499,7 +499,9 @@ conversations are unread, a folder's conversations, newest first, each marked
 unread (•), starred (★) or with attachments (+), and the conversation you
 open, with each message's headers, its signature's verdict and its body as
 `conversations read` shows it. The list holds 50 conversations at first and
-loads 50 more each time you move down past its last. Opening a conversation
+loads 50 more each time you move down past its last. A quoted passage of three
+lines or more, such as the message a reply answers, folds into one line unless
+the whole message is quoted; `z` shows or hides them. Opening a conversation
 there does not mark it read yet. With no session saved, it signs in first, as
 `ruston-cli login` does; `--demo` opens the fictional mailbox. Away from a
 terminal, as in a script, `ruston-cli` with no command still prints the help
@@ -512,6 +514,7 @@ and ends with status 2.
 | PageUp, PageDown | Scroll the reader a page |
 | `g`, `G`, Home, End | Go to the top or the bottom |
 | Enter | Open the folder or conversation |
+| `z` | Show or hide quoted text |
 | Ctrl+R | Refresh the folders and the list |
 | `?` | Show or hide the keys |
 | Esc | Close the keys |
