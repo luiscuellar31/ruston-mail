@@ -9,7 +9,7 @@ mod view;
 
 use crate::cli::{Ctx, LoginArgs, TuiArgs};
 use crate::commands;
-use crate::mailbox::Mailbox;
+use crate::mailbox::{Change, Mailbox};
 use crate::terminal;
 use app::{App, Effect, Message};
 use clap::{Args, FromArgMatches};
@@ -161,15 +161,15 @@ impl Tasks {
     /// Runs `effect` as [`spawn`] does. A read aborts the task still running
     /// one of its kind, whose answer would come too late or be overtaken;
     /// that is safe, and a token refresh that one of them starts finishes on
-    /// a task of its own. Marking read changes the account, and opening a
-    /// link starts a browser, so each always runs to its end: stopped
-    /// halfway, nobody would know whether it happened.
+    /// a task of its own. A change to a conversation changes the account,
+    /// and opening a link starts a browser, so each always runs to its end:
+    /// stopped halfway, nobody would know whether it happened.
     fn run(&mut self, effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) {
         let running = match effect {
             Effect::Places => &mut self.places,
             Effect::Conversations { .. } => &mut self.list,
             Effect::Conversation { .. } => &mut self.conversation,
-            Effect::MarkRead { .. } | Effect::OpenLink { .. } => {
+            Effect::MarkRead { .. } | Effect::Change { .. } | Effect::OpenLink { .. } => {
                 spawn(effect, mailbox, answers);
                 return;
             }
@@ -202,9 +202,16 @@ fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) 
                     .map_err(|error| error.to_string()),
             },
             Effect::MarkRead { id, place } => {
-                let result = mailbox.mark_read(&id, &place).await;
+                let result = mailbox.change(&id, &place, &Change::Read(true)).await;
                 Message::MarkedRead {
                     id,
+                    result: result.map_err(|error| error.to_string()),
+                }
+            }
+            Effect::Change { id, place, change } => {
+                let result = mailbox.change(&id, &place, &change).await;
+                Message::Changed {
+                    change,
                     result: result.map_err(|error| error.to_string()),
                 }
             }
@@ -256,29 +263,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn marking_read_runs_to_its_end_however_often_it_is_asked() {
+    async fn changes_run_to_their_end_however_often_they_are_asked() {
         let (sender, mut answers) = mpsc::unbounded_channel();
         let mut tasks = Tasks::default();
+        let mailbox = Mailbox::demo();
         for id in ["a", "b"] {
             let effect = Effect::MarkRead {
                 id: id.into(),
                 place: "0".into(),
             };
-            tasks.run(effect, &Mailbox::demo(), &sender);
+            tasks.run(effect, &mailbox, &sender);
+        }
+        for star in [true, false] {
+            let effect = Effect::Change {
+                id: "c".into(),
+                place: "0".into(),
+                change: Change::Star(star),
+            };
+            tasks.run(effect, &mailbox, &sender);
         }
         drop(sender);
-        let mut marked = Vec::new();
+        let mut done = Vec::new();
         while let Some(answer) = answers.recv().await {
             match answer {
                 Message::MarkedRead { id, result } => {
                     assert!(result.is_ok());
-                    marked.push(id);
+                    done.push(id);
+                }
+                Message::Changed { change, result } => {
+                    assert!(result.is_ok());
+                    done.push(format!("{change:?}"));
                 }
                 other => panic!("{other:?}"),
             }
         }
-        marked.sort();
-        assert_eq!(marked, ["a", "b"]);
+        done.sort();
+        assert_eq!(done, ["Star(false)", "Star(true)", "a", "b"]);
     }
 
     #[cfg(unix)]

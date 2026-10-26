@@ -24,6 +24,7 @@ use crate::cli::{
     FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd,
 };
 use crate::commands::contacts;
+use crate::mailbox::Change;
 use crate::render;
 
 /// Said on standard error before every demo command, so a fictional send,
@@ -786,16 +787,66 @@ impl DemoSession {
         conversation_counts(&self.snapshot())
     }
 
-    /// Marks the conversation `id` read wherever it is.
-    pub(crate) fn mark_read(&self, id: &str) {
+    /// Makes `change` to the conversation `id`, listed in `place`, much as
+    /// Proton would: a star labels it Starred, reading marks it read
+    /// wherever it is and unread only where it is listed, and a move takes
+    /// it out of the folders it was in, keeping its labels, Sent and Drafts.
+    pub(crate) fn change(&self, id: &str, place: &str, change: &Change) {
         let mut conversations = self
             .conversations
             .lock()
             .expect("demo mailbox lock poisoned");
-        if let Some(conversation) = conversations.iter_mut().find(|c| c.id == id) {
-            conversation.num_unread = 0;
-            for label in &mut conversation.labels {
-                label.context_num_unread = Some(0);
+        let Some(conversation) = conversations.iter_mut().find(|c| c.id == id) else {
+            return;
+        };
+        let whole = |id: &str, conversation: &Conversation| ConversationLabel {
+            id: id.to_string(),
+            context_num_messages: Some(conversation.num_messages),
+            context_num_unread: Some(conversation.num_unread),
+            context_time: Some(conversation.time),
+        };
+        match change {
+            Change::Star(true) => {
+                if !conversation
+                    .labels
+                    .iter()
+                    .any(|l| l.id == label_ids::STARRED)
+                {
+                    let starred = whole(label_ids::STARRED, conversation);
+                    conversation.labels.push(starred);
+                }
+            }
+            Change::Star(false) => conversation.labels.retain(|l| l.id != label_ids::STARRED),
+            Change::Read(true) => {
+                conversation.num_unread = 0;
+                for label in &mut conversation.labels {
+                    label.context_num_unread = Some(0);
+                }
+            }
+            Change::Read(false) => {
+                conversation.num_unread = conversation.num_unread.max(1);
+                if let Some(label) = conversation.labels.iter_mut().find(|l| l.id == place) {
+                    label.context_num_unread = Some(label.context_num_unread.unwrap_or(0).max(1));
+                }
+            }
+            Change::Move(folder) => {
+                let folders = demo_labels()
+                    .into_iter()
+                    .filter(|label| label.label_type == label_type::MESSAGE_FOLDER)
+                    .map(|label| label.id);
+                let left: Vec<String> = [
+                    label_ids::INBOX,
+                    label_ids::ARCHIVE,
+                    label_ids::SPAM,
+                    label_ids::TRASH,
+                ]
+                .map(String::from)
+                .into_iter()
+                .chain(folders)
+                .collect();
+                conversation.labels.retain(|l| !left.contains(&l.id));
+                let moved = whole(folder, conversation);
+                conversation.labels.push(moved);
             }
         }
     }
@@ -1621,7 +1672,7 @@ mod tests {
             (unread(label_ids::INBOX), unread(label_ids::STARRED)),
             (2, 1)
         );
-        session.mark_read("conv-demo-01");
+        session.change("conv-demo-01", label_ids::INBOX, &Change::Read(true));
         assert_eq!(
             (unread(label_ids::INBOX), unread(label_ids::STARRED)),
             (1, 0)
@@ -1639,6 +1690,51 @@ mod tests {
                 .map(|count| count.unread),
             Some(2)
         );
+    }
+
+    #[test]
+    fn a_session_stars_marks_unread_and_moves_as_proton_would() {
+        let session = DemoSession::new();
+        let count = |label: &str| {
+            session
+                .counts()
+                .iter()
+                .find(|count| count.label_id == label)
+                .map_or((0, 0), |count| (count.total, count.unread))
+        };
+        let listed = |label: &str| {
+            let (_, page) = session.conversations(label, 0, 50);
+            page.into_iter().map(|c| c.id).collect::<Vec<_>>()
+        };
+        // Offsite planning, read and in the Inbox only.
+        let id = "conv-demo-03";
+        session.change(id, label_ids::INBOX, &Change::Star(true));
+        session.change(id, label_ids::INBOX, &Change::Star(true));
+        assert_eq!(count(label_ids::STARRED), (2, 1));
+        session.change(id, label_ids::INBOX, &Change::Read(false));
+        assert_eq!(count(label_ids::INBOX), (4, 3));
+        session.change(
+            id,
+            label_ids::INBOX,
+            &Change::Move(label_ids::ARCHIVE.into()),
+        );
+        assert!(!listed(label_ids::INBOX).contains(&id.to_string()));
+        assert!(listed(label_ids::ARCHIVE).contains(&id.to_string()));
+        // Still starred, and unread wherever it is now.
+        assert!(listed(label_ids::STARRED).contains(&id.to_string()));
+        assert_eq!(count(label_ids::ARCHIVE), (2, 1));
+        session.change(id, label_ids::ARCHIVE, &Change::Star(false));
+        assert_eq!(count(label_ids::STARRED), (1, 1));
+        // The reply in Sent stays there when its conversation is trashed.
+        let first = "conv-demo-01";
+        session.change(
+            first,
+            label_ids::INBOX,
+            &Change::Move(label_ids::TRASH.into()),
+        );
+        assert!(listed(label_ids::TRASH).contains(&first.to_string()));
+        assert!(listed(label_ids::SENT).contains(&first.to_string()));
+        assert!(!listed(label_ids::INBOX).contains(&first.to_string()));
     }
 
     #[test]

@@ -26,7 +26,7 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 11] = [
+const KEYS: [(&str, &str); 15] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
@@ -34,6 +34,10 @@ const KEYS: [(&str, &str); 11] = [
     ("Enter", "open the folder or conversation"),
     ("z", "show or hide quoted text"),
     ("o", "list the conversation's links to open one"),
+    ("s", "star or unstar the conversation"),
+    ("u", "mark it read or unread"),
+    ("a", "archive it"),
+    ("d, Delete", "move it to Trash"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys, or go back a pane"),

@@ -1,7 +1,7 @@
 //! What the terminal interface reads from a Proton account or from the
-//! offline demo, through the same calls, and the one change it makes so far,
-//! marking a conversation read; opened once for the whole session. It
-//! returns core's types; how they look is the interface's business.
+//! offline demo, through the same calls, and the changes it makes to a
+//! conversation; opened once for the whole session. It returns core's types;
+//! how they look is the interface's business.
 
 use crate::demo::{self, DemoSession};
 use ruston_core::model::enums::{label_ids, label_type};
@@ -28,6 +28,17 @@ pub(crate) enum Mailbox {
     Proton(Arc<Client>),
     /// The offline demo's fictional mail, as this session has changed it.
     Demo(Arc<DemoSession>),
+}
+
+/// A change the interface makes to a conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Change {
+    /// Star it, or take its star away.
+    Star(bool),
+    /// Mark it read, or unread in the place it is listed in.
+    Read(bool),
+    /// Move it to the folder with this label ID, such as Archive or Trash.
+    Move(String),
 }
 
 /// A place to list mail from: a system folder, or one of the account's own
@@ -109,17 +120,18 @@ impl Mailbox {
         }
     }
 
-    /// Marks the conversation `id`, listed in the place `place`, read. The
-    /// demo keeps it until the interface closes.
-    pub(crate) async fn mark_read(&self, id: &str, place: &str) -> Result<()> {
+    /// Makes `change` to the conversation `id`, listed in the place
+    /// `place`. The demo keeps it until the interface closes.
+    pub(crate) async fn change(&self, id: &str, place: &str, change: &Change) -> Result<()> {
+        let ids = [id.to_owned()];
         match self {
-            Self::Proton(client) => {
-                client
-                    .mark_conversations_read(&[id.to_owned()], true, place)
-                    .await
-            }
+            Self::Proton(client) => match change {
+                Change::Star(starred) => client.star_conversations(&ids, *starred).await,
+                Change::Read(read) => client.mark_conversations_read(&ids, *read, place).await,
+                Change::Move(folder) => client.move_conversations(&ids, folder).await,
+            },
             Self::Demo(session) => {
-                session.mark_read(id);
+                session.change(id, place, change);
                 Ok(())
             }
         }
@@ -263,7 +275,7 @@ mod tests {
         );
         assert!(mailbox.conversation("no-such-conversation").await.is_err());
         mailbox
-            .mark_read(&page[0].id, label_ids::INBOX)
+            .change(&page[0].id, label_ids::INBOX, &Change::Read(true))
             .await
             .unwrap();
     }

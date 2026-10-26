@@ -728,7 +728,10 @@ instead of an unknown outcome.
   thread of its own. Once the reader shows an unread conversation, the state
   asks for it to be marked read, as the desktop does, unless
   `tui --keep-unread` says not to; once Proton confirms it, the row shows it
-  read and each place it was unread in counts one fewer.
+  read and each place it was unread in counts one fewer. The quick actions
+  (star, read or unread, archive, Trash) act on the list's selection or the
+  conversation the reader shows, through `Mailbox::change`, and then load
+  the list and the counts again, which Proton owns, as the desktop does.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with

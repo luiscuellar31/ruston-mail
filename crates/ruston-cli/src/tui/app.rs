@@ -3,7 +3,7 @@
 //! must happen elsewhere, such as loading a page, comes back as an [`Effect`].
 
 use super::reading::Reading;
-use crate::mailbox::Place;
+use crate::mailbox::{Change, Place};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ruston_core::Conversation;
 use ruston_core::model::enums::label_ids;
@@ -123,6 +123,13 @@ pub(crate) enum Message {
     ShowLinks,
     /// Answers yes to the question on screen.
     Yes,
+    /// Stars the conversation acted on, or takes its star away.
+    Star,
+    /// Marks the conversation acted on read, or unread.
+    ToggleRead,
+    Archive,
+    /// Moves the conversation acted on to Trash.
+    Trash,
     Refresh,
     ToggleHelp,
     /// Closes the list of keys, or else goes back a pane.
@@ -143,6 +150,10 @@ pub(crate) enum Message {
         result: Result<(), String>,
     },
     LinkOpened(Result<(), String>),
+    Changed {
+        change: Change,
+        result: Result<(), String>,
+    },
 }
 
 /// Work the interface hands out, whose answer comes back as a [`Message`].
@@ -164,6 +175,11 @@ pub(crate) enum Effect {
     },
     OpenLink {
         url: String,
+    },
+    Change {
+        id: String,
+        place: String,
+        change: Change,
     },
 }
 
@@ -235,6 +251,14 @@ impl App {
             Message::ShowLinks => self.show_links(),
             // Nothing on screen waits for a yes.
             Message::Yes => {}
+            Message::Star => {
+                return self.change(|conversation| Change::Star(!is_starred(conversation)));
+            }
+            Message::ToggleRead => {
+                return self.change(|conversation| Change::Read(conversation.num_unread > 0));
+            }
+            Message::Archive => return self.change(|_| Change::Move(label_ids::ARCHIVE.into())),
+            Message::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
             Message::Refresh => {
                 let (id, name) = (self.listed_id.clone(), self.listed.clone());
                 return vec![Effect::Places, self.list(id, name)];
@@ -283,13 +307,17 @@ impl App {
                     self.total = total;
                     self.conversations = conversations;
                     self.next_page = 1;
+                    // When it has left the list, the row now in its place is.
+                    let in_its_place = self
+                        .selected_conversation
+                        .min(self.conversations.len().saturating_sub(1));
                     self.selected_conversation = selected
                         .and_then(|id| {
                             self.conversations
                                 .iter()
                                 .position(|conversation| conversation.id == id)
                         })
-                        .unwrap_or(0);
+                        .unwrap_or(in_its_place);
                     self.notice = None;
                 }
                 Err(error) => {
@@ -321,8 +349,56 @@ impl App {
             Message::LinkOpened(Err(error)) => {
                 self.notice = Some(format!("Cannot open the link: {error}"));
             }
+            // Proton owns the counts, and the list may have changed with
+            // them: both load again, the selection kept where it can be.
+            Message::Changed { result: Ok(()), .. } => {
+                let (id, name) = (self.listed_id.clone(), self.listed.clone());
+                return vec![Effect::Places, self.list(id, name)];
+            }
+            Message::Changed {
+                change,
+                result: Err(error),
+            } => {
+                let (_, failed) = wording(&change);
+                self.notice = Some(format!("{failed}: {error}"));
+            }
         }
         Vec::new()
+    }
+
+    /// The conversation a quick action acts on: the list's selection, or the
+    /// one the reader shows while it is listed; none from the folders.
+    fn acted_on(&self) -> Option<&Conversation> {
+        let id = match self.focus {
+            Pane::Folders => return None,
+            Pane::Conversations => return self.conversations.get(self.selected_conversation),
+            Pane::Reader => &self.reading.as_ref()?.id,
+        };
+        self.conversations
+            .iter()
+            .find(|conversation| &conversation.id == id)
+    }
+
+    /// Asks for the change `make` works out for the conversation acted on,
+    /// saying so in the status bar meanwhile.
+    fn change(&mut self, make: impl FnOnce(&Conversation) -> Change) -> Vec<Effect> {
+        // Until its first page comes, the list shows another place's rows.
+        if self.focus != Pane::Folders && self.next_page == 0 {
+            self.notice = Some("Wait for the list to load.".to_owned());
+            return Vec::new();
+        }
+        let Some(conversation) = self.acted_on() else {
+            self.notice = Some("Choose a conversation in the list first.".to_owned());
+            return Vec::new();
+        };
+        let (id, change) = (conversation.id.clone(), make(conversation));
+        let (doing, _) = wording(&change);
+        self.notice = Some(doing.to_owned());
+        vec![Effect::Change {
+            id,
+            place: self.listed_id.clone(),
+            change,
+        }]
     }
 
     /// Lists the open conversation's links, to open one, or says why not.
@@ -439,6 +515,8 @@ impl App {
                 };
                 let (id, name) = (place.id.clone(), place.name.clone());
                 self.focus = Pane::Conversations;
+                // Another folder's list starts at its top.
+                self.selected_conversation = 0;
                 vec![self.list(id, name)]
             }
             Pane::Conversations => {
@@ -513,6 +591,42 @@ impl App {
     }
 }
 
+/// Whether `conversation` is starred.
+fn is_starred(conversation: &Conversation) -> bool {
+    conversation
+        .labels
+        .iter()
+        .any(|label| label.id == label_ids::STARRED)
+}
+
+/// What the status bar says while `change` is made, and if it fails.
+fn wording(change: &Change) -> (&'static str, &'static str) {
+    match change {
+        Change::Star(true) => ("Starring the conversation…", "Cannot star the conversation"),
+        Change::Star(false) => (
+            "Taking the conversation's star away…",
+            "Cannot take the conversation's star away",
+        ),
+        Change::Read(true) => (
+            "Marking the conversation read…",
+            "Cannot mark the conversation read",
+        ),
+        Change::Read(false) => (
+            "Marking the conversation unread…",
+            "Cannot mark the conversation unread",
+        ),
+        Change::Move(folder) if folder == label_ids::ARCHIVE => (
+            "Archiving the conversation…",
+            "Cannot archive the conversation",
+        ),
+        Change::Move(folder) if folder == label_ids::TRASH => (
+            "Moving the conversation to Trash…",
+            "Cannot move the conversation to Trash",
+        ),
+        Change::Move(_) => ("Moving the conversation…", "Cannot move the conversation"),
+    }
+}
+
 /// Whether `message` came from a key, not from an answer.
 fn is_key(message: &Message) -> bool {
     !matches!(
@@ -522,6 +636,7 @@ fn is_key(message: &Message) -> bool {
             | Message::ConversationLoaded { .. }
             | Message::MarkedRead { .. }
             | Message::LinkOpened(_)
+            | Message::Changed { .. }
     )
 }
 
@@ -563,6 +678,10 @@ impl Message {
             KeyCode::Char('z') => Some(Self::ToggleQuotes),
             KeyCode::Char('o') => Some(Self::ShowLinks),
             KeyCode::Char('y') => Some(Self::Yes),
+            KeyCode::Char('s') => Some(Self::Star),
+            KeyCode::Char('u') => Some(Self::ToggleRead),
+            KeyCode::Char('a') => Some(Self::Archive),
+            KeyCode::Char('d') | KeyCode::Delete => Some(Self::Trash),
             _ => None,
         }
     }
@@ -1166,6 +1285,112 @@ mod tests {
             result: Ok(reading(2)),
         });
         assert_eq!(app.picking_link, None);
+    }
+
+    #[test]
+    fn the_quick_actions_change_the_conversation_acted_on_then_reload() {
+        let mut app = loaded();
+        app.conversations[1] = unread("b", "folder-1");
+        // From the folders, nothing is acted on.
+        assert!(press(&mut app, KeyCode::Char('s')).is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Choose a conversation in the list first.")
+        );
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Down);
+        let change = |change: Change| {
+            vec![Effect::Change {
+                id: "b".into(),
+                place: label_ids::INBOX.into(),
+                change,
+            }]
+        };
+        assert_eq!(
+            press(&mut app, KeyCode::Char('s')),
+            change(Change::Star(true))
+        );
+        assert_eq!(app.notice.as_deref(), Some("Starring the conversation…"));
+        assert_eq!(
+            press(&mut app, KeyCode::Char('u')),
+            change(Change::Read(true))
+        );
+        let archive = Change::Move(label_ids::ARCHIVE.into());
+        assert_eq!(press(&mut app, KeyCode::Char('a')), change(archive));
+        let trash = Change::Move(label_ids::TRASH.into());
+        assert_eq!(press(&mut app, KeyCode::Char('d')), change(trash.clone()));
+        assert_eq!(press(&mut app, KeyCode::Delete), change(trash.clone()));
+
+        // Done, the folders and the list load again.
+        let effects = app.update(Message::Changed {
+            change: trash.clone(),
+            result: Ok(()),
+        });
+        assert_eq!(
+            effects,
+            [
+                Effect::Places,
+                Effect::Conversations {
+                    request: 2,
+                    place: label_ids::INBOX.into(),
+                    page: 0
+                }
+            ]
+        );
+        // Meanwhile the rows are the old ones: nothing is acted on.
+        assert!(press(&mut app, KeyCode::Char('s')).is_empty());
+        assert_eq!(app.notice.as_deref(), Some("Wait for the list to load."));
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((2, vec![conversation("a"), unread("b", "folder-1")])),
+        });
+        app.update(Message::Changed {
+            change: trash,
+            result: Err("offline".into()),
+        });
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Cannot move the conversation to Trash: offline")
+        );
+
+        // In the reader, the conversation it shows is acted on.
+        app.focus = Pane::Reader;
+        app.selected_conversation = 0;
+        app.conversations[1].labels.push(ConversationLabel {
+            id: label_ids::STARRED.into(),
+            ..ConversationLabel::default()
+        });
+        app.reading = Some(reading(1));
+        assert_eq!(
+            press(&mut app, KeyCode::Char('s')),
+            change(Change::Star(false))
+        );
+    }
+
+    #[test]
+    fn a_conversation_that_left_the_list_leaves_the_selection_in_its_place() {
+        let mut app = loaded();
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Down);
+        let refresh = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        app.update(Message::from_event(&refresh).unwrap());
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((2, vec![conversation("a"), conversation("c")])),
+        });
+        assert_eq!(app.conversations[app.selected_conversation].id, "c");
+        // Another folder starts at the top of its list.
+        app.focus = Pane::Folders;
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        app.update(Message::ConversationsLoaded {
+            request: 3,
+            page: 0,
+            result: Ok((2, vec![conversation("w1"), conversation("w2")])),
+        });
+        assert_eq!(app.selected_conversation, 0);
     }
 
     #[test]
