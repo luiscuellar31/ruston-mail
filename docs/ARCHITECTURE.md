@@ -703,11 +703,14 @@ instead of an unknown outcome.
   would draw over it. [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs)
   holds the state and what each key or answer does, without a terminal; what
   must load comes back from `update` as an effect, which `tui.rs` runs in a
-  task, and each list or conversation request is numbered so an answer for an
-  earlier one is dropped. A list loads a page at a time: moving past its last
-  row, once its first page has come, asks for the next under the same number,
-  and the page is added below without the conversations already listed. Keys
-  count on press only, since Windows also reports releases.
+  task, aborting the one still running an effect of the same kind: they only
+  read, and a token refresh that one of them starts finishes on a task of its
+  own. Each list or conversation request is numbered so an answer for an
+  earlier one, sent before its task was aborted, is dropped. A list loads a
+  page at a time: moving past its last row, once its first page has come, asks
+  for the next under the same number, and the page is added below without the
+  conversations already listed. Keys count on press only, since Windows also
+  reports releases.
   [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
   an opened conversation into the reader's lines, each message's headers,
   verdict and body as `conversations read` shows it, inside the task that

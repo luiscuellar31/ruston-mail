@@ -20,6 +20,7 @@ use ruston_core::{Client, Error, Result};
 use std::io::{self, IsTerminal};
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::task::AbortHandle;
 
 /// Whether standard input and output are both a terminal, as the interface
 /// needs: it reads keys from one and draws over the other.
@@ -78,8 +79,9 @@ async fn run_loop(
 ) -> Result<()> {
     let (sender, mut answers) = mpsc::unbounded_channel();
     let mut events = EventStream::new();
+    let mut tasks = Tasks::default();
     for effect in app.start() {
-        spawn(effect, mailbox, &sender);
+        tasks.run(effect, mailbox, &sender);
     }
     while !app.quit {
         terminal.draw(|frame| view::draw(frame, app, theme))?;
@@ -92,18 +94,43 @@ async fn run_loop(
         };
         if let Some(message) = message {
             for effect in app.update(message) {
-                spawn(effect, mailbox, &sender);
+                tasks.run(effect, mailbox, &sender);
             }
         }
     }
     Ok(())
 }
 
+/// The task still running each kind of effect, if any.
+#[derive(Default)]
+struct Tasks {
+    places: Option<AbortHandle>,
+    list: Option<AbortHandle>,
+    conversation: Option<AbortHandle>,
+}
+
+impl Tasks {
+    /// Runs `effect` as [`spawn`] does, aborting the task still running an
+    /// effect of its kind, whose answer would come too late or be overtaken.
+    /// That is safe, as they only read, and a token refresh that one of them
+    /// starts finishes on a task of its own.
+    fn run(&mut self, effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) {
+        let running = match effect {
+            Effect::Places => &mut self.places,
+            Effect::Conversations { .. } => &mut self.list,
+            Effect::Conversation { .. } => &mut self.conversation,
+        };
+        if let Some(before) = running.replace(spawn(effect, mailbox, answers)) {
+            before.abort();
+        }
+    }
+}
+
 /// Runs `effect` in a task of its own, which sends its answer back as a
 /// message. Once the interface has closed, nobody waits for it.
-fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) {
+fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) -> AbortHandle {
     let (mailbox, answers) = (mailbox.clone(), answers.clone());
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let answer = match effect {
             Effect::Places => {
                 Message::PlacesLoaded(mailbox.places().await.map_err(|error| error.to_string()))
@@ -133,11 +160,39 @@ fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) 
         };
         let _ = answers.send(answer);
     });
+    task.abort_handle()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_new_effect_aborts_the_task_still_running_one_of_its_kind() {
+        let (sender, mut answers) = mpsc::unbounded_channel();
+        let mut tasks = Tasks::default();
+        // The test's runtime runs none of them until it waits.
+        for request in [1, 2] {
+            let id = "no-such-conversation".to_owned();
+            tasks.run(
+                Effect::Conversation { request, id },
+                &Mailbox::Demo,
+                &sender,
+            );
+        }
+        tasks.run(Effect::Places, &Mailbox::Demo, &sender);
+        drop(sender);
+        let mut seen = Vec::new();
+        while let Some(answer) = answers.recv().await {
+            seen.push(match answer {
+                Message::ConversationLoaded { request, .. } => format!("conversation {request}"),
+                Message::PlacesLoaded(_) => "places".to_owned(),
+                other => panic!("{other:?}"),
+            });
+        }
+        seen.sort();
+        assert_eq!(seen, ["conversation 2", "places"]);
+    }
 
     #[test]
     fn signing_in_first_takes_what_login_takes_without_options() {
