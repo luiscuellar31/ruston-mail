@@ -497,6 +497,25 @@ impl Client {
     pub fn search_local(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
         self.open_cache()?.search(query, limit)
     }
+
+    /// Full-text search of the local index without changing it, for a
+    /// program that keeps no mail on disk itself: nothing is created,
+    /// upgraded or written, and SQLite runs on the blocking pool. `None`
+    /// when this device holds no index for the account.
+    pub async fn search_local_read_only(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<Option<Vec<MessageMetadata>>> {
+        let path = Cache::existing_account_path(&self.profile, &self.cache_identity)?;
+        let (identity, query) = (self.cache_identity.clone(), query.to_owned());
+        super::off_thread(move || {
+            Cache::open_existing_for_account(&path, &identity)?
+                .map(|cache| cache.search(&query, limit))
+                .transpose()
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

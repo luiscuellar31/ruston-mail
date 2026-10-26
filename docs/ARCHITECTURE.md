@@ -1092,7 +1092,12 @@ value, so no reference to a SQLite connection, which is not `Sync`, lives
 across a request and their futures can run on `tokio::spawn`. The session
 metadata also records the `User.ID`, so `LocalCache` opens the same database
 from the saved session without a request; the CLI's `messages list --cached`
-and `search` use it and work offline. A session saved before the ID was kept is
+and `search` use it and work offline. `Client::search_local_read_only` alone
+skips `open_cache`: it opens an existing account database read-only, creating,
+migrating, binding and tightening nothing, refuses a symlink, a folder others
+could write and another account's database, and answers `None` when there is
+none, so a program that keeps no mail on disk can search an index the CLI
+built. SQLite runs on the blocking pool there. A session saved before the ID was kept is
 resumed once instead, which records it. Metadata writes replace the file with
 one rename under the profile lock, and a resume records the ID only for the
 session it loaded. It selects

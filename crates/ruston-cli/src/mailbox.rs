@@ -4,11 +4,10 @@
 //! how they look is the interface's business.
 
 use crate::demo::{self, DemoSession};
-use ruston_core::model::ConversationLabel;
+use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{
-    Client, Conversation, ConversationMessage, Error, Label, LabelCount, MessageMetadata, Result,
-    SearchOpts,
+    Client, Conversation, ConversationMessage, Error, Label, LabelCount, Result, SearchOpts,
 };
 use std::sync::Arc;
 
@@ -190,57 +189,6 @@ impl Mailbox {
     }
 }
 
-/// The conversations `messages` belong to, in the order the first message of
-/// each comes, made of what those messages say, as the list shows them: a
-/// search of the local index finds messages, and has nothing else offline.
-fn conversations_of(messages: Vec<MessageMetadata>) -> Vec<Conversation> {
-    let mut conversations: Vec<Conversation> = Vec::new();
-    for message in messages {
-        if message.conversation_id.is_empty() {
-            continue;
-        }
-        let at = conversations
-            .iter()
-            .position(|conversation| conversation.id == message.conversation_id)
-            .unwrap_or_else(|| {
-                conversations.push(Conversation {
-                    id: message.conversation_id.clone(),
-                    subject: message.subject.clone(),
-                    ..Conversation::default()
-                });
-                conversations.len() - 1
-            });
-        let conversation = &mut conversations[at];
-        let unread = i64::from(message.unread > 0);
-        conversation.num_messages += 1;
-        conversation.num_unread += unread;
-        conversation.num_attachments += message.num_attachments;
-        conversation.time = conversation.time.max(message.time);
-        if !conversation
-            .senders
-            .iter()
-            .any(|sender| sender.address == message.sender.address)
-        {
-            conversation.senders.push(message.sender.clone());
-        }
-        for id in &message.label_ids {
-            match conversation.labels.iter_mut().find(|label| &label.id == id) {
-                Some(label) => {
-                    label.context_num_messages = Some(label.context_num_messages.unwrap_or(0) + 1);
-                    label.context_num_unread = Some(label.context_num_unread.unwrap_or(0) + unread);
-                }
-                None => conversation.labels.push(ConversationLabel {
-                    id: id.clone(),
-                    context_num_messages: Some(1),
-                    context_num_unread: Some(unread),
-                    context_time: Some(message.time),
-                }),
-            }
-        }
-    }
-    conversations
-}
-
 /// The places to list: the system folders, then the account's folders in
 /// the order of their paths, so each sits under its parent, then its labels
 /// as Proton orders them.
@@ -334,38 +282,6 @@ mod tests {
         );
         assert_eq!(places[7].kind, PlaceKind::Folder);
         assert_eq!(places[10].kind, PlaceKind::Label);
-    }
-
-    fn message(id: &str, conversation: &str, sender: &str, unread: i64) -> MessageMetadata {
-        MessageMetadata {
-            id: id.into(),
-            conversation_id: conversation.into(),
-            subject: format!("About {conversation}"),
-            sender: ruston_core::Recipient::new(sender),
-            unread,
-            time: 1_700_000_000 + id.len() as i64,
-            label_ids: vec![label_ids::INBOX.into()],
-            ..MessageMetadata::default()
-        }
-    }
-
-    #[test]
-    fn messages_found_offline_list_as_their_conversations_in_the_order_found() {
-        let messages = vec![
-            message("m1", "c-b", "alex@example.test", 1),
-            message("m2", "c-a", "sam@example.test", 0),
-            message("m-three", "c-b", "sam@example.test", 0),
-            message("m4", "", "lost@example.test", 1),
-        ];
-        let conversations = conversations_of(messages);
-        let ids: Vec<&str> = conversations.iter().map(|c| c.id.as_str()).collect();
-        assert_eq!(ids, ["c-b", "c-a"]);
-        let first = &conversations[0];
-        assert_eq!((first.num_messages, first.num_unread), (2, 1));
-        assert_eq!(first.time, 1_700_000_007);
-        assert_eq!(first.senders.len(), 2);
-        assert_eq!(first.labels[0].context_num_unread, Some(1));
-        assert_eq!(first.subject, "About c-b");
     }
 
     #[tokio::test]

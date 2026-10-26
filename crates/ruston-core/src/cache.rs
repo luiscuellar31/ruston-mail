@@ -42,17 +42,7 @@ fn secure_cache_file(path: &Path) -> Result<()> {
     use std::io::ErrorKind;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let dir = std::fs::symlink_metadata(parent).map_err(map)?;
-    if !dir.is_dir() || dir.file_type().is_symlink() || dir.permissions().mode() & 0o777 != 0o700 {
-        return Err(Error::Cache(format!(
-            "cache directory {} must be private (mode 0700) and not a symlink",
-            parent.display()
-        )));
-    }
+    private_parent(path)?;
 
     let mut options = OpenOptions::new();
     options.write(true).create_new(true).mode(0o600);
@@ -78,6 +68,26 @@ fn secure_cache_file(path: &Path) -> Result<()> {
     let metadata = std::fs::symlink_metadata(path).map_err(map)?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o777 != 0o600 {
         return Err(Error::Cache("cache database is not private".into()));
+    }
+    Ok(())
+}
+
+/// Refuses a cache whose folder is not private to this user or is a
+/// symlink, where someone else could put a file of their own in its place.
+#[cfg(unix)]
+fn private_parent(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let dir = std::fs::symlink_metadata(parent).map_err(map)?;
+    if !dir.is_dir() || dir.file_type().is_symlink() || dir.permissions().mode() & 0o777 != 0o700 {
+        return Err(Error::Cache(format!(
+            "cache directory {} must be private (mode 0700) and not a symlink",
+            parent.display()
+        )));
     }
     Ok(())
 }
@@ -421,7 +431,7 @@ fn account_owner(conn: &Connection) -> Result<Option<String>> {
 /// stored inside it as `account_identity_v1`. Renaming, reordering or adding a
 /// field starts every account on an empty cache and leaves the old one, with
 /// its decrypted bodies, orphaned on disk.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct CacheIdentity {
     base_url: String,
     user_id: String,
@@ -486,11 +496,16 @@ fn list_sql(unread_only: bool) -> String {
 
 /// The folder that holds the caches, created on first use.
 fn cache_root() -> Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
-        .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
-    let dir = dirs.cache_dir().to_path_buf();
+    let dir = cache_root_path()?;
     create_cache_dir(&dir)?;
     Ok(dir)
+}
+
+/// Where the caches are kept, whether or not anything is there yet.
+fn cache_root_path() -> Result<PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", crate::STORAGE_NAME)
+        .ok_or_else(|| Error::Cache("cannot resolve cache dir".into()))?;
+    Ok(dirs.cache_dir().to_path_buf())
 }
 
 /// Creates a cache folder, private to this user.
@@ -525,16 +540,75 @@ impl Cache {
     }
 
     fn account_path(root: &Path, profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
-        validate_profile_name(profile)?;
+        let path = Self::account_file(root, profile, identity)?;
         let accounts = root.join("accounts");
-        let dir = accounts.join(profile);
-        for directory in [&accounts, &dir] {
+        for directory in [&accounts, &accounts.join(profile)] {
             create_cache_dir(directory)?;
         }
+        Ok(path)
+    }
+
+    /// Where an account's cache is under `root`, creating nothing.
+    fn account_file(root: &Path, profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
+        validate_profile_name(profile)?;
         // A fixed-size lowercase name also avoids path separators and collisions
         // caused by case-insensitive filesystems. Verify the full identity in SQLite.
         let digest = Sha256::digest(identity.serialized()?.as_bytes());
-        Ok(dir.join(format!("{digest:x}.db")))
+        Ok(root
+            .join("accounts")
+            .join(profile)
+            .join(format!("{digest:x}.db")))
+    }
+
+    /// Where an account's cache is, if one was ever made, creating nothing.
+    pub(crate) fn existing_account_path(
+        profile: &str,
+        identity: &CacheIdentity,
+    ) -> Result<PathBuf> {
+        Self::account_file(&cache_root_path()?, profile, identity)
+    }
+
+    /// An account's cache opened only to read it, for a program that keeps
+    /// no mail on disk itself: nothing is created, migrated, bound or
+    /// tightened. `None` when there is none for the account, or it was never
+    /// bound to one; one that needs migrating, which only a writer may do,
+    /// or that belongs to another account, is an error.
+    pub(crate) fn open_existing_for_account(
+        path: &Path,
+        identity: &CacheIdentity,
+    ) -> Result<Option<Cache>> {
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(map(error)),
+        };
+        if !metadata.is_file() {
+            return Err(Error::Cache("cache database must be a regular file".into()));
+        }
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        #[cfg(unix)]
+        let (sqlite_path, flags) = {
+            private_parent(path)?;
+            // As `open` does: NOFOLLOW refuses a symlink anywhere in the path.
+            let resolved = std::fs::canonicalize(path).map_err(map)?;
+            (resolved, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW)
+        };
+        #[cfg(not(unix))]
+        let sqlite_path = path.to_path_buf();
+        let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(map)?;
+        conn.busy_timeout(Duration::from_secs(30)).map_err(map)?;
+        if needs_migration(&conn)? {
+            return Err(Error::Cache(
+                "the local index needs `ruston-cli sync` or `ruston-cli index` to update it".into(),
+            ));
+        }
+        match account_owner(&conn)? {
+            Some(owner) if owner == identity.serialized()? => Ok(Some(Cache { conn })),
+            Some(_) => Err(Error::Cache("cache belongs to a different account".into())),
+            None => Ok(None),
+        }
     }
 
     /// Open a database only for its authenticated account. The binding is
