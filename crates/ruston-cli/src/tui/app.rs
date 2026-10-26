@@ -519,7 +519,10 @@ impl App {
             Event::Key(key) if self.command_line.is_some() => {
                 (key.kind != KeyEventKind::Release).then_some(Message::Typed(*key))
             }
-            Event::Key(key) if self.question.is_some() => {
+            Event::Key(key)
+                if self.question.is_some()
+                    || self.picking_link.is_some_and(|pick| pick.confirming) =>
+            {
                 (key.kind != KeyEventKind::Release).then(|| answer_of(key))
             }
             _ => Message::from_event(event),
@@ -1859,10 +1862,15 @@ mod tests {
         };
         assert!(press(&mut app, KeyCode::Enter).is_empty());
         assert_eq!(app.picking_link, Some(asked));
-        // Any other key goes back to the links.
-        assert!(press(&mut app, KeyCode::Char('j')).is_empty());
-        assert_eq!(app.picking_link.map(|pick| pick.confirming), Some(false));
-        press(&mut app, KeyCode::Enter);
+        // Any other key goes back to the links, one that does nothing
+        // elsewhere and q too.
+        for other in ['j', 'n', 'q'] {
+            assert!(press(&mut app, KeyCode::Char(other)).is_empty());
+            assert_eq!(app.picking_link.map(|pick| pick.confirming), Some(false));
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(app.picking_link, Some(asked));
+        }
+        assert!(!app.quit);
         assert_eq!(
             press(&mut app, KeyCode::Char('y')),
             [Effect::OpenLink {

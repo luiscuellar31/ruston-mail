@@ -735,7 +735,8 @@ instead of an unknown outcome.
   folds into a line each, as the desktop does, until `z` shows them, and
   gathers the web addresses the bodies link to, each read by `url` so it is
   listed as it would open, a host in another script in ASCII. `o` lists them
-  over the panes; one opens only after a yes, through the browser opener
+  over the panes; one opens only after a yes to a question that takes every
+  key, `y` alone saying yes, through the browser opener
   `hv.rs` uses, with no terminal input to read and its opener waited for on a
   thread of its own. It also lists each opened message's attachments, inline
   ones aside, under its headers; `v` lists them over the panes and Enter has
