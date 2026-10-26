@@ -5,7 +5,9 @@
 
 use crate::demo::{self, DemoSession};
 use ruston_core::model::enums::{label_ids, label_type};
-use ruston_core::{Client, Conversation, ConversationMessage, Label, LabelCount, Result};
+use ruston_core::{
+    Client, Conversation, ConversationMessage, Label, LabelCount, Result, SearchOpts,
+};
 use std::sync::Arc;
 
 /// How many conversations a page of the list holds.
@@ -105,6 +107,24 @@ impl Mailbox {
         match self {
             Self::Proton(client) => client.list_conversations(id, page, PAGE_SIZE, false).await,
             Self::Demo(session) => Ok(session.conversations(id, page, PAGE_SIZE)),
+        }
+    }
+
+    /// Page `page` of the conversations that `words` find in all mail,
+    /// newest first, with how many there are in all; the demo looks in
+    /// their subjects, as its `conversations search` does.
+    pub(crate) async fn search(&self, words: &str, page: u32) -> Result<(u32, Vec<Conversation>)> {
+        match self {
+            Self::Proton(client) => {
+                let opts = SearchOpts {
+                    keyword: Some(words.to_owned()),
+                    ..SearchOpts::default()
+                };
+                client
+                    .search_conversations_page(&opts, page, PAGE_SIZE)
+                    .await
+            }
+            Self::Demo(session) => Ok(session.search(words, page, PAGE_SIZE)),
         }
     }
 
@@ -272,6 +292,9 @@ mod tests {
         assert!(page.windows(2).all(|pair| pair[0].time >= pair[1].time));
         let (_, past_the_end) = mailbox.conversations(label_ids::INBOX, 9).await.unwrap();
         assert!(past_the_end.is_empty());
+        let (found, matching) = mailbox.search("AGENDA", 0).await.unwrap();
+        assert_eq!(found, 1);
+        assert_eq!(matching[0].subject, "Offsite planning and agenda");
 
         let (conversation, messages) = mailbox.conversation(&page[0].id).await.unwrap();
         assert_eq!(conversation.id, page[0].id);

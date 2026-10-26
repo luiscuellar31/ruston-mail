@@ -3,9 +3,9 @@
 //! asks for. Doing what it asks is the state's business, in `app`.
 
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 12] = [
-    "archive", "folder", "help", "move", "q", "quit", "read", "refresh", "star", "trash", "unread",
-    "unstar",
+const COMMANDS: [&str; 13] = [
+    "archive", "folder", "help", "move", "q", "quit", "read", "refresh", "search", "star", "trash",
+    "unread", "unstar",
 ];
 
 /// What a command line asks for.
@@ -18,6 +18,8 @@ pub(crate) enum Command {
     Folder(String),
     /// Move the conversation acted on to the folder with this name.
     Move(String),
+    /// Search all mail for these words.
+    Search(String),
     Star(bool),
     Read(bool),
     Archive,
@@ -46,6 +48,7 @@ impl Command {
             "refresh" => Self::Refresh,
             "folder" => Self::Folder(needs("the name of a folder or label")?),
             "move" => Self::Move(needs("the name of a folder")?),
+            "search" => Self::Search(needs("the words to look for")?),
             "star" => Self::Star(true),
             "unstar" => Self::Star(false),
             "read" => Self::Read(true),
@@ -54,7 +57,8 @@ impl Command {
             "trash" => Self::Trash,
             other => return Err(format!("Not a command: :{other}")),
         };
-        if !argument.is_empty() && !matches!(command, Self::Folder(_) | Self::Move(_)) {
+        let takes_words = matches!(command, Self::Folder(_) | Self::Move(_) | Self::Search(_));
+        if !argument.is_empty() && !takes_words {
             return Err(format!(":{name} takes nothing after it"));
         }
         Ok(Some(command))
@@ -81,6 +85,14 @@ struct Completing {
 }
 
 impl CommandLine {
+    /// A line that starts with `text` already typed.
+    pub(crate) fn with(text: &str) -> Self {
+        Self {
+            text: text.to_owned(),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn type_char(&mut self, c: char) {
         self.text.push(c);
         self.completing = None;
@@ -173,6 +185,14 @@ mod tests {
         );
         assert_eq!(Command::parse("unstar"), Ok(Some(Command::Star(false))));
         assert_eq!(Command::parse("unread"), Ok(Some(Command::Read(false))));
+        assert_eq!(
+            Command::parse("search  quarterly report "),
+            Ok(Some(Command::Search("quarterly report".into())))
+        );
+        assert_eq!(
+            Command::parse("search"),
+            Err(":search needs the words to look for".into())
+        );
         assert_eq!(
             Command::parse("folder"),
             Err(":folder needs the name of a folder or label".into())

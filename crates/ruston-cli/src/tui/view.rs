@@ -26,7 +26,7 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 16] = [
+const KEYS: [(&str, &str); 17] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
@@ -38,6 +38,7 @@ const KEYS: [(&str, &str); 16] = [
     ("u", "mark it read or unread"),
     ("a", "archive it"),
     ("d, Delete", "move it to Trash"),
+    ("/", "search all mail"),
     (":", "type a command; Tab completes it"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
@@ -167,10 +168,16 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
         }
         // Without this, the keys would seem to do nothing in an empty list.
         Pane::Conversations if app.listed_nothing() => {
-            let hint = vec![
-                Line::raw(format!("No conversations in {}.", screen_line(&app.listed))),
-                Line::raw("Esc goes back to the folders."),
-            ];
+            let hint = match &app.search {
+                Some(search) => vec![
+                    Line::raw(format!("Nothing matches {}.", screen_line(&search.words))),
+                    Line::raw(format!("Esc goes back to {}.", screen_line(&search.back.1))),
+                ],
+                None => vec![
+                    Line::raw(format!("No conversations in {}.", screen_line(&app.listed))),
+                    Line::raw("Esc goes back to the folders."),
+                ],
+            };
             let hint = Paragraph::new(hint)
                 .style(Style::new().add_modifier(Modifier::DIM))
                 .wrap(Wrap { trim: true });
@@ -676,6 +683,33 @@ mod tests {
         assert!(!status.contains("conversation(s)"), "{status}");
         let cursor = terminal.backend_mut().get_cursor_position().unwrap();
         assert_eq!((cursor.x, cursor.y), (10, 29));
+    }
+
+    #[test]
+    fn a_search_that_finds_nothing_says_where_esc_goes() {
+        let mut app = App::new("me@example.test".into());
+        app.update(Message::Command);
+        for c in "search zebra\u{1b}[2J".chars() {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            app.update(Message::Typed(key));
+        }
+        app.update(Message::Typed(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        app.update(Message::ConversationsLoaded {
+            request: 1,
+            page: 0,
+            result: Ok((0, Vec::new())),
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains("Nothing matches zebra[2J."), "{screen}");
+        assert!(screen.contains("Esc goes back to Inbox."), "{screen}");
+        let status = screen.lines().last().unwrap();
+        assert!(
+            status.contains("Search: zebra[2J · 0 conversation(s)"),
+            "{status}"
+        );
     }
 
     #[test]

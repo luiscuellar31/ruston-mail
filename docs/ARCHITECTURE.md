@@ -739,7 +739,12 @@ instead of an unknown outcome.
   [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) is the command
   line `:` opens: its text, the lines run before, Tab's completion and what a
   line asks for; while it is open the state gets each key as typed, and runs
-  the command as the keys would, with `:move` reaching any folder.
+  the command as the keys would, with `:move` reaching any folder. `/` and
+  `:search` list what `Mailbox::search` finds in all mail, a page at a time
+  as a folder's list, under the same request numbers; Esc lists again the
+  place shown before, and a refresh or a change searches again. The demo
+  finds conversations by their subjects, as its `conversations search`
+  does.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with

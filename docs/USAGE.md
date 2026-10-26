@@ -511,7 +511,9 @@ read or unread, `a` archives it, and `d` or Delete moves it to Trash; then the
 list and the counts load again. The demo keeps such changes until the
 interface closes. `:` opens a command line at the foot; Tab completes a
 command or a name, Up and Down bring back the lines run before, Enter runs
-it and Esc closes it. With no session saved, it signs in first, as
+it and Esc closes it. `/` starts one at `:search`, which looks for words in
+all of your mail and lists what it finds; Esc in that list goes back to the
+folder listed before. With no session saved, it signs in first, as
 `ruston-cli login` does; `--demo` opens the fictional mailbox. Away from a
 terminal, as in a script, `ruston-cli` with no command still prints the help
 and ends with status 2.
@@ -529,6 +531,7 @@ and ends with status 2.
 | `u` | Mark it read or unread |
 | `a` | Archive it |
 | `d`, Delete | Move it to Trash |
+| `/` | Search all mail |
 | `:` | Type a command |
 | Ctrl+R | Refresh the folders and the list |
 | `?` | Show or hide the keys |
@@ -543,7 +546,8 @@ and ends with status 2.
 | `:star`, `:unstar` | Star the conversation, or take its star away |
 | `:read`, `:unread` | Mark it read or unread |
 | `:archive`, `:trash` | Archive it, or move it to Trash |
-| `:refresh` | Refresh the folders and the list |
+| `:search WORDS` | Search all mail for the words |
+| `:refresh` | Refresh the folders and the list, or the search |
 | `:help` | Show the keys |
 | `:q`, `:quit` | Quit |
 

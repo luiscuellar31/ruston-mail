@@ -54,6 +54,14 @@ pub(crate) struct LinkPick {
     pub(crate) confirming: bool,
 }
 
+/// A search whose results the list shows: its words, and the label ID and
+/// name of the place listed before it, which Esc lists again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Search {
+    pub(crate) words: String,
+    pub(crate) back: (String, String),
+}
+
 /// What the interface shows and where the keys go.
 pub(crate) struct App {
     /// Whose mail this is, for the status bar.
@@ -97,6 +105,8 @@ pub(crate) struct App {
     pub(crate) command_line: Option<CommandLine>,
     /// The lines run from it, oldest first, for Up and Down.
     history: Vec<String>,
+    /// The search the list shows the results of, if it shows one.
+    pub(crate) search: Option<Search>,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
@@ -130,6 +140,8 @@ pub(crate) enum Message {
     Yes,
     /// Opens the command line.
     Command,
+    /// Opens the command line at `:search`.
+    Search,
     /// A key typed while the command line is open.
     Typed(KeyEvent),
     /// Stars the conversation acted on, or takes its star away.
@@ -176,6 +188,12 @@ pub(crate) enum Effect {
         place: String,
         page: u32,
     },
+    /// Page `page` of what `words` find in all mail, numbered as a list.
+    Search {
+        request: u64,
+        words: String,
+        page: u32,
+    },
     Conversation {
         request: u64,
         id: String,
@@ -217,6 +235,7 @@ impl App {
             picking_link: None,
             command_line: None,
             history: Vec::new(),
+            search: None,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
@@ -245,6 +264,16 @@ impl App {
             _ if self.picking_link.is_some() && is_key(&message) => {
                 return self.pick_link(&message);
             }
+            // Back from a search's results to the place listed before it.
+            Message::Back if self.focus == Pane::Conversations && self.search.is_some() => {
+                let (id, name) = self
+                    .search
+                    .as_ref()
+                    .map(|search| search.back.clone())
+                    .unwrap_or_default();
+                self.selected_conversation = 0;
+                return vec![self.list(id, name)];
+            }
             // Back from the list or the reader to the pane before it; the
             // folders come first, so nothing is before them.
             Message::Back if self.focus != Pane::Folders => {
@@ -265,6 +294,7 @@ impl App {
             // Nothing on screen waits for a yes.
             Message::Yes => {}
             Message::Command => self.command_line = Some(CommandLine::default()),
+            Message::Search => self.command_line = Some(CommandLine::with("search ")),
             Message::Typed(key) => return self.type_in_command_line(&key),
             Message::Star => {
                 return self.change(|conversation| Change::Star(!is_starred(conversation)));
@@ -274,10 +304,7 @@ impl App {
             }
             Message::Archive => return self.change(|_| Change::Move(label_ids::ARCHIVE.into())),
             Message::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
-            Message::Refresh => {
-                let (id, name) = (self.listed_id.clone(), self.listed.clone());
-                return vec![Effect::Places, self.list(id, name)];
-            }
+            Message::Refresh => return self.reload(),
             Message::PlacesLoaded(Ok(places)) => {
                 let selected = self
                     .places
@@ -366,10 +393,7 @@ impl App {
             }
             // Proton owns the counts, and the list may have changed with
             // them: both load again, the selection kept where it can be.
-            Message::Changed { result: Ok(()), .. } => {
-                let (id, name) = (self.listed_id.clone(), self.listed.clone());
-                return vec![Effect::Places, self.list(id, name)];
-            }
+            Message::Changed { result: Ok(()), .. } => return self.reload(),
             Message::Changed {
                 change,
                 result: Err(error),
@@ -469,6 +493,11 @@ impl App {
             Command::Quit => self.quit = true,
             Command::Help => self.help = true,
             Command::Refresh => return self.update(Message::Refresh),
+            Command::Search(words) => {
+                self.focus = Pane::Conversations;
+                self.selected_conversation = 0;
+                return vec![self.search_for(words)];
+            }
             Command::Folder(name) => match self.named(&name) {
                 Ok(index) => {
                     self.selected_place = index;
@@ -618,10 +647,18 @@ impl App {
         {
             self.loading_more = true;
             self.notice = Some(format!("Loading more of {}…", self.listed));
-            return vec![Effect::Conversations {
-                request: self.list_request,
-                place: self.listed_id.clone(),
-                page: self.next_page,
+            let (request, page) = (self.list_request, self.next_page);
+            return vec![match &self.search {
+                Some(search) => Effect::Search {
+                    request,
+                    words: search.words.clone(),
+                    page,
+                },
+                None => Effect::Conversations {
+                    request,
+                    place: self.listed_id.clone(),
+                    page,
+                },
             }];
         }
         self.step(1);
@@ -683,19 +720,67 @@ impl App {
     }
 
     /// Asks for the first page of the place `id`, named `name`, making any
-    /// answer still on its way for another one too late.
+    /// answer still on its way for another one too late. A search shown
+    /// before ends.
     fn list(&mut self, id: String, name: String) -> Effect {
-        self.list_request += 1;
-        self.next_page = 0;
-        self.loading_more = false;
-        self.notice = Some(format!("Loading {name}…"));
-        self.listed = name;
-        self.listed_id.clone_from(&id);
+        self.search = None;
+        let notice = format!("Loading {name}…");
+        let request = self.relist(id.clone(), name, notice);
         Effect::Conversations {
-            request: self.list_request,
+            request,
             place: id,
             page: 0,
         }
+    }
+
+    /// Asks for the first page of what `words` find in all mail, as `list`
+    /// does for a place, keeping the place listed before the first search
+    /// to go back to.
+    fn search_for(&mut self, words: String) -> Effect {
+        let back = match self.search.take() {
+            Some(search) => search.back,
+            None => (self.listed_id.clone(), self.listed.clone()),
+        };
+        let notice = format!("Searching for {words}…");
+        // All mail holds the results, so marking one unread does it there.
+        let id = label_ids::ALL_MAIL.to_owned();
+        let request = self.relist(id, format!("Search: {words}"), notice);
+        self.search = Some(Search {
+            words: words.clone(),
+            back,
+        });
+        Effect::Search {
+            request,
+            words,
+            page: 0,
+        }
+    }
+
+    /// Makes the list the place `name`, listed from the label ID `id`, its
+    /// first page on its way under a new number, saying `notice` meanwhile.
+    fn relist(&mut self, id: String, name: String, notice: String) -> u64 {
+        self.list_request += 1;
+        self.next_page = 0;
+        self.loading_more = false;
+        self.notice = Some(notice);
+        self.listed = name;
+        self.listed_id = id;
+        self.list_request
+    }
+
+    /// The folders and the list again, a search's results included.
+    fn reload(&mut self) -> Vec<Effect> {
+        let list = match &self.search {
+            Some(search) => {
+                let words = search.words.clone();
+                self.search_for(words)
+            }
+            None => {
+                let (id, name) = (self.listed_id.clone(), self.listed.clone());
+                self.list(id, name)
+            }
+        };
+        vec![Effect::Places, list]
     }
 
     /// Asks for the conversation `id`, which the reader now shows, to be
@@ -846,6 +931,7 @@ impl Message {
             KeyCode::Char('a') => Some(Self::Archive),
             KeyCode::Char('d') | KeyCode::Delete => Some(Self::Trash),
             KeyCode::Char(':') => Some(Self::Command),
+            KeyCode::Char('/') => Some(Self::Search),
             _ => None,
         }
     }
@@ -1698,6 +1784,107 @@ mod tests {
             app.notice.as_deref(),
             Some("Something went wrong: the renderer broke")
         );
+    }
+
+    #[test]
+    fn a_search_lists_what_it_finds_and_esc_goes_back_to_the_place() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.command_line.as_ref().unwrap().text, "search ");
+        for c in "plans".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        let effects = press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            effects,
+            [Effect::Search {
+                request: 2,
+                words: "plans".into(),
+                page: 0
+            }]
+        );
+        assert_eq!(app.focus, Pane::Conversations);
+        assert_eq!(app.listed, "Search: plans");
+        assert_eq!(app.notice.as_deref(), Some("Searching for plans…"));
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((3, vec![conversation("p1"), conversation("p2")])),
+        });
+        // More of it loads as a list's does, and Ctrl+R searches again.
+        press(&mut app, KeyCode::End);
+        assert_eq!(
+            press(&mut app, KeyCode::Down),
+            [Effect::Search {
+                request: 2,
+                words: "plans".into(),
+                page: 1
+            }]
+        );
+        let refresh = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        let effects = app.update(Message::from_event(&refresh).unwrap());
+        assert_eq!(
+            effects,
+            [
+                Effect::Places,
+                Effect::Search {
+                    request: 3,
+                    words: "plans".into(),
+                    page: 0
+                }
+            ]
+        );
+        // A second search goes back to where the first came from.
+        command(&mut app, "search notes");
+        assert_eq!(app.listed, "Search: notes");
+        assert_eq!(
+            press(&mut app, KeyCode::Esc),
+            [Effect::Conversations {
+                request: 5,
+                place: label_ids::INBOX.into(),
+                page: 0
+            }]
+        );
+        assert_eq!((app.search.clone(), app.focus), (None, Pane::Conversations));
+        assert_eq!(app.listed, "Inbox");
+    }
+
+    #[test]
+    fn a_change_to_a_search_result_searches_again() {
+        let mut app = loaded();
+        command(&mut app, "search plans");
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((1, vec![conversation("p1")])),
+        });
+        assert_eq!(
+            press(&mut app, KeyCode::Char('s')),
+            [Effect::Change {
+                id: "p1".into(),
+                place: label_ids::ALL_MAIL.into(),
+                change: Change::Star(true)
+            }]
+        );
+        let effects = app.update(Message::Changed {
+            change: Change::Star(true),
+            result: Ok(()),
+        });
+        assert_eq!(
+            effects,
+            [
+                Effect::Places,
+                Effect::Search {
+                    request: 3,
+                    words: "plans".into(),
+                    page: 0
+                }
+            ]
+        );
+        // Opening a folder ends the search.
+        app.focus = Pane::Folders;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.search, None);
     }
 
     #[test]

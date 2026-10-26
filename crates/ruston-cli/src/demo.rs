@@ -796,6 +796,24 @@ impl DemoSession {
         list_page(self.snapshot(), label, is_all, false, page, page_size)
     }
 
+    /// Page `page` of the conversations whose subject has `words`, in any
+    /// place, newest first, with how many there are in all.
+    pub(crate) fn search(
+        &self,
+        words: &str,
+        page: u32,
+        page_size: u32,
+    ) -> (u32, Vec<Conversation>) {
+        let mut found: Vec<Conversation> = self
+            .snapshot()
+            .into_iter()
+            .filter(|conversation| subject_has(conversation, words))
+            .collect();
+        found.sort_by_key(|conversation| std::cmp::Reverse(conversation.time));
+        let total = found.len() as u32;
+        (total, page_of(found, page, page_size))
+    }
+
     /// How many conversations each place holds, and how many are unread.
     pub(crate) fn counts(&self) -> Vec<LabelCount> {
         conversation_counts(&self.snapshot())
@@ -864,6 +882,16 @@ impl DemoSession {
             }
         }
     }
+}
+
+/// Whether `conversation`'s subject has `words`, whatever their case: how
+/// the demo finds conversations, in `conversations search` and the terminal
+/// interface alike.
+fn subject_has(conversation: &Conversation, words: &str) -> bool {
+    conversation
+        .subject
+        .to_lowercase()
+        .contains(&words.to_lowercase())
 }
 
 /// How many of `conversations` each place holds and how many of those are
@@ -1181,12 +1209,12 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     .into_iter()
                     .filter(|c| {
                         if let Some(kw) = &args.keyword
-                            && !c.subject.to_lowercase().contains(&kw.to_lowercase())
+                            && !subject_has(c, kw)
                         {
                             return false;
                         }
                         if let Some(subject) = &args.subject
-                            && !c.subject.to_lowercase().contains(&subject.to_lowercase())
+                            && !subject_has(c, subject)
                         {
                             return false;
                         }
@@ -1749,6 +1777,31 @@ mod tests {
         assert!(listed(label_ids::TRASH).contains(&first.to_string()));
         assert!(listed(label_ids::SENT).contains(&first.to_string()));
         assert!(!listed(label_ids::INBOX).contains(&first.to_string()));
+    }
+
+    #[test]
+    fn a_session_finds_conversations_by_their_subject_wherever_they_are() {
+        let session = DemoSession::new();
+        let found = |words: &str| {
+            let (total, page) = session.search(words, 0, 50);
+            (total, page.into_iter().map(|c| c.id).collect::<Vec<_>>())
+        };
+        assert_eq!(found("OFFSITE"), (1, vec!["conv-demo-03".to_owned()]));
+        // In Trash too, and newest first.
+        let (total, ids) = found("e");
+        assert!(
+            total > 1 && ids.contains(&"conv-demo-06".to_owned()),
+            "{ids:?}"
+        );
+        assert_eq!(found("nothing like this"), (0, Vec::new()));
+        // A change made in the session shows in what it finds.
+        session.change(
+            "conv-demo-03",
+            label_ids::INBOX,
+            &Change::Move(label_ids::TRASH.into()),
+        );
+        let (_, page) = session.search("offsite", 0, 50);
+        assert!(page[0].labels.iter().any(|l| l.id == label_ids::TRASH));
     }
 
     #[test]

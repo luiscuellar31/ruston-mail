@@ -197,7 +197,7 @@ impl Tasks {
     fn run(&mut self, effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) {
         let running = match effect {
             Effect::Places => &mut self.places,
-            Effect::Conversations { .. } => &mut self.list,
+            Effect::Conversations { .. } | Effect::Search { .. } => &mut self.list,
             Effect::Conversation { .. } => &mut self.conversation,
             Effect::MarkRead { .. } | Effect::Change { .. } | Effect::OpenLink { .. } => {
                 self.writes.retain(|write| !write.is_finished());
@@ -269,6 +269,18 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
             page,
             result: mailbox
                 .conversations(&place, page)
+                .await
+                .map_err(|error| error.to_string()),
+        },
+        Effect::Search {
+            request,
+            words,
+            page,
+        } => Message::ConversationsLoaded {
+            request,
+            page,
+            result: mailbox
+                .search(&words, page)
                 .await
                 .map_err(|error| error.to_string()),
         },
