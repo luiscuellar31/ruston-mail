@@ -177,6 +177,9 @@ pub(crate) struct App {
     pub(crate) notice: Option<String>,
     /// The last list asked for; an answer to any other comes too late.
     list_request: u64,
+    /// Whether that list is the one shown, loading again, as after Ctrl+R
+    /// or a change, rather than another place's.
+    reloading: bool,
     /// The last conversation asked for, likewise.
     read_request: u64,
 }
@@ -380,6 +383,7 @@ impl App {
             reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
             list_request: 0,
+            reloading: false,
             read_request: 0,
         }
     }
@@ -513,10 +517,12 @@ impl App {
             }
             Message::ConversationsLoaded { result, .. } => match result {
                 Ok((total, conversations)) => {
-                    // A refresh keeps the selection on the same conversation.
+                    // A list loaded again keeps the selection on the same
+                    // conversation; another place's starts where it was put.
                     let selected = self
                         .conversations
                         .get(self.selected_conversation)
+                        .filter(|_| self.reloading)
                         .map(|conversation| conversation.id.clone());
                     self.total = total;
                     self.conversations = conversations;
@@ -1320,6 +1326,7 @@ impl App {
         // Marks belong to the rows they were made on.
         self.marked.clear();
         self.list_request += 1;
+        self.reloading = id == self.listed_id && name == self.listed;
         self.next_page = 0;
         self.loading_more = false;
         self.notice = Some(notice);
@@ -1970,6 +1977,23 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         ctrl(&mut app, KeyCode::Char('f'));
         assert_eq!(app.command_line.as_ref().unwrap().text, "search ");
+    }
+
+    #[test]
+    fn another_place_lists_from_its_top_whatever_was_selected_before() {
+        let mut app = loaded();
+        app.selected_place = 1;
+        let effects = press(&mut app, KeyCode::Enter);
+        let [Effect::Conversations { request, .. }] = effects[..] else {
+            panic!("{effects:?}");
+        };
+        // Work holds the conversation the Inbox's selection was on, second.
+        app.update(Message::ConversationsLoaded {
+            request,
+            page: 0,
+            result: Ok((2, vec![conversation("w"), conversation("a")])),
+        });
+        assert_eq!(app.selected_conversation, 0);
     }
 
     #[test]
