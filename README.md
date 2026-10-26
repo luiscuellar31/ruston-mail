@@ -7,7 +7,8 @@
 
 Ruston Mail reads, organizes, and sends your Proton Mail in a native
 three-pane window, without an embedded browser. It comes with `ruston-cli`, a
-command-line client for the same account. The project is in early development.
+command-line client for the same account, which also opens a full-screen
+terminal interface. The project is in early development.
 
 > Ruston Mail is not affiliated with or endorsed by Proton AG.
 
@@ -24,6 +25,8 @@ command-line client for the same account. The project is in early development.
   can be undone.
 - Private by default: the desktop keeps mail in memory, blocks remote images,
   and asks before opening a link.
+- Work from a terminal as well: `ruston-cli` opens a full-screen interface to
+  read, organize, search, write, and send mail with Proton Mail's keys.
 
 ## Limitations
 
@@ -93,6 +96,11 @@ ruston-cli messages list --folder inbox
 ruston-cli messages read <id>
 ruston-cli --help
 ```
+
+Run `ruston-cli` with no command, or `ruston-cli tui`, to open its terminal
+interface; `ruston-cli --demo tui` tries it on fictional mail. It writes plain
+text and keeps a message being written in memory, never as a draft. The
+[user guide](docs/USAGE.md#terminal-interface) lists its keys.
 
 Its optional local search index keeps decrypted message bodies on disk,
 unencrypted. The [user guide](docs/USAGE.md#command-line) covers that, putting

@@ -503,47 +503,54 @@ inside the app:
 From source, run `cargo run -p ruston-cli -- --help`. `ruston-cli --help` lists
 every command, and `ruston-cli <command> --help` its options.
 
+### Terminal interface
+
 `ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
-terminal interface with folders, conversations and a reader. It is being built
-for 0.9.0, and its keys are Proton Mail's wherever Proton has one. It lists
-the folders and labels with how many of their conversations are unread, a
-folder's conversations, newest first, each marked unread (•), starred (★) or
-with attachments (+), and the conversation you open, with each message's
-headers, its signature's verdict and its body as `conversations read` shows
-it. The list holds 50 conversations at first and loads 50 more each time you
-move down past its last. `g` followed by a letter goes to a folder, as in
-Proton: `i` the Inbox, `a` Archive, `e` Sent, `*` Starred, `d` Drafts, `t`
-Trash, `s` Spam and `m` All mail. A quoted passage of three lines or more,
-such as the message a reply answers, folds into one line unless the whole
-message is quoted; `z` shows or hides them. Links show as text with the
-address they open; `b` lists those of the open conversation, and one opens in
-your browser only once you answer `y` to the address it shows. Each message
-lists its attachments under its headers, and `v` lists those of the open
-conversation: Enter saves one, checking its signature as
+terminal interface with folders, conversations and a reader, whose keys are
+Proton Mail's wherever Proton has one; `?` lists them. With no session saved,
+it signs in first, as `ruston-cli login` does, and `--demo` opens the
+fictional mailbox, which keeps the changes you make until the interface
+closes. Away from a terminal, as in a script, `ruston-cli` with no command
+still prints the help and ends with status 2.
+
+It lists the folders and labels with how many of their conversations are
+unread, a folder's conversations, newest first, each marked unread (•),
+starred (★) or with attachments (+), and the conversation you open, with each
+message's headers, its signature's verdict and its body as
+`conversations read` shows it. The list holds 50 conversations at first and
+loads 50 more each time you move down past its last. `g` followed by a letter
+goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
+Starred, `d` Drafts, `t` Trash, `s` Spam and `m` All mail. A quoted passage of
+three lines or more, such as the message a reply answers, folds into one line
+unless the whole message is quoted; `z` shows or hides them. Links show as
+text with the address they open; `b` lists those of the open conversation, and
+one opens in your browser only once you answer `y` to the address it shows.
+Each message lists its attachments under its headers, and `v` lists those of
+the open conversation: Enter saves one, checking its signature as
 `ruston-cli attachments download` does, into your Downloads folder, or the
 current folder when there is none, never over a file already there. Opening an
 unread conversation marks it read once it shows, as the desktop does, unless
-you start it with `ruston-cli tui --keep-unread`. `*` stars or unstars the
-conversation selected in the list, or the one the reader shows, `u` marks it
-unread and `r`, in the list, read, `a` archives it, `s` moves it to Spam, `i`
-to the Inbox, and `t` or Delete to Trash; then the list and the counts load
-again, and a conversation the reader shows that left the folder listed is
-put away. `l` starts `:label`, which puts one of your labels on it, and `m`
-starts `:move`. Space or `x` marks the selected conversation and moves down,
-and Ctrl+A marks them all: with some marked, an action from the list acts on
-all of them, and Esc takes the marks away. In Trash or Spam, Ctrl+Backspace or
-`:delete` deletes the conversation forever, and `:empty` everything in the
-folder, only once you answer `y` to the question that names it; any other key
-keeps the mail. The demo keeps such changes until the interface closes. `:` or
-Ctrl+K opens a command line at the foot; Tab completes a command or a name, Up
-and Down bring back the lines run before, Enter runs it and Esc closes it. `/`
-or Ctrl+F starts one at `:search`, which looks for words in all of your mail
-and lists what it finds; Esc in that list goes back to the folder listed
-before. `:local` looks instead in the local index that `ruston-cli index`
-builds, without a connection; opening what it finds still needs one. With no
-session saved, it signs in first, as `ruston-cli login` does; `--demo` opens
-the fictional mailbox. Away from a terminal, as in a script, `ruston-cli` with
-no command still prints the help and ends with status 2.
+you start it with `ruston-cli tui --keep-unread`.
+
+`*` stars or unstars the conversation selected in the list, or the one the
+reader shows, `u` marks it unread and `r`, in the list, read, `a` archives it,
+`s` moves it to Spam, `i` to the Inbox, and `t` or Delete to Trash; then the
+list and the counts load again, and a conversation the reader shows that left
+the folder listed is put away. `l` starts `:label`, which puts one of your
+labels on it, and `m` starts `:move`. Space or `x` marks the selected
+conversation and moves down, and Ctrl+A marks them all: with some marked, an
+action from the list acts on all of them, and Esc takes the marks away. In
+Trash or Spam, Ctrl+Backspace or `:delete` deletes the conversation forever,
+and `:empty` everything in the folder, only once you answer `y` to the
+question that names it; any other key keeps the mail.
+
+`:` or Ctrl+K opens a command line at the foot; Tab completes a command or a
+name, Up and Down bring back the lines run before, Enter runs it and Esc
+closes it. `/` or Ctrl+F starts one at `:search`, which looks for words in all
+of your mail and lists what it finds; Esc in that list goes back to the folder
+listed before. `:local` looks instead in the local index that
+`ruston-cli index` builds, without a connection; opening what it finds still
+needs one.
 
 `n` or Ctrl+N, as in Proton Mail, or `:compose` writes a new message, which
 takes the whole screen. In the reader, `r` replies to the conversation's last
@@ -572,8 +579,8 @@ taken it without confirming so, the message stays open and says to check Sent
 before sending it again. Esc or Ctrl+C closes it, first asking when something
 is written. On Linux and macOS, what you paste comes whole: its lines stay
 lines in the text, and in To, Cc, Bcc or Subject they are joined, addresses
-by commas. A message being written is kept only in memory, never on disk;
-the demo puts what it sends in its Sent.
+by commas. A message being written is kept only in memory, never on disk,
+and goes as plain text; the demo puts what it sends in its Sent.
 
 | Key | Action |
 | --- | --- |

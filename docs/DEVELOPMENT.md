@@ -48,6 +48,13 @@ The CLI has its own fictional demo data:
 cargo run -p ruston-cli -- --demo messages list
 ```
 
+The terminal interface runs on it too, and keeps the changes it makes, the
+messages it sends included, until it closes:
+
+```sh
+cargo run -p ruston-cli -- --demo tui
+```
+
 `RUSTON_DEMO` turns the CLI demo on as well, so every demo command first says
 on standard error that nothing reaches Proton, and its JSON says `"demo": true`,
 so a script cannot take fictional mail for real. Text output stays as it is.
