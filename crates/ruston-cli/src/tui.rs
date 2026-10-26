@@ -87,7 +87,15 @@ async fn run_loop(
         terminal.draw(|frame| view::draw(frame, app, theme))?;
         let message = tokio::select! {
             event = events.next() => match event {
-                Some(event) => Message::from_event(&event?),
+                Some(event) => {
+                    let event = event?;
+                    #[cfg(unix)]
+                    if suspends(&event) {
+                        suspend(terminal)?;
+                        continue;
+                    }
+                    Message::from_event(&event)
+                }
                 None => break,
             },
             Some(answer) = answers.recv() => Some(answer),
@@ -98,6 +106,34 @@ async fn run_loop(
             }
         }
     }
+    Ok(())
+}
+
+/// Whether `event` is Ctrl+Z, which suspends the interface where the shell
+/// has job control, as it suspends any program there. In raw mode the
+/// terminal sends it as a key instead of stopping the process.
+#[cfg(unix)]
+fn suspends(event: &crossterm::event::Event) -> bool {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+    matches!(event, Event::Key(key) if key.kind != KeyEventKind::Release
+        && key.code == KeyCode::Char('z')
+        && key.modifiers.contains(KeyModifiers::CONTROL))
+}
+
+/// Puts the terminal back as the shell had it and stops the process, as
+/// Ctrl+Z does to any program. Once the shell resumes it, it takes the
+/// terminal again through a new `Terminal`, which draws everything anew:
+/// clearing the old one would ask the terminal where its cursor is, an
+/// answer the event stream's reader can hold up until the next key.
+#[cfg(unix)]
+fn suspend(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+    use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen};
+    terminal.show_cursor()?;
+    ratatui::try_restore()?;
+    signal_hook::low_level::raise(signal_hook::consts::SIGTSTP)?;
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(io::stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
+    *terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
     Ok(())
 }
 
@@ -192,6 +228,17 @@ mod tests {
         }
         seen.sort();
         assert_eq!(seen, ["conversation 2", "places"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ctrl_z_suspends_the_interface_and_asks_nothing_of_it() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let ctrl_z = Event::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert!(suspends(&ctrl_z));
+        assert!(Message::from_event(&ctrl_z).is_none());
+        let z = Event::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert!(!suspends(&z));
     }
 
     #[test]

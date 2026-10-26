@@ -519,6 +519,7 @@ and ends with status 2.
 | `?` | Show or hide the keys |
 | Esc | Close the keys |
 | `q`, Ctrl+C | Quit |
+| Ctrl+Z | Suspend to the shell, on Linux and macOS |
 
 The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with

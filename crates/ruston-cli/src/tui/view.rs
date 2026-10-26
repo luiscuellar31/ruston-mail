@@ -39,6 +39,13 @@ const KEYS: [(&str, &str); 10] = [
     ("q, Ctrl+C", "quit"),
 ];
 
+/// Ctrl+Z, where the shell has job control to suspend the interface with.
+const SUSPEND_KEYS: &[(&str, &str)] = if cfg!(unix) {
+    &[("Ctrl+Z", "suspend to the shell")]
+} else {
+    &[]
+};
+
 /// The terminal's own colors with one accent, or none at all when
 /// `NO_COLOR` is set, as <https://no-color.org> asks.
 pub(crate) struct Theme {
@@ -269,6 +276,7 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
 fn draw_keys(frame: &mut Frame, theme: &Theme) {
     let lines: Vec<Line> = KEYS
         .iter()
+        .chain(SUSPEND_KEYS)
         .map(|(keys, action)| {
             Line::from(vec![
                 Span::styled(format!(" {keys:<18}"), theme.accent),
@@ -534,7 +542,7 @@ mod tests {
         let mut app = App::new("demo".into());
         app.help = true;
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
-        for (keys, action) in KEYS {
+        for (keys, action) in KEYS.iter().chain(SUSPEND_KEYS) {
             assert!(screen.contains(keys), "{keys} missing:\n{screen}");
             assert!(screen.contains(action), "{action} missing:\n{screen}");
         }

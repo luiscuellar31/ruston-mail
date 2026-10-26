@@ -698,8 +698,9 @@ instead of an unknown outcome.
   whose listing and reading `demo.rs` shares with its own `conversations list`
   and `conversations read`. It owns
   the terminal: raw mode and the alternate screen, put back however the
-  interface ends, a panic included, and an async loop over crossterm's event
-  stream and the answers of the tasks it runs. It starts no logging, which
+  interface ends, a panic included, or while Ctrl+Z suspends it where the
+  shell has job control, and an async loop over crossterm's event stream and
+  the answers of the tasks it runs. It starts no logging, which
   would draw over it. [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs)
   holds the state and what each key or answer does, without a terminal; what
   must load comes back from `update` as an effect, which `tui.rs` runs in a
