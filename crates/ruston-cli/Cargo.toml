@@ -31,6 +31,10 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 futures = { workspace = true }
 directories = { workspace = true }
+# The terminal interface's editor wraps text and moves through it as a
+# terminal shows it: in columns and whole characters. Ratatui uses both.
+unicode-segmentation = "1"
+unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 # Ctrl+Z in the terminal interface stops the process, once the terminal is

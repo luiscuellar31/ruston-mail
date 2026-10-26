@@ -146,7 +146,7 @@ struct ControlFilter<'a> {
 
 /// Terminal controls and the invisible marks that reorder or hide text, such
 /// as direction overrides; layout controls stay.
-fn is_filtered(c: char) -> bool {
+pub(crate) fn is_filtered(c: char) -> bool {
     (c.is_control() && !matches!(c, '\n' | '\t')) || is_invisible_mark(c)
 }
 

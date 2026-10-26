@@ -761,6 +761,23 @@ instead of an unknown outcome.
   refuses them anywhere else; each first asks a question over the panes,
   naming what it deletes, which takes every key until one answers it: `y`
   alone says yes.
+  [`tui/compose.rs`](../crates/ruston-cli/src/tui/compose.rs) holds a message
+  being written, in memory only, and
+  [`tui/editor.rs`](../crates/ruston-cli/src/tui/editor.rs) the text of each
+  of its fields: lines, a cursor kept between grapheme clusters with
+  `unicode-segmentation`, and the rows the lines wrap to in the columns
+  `unicode-width` gives, which the view draws and the cursor moves through,
+  so both agree. While a message is open it takes the whole screen and every
+  key. Sending reads the recipient fields with core's `mail::recipients`,
+  taking ASCII domains only, then asks a question that
+  `Mailbox::protection` fills in with core's `recipient_protection`, four
+  lookups at a time; the lookup is a read, numbered so an answer for an
+  earlier question is dropped, and a newer one aborts it. Only `y` hands the
+  message to `Mailbox::send`, which sends it as plain text from the primary
+  address through core's `send`: a write, never aborted. Core's
+  `SendUnconfirmed` keeps the message open, saying to check Sent before
+  sending it again. The demo keeps what it sends, with its messages, in its
+  `DemoSession`, so Sent lists it and the reader opens it.
   [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) is the command
   line `:` opens: its text, the lines run before, Tab's completion and what a
   line asks for; while it is open the state gets each key as typed, and runs
@@ -1040,7 +1057,7 @@ instead of an unknown outcome.
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
-| CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs), [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs), [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) | [`mailbox.rs`](../crates/ruston-cli/src/mailbox.rs), [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs), [`demo.rs`](../crates/ruston-cli/src/demo.rs) |
+| CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs), [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs), [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs), [`tui/compose.rs`](../crates/ruston-cli/src/tui/compose.rs), [`tui/editor.rs`](../crates/ruston-cli/src/tui/editor.rs) | [`mailbox.rs`](../crates/ruston-cli/src/mailbox.rs), [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs), [`demo.rs`](../crates/ruston-cli/src/demo.rs) |
 | CLI syntax, behavior, or output | [`crates/ruston-cli/src/cli.rs`](../crates/ruston-cli/src/cli.rs), [`commands/`](../crates/ruston-cli/src/commands/) | [`render.rs`](../crates/ruston-cli/src/render.rs), corresponding core `mail/` operation |
 | Proton request or response | [`crates/ruston-core/src/api/`](../crates/ruston-core/src/api/) | [`transport/`](../crates/ruston-core/src/transport/), [`model/`](../crates/ruston-core/src/model/), [wire tests](../crates/ruston-core/tests/api_wiremock.rs) |
 | Sessions and desktop preferences | Core [`session/`](../crates/ruston-core/src/session/) | Desktop [`settings.rs`](../src/settings.rs), [privacy guide](PRIVACY.md) |

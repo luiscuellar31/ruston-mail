@@ -544,6 +544,21 @@ session saved, it signs in first, as `ruston-cli login` does; `--demo` opens
 the fictional mailbox. Away from a terminal, as in a script, `ruston-cli` with
 no command still prints the help and ends with status 2.
 
+`n` or Ctrl+N, as in Proton Mail, or `:compose` writes a new message, which
+takes the whole screen. It goes from your primary address, which From shows.
+To, Cc and Bcc take addresses separated by commas or semicolons; a domain in
+another script is refused unless you type it in its `xn--` form, as the
+desktop does unless told otherwise. Tab and Shift+Tab move between the fields
+and the text under them, and Up and Down do too; Enter starts a new line in
+the text, and in a field moves to the next one. Ctrl+Enter sends it, as in
+Proton, or Ctrl+S, for terminals that send Ctrl+Enter as Enter, such as WSL in
+Windows Terminal. First a question names who gets it and how Proton will
+protect it for each of them, and only `y` sends it. When Proton may have
+taken it without confirming so, the message stays open and says to check Sent
+before sending it again. Esc or Ctrl+C closes it, first asking when something
+is written. A message being written is kept only in memory, never on disk;
+the demo puts what it sends in its Sent.
+
 | Key | Action |
 | --- | --- |
 | Tab, Shift+Tab | Next or previous pane |
@@ -563,6 +578,7 @@ no command still prints the help and ends with status 2.
 | `t`, Delete | Move it to Trash |
 | Ctrl+Backspace | Delete it forever, in Trash or Spam, once you answer `y` |
 | `l`, `m` | Label it, or move it to a folder |
+| `n`, Ctrl+N | Write a new message |
 | Space, `x` | Mark it, for an action on all marked |
 | Ctrl+A | Mark them all, or none |
 | `/`, Ctrl+F | Search all mail |
@@ -573,6 +589,14 @@ no command still prints the help and ends with status 2.
 | `q`, Ctrl+C | Quit |
 | Ctrl+Z | Suspend to the shell, on Linux and macOS |
 
+| While writing | Action |
+| --- | --- |
+| Tab, Shift+Tab | Next or previous field |
+| Up, Down | Move a row, or to the field above or below |
+| Enter | Start a new line in the text, or go to the next field |
+| Ctrl+Enter, Ctrl+S | Send it, once you answer `y` |
+| Esc, Ctrl+C | Close it, asking first when something is written |
+
 | Command | Action |
 | --- | --- |
 | `:folder NAME` | Open the folder or label with that name |
@@ -582,6 +606,7 @@ no command still prints the help and ends with status 2.
 | `:archive`, `:trash` | Archive it, or move it to Trash |
 | `:spam`, `:notspam` | Move it to Spam, or out of Spam to the Inbox |
 | `:label LABEL`, `:unlabel LABEL` | Put one of your labels on it, or take it off |
+| `:compose` | Write a new message |
 | `:delete` | Delete it forever, in Trash or Spam, once you answer `y` |
 | `:empty` | Delete everything in Trash or Spam forever, once you answer `y` |
 | `:search WORDS` | Search all mail for the words |

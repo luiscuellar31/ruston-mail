@@ -4,12 +4,15 @@
 //! how they look is the interface's business.
 
 use crate::demo::{self, DemoSession};
+use futures::StreamExt;
 use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{
-    Client, Conversation, ConversationMessage, Error, Label, LabelCount, Result, SearchOpts,
+    Client, Conversation, ConversationMessage, Error, Label, LabelCount, RecipientProtection,
+    Result, SearchOpts, SendOptions,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,6 +21,9 @@ pub(crate) const PAGE_SIZE: u32 = 50;
 
 /// How many messages a search of the local index finds at most.
 const LOCAL_LIMIT: u32 = 200;
+
+/// How many recipients' keys are looked up at once, as the desktop does.
+const PROTECTION_LOOKUPS: usize = 4;
 
 /// The system folders the desktop shows, in its order.
 const SYSTEM_FOLDERS: [(&str, &str); 7] = [
@@ -55,6 +61,41 @@ pub(crate) enum Change {
     Delete,
 }
 
+/// A message ready to leave, as plain text from the account's primary
+/// address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Outgoing {
+    pub(crate) to: Vec<String>,
+    pub(crate) cc: Vec<String>,
+    pub(crate) bcc: Vec<String>,
+    pub(crate) subject: String,
+    pub(crate) body: String,
+}
+
+impl Outgoing {
+    /// Everyone it goes to, each once whatever the case of their address,
+    /// To before Cc before Bcc.
+    pub(crate) fn recipients(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        self.to
+            .iter()
+            .chain(&self.cc)
+            .chain(&self.bcc)
+            .filter(|address| seen.insert(address.to_ascii_lowercase()))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Why a message did not go, or may not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SendFailure {
+    /// Proton may have taken it, but that could not be confirmed.
+    Unconfirmed,
+    /// It was not sent, for this reason.
+    Failed(String),
+}
+
 /// A place to list mail from: a system folder, or one of the account's own
 /// folders or labels.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,8 +126,17 @@ impl Mailbox {
     /// Whose mail it is, for the status bar.
     pub(crate) fn account(&self) -> String {
         match self {
-            Self::Proton(client) => client.primary_email().unwrap_or("(unknown)").to_owned(),
+            Self::Proton(_) => self.sender(),
             Self::Demo(_) => format!("{} (demo)", demo::DEMO_EMAIL),
+        }
+    }
+
+    /// The address a new message goes from: the account's primary one,
+    /// which core sends from when told no other.
+    pub(crate) fn sender(&self) -> String {
+        match self {
+            Self::Proton(client) => client.primary_email().unwrap_or("(unknown)").to_owned(),
+            Self::Demo(_) => demo::DEMO_EMAIL.to_owned(),
         }
     }
 
@@ -193,7 +243,65 @@ impl Mailbox {
     ) -> Result<(Conversation, Vec<ConversationMessage>)> {
         match self {
             Self::Proton(client) => client.read_conversation_each(id).await,
-            Self::Demo(_) => demo::conversation(id),
+            Self::Demo(session) => session.conversation(id),
+        }
+    }
+
+    /// How Proton would protect a message to each of `addresses`, in their
+    /// order: the key lookup sending makes, a few at a time. The demo
+    /// encrypts end to end for Proton's own domains alone.
+    pub(crate) async fn protection(
+        &self,
+        addresses: &[String],
+    ) -> Vec<(String, std::result::Result<RecipientProtection, String>)> {
+        match self {
+            Self::Proton(client) => {
+                // Built before the await, so the future is plainly `Send`.
+                let lookups: Vec<_> = addresses
+                    .iter()
+                    .map(|address| async move {
+                        let protection = client
+                            .recipient_protection(address)
+                            .await
+                            .map_err(|error| error.to_string());
+                        (address.clone(), protection)
+                    })
+                    .collect();
+                futures::stream::iter(lookups)
+                    .buffered(PROTECTION_LOOKUPS)
+                    .collect()
+                    .await
+            }
+            Self::Demo(_) => addresses
+                .iter()
+                .map(|address| (address.clone(), Ok(demo::protection(address))))
+                .collect(),
+        }
+    }
+
+    /// Sends `outgoing` as plain text from the account's primary address.
+    /// The demo keeps it in its Sent until the interface closes.
+    pub(crate) async fn send(&self, outgoing: &Outgoing) -> std::result::Result<(), SendFailure> {
+        match self {
+            Self::Proton(client) => {
+                let options = SendOptions {
+                    to: outgoing.to.clone(),
+                    cc: outgoing.cc.clone(),
+                    bcc: outgoing.bcc.clone(),
+                    subject: outgoing.subject.clone(),
+                    body: outgoing.body.clone(),
+                    ..SendOptions::default()
+                };
+                match client.send(&options).await {
+                    Ok(_) => Ok(()),
+                    Err(Error::SendUnconfirmed { .. }) => Err(SendFailure::Unconfirmed),
+                    Err(error) => Err(SendFailure::Failed(error.to_string())),
+                }
+            }
+            Self::Demo(session) => {
+                session.send(outgoing);
+                Ok(())
+            }
         }
     }
 
@@ -443,6 +551,38 @@ mod tests {
             .change(&[page[0].id.clone()], label_ids::INBOX, &Change::Read(true))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_demo_keeps_what_it_sends_in_sent_and_protects_proton_mail_alone() {
+        let mailbox = Mailbox::demo();
+        assert_eq!(mailbox.sender(), demo::DEMO_EMAIL);
+        let addresses = ["sam@proton.me".to_owned(), "alex@example.test".to_owned()];
+        assert_eq!(
+            mailbox.protection(&addresses).await,
+            [
+                (addresses[0].clone(), Ok(RecipientProtection::EndToEnd)),
+                (addresses[1].clone(), Ok(RecipientProtection::Unencrypted)),
+            ]
+        );
+        let outgoing = Outgoing {
+            to: vec![addresses[0].clone()],
+            cc: Vec::new(),
+            bcc: vec![addresses[1].clone()],
+            subject: "Plans".into(),
+            body: "See you there.".into(),
+        };
+        mailbox.send(&outgoing).await.unwrap();
+        // The newest, so the first in Sent.
+        let (_, sent) = mailbox.conversations(label_ids::SENT, 0).await.unwrap();
+        assert_eq!(sent[0].subject, "Plans");
+        let (_, messages) = mailbox.conversation(&sent[0].id).await.unwrap();
+        let [ConversationMessage::Opened(message)] = &messages[..] else {
+            panic!("{messages:?}");
+        };
+        assert_eq!(message.body, "See you there.");
+        assert_eq!(message.meta.sender.address, demo::DEMO_EMAIL);
+        assert_eq!(message.meta.bcc_list[0].address, addresses[1]);
     }
 
     #[tokio::test]

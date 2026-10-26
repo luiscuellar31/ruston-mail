@@ -12,10 +12,11 @@ use std::sync::Mutex;
 use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::mail::organize::folder_id_among;
 use ruston_core::model::ConversationLabel;
-use ruston_core::model::enums::{filter, label_ids, label_type};
+use ruston_core::model::enums::{filter, label_ids, label_type, message_flag};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
-    Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
+    Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, RecipientProtection,
+    Result, Verdict,
 };
 use serde_json::json;
 
@@ -24,7 +25,7 @@ use crate::cli::{
     FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd,
 };
 use crate::commands::contacts;
-use crate::mailbox::Change;
+use crate::mailbox::{Change, Outgoing};
 use crate::render;
 
 /// Said on standard error before every demo command, so a fictional send,
@@ -38,6 +39,7 @@ pub(crate) const DEMO_EMAIL: &str = "demo@example.com";
 const DEMO_NAME: &str = "Demo User";
 const DEMO_ALIAS: &str = "volunteers@example.org";
 
+#[derive(Clone)]
 struct DemoMessage {
     meta: MessageMetadata,
     body: String,
@@ -755,25 +757,126 @@ fn read_conversation(
     Ok((conversation, messages))
 }
 
-/// The demo's conversation `id` with its messages, as `conversations read`
-/// shows it, for the terminal interface.
-pub(crate) fn conversation(id: &str) -> Result<(Conversation, Vec<ConversationMessage>)> {
-    let (messages, conversations) = fixtures();
-    read_conversation(messages, conversations, id)
+/// How Proton would protect a message from the demo to `address`: end to
+/// end for Proton's own domains, as the desktop's demo has it, and without
+/// end-to-end encryption for any other.
+pub(crate) fn protection(address: &str) -> RecipientProtection {
+    let domain = address.rsplit('@').next().unwrap_or_default();
+    let proton = ["proton.me", "protonmail.com", "pm.me"]
+        .iter()
+        .any(|known| domain.eq_ignore_ascii_case(known));
+    if proton {
+        RecipientProtection::EndToEnd
+    } else {
+        RecipientProtection::Unencrypted
+    }
 }
 
-/// The demo's conversations as the terminal interface changes them: the
-/// fixtures at first, then each change it makes, for as long as it runs.
-/// Its counts come from them, so the two always agree.
+/// The demo's mail as the terminal interface changes it: the fixtures at
+/// first, then each change it makes and each message it sends, for as long
+/// as it runs. Its counts come from its conversations, so the two always
+/// agree.
 pub(crate) struct DemoSession {
     conversations: Mutex<Vec<Conversation>>,
+    messages: Mutex<Vec<DemoMessage>>,
 }
 
 impl DemoSession {
     pub(crate) fn new() -> Self {
+        let (messages, conversations) = fixtures();
         Self {
-            conversations: Mutex::new(fixtures().1),
+            conversations: Mutex::new(conversations),
+            messages: Mutex::new(messages),
         }
+    }
+
+    /// The conversation whose ID is or holds `id`, with its messages, as
+    /// `conversations read` shows it.
+    pub(crate) fn conversation(
+        &self,
+        id: &str,
+    ) -> Result<(Conversation, Vec<ConversationMessage>)> {
+        let messages = self
+            .messages
+            .lock()
+            .expect("demo mailbox lock poisoned")
+            .clone();
+        read_conversation(messages, self.snapshot(), id)
+    }
+
+    /// Keeps `outgoing` as a message the demo's user sent just now, in a
+    /// conversation of its own in Sent, as Proton would list it.
+    pub(crate) fn send(&self, outgoing: &Outgoing) {
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+            });
+        let people = |addresses: &[String]| -> Vec<Recipient> {
+            addresses.iter().map(Recipient::new).collect()
+        };
+        let sender = Recipient {
+            name: DEMO_NAME.to_string(),
+            address: DEMO_EMAIL.to_string(),
+            contact_id: None,
+            is_proton: Some(1),
+        };
+        let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
+        let number = messages.len() + 1;
+        let conversation_id = format!("conv-demo-sent-{number}");
+        let meta = MessageMetadata {
+            id: format!("msg-demo-sent-{number}"),
+            order: i64::try_from(number).unwrap_or(i64::MAX),
+            conversation_id: conversation_id.clone(),
+            subject: outgoing.subject.clone(),
+            unread: 0,
+            sender: sender.clone(),
+            to_list: people(&outgoing.to),
+            cc_list: people(&outgoing.cc),
+            bcc_list: people(&outgoing.bcc),
+            time,
+            size: outgoing.body.len() as u64,
+            address_id: "addr-demo-01".to_string(),
+            label_ids: vec![label_ids::SENT.to_string()],
+            external_id: None,
+            num_attachments: 0,
+            flags: message_flag::SENT,
+            expiration_time: None,
+        };
+        let recipients = meta
+            .to_list
+            .iter()
+            .chain(&meta.cc_list)
+            .chain(&meta.bcc_list)
+            .cloned()
+            .collect();
+        messages.push(DemoMessage {
+            meta,
+            body: outgoing.body.clone(),
+            mime_type: "text/plain".to_string(),
+            attachments: Vec::new(),
+        });
+        drop(messages);
+        self.conversations
+            .lock()
+            .expect("demo mailbox lock poisoned")
+            .push(Conversation {
+                id: conversation_id,
+                subject: outgoing.subject.clone(),
+                time,
+                num_messages: 1,
+                num_unread: 0,
+                num_attachments: 0,
+                senders: vec![sender],
+                recipients,
+                labels: vec![ConversationLabel {
+                    id: label_ids::SENT.to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(0),
+                    context_time: Some(time),
+                }],
+                expiration_time: None,
+            });
     }
 
     /// The conversations as they stand now.

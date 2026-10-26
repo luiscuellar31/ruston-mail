@@ -3,9 +3,10 @@
 //! asks for. Doing what it asks is the state's business, in `app`.
 
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 21] = [
+const COMMANDS: [&str; 22] = [
     "archive",
     "attachments",
+    "compose",
     "delete",
     "empty",
     "folder",
@@ -59,6 +60,8 @@ pub(crate) enum Command {
     Delete,
     /// Delete everything in Trash or Spam forever, once asked.
     Empty,
+    /// Write a new message.
+    Compose,
 }
 
 impl Command {
@@ -98,6 +101,7 @@ impl Command {
             "trash" => Self::Trash,
             "delete" => Self::Delete,
             "empty" => Self::Empty,
+            "compose" => Self::Compose,
             other => return Err(format!("Not a command: :{other}")),
         };
         let takes_words = matches!(
@@ -258,6 +262,7 @@ mod tests {
         );
         assert_eq!(Command::parse("notspam"), Ok(Some(Command::NotSpam)));
         assert_eq!(Command::parse("delete"), Ok(Some(Command::Delete)));
+        assert_eq!(Command::parse("compose"), Ok(Some(Command::Compose)));
         assert_eq!(
             Command::parse("empty trash"),
             Err(":empty takes nothing after it".into())

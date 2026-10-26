@@ -5,6 +5,7 @@
 //! `terminal::screen_line` first.
 
 use super::app::{App, GO_TO, LinkPick, Pane, Question};
+use super::compose::{Checked, Compose, Field};
 use super::reading::size_label;
 use crate::render;
 use crate::terminal::screen_line;
@@ -12,9 +13,9 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use ruston_core::Conversation;
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ruston_core::model::enums::label_ids;
+use ruston_core::{Conversation, RecipientProtection};
 
 /// Below this width the panes take turns on the screen, as the desktop's
 /// compact view does.
@@ -29,9 +30,12 @@ const SENDER_WIDTH: usize = 18;
 /// How many conversations a question names before it counts the rest.
 const NAMED: usize = 5;
 
+/// The width of a field's name, before what it holds.
+const LABEL_WIDTH: u16 = 9;
+
 /// Each key and what it does, as the list of keys shows them: Proton Mail's
 /// where it has one, and keys it leaves free for what only a terminal needs.
-const KEYS: [(&str, &str); 19] = [
+const KEYS: [(&str, &str); 20] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, Up, Down", "move, or scroll the reader"),
     ("Enter, Right, Left", "open it, or go back a pane"),
@@ -43,6 +47,7 @@ const KEYS: [(&str, &str); 19] = [
     ),
     ("z", "show or hide quoted text"),
     ("b, v", "list its links, or its attachments"),
+    ("n, Ctrl+N", "write a new message"),
     ("*, r, u", "star or unstar it, mark it read or unread"),
     ("a, s, i", "archive it, or move it to Spam or the Inbox"),
     ("t, Delete", "move it to Trash"),
@@ -88,6 +93,14 @@ impl Theme {
 }
 
 pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
+    // The message being written takes the whole screen.
+    if let Some(compose) = &app.compose {
+        draw_compose(frame, compose, theme, app.question.is_none());
+        if let Some(question) = &app.question {
+            draw_question(frame, question, theme);
+        }
+        return;
+    }
     let [main, status] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
     if main.width >= THREE_PANES_MIN_WIDTH {
@@ -118,11 +131,12 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     }
 }
 
-/// The question on screen, over the panes: what it would delete forever,
-/// naming the first few conversations by their subjects, and what a yes
-/// does.
+/// The question on screen, over everything else: what it would delete
+/// forever, naming the first few conversations by their subjects; whether
+/// to throw away the message being written; or whether to send it, to whom
+/// and how Proton would protect it. Each says what a yes does.
 fn draw_question(frame: &mut Frame, question: &Question, theme: &Theme) {
-    let (title, mut lines, yes) = match question {
+    let (title, lines) = match question {
         Question::Delete { subjects, name, .. } => {
             let (asks, yes) = match subjects.len() {
                 1 => (
@@ -141,21 +155,48 @@ fn draw_question(frame: &mut Frame, question: &Question, theme: &Theme) {
             if subjects.len() > NAMED {
                 lines.push(Line::raw(format!("…and {} more", subjects.len() - NAMED)));
             }
-            (" Delete forever ".to_owned(), lines, yes)
+            lines.extend(undone(yes));
+            (" Delete forever ".to_owned(), lines)
         }
-        Question::Empty { name, .. } => (
-            format!(" Empty {} ", screen_line(name)),
-            vec![Line::raw(screen_line(&format!(
+        Question::Empty { name, .. } => {
+            let mut lines = vec![Line::raw(screen_line(&format!(
                 "Delete everything in {name} forever?"
-            )))],
-            "y empties it; any other key keeps what it holds.",
-        ),
+            )))];
+            lines.extend(undone("y empties it; any other key keeps what it holds."));
+            (format!(" Empty {} ", screen_line(name)), lines)
+        }
+        Question::Discard => {
+            let mut lines = vec![Line::raw("Discard the message you are writing?")];
+            lines.extend(undone("y discards it; any other key goes back to it."));
+            (" Discard ".to_owned(), lines)
+        }
+        Question::Send {
+            outgoing, checks, ..
+        } => {
+            let mut lines = vec![Line::raw("Send this message?"), Line::default()];
+            for (field, people) in [
+                ("To", &outgoing.to),
+                ("Cc", &outgoing.cc),
+                ("Bcc", &outgoing.bcc),
+            ] {
+                if !people.is_empty() {
+                    let named = format!("{field}: {}", people.join(", "));
+                    lines.push(Line::raw(screen_line(&named)));
+                }
+            }
+            lines.push(Line::default());
+            lines.extend(
+                protection(checks)
+                    .iter()
+                    .map(|said| Line::raw(screen_line(said))),
+            );
+            lines.extend([
+                Line::default(),
+                Line::raw("y sends it; any other key goes back to it."),
+            ]);
+            (" Send ".to_owned(), lines)
+        }
     };
-    lines.extend([
-        Line::default(),
-        Line::raw("This cannot be undone."),
-        Line::raw(yes),
-    ]);
     let area = frame.area();
     let widest = lines.iter().map(Line::width).max().unwrap_or(0) + 2;
     let width = u16::try_from(widest)
@@ -167,6 +208,163 @@ fn draw_question(frame: &mut Frame, question: &Question, theme: &Theme) {
     let block = Block::bordered().title(title).border_style(theme.accent);
     frame.render_widget(Clear, area);
     frame.render_widget(question.block(block), area);
+}
+
+/// The end of a question about what cannot be undone, with what a yes does.
+fn undone(yes: &'static str) -> [Line<'static>; 3] {
+    [
+        Line::default(),
+        Line::raw("This cannot be undone."),
+        Line::raw(yes),
+    ]
+}
+
+/// What the question before sending says about how Proton would protect
+/// the message, as the desktop's editor says it: who would not get it
+/// end-to-end encrypted, and who could not be checked, as soon as either is
+/// known; until every recipient is, that it is checking; then that every
+/// one would.
+fn protection(checks: &[(String, Checked)]) -> Vec<String> {
+    let with = |wanted: Checked| -> Vec<&str> {
+        checks
+            .iter()
+            .filter(|(_, checked)| *checked == wanted)
+            .map(|(address, _)| address.as_str())
+            .collect()
+    };
+    let unencrypted = with(Checked::Known(RecipientProtection::Unencrypted));
+    let unknown = with(Checked::Unknown);
+    let mut said = Vec::new();
+    if !unencrypted.is_empty() {
+        said.push(format!(
+            "Proton will not end-to-end encrypt this message for: {}",
+            unencrypted.join(", ")
+        ));
+    }
+    if !unknown.is_empty() {
+        said.push(format!(
+            "Could not check how this message will be protected for: {}",
+            unknown.join(", ")
+        ));
+    }
+    if said.is_empty() {
+        let checking = checks
+            .iter()
+            .any(|(_, checked)| *checked == Checked::Checking);
+        said.push(if checking {
+            "Checking how this message will be protected…".to_owned()
+        } else {
+            "Proton will end-to-end encrypt this message for every recipient.".to_owned()
+        });
+    }
+    said
+}
+
+/// The message being written, over the whole screen: the address it goes
+/// from, its fields and its text, and at the foot what the keys do, or what
+/// is under way or went wrong. A field scrolls sideways to keep the cursor
+/// in sight, and the text, wrapped as the editor wraps it, scrolls down;
+/// the cursor stands where typing goes, unless a question covers it all.
+fn draw_compose(frame: &mut Frame, compose: &Compose, theme: &Theme, cursor: bool) {
+    let [main, foot] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+    let block = Block::bordered()
+        .title(" New message ")
+        .border_style(theme.accent);
+    let inner = block.inner(main);
+    frame.render_widget(block, main);
+    let [header, rule, body] = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
+    let rows: [Rect; 5] = Layout::vertical([Constraint::Length(1); 5]).areas(header);
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    draw_field(
+        frame,
+        rows[0],
+        Span::raw("From"),
+        Span::styled(screen_line(&compose.from), dim),
+        0,
+    );
+    let mut at = None;
+    for (field, row) in Field::HEADERS.into_iter().zip(&rows[1..]) {
+        let editor = compose.field(field);
+        let focused = compose.focus == field;
+        let name = if focused {
+            Span::styled(field.label(), theme.accent.add_modifier(Modifier::BOLD))
+        } else {
+            Span::raw(field.label())
+        };
+        let place = draw_field(frame, *row, name, Span::raw(editor.text()), editor.column());
+        if focused {
+            at = Some(place);
+        }
+    }
+    frame.render_widget(Block::new().borders(Borders::TOP).border_style(dim), rule);
+
+    let width = usize::from(body.width.max(1));
+    let height = usize::from(body.height);
+    compose.body_width.set(body.width.max(1));
+    compose.body_rows.set(body.height.max(1));
+    let wrapped = compose.body.rows(width);
+    let (row, column) = compose.body.cursor(&wrapped, width);
+    let mut top = compose.top.get();
+    if row < top {
+        top = row;
+    } else if height > 0 && row >= top + height {
+        top = row + 1 - height;
+    }
+    compose.top.set(top);
+    let lines: Vec<Line> = wrapped
+        .iter()
+        .skip(top)
+        .take(height)
+        .map(|row| Line::raw(compose.body.slice(row)))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), body);
+    if compose.focus == Field::Body && height > 0 {
+        let x = body.x + u16::try_from(column).unwrap_or(u16::MAX);
+        let y = body.y + u16::try_from(row - top).unwrap_or(u16::MAX);
+        at = Some((x, y));
+    }
+
+    let said = match compose.said() {
+        Some(said) => Line::raw(format!(" {}", screen_line(said))),
+        None => Line::from(vec![
+            Span::styled(" Ctrl+Enter", theme.accent),
+            Span::raw(" or "),
+            Span::styled("Ctrl+S", theme.accent),
+            Span::raw(" send  "),
+            Span::styled("Tab", theme.accent),
+            Span::raw(" next field  "),
+            Span::styled("Esc", theme.accent),
+            Span::raw(" close"),
+        ]),
+    };
+    frame.render_widget(Paragraph::new(said), foot);
+    if let (true, Some(at)) = (cursor, at) {
+        frame.set_cursor_position(at);
+    }
+}
+
+/// One field of the message on one row: its name, then what it holds,
+/// scrolled sideways so that `column`, the cursor's, shows. Returns where
+/// on screen that column is.
+fn draw_field(frame: &mut Frame, area: Rect, name: Span, text: Span, column: usize) -> (u16, u16) {
+    let [label, value] =
+        Layout::horizontal([Constraint::Length(LABEL_WIDTH), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(Paragraph::new(name), label);
+    let hidden = column.saturating_sub(usize::from(value.width.saturating_sub(1)));
+    frame.render_widget(
+        Paragraph::new(text).scroll((0, u16::try_from(hidden).unwrap_or(u16::MAX))),
+        value,
+    );
+    let x = value
+        .x
+        .saturating_add(u16::try_from(column - hidden).unwrap_or(u16::MAX));
+    (x, value.y)
 }
 
 /// The open conversation's attachments over the panes, with their sizes,
@@ -539,7 +737,7 @@ mod tests {
     use super::super::app::Message;
     use super::super::reading::Reading;
     use super::*;
-    use crate::mailbox::{Place, PlaceKind};
+    use crate::mailbox::{Outgoing, Place, PlaceKind};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::Backend;
@@ -818,6 +1016,110 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("y opens it"), "{screen}");
+    }
+
+    #[test]
+    fn a_message_being_written_takes_the_screen_with_its_fields_and_text() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.sender = "me@example.test".into();
+        app.update(Message::Compose);
+        let compose = app.compose.as_mut().unwrap();
+        for c in "alex@example.test".chars() {
+            compose.to.insert(c);
+        }
+        compose.focus = Field::Body;
+        for c in "A line long enough to wrap twice in a terminal forty columns wide.".chars() {
+            compose.body.insert(c);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(40, 14)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &app, &Theme::new(false)))
+            .unwrap();
+        let screen = text(terminal.backend().buffer());
+        for line in [
+            " New message ",
+            "From     me@example.test",
+            "To       alex@example.test",
+            "Subject",
+            // The text wraps to the 38 columns inside the border.
+            "A line long enough to wrap twice in a",
+            "terminal forty columns wide.",
+            "Ctrl+Enter or Ctrl+S send",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
+        assert!(!screen.contains("Folders"), "{screen}");
+        // The cursor stands after the last character, in the text's second
+        // row, under the five fields and the rule.
+        assert_eq!(
+            terminal.get_cursor_position().unwrap(),
+            ratatui::layout::Position::new(29, 8)
+        );
+        // What went wrong takes the place of the keys.
+        app.compose.as_mut().unwrap().notice = Some("Add someone to send this to.".into());
+        let screen = text(&drawn(40, 14, &app, &Theme::new(false)));
+        assert!(screen.contains("Add someone to send this to."), "{screen}");
+        // Even a terminal too small for it draws without panicking.
+        let _ = drawn(8, 3, &app, &Theme::new(false));
+    }
+
+    #[test]
+    fn sending_asks_naming_who_gets_it_and_how_proton_protects_it() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.update(Message::Compose);
+        let ask = |app: &mut App, checks: Vec<(String, Checked)>| {
+            app.question = Some(Question::Send {
+                request: 1,
+                outgoing: Outgoing {
+                    to: vec!["sam@proton.me".into()],
+                    cc: vec!["alex@example.test".into()],
+                    bcc: Vec::new(),
+                    subject: String::new(),
+                    body: String::new(),
+                },
+                checks,
+            });
+            text(&drawn(100, 30, app, &Theme::new(false)))
+        };
+        let sam = |checked| ("sam@proton.me".to_owned(), checked);
+        let alex = |checked| ("alex@example.test".to_owned(), checked);
+        let end_to_end = Checked::Known(RecipientProtection::EndToEnd);
+        let screen = ask(&mut app, vec![sam(end_to_end), alex(Checked::Checking)]);
+        for line in [
+            " Send ",
+            "Send this message?",
+            "To: sam@proton.me",
+            "Cc: alex@example.test",
+            "Checking how this message will be protected…",
+            "y sends it; any other key goes back to it.",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
+        let unencrypted = Checked::Known(RecipientProtection::Unencrypted);
+        let screen = ask(&mut app, vec![sam(Checked::Unknown), alex(unencrypted)]);
+        for line in [
+            "Proton will not end-to-end encrypt this message for: alex@example.test",
+            "Could not check how this message will be protected for: sam@proton.me",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
+        let pgp = Checked::Known(RecipientProtection::Pgp);
+        let screen = ask(&mut app, vec![sam(end_to_end), alex(pgp)]);
+        assert!(
+            screen.contains("Proton will end-to-end encrypt this message for every recipient."),
+            "{screen}"
+        );
+
+        app.question = Some(Question::Discard);
+        let screen = text(&drawn(100, 30, &app, &Theme::new(false)));
+        for line in [
+            " Discard ",
+            "Discard the message you are writing?",
+            "This cannot be undone.",
+            "y discards it; any other key goes back to it.",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
     }
 
     #[test]

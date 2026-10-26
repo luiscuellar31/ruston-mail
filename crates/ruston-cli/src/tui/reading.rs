@@ -366,7 +366,9 @@ mod tests {
 
     #[test]
     fn the_demo_shows_a_quote_to_fold_and_a_link_named_in_words() {
-        let (conversation, messages) = crate::demo::conversation("conv-demo-03").unwrap();
+        let (conversation, messages) = crate::demo::DemoSession::new()
+            .conversation("conv-demo-03")
+            .unwrap();
         let reading = Reading::new(&conversation, &messages);
         let text = reading.lines.join("\n");
         assert!(

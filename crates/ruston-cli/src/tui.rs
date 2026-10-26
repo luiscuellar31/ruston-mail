@@ -5,6 +5,8 @@
 
 mod app;
 mod command;
+mod compose;
+mod editor;
 mod reading;
 mod view;
 
@@ -47,6 +49,7 @@ pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     };
     let mut app = App::new(mailbox.account());
     app.marks_read = !args.keep_unread;
+    app.sender = mailbox.sender();
     let theme = view::Theme::from_env();
     let mut terminal = ratatui::try_init()?;
     report_panics_of(std::thread::current().id());
@@ -199,6 +202,7 @@ struct Tasks {
     places: Option<AbortHandle>,
     list: Option<AbortHandle>,
     conversation: Option<AbortHandle>,
+    protection: Option<AbortHandle>,
     /// The changes and links on their way, which quitting waits for.
     writes: Vec<JoinHandle<()>>,
 }
@@ -207,10 +211,10 @@ impl Tasks {
     /// Runs `effect` as [`spawn`] does. A read aborts the task still running
     /// one of its kind, whose answer would come too late or be overtaken;
     /// that is safe, and a token refresh that one of them starts finishes on
-    /// a task of its own. A change to a conversation, or emptying a folder,
-    /// changes the account, and opening a link starts a browser, so each
-    /// always runs to its end: stopped halfway, nobody would know whether it
-    /// happened.
+    /// a task of its own. A change to a conversation, emptying a folder or
+    /// sending a message changes the account, and opening a link starts a
+    /// browser, so each always runs to its end: stopped halfway, nobody
+    /// would know whether it happened.
     fn run(&mut self, effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) {
         let running = match effect {
             Effect::Places => &mut self.places,
@@ -218,9 +222,11 @@ impl Tasks {
                 &mut self.list
             }
             Effect::Conversation { .. } => &mut self.conversation,
+            Effect::Protection { .. } => &mut self.protection,
             Effect::MarkRead { .. }
             | Effect::Change { .. }
             | Effect::Empty { .. }
+            | Effect::Send(_)
             | Effect::OpenLink { .. }
             | Effect::SaveAttachment { .. } => {
                 self.writes.retain(|write| !write.is_finished());
@@ -332,6 +338,11 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
                 result: result.map_err(|error| error.to_string()),
             }
         }
+        Effect::Protection { request, addresses } => Message::Protected {
+            request,
+            checks: mailbox.protection(&addresses).await,
+        },
+        Effect::Send(outgoing) => Message::Sent(mailbox.send(&outgoing).await),
         Effect::Empty { place, name } => Message::Emptied {
             name,
             result: mailbox
@@ -441,6 +452,24 @@ mod tests {
         let started = std::time::Instant::now();
         stuck.finish(&mailbox, Duration::from_millis(100)).await;
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn quitting_waits_for_a_message_on_its_way() {
+        let (sender, mut answers) = mpsc::unbounded_channel();
+        let mut tasks = Tasks::default();
+        let mailbox = Mailbox::demo();
+        let outgoing = crate::mailbox::Outgoing {
+            to: vec!["sam@proton.me".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Plans".into(),
+            body: "See you there.".into(),
+        };
+        tasks.run(Effect::Send(outgoing), &mailbox, &sender);
+        assert!(tasks.busy());
+        tasks.finish(&mailbox, Duration::from_secs(5)).await;
+        assert!(matches!(answers.try_recv(), Ok(Message::Sent(Ok(())))));
     }
 
     #[tokio::test]

@@ -3,11 +3,12 @@
 //! must happen elsewhere, such as loading a page, comes back as an [`Effect`].
 
 use super::command::{Command, CommandLine};
+use super::compose::{Asked, Checked, Compose, Sending};
 use super::reading::Reading;
-use crate::mailbox::{Change, Place, PlaceKind, deletes_forever};
+use crate::mailbox::{Change, Outgoing, Place, PlaceKind, SendFailure, deletes_forever};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ruston_core::Conversation;
 use ruston_core::model::enums::label_ids;
+use ruston_core::{Conversation, RecipientProtection};
 use std::cell::Cell;
 
 /// The three panes, in the order Tab visits them.
@@ -92,6 +93,16 @@ pub(crate) enum Question {
     /// Whether to delete forever everything in the place with label ID
     /// `place`, named `name`.
     Empty { place: String, name: String },
+    /// Whether to throw away the message being written, which is kept
+    /// nowhere else.
+    Discard,
+    /// Whether to send `outgoing`, saying how Proton would protect it for
+    /// each recipient as the lookups numbered `request` answer.
+    Send {
+        request: u64,
+        outgoing: Outgoing,
+        checks: Vec<(String, Checked)>,
+    },
 }
 
 /// What the interface shows and where the keys go.
@@ -140,6 +151,13 @@ pub(crate) struct App {
     pub(crate) question: Option<Question>,
     /// Whether `g` was pressed, so the next key names a folder to go to.
     pub(crate) going: bool,
+    /// The message being written, which then takes the whole screen and
+    /// every key.
+    pub(crate) compose: Option<Compose>,
+    /// The address a new message goes from, for the editor to show.
+    pub(crate) sender: String,
+    /// The last send asked about; lookups for any other come too late.
+    send_request: u64,
     /// The command line, while `:` has it open at the foot.
     pub(crate) command_line: Option<CommandLine>,
     /// The lines run from it, oldest first, for Up and Down.
@@ -221,6 +239,10 @@ pub(crate) enum Message {
     Move,
     /// Asks whether to delete the conversation acted on forever.
     DeleteForever,
+    /// Opens a new message to write.
+    Compose,
+    /// A key typed while a message is being written.
+    Edit(KeyEvent),
     Refresh,
     ToggleHelp,
     /// Closes the list of keys, or else goes back a pane.
@@ -257,6 +279,14 @@ pub(crate) enum Message {
         name: String,
         result: Result<(), String>,
     },
+    /// How Proton would protect the message the send numbered `request`
+    /// asks about, for each of its recipients.
+    Protected {
+        request: u64,
+        checks: Vec<(String, Result<RecipientProtection, String>)>,
+    },
+    /// Whether the message went.
+    Sent(Result<(), SendFailure>),
     /// A task stopped on a bug, saying what it was.
     Failed(String),
 }
@@ -307,6 +337,12 @@ pub(crate) enum Effect {
         place: String,
         name: String,
     },
+    /// Looks up how Proton would protect a message to each of `addresses`.
+    Protection {
+        request: u64,
+        addresses: Vec<String>,
+    },
+    Send(Outgoing),
 }
 
 impl App {
@@ -333,6 +369,9 @@ impl App {
             picking_attachment: None,
             question: None,
             going: false,
+            compose: None,
+            sender: String::new(),
+            send_request: 0,
             command_line: None,
             history: Vec::new(),
             search: None,
@@ -435,6 +474,8 @@ impl App {
             Message::Label => self.command_line = Some(CommandLine::with("label ")),
             Message::Move => self.command_line = Some(CommandLine::with("move ")),
             Message::DeleteForever => self.ask_to_delete(),
+            Message::Compose => self.compose = Some(Compose::new(self.sender.clone())),
+            Message::Edit(key) => return self.edit(&key),
             Message::Refresh => return self.reload(),
             Message::PlacesLoaded(Ok(places)) => {
                 let selected = self
@@ -547,6 +588,8 @@ impl App {
                 name,
                 result: Err(error),
             } => self.notice = Some(format!("Cannot empty {name}: {error}")),
+            Message::Protected { request, checks } => self.protected(request, checks),
+            Message::Sent(result) => return self.sent(result),
             Message::Failed(error) => {
                 self.notice = Some(format!("Something went wrong: {error}"));
             }
@@ -567,6 +610,9 @@ impl App {
                     || self.picking_link.is_some_and(|pick| pick.confirming) =>
             {
                 (key.kind != KeyEventKind::Release).then(|| answer_of(key))
+            }
+            Event::Key(key) if self.compose.is_some() => {
+                (key.kind != KeyEventKind::Release).then_some(Message::Edit(*key))
             }
             Event::Key(key) if self.going => {
                 (key.kind != KeyEventKind::Release).then(|| Message::GoTo(going_to(key)))
@@ -701,6 +747,7 @@ impl App {
             },
             Command::Delete => self.ask_to_delete(),
             Command::Empty => self.ask_to_empty(),
+            Command::Compose => return self.update(Message::Compose),
         }
         Vec::new()
     }
@@ -880,27 +927,144 @@ impl App {
     }
 
     /// What a key does to the question on screen: `y` does what it asks,
-    /// and any other key puts it away with nothing deleted.
+    /// and any other key puts it away, nothing deleted, discarded or sent;
+    /// a message being written is back as it was.
     fn answer(&mut self, message: &Message) -> Vec<Effect> {
         let Some(question) = self.question.take() else {
             return Vec::new();
         };
-        if !matches!(message, Message::Yes) {
-            self.notice = Some("Nothing was deleted.".to_owned());
-            return Vec::new();
-        }
+        let yes = matches!(message, Message::Yes);
         match question {
-            Question::Delete { ids, place, .. } => {
+            Question::Delete { ids, place, .. } if yes => {
                 let change = Change::Delete;
                 let (doing, _) = wording(&change, ids.len());
                 self.notice = Some(doing);
                 vec![Effect::Change { ids, place, change }]
             }
-            Question::Empty { place, name } => {
+            Question::Empty { place, name } if yes => {
                 self.notice = Some(format!("Emptying {name}…"));
                 vec![Effect::Empty { place, name }]
             }
+            Question::Delete { .. } | Question::Empty { .. } => {
+                self.notice = Some("Nothing was deleted.".to_owned());
+                Vec::new()
+            }
+            Question::Discard if yes => {
+                self.compose = None;
+                Vec::new()
+            }
+            Question::Send { outgoing, .. } if yes => self.send(outgoing),
+            Question::Discard | Question::Send { .. } => Vec::new(),
         }
+    }
+
+    /// What a key does to the message being written: it types in it or
+    /// moves through it, or closes it, asking first when something is
+    /// written, or asks whether to send it.
+    fn edit(&mut self, key: &KeyEvent) -> Vec<Effect> {
+        let Some(compose) = self.compose.as_mut() else {
+            return Vec::new();
+        };
+        match compose.key(key) {
+            Asked::Nothing => {}
+            Asked::Close if compose.untouched() => self.compose = None,
+            Asked::Close => self.question = Some(Question::Discard),
+            Asked::Send => return self.ask_to_send(),
+        }
+        Vec::new()
+    }
+
+    /// Asks whether to send the message being written, once it can go,
+    /// looking up meanwhile how Proton would protect it for each of its
+    /// recipients; or says why it cannot go yet.
+    fn ask_to_send(&mut self) -> Vec<Effect> {
+        let Some(compose) = self.compose.as_mut() else {
+            return Vec::new();
+        };
+        match compose.ready() {
+            Err(why) => {
+                compose.notice = Some(why);
+                Vec::new()
+            }
+            Ok(outgoing) => {
+                self.send_request += 1;
+                let addresses = outgoing.recipients();
+                let checks = addresses
+                    .iter()
+                    .map(|address| (address.clone(), Checked::Checking))
+                    .collect();
+                self.question = Some(Question::Send {
+                    request: self.send_request,
+                    outgoing,
+                    checks,
+                });
+                vec![Effect::Protection {
+                    request: self.send_request,
+                    addresses,
+                }]
+            }
+        }
+    }
+
+    /// Shows how Proton would protect the message about to go for each
+    /// recipient looked up, while the question the lookups answer is open.
+    fn protected(
+        &mut self,
+        request: u64,
+        answers: Vec<(String, Result<RecipientProtection, String>)>,
+    ) {
+        let Some(Question::Send {
+            request: asked,
+            checks,
+            ..
+        }) = self.question.as_mut()
+        else {
+            return;
+        };
+        if *asked != request {
+            return;
+        }
+        for (address, answer) in answers {
+            if let Some((_, checked)) = checks.iter_mut().find(|(shown, _)| *shown == address) {
+                *checked = answer.map_or(Checked::Unknown, Checked::Known);
+            }
+        }
+    }
+
+    /// Hands `outgoing` over; the message being written waits for the
+    /// answer, unchangeable meanwhile.
+    fn send(&mut self, outgoing: Outgoing) -> Vec<Effect> {
+        if let Some(compose) = self.compose.as_mut() {
+            compose.sending = Sending::InFlight;
+            compose.notice = None;
+        }
+        vec![Effect::Send(outgoing)]
+    }
+
+    /// Once the message went, the editor closes, and a list that could hold
+    /// it loads again; when it did not, or may not have, the message stays,
+    /// saying so.
+    fn sent(&mut self, result: Result<(), SendFailure>) -> Vec<Effect> {
+        let failure = match result {
+            Ok(()) => {
+                self.compose = None;
+                let lists_it = self.search.is_none()
+                    && [label_ids::SENT, label_ids::ALL_MAIL].contains(&self.listed_id.as_str());
+                let effects = if lists_it { self.reload() } else { Vec::new() };
+                self.notice = Some("Sent.".to_owned());
+                return effects;
+            }
+            Err(failure) => failure,
+        };
+        if let Some(compose) = self.compose.as_mut() {
+            (compose.sending, compose.notice) = match failure {
+                SendFailure::Unconfirmed => (Sending::Unconfirmed, None),
+                SendFailure::Failed(error) => {
+                    (Sending::Writing, Some(format!("Not sent: {error}")))
+                }
+            };
+        }
+        Vec::new()
     }
 
     /// Lists the open conversation's links, to open one, or says why not.
@@ -1326,6 +1490,8 @@ fn is_key(message: &Message) -> bool {
             | Message::AttachmentSaved { .. }
             | Message::Changed { .. }
             | Message::Emptied { .. }
+            | Message::Protected { .. }
+            | Message::Sent(_)
             | Message::Failed(_)
     )
 }
@@ -1355,6 +1521,7 @@ impl Message {
                 KeyCode::Char('f') => Some(Self::Search),
                 KeyCode::Char('k') => Some(Self::Command),
                 KeyCode::Char('a') => Some(Self::MarkAll),
+                KeyCode::Char('n') => Some(Self::Compose),
                 KeyCode::Up => Some(Self::Top),
                 KeyCode::Down => Some(Self::Bottom),
                 // Many terminals send Ctrl+Backspace as Ctrl+H.
@@ -1378,6 +1545,7 @@ impl Message {
             KeyCode::End => Some(Self::Bottom),
             KeyCode::Enter => Some(Self::Open),
             KeyCode::Char('g') => Some(Self::Go),
+            KeyCode::Char('n') => Some(Self::Compose),
             KeyCode::Char('z') => Some(Self::ToggleQuotes),
             KeyCode::Char('b') => Some(Self::ShowLinks),
             KeyCode::Char('v') => Some(Self::ShowAttachments),
@@ -2537,6 +2705,166 @@ mod tests {
             app.notice.as_deref(),
             Some("Only mail in Trash or Spam can be deleted forever.")
         );
+    }
+
+    /// Types `text` where the keys go.
+    fn write(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn n_opens_a_new_message_that_takes_every_key_until_it_closes() {
+        let mut app = loaded();
+        app.sender = "me@example.test".into();
+        assert!(press(&mut app, KeyCode::Char('n')).is_empty());
+        assert_eq!(app.compose.as_ref().unwrap().from, "me@example.test");
+        // q types instead of quitting.
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.quit);
+        assert_eq!(app.compose.as_ref().unwrap().to.text(), "q");
+        // Written, Esc asks first, and any other key goes back to it.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.question, Some(Question::Discard));
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.question, None);
+        assert_eq!(app.compose.as_ref().unwrap().to.text(), "q");
+        // Ctrl+C asks as Esc does, and y discards it.
+        ctrl(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.question, Some(Question::Discard));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(app.compose.is_none());
+        assert!(!app.quit);
+        // Untouched, it closes at once; Ctrl+N and :compose open one too.
+        ctrl(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.compose.is_none() && app.question.is_none());
+        command(&mut app, "compose");
+        assert!(app.compose.is_some());
+    }
+
+    #[test]
+    fn a_message_goes_only_after_a_yes_to_who_gets_it_and_how() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('n'));
+        // With nobody to send it to, it says so and asks nothing.
+        assert!(ctrl(&mut app, KeyCode::Char('s')).is_empty());
+        assert_eq!(app.question, None);
+        let said = |app: &App| app.compose.as_ref().unwrap().said().map(str::to_owned);
+        assert_eq!(said(&app).as_deref(), Some("Add someone to send this to."));
+        write(&mut app, "sam@proton.me, alex@example.test");
+        let addresses = vec!["sam@proton.me".to_owned(), "alex@example.test".to_owned()];
+        assert_eq!(
+            ctrl(&mut app, KeyCode::Enter),
+            [Effect::Protection {
+                request: 1,
+                addresses: addresses.clone(),
+            }]
+        );
+        let Some(Question::Send {
+            outgoing, checks, ..
+        }) = &app.question
+        else {
+            panic!("{:?}", app.question);
+        };
+        assert_eq!(outgoing.to, addresses);
+        assert!(
+            checks
+                .iter()
+                .all(|(_, checked)| *checked == Checked::Checking)
+        );
+        // An answer to a question asked before comes too late.
+        app.update(Message::Protected {
+            request: 0,
+            checks: vec![("sam@proton.me".into(), Ok(RecipientProtection::Unencrypted))],
+        });
+        app.update(Message::Protected {
+            request: 1,
+            checks: vec![
+                ("sam@proton.me".into(), Ok(RecipientProtection::EndToEnd)),
+                ("alex@example.test".into(), Err("offline".into())),
+            ],
+        });
+        let Some(Question::Send { checks, .. }) = &app.question else {
+            panic!("{:?}", app.question);
+        };
+        assert_eq!(
+            checks,
+            &[
+                (
+                    "sam@proton.me".to_owned(),
+                    Checked::Known(RecipientProtection::EndToEnd)
+                ),
+                ("alex@example.test".to_owned(), Checked::Unknown),
+            ]
+        );
+        // Any key but y goes back to the message; Ctrl+J asks again.
+        press(&mut app, KeyCode::Char('n'));
+        assert!(app.question.is_none() && app.compose.is_some());
+        let effects = ctrl(&mut app, KeyCode::Char('j'));
+        assert!(
+            matches!(&effects[..], [Effect::Protection { request: 2, .. }]),
+            "{effects:?}"
+        );
+        let effects = press(&mut app, KeyCode::Char('y'));
+        assert!(
+            matches!(&effects[..], [Effect::Send(outgoing)] if outgoing.to == addresses),
+            "{effects:?}"
+        );
+        assert_eq!(said(&app).as_deref(), Some("Sending…"));
+        // On its way, nothing changes it or closes it.
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.question, None);
+        assert_eq!(
+            app.compose.as_ref().unwrap().to.text(),
+            "sam@proton.me, alex@example.test"
+        );
+
+        // Not sent: it stays, saying why.
+        app.update(Message::Sent(Err(SendFailure::Failed("offline".into()))));
+        assert_eq!(said(&app).as_deref(), Some("Not sent: offline"));
+        // Perhaps sent: it says to check Sent, until the message goes.
+        ctrl(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('y'));
+        app.update(Message::Sent(Err(SendFailure::Unconfirmed)));
+        let unconfirmed = Some(super::super::compose::UNCONFIRMED);
+        assert_eq!(said(&app).as_deref(), unconfirmed);
+        write(&mut app, ",");
+        ctrl(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(said(&app).as_deref(), Some("Sending…"));
+        // Sent: the editor closes and says so. The Inbox does not list it,
+        // so nothing loads again.
+        assert!(app.update(Message::Sent(Ok(()))).is_empty());
+        assert!(app.compose.is_none());
+        assert_eq!(app.notice.as_deref(), Some("Sent."));
+    }
+
+    #[test]
+    fn sent_lists_a_message_once_it_goes() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('g'));
+        let effects = press(&mut app, KeyCode::Char('e'));
+        let [Effect::Conversations { request, .. }] = effects[..] else {
+            panic!("{effects:?}");
+        };
+        app.update(Message::ConversationsLoaded {
+            request,
+            page: 0,
+            result: Ok((0, Vec::new())),
+        });
+        press(&mut app, KeyCode::Char('n'));
+        write(&mut app, "sam@proton.me");
+        ctrl(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('y'));
+        let effects = app.update(Message::Sent(Ok(())));
+        assert!(
+            matches!(&effects[..], [Effect::Places, Effect::Conversations { place, .. }] if place == label_ids::SENT),
+            "{effects:?}"
+        );
+        assert_eq!(app.notice.as_deref(), Some("Sent."));
     }
 
     #[test]
