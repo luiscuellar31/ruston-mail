@@ -4,6 +4,7 @@
 //! event loop, and runs the work `app` hands out.
 
 mod app;
+mod reading;
 mod view;
 
 use crate::cli::{Ctx, LoginArgs};
@@ -14,6 +15,7 @@ use app::{App, Effect, Message};
 use clap::{Args, FromArgMatches};
 use crossterm::event::EventStream;
 use futures::StreamExt;
+use reading::Reading;
 use ruston_core::{Client, Error, Result};
 use std::io::{self, IsTerminal};
 use std::sync::Arc;
@@ -103,14 +105,24 @@ fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) 
     let (mailbox, answers) = (mailbox.clone(), answers.clone());
     tokio::spawn(async move {
         let answer = match effect {
-            Effect::LoadPlaces => {
+            Effect::Places => {
                 Message::PlacesLoaded(mailbox.places().await.map_err(|error| error.to_string()))
             }
-            Effect::LoadConversations { request, place } => Message::ConversationsLoaded {
+            Effect::Conversations { request, place } => Message::ConversationsLoaded {
                 request,
                 result: mailbox
                     .conversations(&place, 0)
                     .await
+                    .map_err(|error| error.to_string()),
+            },
+            // The reading is made here, off the loop: a large HTML body
+            // takes a while to turn into text.
+            Effect::Conversation { request, id } => Message::ConversationLoaded {
+                request,
+                result: mailbox
+                    .conversation(&id)
+                    .await
+                    .map(|(conversation, messages)| Reading::new(&conversation, &messages))
                     .map_err(|error| error.to_string()),
             },
         };

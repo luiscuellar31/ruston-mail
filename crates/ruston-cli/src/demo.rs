@@ -682,6 +682,32 @@ fn list_page(
     (total, page_of(matching, page, page_size))
 }
 
+/// The conversation whose ID is or holds `id`, with its messages, all of
+/// which open in the demo.
+fn read_conversation(
+    messages: Vec<DemoMessage>,
+    conversations: Vec<Conversation>,
+    id: &str,
+) -> Result<(Conversation, Vec<ConversationMessage>)> {
+    let conversation = conversations
+        .into_iter()
+        .find(|c| c.id == id || c.id.contains(id))
+        .ok_or_else(|| Error::Other(format!("demo conversation not found for id '{id}'")))?;
+    let messages = messages
+        .into_iter()
+        .filter(|m| m.meta.conversation_id == conversation.id)
+        .map(|m| ConversationMessage::Opened(m.to_full()))
+        .collect();
+    Ok((conversation, messages))
+}
+
+/// The demo's conversation `id` with its messages, as `conversations read`
+/// shows it, for the terminal interface.
+pub(crate) fn conversation(id: &str) -> Result<(Conversation, Vec<ConversationMessage>)> {
+    let (messages, conversations) = fixtures();
+    read_conversation(messages, conversations, id)
+}
+
 /// Page `page` of the demo's conversations in the folder or label `label`,
 /// as `conversations list` would list them, for the terminal interface.
 pub(crate) fn conversations(label: &str, page: u32, page_size: u32) -> (u32, Vec<Conversation>) {
@@ -996,20 +1022,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             ConversationsCmd::Read { id } => {
-                let conv = fixtures_convs
-                    .into_iter()
-                    .find(|c| c.id == id || c.id.contains(&id))
-                    .ok_or_else(|| {
-                        Error::Other(format!("demo conversation not found for id '{id}'"))
-                    })?;
-
-                // Every demo message opens.
-                let conv_messages: Vec<_> = fixtures_messages
-                    .into_iter()
-                    .filter(|m| m.meta.conversation_id == conv.id)
-                    .map(|m| ConversationMessage::Opened(m.to_full()))
-                    .collect();
-
+                let (conv, conv_messages) =
+                    read_conversation(fixtures_messages, fixtures_convs, &id)?;
                 render::conversation_read(ctx.json, &conv, &conv_messages);
                 Ok(())
             }

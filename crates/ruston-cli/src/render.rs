@@ -131,7 +131,7 @@ pub fn json_out<T: serde::Serialize + ?Sized>(value: &T) {
     }
 }
 
-fn fmt_addr(r: &Recipient) -> String {
+pub(crate) fn fmt_addr(r: &Recipient) -> String {
     if r.name.is_empty() || r.name == r.address {
         r.address.clone()
     } else {
@@ -139,7 +139,7 @@ fn fmt_addr(r: &Recipient) -> String {
     }
 }
 
-fn fmt_addrs(list: &[Recipient]) -> String {
+pub(crate) fn fmt_addrs(list: &[Recipient]) -> String {
     if list.is_empty() {
         "-".to_string()
     } else {
@@ -217,7 +217,7 @@ pub fn conversations_list(json: bool, total: u32, convs: &[Conversation]) {
 }
 
 /// A verdict's name, as `--json` writes it.
-fn verdict_name(verdict: Verdict) -> &'static str {
+pub(crate) fn verdict_name(verdict: Verdict) -> &'static str {
     match verdict {
         Verdict::Verified => "verified",
         Verdict::Unsigned => "unsigned",
@@ -393,7 +393,7 @@ pub fn conversation_read(json: bool, conv: &Conversation, msgs: &[ConversationMe
 
 /// What a thread shows of an opened message: what `messages read` shows by
 /// default, HTML as text and a huge body cut short.
-fn thread_body(message: &FullMessage) -> Cow<'_, str> {
+pub(crate) fn thread_body(message: &FullMessage) -> Cow<'_, str> {
     displayed_body(&message.body, &message.mime_type, ReadFormat::Text)
 }
 

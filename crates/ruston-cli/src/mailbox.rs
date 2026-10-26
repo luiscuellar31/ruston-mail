@@ -4,7 +4,7 @@
 
 use crate::demo;
 use ruston_core::model::enums::{label_ids, label_type};
-use ruston_core::{Client, Conversation, Label, LabelCount, Result};
+use ruston_core::{Client, Conversation, ConversationMessage, Label, LabelCount, Result};
 use std::sync::Arc;
 
 /// How many conversations a page of the list holds.
@@ -88,6 +88,18 @@ impl Mailbox {
         match self {
             Self::Proton(client) => client.list_conversations(id, page, PAGE_SIZE, false).await,
             Self::Demo => Ok(demo::conversations(id, page, PAGE_SIZE)),
+        }
+    }
+
+    /// The conversation `id` with its messages, oldest first, each opened
+    /// or said to be unreadable. Reading it does not mark it read.
+    pub(crate) async fn conversation(
+        &self,
+        id: &str,
+    ) -> Result<(Conversation, Vec<ConversationMessage>)> {
+        match self {
+            Self::Proton(client) => client.read_conversation_each(id).await,
+            Self::Demo => demo::conversation(id),
         }
     }
 }
@@ -218,5 +230,15 @@ mod tests {
         assert!(page.windows(2).all(|pair| pair[0].time >= pair[1].time));
         let (_, past_the_end) = mailbox.conversations(label_ids::INBOX, 9).await.unwrap();
         assert!(past_the_end.is_empty());
+
+        let (conversation, messages) = mailbox.conversation(&page[0].id).await.unwrap();
+        assert_eq!(conversation.id, page[0].id);
+        assert!(!messages.is_empty());
+        assert!(
+            messages
+                .iter()
+                .all(|message| matches!(message, ConversationMessage::Opened(_)))
+        );
+        assert!(mailbox.conversation("no-such-conversation").await.is_err());
     }
 }

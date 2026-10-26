@@ -2,10 +2,12 @@
 //! drawing and from the terminal, so both can be tested without one. What
 //! must happen elsewhere, such as loading a page, comes back as an [`Effect`].
 
+use super::reading::Reading;
 use crate::mailbox::Place;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ruston_core::Conversation;
 use ruston_core::model::enums::label_ids;
+use std::cell::Cell;
 
 /// The three panes, in the order Tab visits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,10 +67,22 @@ pub(crate) struct App {
     pub(crate) total: u32,
     /// Which conversation the list's selection is on.
     pub(crate) selected_conversation: usize,
+    /// The conversation the reader shows, once it has loaded.
+    pub(crate) reading: Option<Reading>,
+    /// How many rows down the reader is scrolled.
+    pub(crate) scroll: u16,
+    /// The furthest the reader could scroll when last drawn: its wrapped
+    /// rows less those that fit. The view sets it, as only it knows the
+    /// pane's size.
+    pub(crate) reader_bottom: Cell<u16>,
+    /// How many rows of the reader fit when last drawn, for a page.
+    pub(crate) reader_rows: Cell<u16>,
     /// What is loading, or what went wrong, for the status bar.
     pub(crate) notice: Option<String>,
     /// The last list asked for; an answer to any other comes too late.
     list_request: u64,
+    /// The last conversation asked for, likewise.
+    read_request: u64,
 }
 
 /// Something the person asked for, or an answer to an [`Effect`].
@@ -78,6 +92,10 @@ pub(crate) enum Message {
     PreviousPane,
     Up,
     Down,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
     Open,
     ToggleHelp,
     CloseHelp,
@@ -87,13 +105,18 @@ pub(crate) enum Message {
         request: u64,
         result: Result<(u32, Vec<Conversation>), String>,
     },
+    ConversationLoaded {
+        request: u64,
+        result: Result<Reading, String>,
+    },
 }
 
 /// Work the interface hands out, whose answer comes back as a [`Message`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Effect {
-    LoadPlaces,
-    LoadConversations { request: u64, place: String },
+    Places,
+    Conversations { request: u64, place: String },
+    Conversation { request: u64, id: String },
 }
 
 impl App {
@@ -109,8 +132,13 @@ impl App {
             conversations: Vec::new(),
             total: 0,
             selected_conversation: 0,
+            reading: None,
+            scroll: 0,
+            reader_bottom: Cell::new(0),
+            reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
             list_request: 0,
+            read_request: 0,
         }
     }
 
@@ -118,7 +146,7 @@ impl App {
     /// is the first of them.
     pub(crate) fn start(&mut self) -> Vec<Effect> {
         vec![
-            Effect::LoadPlaces,
+            Effect::Places,
             self.list(label_ids::INBOX.to_owned(), "Inbox".to_owned()),
         ]
     }
@@ -134,6 +162,10 @@ impl App {
             Message::PreviousPane => self.focus = self.focus.previous(),
             Message::Up => self.step(-1),
             Message::Down => self.step(1),
+            Message::PageUp => self.step(-self.page()),
+            Message::PageDown => self.step(self.page()),
+            Message::Top => self.step(isize::MIN),
+            Message::Bottom => self.step(isize::MAX),
             Message::Open => return self.open(),
             Message::PlacesLoaded(Ok(places)) => {
                 self.places = places;
@@ -154,24 +186,46 @@ impl App {
                     self.notice = Some(format!("Cannot load {}: {error}", self.listed));
                 }
             },
+            Message::ConversationLoaded { request, .. } if request != self.read_request => {}
+            Message::ConversationLoaded { result, .. } => match result {
+                Ok(reading) => {
+                    self.reading = Some(reading);
+                    self.scroll = 0;
+                    self.notice = None;
+                }
+                Err(error) => {
+                    self.notice = Some(format!("Cannot open the conversation: {error}"));
+                }
+            },
         }
         Vec::new()
     }
 
-    /// Moves the focused list's selection `by` rows, within the list.
+    /// How many rows a page of the reader moves: as many as fit.
+    fn page(&self) -> isize {
+        isize::try_from(self.reader_rows.get()).map_or(1, |rows| rows.max(1))
+    }
+
+    /// Moves the focused list's selection, or the reader, `by` rows, as far
+    /// as there is to go.
     fn step(&mut self, by: isize) {
         let (selected, len) = match self.focus {
             Pane::Folders => (&mut self.selected_place, self.places.len()),
             Pane::Conversations => (&mut self.selected_conversation, self.conversations.len()),
-            Pane::Reader => return,
+            Pane::Reader => {
+                let scroll = usize::from(self.scroll).saturating_add_signed(by);
+                let bottom = usize::from(self.reader_bottom.get());
+                self.scroll = u16::try_from(scroll.min(bottom)).unwrap_or(u16::MAX);
+                return;
+            }
         };
         *selected = selected
             .saturating_add_signed(by)
             .min(len.saturating_sub(1));
     }
 
-    /// Opens what the focused list's selection is on: a folder's
-    /// conversations, shown next.
+    /// Opens what the focused list's selection is on, in the pane after it:
+    /// a folder's conversations, or a conversation in the reader.
     fn open(&mut self) -> Vec<Effect> {
         match self.focus {
             Pane::Folders => {
@@ -182,7 +236,20 @@ impl App {
                 self.focus = Pane::Conversations;
                 vec![self.list(id, name)]
             }
-            Pane::Conversations | Pane::Reader => Vec::new(),
+            Pane::Conversations => {
+                let Some(conversation) = self.conversations.get(self.selected_conversation) else {
+                    return Vec::new();
+                };
+                let id = conversation.id.clone();
+                self.read_request += 1;
+                self.notice = Some("Opening the conversation…".to_owned());
+                self.focus = Pane::Reader;
+                vec![Effect::Conversation {
+                    request: self.read_request,
+                    id,
+                }]
+            }
+            Pane::Reader => Vec::new(),
         }
     }
 
@@ -192,7 +259,7 @@ impl App {
         self.list_request += 1;
         self.notice = Some(format!("Loading {name}…"));
         self.listed = name;
-        Effect::LoadConversations {
+        Effect::Conversations {
             request: self.list_request,
             place: id,
         }
@@ -203,7 +270,9 @@ impl App {
 fn is_key(message: &Message) -> bool {
     !matches!(
         message,
-        Message::PlacesLoaded(_) | Message::ConversationsLoaded { .. }
+        Message::PlacesLoaded(_)
+            | Message::ConversationsLoaded { .. }
+            | Message::ConversationLoaded { .. }
     )
 }
 
@@ -233,6 +302,10 @@ impl Message {
             KeyCode::BackTab => Some(Self::PreviousPane),
             KeyCode::Up | KeyCode::Char('k') => Some(Self::Up),
             KeyCode::Down | KeyCode::Char('j') => Some(Self::Down),
+            KeyCode::PageUp => Some(Self::PageUp),
+            KeyCode::PageDown => Some(Self::PageDown),
+            KeyCode::Home | KeyCode::Char('g') => Some(Self::Top),
+            KeyCode::End | KeyCode::Char('G') => Some(Self::Bottom),
             KeyCode::Enter => Some(Self::Open),
             _ => None,
         }
@@ -273,7 +346,7 @@ mod tests {
     fn loaded() -> App {
         let mut app = App::new("demo".into());
         let start = app.start();
-        let Effect::LoadConversations { request, .. } = start[1].clone() else {
+        let Effect::Conversations { request, .. } = start[1].clone() else {
             panic!("{start:?}");
         };
         app.update(Message::PlacesLoaded(Ok(vec![
@@ -293,8 +366,8 @@ mod tests {
         assert_eq!(
             app.start(),
             [
-                Effect::LoadPlaces,
-                Effect::LoadConversations {
+                Effect::Places,
+                Effect::Conversations {
                     request: 1,
                     place: label_ids::INBOX.into()
                 }
@@ -318,7 +391,7 @@ mod tests {
         let effects = press(&mut app, KeyCode::Enter);
         assert_eq!(
             effects,
-            [Effect::LoadConversations {
+            [Effect::Conversations {
                 request: 2,
                 place: "folder-1".into()
             }]
@@ -362,6 +435,84 @@ mod tests {
             app.notice.as_deref(),
             Some("Cannot load the folders: refused")
         );
+    }
+
+    fn reading(lines: usize) -> Reading {
+        Reading {
+            subject: "Plans".into(),
+            lines: (0..lines).map(|n| format!("line {n}")).collect(),
+        }
+    }
+
+    #[test]
+    fn enter_on_a_conversation_opens_it_in_the_reader() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        let effects = press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            effects,
+            [Effect::Conversation {
+                request: 1,
+                id: "b".into()
+            }]
+        );
+        assert_eq!(app.focus, Pane::Reader);
+        assert_eq!(app.notice.as_deref(), Some("Opening the conversation…"));
+        // An answer for a conversation asked for before comes too late.
+        app.update(Message::ConversationLoaded {
+            request: 0,
+            result: Ok(reading(1)),
+        });
+        assert!(app.reading.is_none());
+        app.update(Message::ConversationLoaded {
+            request: 1,
+            result: Ok(reading(3)),
+        });
+        assert_eq!(app.reading.as_ref().unwrap().lines.len(), 3);
+        assert_eq!(app.notice, None);
+        app.update(Message::ConversationLoaded {
+            request: 1,
+            result: Err("gone".into()),
+        });
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Cannot open the conversation: gone")
+        );
+    }
+
+    #[test]
+    fn the_reader_scrolls_by_rows_and_pages_as_far_as_its_bottom() {
+        let mut app = loaded();
+        app.focus = Pane::Reader;
+        app.reading = Some(reading(100));
+        // As the view leaves them after drawing 100 rows 30 at a time.
+        app.reader_bottom.set(70);
+        app.reader_rows.set(30);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.scroll, 1);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.scroll, 31);
+        press(&mut app, KeyCode::Char('G'));
+        assert_eq!(app.scroll, 70);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.scroll, 70);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.scroll, 40);
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.scroll, 0);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.scroll, 0);
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_ends_of_a_list() {
+        let mut app = loaded();
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.selected_conversation, 1);
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.selected_conversation, 0);
     }
 
     #[test]

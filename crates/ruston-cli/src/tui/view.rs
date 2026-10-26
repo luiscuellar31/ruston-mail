@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ruston_core::Conversation;
 
 /// Below this width the panes take turns on the screen, as the desktop's
@@ -25,10 +25,12 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 6] = [
+const KEYS: [(&str, &str); 8] = [
     ("Tab, Shift+Tab", "next or previous pane"),
-    ("j, k, arrows", "move down or up the list"),
-    ("Enter", "open the folder"),
+    ("j, k, arrows", "move, or scroll the reader"),
+    ("PageUp, PageDown", "scroll the reader a page"),
+    ("g, G, Home, End", "go to the top or the bottom"),
+    ("Enter", "open the folder or conversation"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys"),
     ("q, Ctrl+C", "quit"),
@@ -109,7 +111,7 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 area,
             );
         }
-        Pane::Reader => frame.render_widget(block, area),
+        Pane::Reader => draw_reader(frame, app, block, area),
     }
 }
 
@@ -131,6 +133,39 @@ fn draw_list<'a>(
     let list = List::new(items).block(block).highlight_style(highlight);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// The open conversation, wrapped to the pane and scrolled as far as the
+/// state asks, within what there is. Since only the drawing knows how many
+/// rows the text wraps to, it tells the state how far it can scroll.
+fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
+    let inner = block.inner(area);
+    let Some(reading) = &app.reading else {
+        app.reader_bottom.set(0);
+        let hint = Line::styled(
+            "Enter on a conversation opens it here.",
+            Style::new().add_modifier(Modifier::DIM),
+        );
+        frame.render_widget(Paragraph::new(hint).block(block), area);
+        return;
+    };
+    let mut lines = vec![
+        Line::styled(
+            reading.subject.as_str(),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        Line::default(),
+    ];
+    lines.extend(reading.lines.iter().map(|line| Line::raw(line.as_str())));
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let rows = paragraph.line_count(inner.width);
+    let bottom = u16::try_from(rows.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
+    app.reader_bottom.set(bottom);
+    app.reader_rows.set(inner.height.max(1));
+    frame.render_widget(
+        paragraph.scroll((app.scroll.min(bottom), 0)).block(block),
+        area,
+    );
 }
 
 /// One row of the list: whether it is unread, its day, who wrote it and its
@@ -192,7 +227,7 @@ fn draw_keys(frame: &mut Frame, theme: &Theme) {
         .iter()
         .map(|(keys, action)| {
             Line::from(vec![
-                Span::styled(format!(" {keys:<16}"), theme.accent),
+                Span::styled(format!(" {keys:<18}"), theme.accent),
                 Span::raw(*action),
             ])
         })
@@ -224,6 +259,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use super::super::reading::Reading;
     use super::*;
     use crate::mailbox::{Place, PlaceKind};
     use ratatui::Terminal;
@@ -320,6 +356,50 @@ mod tests {
         );
         let screen = text(&buffer);
         assert!(screen.contains("first second"), "{screen}");
+    }
+
+    #[test]
+    fn the_reader_shows_the_open_conversation_and_scrolls_within_it() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(
+            screen.contains("Enter on a conversation opens it here."),
+            "{screen}"
+        );
+
+        app.reading = Some(Reading {
+            subject: "Plans for May".into(),
+            lines: (0..100).map(|n| format!("line {n}")).collect(),
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains("Plans for May"), "{screen}");
+        assert!(screen.contains("line 0"), "{screen}");
+        // The subject, a blank row and 100 lines, 27 rows of them in view.
+        assert_eq!(app.reader_bottom.get(), 102 - 27);
+        assert_eq!(app.reader_rows.get(), 27);
+
+        app.scroll = 50;
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(!screen.contains("line 0 "), "{screen}");
+        assert!(screen.contains("line 48"), "{screen}");
+        // Scrolled past the end, as after the pane grew, it shows the end.
+        app.scroll = 500;
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains("line 99"), "{screen}");
+    }
+
+    #[test]
+    fn long_reader_lines_wrap_to_the_pane() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.reading = Some(Reading {
+            subject: "Long".into(),
+            lines: vec!["word ".repeat(60)],
+        });
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        // 300 columns wrap into several rows of the 46-column pane.
+        assert!(app.reader_bottom.get() == 0);
+        let rows = drawn(120, 10, &app, &Theme::new(false));
+        assert!(app.reader_bottom.get() > 0, "{}", text(&rows));
     }
 
     #[test]
