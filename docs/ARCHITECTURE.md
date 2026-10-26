@@ -696,7 +696,9 @@ instead of an unknown outcome.
   is saved, and opens one [`Mailbox`](../crates/ruston-cli/src/mailbox.rs)
   for the whole session: the account behind an `Arc<Client>`, or the demo,
   whose listing and reading `demo.rs` shares with its own `conversations list`
-  and `conversations read`. It owns
+  and `conversations read`, through a `DemoSession` that keeps the changes
+  the interface makes until it closes and works out its counts from its
+  conversations. It owns
   the terminal: raw mode and the alternate screen, put back however the
   interface ends, a panic included, or while Ctrl+Z suspends it where the
   shell has job control, and an async loop over crossterm's event stream and

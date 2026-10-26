@@ -3,7 +3,7 @@
 //! marking a conversation read; opened once for the whole session. It
 //! returns core's types; how they look is the interface's business.
 
-use crate::demo;
+use crate::demo::{self, DemoSession};
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{Client, Conversation, ConversationMessage, Label, LabelCount, Result};
 use std::sync::Arc;
@@ -26,8 +26,8 @@ const SYSTEM_FOLDERS: [(&str, &str); 7] = [
 pub(crate) enum Mailbox {
     /// A signed-in account, shared by every task the interface runs.
     Proton(Arc<Client>),
-    /// The offline demo's fictional mail.
-    Demo,
+    /// The offline demo's fictional mail, as this session has changed it.
+    Demo(Arc<DemoSession>),
 }
 
 /// A place to list mail from: a system folder, or one of the account's own
@@ -52,11 +52,16 @@ pub(crate) enum PlaceKind {
 }
 
 impl Mailbox {
+    /// The offline demo, as its fixtures start.
+    pub(crate) fn demo() -> Self {
+        Self::Demo(Arc::new(DemoSession::new()))
+    }
+
     /// Whose mail it is, for the status bar.
     pub(crate) fn account(&self) -> String {
         match self {
             Self::Proton(client) => client.primary_email().unwrap_or("(unknown)").to_owned(),
-            Self::Demo => format!("{} (demo)", demo::DEMO_EMAIL),
+            Self::Demo(_) => format!("{} (demo)", demo::DEMO_EMAIL),
         }
     }
 
@@ -69,11 +74,11 @@ impl Mailbox {
                 client.list_labels(),
                 client.conversation_counts()
             )?,
-            Self::Demo => {
+            Self::Demo(session) => {
                 let (folders, labels) = demo::demo_labels()
                     .into_iter()
                     .partition(|label| label.label_type == label_type::MESSAGE_FOLDER);
-                (folders, labels, demo::demo_counts(true))
+                (folders, labels, session.counts())
             }
         };
         Ok(places(folders, labels, &counts))
@@ -88,7 +93,7 @@ impl Mailbox {
     ) -> Result<(u32, Vec<Conversation>)> {
         match self {
             Self::Proton(client) => client.list_conversations(id, page, PAGE_SIZE, false).await,
-            Self::Demo => Ok(demo::conversations(id, page, PAGE_SIZE)),
+            Self::Demo(session) => Ok(session.conversations(id, page, PAGE_SIZE)),
         }
     }
 
@@ -100,12 +105,12 @@ impl Mailbox {
     ) -> Result<(Conversation, Vec<ConversationMessage>)> {
         match self {
             Self::Proton(client) => client.read_conversation_each(id).await,
-            Self::Demo => demo::conversation(id),
+            Self::Demo(_) => demo::conversation(id),
         }
     }
 
     /// Marks the conversation `id`, listed in the place `place`, read. The
-    /// demo keeps nothing: its mail is unread again once listed anew.
+    /// demo keeps it until the interface closes.
     pub(crate) async fn mark_read(&self, id: &str, place: &str) -> Result<()> {
         match self {
             Self::Proton(client) => {
@@ -113,7 +118,10 @@ impl Mailbox {
                     .mark_conversations_read(&[id.to_owned()], true, place)
                     .await
             }
-            Self::Demo => Ok(()),
+            Self::Demo(session) => {
+                session.mark_read(id);
+                Ok(())
+            }
         }
     }
 }
@@ -215,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_demo_lists_its_places_and_conversations_as_its_commands_do() {
-        let mailbox = Mailbox::Demo;
+        let mailbox = Mailbox::demo();
         let places = mailbox.places().await.unwrap();
         let inbox = &places[0];
         assert_eq!(inbox.id, label_ids::INBOX);

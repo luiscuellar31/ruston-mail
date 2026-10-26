@@ -34,7 +34,7 @@ pub(crate) fn has_terminal() -> bool {
 /// `ratatui::try_init` installs, before the panic is reported.
 pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let mailbox = if ctx.demo {
-        Mailbox::Demo
+        Mailbox::demo()
     } else {
         Mailbox::Proton(Arc::new(signed_in(ctx).await?))
     };
@@ -235,16 +235,13 @@ mod tests {
     async fn a_new_effect_aborts_the_task_still_running_one_of_its_kind() {
         let (sender, mut answers) = mpsc::unbounded_channel();
         let mut tasks = Tasks::default();
+        let mailbox = Mailbox::demo();
         // The test's runtime runs none of them until it waits.
         for request in [1, 2] {
             let id = "no-such-conversation".to_owned();
-            tasks.run(
-                Effect::Conversation { request, id },
-                &Mailbox::Demo,
-                &sender,
-            );
+            tasks.run(Effect::Conversation { request, id }, &mailbox, &sender);
         }
-        tasks.run(Effect::Places, &Mailbox::Demo, &sender);
+        tasks.run(Effect::Places, &mailbox, &sender);
         drop(sender);
         let mut seen = Vec::new();
         while let Some(answer) = answers.recv().await {
@@ -267,7 +264,7 @@ mod tests {
                 id: id.into(),
                 place: "0".into(),
             };
-            tasks.run(effect, &Mailbox::Demo, &sender);
+            tasks.run(effect, &Mailbox::demo(), &sender);
         }
         drop(sender);
         let mut marked = Vec::new();

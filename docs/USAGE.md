@@ -505,8 +505,8 @@ the whole message is quoted; `z` shows or hides them. Links show as text with
 the address they open; `o` lists those of the open conversation, and one opens
 in your browser only once you answer `y` to the address it shows. Opening an
 unread conversation marks it read once it shows, as the desktop does, unless
-you start it with `ruston-cli tui --keep-unread`; the demo forgets it when the
-list loads again. With no session saved, it signs in first, as
+you start it with `ruston-cli tui --keep-unread`; the demo keeps such changes
+until the interface closes. With no session saved, it signs in first, as
 `ruston-cli login` does; `--demo` opens the fictional mailbox. Away from a
 terminal, as in a script, `ruston-cli` with no command still prints the help
 and ends with status 2.

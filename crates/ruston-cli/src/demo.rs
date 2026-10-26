@@ -7,6 +7,7 @@ use crate::terminal;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::mail::organize::folder_id_among;
@@ -746,11 +747,90 @@ pub(crate) fn conversation(id: &str) -> Result<(Conversation, Vec<ConversationMe
     read_conversation(messages, conversations, id)
 }
 
-/// Page `page` of the demo's conversations in the folder or label `label`,
-/// as `conversations list` would list them, for the terminal interface.
-pub(crate) fn conversations(label: &str, page: u32, page_size: u32) -> (u32, Vec<Conversation>) {
-    let is_all = label == label_ids::ALL_MAIL;
-    list_page(fixtures().1, label, is_all, false, page, page_size)
+/// The demo's conversations as the terminal interface changes them: the
+/// fixtures at first, then each change it makes, for as long as it runs.
+/// Its counts come from them, so the two always agree.
+pub(crate) struct DemoSession {
+    conversations: Mutex<Vec<Conversation>>,
+}
+
+impl DemoSession {
+    pub(crate) fn new() -> Self {
+        Self {
+            conversations: Mutex::new(fixtures().1),
+        }
+    }
+
+    /// The conversations as they stand now.
+    fn snapshot(&self) -> Vec<Conversation> {
+        self.conversations
+            .lock()
+            .expect("demo mailbox lock poisoned")
+            .clone()
+    }
+
+    /// Page `page` of the conversations in the folder or label `label`, as
+    /// `conversations list` would list them.
+    pub(crate) fn conversations(
+        &self,
+        label: &str,
+        page: u32,
+        page_size: u32,
+    ) -> (u32, Vec<Conversation>) {
+        let is_all = label == label_ids::ALL_MAIL;
+        list_page(self.snapshot(), label, is_all, false, page, page_size)
+    }
+
+    /// How many conversations each place holds, and how many are unread.
+    pub(crate) fn counts(&self) -> Vec<LabelCount> {
+        conversation_counts(&self.snapshot())
+    }
+
+    /// Marks the conversation `id` read wherever it is.
+    pub(crate) fn mark_read(&self, id: &str) {
+        let mut conversations = self
+            .conversations
+            .lock()
+            .expect("demo mailbox lock poisoned");
+        if let Some(conversation) = conversations.iter_mut().find(|c| c.id == id) {
+            conversation.num_unread = 0;
+            for label in &mut conversation.labels {
+                label.context_num_unread = Some(0);
+            }
+        }
+    }
+}
+
+/// How many of `conversations` each place holds and how many of those are
+/// unread there, as Proton counts them; All mail holds every one.
+fn conversation_counts(conversations: &[Conversation]) -> Vec<LabelCount> {
+    let mut counts: Vec<LabelCount> = Vec::new();
+    for conversation in conversations {
+        for label in &conversation.labels {
+            let at = counts
+                .iter()
+                .position(|count| count.label_id == label.id)
+                .unwrap_or_else(|| {
+                    counts.push(LabelCount {
+                        label_id: label.id.clone(),
+                        total: 0,
+                        unread: 0,
+                    });
+                    counts.len() - 1
+                });
+            counts[at].total += 1;
+            if label.context_num_unread.unwrap_or(0) > 0 {
+                counts[at].unread += 1;
+            }
+        }
+    }
+    let unread = conversations.iter().filter(|c| c.num_unread > 0).count();
+    counts.push(LabelCount {
+        label_id: label_ids::ALL_MAIL.to_string(),
+        total: conversations.len() as i64,
+        unread: unread as i64,
+    });
+    counts
 }
 
 /// Dispatcher for CLI commands in offline demo mode.
@@ -1508,6 +1588,57 @@ mod tests {
                 assert_eq!(label.context_num_unread, Some(unread as i64), "{at}");
             }
         }
+    }
+
+    #[test]
+    fn a_session_starts_with_the_counts_the_demo_gives() {
+        let counts = DemoSession::new().counts();
+        for expected in demo_counts(true) {
+            let counted = counts
+                .iter()
+                .find(|count| count.label_id == expected.label_id)
+                .unwrap();
+            assert_eq!(
+                (counted.total, counted.unread),
+                (expected.total, expected.unread),
+                "{}",
+                expected.label_id
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_keeps_what_it_marks_read_and_counts_it() {
+        let session = DemoSession::new();
+        let unread = |label: &str| {
+            session
+                .counts()
+                .iter()
+                .find(|count| count.label_id == label)
+                .map_or(0, |count| count.unread)
+        };
+        assert_eq!(
+            (unread(label_ids::INBOX), unread(label_ids::STARRED)),
+            (2, 1)
+        );
+        session.mark_read("conv-demo-01");
+        assert_eq!(
+            (unread(label_ids::INBOX), unread(label_ids::STARRED)),
+            (1, 0)
+        );
+        assert_eq!(unread("label-demo-work"), 1);
+        let (_, inbox) = session.conversations(label_ids::INBOX, 0, 50);
+        let first = inbox.iter().find(|c| c.id == "conv-demo-01").unwrap();
+        assert_eq!(first.num_unread, 0);
+        // A new session starts from the fixtures again.
+        assert_eq!(
+            DemoSession::new()
+                .counts()
+                .iter()
+                .find(|count| count.label_id == label_ids::INBOX)
+                .map(|count| count.unread),
+            Some(2)
+        );
     }
 
     #[test]
