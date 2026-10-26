@@ -20,12 +20,13 @@ pub use model::{
     UNREADABLE_NOTICE,
 };
 pub use outgoing::{
-    BodyFormat, Domains, InternationalDomain, Outgoing, OutgoingKind, Protection, ProtectionCheck,
-    Recipients, SendError, recipients, validate_attachments,
+    BodyFormat, Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError,
+    validate_attachments,
 };
 #[cfg(test)]
 pub use proton::PromptAnswer;
 pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
+pub use ruston_core::mail::recipients::{Domains, InternationalDomain, Recipients, recipients};
 
 /// The source of mailbox data for an open mailbox.
 #[derive(Clone)]

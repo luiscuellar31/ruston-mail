@@ -7,6 +7,7 @@ pub mod export;
 pub mod filters;
 pub mod organize;
 pub mod read;
+pub mod recipients;
 pub mod send;
 pub mod sync;
 #[cfg(test)]

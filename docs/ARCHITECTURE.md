@@ -618,8 +618,9 @@ The `check_recipient_protection` preference in
 [`settings.rs`](../src/settings.rs) turns the lookup off; turning it off also
 forgets the open draft's answers, so no notice remains.
 
-[`mail/outgoing.rs`](../src/mail/outgoing.rs) reads recipient fields under a
-`Domains` rule that takes ASCII domains only, unless the
+Core [`mail/recipients.rs`](../crates/ruston-core/src/mail/recipients.rs)
+reads recipient fields, for every frontend, under a `Domains` rule; the
+desktop's takes ASCII domains only, unless the
 `accept_international_domains` preference is on. Then a domain in another
 script is converted to its IDNA `xn--` form with `url::Host::parse`, after
 refusing percent escapes and results that are not domain names. The address is
@@ -1035,7 +1036,7 @@ instead of an unknown outcome.
 | Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | [`src/mail/html.rs`](../src/mail/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
 | Desktop email links and instance activation | [`src/mailto.rs`](../src/mailto.rs), [`src/launch.rs`](../src/launch.rs), [`src/app/mailto.rs`](../src/app/mailto.rs) | [`src/launch/macos.rs`](../src/launch/macos.rs), [`src/ui/mod.rs`](../src/ui/mod.rs), platform packaging |
 | CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
-| Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
+| Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/recipients.rs`](../crates/ruston-core/src/mail/recipients.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
