@@ -303,6 +303,16 @@ fn page(
             ui,
             "Lets you write to a domain such as münchen.de. It is sent in its ASCII form, xn--mnchen-3ya.de, which the composer shows beside it: letters from another script can imitate a familiar domain. Email links still refuse such domains.",
         );
+        ui.add_space(6.0);
+
+        ui.add(theme::Checkbox::new(
+            &mut settings.search_device_offline,
+            "Search this device when Proton cannot be reached",
+        ));
+        description(
+            ui,
+            "A search then looks in the index that ruston-cli index builds on this device, which Ruston Mail reads without changing. That index holds your mail decrypted and unencrypted; Ruston Mail never writes it, and opening a result still needs Proton.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Keyboard", |ui| {
@@ -396,6 +406,9 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
         messages.push(Message::SetAcceptInternationalDomains(
             draft.accept_international_domains,
         ));
+    }
+    if draft.search_device_offline != current.search_device_offline {
+        messages.push(Message::SetSearchDeviceOffline(draft.search_device_offline));
     }
     if draft.start != current.start {
         messages.push(Message::SetStartFolder(draft.start));
@@ -694,6 +707,7 @@ mod tests {
         for choice in [
             "Check recipient encryption while writing",
             "Accept international domain names",
+            "Search this device when Proton cannot be reached",
         ] {
             let choice = find(choice);
             assert!(choice.top() > advanced.top());
@@ -859,8 +873,14 @@ mod tests {
         draft.system_font = true;
         draft.check_recipient_protection = false;
         draft.accept_international_domains = true;
+        draft.search_device_offline = true;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 8);
+        assert_eq!(changes.len(), 9);
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetSearchDeviceOffline(true)))
+        );
         assert!(
             changes
                 .iter()

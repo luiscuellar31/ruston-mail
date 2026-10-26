@@ -92,6 +92,15 @@ search starts once it has loaded. What Proton finds is titled **Search
 results**, since it comes from every folder. Clear the field to return to the
 open folder.
 
+When Proton cannot be reached, a search can look on this device instead: turn
+on **Search this device when Proton cannot be reached** under Settings ›
+Advanced. It then searches the index that `ruston-cli index` builds, which
+Ruston Mail reads without changing, and the line under the search field says
+the results come from this device. That index holds your mail decrypted and
+unencrypted, so the setting is off until you turn it on; without an index the
+search fails as before and says there was none to look in. Opening a result
+still needs Proton.
+
 Folder lists and server search load 50 conversations at a time. Use **Load more**
 at the end of the list to request another page when available. Loading another
 page keeps the open message and your position in the list. Refresh keeps verified
@@ -383,6 +392,8 @@ Settings control:
 - Plain-text or HTML sending.
 - Whether the composer checks recipient encryption while you write (Advanced).
 - Whether recipient fields accept international domain names (Advanced).
+- Whether a search looks in this device's index when Proton cannot be reached
+  (Advanced).
 - The folder shown at startup.
 - Dark or light appearance, or on macOS and Windows the system's. Dark remains
   the default.

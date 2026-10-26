@@ -7,6 +7,7 @@ use tokio::sync::Semaphore;
 
 use futures::channel::{mpsc, oneshot};
 use futures::{SinkExt, StreamExt, stream};
+use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{human_verification, label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
@@ -487,6 +488,32 @@ impl ProtonMailService {
         })
     }
 
+    /// Searches this device's index, the one `ruston-cli index` builds,
+    /// reading it without changing it, so nothing decrypted is written: for
+    /// a search Proton could not answer. `None` when there is none.
+    pub async fn search_local(
+        &self,
+        query: &str,
+    ) -> Result<Option<ConversationPage>, MailboxError> {
+        let found = self
+            .client
+            .search_local_read_only(query, LOCAL_SEARCH_LIMIT)
+            .await
+            .map_err(map_mailbox_error)?;
+        Ok(found.map(|messages| {
+            // As the server's results do, from Inbox's perspective.
+            let conversations: Vec<ConversationSummary> = conversations_of(messages)
+                .into_iter()
+                .map(|conversation| summarize(conversation, &Folder::INBOX))
+                .collect();
+            ConversationPage {
+                total: u32::try_from(conversations.len()).unwrap_or(u32::MAX),
+                conversations,
+                inspect_candidates: Vec::new(),
+            }
+        }))
+    }
+
     /// Fetches and decrypts one attachment, returning the name the sender gave
     /// it and its contents. Nothing is written to disk here. An attachment of
     /// a message read lately downloads from what that read listed; any other
@@ -629,6 +656,9 @@ fn conversation_deadline(messages: u32) -> Duration {
 
 /// Runs one Proton request under `REQUEST_TIMEOUT`. A call that outlives it
 /// fails as a connection error, which every view offers to retry.
+/// How many messages a search of this device's index finds at most.
+const LOCAL_SEARCH_LIMIT: u32 = 200;
+
 async fn timed<T>(call: impl Future<Output = ruston_core::Result<T>>) -> Result<T, MailboxError> {
     timed_with(
         call,

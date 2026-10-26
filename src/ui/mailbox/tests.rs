@@ -167,7 +167,7 @@ fn typing_a_search_leaves_the_list_where_it_was() {
         let searching = drawn("p");
         assert_eq!(first_row(&drawn("")), first_row(&searching), "at {size:?}");
         if zoom == 1.0 {
-            let scope = search_scope_label(None, 50);
+            let scope = search_scope_label(None, false, 50);
             let whole = searching.iter().any(|clipped| {
                 matches!(&clipped.shape, egui::Shape::Text(text)
                     if text.galley.text() == scope && !text.galley.elided)
@@ -1825,13 +1825,22 @@ fn an_open_settings_page_leaves_no_folder_marked_as_chosen() {
 
 #[test]
 fn search_scope_says_what_the_list_is_showing() {
-    let narrowing = search_scope_label(None, 50);
+    let narrowing = search_scope_label(None, false, 50);
     assert!(narrowing.contains("50 loaded conversations"));
     assert!(narrowing.contains("Enter"));
-    assert!(search_scope_label(None, 1).contains("1 loaded conversation "));
-    let found = search_scope_label(Some("invoice"), 50);
+    assert!(search_scope_label(None, false, 1).contains("1 loaded conversation "));
+    let found = search_scope_label(Some("invoice"), false, 50);
     assert!(found.contains("invoice"));
     assert!(!found.contains("Enter"));
+    // Results from this device's index say so.
+    let on_device = search_scope_label(Some("invoice"), true, 50);
+    assert!(
+        on_device.contains("this device's search index"),
+        "{on_device}"
+    );
+    assert!(on_device.contains("invoice"));
+    assert!(device_index_label(DeviceIndex::Missing).contains("no search index"));
+    assert!(device_index_label(DeviceIndex::Unreadable).contains("could not be read"));
 }
 
 #[test]

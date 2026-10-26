@@ -1977,6 +1977,101 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
     assert!(app.mailbox().unwrap().visible_conversations().len() > 0);
 }
 
+/// The app with its first page in, a search for `query` sent, and the
+/// request it is waiting on.
+fn searching(settings: Settings, query: &str) -> (App, SearchRequest) {
+    let (mut app, _) = App::boot(true, settings);
+    let folder = app.mailbox().unwrap().folder();
+    let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
+    let _ = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
+    let _ = app.update(Message::SearchChanged(query.to_owned()));
+    let _ = app.update(Message::SearchSubmitted);
+    let request = SearchRequest {
+        id: pending_list_request(&app),
+        query: query.to_owned(),
+        page: 0,
+        page_size: demo::PAGE_SIZE,
+    };
+    (app, request)
+}
+
+#[test]
+fn a_search_proton_cannot_answer_looks_on_this_device_only_once_asked() {
+    // Not asked: the search fails as it always has.
+    let (mut app, request) = searching(Settings::default(), "Avery");
+    let effects = app.update(Message::SearchLoaded(
+        request,
+        Err(MailboxError::Connection),
+    ));
+    assert_eq!(effects.units(), 0);
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Search)
+    ));
+
+    // Asked: this device's index is searched instead, and what it finds shows.
+    let mut settings = Settings::default();
+    settings.search_device_offline = true;
+    let (mut app, request) = searching(settings.clone(), "Avery");
+    let effects = app.update(Message::SearchLoaded(
+        request.clone(),
+        Err(MailboxError::Connection),
+    ));
+    assert_eq!(effects.units(), 1, "this device's index is searched");
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Loading(_)
+    ));
+    let found = demo_service(&app)
+        .search("Avery", demo::PAGE_SIZE, NOW)
+        .unwrap();
+    let _ = app.update(Message::DeviceSearchLoaded(request, Ok(Some(found))));
+    let mailbox = app.mailbox().unwrap();
+    assert_eq!(mailbox.shown_search_query(), Some("Avery"));
+    assert!(mailbox.shown_search_is_on_device());
+    assert!(mailbox.visible_conversations().len() > 0);
+
+    // Any other failure is not Proton being out of reach.
+    let (mut app, request) = searching(settings.clone(), "Avery");
+    let effects = app.update(Message::SearchLoaded(request, Err(MailboxError::Service)));
+    assert_eq!(effects.units(), 0);
+
+    // With no index here, the search fails, saying there was none to look in.
+    let (mut app, request) = searching(settings, "Avery");
+    let _ = app.update(Message::SearchLoaded(
+        request.clone(),
+        Err(MailboxError::Connection),
+    ));
+    let _ = app.update(Message::DeviceSearchLoaded(request, Ok(None)));
+    let mailbox = app.mailbox().unwrap();
+    assert!(matches!(
+        mailbox.status(),
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Search)
+    ));
+    assert_eq!(mailbox.device_index(), Some(DeviceIndex::Missing));
+    // A new search starts afresh.
+    let _ = app.update(Message::SearchChanged(String::new()));
+    assert_eq!(app.mailbox().unwrap().device_index(), None);
+}
+
+#[test]
+fn a_search_from_this_device_that_comes_too_late_is_dropped() {
+    let mut settings = Settings::default();
+    settings.search_device_offline = true;
+    let (mut app, request) = searching(settings, "Avery");
+    let _ = app.update(Message::SearchLoaded(
+        request.clone(),
+        Err(MailboxError::Connection),
+    ));
+    // The query changed meanwhile.
+    let _ = app.update(Message::SearchChanged(String::new()));
+    let found = demo_service(&app)
+        .search("Avery", demo::PAGE_SIZE, NOW)
+        .unwrap();
+    let _ = app.update(Message::DeviceSearchLoaded(request, Ok(Some(found))));
+    assert_eq!(app.mailbox().unwrap().shown_search_query(), None);
+}
+
 #[test]
 fn a_search_waiting_for_the_folder_is_dropped_when_the_query_changes() {
     let (mut app, _) = App::boot(true, Settings::default());

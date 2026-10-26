@@ -145,6 +145,17 @@ struct SearchState {
     row_ids: HashSet<String>,
     next_page: u32,
     has_more: bool,
+    /// Found in this device's index, Proton being out of reach.
+    on_device: bool,
+}
+
+/// Why a search Proton could not answer found nothing on this device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceIndex {
+    /// This device holds no index for the account.
+    Missing,
+    /// The index could not be read.
+    Unreadable,
 }
 
 /// The loaded part of one folder while another folder is open.
@@ -373,6 +384,8 @@ pub struct Mailbox {
     search_query: String,
     /// Results of the last server search, while they are on screen.
     search: Option<SearchState>,
+    /// Why this device's index had nothing for the last search, if so.
+    device_index: Option<DeviceIndex>,
     /// The search in flight, so a late answer to an abandoned one is ignored.
     search_request: Option<RequestId>,
     /// Enter was pressed while a folder page was loading. Searching then
@@ -440,6 +453,7 @@ impl Mailbox {
             cached_readers: Vec::new(),
             search_query: String::new(),
             search: None,
+            device_index: None,
             search_request: None,
             search_deferred: false,
             action_in_flight: None,
@@ -564,6 +578,7 @@ impl Mailbox {
 
         self.search_deferred = false;
         self.search_request = Some(request);
+        self.device_index = None;
         self.status = ListStatus::Loading(request);
 
         Some(SearchRequest {
@@ -639,6 +654,7 @@ impl Mailbox {
                         row_ids,
                         next_page: 1,
                         has_more,
+                        on_device: false,
                     });
                     self.recompute_visible();
                     self.close_reader_if_hidden();
@@ -658,10 +674,54 @@ impl Mailbox {
         }
     }
 
+    /// Applies what this device's index found for a search Proton could not
+    /// answer, or, when it found nothing to look in, the failure that
+    /// Proton's silence was, saying why.
+    pub fn finish_device_search(
+        &mut self,
+        request: &SearchRequest,
+        found: Result<Option<ConversationPage>, MailboxError>,
+    ) -> Option<MailboxError> {
+        if self.search_request != Some(request.id) {
+            return None;
+        }
+        let page = match found {
+            Ok(Some(page)) => page,
+            Ok(None) => return self.no_device_results(request, DeviceIndex::Missing),
+            Err(_) => return self.no_device_results(request, DeviceIndex::Unreadable),
+        };
+        let error = self.finish_search(request, Ok(page));
+        if let Some(search) = &mut self.search {
+            search.on_device = true;
+        }
+        error
+    }
+
+    fn no_device_results(
+        &mut self,
+        request: &SearchRequest,
+        why: DeviceIndex,
+    ) -> Option<MailboxError> {
+        self.device_index = Some(why);
+        self.finish_search(request, Err(MailboxError::Connection))
+    }
+
+    /// Whether the results shown came from this device's index.
+    pub fn shown_search_is_on_device(&self) -> bool {
+        self.search.as_ref().is_some_and(|search| search.on_device)
+    }
+
+    /// Why this device's index had nothing to show for the last search,
+    /// if it was looked in for nothing.
+    pub fn device_index(&self) -> Option<DeviceIndex> {
+        self.device_index
+    }
+
     /// Goes back to the folder listing, leaving any results behind.
     pub fn clear_search(&mut self) {
         let leaving_results = self.search.is_some();
         self.search = None;
+        self.device_index = None;
         self.search_deferred = false;
         if self.search_request.is_some() {
             self.status = ListStatus::Loaded;

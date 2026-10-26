@@ -147,6 +147,19 @@ impl MailBackend {
         }
     }
 
+    /// Searches this device's index, the one `ruston-cli index` builds,
+    /// without changing it, for a search Proton could not answer: `None`
+    /// when this device holds none. The demo, never out of reach, has none.
+    pub async fn search_local(
+        &self,
+        query: &str,
+    ) -> Result<Option<ConversationPage>, MailboxError> {
+        match self {
+            Self::Proton(service) => service.search_local(query).await,
+            Self::Demo(_) => Ok(None),
+        }
+    }
+
     /// Fetches one attachment's contents. The demo mailbox carries no files.
     pub async fn download_attachment(
         &self,

@@ -241,7 +241,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   request records what it asked for (`ListAttempt`: the folder, a next page or
   a search), so the list's Try again sends the same request again. Clearing
   the search clears only the search's own failure; a folder that failed to
-  load keeps saying so.
+  load keeps saying so. When a search's first page fails because Proton
+  cannot be reached and the person turned on searching this device, the app
+  asks `MailBackend::search_local` instead, which reads the index that
+  `ruston-cli index` built through core's `search_local_read_only`, never
+  writing it; its
+  answer, applied under the same request, marks the results as this device's,
+  and with no index, or one that cannot be read, the search fails as Proton's
+  did and says why.
   A refreshed listing can regroup a message or omit its row without proving
   deletion; the reader remains visible and loses its cache stamp if its row is
   absent. Typing in the search field keeps the reader open the same way, even

@@ -4,8 +4,8 @@ use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, S
 
 use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
 use crate::app::{
-    App, AuthState, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message, Notice,
-    compact_layout, panel_ratios, panel_widths,
+    App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message,
+    Notice, compact_layout, panel_ratios, panel_widths,
 };
 use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError, PlaceLook};
 use crate::settings::{ComposePlacement, Panels, Settings};
@@ -598,8 +598,14 @@ fn conversation_pane(
     // the list down; text too long for it is shortened, whole on hover.
     let scope = if mailbox.search_query().is_empty() {
         String::new()
+    } else if let Some(why) = mailbox.device_index() {
+        device_index_label(why).to_owned()
     } else {
-        search_scope_label(mailbox.shown_search_query(), mailbox.loaded_count())
+        search_scope_label(
+            mailbox.shown_search_query(),
+            mailbox.shown_search_is_on_device(),
+            mailbox.loaded_count(),
+        )
     };
     ui.add(
         egui::Label::new(
@@ -620,7 +626,12 @@ fn conversation_pane(
             try_again(ui, attempt, messages);
         }),
         (_, true) if mailbox.shown_search_query().is_some() => empty_state(ui, |ui| {
-            state_message(ui, "Proton found no mail matching that.", muted);
+            let found_nothing = if mailbox.shown_search_is_on_device() {
+                "This device's search index has no mail matching that."
+            } else {
+                "Proton found no mail matching that."
+            };
+            state_message(ui, found_nothing, muted);
         }),
         (_, true) if mailbox.has_search_text() => empty_state(ui, |ui| {
             state_message(ui, "No matches in the conversations loaded so far.", muted);
@@ -1347,12 +1358,27 @@ pub(super) fn detail(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-fn search_scope_label(results: Option<&str>, loaded: usize) -> String {
+fn search_scope_label(results: Option<&str>, on_device: bool, loaded: usize) -> String {
     match (results, loaded) {
+        (Some(query), _) if on_device => format!(
+            "Proton could not be reached: showing what this device's search index found for “{query}”."
+        ),
         (Some(query), _) => format!("Showing what the server found for “{query}”."),
         (None, 1) => "Narrowing 1 loaded conversation · Enter searches all mail".to_owned(),
         (None, loaded) => {
             format!("Narrowing {loaded} loaded conversations · Enter searches all mail")
+        }
+    }
+}
+
+/// Why a search Proton could not answer has nothing from this device.
+fn device_index_label(why: DeviceIndex) -> &'static str {
+    match why {
+        DeviceIndex::Missing => {
+            "Proton could not be reached, and this device has no search index to look in."
+        }
+        DeviceIndex::Unreadable => {
+            "Proton could not be reached, and this device's search index could not be read."
         }
     }
 }

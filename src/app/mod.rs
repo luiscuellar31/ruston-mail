@@ -42,7 +42,8 @@ use mailbox::ActionStart;
 use mailbox::PageRequest;
 pub(crate) use mailbox::RequestId;
 pub use mailbox::{
-    ActionRequest, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
+    ActionRequest, DeviceIndex, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest,
+    Step, UndoMove,
 };
 pub use reader::{ConversationReader, ReaderState};
 
@@ -94,6 +95,11 @@ pub enum Message {
     /// Asks the server for the first page matching what was typed, across folders.
     SearchSubmitted,
     SearchLoaded(SearchRequest, Result<ConversationPage, MailboxError>),
+    /// What this device's index found for a search Proton could not answer.
+    DeviceSearchLoaded(
+        SearchRequest,
+        Result<Option<ConversationPage>, MailboxError>,
+    ),
     ToggleMessageExpanded(String),
     /// Folds or unfolds one quoted passage of a message.
     ToggleQuoteExpanded(String, usize),
@@ -189,6 +195,8 @@ pub enum Message {
     /// Takes recipient domains written in another script, sent in their
     /// ASCII form, or refuses them.
     SetAcceptInternationalDomains(bool),
+    /// Searches this device's index when Proton cannot be reached, or not.
+    SetSearchDeviceOffline(bool),
     /// Starts a new message.
     OpenCompose,
     ReceiveMailto(crate::mailto::Request),
@@ -685,11 +693,27 @@ impl App {
             }
             Message::SearchSubmitted => return self.start_search(),
             Message::SearchLoaded(request, result) => {
+                // With Proton out of reach, this device's index answers
+                // instead when asked to; never for a later page, as the
+                // index gives all it finds at once.
+                let unreachable = matches!(result, Err(MailboxError::Connection));
+                if unreachable
+                    && request.page == 0
+                    && self.settings.search_device_offline
+                    && self.backend.is_some()
+                {
+                    return self.fetch_device_search(request);
+                }
                 let error = self
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_search(&request, result));
                 self.end_session_if_expired(error);
+            }
+            Message::DeviceSearchLoaded(request, found) => {
+                if let Some(mailbox) = self.mailbox.as_mut() {
+                    mailbox.finish_device_search(&request, found);
+                }
             }
             Message::ToggleMessageExpanded(id) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -1021,6 +1045,9 @@ impl App {
             Message::SetCheckRecipientProtection(on) => self.set_check_recipient_protection(on),
             Message::SetAcceptInternationalDomains(on) => {
                 self.set_accept_international_domains(on);
+            }
+            Message::SetSearchDeviceOffline(on) => {
+                self.remember(|settings| settings.search_device_offline = on);
             }
             Message::OpenCompose => {
                 self.showing_settings = false;
@@ -1603,6 +1630,18 @@ impl App {
         Effects::perform(
             async move { backend.search(&query, page, page_size).await },
             move |result| Message::SearchLoaded(request.clone(), result),
+        )
+    }
+
+    /// Looks in this device's index for a search Proton could not answer.
+    fn fetch_device_search(&self, request: SearchRequest) -> Effects {
+        let Some(backend) = self.backend.clone() else {
+            return Effects::none();
+        };
+        let query = request.query.clone();
+        Effects::perform(
+            async move { backend.search_local(&query).await },
+            move |found| Message::DeviceSearchLoaded(request, found),
         )
     }
 
