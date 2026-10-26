@@ -494,17 +494,27 @@ every command, and `ruston-cli <command> --help` its options.
 
 `ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
 terminal interface with folders, conversations and a reader. It is being built
-for 0.9.0: for now it lists the folders and labels with how many of their
-conversations are unread, a folder's 50 newest conversations, and the one you
+for 0.9.0. It lists the folders and labels with how many of their
+conversations are unread, a folder's conversations, newest first, each marked
+unread (•), starred (★) or with attachments (+), and the conversation you
 open, with each message's headers, its signature's verdict and its body as
 `conversations read` shows it. Opening a conversation there does not mark it
-read yet. `j`, `k` or the arrows move or scroll, PageUp and PageDown scroll the
-reader a page, `g` and `G` go to the top or the bottom, Enter opens a folder or
-a conversation, Tab and Shift+Tab move between the panes, `?` lists the keys,
-and `q` or Ctrl+C quits. With no session saved, it signs in first, as
-`ruston-cli login` does; `--demo` opens the fictional mailbox. Away from a
-terminal, as in a script, `ruston-cli` with no command still prints the help
-and ends with status 2.
+read yet. With no session saved, it signs in first, as `ruston-cli login`
+does; `--demo` opens the fictional mailbox. Away from a terminal, as in a
+script, `ruston-cli` with no command still prints the help and ends with
+status 2.
+
+| Key | Action |
+| --- | --- |
+| Tab, Shift+Tab | Next or previous pane |
+| `j`, `k`, arrows | Move, or scroll the reader |
+| PageUp, PageDown | Scroll the reader a page |
+| `g`, `G`, Home, End | Go to the top or the bottom |
+| Enter | Open the folder or conversation |
+| Ctrl+R | Refresh the folders and the list |
+| `?` | Show or hide the keys |
+| Esc | Close the keys |
+| `q`, Ctrl+C | Quit |
 
 The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with

@@ -13,6 +13,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ruston_core::Conversation;
+use ruston_core::model::enums::label_ids;
 
 /// Below this width the panes take turns on the screen, as the desktop's
 /// compact view does.
@@ -25,12 +26,13 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 8] = [
+const KEYS: [(&str, &str); 9] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
     ("g, G, Home, End", "go to the top or the bottom"),
     ("Enter", "open the folder or conversation"),
+    ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys"),
     ("q, Ctrl+C", "quit"),
@@ -168,10 +170,25 @@ fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
     );
 }
 
-/// One row of the list: whether it is unread, its day, who wrote it and its
-/// subject. Unread conversations are bold.
+/// One row of the list: whether it is unread (•), starred (★) or has
+/// attachments (+), its day, who wrote it and its subject. Unread
+/// conversations are bold.
 fn conversation_row(conversation: &Conversation) -> ListItem<'static> {
     let unread = conversation.num_unread > 0;
+    let starred = conversation
+        .labels
+        .iter()
+        .any(|label| label.id == label_ids::STARRED);
+    let flags = format!(
+        "{}{}{}",
+        if unread { "•" } else { " " },
+        if starred { "★" } else { " " },
+        if conversation.num_attachments > 0 {
+            "+"
+        } else {
+            " "
+        },
+    );
     let time = render::fmt_time(conversation.time);
     let day = time.get(..10).unwrap_or(&time);
     let sender = conversation.senders.first().map_or("-", |sender| {
@@ -187,7 +204,7 @@ fn conversation_row(conversation: &Conversation) -> ListItem<'static> {
         Style::new()
     };
     ListItem::new(Line::from(vec![
-        Span::raw(format!("{} {day}  ", if unread { "•" } else { " " })),
+        Span::raw(format!("{flags} {day}  ")),
         Span::styled(
             format!("{:<SENDER_WIDTH$.SENDER_WIDTH$}  ", screen_line(sender)),
             style,
@@ -328,7 +345,7 @@ mod tests {
         assert!(screen.contains("  2024"), "{screen}");
         // The pane is 48 columns wide: the subject is cut where it ends.
         assert!(
-            screen.contains("• 2024-04-24  alex@example.test   Quarterly re│"),
+            screen.contains("•   2024-04-24  alex@example.test   Quarterly │"),
             "{screen}"
         );
         let status = screen.lines().last().unwrap();
@@ -340,12 +357,30 @@ mod tests {
     }
 
     #[test]
+    fn a_row_marks_a_starred_conversation_and_one_with_attachments() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let conversation = &mut app.conversations[0];
+        conversation.num_unread = 0;
+        conversation.num_attachments = 2;
+        conversation.labels = vec![ruston_core::model::ConversationLabel {
+            id: label_ids::STARRED.into(),
+            ..Default::default()
+        }];
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(
+            screen.contains(" ★+ 2024-04-24  alex@example.test"),
+            "{screen}"
+        );
+    }
+
+    #[test]
     fn mail_text_cannot_draw_controls_or_spill_into_other_rows() {
         let app = with_mail(
             "evil\x1b[2J\u{202e}@example.test",
             "first\nsecond\x1b]52;c;payload\x07\tend",
         );
-        let buffer = drawn(120, 30, &app, &Theme::new(false));
+        // Wide enough for the whole subject to show.
+        let buffer = drawn(200, 30, &app, &Theme::new(false));
         assert!(
             buffer.content().iter().all(|cell| cell
                 .symbol()

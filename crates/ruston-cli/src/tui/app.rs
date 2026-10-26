@@ -61,6 +61,8 @@ pub(crate) struct App {
     pub(crate) selected_place: usize,
     /// The name of the place whose conversations the list shows.
     pub(crate) listed: String,
+    /// Its label ID, to list it again.
+    listed_id: String,
     /// Its first page of conversations, newest first.
     pub(crate) conversations: Vec<Conversation>,
     /// How many conversations it has in all.
@@ -97,6 +99,7 @@ pub(crate) enum Message {
     Top,
     Bottom,
     Open,
+    Refresh,
     ToggleHelp,
     CloseHelp,
     Quit,
@@ -129,6 +132,7 @@ impl App {
             places: Vec::new(),
             selected_place: 0,
             listed: "Inbox".to_owned(),
+            listed_id: label_ids::INBOX.to_owned(),
             conversations: Vec::new(),
             total: 0,
             selected_conversation: 0,
@@ -167,9 +171,19 @@ impl App {
             Message::Top => self.step(isize::MIN),
             Message::Bottom => self.step(isize::MAX),
             Message::Open => return self.open(),
+            Message::Refresh => {
+                let (id, name) = (self.listed_id.clone(), self.listed.clone());
+                return vec![Effect::Places, self.list(id, name)];
+            }
             Message::PlacesLoaded(Ok(places)) => {
+                let selected = self
+                    .places
+                    .get(self.selected_place)
+                    .map(|place| place.id.clone());
                 self.places = places;
-                self.selected_place = 0;
+                self.selected_place = selected
+                    .and_then(|id| self.places.iter().position(|place| place.id == id))
+                    .unwrap_or(0);
             }
             Message::PlacesLoaded(Err(error)) => {
                 self.notice = Some(format!("Cannot load the folders: {error}"));
@@ -177,9 +191,20 @@ impl App {
             Message::ConversationsLoaded { request, .. } if request != self.list_request => {}
             Message::ConversationsLoaded { result, .. } => match result {
                 Ok((total, conversations)) => {
+                    // A refresh keeps the selection on the same conversation.
+                    let selected = self
+                        .conversations
+                        .get(self.selected_conversation)
+                        .map(|conversation| conversation.id.clone());
                     self.total = total;
                     self.conversations = conversations;
-                    self.selected_conversation = 0;
+                    self.selected_conversation = selected
+                        .and_then(|id| {
+                            self.conversations
+                                .iter()
+                                .position(|conversation| conversation.id == id)
+                        })
+                        .unwrap_or(0);
                     self.notice = None;
                 }
                 Err(error) => {
@@ -259,6 +284,7 @@ impl App {
         self.list_request += 1;
         self.notice = Some(format!("Loading {name}…"));
         self.listed = name;
+        self.listed_id.clone_from(&id);
         Effect::Conversations {
             request: self.list_request,
             place: id,
@@ -292,7 +318,11 @@ impl Message {
 
     fn from_key(key: &KeyEvent) -> Option<Self> {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            return (key.code == KeyCode::Char('c')).then_some(Self::Quit);
+            return match key.code {
+                KeyCode::Char('c') => Some(Self::Quit),
+                KeyCode::Char('r') => Some(Self::Refresh),
+                _ => None,
+            };
         }
         match key.code {
             KeyCode::Char('q') => Some(Self::Quit),
@@ -513,6 +543,42 @@ mod tests {
         assert_eq!(app.selected_conversation, 1);
         press(&mut app, KeyCode::Home);
         assert_eq!(app.selected_conversation, 0);
+    }
+
+    #[test]
+    fn ctrl_r_reloads_the_folders_and_the_list_keeping_the_selection() {
+        let mut app = loaded();
+        app.selected_place = 1;
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Down);
+        let refresh = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        let effects = app.update(Message::from_event(&refresh).unwrap());
+        assert_eq!(
+            effects,
+            [
+                Effect::Places,
+                Effect::Conversations {
+                    request: 2,
+                    place: label_ids::INBOX.into()
+                }
+            ]
+        );
+        assert_eq!(app.notice.as_deref(), Some("Loading Inbox…"));
+        // New mail came in above the selected conversation, b.
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            result: Ok((
+                3,
+                vec![conversation("new"), conversation("a"), conversation("b")],
+            )),
+        });
+        assert_eq!(app.selected_conversation, 2);
+        app.update(Message::PlacesLoaded(Ok(vec![
+            place("folder-0", "Added"),
+            place(label_ids::INBOX, "Inbox"),
+            place("folder-1", "Work"),
+        ])));
+        assert_eq!(app.places[app.selected_place].name, "Work");
     }
 
     #[test]
