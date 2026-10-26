@@ -63,8 +63,12 @@ pub(crate) struct App {
     pub(crate) listed: String,
     /// Its label ID, to list it again.
     listed_id: String,
-    /// Its first page of conversations, newest first.
+    /// The pages of its conversations loaded so far, newest first.
     pub(crate) conversations: Vec<Conversation>,
+    /// The next page of them to ask for; 0 until the first has come.
+    next_page: u32,
+    /// Whether that page is on its way.
+    loading_more: bool,
     /// How many conversations it has in all.
     pub(crate) total: u32,
     /// Which conversation the list's selection is on.
@@ -106,6 +110,7 @@ pub(crate) enum Message {
     PlacesLoaded(Result<Vec<Place>, String>),
     ConversationsLoaded {
         request: u64,
+        page: u32,
         result: Result<(u32, Vec<Conversation>), String>,
     },
     ConversationLoaded {
@@ -118,8 +123,15 @@ pub(crate) enum Message {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Effect {
     Places,
-    Conversations { request: u64, place: String },
-    Conversation { request: u64, id: String },
+    Conversations {
+        request: u64,
+        place: String,
+        page: u32,
+    },
+    Conversation {
+        request: u64,
+        id: String,
+    },
 }
 
 impl App {
@@ -134,6 +146,8 @@ impl App {
             listed: "Inbox".to_owned(),
             listed_id: label_ids::INBOX.to_owned(),
             conversations: Vec::new(),
+            next_page: 0,
+            loading_more: false,
             total: 0,
             selected_conversation: 0,
             reading: None,
@@ -165,7 +179,7 @@ impl App {
             Message::NextPane => self.focus = self.focus.next(),
             Message::PreviousPane => self.focus = self.focus.previous(),
             Message::Up => self.step(-1),
-            Message::Down => self.step(1),
+            Message::Down => return self.down(),
             Message::PageUp => self.step(-self.page()),
             Message::PageDown => self.step(self.page()),
             Message::Top => self.step(isize::MIN),
@@ -189,6 +203,26 @@ impl App {
                 self.notice = Some(format!("Cannot load the folders: {error}"));
             }
             Message::ConversationsLoaded { request, .. } if request != self.list_request => {}
+            Message::ConversationsLoaded { page, result, .. } if page > 0 => {
+                self.loading_more = false;
+                match result {
+                    Ok((total, more)) => {
+                        // Mail that came in meanwhile pushes some of the
+                        // listed conversations onto this page too.
+                        let more: Vec<Conversation> = more
+                            .into_iter()
+                            .filter(|new| self.conversations.iter().all(|old| old.id != new.id))
+                            .collect();
+                        self.conversations.extend(more);
+                        self.total = total;
+                        self.next_page = page + 1;
+                        self.notice = None;
+                    }
+                    Err(error) => {
+                        self.notice = Some(format!("Cannot load more of {}: {error}", self.listed));
+                    }
+                }
+            }
             Message::ConversationsLoaded { result, .. } => match result {
                 Ok((total, conversations)) => {
                     // A refresh keeps the selection on the same conversation.
@@ -198,6 +232,7 @@ impl App {
                         .map(|conversation| conversation.id.clone());
                     self.total = total;
                     self.conversations = conversations;
+                    self.next_page = 1;
                     self.selected_conversation = selected
                         .and_then(|id| {
                             self.conversations
@@ -223,6 +258,30 @@ impl App {
                 }
             },
         }
+        Vec::new()
+    }
+
+    /// Moves down a row, and at the last row of a list with more to it,
+    /// asks for its next page, which lands below. While a list's first page
+    /// is on its way, the rows shown are from before it, so none follow.
+    fn down(&mut self) -> Vec<Effect> {
+        let at_end = self.selected_conversation + 1 >= self.conversations.len();
+        let more = self.conversations.len() < usize::try_from(self.total).unwrap_or(usize::MAX);
+        if self.focus == Pane::Conversations
+            && at_end
+            && more
+            && self.next_page > 0
+            && !self.loading_more
+        {
+            self.loading_more = true;
+            self.notice = Some(format!("Loading more of {}…", self.listed));
+            return vec![Effect::Conversations {
+                request: self.list_request,
+                place: self.listed_id.clone(),
+                page: self.next_page,
+            }];
+        }
+        self.step(1);
         Vec::new()
     }
 
@@ -282,12 +341,15 @@ impl App {
     /// answer still on its way for another one too late.
     fn list(&mut self, id: String, name: String) -> Effect {
         self.list_request += 1;
+        self.next_page = 0;
+        self.loading_more = false;
         self.notice = Some(format!("Loading {name}…"));
         self.listed = name;
         self.listed_id.clone_from(&id);
         Effect::Conversations {
             request: self.list_request,
             place: id,
+            page: 0,
         }
     }
 }
@@ -384,6 +446,7 @@ mod tests {
             place("folder-1", "Work"),
         ])));
         app.update(Message::ConversationsLoaded {
+            page: 0,
             request,
             result: Ok((2, vec![conversation("a"), conversation("b")])),
         });
@@ -399,7 +462,8 @@ mod tests {
                 Effect::Places,
                 Effect::Conversations {
                     request: 1,
-                    place: label_ids::INBOX.into()
+                    place: label_ids::INBOX.into(),
+                    page: 0
                 }
             ]
         );
@@ -423,7 +487,8 @@ mod tests {
             effects,
             [Effect::Conversations {
                 request: 2,
-                place: "folder-1".into()
+                place: "folder-1".into(),
+                page: 0
             }]
         );
         assert_eq!(app.focus, Pane::Conversations);
@@ -438,11 +503,13 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         // The Inbox's answer, asked for first, arrives after Work was asked for.
         app.update(Message::ConversationsLoaded {
+            page: 0,
             request: 1,
             result: Ok((1, vec![conversation("old")])),
         });
         assert_eq!(app.total, 2);
         app.update(Message::ConversationsLoaded {
+            page: 0,
             request: 2,
             result: Ok((1, vec![conversation("work")])),
         });
@@ -455,6 +522,7 @@ mod tests {
         let mut app = loaded();
         press(&mut app, KeyCode::Enter);
         app.update(Message::ConversationsLoaded {
+            page: 0,
             request: 2,
             result: Err("offline".into()),
         });
@@ -559,13 +627,15 @@ mod tests {
                 Effect::Places,
                 Effect::Conversations {
                     request: 2,
-                    place: label_ids::INBOX.into()
+                    place: label_ids::INBOX.into(),
+                    page: 0
                 }
             ]
         );
         assert_eq!(app.notice.as_deref(), Some("Loading Inbox…"));
         // New mail came in above the selected conversation, b.
         app.update(Message::ConversationsLoaded {
+            page: 0,
             request: 2,
             result: Ok((
                 3,
@@ -579,6 +649,115 @@ mod tests {
             place("folder-1", "Work"),
         ])));
         assert_eq!(app.places[app.selected_place].name, "Work");
+    }
+
+    #[test]
+    fn down_at_the_end_of_a_longer_list_loads_its_next_page_below() {
+        let mut app = loaded();
+        app.total = 5;
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_conversation, 1);
+        let effects = press(&mut app, KeyCode::Down);
+        assert_eq!(
+            effects,
+            [Effect::Conversations {
+                request: 1,
+                place: label_ids::INBOX.into(),
+                page: 1
+            }]
+        );
+        assert_eq!(app.notice.as_deref(), Some("Loading more of Inbox…"));
+        // Only once at a time.
+        assert!(press(&mut app, KeyCode::Down).is_empty());
+        // "b" came back on this page as well, pushed down by new mail.
+        app.update(Message::ConversationsLoaded {
+            request: 1,
+            page: 1,
+            result: Ok((5, vec![conversation("b"), conversation("c")])),
+        });
+        let ids: Vec<&str> = app.conversations.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+        assert_eq!(app.notice, None);
+        assert_eq!(app.selected_conversation, 1);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            press(&mut app, KeyCode::Down),
+            [Effect::Conversations {
+                request: 1,
+                place: label_ids::INBOX.into(),
+                page: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn a_list_with_nothing_more_to_it_just_stays_at_its_end() {
+        let mut app = loaded();
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Down);
+        assert!(press(&mut app, KeyCode::Down).is_empty());
+        assert_eq!(app.selected_conversation, 1);
+    }
+
+    #[test]
+    fn a_next_page_for_a_list_since_replaced_comes_too_late() {
+        let mut app = loaded();
+        app.total = 5;
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::End);
+        assert_eq!(press(&mut app, KeyCode::Down).len(), 1);
+        let refresh = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        app.update(Message::from_event(&refresh).unwrap());
+        app.update(Message::ConversationsLoaded {
+            request: 1,
+            page: 1,
+            result: Ok((5, vec![conversation("late")])),
+        });
+        assert!(app.conversations.iter().all(|c| c.id != "late"));
+        // A failed next page can be asked for again.
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((5, vec![conversation("a"), conversation("b")])),
+        });
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Down);
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 1,
+            result: Err("offline".into()),
+        });
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Cannot load more of Inbox: offline")
+        );
+        assert_eq!(press(&mut app, KeyCode::Down).len(), 1);
+    }
+
+    #[test]
+    fn a_list_whose_first_page_is_on_its_way_asks_for_no_more_yet() {
+        let mut app = loaded();
+        app.total = 5;
+        // Work is asked for; the Inbox's rows stay until its answer comes.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::End);
+        assert!(press(&mut app, KeyCode::Down).is_empty());
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((5, vec![conversation("w1"), conversation("w2")])),
+        });
+        press(&mut app, KeyCode::End);
+        assert_eq!(
+            press(&mut app, KeyCode::Down),
+            [Effect::Conversations {
+                request: 2,
+                place: "folder-1".into(),
+                page: 1
+            }]
+        );
     }
 
     #[test]

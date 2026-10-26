@@ -704,8 +704,11 @@ instead of an unknown outcome.
   holds the state and what each key or answer does, without a terminal; what
   must load comes back from `update` as an effect, which `tui.rs` runs in a
   task, and each list or conversation request is numbered so an answer for an
-  earlier one is dropped. Keys count on press only, since Windows also reports
-  releases. [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
+  earlier one is dropped. A list loads a page at a time: moving past its last
+  row, once its first page has come, asks for the next under the same number,
+  and the page is added below without the conversations already listed. Keys
+  count on press only, since Windows also reports releases.
+  [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
   an opened conversation into the reader's lines, each message's headers,
   verdict and body as `conversations read` shows it, inside the task that
   loads it, since a large HTML body takes a while; reading it does not mark

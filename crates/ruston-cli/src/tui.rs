@@ -108,10 +108,15 @@ fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) 
             Effect::Places => {
                 Message::PlacesLoaded(mailbox.places().await.map_err(|error| error.to_string()))
             }
-            Effect::Conversations { request, place } => Message::ConversationsLoaded {
+            Effect::Conversations {
                 request,
+                place,
+                page,
+            } => Message::ConversationsLoaded {
+                request,
+                page,
                 result: mailbox
-                    .conversations(&place, 0)
+                    .conversations(&place, page)
                     .await
                     .map_err(|error| error.to_string()),
             },

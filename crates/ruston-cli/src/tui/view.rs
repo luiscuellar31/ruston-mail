@@ -232,6 +232,13 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     .areas(area);
     let detail = match &app.notice {
         Some(notice) => notice.clone(),
+        None if app.conversations.len() < usize::try_from(app.total).unwrap_or(usize::MAX) => {
+            format!(
+                "{} of {} conversation(s)",
+                app.conversations.len(),
+                app.total
+            )
+        }
         None => format!("{} conversation(s)", app.total),
     };
     let text = format!(" {} · {} · {detail}", app.account, app.listed);
@@ -446,6 +453,18 @@ mod tests {
         assert!(screen.contains("Quarterly report"), "{screen}");
         assert!(!screen.contains("Folders"), "{screen}");
         assert!(!screen.contains("Reader"), "{screen}");
+    }
+
+    #[test]
+    fn the_status_bar_says_how_much_of_a_longer_list_is_loaded() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.total = 120;
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        let status = screen.lines().last().unwrap();
+        assert!(
+            status.contains("Inbox · 1 of 120 conversation(s)"),
+            "{status}"
+        );
     }
 
     #[test]

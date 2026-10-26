@@ -498,11 +498,12 @@ for 0.9.0. It lists the folders and labels with how many of their
 conversations are unread, a folder's conversations, newest first, each marked
 unread (•), starred (★) or with attachments (+), and the conversation you
 open, with each message's headers, its signature's verdict and its body as
-`conversations read` shows it. Opening a conversation there does not mark it
-read yet. With no session saved, it signs in first, as `ruston-cli login`
-does; `--demo` opens the fictional mailbox. Away from a terminal, as in a
-script, `ruston-cli` with no command still prints the help and ends with
-status 2.
+`conversations read` shows it. The list holds 50 conversations at first and
+loads 50 more each time you move down past its last. Opening a conversation
+there does not mark it read yet. With no session saved, it signs in first, as
+`ruston-cli login` does; `--demo` opens the fictional mailbox. Away from a
+terminal, as in a script, `ruston-cli` with no command still prints the help
+and ends with status 2.
 
 | Key | Action |
 | --- | --- |
