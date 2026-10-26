@@ -437,7 +437,7 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
             let result = mailbox.change(&ids, &place, &change).await;
             Message::Changed {
                 change,
-                count: ids.len(),
+                ids,
                 result: result.map_err(|error| error.to_string()),
             }
         }

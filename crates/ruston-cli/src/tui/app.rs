@@ -283,8 +283,8 @@ pub(crate) enum Message {
     },
     Changed {
         change: Change,
-        /// How many conversations it was made to.
-        count: usize,
+        /// The conversations it was made to.
+        ids: Vec<String>,
         result: Result<(), String>,
     },
     /// Whether the place named `name` was emptied.
@@ -617,13 +617,20 @@ impl App {
             }
             // Proton owns the counts, and the list may have changed with
             // them: both load again, the selection kept where it can be.
-            Message::Changed { result: Ok(()), .. } => return self.reload(),
             Message::Changed {
                 change,
-                count,
+                ids,
+                result: Ok(()),
+            } => {
+                self.close_left(&change, &ids);
+                return self.reload();
+            }
+            Message::Changed {
+                change,
+                ids,
                 result: Err(error),
             } => {
-                let (_, failed) = wording(&change, count);
+                let (_, failed) = wording(&change, ids.len());
                 self.notice = Some(format!("{failed}: {error}"));
             }
             Message::Emptied { result: Ok(()), .. } => return self.reload(),
@@ -1447,6 +1454,39 @@ impl App {
             }
         };
         vec![Effect::Places, list]
+    }
+
+    /// Puts away the conversation the reader shows when `change`, made to
+    /// the conversations `ids`, took it out of the place listed, as Proton
+    /// does: moved to another folder, deleted forever, or no longer bearing
+    /// the label or the star the place lists. The keys go back to the list.
+    fn close_left(&mut self, change: &Change, ids: &[String]) {
+        let listed = self.listed_id.as_str();
+        let left = match change {
+            Change::Delete => true,
+            // All mail holds what is moved anywhere but Trash and Spam.
+            Change::Move(folder) if listed == label_ids::ALL_MAIL => {
+                folder == label_ids::TRASH || folder == label_ids::SPAM
+            }
+            Change::Move(folder) => folder != listed,
+            Change::Unlabel(label) => label == listed,
+            Change::Star(false) => listed == label_ids::STARRED,
+            Change::Star(true) | Change::Read(_) | Change::Label(_) => false,
+        };
+        if left
+            && self
+                .reading
+                .as_ref()
+                .is_some_and(|reading| ids.contains(&reading.id))
+        {
+            self.reading = None;
+            self.scroll = 0;
+            self.picking_link = None;
+            self.picking_attachment = None;
+            if self.focus == Pane::Reader {
+                self.focus = Pane::Conversations;
+            }
+        }
     }
 
     /// Asks for the conversation `id`, which the reader now shows, to be
@@ -2499,7 +2539,7 @@ mod tests {
         // Done, the folders and the list load again.
         let effects = app.update(Message::Changed {
             change: trash.clone(),
-            count: 1,
+            ids: vec!["b".into()],
             result: Ok(()),
         });
         assert_eq!(
@@ -2523,7 +2563,7 @@ mod tests {
         });
         app.update(Message::Changed {
             change: trash,
-            count: 1,
+            ids: vec!["b".into()],
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -2584,7 +2624,7 @@ mod tests {
         );
         app.update(Message::Changed {
             change: Change::Star(true),
-            count: 2,
+            ids: vec!["b".into(), "c".into()],
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -2608,7 +2648,7 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
         app.update(Message::Changed {
             change: Change::Star(true),
-            count: 1,
+            ids: vec!["b".into()],
             result: Ok(()),
         });
         assert!(app.marked.is_empty());
@@ -2781,7 +2821,7 @@ mod tests {
         );
         app.update(Message::Changed {
             change: Change::Delete,
-            count: 2,
+            ids: vec!["x".into(), "y".into()],
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -2790,7 +2830,7 @@ mod tests {
         );
         let effects = app.update(Message::Changed {
             change: Change::Delete,
-            count: 2,
+            ids: vec!["x".into(), "y".into()],
             result: Ok(()),
         });
         assert_eq!(effects[0], Effect::Places);
@@ -3130,6 +3170,47 @@ mod tests {
     }
 
     #[test]
+    fn the_reader_puts_away_a_conversation_a_change_took_out_of_the_list() {
+        let changed = |app: &mut App, change: Change, id: &str| {
+            app.update(Message::Changed {
+                change,
+                ids: vec![id.into()],
+                result: Ok(()),
+            });
+        };
+        let mut app = loaded();
+        app.reading = Some(reading(3));
+        app.focus = Pane::Reader;
+        // Starred, labelled or moved to the Inbox it shows, it stays.
+        changed(&mut app, Change::Star(true), "b");
+        changed(&mut app, Change::Label("label-1".into()), "b");
+        changed(&mut app, Change::Move(label_ids::INBOX.into()), "b");
+        // So does it when another conversation leaves.
+        changed(&mut app, Change::Move(label_ids::ARCHIVE.into()), "a");
+        assert!(app.reading.is_some());
+        assert_eq!(app.focus, Pane::Reader);
+        // Archived, it goes, and the keys go back to the list.
+        changed(&mut app, Change::Move(label_ids::ARCHIVE.into()), "b");
+        assert!(app.reading.is_none());
+        assert_eq!(app.focus, Pane::Conversations);
+        // In All mail, only Trash and Spam take it out.
+        let mut app = loaded();
+        command(&mut app, "search plans");
+        app.reading = Some(reading(3));
+        changed(&mut app, Change::Move(label_ids::ARCHIVE.into()), "b");
+        assert!(app.reading.is_some());
+        changed(&mut app, Change::Move(label_ids::TRASH.into()), "b");
+        assert!(app.reading.is_none());
+        // Unstarred in Starred, it goes too.
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('g'));
+        press(&mut app, KeyCode::Char('*'));
+        app.reading = Some(reading(3));
+        changed(&mut app, Change::Star(false), "b");
+        assert!(app.reading.is_none());
+    }
+
+    #[test]
     fn a_conversation_that_left_the_list_leaves_the_selection_in_its_place() {
         let mut app = loaded();
         app.focus = Pane::Conversations;
@@ -3408,7 +3489,7 @@ mod tests {
         );
         let effects = app.update(Message::Changed {
             change: Change::Star(true),
-            count: 1,
+            ids: vec!["p1".into()],
             result: Ok(()),
         });
         assert_eq!(

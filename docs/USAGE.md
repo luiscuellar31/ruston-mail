@@ -527,7 +527,8 @@ you start it with `ruston-cli tui --keep-unread`. `*` stars or unstars the
 conversation selected in the list, or the one the reader shows, `u` marks it
 unread and `r`, in the list, read, `a` archives it, `s` moves it to Spam, `i`
 to the Inbox, and `t` or Delete to Trash; then the list and the counts load
-again. `l` starts `:label`, which puts one of your labels on it, and `m`
+again, and a conversation the reader shows that left the folder listed is
+put away. `l` starts `:label`, which puts one of your labels on it, and `m`
 starts `:move`. Space or `x` marks the selected conversation and moves down,
 and Ctrl+A marks them all: with some marked, an action from the list acts on
 all of them, and Esc takes the marks away. In Trash or Spam, Ctrl+Backspace or

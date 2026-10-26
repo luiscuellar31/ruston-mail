@@ -756,7 +756,10 @@ instead of an unknown outcome.
   conversations marked with Space or `x`, from the list, or else on its selection or
   the conversation the reader shows, through `Mailbox::change`, one request
   for all, and then load the list and the counts again, which Proton owns, as
-  the desktop does. Deleting forever, with Ctrl+Backspace or `:delete`, and
+  the desktop does. When a change took the conversation the reader shows out
+  of the place listed, the reader puts it away; the answer names the
+  conversations changed, since a list loaded again holds only its first
+  page and cannot tell. Deleting forever, with Ctrl+Backspace or `:delete`, and
   `:empty` work only in Trash and Spam, as `messages empty` does, and `Mailbox`
   refuses them anywhere else; each first asks a question over the panes,
   naming what it deletes, which takes every key until one answers it: `y`
