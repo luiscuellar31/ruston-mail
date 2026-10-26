@@ -6,7 +6,11 @@
 
 use crate::render;
 use crate::terminal::{screen_line, screen_text};
-use ruston_core::{Conversation, ConversationMessage, MessageMetadata};
+use ruston_core::model::enums::label_ids;
+use ruston_core::{
+    AddressInfo, Conversation, ConversationMessage, MessageMetadata, Recipient, reply_recipients,
+    reply_redirected,
+};
 use std::ops::Range;
 
 /// What stands between two messages.
@@ -29,6 +33,28 @@ pub(crate) struct ReadingAttachment {
     pub(crate) size: u64,
 }
 
+/// The message an answer to the open conversation answers, its last one
+/// that is not a draft, with what writing the answer shows of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Answerable {
+    pub(crate) message_id: String,
+    /// The account's address it reached, which core answers from.
+    pub(crate) from: Option<String>,
+    /// Its subject and who sent it, safe to draw.
+    pub(crate) subject: String,
+    pub(crate) sender: String,
+    /// Whom a reply goes to, as core would send it, and whom Reply all
+    /// copies in as well.
+    pub(crate) to: Vec<String>,
+    pub(crate) cc: Vec<String>,
+    /// Its sender, when the message asks for replies to go elsewhere.
+    pub(crate) redirected_from: Option<String>,
+    /// Whether it opened: only then can an answer quote it.
+    pub(crate) opened: bool,
+    /// The names of the files a forward carries, safe to draw.
+    pub(crate) files: Vec<String>,
+}
+
 /// A conversation as the reader shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Reading {
@@ -45,10 +71,19 @@ pub(crate) struct Reading {
     pub(crate) links: Vec<String>,
     /// The attachments of its opened messages, in order, inline ones aside.
     pub(crate) attachments: Vec<ReadingAttachment>,
+    /// What an answer to it answers, when it has a message that is not a
+    /// draft; boxed, as the reading travels in a message to the loop.
+    pub(crate) answer: Option<Box<Answerable>>,
 }
 
 impl Reading {
-    pub(crate) fn new(conversation: &Conversation, messages: &[ConversationMessage]) -> Self {
+    /// The reader's view of `conversation` and its `messages`, oldest first;
+    /// `own` are the account's addresses, which a reply leaves out.
+    pub(crate) fn new(
+        conversation: &Conversation,
+        messages: &[ConversationMessage],
+        own: &[AddressInfo],
+    ) -> Self {
         let mut lines = Vec::new();
         let mut quotes = Vec::new();
         let mut links: Vec<String> = Vec::new();
@@ -109,8 +144,71 @@ impl Reading {
             quotes,
             links,
             attachments,
+            answer: answerable(messages, own).map(Box::new),
         }
     }
+}
+
+/// What an answer to a conversation of `messages`, oldest first, answers:
+/// its last message that is not a draft, addressed as core would address a
+/// reply, leaving out the account's `own` addresses, and from the one of
+/// them it reached.
+fn answerable(messages: &[ConversationMessage], own: &[AddressInfo]) -> Option<Answerable> {
+    let draft = |meta: &MessageMetadata| {
+        meta.label_ids
+            .iter()
+            .any(|label| label == label_ids::DRAFTS || label == label_ids::ALL_DRAFTS)
+    };
+    let (meta, reply_tos, files, opened): (&MessageMetadata, &[Recipient], Vec<String>, bool) =
+        messages
+            .iter()
+            .rev()
+            .map(|message| match message {
+                ConversationMessage::Opened(message) => (
+                    &message.meta,
+                    message.reply_tos.as_slice(),
+                    message
+                        .attachments
+                        .iter()
+                        .filter(|attachment| !attachment.is_inline())
+                        .map(|attachment| screen_line(&attachment.name))
+                        .collect(),
+                    true,
+                ),
+                ConversationMessage::Unreadable(message) => (
+                    &message.meta,
+                    message.reply_tos.as_slice(),
+                    Vec::new(),
+                    false,
+                ),
+            })
+            .find(|(meta, ..)| !draft(meta))?;
+    let emails: Vec<String> = own.iter().map(|address| address.email.clone()).collect();
+    let recipients = reply_recipients(meta, reply_tos, &emails);
+    let from = own
+        .iter()
+        .find(|address| address.id == meta.address_id)
+        .map(|address| screen_line(&address.email));
+    let sender = meta.sender.address.trim();
+    let redirected_from =
+        (reply_redirected(meta, reply_tos) && !recipients.to.is_empty() && !sender.is_empty())
+            .then(|| screen_line(sender));
+    let named = if meta.sender.name.is_empty() {
+        &meta.sender.address
+    } else {
+        &meta.sender.name
+    };
+    Some(Answerable {
+        message_id: meta.id.clone(),
+        from,
+        subject: screen_line(render::subject_or_empty(&meta.subject)),
+        sender: screen_line(named),
+        to: recipients.to,
+        cc: recipients.cc,
+        redirected_from,
+        opened,
+        files,
+    })
 }
 
 /// `bytes` as the desktop shows an attachment's size: KB, MB or GB, with one
@@ -274,7 +372,7 @@ mod tests {
             }),
         ];
 
-        let reading = Reading::new(&conversation, &messages);
+        let reading = Reading::new(&conversation, &messages, &[]);
         assert_eq!(reading.subject, "Plans[2J for May");
         let text = reading.lines.join("\n");
         assert!(
@@ -298,6 +396,61 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_answers_the_last_message_that_is_not_a_draft() {
+        let own = [AddressInfo {
+            id: "addr-2".into(),
+            email: "alias@example.test".into(),
+        }];
+        let mut first = meta("alex@example.test");
+        first.id = "m1".into();
+        first.subject = "Plans\x1b[2J".into();
+        first.address_id = "addr-2".into();
+        first.cc_list = vec![
+            Recipient::new("sam@example.test"),
+            Recipient::new("alias@example.test"),
+        ];
+        let answered = ConversationMessage::Opened(FullMessage {
+            meta: first,
+            body: "Hi".into(),
+            mime_type: "text/plain".into(),
+            verdict: Verdict::Verified,
+            attachments: Vec::new(),
+            reply_tos: vec![Recipient::new("list@example.test")],
+        });
+        let mut draft = meta("alias@example.test");
+        draft.id = "m2".into();
+        draft.label_ids = vec![label_ids::DRAFTS.into()];
+        let draft = ConversationMessage::Unreadable(UnreadableMessage {
+            meta: draft,
+            reply_tos: Vec::new(),
+            error: Error::Other("a draft".into()),
+        });
+        let reading = Reading::new(&Conversation::default(), &[answered, draft], &own);
+        let answer = reading.answer.unwrap();
+        assert_eq!(answer.message_id, "m1");
+        // From the address it reached, to whom it asks replies to go, and
+        // for Reply all, everyone else but the account.
+        assert_eq!(answer.from.as_deref(), Some("alias@example.test"));
+        assert_eq!(answer.to, ["list@example.test"]);
+        assert_eq!(answer.cc, ["me@example.test", "sam@example.test"]);
+        assert_eq!(answer.redirected_from.as_deref(), Some("alex@example.test"));
+        assert_eq!(answer.subject, "Plans[2J");
+        assert!(answer.opened);
+        // A conversation of drafts alone answers nothing.
+        let mut only = meta("alias@example.test");
+        only.label_ids = vec![label_ids::ALL_DRAFTS.into()];
+        let only = ConversationMessage::Unreadable(UnreadableMessage {
+            meta: only,
+            reply_tos: Vec::new(),
+            error: Error::Other("a draft".into()),
+        });
+        assert_eq!(
+            Reading::new(&Conversation::default(), &[only], &own).answer,
+            None
+        );
+    }
+
+    #[test]
     fn quoted_passages_of_three_lines_or_more_fold_unless_all_is_quoted() {
         let messages = [
             opened(
@@ -307,7 +460,7 @@ mod tests {
             ),
             opened("sam@example.test", "> all\n> of it\n\n> quoted"),
         ];
-        let reading = Reading::new(&Conversation::default(), &messages);
+        let reading = Reading::new(&Conversation::default(), &messages, &[]);
         assert!(reading.links.is_empty());
         let at = |text: &str| reading.lines.iter().position(|line| line == text).unwrap();
         let (first, second) = (at("> Shall we meet?"), at("> x"));
@@ -349,7 +502,7 @@ mod tests {
         if let ConversationMessage::Opened(full) = &mut message {
             full.mime_type = "text/html".into();
         }
-        let reading = Reading::new(&Conversation::default(), &[message]);
+        let reading = Reading::new(&Conversation::default(), &[message], &[]);
         let text = reading.lines.join(
             "
 ",
@@ -369,7 +522,7 @@ mod tests {
         let (conversation, messages) = crate::demo::DemoSession::new()
             .conversation("conv-demo-03")
             .unwrap();
-        let reading = Reading::new(&conversation, &messages);
+        let reading = Reading::new(&conversation, &messages, &[]);
         let text = reading.lines.join("\n");
         assert!(
             text.contains("[the shared agenda](https://example.com/offsite/agenda)"),
@@ -403,7 +556,7 @@ mod tests {
                 },
             ];
         }
-        let reading = Reading::new(&Conversation::default(), &[message]);
+        let reading = Reading::new(&Conversation::default(), &[message], &[]);
         assert_eq!(
             reading.attachments,
             [ReadingAttachment {
@@ -438,7 +591,7 @@ mod tests {
                 "> Plans: https://example.test/plan\nNotes: https://example.test/notes",
             ),
         ];
-        let reading = Reading::new(&Conversation::default(), &messages);
+        let reading = Reading::new(&Conversation::default(), &messages, &[]);
         assert_eq!(
             reading.links,
             ["https://example.test/plan", "https://example.test/notes"]

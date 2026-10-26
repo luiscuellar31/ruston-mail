@@ -545,7 +545,15 @@ the fictional mailbox. Away from a terminal, as in a script, `ruston-cli` with
 no command still prints the help and ends with status 2.
 
 `n` or Ctrl+N, as in Proton Mail, or `:compose` writes a new message, which
-takes the whole screen. It goes from your primary address, which From shows.
+takes the whole screen. In the reader, `r` replies to the conversation's last
+message, `R` (Shift+R) replies to everyone it went to, and `F` (Shift+F)
+forwards it with its files, as in Proton; `:reply`, `:replyall` and
+`:forward` do the same. A reply opens addressed as Proton would address it,
+which you can change, and says when the message asked for replies to go to
+someone other than its sender. Proton writes an answer's subject, and the
+original goes under your text unless Ctrl+Q leaves it out. A message goes
+from your primary address, or an answer from the one the original reached;
+From shows which.
 To, Cc and Bcc take addresses separated by commas or semicolons; a domain in
 another script is refused unless you type it in its `xn--` form, as the
 desktop does unless told otherwise. Tab and Shift+Tab move between the fields
@@ -579,6 +587,7 @@ the demo puts what it sends in its Sent.
 | Ctrl+Backspace | Delete it forever, in Trash or Spam, once you answer `y` |
 | `l`, `m` | Label it, or move it to a folder |
 | `n`, Ctrl+N | Write a new message |
+| `r`, `R`, `F` | In the reader: reply, reply to all, or forward |
 | Space, `x` | Mark it, for an action on all marked |
 | Ctrl+A | Mark them all, or none |
 | `/`, Ctrl+F | Search all mail |
@@ -595,6 +604,7 @@ the demo puts what it sends in its Sent.
 | Up, Down | Move a row, or to the field above or below |
 | Enter | Start a new line in the text, or go to the next field |
 | Ctrl+Enter, Ctrl+S | Send it, once you answer `y` |
+| Ctrl+Q | In an answer, leave the original out, or put it back |
 | Esc, Ctrl+C | Close it, asking first when something is written |
 
 | Command | Action |
@@ -607,6 +617,7 @@ the demo puts what it sends in its Sent.
 | `:spam`, `:notspam` | Move it to Spam, or out of Spam to the Inbox |
 | `:label LABEL`, `:unlabel LABEL` | Put one of your labels on it, or take it off |
 | `:compose` | Write a new message |
+| `:reply`, `:replyall`, `:forward` | Reply to the open conversation, reply to all, or forward it |
 | `:delete` | Delete it forever, in Trash or Spam, once you answer `y` |
 | `:empty` | Delete everything in Trash or Spam forever, once you answer `y` |
 | `:search WORDS` | Search all mail for the words |

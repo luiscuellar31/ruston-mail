@@ -11,11 +11,12 @@ use std::sync::Mutex;
 
 use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::mail::organize::folder_id_among;
+use ruston_core::mail::send::{forward_subject, reply_subject};
 use ruston_core::model::ConversationLabel;
 use ruston_core::model::enums::{filter, label_ids, label_type, message_flag};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
-    Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, RecipientProtection,
+    Filter, FullMessage, Label, LabelCount, MessageMetadata, Quote, Recipient, RecipientProtection,
     Result, Verdict,
 };
 use serde_json::json;
@@ -25,7 +26,7 @@ use crate::cli::{
     FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd,
 };
 use crate::commands::contacts;
-use crate::mailbox::{Change, Outgoing};
+use crate::mailbox::{Change, Outgoing, OutgoingKind};
 use crate::render;
 
 /// Said on standard error before every demo command, so a fictional send,
@@ -550,7 +551,7 @@ fn demo_contacts() -> Vec<Contact> {
     ]
 }
 
-fn demo_addresses() -> Vec<AddressInfo> {
+pub(crate) fn demo_addresses() -> Vec<AddressInfo> {
     vec![
         AddressInfo {
             id: "addr-demo-01".to_string(),
@@ -804,8 +805,11 @@ impl DemoSession {
         read_conversation(messages, self.snapshot(), id)
     }
 
-    /// Keeps `outgoing` as a message the demo's user sent just now, in a
-    /// conversation of its own in Sent, as Proton would list it.
+    /// Keeps `outgoing` as a message the demo's user sent just now, as
+    /// Proton would: a new one in a conversation of its own, an answer in
+    /// the conversation of the message it answers, with the subject core
+    /// gives it and, unless left out, that message quoted under its text as
+    /// core quotes it in plain text. Sent lists either.
     pub(crate) fn send(&self, outgoing: &Outgoing) {
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -823,19 +827,41 @@ impl DemoSession {
         };
         let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
         let number = messages.len() + 1;
-        let conversation_id = format!("conv-demo-sent-{number}");
+        let answered = match &outgoing.kind {
+            OutgoingKind::New => None,
+            OutgoingKind::Reply { message_id, .. } | OutgoingKind::Forward { message_id, .. } => {
+                messages.iter().find(|m| m.meta.id == *message_id).cloned()
+            }
+        };
+        let (subject, conversation_id) = match (&outgoing.kind, &answered) {
+            (OutgoingKind::Reply { .. }, Some(original)) => (
+                reply_subject(&original.meta.subject),
+                original.meta.conversation_id.clone(),
+            ),
+            (OutgoingKind::Forward { .. }, Some(original)) => (
+                forward_subject(&original.meta.subject),
+                original.meta.conversation_id.clone(),
+            ),
+            _ => (outgoing.subject.clone(), format!("conv-demo-sent-{number}")),
+        };
+        let body = match &answered {
+            Some(original) if outgoing.kind.quote() == Quote::Original => {
+                format!("{}\n\n{}", outgoing.body, quoted(original))
+            }
+            _ => outgoing.body.clone(),
+        };
         let meta = MessageMetadata {
             id: format!("msg-demo-sent-{number}"),
             order: i64::try_from(number).unwrap_or(i64::MAX),
             conversation_id: conversation_id.clone(),
-            subject: outgoing.subject.clone(),
+            subject: subject.clone(),
             unread: 0,
             sender: sender.clone(),
             to_list: people(&outgoing.to),
             cc_list: people(&outgoing.cc),
             bcc_list: people(&outgoing.bcc),
             time,
-            size: outgoing.body.len() as u64,
+            size: body.len() as u64,
             address_id: "addr-demo-01".to_string(),
             label_ids: vec![label_ids::SENT.to_string()],
             external_id: None,
@@ -843,7 +869,7 @@ impl DemoSession {
             flags: message_flag::SENT,
             expiration_time: None,
         };
-        let recipients = meta
+        let recipients: Vec<Recipient> = meta
             .to_list
             .iter()
             .chain(&meta.cc_list)
@@ -852,31 +878,51 @@ impl DemoSession {
             .collect();
         messages.push(DemoMessage {
             meta,
-            body: outgoing.body.clone(),
+            body,
             mime_type: "text/plain".to_string(),
             attachments: Vec::new(),
         });
         drop(messages);
-        self.conversations
+        let sent = |messages: i64| ConversationLabel {
+            id: label_ids::SENT.to_string(),
+            context_num_messages: Some(messages),
+            context_num_unread: Some(0),
+            context_time: Some(time),
+        };
+        let mut conversations = self
+            .conversations
             .lock()
-            .expect("demo mailbox lock poisoned")
-            .push(Conversation {
+            .expect("demo mailbox lock poisoned");
+        match conversations.iter_mut().find(|c| c.id == conversation_id) {
+            Some(conversation) => {
+                conversation.num_messages += 1;
+                conversation.time = time;
+                match conversation
+                    .labels
+                    .iter_mut()
+                    .find(|l| l.id == label_ids::SENT)
+                {
+                    Some(label) => {
+                        label.context_num_messages =
+                            Some(label.context_num_messages.unwrap_or(0) + 1);
+                        label.context_time = Some(time);
+                    }
+                    None => conversation.labels.push(sent(1)),
+                }
+            }
+            None => conversations.push(Conversation {
                 id: conversation_id,
-                subject: outgoing.subject.clone(),
+                subject,
                 time,
                 num_messages: 1,
                 num_unread: 0,
                 num_attachments: 0,
                 senders: vec![sender],
                 recipients,
-                labels: vec![ConversationLabel {
-                    id: label_ids::SENT.to_string(),
-                    context_num_messages: Some(1),
-                    context_num_unread: Some(0),
-                    context_time: Some(time),
-                }],
+                labels: vec![sent(1)],
                 expiration_time: None,
-            });
+            }),
+        }
     }
 
     /// The conversations as they stand now.
@@ -1032,6 +1078,22 @@ pub(crate) fn download_attachment(
         })?;
     let contents = simulated_attachment(&attachment.name);
     Ok((attachment.name, contents))
+}
+
+/// `original` quoted under an answer's text as core quotes it in plain
+/// text, from what the reader shows of its body.
+fn quoted(original: &DemoMessage) -> String {
+    let sender = &original.meta.sender;
+    let who = if sender.name.is_empty() {
+        sender.address.clone()
+    } else {
+        format!("{} <{}>", sender.name, sender.address)
+    };
+    let lines: String = render::thread_body(&original.to_full())
+        .lines()
+        .map(|line| format!("> {line}\n"))
+        .collect();
+    format!("------- Original Message -------\nOn {who} wrote:\n{lines}")
 }
 
 /// Up to `limit` of the demo's messages whose subject or body has `query`,

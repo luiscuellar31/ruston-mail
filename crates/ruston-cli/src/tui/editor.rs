@@ -45,6 +45,20 @@ impl Default for Editor {
 }
 
 impl Editor {
+    /// A text that starts as `text`, the cursor at its end; what typing
+    /// would not take is left out.
+    pub(crate) fn with(text: &str) -> Self {
+        let mut editor = Self::default();
+        for c in text.chars() {
+            if c == '\n' {
+                editor.break_line();
+            } else {
+                editor.insert(c);
+            }
+        }
+        editor
+    }
+
     /// The text, its lines joined by line breaks.
     pub(crate) fn text(&self) -> String {
         self.lines.join("\n")
@@ -290,15 +304,7 @@ mod tests {
     use super::*;
 
     fn typed(text: &str) -> Editor {
-        let mut editor = Editor::default();
-        for c in text.chars() {
-            if c == '\n' {
-                editor.break_line();
-            } else {
-                editor.insert(c);
-            }
-        }
-        editor
+        Editor::with(text)
     }
 
     /// The rows `editor` wraps to at `width`, as text.

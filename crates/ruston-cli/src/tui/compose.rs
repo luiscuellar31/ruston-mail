@@ -3,10 +3,11 @@
 //! whether it is on its way. It lives in memory only, never on disk.
 
 use super::editor::Editor;
-use crate::mailbox::Outgoing;
+use super::reading::Answerable;
+use crate::mailbox::{Outgoing, OutgoingKind};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ruston_core::RecipientProtection;
 use ruston_core::mail::recipients::{Domains, recipients};
+use ruston_core::{Quote, RecipientProtection};
 use std::cell::Cell;
 
 /// What the editor says when Proton may have sent the message or may not:
@@ -25,9 +26,6 @@ pub(crate) enum Field {
 }
 
 impl Field {
-    /// The fields of one line, above the text.
-    pub(crate) const HEADERS: [Self; 4] = [Self::To, Self::Cc, Self::Bcc, Self::Subject];
-
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::To => "To",
@@ -37,42 +35,29 @@ impl Field {
             Self::Body => "",
         }
     }
+}
 
-    fn next(self) -> Self {
-        match self {
-            Self::To => Self::Cc,
-            Self::Cc => Self::Bcc,
-            Self::Bcc => Self::Subject,
-            Self::Subject => Self::Body,
-            Self::Body => Self::To,
-        }
-    }
+/// A new message's fields, in the order Tab goes through them.
+const NEW_FIELDS: [Field; 5] = [
+    Field::To,
+    Field::Cc,
+    Field::Bcc,
+    Field::Subject,
+    Field::Body,
+];
 
-    fn previous(self) -> Self {
-        match self {
-            Self::To => Self::Body,
-            Self::Cc => Self::To,
-            Self::Bcc => Self::Cc,
-            Self::Subject => Self::Bcc,
-            Self::Body => Self::Subject,
-        }
-    }
+/// An answer's: core writes its subject.
+const ANSWER_FIELDS: [Field; 4] = [Field::To, Field::Cc, Field::Bcc, Field::Body];
 
-    /// The field above, To being the first.
-    fn above(self) -> Self {
-        match self {
-            Self::To => Self::To,
-            other => other.previous(),
-        }
-    }
-
-    /// The field below, the text being the last.
-    fn below(self) -> Self {
-        match self {
-            Self::Body => Self::Body,
-            other => other.next(),
-        }
-    }
+/// How a message is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnswerKind {
+    /// To whoever the message asks replies to go to.
+    Reply,
+    /// To them, and copied to everyone else it went to.
+    ReplyAll,
+    /// Passed on, with its files, to recipients typed.
+    Forward,
 }
 
 /// How far along the message is.
@@ -111,6 +96,14 @@ pub(crate) enum Asked {
 pub(crate) struct Compose {
     /// The address it goes from, as core picks it.
     pub(crate) from: String,
+    /// What it answers, and whether the original goes under its text.
+    pub(crate) kind: OutgoingKind,
+    /// The message it answers, as the editor names it.
+    pub(crate) answering: Option<Answerable>,
+    /// What To and Cc opened with: for a reply, whom core would answer.
+    /// Leaving them as they were is not writing.
+    opened_to: String,
+    opened_cc: String,
     pub(crate) to: Editor,
     pub(crate) cc: Editor,
     pub(crate) bcc: Editor,
@@ -135,6 +128,10 @@ impl Compose {
     pub(crate) fn new(from: String) -> Self {
         Self {
             from,
+            kind: OutgoingKind::New,
+            answering: None,
+            opened_to: String::new(),
+            opened_cc: String::new(),
             to: Editor::default(),
             cc: Editor::default(),
             bcc: Editor::default(),
@@ -146,6 +143,101 @@ impl Compose {
             top: Cell::new(0),
             body_width: Cell::new(0),
             body_rows: Cell::new(0),
+        }
+    }
+
+    /// An answer to `answering`, as `how` says: a reply addressed as core
+    /// would address it, its keys typing in the text, or a forward typing in
+    /// To. It goes from the address the original reached, or `from`, with
+    /// the original under its text when the original opened.
+    pub(crate) fn answer(from: String, how: AnswerKind, answering: Answerable) -> Self {
+        let message_id = answering.message_id.clone();
+        let quote = Quote::Original;
+        let (kind, to, cc) = match how {
+            AnswerKind::Reply => (
+                OutgoingKind::Reply {
+                    message_id,
+                    everyone: false,
+                    quote,
+                },
+                answering.to.join(", "),
+                String::new(),
+            ),
+            AnswerKind::ReplyAll => (
+                OutgoingKind::Reply {
+                    message_id,
+                    everyone: true,
+                    quote,
+                },
+                answering.to.join(", "),
+                answering.cc.join(", "),
+            ),
+            AnswerKind::Forward => (
+                OutgoingKind::Forward { message_id, quote },
+                String::new(),
+                String::new(),
+            ),
+        };
+        let mut compose = Self::new(answering.from.clone().unwrap_or(from));
+        compose.to = Editor::with(&to);
+        compose.cc = Editor::with(&cc);
+        compose.opened_to = to;
+        compose.opened_cc = cc;
+        compose.kind = kind;
+        compose.focus = if how == AnswerKind::Forward {
+            Field::To
+        } else {
+            Field::Body
+        };
+        compose.answering = Some(answering);
+        compose
+    }
+
+    /// The fields of one line, above the text: a subject only for a new
+    /// message, since core writes an answer's.
+    pub(crate) fn headers(&self) -> &'static [Field] {
+        let fields: &'static [Field] = if self.kind == OutgoingKind::New {
+            &NEW_FIELDS
+        } else {
+            &ANSWER_FIELDS
+        };
+        &fields[..fields.len() - 1]
+    }
+
+    /// The field `by` places from the focused one, in the order Tab goes
+    /// through them; past either end, round to the other with `round`, or
+    /// else stopping there.
+    fn field_after(&self, by: isize, round: bool) -> Field {
+        let fields: &[Field] = if self.kind == OutgoingKind::New {
+            &NEW_FIELDS
+        } else {
+            &ANSWER_FIELDS
+        };
+        let last = isize::try_from(fields.len() - 1).unwrap_or(0);
+        let at = fields
+            .iter()
+            .position(|field| *field == self.focus)
+            .and_then(|at| isize::try_from(at).ok())
+            .unwrap_or(0);
+        let next = if round {
+            (at + by).rem_euclid(last + 1)
+        } else {
+            (at + by).clamp(0, last)
+        };
+        fields[usize::try_from(next).unwrap_or(0)]
+    }
+
+    /// Puts the original under an answer's text, or leaves it out; only an
+    /// original that opened can go.
+    fn toggle_quote(&mut self) {
+        let opened = self.answering.as_ref().is_some_and(|answer| answer.opened);
+        if let (true, OutgoingKind::Reply { quote, .. } | OutgoingKind::Forward { quote, .. }) =
+            (opened, &mut self.kind)
+        {
+            *quote = match quote {
+                Quote::Original => Quote::Omitted,
+                Quote::Omitted => Quote::Original,
+            };
         }
     }
 
@@ -181,18 +273,22 @@ impl Compose {
         }
     }
 
-    /// Whether only blanks were written, so closing it loses nothing.
+    /// Whether nothing was written, so closing it loses nothing: a reply
+    /// still addressed as it opened is untouched.
     pub(crate) fn untouched(&self) -> bool {
-        [&self.to, &self.cc, &self.bcc, &self.subject, &self.body]
-            .iter()
-            .all(|editor| editor.is_blank())
+        self.to.text().trim() == self.opened_to.trim()
+            && self.cc.text().trim() == self.opened_cc.trim()
+            && [&self.bcc, &self.subject, &self.body]
+                .iter()
+                .all(|editor| editor.is_blank())
     }
 
     /// What `key` does: types in the focused field or moves through the
     /// message, or asks for it to be closed or sent. Esc and Ctrl+C close
     /// it; Ctrl+Enter, Proton Mail's key, sends it, and so does Ctrl+S,
     /// since many terminals send Ctrl+Enter as Enter alone and some as
-    /// Ctrl+J. Nothing changes it while it is on its way.
+    /// Ctrl+J. Ctrl+Q puts the original under an answer or leaves it out.
+    /// Nothing changes it while it is on its way.
     pub(crate) fn key(&mut self, key: &KeyEvent) -> Asked {
         if self.sending == Sending::InFlight {
             return Asked::Nothing;
@@ -211,20 +307,21 @@ impl Compose {
         let page = isize::try_from(self.body_rows.get()).map_or(1, |rows| rows.max(1));
         let focus = self.focus;
         match key.code {
-            KeyCode::Tab => self.focus = focus.next(),
-            KeyCode::BackTab => self.focus = focus.previous(),
+            KeyCode::Tab => self.focus = self.field_after(1, true),
+            KeyCode::BackTab => self.focus = self.field_after(-1, true),
             KeyCode::Enter if focus == Field::Body => self.body.break_line(),
-            KeyCode::Enter => self.focus = focus.next(),
+            KeyCode::Enter => self.focus = self.field_after(1, false),
             KeyCode::Up if focus == Field::Body => {
                 if !self.body.vertical(width, -1) {
-                    self.focus = Field::Subject;
+                    self.focus = self.field_after(-1, false);
                 }
             }
-            KeyCode::Up => self.focus = focus.above(),
+            KeyCode::Up => self.focus = self.field_after(-1, false),
             KeyCode::Down if focus == Field::Body => {
                 self.body.vertical(width, 1);
             }
-            KeyCode::Down => self.focus = focus.below(),
+            KeyCode::Down => self.focus = self.field_after(1, false),
+            KeyCode::Char('q') if ctrl => self.toggle_quote(),
             KeyCode::PageUp if focus == Field::Body => {
                 self.body.vertical(width, -page);
             }
@@ -277,6 +374,7 @@ impl Compose {
             return Err("Add someone to send this to.".to_owned());
         }
         Ok(Outgoing {
+            kind: self.kind.clone(),
             to: to.accepted,
             cc: cc.accepted,
             bcc: bcc.accepted,
@@ -396,6 +494,7 @@ mod tests {
         assert_eq!(
             outgoing,
             Outgoing {
+                kind: OutgoingKind::New,
                 to: vec!["ana@xn--mnchen-3ya.de".into(), "Alex@Example.test".into()],
                 cc: Vec::new(),
                 bcc: vec!["alex@example.test".into()],
@@ -408,6 +507,70 @@ mod tests {
             outgoing.recipients(),
             ["ana@xn--mnchen-3ya.de", "Alex@Example.test"]
         );
+    }
+
+    fn answering() -> Answerable {
+        Answerable {
+            message_id: "m1".into(),
+            from: Some("alias@example.test".into()),
+            subject: "Plans".into(),
+            sender: "Alex Reed".into(),
+            to: vec!["alex@example.test".into()],
+            cc: vec!["sam@example.test".into()],
+            redirected_from: None,
+            opened: true,
+            files: vec!["plan.pdf".into()],
+        }
+    }
+
+    #[test]
+    fn an_answer_opens_addressed_as_core_would_and_asks_no_subject() {
+        let reply = Compose::answer("me@example.test".into(), AnswerKind::Reply, answering());
+        assert_eq!(reply.from, "alias@example.test");
+        assert_eq!(reply.to.text(), "alex@example.test");
+        assert!(reply.cc.is_blank());
+        assert_eq!(reply.focus, Field::Body);
+        assert_eq!(reply.headers(), [Field::To, Field::Cc, Field::Bcc]);
+        assert!(reply.untouched());
+
+        let mut all = Compose::answer("me@example.test".into(), AnswerKind::ReplyAll, answering());
+        assert_eq!(all.cc.text(), "sam@example.test");
+        // Tab goes round the fields without a subject.
+        let mut order = Vec::new();
+        for _ in 0..4 {
+            press(&mut all, KeyCode::Tab);
+            order.push(all.focus);
+        }
+        assert_eq!(order, [Field::To, Field::Cc, Field::Bcc, Field::Body]);
+        // Ctrl+Q leaves the original out, and puts it back.
+        ctrl(&mut all, KeyCode::Char('q'));
+        assert_eq!(all.kind.quote(), Quote::Omitted);
+        ctrl(&mut all, KeyCode::Char('q'));
+        assert_eq!(all.kind.quote(), Quote::Original);
+        write(&mut all, "Count me in.");
+        assert!(!all.untouched());
+        let outgoing = all.ready().unwrap();
+        assert_eq!(
+            outgoing.kind,
+            OutgoingKind::Reply {
+                message_id: "m1".into(),
+                everyone: true,
+                quote: Quote::Original,
+            }
+        );
+        assert_eq!(outgoing.subject, "");
+
+        let forward = Compose::answer("me@example.test".into(), AnswerKind::Forward, answering());
+        assert!(forward.to.is_blank() && forward.cc.is_blank());
+        assert_eq!(forward.focus, Field::To);
+        // An original that did not open has nothing to quote.
+        let unopened = Answerable {
+            opened: false,
+            ..answering()
+        };
+        let mut reply = Compose::answer("me@example.test".into(), AnswerKind::Reply, unopened);
+        ctrl(&mut reply, KeyCode::Char('q'));
+        assert_eq!(reply.kind.quote(), Quote::Original);
     }
 
     #[test]

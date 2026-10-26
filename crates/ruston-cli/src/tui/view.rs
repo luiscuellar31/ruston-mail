@@ -7,6 +7,7 @@
 use super::app::{App, GO_TO, LinkPick, Pane, Question};
 use super::compose::{Checked, Compose, Field};
 use super::reading::size_label;
+use crate::mailbox::OutgoingKind;
 use crate::render;
 use crate::terminal::screen_line;
 use ratatui::Frame;
@@ -15,7 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ruston_core::model::enums::label_ids;
-use ruston_core::{Conversation, RecipientProtection};
+use ruston_core::{Conversation, Quote, RecipientProtection};
 
 /// Below this width the panes take turns on the screen, as the desktop's
 /// compact view does.
@@ -35,7 +36,7 @@ const LABEL_WIDTH: u16 = 9;
 
 /// Each key and what it does, as the list of keys shows them: Proton Mail's
 /// where it has one, and keys it leaves free for what only a terminal needs.
-const KEYS: [(&str, &str); 20] = [
+const KEYS: [(&str, &str); 21] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, Up, Down", "move, or scroll the reader"),
     ("Enter, Right, Left", "open it, or go back a pane"),
@@ -48,6 +49,7 @@ const KEYS: [(&str, &str); 20] = [
     ("z", "show or hide quoted text"),
     ("b, v", "list its links, or its attachments"),
     ("n, Ctrl+N", "write a new message"),
+    ("r, R, F", "in the reader: reply, reply to all, forward"),
     ("*, r, u", "star or unstar it, mark it read or unread"),
     ("a, s, i", "archive it, or move it to Spam or the Inbox"),
     ("t, Delete", "move it to Trash"),
@@ -268,19 +270,28 @@ fn protection(checks: &[(String, Checked)]) -> Vec<String> {
 fn draw_compose(frame: &mut Frame, compose: &Compose, theme: &Theme, cursor: bool) {
     let [main, foot] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
-    let block = Block::bordered()
-        .title(" New message ")
-        .border_style(theme.accent);
+    let title = match &compose.kind {
+        OutgoingKind::New => " New message ",
+        OutgoingKind::Reply {
+            everyone: false, ..
+        } => " Reply ",
+        OutgoingKind::Reply { everyone: true, .. } => " Reply to everyone ",
+        OutgoingKind::Forward { .. } => " Forward ",
+    };
+    let block = Block::bordered().title(title).border_style(theme.accent);
     let inner = block.inner(main);
     frame.render_widget(block, main);
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let notes = answer_notes(compose, theme, dim);
+    let headers = compose.headers();
+    let header_rows = 1 + headers.len() + notes.len();
     let [header, rule, body] = Layout::vertical([
-        Constraint::Length(5),
+        Constraint::Length(u16::try_from(header_rows).unwrap_or(u16::MAX)),
         Constraint::Length(1),
         Constraint::Fill(1),
     ])
     .areas(inner);
-    let rows: [Rect; 5] = Layout::vertical([Constraint::Length(1); 5]).areas(header);
-    let dim = Style::new().add_modifier(Modifier::DIM);
+    let rows = Layout::vertical(vec![Constraint::Length(1); header_rows]).split(header);
     draw_field(
         frame,
         rows[0],
@@ -288,8 +299,11 @@ fn draw_compose(frame: &mut Frame, compose: &Compose, theme: &Theme, cursor: boo
         Span::styled(screen_line(&compose.from), dim),
         0,
     );
+    for (note, row) in notes.into_iter().zip(rows.iter().skip(1 + headers.len())) {
+        frame.render_widget(Paragraph::new(note), *row);
+    }
     let mut at = None;
-    for (field, row) in Field::HEADERS.into_iter().zip(&rows[1..]) {
+    for (field, row) in headers.iter().copied().zip(rows.iter().skip(1)) {
         let editor = compose.field(field);
         let focused = compose.focus == field;
         let name = if focused {
@@ -347,6 +361,46 @@ fn draw_compose(frame: &mut Frame, compose: &Compose, theme: &Theme, cursor: boo
     if let (true, Some(at)) = (cursor, at) {
         frame.set_cursor_position(at);
     }
+}
+
+/// What the editor says under the fields of an answer: what it answers,
+/// that the message asked for replies to go elsewhere, whether the
+/// original goes under the text, and what files a forward carries.
+fn answer_notes(compose: &Compose, theme: &Theme, dim: Style) -> Vec<Line<'static>> {
+    let Some(answering) = &compose.answering else {
+        return Vec::new();
+    };
+    let mut notes = vec![Line::styled(
+        format!(
+            "Answering “{}” from {}.",
+            answering.subject, answering.sender
+        ),
+        dim,
+    )];
+    if let (Some(sender), OutgoingKind::Reply { .. }) = (&answering.redirected_from, &compose.kind)
+    {
+        let asked = format!(
+            "The message asks for replies to go to {}, not to its sender, {sender}.",
+            answering.to.join(", ")
+        );
+        notes.push(Line::styled(screen_line(&asked), theme.accent));
+    }
+    if answering.opened {
+        notes.push(Line::styled(
+            match compose.kind.quote() {
+                Quote::Original => "The original goes under your text; Ctrl+Q leaves it out.",
+                Quote::Omitted => "The original is left out; Ctrl+Q puts it under your text.",
+            },
+            dim,
+        ));
+    }
+    if matches!(compose.kind, OutgoingKind::Forward { .. }) && !answering.files.is_empty() {
+        notes.push(Line::styled(
+            format!("Forwarding: {}", answering.files.join(", ")),
+            dim,
+        ));
+    }
+    notes
 }
 
 /// One field of the message on one row: its name, then what it holds,
@@ -735,6 +789,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::super::app::Message;
+    use super::super::compose::AnswerKind;
     use super::super::reading::Reading;
     use super::*;
     use crate::mailbox::{Outgoing, Place, PlaceKind};
@@ -883,6 +938,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            answer: None,
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(screen.contains("Plans for May"), "{screen}");
@@ -914,6 +970,7 @@ mod tests {
             quotes: vec![2..6, 8..11],
             links: Vec::new(),
             attachments: Vec::new(),
+            answer: None,
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         for shown in [
@@ -945,6 +1002,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            answer: None,
         });
         let _ = drawn(120, 30, &app, &Theme::new(false));
         // 300 columns wrap into several rows of the 46-column pane.
@@ -989,6 +1047,7 @@ mod tests {
                 "https://xn--bcher-kva.example/\u{1b}[2J".into(),
             ],
             attachments: Vec::new(),
+            answer: None,
         });
         app.picking_link = Some(LinkPick {
             selected: 1,
@@ -1064,6 +1123,53 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_says_what_it_answers_and_what_goes_with_it() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let answering = super::super::reading::Answerable {
+            message_id: "m1".into(),
+            from: None,
+            subject: "Plans".into(),
+            sender: "Alex Reed".into(),
+            to: vec!["list@example.test".into()],
+            cc: Vec::new(),
+            redirected_from: Some("alex@example.test".into()),
+            opened: true,
+            files: vec!["plan.pdf".into()],
+        };
+        app.compose = Some(Compose::answer(
+            "me@example.test".into(),
+            AnswerKind::Forward,
+            answering.clone(),
+        ));
+        let screen = text(&drawn(100, 20, &app, &Theme::new(false)));
+        for line in [
+            " Forward ",
+            "Answering “Plans” from Alex Reed.",
+            "The original goes under your text; Ctrl+Q leaves it out.",
+            "Forwarding: plan.pdf",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
+        // Core writes an answer's subject.
+        assert!(!screen.contains("Subject"), "{screen}");
+        assert!(!screen.contains("asks for replies"), "{screen}");
+        app.compose = Some(Compose::answer(
+            "me@example.test".into(),
+            AnswerKind::Reply,
+            answering,
+        ));
+        let screen = text(&drawn(100, 20, &app, &Theme::new(false)));
+        for line in [
+            " Reply ",
+            "The message asks for replies to go to list@example.test, not to its sender, alex@example.test.",
+            "To       list@example.test",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
+        assert!(!screen.contains("Forwarding"), "{screen}");
+    }
+
+    #[test]
     fn sending_asks_naming_who_gets_it_and_how_proton_protects_it() {
         let mut app = with_mail("alex@example.test", "Quarterly report");
         app.update(Message::Compose);
@@ -1071,6 +1177,7 @@ mod tests {
             app.question = Some(Question::Send {
                 request: 1,
                 outgoing: Outgoing {
+                    kind: crate::mailbox::OutgoingKind::New,
                     to: vec!["sam@proton.me".into()],
                     cc: vec!["alex@example.test".into()],
                     bcc: Vec::new(),
@@ -1274,6 +1381,7 @@ mod tests {
                 name: "plan.pdf".into(),
                 size: 24_576,
             }],
+            answer: None,
         });
         app.picking_attachment = Some(0);
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));

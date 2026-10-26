@@ -375,7 +375,9 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
             result: mailbox
                 .conversation(&id)
                 .await
-                .map(|(conversation, messages)| Reading::new(&conversation, &messages))
+                .map(|(conversation, messages)| {
+                    Reading::new(&conversation, &messages, &mailbox.own_addresses())
+                })
                 .map_err(|error| error.to_string()),
         },
     }
@@ -460,6 +462,7 @@ mod tests {
         let mut tasks = Tasks::default();
         let mailbox = Mailbox::demo();
         let outgoing = crate::mailbox::Outgoing {
+            kind: crate::mailbox::OutgoingKind::New,
             to: vec!["sam@proton.me".into()],
             cc: Vec::new(),
             bcc: Vec::new(),

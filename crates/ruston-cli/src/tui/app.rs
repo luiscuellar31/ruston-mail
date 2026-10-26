@@ -3,7 +3,7 @@
 //! must happen elsewhere, such as loading a page, comes back as an [`Effect`].
 
 use super::command::{Command, CommandLine};
-use super::compose::{Asked, Checked, Compose, Sending};
+use super::compose::{AnswerKind, Asked, Checked, Compose, Sending};
 use super::reading::Reading;
 use crate::mailbox::{Change, Outgoing, Place, PlaceKind, SendFailure, deletes_forever};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -180,6 +180,9 @@ pub(crate) struct App {
     /// Whether that list is the one shown, loading again, as after Ctrl+R
     /// or a change, rather than another place's.
     reloading: bool,
+    /// What the status bar says once that list has loaded, rather than
+    /// nothing: that a message was sent.
+    said_once_loaded: Option<String>,
     /// The last conversation asked for, likewise.
     read_request: u64,
 }
@@ -244,6 +247,8 @@ pub(crate) enum Message {
     DeleteForever,
     /// Opens a new message to write.
     Compose,
+    /// Opens an answer to the conversation the reader shows.
+    Answer(AnswerKind),
     /// A key typed while a message is being written.
     Edit(KeyEvent),
     Refresh,
@@ -384,6 +389,7 @@ impl App {
             notice: Some("Loading…".to_owned()),
             list_request: 0,
             reloading: false,
+            said_once_loaded: None,
             read_request: 0,
         }
     }
@@ -468,7 +474,7 @@ impl App {
                 return self.change(|targets| Change::Star(!targets.iter().all(|c| is_starred(c))));
             }
             // In the reader, Proton Mail's `r` answers the message instead.
-            Message::Read if self.focus == Pane::Reader => {}
+            Message::Read if self.focus == Pane::Reader => self.open_answer(AnswerKind::Reply),
             Message::Read => return self.change(|_| Change::Read(true)),
             Message::Unread => return self.change(|_| Change::Read(false)),
             Message::Archive => return self.change(|_| Change::Move(label_ids::ARCHIVE.into())),
@@ -479,6 +485,7 @@ impl App {
             Message::Move => self.command_line = Some(CommandLine::with("move ")),
             Message::DeleteForever => self.ask_to_delete(),
             Message::Compose => self.compose = Some(Compose::new(self.sender.clone())),
+            Message::Answer(how) => self.open_answer(how),
             Message::Edit(key) => return self.edit(&key),
             Message::Refresh => return self.reload(),
             Message::PlacesLoaded(Ok(places)) => {
@@ -538,7 +545,7 @@ impl App {
                                 .position(|conversation| conversation.id == id)
                         })
                         .unwrap_or(in_its_place);
-                    self.notice = None;
+                    self.notice = self.said_once_loaded.take();
                 }
                 Err(error) => {
                     self.notice = Some(format!("Cannot load {}: {error}", self.listed));
@@ -754,6 +761,7 @@ impl App {
             Command::Delete => self.ask_to_delete(),
             Command::Empty => self.ask_to_empty(),
             Command::Compose => return self.update(Message::Compose),
+            Command::Answer(how) => self.open_answer(how),
         }
         Vec::new()
     }
@@ -1047,17 +1055,35 @@ impl App {
         vec![Effect::Send(outgoing)]
     }
 
-    /// Once the message went, the editor closes, and a list that could hold
-    /// it loads again; when it did not, or may not have, the message stays,
-    /// saying so.
+    /// Opens an answer to the conversation the reader shows, as `how` says,
+    /// or says why there is none to write.
+    fn open_answer(&mut self, how: AnswerKind) {
+        let Some(reading) = &self.reading else {
+            let what = match how {
+                AnswerKind::Reply | AnswerKind::ReplyAll => "reply to it",
+                AnswerKind::Forward => "forward it",
+            };
+            self.notice = Some(format!("Open a conversation to {what}."));
+            return;
+        };
+        let Some(answering) = reading.answer.clone() else {
+            self.notice = Some("This conversation has nothing to answer.".to_owned());
+            return;
+        };
+        self.compose = Some(Compose::answer(self.sender.clone(), how, *answering));
+    }
+
+    /// Once the message went, the editor closes, and the folders and the
+    /// list load again, since an answer changes the conversation it answers
+    /// and Sent holds it; the status bar says it was sent once they have.
+    /// When it did not go, or may not have, the message stays, saying so.
     fn sent(&mut self, result: Result<(), SendFailure>) -> Vec<Effect> {
         let failure = match result {
             Ok(()) => {
                 self.compose = None;
-                let lists_it = self.search.is_none()
-                    && [label_ids::SENT, label_ids::ALL_MAIL].contains(&self.listed_id.as_str());
-                let effects = if lists_it { self.reload() } else { Vec::new() };
+                let effects = self.reload();
                 self.notice = Some("Sent.".to_owned());
+                self.said_once_loaded = Some("Sent.".to_owned());
                 return effects;
             }
             Err(failure) => failure,
@@ -1552,6 +1578,8 @@ impl Message {
             KeyCode::End => Some(Self::Bottom),
             KeyCode::Enter => Some(Self::Open),
             KeyCode::Char('g') => Some(Self::Go),
+            KeyCode::Char('R') => Some(Self::Answer(AnswerKind::ReplyAll)),
+            KeyCode::Char('F') => Some(Self::Answer(AnswerKind::Forward)),
             KeyCode::Char('n') => Some(Self::Compose),
             KeyCode::Char('z') => Some(Self::ToggleQuotes),
             KeyCode::Char('b') => Some(Self::ShowLinks),
@@ -1577,6 +1605,7 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mailbox::OutgoingKind;
     use ruston_core::model::ConversationLabel;
 
     fn key(code: KeyCode) -> Event {
@@ -1730,6 +1759,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            answer: None,
         }
     }
 
@@ -2859,11 +2889,96 @@ mod tests {
         ctrl(&mut app, KeyCode::Char('s'));
         press(&mut app, KeyCode::Char('y'));
         assert_eq!(said(&app).as_deref(), Some("Sending…"));
-        // Sent: the editor closes and says so. The Inbox does not list it,
-        // so nothing loads again.
-        assert!(app.update(Message::Sent(Ok(()))).is_empty());
+        // Sent: the editor closes, the folders and the list load again,
+        // and the status bar says so before and after.
+        let effects = app.update(Message::Sent(Ok(())));
+        let [Effect::Places, Effect::Conversations { request, .. }] = effects[..] else {
+            panic!("{effects:?}");
+        };
         assert!(app.compose.is_none());
         assert_eq!(app.notice.as_deref(), Some("Sent."));
+        app.update(Message::ConversationsLoaded {
+            request,
+            page: 0,
+            result: Ok((2, vec![conversation("a"), conversation("b")])),
+        });
+        assert_eq!(app.notice.as_deref(), Some("Sent."));
+    }
+
+    #[test]
+    fn r_shift_r_and_shift_f_answer_the_conversation_the_reader_shows() {
+        let mut app = loaded();
+        app.sender = "me@example.test".into();
+        press(&mut app, KeyCode::Char('R'));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Open a conversation to reply to it.")
+        );
+        press(&mut app, KeyCode::Char('F'));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Open a conversation to forward it.")
+        );
+        let mut open = reading(1);
+        open.answer = Some(Box::new(super::super::reading::Answerable {
+            message_id: "m1".into(),
+            from: None,
+            subject: "Plans".into(),
+            sender: "Alex Reed".into(),
+            to: vec!["alex@example.test".into()],
+            cc: vec!["sam@example.test".into()],
+            redirected_from: None,
+            opened: true,
+            files: Vec::new(),
+        }));
+        app.reading = Some(open);
+        // In the list, r marks read; in the reader, it replies.
+        app.focus = Pane::Conversations;
+        let effects = press(&mut app, KeyCode::Char('r'));
+        assert!(
+            matches!(
+                &effects[..],
+                [Effect::Change {
+                    change: Change::Read(true),
+                    ..
+                }]
+            ),
+            "{effects:?}"
+        );
+        assert!(app.compose.is_none());
+        app.focus = Pane::Reader;
+        press(&mut app, KeyCode::Char('r'));
+        let kind = |app: &App| app.compose.as_ref().map(|compose| compose.kind.clone());
+        assert!(
+            matches!(
+                kind(&app),
+                Some(OutgoingKind::Reply {
+                    everyone: false,
+                    ..
+                })
+            ),
+            "{:?}",
+            kind(&app)
+        );
+        assert_eq!(app.compose.as_ref().unwrap().from, "me@example.test");
+        // Untouched, an answer closes at once.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.compose.is_none() && app.question.is_none());
+        press(&mut app, KeyCode::Char('R'));
+        assert!(matches!(
+            kind(&app),
+            Some(OutgoingKind::Reply { everyone: true, .. })
+        ));
+        press(&mut app, KeyCode::Esc);
+        command(&mut app, "forward");
+        assert!(matches!(kind(&app), Some(OutgoingKind::Forward { .. })));
+        write(&mut app, "sam@proton.me");
+        ctrl(&mut app, KeyCode::Char('s'));
+        let effects = press(&mut app, KeyCode::Char('y'));
+        assert!(
+            matches!(&effects[..], [Effect::Send(outgoing)] if outgoing.kind == OutgoingKind::Forward { message_id: "m1".into(), quote: ruston_core::Quote::Original }),
+            "{effects:?}"
+        );
     }
 
     #[test]

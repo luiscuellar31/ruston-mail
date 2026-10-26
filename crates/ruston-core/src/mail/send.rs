@@ -1007,14 +1007,15 @@ impl Client {
     }
 }
 
-/// The subject of a reply to a message titled `subject`.
-fn reply_subject(subject: &str) -> String {
+/// The subject of a reply to a message titled `subject`, as
+/// [`Client::reply`] writes it.
+pub fn reply_subject(subject: &str) -> String {
     with_prefix(subject, "Re: ", &["re:"])
 }
 
 /// The subject of a forward of a message titled `subject`, which may already
-/// carry the "Fwd:" other clients write.
-fn forward_subject(subject: &str) -> String {
+/// carry the "Fwd:" other clients write, as [`Client::forward`] writes it.
+pub fn forward_subject(subject: &str) -> String {
     with_prefix(subject, "Fw: ", &["fw:", "fwd:"])
 }
 

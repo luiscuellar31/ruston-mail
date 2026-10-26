@@ -2,14 +2,17 @@
 //! it, the lines typed before, completing a word with Tab, and what a line
 //! asks for. Doing what it asks is the state's business, in `app`.
 
+use super::compose::AnswerKind;
+
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 22] = [
+const COMMANDS: [&str; 25] = [
     "archive",
     "attachments",
     "compose",
     "delete",
     "empty",
     "folder",
+    "forward",
     "help",
     "label",
     "local",
@@ -19,6 +22,8 @@ const COMMANDS: [&str; 22] = [
     "quit",
     "read",
     "refresh",
+    "reply",
+    "replyall",
     "search",
     "spam",
     "star",
@@ -62,6 +67,8 @@ pub(crate) enum Command {
     Empty,
     /// Write a new message.
     Compose,
+    /// Answer the conversation the reader shows.
+    Answer(AnswerKind),
 }
 
 impl Command {
@@ -102,6 +109,9 @@ impl Command {
             "delete" => Self::Delete,
             "empty" => Self::Empty,
             "compose" => Self::Compose,
+            "reply" => Self::Answer(AnswerKind::Reply),
+            "replyall" => Self::Answer(AnswerKind::ReplyAll),
+            "forward" => Self::Answer(AnswerKind::Forward),
             other => return Err(format!("Not a command: :{other}")),
         };
         let takes_words = matches!(
@@ -263,6 +273,10 @@ mod tests {
         assert_eq!(Command::parse("notspam"), Ok(Some(Command::NotSpam)));
         assert_eq!(Command::parse("delete"), Ok(Some(Command::Delete)));
         assert_eq!(Command::parse("compose"), Ok(Some(Command::Compose)));
+        assert_eq!(
+            Command::parse("replyall"),
+            Ok(Some(Command::Answer(AnswerKind::ReplyAll)))
+        );
         assert_eq!(
             Command::parse("empty trash"),
             Err(":empty takes nothing after it".into())

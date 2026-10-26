@@ -9,8 +9,8 @@ use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{
-    Client, Conversation, ConversationMessage, Error, Label, LabelCount, RecipientProtection,
-    Result, SearchOpts, SendOptions,
+    AddressInfo, Client, Conversation, ConversationMessage, Error, Label, LabelCount, Quote,
+    RecipientProtection, Result, SearchOpts, SendOptions,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -61,10 +61,41 @@ pub(crate) enum Change {
     Delete,
 }
 
-/// A message ready to leave, as plain text from the account's primary
-/// address.
+/// What a message answers, if anything. Core writes an answer's subject and
+/// quotes the original under its text, unless told to leave it out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OutgoingKind {
+    New,
+    /// A reply to the message `message_id`, with `everyone` to all it
+    /// reached as well as its sender.
+    Reply {
+        message_id: String,
+        everyone: bool,
+        quote: Quote,
+    },
+    /// The message `message_id` passed on, with its files.
+    Forward {
+        message_id: String,
+        quote: Quote,
+    },
+}
+
+impl OutgoingKind {
+    /// Whether the original goes under the text; a new message answers
+    /// nothing.
+    pub(crate) fn quote(&self) -> Quote {
+        match self {
+            Self::New => Quote::default(),
+            Self::Reply { quote, .. } | Self::Forward { quote, .. } => *quote,
+        }
+    }
+}
+
+/// A message ready to leave, as plain text: from the account's primary
+/// address, or for an answer, from the address the original reached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Outgoing {
+    pub(crate) kind: OutgoingKind,
     pub(crate) to: Vec<String>,
     pub(crate) cc: Vec<String>,
     pub(crate) bcc: Vec<String>,
@@ -137,6 +168,15 @@ impl Mailbox {
         match self {
             Self::Proton(client) => client.primary_email().unwrap_or("(unknown)").to_owned(),
             Self::Demo(_) => demo::DEMO_EMAIL.to_owned(),
+        }
+    }
+
+    /// Every address of the account: a reply leaves them out of whom it
+    /// goes to, and goes from the one the original reached.
+    pub(crate) fn own_addresses(&self) -> Vec<AddressInfo> {
+        match self {
+            Self::Proton(client) => client.addresses(),
+            Self::Demo(_) => demo::demo_addresses(),
         }
     }
 
@@ -279,8 +319,9 @@ impl Mailbox {
         }
     }
 
-    /// Sends `outgoing` as plain text from the account's primary address.
-    /// The demo keeps it in its Sent until the interface closes.
+    /// Sends `outgoing` as plain text: a new message from the account's
+    /// primary address, an answer through core's `reply` or `forward`. The
+    /// demo keeps it until the interface closes.
     pub(crate) async fn send(&self, outgoing: &Outgoing) -> std::result::Result<(), SendFailure> {
         match self {
             Self::Proton(client) => {
@@ -290,9 +331,21 @@ impl Mailbox {
                     bcc: outgoing.bcc.clone(),
                     subject: outgoing.subject.clone(),
                     body: outgoing.body.clone(),
+                    quote: outgoing.kind.quote(),
                     ..SendOptions::default()
                 };
-                match client.send(&options).await {
+                let sent = match &outgoing.kind {
+                    OutgoingKind::New => client.send(&options).await,
+                    OutgoingKind::Reply {
+                        message_id,
+                        everyone,
+                        ..
+                    } => client.reply(message_id, *everyone, &options).await,
+                    OutgoingKind::Forward { message_id, .. } => {
+                        client.forward(message_id, &options).await
+                    }
+                };
+                match sent {
                     Ok(_) => Ok(()),
                     Err(Error::SendUnconfirmed { .. }) => Err(SendFailure::Unconfirmed),
                     Err(error) => Err(SendFailure::Failed(error.to_string())),
@@ -566,6 +619,7 @@ mod tests {
             ]
         );
         let outgoing = Outgoing {
+            kind: OutgoingKind::New,
             to: vec![addresses[0].clone()],
             cc: Vec::new(),
             bcc: vec![addresses[1].clone()],
@@ -583,6 +637,53 @@ mod tests {
         assert_eq!(message.body, "See you there.");
         assert_eq!(message.meta.sender.address, demo::DEMO_EMAIL);
         assert_eq!(message.meta.bcc_list[0].address, addresses[1]);
+    }
+
+    #[tokio::test]
+    async fn a_demo_answer_joins_its_conversation_with_core_s_subject_and_quote() {
+        let mailbox = Mailbox::demo();
+        let answer = |kind, body: &str| Outgoing {
+            kind,
+            to: vec!["sam.chen@example.com".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::new(),
+            body: body.into(),
+        };
+        let reply = OutgoingKind::Reply {
+            message_id: "msg-demo-04".into(),
+            everyone: false,
+            quote: Quote::Original,
+        };
+        mailbox.send(&answer(reply, "Count me in.")).await.unwrap();
+        let (conversation, messages) = mailbox.conversation("conv-demo-03").await.unwrap();
+        assert_eq!(conversation.num_messages, 2);
+        let Some(ConversationMessage::Opened(sent)) = messages.last() else {
+            panic!("{messages:?}");
+        };
+        assert_eq!(sent.meta.subject, "Re: Offsite planning and agenda");
+        assert!(
+            sent.body
+                .starts_with("Count me in.\n\n------- Original Message -------\nOn Sam Chen <"),
+            "{}",
+            sent.body
+        );
+        assert!(sent.body.contains("\n> "), "{}", sent.body);
+        // Sent lists the conversation it answered.
+        let (_, listed) = mailbox.conversations(label_ids::SENT, 0).await.unwrap();
+        assert_eq!(listed[0].id, "conv-demo-03");
+
+        let forward = OutgoingKind::Forward {
+            message_id: "msg-demo-04".into(),
+            quote: Quote::Omitted,
+        };
+        mailbox.send(&answer(forward, "FYI")).await.unwrap();
+        let (_, messages) = mailbox.conversation("conv-demo-03").await.unwrap();
+        let Some(ConversationMessage::Opened(sent)) = messages.last() else {
+            panic!("{messages:?}");
+        };
+        assert_eq!(sent.meta.subject, "Fw: Offsite planning and agenda");
+        assert_eq!(sent.body, "FYI");
     }
 
     #[tokio::test]

@@ -776,8 +776,18 @@ instead of an unknown outcome.
   message to `Mailbox::send`, which sends it as plain text from the primary
   address through core's `send`: a write, never aborted. Core's
   `SendUnconfirmed` keeps the message open, saying to check Sent before
-  sending it again. The demo keeps what it sends, with its messages, in its
-  `DemoSession`, so Sent lists it and the reader opens it.
+  sending it again. Once a message goes, the folders and the list load
+  again, and the status bar says it was sent once they have. The reading
+  also notes what an answer to the open conversation answers: its last
+  message that is not a draft, addressed with core's `reply_recipients` and
+  `reply_redirected`, leaving out the account's addresses, from the one the
+  original reached, as core's `reply` sends it. `r` in the reader, Shift+R
+  and Shift+F open an answer to it, which `Mailbox::send` hands to core's
+  `reply` or `forward`; core writes its subject, with `reply_subject` and
+  `forward_subject`, and quotes the original unless Ctrl+Q left it out. The
+  demo keeps what it sends, with its messages, in its `DemoSession`, so Sent
+  lists it and the reader opens it; an answer joins the conversation it
+  answers, quoting it as core does in plain text.
   [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) is the command
   line `:` opens: its text, the lines run before, Tab's completion and what a
   line asks for; while it is open the state gets each key as typed, and runs
