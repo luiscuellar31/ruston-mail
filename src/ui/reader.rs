@@ -1530,6 +1530,14 @@ fn placeholder(ui: &mut egui::Ui, message: &str) {
 
 pub(super) fn size_label(bytes: u64) -> String {
     const UNIT: f64 = 1024.0;
+    // Under a kilobyte, a tenth of one would round a small file to nothing.
+    if bytes < 1024 {
+        return if bytes == 1 {
+            "1 byte".to_owned()
+        } else {
+            format!("{bytes} bytes")
+        };
+    }
     let bytes = bytes as f64;
     for (limit, suffix) in [
         (UNIT, "KB"),

@@ -699,7 +699,9 @@ fn recipients_keep_every_address() {
 
 #[test]
 fn sizes_read_at_a_glance() {
-    assert_eq!(size_label(0), "0.0 KB");
+    assert_eq!(size_label(0), "0 bytes");
+    assert_eq!(size_label(1), "1 byte");
+    assert_eq!(size_label(1_023), "1023 bytes");
     assert_eq!(size_label(1_024), "1.0 KB");
     assert_eq!(size_label(20 * 1_024), "20 KB");
     assert_eq!(size_label(1_024 * 1_024), "1.0 MB");

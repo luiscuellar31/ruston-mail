@@ -220,10 +220,18 @@ fn answerable(messages: &[ConversationMessage], own: &[AddressInfo]) -> Option<A
     })
 }
 
-/// `bytes` as the desktop shows an attachment's size: KB, MB or GB, with one
-/// decimal below ten.
+/// `bytes` as the desktop shows an attachment's size: in bytes under a
+/// kilobyte, else KB, MB or GB, with one decimal below ten.
 pub(crate) fn size_label(bytes: u64) -> String {
     const UNIT: f64 = 1024.0;
+    // Under a kilobyte, a tenth of one would round a small file to nothing.
+    if bytes < 1024 {
+        return if bytes == 1 {
+            "1 byte".to_owned()
+        } else {
+            format!("{bytes} bytes")
+        };
+    }
     let bytes = bytes as f64;
     for (limit, suffix) in [
         (UNIT, "KB"),
@@ -585,7 +593,9 @@ mod tests {
 
     #[test]
     fn sizes_read_as_the_desktop_shows_them() {
-        assert_eq!(size_label(500), "0.5 KB");
+        assert_eq!(size_label(1), "1 byte");
+        assert_eq!(size_label(500), "500 bytes");
+        assert_eq!(size_label(1_024), "1.0 KB");
         assert_eq!(size_label(24_576), "24 KB");
         assert_eq!(size_label(5 * 1024 * 1024 + 300_000), "5.3 MB");
         assert_eq!(size_label(3 * 1024 * 1024 * 1024), "3.0 GB");
