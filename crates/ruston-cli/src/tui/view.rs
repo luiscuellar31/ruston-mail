@@ -5,6 +5,7 @@
 //! `terminal::screen_line` first.
 
 use super::app::{App, LinkPick, Pane};
+use super::reading::size_label;
 use crate::render;
 use crate::terminal::screen_line;
 use ratatui::Frame;
@@ -26,7 +27,7 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 17] = [
+const KEYS: [(&str, &str); 18] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
@@ -34,6 +35,7 @@ const KEYS: [(&str, &str); 17] = [
     ("Enter", "open the folder or conversation"),
     ("z", "show or hide quoted text"),
     ("o", "list the conversation's links to open one"),
+    ("v", "list the conversation's attachments to save one"),
     ("s", "star or unstar the conversation"),
     ("u", "mark it read or unread"),
     ("a", "archive it"),
@@ -94,9 +96,41 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     if let Some(pick) = app.picking_link {
         draw_links(frame, app, pick, theme);
     }
+    if let Some(selected) = app.picking_attachment {
+        draw_attachments(frame, app, selected, theme);
+    }
     if app.help {
         draw_keys(frame, theme);
     }
+}
+
+/// The open conversation's attachments over the panes, with their sizes,
+/// the selected one inverted.
+fn draw_attachments(frame: &mut Frame, app: &App, selected: usize, theme: &Theme) {
+    let Some(reading) = &app.reading else {
+        return;
+    };
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(100);
+    let items = reading.attachments.iter().map(|attachment| {
+        ListItem::new(format!(
+            " {} · {}",
+            attachment.name,
+            size_label(attachment.size)
+        ))
+    });
+    let rows = u16::try_from(reading.attachments.len() + 2).unwrap_or(u16::MAX);
+    let area = centered(area, width, rows);
+    let block = Block::bordered()
+        .title(" Attachments ")
+        .title_bottom(" Enter saves one to Downloads · Esc closes ")
+        .border_style(theme.accent);
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_widget(Clear, area);
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 /// The open conversation's links over the panes, the selected one inverted,
@@ -541,6 +575,7 @@ mod tests {
             lines: (0..100).map(|n| format!("line {n}")).collect(),
             quotes: Vec::new(),
             links: Vec::new(),
+            attachments: Vec::new(),
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(screen.contains("Plans for May"), "{screen}");
@@ -571,6 +606,7 @@ mod tests {
             lines: lines.map(str::to_owned).to_vec(),
             quotes: vec![2..6, 8..11],
             links: Vec::new(),
+            attachments: Vec::new(),
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         for shown in [
@@ -601,6 +637,7 @@ mod tests {
             lines: vec!["word ".repeat(60)],
             quotes: Vec::new(),
             links: Vec::new(),
+            attachments: Vec::new(),
         });
         let _ = drawn(120, 30, &app, &Theme::new(false));
         // 300 columns wrap into several rows of the 46-column pane.
@@ -644,6 +681,7 @@ mod tests {
                 "https://example.test/a".into(),
                 "https://xn--bcher-kva.example/\u{1b}[2J".into(),
             ],
+            attachments: Vec::new(),
         });
         app.picking_link = Some(LinkPick {
             selected: 1,
@@ -750,6 +788,29 @@ mod tests {
             status.contains("Local: zebra · 0 conversation(s)"),
             "{status}"
         );
+    }
+
+    #[test]
+    fn the_attachments_list_over_the_panes_with_their_sizes() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.reading = Some(Reading {
+            id: "plans".into(),
+            subject: "Plans".into(),
+            lines: Vec::new(),
+            quotes: Vec::new(),
+            links: Vec::new(),
+            attachments: vec![super::super::reading::ReadingAttachment {
+                message_id: "m1".into(),
+                id: "a1".into(),
+                name: "plan.pdf".into(),
+                size: 24_576,
+            }],
+        });
+        app.picking_attachment = Some(0);
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains("Attachments"), "{screen}");
+        assert!(screen.contains(" plan.pdf · 24 KB"), "{screen}");
+        assert!(screen.contains("Enter saves one to Downloads"), "{screen}");
     }
 
     #[test]

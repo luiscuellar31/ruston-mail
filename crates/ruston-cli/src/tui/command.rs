@@ -3,9 +3,22 @@
 //! asks for. Doing what it asks is the state's business, in `app`.
 
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 14] = [
-    "archive", "folder", "help", "local", "move", "q", "quit", "read", "refresh", "search", "star",
-    "trash", "unread", "unstar",
+const COMMANDS: [&str; 15] = [
+    "archive",
+    "attachments",
+    "folder",
+    "help",
+    "local",
+    "move",
+    "q",
+    "quit",
+    "read",
+    "refresh",
+    "search",
+    "star",
+    "trash",
+    "unread",
+    "unstar",
 ];
 
 /// What a command line asks for.
@@ -14,6 +27,8 @@ pub(crate) enum Command {
     Quit,
     Help,
     Refresh,
+    /// List the open conversation's attachments, to save one.
+    Attachments,
     /// Open the folder or label with this name.
     Folder(String),
     /// Move the conversation acted on to the folder with this name.
@@ -48,6 +63,7 @@ impl Command {
             "q" | "quit" => Self::Quit,
             "help" => Self::Help,
             "refresh" => Self::Refresh,
+            "attachments" => Self::Attachments,
             "folder" => Self::Folder(needs("the name of a folder or label")?),
             "move" => Self::Move(needs("the name of a folder")?),
             "search" => Self::Search(needs("the words to look for")?),

@@ -4,11 +4,13 @@
 //! how they look is the interface's business.
 
 use crate::demo::{self, DemoSession};
+use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{
     Client, Conversation, ConversationMessage, Error, Label, LabelCount, Result, SearchOpts,
 };
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// How many conversations a page of the list holds.
@@ -151,6 +153,32 @@ impl Mailbox {
         Ok((conversations.len() as u32, conversations))
     }
 
+    /// Downloads the attachment `attachment_id` of the message `message_id`,
+    /// which must verify when it is signed, and saves it in `folder` under
+    /// its name made safe, never over a file or through a link already
+    /// there; returns where it landed. The demo saves a stand-in, as its
+    /// `attachments download` does.
+    pub(crate) async fn save_attachment(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+        folder: &Path,
+    ) -> Result<PathBuf> {
+        let (name, contents) = match self {
+            Self::Proton(client) => {
+                client
+                    .download_attachment(message_id, attachment_id)
+                    .await?
+            }
+            Self::Demo(_) => demo::download_attachment(message_id, attachment_id)?,
+        };
+        let folder = folder.to_owned();
+        tokio::task::spawn_blocking(move || save_under_free_name(&folder, &name, &contents))
+            .await
+            .map_err(|error| Error::Other(format!("saving stopped: {error}")))?
+            .map_err(Error::from)
+    }
+
     /// The conversation `id` with its messages, oldest first, each opened
     /// or said to be unreadable. Reading it does not mark it read.
     pub(crate) async fn conversation(
@@ -282,6 +310,39 @@ mod tests {
         );
         assert_eq!(places[7].kind, PlaceKind::Folder);
         assert_eq!(places[10].kind, PlaceKind::Label);
+    }
+
+    #[tokio::test]
+    async fn an_attachment_saves_under_a_free_name_never_over_a_file() {
+        let folder = std::env::temp_dir().join(format!(
+            "ruston-tui-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let mailbox = Mailbox::demo();
+        let first = mailbox
+            .save_attachment("msg-demo-03", "att-demo-01", &folder)
+            .await
+            .unwrap();
+        assert_eq!(first, folder.join("translation_proposal.pdf"));
+        let second = mailbox
+            .save_attachment("msg-demo-03", "att-demo-01", &folder)
+            .await
+            .unwrap();
+        assert_eq!(second, folder.join("translation_proposal (1).pdf"));
+        let saved = std::fs::read_to_string(&first).unwrap();
+        assert!(saved.contains("translation_proposal.pdf"), "{saved}");
+        assert!(
+            mailbox
+                .save_attachment("msg-demo-03", "nope", &folder)
+                .await
+                .is_err()
+        );
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[tokio::test]

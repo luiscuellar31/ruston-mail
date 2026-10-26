@@ -736,7 +736,13 @@ instead of an unknown outcome.
   listed as it would open, a host in another script in ASCII. `o` lists them
   over the panes; one opens only after a yes, through the browser opener
   `hv.rs` uses, with no terminal input to read and its opener waited for on a
-  thread of its own. Once the reader shows an unread conversation, the state
+  thread of its own. It also lists each opened message's attachments, inline
+  ones aside, under its headers; `v` lists them over the panes and Enter has
+  `Mailbox::save_attachment` download one, which core refuses to release when
+  its signature does not verify, and save it on the blocking pool with core's
+  `save_under_free_name`, never over a file or through a link, into the
+  Downloads folder `directories` names, `~/Downloads`, or the current folder.
+  Once the reader shows an unread conversation, the state
   asks for it to be marked read, as the desktop does, unless
   `tui --keep-unread` says not to; once Proton confirms it, the row shows it
   read and each place it was unread in counts one fewer. The quick actions

@@ -138,6 +138,22 @@ async fn run_loop(
     Ok(())
 }
 
+/// Where an attachment is saved: the Downloads folder the system names, as
+/// the desktop saves into, or else `~/Downloads` when there is one, or else
+/// the current folder, as `ruston-cli attachments download` saves into.
+fn downloads_folder() -> io::Result<std::path::PathBuf> {
+    let user = directories::UserDirs::new();
+    if let Some(folder) = user.as_ref().and_then(|dirs| dirs.download_dir()) {
+        return Ok(folder.to_path_buf());
+    }
+    if let Some(folder) = user.map(|dirs| dirs.home_dir().join("Downloads"))
+        && folder.is_dir()
+    {
+        return Ok(folder);
+    }
+    std::env::current_dir()
+}
+
 /// Opens `url` in the default browser, as signing in opens a challenge,
 /// with nothing to read from the terminal the interface holds, and waits for
 /// the opener on a thread of its own, so it leaves nothing behind.
@@ -201,7 +217,10 @@ impl Tasks {
                 &mut self.list
             }
             Effect::Conversation { .. } => &mut self.conversation,
-            Effect::MarkRead { .. } | Effect::Change { .. } | Effect::OpenLink { .. } => {
+            Effect::MarkRead { .. }
+            | Effect::Change { .. }
+            | Effect::OpenLink { .. }
+            | Effect::SaveAttachment { .. } => {
                 self.writes.retain(|write| !write.is_finished());
                 self.writes.push(spawn(effect, mailbox, answers));
                 return;
@@ -310,6 +329,21 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
         }
         Effect::OpenLink { url } => {
             Message::LinkOpened(open_link(&url).map_err(|error| error.to_string()))
+        }
+        Effect::SaveAttachment {
+            message_id,
+            attachment_id,
+            name,
+        } => {
+            let result = match downloads_folder() {
+                Ok(folder) => mailbox
+                    .save_attachment(&message_id, &attachment_id, &folder)
+                    .await
+                    .map(|path| path.display().to_string())
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            Message::AttachmentSaved { name, result }
         }
         // The reading is made here, off the loop: a large HTML body
         // takes a while to turn into text.

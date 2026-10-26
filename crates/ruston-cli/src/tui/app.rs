@@ -103,6 +103,9 @@ pub(crate) struct App {
     pub(crate) marks_read: bool,
     /// The open conversation's links, while `o` lists them over the panes.
     pub(crate) picking_link: Option<LinkPick>,
+    /// Which of the open conversation's attachments is selected, while `v`
+    /// lists them over the panes.
+    pub(crate) picking_attachment: Option<usize>,
     /// The command line, while `:` has it open at the foot.
     pub(crate) command_line: Option<CommandLine>,
     /// The lines run from it, oldest first, for Up and Down.
@@ -138,6 +141,8 @@ pub(crate) enum Message {
     ToggleQuotes,
     /// Lists the open conversation's links, to open one.
     ShowLinks,
+    /// Lists the open conversation's attachments, to save one.
+    ShowAttachments,
     /// Answers yes to the question on screen.
     Yes,
     /// Opens the command line.
@@ -173,6 +178,11 @@ pub(crate) enum Message {
         result: Result<(), String>,
     },
     LinkOpened(Result<(), String>),
+    /// Where the attachment `name` was saved, or why it was not.
+    AttachmentSaved {
+        name: String,
+        result: Result<String, String>,
+    },
     Changed {
         change: Change,
         result: Result<(), String>,
@@ -212,6 +222,11 @@ pub(crate) enum Effect {
     OpenLink {
         url: String,
     },
+    SaveAttachment {
+        message_id: String,
+        attachment_id: String,
+        name: String,
+    },
     Change {
         id: String,
         place: String,
@@ -240,6 +255,7 @@ impl App {
             show_quotes: false,
             marks_read: true,
             picking_link: None,
+            picking_attachment: None,
             command_line: None,
             history: Vec::new(),
             search: None,
@@ -271,6 +287,9 @@ impl App {
             _ if self.picking_link.is_some() && is_key(&message) => {
                 return self.pick_link(&message);
             }
+            _ if self.picking_attachment.is_some() && is_key(&message) => {
+                return self.pick_attachment(&message);
+            }
             // Back from a search's results to the place listed before it.
             Message::Back if self.focus == Pane::Conversations && self.search.is_some() => {
                 let (id, name) = self
@@ -298,6 +317,7 @@ impl App {
             Message::Open => return self.open(),
             Message::ToggleQuotes => self.show_quotes = !self.show_quotes,
             Message::ShowLinks => self.show_links(),
+            Message::ShowAttachments => self.show_attachments(),
             // Nothing on screen waits for a yes.
             Message::Yes => {}
             Message::Command => self.command_line = Some(CommandLine::default()),
@@ -377,8 +397,9 @@ impl App {
             Message::ConversationLoaded { result, .. } => match result {
                 Ok(reading) => {
                     let id = reading.id.clone();
-                    // Links listed for the conversation before are not its.
+                    // What was listed for the conversation before is not its.
                     self.picking_link = None;
+                    self.picking_attachment = None;
                     self.reading = Some(reading);
                     self.scroll = 0;
                     self.notice = None;
@@ -394,6 +415,14 @@ impl App {
             } => {
                 self.notice = Some(format!("Cannot mark the conversation read: {error}"));
             }
+            Message::AttachmentSaved {
+                name,
+                result: Ok(path),
+            } => self.notice = Some(format!("Saved {name} as {path}")),
+            Message::AttachmentSaved {
+                name,
+                result: Err(error),
+            } => self.notice = Some(format!("Cannot save {name}: {error}")),
             Message::LinkOpened(Ok(())) => {}
             Message::LinkOpened(Err(error)) => {
                 self.notice = Some(format!("Cannot open the link: {error}"));
@@ -499,6 +528,7 @@ impl App {
         match command {
             Command::Quit => self.quit = true,
             Command::Help => self.help = true,
+            Command::Attachments => self.show_attachments(),
             Command::Refresh => return self.update(Message::Refresh),
             Command::Search(words) => {
                 self.focus = Pane::Conversations;
@@ -600,6 +630,56 @@ impl App {
             Some(_) => self.notice = Some("This conversation has no links.".to_owned()),
             None => self.notice = Some("Open a conversation to list its links.".to_owned()),
         }
+    }
+
+    /// Lists the open conversation's attachments, to save one, or says why
+    /// not.
+    fn show_attachments(&mut self) {
+        match &self.reading {
+            Some(reading) if !reading.attachments.is_empty() => {
+                self.picking_attachment = Some(0);
+            }
+            Some(_) => self.notice = Some("This conversation has no attachments.".to_owned()),
+            None => {
+                self.notice = Some("Open a conversation to list its attachments.".to_owned());
+            }
+        }
+    }
+
+    /// What a key does while the attachments are listed: move through them,
+    /// save the selected one, which never replaces a file, or put them away.
+    fn pick_attachment(&mut self, message: &Message) -> Vec<Effect> {
+        let (Some(mut selected), Some(reading)) = (self.picking_attachment, &self.reading) else {
+            self.picking_attachment = None;
+            return Vec::new();
+        };
+        let last = reading.attachments.len().saturating_sub(1);
+        match message {
+            Message::Up => selected = selected.saturating_sub(1),
+            Message::Down => selected = (selected + 1).min(last),
+            Message::Top => selected = 0,
+            Message::Bottom => selected = last,
+            Message::Open => {
+                self.picking_attachment = None;
+                let Some(attachment) = reading.attachments.get(selected) else {
+                    return Vec::new();
+                };
+                let effect = Effect::SaveAttachment {
+                    message_id: attachment.message_id.clone(),
+                    attachment_id: attachment.id.clone(),
+                    name: attachment.name.clone(),
+                };
+                self.notice = Some(format!("Saving {}…", attachment.name));
+                return vec![effect];
+            }
+            Message::Back | Message::ShowAttachments => {
+                self.picking_attachment = None;
+                return Vec::new();
+            }
+            _ => {}
+        }
+        self.picking_attachment = Some(selected);
+        Vec::new()
     }
 
     /// What a key does while the links are listed: move through them, ask
@@ -912,6 +992,7 @@ fn is_key(message: &Message) -> bool {
             | Message::ConversationLoaded { .. }
             | Message::MarkedRead { .. }
             | Message::LinkOpened(_)
+            | Message::AttachmentSaved { .. }
             | Message::Changed { .. }
             | Message::Failed(_)
     )
@@ -954,6 +1035,7 @@ impl Message {
             KeyCode::Enter => Some(Self::Open),
             KeyCode::Char('z') => Some(Self::ToggleQuotes),
             KeyCode::Char('o') => Some(Self::ShowLinks),
+            KeyCode::Char('v') => Some(Self::ShowAttachments),
             KeyCode::Char('y') => Some(Self::Yes),
             KeyCode::Char('s') => Some(Self::Star),
             KeyCode::Char('u') => Some(Self::ToggleRead),
@@ -1114,6 +1196,7 @@ mod tests {
             lines: (0..lines).map(|n| format!("line {n}")).collect(),
             quotes: Vec::new(),
             links: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -1559,6 +1642,71 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.picking_link, None);
         assert!(press(&mut app, KeyCode::Char('y')).is_empty());
+    }
+
+    #[test]
+    fn v_lists_the_attachments_and_enter_saves_the_one_selected() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Open a conversation to list its attachments.")
+        );
+        app.reading = Some(reading(1));
+        command(&mut app, "attachments");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("This conversation has no attachments.")
+        );
+
+        let mut attached = reading(1);
+        attached.attachments = ["plan.pdf", "budget.xlsx"]
+            .iter()
+            .enumerate()
+            .map(|(index, name)| super::super::reading::ReadingAttachment {
+                message_id: "m1".into(),
+                id: format!("a{index}"),
+                name: (*name).into(),
+                size: 1_000,
+            })
+            .collect();
+        app.reading = Some(attached);
+        press(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.picking_attachment, Some(0));
+        // The keys move through the attachments, not the folders.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!((app.picking_attachment, app.selected_place), (Some(1), 0));
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            [Effect::SaveAttachment {
+                message_id: "m1".into(),
+                attachment_id: "a1".into(),
+                name: "budget.xlsx".into()
+            }]
+        );
+        assert_eq!(app.picking_attachment, None);
+        assert_eq!(app.notice.as_deref(), Some("Saving budget.xlsx…"));
+        app.update(Message::AttachmentSaved {
+            name: "budget.xlsx".into(),
+            result: Ok("/home/me/Downloads/budget (1).xlsx".into()),
+        });
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Saved budget.xlsx as /home/me/Downloads/budget (1).xlsx")
+        );
+        app.update(Message::AttachmentSaved {
+            name: "budget.xlsx".into(),
+            result: Err("attachment signature could not be verified".into()),
+        });
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Cannot save budget.xlsx: attachment signature could not be verified")
+        );
+        // Esc puts them away.
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.picking_attachment, None);
     }
 
     #[test]

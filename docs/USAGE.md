@@ -514,7 +514,11 @@ loads 50 more each time you move down past its last. A quoted passage of three
 lines or more, such as the message a reply answers, folds into one line unless
 the whole message is quoted; `z` shows or hides them. Links show as text with
 the address they open; `o` lists those of the open conversation, and one opens
-in your browser only once you answer `y` to the address it shows. Opening an
+in your browser only once you answer `y` to the address it shows. Each
+message lists its attachments under its headers, and `v` lists those of the
+open conversation: Enter saves one, checking its signature as
+`ruston-cli attachments download` does, into your Downloads folder, or the
+current folder when there is none, never over a file already there. Opening an
 unread conversation marks it read once it shows, as the desktop does, unless
 you start it with `ruston-cli tui --keep-unread`. `s` stars or unstars the
 conversation selected in the list, or the one the reader shows, `u` marks it
@@ -540,6 +544,7 @@ and ends with status 2.
 | Enter | Open the folder or conversation |
 | `z` | Show or hide quoted text |
 | `o` | List the open conversation's links, to open one |
+| `v` | List the open conversation's attachments, to save one |
 | `s` | Star or unstar the conversation |
 | `u` | Mark it read or unread |
 | `a` | Archive it |
@@ -562,6 +567,7 @@ and ends with status 2.
 | `:search WORDS` | Search all mail for the words |
 | `:local WORDS` | Search the local index for the words, offline |
 | `:refresh` | Refresh the folders and the list, or the search |
+| `:attachments` | List the conversation's attachments, to save one |
 | `:help` | Show the keys |
 | `:q`, `:quit` | Quit |
 

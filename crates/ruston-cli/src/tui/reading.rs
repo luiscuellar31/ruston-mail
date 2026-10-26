@@ -19,6 +19,16 @@ const FOLDED_MIN_LINES: usize = 3;
 /// How many links of a conversation the reader lists at most.
 const MAX_LINKS: usize = 100;
 
+/// An attachment of the conversation, which `v` lists to save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReadingAttachment {
+    pub(crate) message_id: String,
+    pub(crate) id: String,
+    /// Its name, safe to draw.
+    pub(crate) name: String,
+    pub(crate) size: u64,
+}
+
 /// A conversation as the reader shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Reading {
@@ -33,6 +43,8 @@ pub(crate) struct Reading {
     /// The web addresses its bodies link to, each once, in order: what `o`
     /// lists to open one.
     pub(crate) links: Vec<String>,
+    /// The attachments of its opened messages, in order, inline ones aside.
+    pub(crate) attachments: Vec<ReadingAttachment>,
 }
 
 impl Reading {
@@ -40,6 +52,7 @@ impl Reading {
         let mut lines = Vec::new();
         let mut quotes = Vec::new();
         let mut links: Vec<String> = Vec::new();
+        let mut attachments = Vec::new();
         for (index, message) in messages.iter().enumerate() {
             if index > 0 {
                 lines.extend([String::new(), SEPARATOR.to_owned(), String::new()]);
@@ -51,6 +64,19 @@ impl Reading {
                         &message.meta,
                         render::verdict_name(message.verdict),
                     );
+                    for attachment in message.attachments.iter().filter(|a| !a.is_inline()) {
+                        let name = screen_line(&attachment.name);
+                        lines.push(format!(
+                            "Attached: {name} ({})",
+                            size_label(attachment.size)
+                        ));
+                        attachments.push(ReadingAttachment {
+                            message_id: message.meta.id.clone(),
+                            id: attachment.id.clone(),
+                            name,
+                            size: attachment.size,
+                        });
+                    }
                     lines.push(String::new());
                     let body = screen_text(&render::thread_body(message));
                     let start = lines.len();
@@ -82,8 +108,31 @@ impl Reading {
             lines,
             quotes,
             links,
+            attachments,
         }
     }
+}
+
+/// `bytes` as the desktop shows an attachment's size: KB, MB or GB, with one
+/// decimal below ten.
+pub(crate) fn size_label(bytes: u64) -> String {
+    const UNIT: f64 = 1024.0;
+    let bytes = bytes as f64;
+    for (limit, suffix) in [
+        (UNIT, "KB"),
+        (UNIT * UNIT, "MB"),
+        (UNIT * UNIT * UNIT, "GB"),
+    ] {
+        if bytes < limit * UNIT {
+            let value = bytes / limit;
+            return if value < 10.0 {
+                format!("{value:.1} {suffix}")
+            } else {
+                format!("{value:.0} {suffix}")
+            };
+        }
+    }
+    format!("{:.0} GB", bytes / (UNIT * UNIT * UNIT))
 }
 
 /// The web addresses in `text`, written out or left by the HTML renderer as
@@ -329,6 +378,53 @@ mod tests {
         let quoted = &reading.lines[reading.quotes[0].clone()];
         assert_eq!(quoted.first().map(String::as_str), Some("> Hi Sam,"));
         assert!(quoted.len() >= 3, "{quoted:?}");
+    }
+
+    #[test]
+    fn attachments_are_listed_under_their_message_inline_ones_aside() {
+        let mut message = opened("alex@example.test", "See attached.");
+        if let ConversationMessage::Opened(full) = &mut message {
+            full.meta.id = "m1".into();
+            full.attachments = vec![
+                ruston_core::Attachment {
+                    id: "a1".into(),
+                    name: "report\u{1b}[2J.pdf".into(),
+                    size: 24_576,
+                    ..ruston_core::Attachment::default()
+                },
+                ruston_core::Attachment {
+                    id: "a2".into(),
+                    name: "logo.png".into(),
+                    size: 900,
+                    disposition: Some("inline".into()),
+                    ..ruston_core::Attachment::default()
+                },
+            ];
+        }
+        let reading = Reading::new(&Conversation::default(), &[message]);
+        assert_eq!(
+            reading.attachments,
+            [ReadingAttachment {
+                message_id: "m1".into(),
+                id: "a1".into(),
+                name: "report[2J.pdf".into(),
+                size: 24_576,
+            }]
+        );
+        let text = reading.lines.join("\n");
+        assert!(
+            text.contains("Verdict: verified\nAttached: report[2J.pdf (24 KB)\n"),
+            "{text}"
+        );
+        assert!(!text.contains("logo.png"), "{text}");
+    }
+
+    #[test]
+    fn sizes_read_as_the_desktop_shows_them() {
+        assert_eq!(size_label(500), "0.5 KB");
+        assert_eq!(size_label(24_576), "24 KB");
+        assert_eq!(size_label(5 * 1024 * 1024 + 300_000), "5.3 MB");
+        assert_eq!(size_label(3 * 1024 * 1024 * 1024), "3.0 GB");
     }
 
     #[test]

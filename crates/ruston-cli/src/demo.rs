@@ -884,6 +884,34 @@ impl DemoSession {
     }
 }
 
+/// What the demo's attachments hold: a stand-in, as its downloads save it.
+fn simulated_attachment(name: &str) -> Vec<u8> {
+    format!("%PDF-1.4\n% Demo simulated attachment content for {name}\n").into_bytes()
+}
+
+/// The demo's attachment `attachment_id` of the message `message_id`: its
+/// name and the stand-in a download of it saves.
+pub(crate) fn download_attachment(
+    message_id: &str,
+    attachment_id: &str,
+) -> Result<(String, Vec<u8>)> {
+    let attachment = fixtures()
+        .0
+        .into_iter()
+        .find(|message| message.meta.id == message_id)
+        .and_then(|message| {
+            message
+                .attachments
+                .into_iter()
+                .find(|a| a.id == attachment_id)
+        })
+        .ok_or_else(|| Error::NotFound {
+            kind: "attachment".into(),
+        })?;
+    let contents = simulated_attachment(&attachment.name);
+    Ok((attachment.name, contents))
+}
+
 /// Up to `limit` of the demo's messages whose subject or body has `query`,
 /// whatever its case: the demo's local index, for `search` and the terminal
 /// interface's `:local` alike.
@@ -1342,11 +1370,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 // through a link already there.
                 let mut written = Vec::new();
                 for a in &atts {
-                    let sample_content = format!(
-                        "%PDF-1.4\n% Demo simulated attachment content for {}\n",
-                        a.name
-                    );
-                    let path = save_under_free_name(&out_dir, &a.name, sample_content.as_bytes())?;
+                    let path =
+                        save_under_free_name(&out_dir, &a.name, &simulated_attachment(&a.name))?;
                     written.push(path.to_string_lossy().to_string());
                 }
                 render::downloaded(ctx.json, &written);

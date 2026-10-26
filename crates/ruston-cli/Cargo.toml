@@ -30,6 +30,7 @@ tracing-subscriber = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 futures = { workspace = true }
+directories = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Ctrl+Z in the terminal interface stops the process, once the terminal is
