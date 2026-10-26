@@ -527,8 +527,10 @@ list and the counts load again. Space marks the selected conversation and
 moves down: with some marked, an action from the list acts on all of them,
 and Esc takes the marks away. `!` moves the conversation to Spam, or out of
 Spam back to the Inbox when the list is Spam's, and `l` starts `:label`, which
-puts one of your labels on it. The demo keeps such changes until the
-interface closes. `:` opens a command line at the foot; Tab completes a
+puts one of your labels on it. In Trash or Spam, `D` deletes the conversation
+forever, and `:empty` everything in the folder, only once you answer `y` to
+the question that names it; any other key keeps the mail. The demo keeps such
+changes until the interface closes. `:` opens a command line at the foot; Tab completes a
 command or a name, Up and Down bring back the lines run before, Enter runs
 it and Esc closes it. `/` starts one at `:search`, which looks for words in
 all of your mail and lists what it finds; Esc in that list goes back to the
@@ -555,6 +557,7 @@ and ends with status 2.
 | `d`, Delete | Move it to Trash |
 | `!` | Move it to Spam, or out of Spam |
 | `l` | Label it |
+| `D` | Delete it forever, in Trash or Spam, once you answer `y` |
 | Space | Mark it, for an action on all marked |
 | `/` | Search all mail |
 | `:` | Type a command |
@@ -573,6 +576,8 @@ and ends with status 2.
 | `:archive`, `:trash` | Archive it, or move it to Trash |
 | `:spam`, `:notspam` | Move it to Spam, or out of Spam to the Inbox |
 | `:label LABEL`, `:unlabel LABEL` | Put one of your labels on it, or take it off |
+| `:delete` | Delete it forever, in Trash or Spam, once you answer `y` |
+| `:empty` | Delete everything in Trash or Spam forever, once you answer `y` |
 | `:search WORDS` | Search all mail for the words |
 | `:local WORDS` | Search the local index for the words, offline |
 | `:refresh` | Refresh the folders and the list, or the search |

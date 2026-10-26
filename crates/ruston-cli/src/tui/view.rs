@@ -4,7 +4,7 @@
 //! Every piece of text that comes with the mail goes through
 //! `terminal::screen_line` first.
 
-use super::app::{App, LinkPick, Pane};
+use super::app::{App, LinkPick, Pane, Question};
 use super::reading::size_label;
 use crate::render;
 use crate::terminal::screen_line;
@@ -26,6 +26,9 @@ const FOLDERS_WIDTH: u16 = 24;
 /// How many columns a conversation's sender takes in its row.
 const SENDER_WIDTH: usize = 18;
 
+/// How many conversations a question names before it counts the rest.
+const NAMED: usize = 5;
+
 /// Each key and what it does, as the list of keys shows them.
 const KEYS: [(&str, &str); 17] = [
     ("Tab, Shift+Tab", "next or previous pane"),
@@ -38,7 +41,7 @@ const KEYS: [(&str, &str); 17] = [
     ("s, u", "star or unstar it, mark it read or unread"),
     ("a, d, Delete", "archive it, or move it to Trash"),
     ("!", "move it to Spam, or out of Spam"),
-    ("l", "label it"),
+    ("l, D", "label it, or delete it forever"),
     ("Space", "mark it; an action acts on all marked"),
     ("/, :", "search all mail, or type a command"),
     ("Ctrl+R", "refresh the folders and the list"),
@@ -98,9 +101,63 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     if let Some(selected) = app.picking_attachment {
         draw_attachments(frame, app, selected, theme);
     }
+    if let Some(question) = &app.question {
+        draw_question(frame, question, theme);
+    }
     if app.help {
         draw_keys(frame, theme);
     }
+}
+
+/// The question on screen, over the panes: what it would delete forever,
+/// naming the first few conversations by their subjects, and what a yes
+/// does.
+fn draw_question(frame: &mut Frame, question: &Question, theme: &Theme) {
+    let (title, mut lines, yes) = match question {
+        Question::Delete { subjects, name, .. } => {
+            let (asks, yes) = match subjects.len() {
+                1 => (
+                    format!("Delete this conversation in {name} forever?"),
+                    "y deletes it; any other key keeps it.",
+                ),
+                count => (
+                    format!("Delete these {count} conversations in {name} forever?"),
+                    "y deletes them; any other key keeps them.",
+                ),
+            };
+            let mut lines = vec![Line::raw(screen_line(&asks)), Line::default()];
+            lines.extend(subjects.iter().take(NAMED).map(|subject| {
+                Line::styled(screen_line(render::subject_or_empty(subject)), theme.accent)
+            }));
+            if subjects.len() > NAMED {
+                lines.push(Line::raw(format!("…and {} more", subjects.len() - NAMED)));
+            }
+            (" Delete forever ".to_owned(), lines, yes)
+        }
+        Question::Empty { name, .. } => (
+            format!(" Empty {} ", screen_line(name)),
+            vec![Line::raw(screen_line(&format!(
+                "Delete everything in {name} forever?"
+            )))],
+            "y empties it; any other key keeps what it holds.",
+        ),
+    };
+    lines.extend([
+        Line::default(),
+        Line::raw("This cannot be undone."),
+        Line::raw(yes),
+    ]);
+    let area = frame.area();
+    let widest = lines.iter().map(Line::width).max().unwrap_or(0) + 2;
+    let width = u16::try_from(widest)
+        .unwrap_or(u16::MAX)
+        .min(area.width.saturating_sub(4));
+    let question = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let rows = question.line_count(width.saturating_sub(2)) + 2;
+    let area = centered(area, width, u16::try_from(rows).unwrap_or(u16::MAX));
+    let block = Block::bordered().title(title).border_style(theme.accent);
+    frame.render_widget(Clear, area);
+    frame.render_widget(question.block(block), area);
 }
 
 /// The open conversation's attachments over the panes, with their sizes,
@@ -728,6 +785,64 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("y opens it"), "{screen}");
+    }
+
+    #[test]
+    fn a_question_names_what_it_would_delete_forever_and_what_a_yes_does() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let mut subjects = vec!["\u{1b}[2JYou won".to_owned(), String::new()];
+        subjects.extend((3..=7).map(|n| format!("Old news {n}")));
+        app.question = Some(Question::Delete {
+            ids: subjects.clone(),
+            subjects,
+            place: label_ids::TRASH.into(),
+            name: "Trash".into(),
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        for line in [
+            " Delete forever ",
+            "Delete these 7 conversations in Trash forever?",
+            "[2JYou won",
+            "(no subject)",
+            "Old news 5",
+            "…and 2 more",
+            "This cannot be undone.",
+            "y deletes them; any other key keeps them.",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
+        assert!(!screen.contains("Old news 6"), "{screen}");
+
+        app.question = Some(Question::Delete {
+            ids: vec!["a".into()],
+            subjects: vec!["Quarterly report".into()],
+            place: label_ids::SPAM.into(),
+            name: "Spam".into(),
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(
+            screen.contains("Delete this conversation in Spam forever?"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("y deletes it; any other key keeps it."),
+            "{screen}"
+        );
+
+        app.question = Some(Question::Empty {
+            place: label_ids::TRASH.into(),
+            name: "Trash".into(),
+        });
+        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
+        for line in [
+            " Empty Trash ",
+            "Delete everything in Trash forever?",
+            "y empties it; any other key keeps what it holds.",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
+        // Even a terminal too small for it draws without panicking.
+        let _ = drawn(12, 4, &app, &Theme::new(false));
     }
 
     #[test]

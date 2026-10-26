@@ -821,8 +821,10 @@ impl DemoSession {
 
     /// Makes `change` to the conversation `id`, listed in `place`, much as
     /// Proton would: a star labels it Starred, reading marks it read
-    /// wherever it is and unread only where it is listed, and a move takes
-    /// it out of the folders it was in, keeping its labels, Sent and Drafts.
+    /// wherever it is and unread only where it is listed, a move takes it
+    /// out of the folders it was in, keeping its labels, Sent and Drafts,
+    /// and deleting it forever takes it away whole, as a move brings all of
+    /// it to Trash or Spam.
     pub(crate) fn change(&self, id: &str, place: &str, change: &Change) {
         let mut conversations = self
             .conversations
@@ -887,6 +889,16 @@ impl DemoSession {
                 }
             }
             Change::Unlabel(label) => conversation.labels.retain(|l| &l.id != label),
+            Change::Delete => conversations.retain(|c| c.id != id),
+        }
+    }
+
+    /// Deletes forever every conversation in the place `place`, as emptying
+    /// it does.
+    pub(crate) fn empty(&self, place: &str) {
+        let (_, listed) = self.conversations(place, 0, u32::MAX);
+        for conversation in listed {
+            self.change(&conversation.id, place, &Change::Delete);
         }
     }
 }
@@ -1814,6 +1826,34 @@ mod tests {
         assert!(listed(label_ids::TRASH).contains(&first.to_string()));
         assert!(listed(label_ids::SENT).contains(&first.to_string()));
         assert!(!listed(label_ids::INBOX).contains(&first.to_string()));
+    }
+
+    #[test]
+    fn a_session_deletes_forever_and_empties_what_was_thrown_away() {
+        let session = DemoSession::new();
+        let listed = |label: &str| {
+            let (_, page) = session.conversations(label, 0, 50);
+            page.into_iter().map(|c| c.id).collect::<Vec<_>>()
+        };
+        // Garden fence, in Trash alone.
+        session.change("conv-demo-06", label_ids::TRASH, &Change::Delete);
+        assert!(listed(label_ids::TRASH).is_empty());
+        assert!(!listed(label_ids::ALL_MAIL).contains(&"conv-demo-06".to_owned()));
+        // Emptying Spam takes all that is in it, wherever else it was
+        // labelled, and nothing else.
+        for id in ["conv-demo-02", "conv-demo-03"] {
+            session.change(id, label_ids::INBOX, &Change::Move(label_ids::SPAM.into()));
+        }
+        session.empty(label_ids::SPAM);
+        assert!(listed(label_ids::SPAM).is_empty());
+        assert_eq!(listed(label_ids::INBOX), ["conv-demo-01", "conv-demo-05"]);
+        assert_eq!(listed("label-demo-work"), ["conv-demo-01"]);
+        let all = session
+            .counts()
+            .into_iter()
+            .find(|count| count.label_id == label_ids::ALL_MAIL)
+            .map(|count| count.total);
+        assert_eq!(all, Some(3));
     }
 
     #[test]

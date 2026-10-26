@@ -51,6 +51,8 @@ pub(crate) enum Change {
     Label(String),
     /// Take the label with this ID off it.
     Unlabel(String),
+    /// Delete it forever from the place it is listed in, Trash or Spam.
+    Delete,
 }
 
 /// A place to list mail from: a system folder, or one of the account's own
@@ -204,9 +206,12 @@ impl Mailbox {
     }
 
     /// Makes `change` to the conversations `ids`, listed in the place
-    /// `place`, all in one request. The demo keeps it until the interface
-    /// closes.
+    /// `place`, all in one request; deleting forever only from Trash or
+    /// Spam. The demo keeps it until the interface closes.
     pub(crate) async fn change(&self, ids: &[String], place: &str, change: &Change) -> Result<()> {
+        if *change == Change::Delete {
+            only_thrown_away(place)?;
+        }
         match self {
             Self::Proton(client) => match change {
                 Change::Star(starred) => client.star_conversations(ids, *starred).await,
@@ -214,6 +219,7 @@ impl Mailbox {
                 Change::Move(folder) => client.move_conversations(ids, folder).await,
                 Change::Label(label) => client.label_conversations(ids, label).await,
                 Change::Unlabel(label) => client.unlabel_conversations(ids, label).await,
+                Change::Delete => client.delete_conversations(ids, place).await,
             },
             Self::Demo(session) => {
                 for id in ids {
@@ -222,6 +228,38 @@ impl Mailbox {
                 Ok(())
             }
         }
+    }
+
+    /// Deletes forever everything in the place `place`, which must be Trash
+    /// or Spam. The demo keeps it until the interface closes.
+    pub(crate) async fn empty(&self, place: &str) -> Result<()> {
+        only_thrown_away(place)?;
+        match self {
+            Self::Proton(client) => client.empty_folder(place).await,
+            Self::Demo(session) => {
+                session.empty(place);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Whether mail in the place with label ID `id` can be deleted forever: only
+/// in Trash and Spam, which hold mail already thrown away, as `messages
+/// empty` empties only them.
+pub(crate) fn deletes_forever(id: &str) -> bool {
+    id == label_ids::TRASH || id == label_ids::SPAM
+}
+
+/// Refuses to delete mail forever from anywhere but Trash and Spam, which
+/// the interface never asks for.
+fn only_thrown_away(place: &str) -> Result<()> {
+    if deletes_forever(place) {
+        Ok(())
+    } else {
+        Err(Error::Other(
+            "only mail in Trash or Spam is deleted forever".into(),
+        ))
     }
 }
 
@@ -405,5 +443,50 @@ mod tests {
             .change(&[page[0].id.clone()], label_ids::INBOX, &Change::Read(true))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mail_is_deleted_forever_from_trash_and_spam_alone() {
+        let mailbox = Mailbox::demo();
+        let ids = |(_, page): (u32, Vec<Conversation>)| -> Vec<String> {
+            page.into_iter()
+                .map(|conversation| conversation.id)
+                .collect()
+        };
+        let inbox = ids(mailbox.conversations(label_ids::INBOX, 0).await.unwrap());
+        assert!(
+            mailbox
+                .change(&inbox, label_ids::INBOX, &Change::Delete)
+                .await
+                .is_err()
+        );
+        assert!(mailbox.empty(label_ids::INBOX).await.is_err());
+        assert!(mailbox.empty(label_ids::ALL_MAIL).await.is_err());
+        assert_eq!(
+            ids(mailbox.conversations(label_ids::INBOX, 0).await.unwrap()),
+            inbox
+        );
+
+        let trash = ids(mailbox.conversations(label_ids::TRASH, 0).await.unwrap());
+        assert!(!trash.is_empty());
+        mailbox
+            .change(&trash, label_ids::TRASH, &Change::Delete)
+            .await
+            .unwrap();
+        assert!(ids(mailbox.conversations(label_ids::TRASH, 0).await.unwrap()).is_empty());
+        mailbox
+            .change(
+                &inbox[..1],
+                label_ids::INBOX,
+                &Change::Move(label_ids::SPAM.into()),
+            )
+            .await
+            .unwrap();
+        mailbox.empty(label_ids::SPAM).await.unwrap();
+        assert!(ids(mailbox.conversations(label_ids::SPAM, 0).await.unwrap()).is_empty());
+        assert_eq!(
+            ids(mailbox.conversations(label_ids::INBOX, 0).await.unwrap()),
+            inbox[1..]
+        );
     }
 }

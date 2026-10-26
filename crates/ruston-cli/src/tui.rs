@@ -207,9 +207,10 @@ impl Tasks {
     /// Runs `effect` as [`spawn`] does. A read aborts the task still running
     /// one of its kind, whose answer would come too late or be overtaken;
     /// that is safe, and a token refresh that one of them starts finishes on
-    /// a task of its own. A change to a conversation changes the account,
-    /// and opening a link starts a browser, so each always runs to its end:
-    /// stopped halfway, nobody would know whether it happened.
+    /// a task of its own. A change to a conversation, or emptying a folder,
+    /// changes the account, and opening a link starts a browser, so each
+    /// always runs to its end: stopped halfway, nobody would know whether it
+    /// happened.
     fn run(&mut self, effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) {
         let running = match effect {
             Effect::Places => &mut self.places,
@@ -219,6 +220,7 @@ impl Tasks {
             Effect::Conversation { .. } => &mut self.conversation,
             Effect::MarkRead { .. }
             | Effect::Change { .. }
+            | Effect::Empty { .. }
             | Effect::OpenLink { .. }
             | Effect::SaveAttachment { .. } => {
                 self.writes.retain(|write| !write.is_finished());
@@ -330,6 +332,13 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
                 result: result.map_err(|error| error.to_string()),
             }
         }
+        Effect::Empty { place, name } => Message::Emptied {
+            name,
+            result: mailbox
+                .empty(&place)
+                .await
+                .map_err(|error| error.to_string()),
+        },
         Effect::OpenLink { url } => {
             Message::LinkOpened(open_link(&url).map_err(|error| error.to_string()))
         }

@@ -719,7 +719,8 @@ instead of an unknown outcome.
   must load comes back from `update` as an effect, which `tui.rs` runs in a
   task. A read aborts the one still running a read of the same kind, which is
   safe: a token refresh that one of them starts finishes on a task of its own.
-  Marking read, the one write so far, always runs to its end. Each list or
+  Writes, from marking read to emptying a folder, always run to their end.
+  Each list or
   conversation request is numbered so an answer for an earlier one, sent
   before its task was aborted, is dropped. A list loads a
   page at a time: moving past its last row, once its first page has come, asks
@@ -750,7 +751,11 @@ instead of an unknown outcome.
   conversations marked with Space, from the list, or else on its selection or
   the conversation the reader shows, through `Mailbox::change`, one request
   for all, and then load the list and the counts again, which Proton owns, as
-  the desktop does.
+  the desktop does. Deleting forever, with `D` or `:delete`, and `:empty`
+  work only in Trash and Spam, as `messages empty` does, and `Mailbox`
+  refuses them anywhere else; each first asks a question over the panes,
+  naming what it deletes, which takes every key until one answers it: `y`
+  alone says yes.
   [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) is the command
   line `:` opens: its text, the lines run before, Tab's completion and what a
   line asks for; while it is open the state gets each key as typed, and runs

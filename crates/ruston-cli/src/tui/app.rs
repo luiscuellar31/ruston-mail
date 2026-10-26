@@ -4,7 +4,7 @@
 
 use super::command::{Command, CommandLine};
 use super::reading::Reading;
-use crate::mailbox::{Change, Place, PlaceKind};
+use crate::mailbox::{Change, Place, PlaceKind, deletes_forever};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ruston_core::Conversation;
 use ruston_core::model::enums::label_ids;
@@ -64,6 +64,23 @@ pub(crate) struct Search {
     pub(crate) back: (String, String),
 }
 
+/// A question over the panes before something that cannot be undone. Only
+/// `y` answers yes; any other key leaves everything as it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Question {
+    /// Whether to delete forever the conversations `ids`, whose subjects
+    /// are `subjects`, from the place with label ID `place`, named `name`.
+    Delete {
+        ids: Vec<String>,
+        subjects: Vec<String>,
+        place: String,
+        name: String,
+    },
+    /// Whether to delete forever everything in the place with label ID
+    /// `place`, named `name`.
+    Empty { place: String, name: String },
+}
+
 /// What the interface shows and where the keys go.
 pub(crate) struct App {
     /// Whose mail this is, for the status bar.
@@ -106,6 +123,8 @@ pub(crate) struct App {
     /// Which of the open conversation's attachments is selected, while `v`
     /// lists them over the panes.
     pub(crate) picking_attachment: Option<usize>,
+    /// The question over the panes that waits for a yes, if one does.
+    pub(crate) question: Option<Question>,
     /// The command line, while `:` has it open at the foot.
     pub(crate) command_line: Option<CommandLine>,
     /// The lines run from it, oldest first, for Up and Down.
@@ -167,6 +186,8 @@ pub(crate) enum Message {
     Spam,
     /// Opens the command line at `:label`.
     Label,
+    /// Asks whether to delete the conversation acted on forever.
+    DeleteForever,
     Refresh,
     ToggleHelp,
     /// Closes the list of keys, or else goes back a pane.
@@ -196,6 +217,11 @@ pub(crate) enum Message {
         change: Change,
         /// How many conversations it was made to.
         count: usize,
+        result: Result<(), String>,
+    },
+    /// Whether the place named `name` was emptied.
+    Emptied {
+        name: String,
         result: Result<(), String>,
     },
     /// A task stopped on a bug, saying what it was.
@@ -243,6 +269,11 @@ pub(crate) enum Effect {
         place: String,
         change: Change,
     },
+    /// Deletes forever everything in the place `place`, named `name`.
+    Empty {
+        place: String,
+        name: String,
+    },
 }
 
 impl App {
@@ -267,6 +298,7 @@ impl App {
             marks_read: true,
             picking_link: None,
             picking_attachment: None,
+            question: None,
             command_line: None,
             history: Vec::new(),
             search: None,
@@ -302,6 +334,8 @@ impl App {
             _ if self.picking_attachment.is_some() && is_key(&message) => {
                 return self.pick_attachment(&message);
             }
+            // And a question, which only a yes answers.
+            _ if self.question.is_some() && is_key(&message) => return self.answer(&message),
             // Marks go first.
             Message::Back if self.focus == Pane::Conversations && !self.marked.is_empty() => {
                 self.marked.clear();
@@ -357,6 +391,7 @@ impl App {
             }
             Message::Spam => return self.change(|_| Change::Move(label_ids::SPAM.into())),
             Message::Label => self.command_line = Some(CommandLine::with("label ")),
+            Message::DeleteForever => self.ask_to_delete(),
             Message::Refresh => return self.reload(),
             Message::PlacesLoaded(Ok(places)) => {
                 let selected = self
@@ -464,6 +499,11 @@ impl App {
                 let (_, failed) = wording(&change, count);
                 self.notice = Some(format!("{failed}: {error}"));
             }
+            Message::Emptied { result: Ok(()), .. } => return self.reload(),
+            Message::Emptied {
+                name,
+                result: Err(error),
+            } => self.notice = Some(format!("Cannot empty {name}: {error}")),
             Message::Failed(error) => {
                 self.notice = Some(format!("Something went wrong: {error}"));
             }
@@ -472,11 +512,15 @@ impl App {
     }
 
     /// What a terminal event asks for: while the command line is open, the
-    /// key typed in it, or else what [`Message::from_event`] makes of it.
+    /// key typed in it, while a question waits, a yes or a no, or else what
+    /// [`Message::from_event`] makes of it.
     pub(crate) fn message_for(&self, event: &Event) -> Option<Message> {
         match event {
             Event::Key(key) if self.command_line.is_some() => {
                 (key.kind != KeyEventKind::Release).then_some(Message::Typed(*key))
+            }
+            Event::Key(key) if self.question.is_some() => {
+                (key.kind != KeyEventKind::Release).then(|| answer_of(key))
             }
             _ => Message::from_event(event),
         }
@@ -606,6 +650,8 @@ impl App {
                 Ok(id) => return self.change(|_| Change::Unlabel(id)),
                 Err(error) => self.notice = Some(error),
             },
+            Command::Delete => self.ask_to_delete(),
+            Command::Empty => self.ask_to_empty(),
         }
         Vec::new()
     }
@@ -685,19 +731,26 @@ impl App {
             .find(|conversation| &conversation.id == id)
     }
 
+    /// Why nothing can be done to the conversations acted on yet, if so.
+    fn cannot_act(&self) -> Option<&'static str> {
+        // Until its first page comes, the list shows another place's rows.
+        if self.focus != Pane::Folders && self.next_page == 0 {
+            Some("Wait for the list to load.")
+        } else if self.targets().is_empty() {
+            Some("Choose a conversation in the list first.")
+        } else {
+            None
+        }
+    }
+
     /// Asks for the change `make` works out for the conversations acted on,
     /// saying so in the status bar meanwhile.
     fn change(&mut self, make: impl FnOnce(&[&Conversation]) -> Change) -> Vec<Effect> {
-        // Until its first page comes, the list shows another place's rows.
-        if self.focus != Pane::Folders && self.next_page == 0 {
-            self.notice = Some("Wait for the list to load.".to_owned());
+        if let Some(why) = self.cannot_act() {
+            self.notice = Some(why.to_owned());
             return Vec::new();
         }
         let targets = self.targets();
-        if targets.is_empty() {
-            self.notice = Some("Choose a conversation in the list first.".to_owned());
-            return Vec::new();
-        }
         let change = make(&targets);
         let ids: Vec<String> = targets
             .iter()
@@ -710,6 +763,64 @@ impl App {
             place: self.listed_id.clone(),
             change,
         }]
+    }
+
+    /// Asks whether to delete the conversations acted on forever, which
+    /// only Trash and Spam do.
+    fn ask_to_delete(&mut self) {
+        if !deletes_forever(&self.listed_id) {
+            self.notice = Some("Only mail in Trash or Spam can be deleted forever.".to_owned());
+            return;
+        }
+        if let Some(why) = self.cannot_act() {
+            self.notice = Some(why.to_owned());
+            return;
+        }
+        let targets = self.targets();
+        let question = Question::Delete {
+            ids: targets.iter().map(|c| c.id.clone()).collect(),
+            subjects: targets.iter().map(|c| c.subject.clone()).collect(),
+            place: self.listed_id.clone(),
+            name: self.listed.clone(),
+        };
+        self.question = Some(question);
+    }
+
+    /// Asks whether to delete everything in the listed place forever,
+    /// which only Trash and Spam do.
+    fn ask_to_empty(&mut self) {
+        if !deletes_forever(&self.listed_id) {
+            self.notice = Some("Only Trash and Spam can be emptied.".to_owned());
+            return;
+        }
+        self.question = Some(Question::Empty {
+            place: self.listed_id.clone(),
+            name: self.listed.clone(),
+        });
+    }
+
+    /// What a key does to the question on screen: `y` does what it asks,
+    /// and any other key puts it away with nothing deleted.
+    fn answer(&mut self, message: &Message) -> Vec<Effect> {
+        let Some(question) = self.question.take() else {
+            return Vec::new();
+        };
+        if !matches!(message, Message::Yes) {
+            self.notice = Some("Nothing was deleted.".to_owned());
+            return Vec::new();
+        }
+        match question {
+            Question::Delete { ids, place, .. } => {
+                let change = Change::Delete;
+                let (doing, _) = wording(&change, ids.len());
+                self.notice = Some(doing);
+                vec![Effect::Change { ids, place, change }]
+            }
+            Question::Empty { place, name } => {
+                self.notice = Some(format!("Emptying {name}…"));
+                vec![Effect::Empty { place, name }]
+            }
+        }
     }
 
     /// Lists the open conversation's links, to open one, or says why not.
@@ -1085,8 +1196,25 @@ fn wording(change: &Change, count: usize) -> (String, String) {
         Change::Move(_) => (format!("Moving {what}"), format!("move {what}")),
         Change::Label(_) => (format!("Labelling {what}"), format!("label {what}")),
         Change::Unlabel(_) => (format!("Unlabelling {what}"), format!("unlabel {what}")),
+        Change::Delete => (
+            format!("Deleting {what} forever"),
+            format!("delete {what} forever"),
+        ),
     };
     (format!("{doing}…"), format!("Cannot {cannot}"))
+}
+
+/// What `key` answers to a question: yes for `y` alone, and no, as Esc says
+/// it, for any other key, `q` and Ctrl+C included.
+fn answer_of(key: &KeyEvent) -> Message {
+    let alone = !key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    if key.code == KeyCode::Char('y') && alone {
+        Message::Yes
+    } else {
+        Message::Back
+    }
 }
 
 /// Whether `message` came from a key, not from an answer.
@@ -1100,6 +1228,7 @@ fn is_key(message: &Message) -> bool {
             | Message::LinkOpened(_)
             | Message::AttachmentSaved { .. }
             | Message::Changed { .. }
+            | Message::Emptied { .. }
             | Message::Failed(_)
     )
 }
@@ -1151,6 +1280,7 @@ impl Message {
             KeyCode::Char(' ') => Some(Self::Mark),
             KeyCode::Char('!') => Some(Self::Spam),
             KeyCode::Char('l') => Some(Self::Label),
+            KeyCode::Char('D') => Some(Self::DeleteForever),
             KeyCode::Char('/') => Some(Self::Search),
             _ => None,
         }
@@ -2061,6 +2191,144 @@ mod tests {
         assert_eq!(
             app.notice.as_deref(),
             Some("Moving the conversation to the Inbox…")
+        );
+    }
+
+    #[test]
+    fn deleting_forever_asks_first_and_only_a_yes_deletes() {
+        let mut app = loaded();
+        app.places.push(place(label_ids::TRASH, "Trash"));
+        app.focus = Pane::Conversations;
+        // Nothing outside Trash and Spam is deleted forever.
+        assert!(press(&mut app, KeyCode::Char('D')).is_empty());
+        assert_eq!(app.question, None);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Only mail in Trash or Spam can be deleted forever.")
+        );
+        assert!(command(&mut app, "empty").is_empty());
+        assert_eq!(app.question, None);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Only Trash and Spam can be emptied.")
+        );
+
+        let effects = command(&mut app, "folder trash");
+        let [Effect::Conversations { request, .. }] = effects[..] else {
+            panic!("{effects:?}");
+        };
+        let old = |id: &str| Conversation {
+            subject: format!("About {id}"),
+            ..conversation(id)
+        };
+        app.update(Message::ConversationsLoaded {
+            request,
+            page: 0,
+            result: Ok((2, vec![old("x"), old("y")])),
+        });
+        // D asks about the selected conversation; any key but y keeps it.
+        assert!(press(&mut app, KeyCode::Char('D')).is_empty());
+        assert_eq!(
+            app.question,
+            Some(Question::Delete {
+                ids: vec!["x".into()],
+                subjects: vec!["About x".into()],
+                place: label_ids::TRASH.into(),
+                name: "Trash".into(),
+            })
+        );
+        assert!(press(&mut app, KeyCode::Char('n')).is_empty());
+        assert_eq!(app.question, None);
+        assert_eq!(app.notice.as_deref(), Some("Nothing was deleted."));
+        // q too, which quits only once nothing is asked.
+        press(&mut app, KeyCode::Char('D'));
+        let ctrl_y = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert!(matches!(app.message_for(&ctrl_y), Some(Message::Back)));
+        assert!(press(&mut app, KeyCode::Char('q')).is_empty());
+        assert!(!app.quit);
+        assert_eq!(app.question, None);
+        // With some marked, about all of them; Esc keeps them, marks and
+        // all.
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('D'));
+        assert!(
+            matches!(&app.question, Some(Question::Delete { ids, .. }) if ids == &["x", "y"]),
+            "{:?}",
+            app.question
+        );
+        assert!(press(&mut app, KeyCode::Esc).is_empty());
+        assert_eq!(app.question, None);
+        assert_eq!(app.marked, ["x", "y"]);
+        // A yes deletes them, and the list loads again.
+        assert!(command(&mut app, "delete").is_empty());
+        assert_eq!(
+            press(&mut app, KeyCode::Char('y')),
+            [Effect::Change {
+                ids: vec!["x".into(), "y".into()],
+                place: label_ids::TRASH.into(),
+                change: Change::Delete,
+            }]
+        );
+        assert_eq!(app.question, None);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Deleting 2 conversations forever…")
+        );
+        app.update(Message::Changed {
+            change: Change::Delete,
+            count: 2,
+            result: Err("offline".into()),
+        });
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Cannot delete 2 conversations forever: offline")
+        );
+        let effects = app.update(Message::Changed {
+            change: Change::Delete,
+            count: 2,
+            result: Ok(()),
+        });
+        assert_eq!(effects[0], Effect::Places);
+
+        // :empty asks about all that is in the place listed.
+        assert!(command(&mut app, "empty").is_empty());
+        assert_eq!(
+            app.question,
+            Some(Question::Empty {
+                place: label_ids::TRASH.into(),
+                name: "Trash".into(),
+            })
+        );
+        assert_eq!(
+            press(&mut app, KeyCode::Char('y')),
+            [Effect::Empty {
+                place: label_ids::TRASH.into(),
+                name: "Trash".into(),
+            }]
+        );
+        assert_eq!(app.notice.as_deref(), Some("Emptying Trash…"));
+        app.update(Message::Emptied {
+            name: "Trash".into(),
+            result: Err("offline".into()),
+        });
+        assert_eq!(app.notice.as_deref(), Some("Cannot empty Trash: offline"));
+        let effects = app.update(Message::Emptied {
+            name: "Trash".into(),
+            result: Ok(()),
+        });
+        assert!(
+            matches!(&effects[..], [Effect::Places, Effect::Conversations { place, .. }] if place == label_ids::TRASH),
+            "{effects:?}"
+        );
+
+        // A search's results hold mail from anywhere.
+        command(&mut app, "search news");
+        press(&mut app, KeyCode::Char('D'));
+        assert_eq!(app.question, None);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Only mail in Trash or Spam can be deleted forever.")
         );
     }
 

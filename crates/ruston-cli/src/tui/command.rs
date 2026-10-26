@@ -3,9 +3,11 @@
 //! asks for. Doing what it asks is the state's business, in `app`.
 
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 19] = [
+const COMMANDS: [&str; 21] = [
     "archive",
     "attachments",
+    "delete",
+    "empty",
     "folder",
     "help",
     "label",
@@ -53,6 +55,10 @@ pub(crate) enum Command {
     Spam,
     /// Move them out of Spam, to the Inbox.
     NotSpam,
+    /// Delete them forever, from Trash or Spam, once asked.
+    Delete,
+    /// Delete everything in Trash or Spam forever, once asked.
+    Empty,
 }
 
 impl Command {
@@ -90,6 +96,8 @@ impl Command {
             "unread" => Self::Read(false),
             "archive" => Self::Archive,
             "trash" => Self::Trash,
+            "delete" => Self::Delete,
+            "empty" => Self::Empty,
             other => return Err(format!("Not a command: :{other}")),
         };
         let takes_words = matches!(
@@ -249,6 +257,11 @@ mod tests {
             Err(":unlabel needs the name of a label".into())
         );
         assert_eq!(Command::parse("notspam"), Ok(Some(Command::NotSpam)));
+        assert_eq!(Command::parse("delete"), Ok(Some(Command::Delete)));
+        assert_eq!(
+            Command::parse("empty trash"),
+            Err(":empty takes nothing after it".into())
+        );
         assert_eq!(
             Command::parse("folder"),
             Err(":folder needs the name of a folder or label".into())
