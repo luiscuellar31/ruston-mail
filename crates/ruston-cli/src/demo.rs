@@ -223,8 +223,22 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
                 flags: 0,
                 expiration_time: None,
             },
-            body: "Hi everyone,\n\nPlease add your topics for the offsite by Friday. I have reserved the morning for planning and the afternoon for team discussions.\n\nThanks,\nSam\n".to_string(),
-            mime_type: "text/plain".to_string(),
+            // In HTML, quoting the message it answers, with a link whose
+            // words are not its address.
+            body: concat!(
+                "<p>Hi everyone,</p>",
+                "<p>Please add your topics for the offsite by Friday. I have reserved the morning ",
+                "for planning and the afternoon for team discussions. The draft is in ",
+                "<a href=\"https://example.com/offsite/agenda\">the shared agenda</a>.</p>",
+                "<p>Thanks,<br>Sam</p>",
+                "<p>On Monday, Priya Natarajan wrote:</p>",
+                "<blockquote><p>Hi Sam,</p>",
+                "<p>The venue is booked for the whole day, and lunch is included.</p>",
+                "<p>The room has a projector and two whiteboards.</p>",
+                "<p>Best,<br>Priya</p></blockquote>",
+            )
+            .to_string(),
+            mime_type: "text/html".to_string(),
             attachments: Vec::new(),
         },
         DemoMessage {

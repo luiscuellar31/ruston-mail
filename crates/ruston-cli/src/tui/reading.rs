@@ -316,6 +316,22 @@ mod tests {
     }
 
     #[test]
+    fn the_demo_shows_a_quote_to_fold_and_a_link_named_in_words() {
+        let (conversation, messages) = crate::demo::conversation("conv-demo-03").unwrap();
+        let reading = Reading::new(&conversation, &messages);
+        let text = reading.lines.join("\n");
+        assert!(
+            text.contains("[the shared agenda](https://example.com/offsite/agenda)"),
+            "{text}"
+        );
+        assert_eq!(reading.links, ["https://example.com/offsite/agenda"]);
+        assert_eq!(reading.quotes.len(), 1, "{text}");
+        let quoted = &reading.lines[reading.quotes[0].clone()];
+        assert_eq!(quoted.first().map(String::as_str), Some("> Hi Sam,"));
+        assert!(quoted.len() >= 3, "{quoted:?}");
+    }
+
+    #[test]
     fn a_conversation_lists_each_link_of_its_bodies_once() {
         let messages = [
             opened("alex@example.test", "Plans: https://example.test/plan"),
