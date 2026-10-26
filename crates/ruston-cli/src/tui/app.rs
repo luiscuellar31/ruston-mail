@@ -2,8 +2,9 @@
 //! drawing and from the terminal, so both can be tested without one. What
 //! must happen elsewhere, such as loading a page, comes back as an [`Effect`].
 
+use super::command::{Command, CommandLine};
 use super::reading::Reading;
-use crate::mailbox::{Change, Place};
+use crate::mailbox::{Change, Place, PlaceKind};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ruston_core::Conversation;
 use ruston_core::model::enums::label_ids;
@@ -92,6 +93,10 @@ pub(crate) struct App {
     pub(crate) marks_read: bool,
     /// The open conversation's links, while `o` lists them over the panes.
     pub(crate) picking_link: Option<LinkPick>,
+    /// The command line, while `:` has it open at the foot.
+    pub(crate) command_line: Option<CommandLine>,
+    /// The lines run from it, oldest first, for Up and Down.
+    history: Vec<String>,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
@@ -123,6 +128,10 @@ pub(crate) enum Message {
     ShowLinks,
     /// Answers yes to the question on screen.
     Yes,
+    /// Opens the command line.
+    Command,
+    /// A key typed while the command line is open.
+    Typed(KeyEvent),
     /// Stars the conversation acted on, or takes its star away.
     Star,
     /// Marks the conversation acted on read, or unread.
@@ -204,6 +213,8 @@ impl App {
             show_quotes: false,
             marks_read: true,
             picking_link: None,
+            command_line: None,
+            history: Vec::new(),
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
@@ -251,6 +262,8 @@ impl App {
             Message::ShowLinks => self.show_links(),
             // Nothing on screen waits for a yes.
             Message::Yes => {}
+            Message::Command => self.command_line = Some(CommandLine::default()),
+            Message::Typed(key) => return self.type_in_command_line(&key),
             Message::Star => {
                 return self.change(|conversation| Change::Star(!is_starred(conversation)));
             }
@@ -364,6 +377,134 @@ impl App {
             }
         }
         Vec::new()
+    }
+
+    /// What a terminal event asks for: while the command line is open, the
+    /// key typed in it, or else what [`Message::from_event`] makes of it.
+    pub(crate) fn message_for(&self, event: &Event) -> Option<Message> {
+        match event {
+            Event::Key(key) if self.command_line.is_some() => {
+                (key.kind != KeyEventKind::Release).then_some(Message::Typed(*key))
+            }
+            _ => Message::from_event(event),
+        }
+    }
+
+    /// What a key does on the command line: Enter runs it, Esc or Ctrl+C
+    /// closes it, Backspace on an empty one too; Up and Down recall the
+    /// lines run before, Tab completes a word, and Ctrl+U clears it. Ctrl
+    /// with Alt types, as Windows reports what AltGr types.
+    fn type_in_command_line(&mut self, key: &KeyEvent) -> Vec<Effect> {
+        let shortcut = key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+        if key.code == KeyCode::Enter {
+            let text = self
+                .command_line
+                .take()
+                .map(|line| line.text.trim().to_owned())
+                .unwrap_or_default();
+            if !text.is_empty() && self.history.last() != Some(&text) {
+                self.history.push(text.clone());
+            }
+            return match Command::parse(&text) {
+                Ok(Some(command)) => self.run(command),
+                Ok(None) => Vec::new(),
+                Err(error) => {
+                    self.notice = Some(error);
+                    Vec::new()
+                }
+            };
+        }
+        let (places, folders) = self.completions();
+        let Some(line) = self.command_line.as_mut() else {
+            return Vec::new();
+        };
+        match key.code {
+            KeyCode::Esc => self.command_line = None,
+            KeyCode::Char('c') if shortcut => self.command_line = None,
+            KeyCode::Char('u') if shortcut => line.clear(),
+            KeyCode::Backspace => {
+                if !line.backspace() {
+                    self.command_line = None;
+                }
+            }
+            KeyCode::Up => line.recall(&self.history, true),
+            KeyCode::Down => line.recall(&self.history, false),
+            KeyCode::Tab | KeyCode::BackTab => {
+                let backwards = key.code == KeyCode::BackTab;
+                let after = |command: &str| match command {
+                    "folder" => places.clone(),
+                    "move" => folders.clone(),
+                    _ => Vec::new(),
+                };
+                line.complete(after, backwards);
+            }
+            KeyCode::Char(c) if !shortcut => line.type_char(c),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// The names Tab offers after `:folder`, every place's, and after
+    /// `:move`, those of the folders a conversation can move to.
+    fn completions(&self) -> (Vec<String>, Vec<String>) {
+        let names = |takes: fn(&Place) -> bool| -> Vec<String> {
+            self.places
+                .iter()
+                .filter(|place| takes(place))
+                .map(|place| place.name.clone())
+                .collect()
+        };
+        (names(|_| true), names(takes_moves))
+    }
+
+    /// Does what a command line asks for.
+    fn run(&mut self, command: Command) -> Vec<Effect> {
+        match command {
+            Command::Quit => self.quit = true,
+            Command::Help => self.help = true,
+            Command::Refresh => return self.update(Message::Refresh),
+            Command::Folder(name) => match self.named(&name) {
+                Ok(index) => {
+                    self.selected_place = index;
+                    self.focus = Pane::Folders;
+                    return self.open();
+                }
+                Err(error) => self.notice = Some(error),
+            },
+            Command::Move(name) => match self.named(&name) {
+                Ok(index) if takes_moves(&self.places[index]) => {
+                    let id = self.places[index].id.clone();
+                    return self.change(|_| Change::Move(id));
+                }
+                Ok(index) => {
+                    let name = &self.places[index].name;
+                    self.notice = Some(format!("Conversations cannot be moved to {name}"));
+                }
+                Err(error) => self.notice = Some(error),
+            },
+            Command::Star(starred) => return self.change(|_| Change::Star(starred)),
+            Command::Read(read) => return self.change(|_| Change::Read(read)),
+            Command::Archive => return self.change(|_| Change::Move(label_ids::ARCHIVE.into())),
+            Command::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
+        }
+        Vec::new()
+    }
+
+    /// Which of the places is named `name`, whatever its case.
+    fn named(&self, name: &str) -> Result<usize, String> {
+        let wanted = name.to_lowercase();
+        let mut named = self
+            .places
+            .iter()
+            .enumerate()
+            .filter(|(_, place)| place.name.to_lowercase() == wanted)
+            .map(|(index, _)| index);
+        match (named.next(), named.next()) {
+            (Some(index), None) => Ok(index),
+            (None, _) => Err(format!("No folder or label is named {name}")),
+            (Some(_), Some(_)) => Err(format!("Several folders or labels are named {name}")),
+        }
     }
 
     /// The conversation a quick action acts on: the list's selection, or the
@@ -591,6 +732,22 @@ impl App {
     }
 }
 
+/// Whether conversations can be moved to `place`: a folder of the account's
+/// own, or the Inbox, Archive, Spam or Trash, unlike a label or Sent.
+fn takes_moves(place: &Place) -> bool {
+    match place.kind {
+        PlaceKind::Folder => true,
+        PlaceKind::Label => false,
+        PlaceKind::System => [
+            label_ids::INBOX,
+            label_ids::ARCHIVE,
+            label_ids::SPAM,
+            label_ids::TRASH,
+        ]
+        .contains(&place.id.as_str()),
+    }
+}
+
 /// Whether `conversation` is starred.
 fn is_starred(conversation: &Conversation) -> bool {
     conversation
@@ -682,6 +839,7 @@ impl Message {
             KeyCode::Char('u') => Some(Self::ToggleRead),
             KeyCode::Char('a') => Some(Self::Archive),
             KeyCode::Char('d') | KeyCode::Delete => Some(Self::Trash),
+            KeyCode::Char(':') => Some(Self::Command),
             _ => None,
         }
     }
@@ -690,7 +848,6 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mailbox::PlaceKind;
     use ruston_core::model::ConversationLabel;
 
     fn key(code: KeyCode) -> Event {
@@ -698,7 +855,17 @@ mod tests {
     }
 
     fn press(app: &mut App, code: KeyCode) -> Vec<Effect> {
-        Message::from_event(&key(code)).map_or_else(Vec::new, |message| app.update(message))
+        app.message_for(&key(code))
+            .map_or_else(Vec::new, |message| app.update(message))
+    }
+
+    /// Opens the command line, types `line` and runs it.
+    fn command(app: &mut App, line: &str) -> Vec<Effect> {
+        press(app, KeyCode::Char(':'));
+        for c in line.chars() {
+            press(app, KeyCode::Char(c));
+        }
+        press(app, KeyCode::Enter)
     }
 
     fn place(id: &str, name: &str) -> Place {
@@ -1391,6 +1558,128 @@ mod tests {
             result: Ok((2, vec![conversation("w1"), conversation("w2")])),
         });
         assert_eq!(app.selected_conversation, 0);
+    }
+
+    #[test]
+    fn a_command_line_opens_folders_by_name_and_remembers_what_ran() {
+        let mut app = loaded();
+        assert_eq!(
+            command(&mut app, "folder WORK"),
+            [Effect::Conversations {
+                request: 2,
+                place: "folder-1".into(),
+                page: 0
+            }]
+        );
+        assert_eq!((app.focus, app.selected_place), (Pane::Conversations, 1));
+        assert!(app.command_line.is_none());
+        command(&mut app, "folder Nowhere");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("No folder or label is named Nowhere")
+        );
+        command(&mut app, "fly");
+        assert_eq!(app.notice.as_deref(), Some("Not a command: :fly"));
+
+        // Up recalls the lines run before, and Tab completes.
+        press(&mut app, KeyCode::Char(':'));
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.command_line.as_ref().unwrap().text, "fly");
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.command_line.as_ref().unwrap().text, "folder WORK");
+        press(&mut app, KeyCode::Char('u'));
+        let ctrl_u = Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        app.update(app.message_for(&ctrl_u).unwrap());
+        for c in "folder in".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.command_line.as_ref().unwrap().text, "folder Inbox");
+        // While it is open, keys type: q does not quit, j does not move.
+        press(&mut app, KeyCode::Char('q'));
+        assert!(!app.quit);
+        assert_eq!(app.command_line.as_ref().unwrap().text, "folder Inboxq");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.command_line.is_none());
+        // Backspace on an empty line closes it, as Ctrl+C does.
+        press(&mut app, KeyCode::Char(':'));
+        press(&mut app, KeyCode::Backspace);
+        assert!(app.command_line.is_none());
+        press(&mut app, KeyCode::Char(':'));
+        let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        app.update(app.message_for(&ctrl_c).unwrap());
+        assert!(app.command_line.is_none());
+        assert!(!app.quit);
+        command(&mut app, "q");
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn altgr_types_on_the_command_line() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char(':'));
+        let at = KeyEvent::new(
+            KeyCode::Char('@'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        app.update(app.message_for(&Event::Key(at)).unwrap());
+        assert_eq!(app.command_line.as_ref().unwrap().text, "@");
+    }
+
+    #[test]
+    fn commands_make_the_quick_actions_and_move_to_any_folder() {
+        let mut app = loaded();
+        app.places = vec![
+            place(label_ids::INBOX, "Inbox"),
+            place(label_ids::SENT, "Sent"),
+            Place {
+                kind: PlaceKind::Folder,
+                ..place("folder-1", "Work")
+            },
+            Place {
+                kind: PlaceKind::Label,
+                ..place("label-1", "Family")
+            },
+        ];
+        app.focus = Pane::Conversations;
+        let change = |change: Change| {
+            vec![Effect::Change {
+                id: "a".into(),
+                place: label_ids::INBOX.into(),
+                change,
+            }]
+        };
+        assert_eq!(command(&mut app, "star"), change(Change::Star(true)));
+        assert_eq!(command(&mut app, "unstar"), change(Change::Star(false)));
+        assert_eq!(command(&mut app, "read"), change(Change::Read(true)));
+        assert_eq!(command(&mut app, "unread"), change(Change::Read(false)));
+        let archive = Change::Move(label_ids::ARCHIVE.into());
+        assert_eq!(command(&mut app, "archive"), change(archive));
+        let trash = Change::Move(label_ids::TRASH.into());
+        assert_eq!(command(&mut app, "trash"), change(trash));
+        let work = Change::Move("folder-1".into());
+        assert_eq!(command(&mut app, "move work"), change(work));
+        assert!(command(&mut app, "move Family").is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Conversations cannot be moved to Family")
+        );
+        assert!(command(&mut app, "move Sent").is_empty());
+        // Tab offers only the folders a conversation can move to.
+        press(&mut app, KeyCode::Char(':'));
+        for c in "move ".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        let mut offered = Vec::new();
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Tab);
+            offered.push(app.command_line.as_ref().unwrap().text.clone());
+        }
+        assert_eq!(offered, ["move Inbox", "move Work", "move Inbox"]);
+        press(&mut app, KeyCode::Esc);
+        command(&mut app, "help");
+        assert!(app.help);
     }
 
     #[test]

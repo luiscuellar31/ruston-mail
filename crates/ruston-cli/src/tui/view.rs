@@ -26,7 +26,7 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 15] = [
+const KEYS: [(&str, &str); 16] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
@@ -38,6 +38,7 @@ const KEYS: [(&str, &str); 15] = [
     ("u", "mark it read or unread"),
     ("a", "archive it"),
     ("d, Delete", "move it to Trash"),
+    (":", "type a command; Tab completes it"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys, or go back a pane"),
@@ -309,6 +310,10 @@ fn conversation_row(conversation: &Conversation) -> ListItem<'static> {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    if let Some(line) = &app.command_line {
+        draw_command_line(frame, &line.text, area);
+        return;
+    }
     let hints = Line::from(vec![
         Span::styled("Tab", theme.accent),
         Span::raw(" panes  "),
@@ -336,6 +341,16 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let text = format!(" {} · {} · {detail}", app.account, app.listed);
     frame.render_widget(Paragraph::new(screen_line(&text)), state);
     frame.render_widget(Paragraph::new(hints), hints_area);
+}
+
+/// The command line in place of the status bar, with the cursor after what
+/// is typed; a line longer than the bar shows its end.
+fn draw_command_line(frame: &mut Frame, text: &str, area: Rect) {
+    let line = Line::raw(format!(":{}", screen_line(text)));
+    let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
+    let hidden = width.saturating_sub(area.width.saturating_sub(1));
+    frame.render_widget(Paragraph::new(line).scroll((0, hidden)), area);
+    frame.set_cursor_position((area.x + width - hidden, area.y));
 }
 
 fn draw_keys(frame: &mut Frame, theme: &Theme) {
@@ -380,7 +395,9 @@ mod tests {
     use super::super::reading::Reading;
     use super::*;
     use crate::mailbox::{Place, PlaceKind};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
+    use ratatui::backend::Backend;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ruston_core::Recipient;
@@ -639,6 +656,26 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("y opens it"), "{screen}");
+    }
+
+    #[test]
+    fn the_command_line_takes_the_status_bar_with_the_cursor_after_it() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.update(Message::Command);
+        for c in "folder Wo".chars() {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            app.update(Message::Typed(key));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &app, &Theme::new(false)))
+            .unwrap();
+        let screen = text(terminal.backend().buffer());
+        let status = screen.lines().last().unwrap();
+        assert!(status.starts_with(":folder Wo "), "{status}");
+        assert!(!status.contains("conversation(s)"), "{status}");
+        let cursor = terminal.backend_mut().get_cursor_position().unwrap();
+        assert_eq!((cursor.x, cursor.y), (10, 29));
     }
 
     #[test]

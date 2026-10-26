@@ -4,6 +4,7 @@
 //! event loop, and runs the work `app` hands out.
 
 mod app;
+mod command;
 mod reading;
 mod view;
 
@@ -95,7 +96,7 @@ async fn run_loop(
                         suspend(terminal)?;
                         continue;
                     }
-                    Message::from_event(&event)
+                    app.message_for(&event)
                 }
                 None => break,
             },

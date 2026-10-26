@@ -509,7 +509,9 @@ you start it with `ruston-cli tui --keep-unread`. `s` stars or unstars the
 conversation selected in the list, or the one the reader shows, `u` marks it
 read or unread, `a` archives it, and `d` or Delete moves it to Trash; then the
 list and the counts load again. The demo keeps such changes until the
-interface closes. With no session saved, it signs in first, as
+interface closes. `:` opens a command line at the foot; Tab completes a
+command or a name, Up and Down bring back the lines run before, Enter runs
+it and Esc closes it. With no session saved, it signs in first, as
 `ruston-cli login` does; `--demo` opens the fictional mailbox. Away from a
 terminal, as in a script, `ruston-cli` with no command still prints the help
 and ends with status 2.
@@ -527,11 +529,23 @@ and ends with status 2.
 | `u` | Mark it read or unread |
 | `a` | Archive it |
 | `d`, Delete | Move it to Trash |
+| `:` | Type a command |
 | Ctrl+R | Refresh the folders and the list |
 | `?` | Show or hide the keys |
 | Esc | Close the keys, or go back a pane |
 | `q`, Ctrl+C | Quit |
 | Ctrl+Z | Suspend to the shell, on Linux and macOS |
+
+| Command | Action |
+| --- | --- |
+| `:folder NAME` | Open the folder or label with that name |
+| `:move FOLDER` | Move the conversation to a folder of yours, or to Inbox, Archive, Spam or Trash |
+| `:star`, `:unstar` | Star the conversation, or take its star away |
+| `:read`, `:unread` | Mark it read or unread |
+| `:archive`, `:trash` | Archive it, or move it to Trash |
+| `:refresh` | Refresh the folders and the list |
+| `:help` | Show the keys |
+| `:q`, `:quit` | Quit |
 
 The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with

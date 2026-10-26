@@ -732,6 +732,10 @@ instead of an unknown outcome.
   (star, read or unread, archive, Trash) act on the list's selection or the
   conversation the reader shows, through `Mailbox::change`, and then load
   the list and the counts again, which Proton owns, as the desktop does.
+  [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) is the command
+  line `:` opens: its text, the lines run before, Tab's completion and what a
+  line asks for; while it is open the state gets each key as typed, and runs
+  the command as the keys would, with `:move` reaching any folder.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with
@@ -999,7 +1003,7 @@ instead of an unknown outcome.
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
-| CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs), [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) | [`mailbox.rs`](../crates/ruston-cli/src/mailbox.rs), [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs), [`demo.rs`](../crates/ruston-cli/src/demo.rs) |
+| CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs), [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs), [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) | [`mailbox.rs`](../crates/ruston-cli/src/mailbox.rs), [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs), [`demo.rs`](../crates/ruston-cli/src/demo.rs) |
 | CLI syntax, behavior, or output | [`crates/ruston-cli/src/cli.rs`](../crates/ruston-cli/src/cli.rs), [`commands/`](../crates/ruston-cli/src/commands/) | [`render.rs`](../crates/ruston-cli/src/render.rs), corresponding core `mail/` operation |
 | Proton request or response | [`crates/ruston-core/src/api/`](../crates/ruston-core/src/api/) | [`transport/`](../crates/ruston-core/src/transport/), [`model/`](../crates/ruston-core/src/model/), [wire tests](../crates/ruston-core/tests/api_wiremock.rs) |
 | Sessions and desktop preferences | Core [`session/`](../crates/ruston-core/src/session/) | Desktop [`settings.rs`](../src/settings.rs), [privacy guide](PRIVACY.md) |
