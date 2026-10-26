@@ -163,6 +163,10 @@ pub(crate) enum Message {
     Archive,
     /// Moves the conversation acted on to Trash.
     Trash,
+    /// Moves the conversation acted on to Spam, or out of it from there.
+    Spam,
+    /// Opens the command line at `:label`.
+    Label,
     Refresh,
     ToggleHelp,
     /// Closes the list of keys, or else goes back a pane.
@@ -347,6 +351,12 @@ impl App {
             }
             Message::Archive => return self.change(|_| Change::Move(label_ids::ARCHIVE.into())),
             Message::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
+            // Not spam, from Spam, goes back to the Inbox, as Proton's does.
+            Message::Spam if self.listed_id == label_ids::SPAM => {
+                return self.change(|_| Change::Move(label_ids::INBOX.into()));
+            }
+            Message::Spam => return self.change(|_| Change::Move(label_ids::SPAM.into())),
+            Message::Label => self.command_line = Some(CommandLine::with("label ")),
             Message::Refresh => return self.reload(),
             Message::PlacesLoaded(Ok(places)) => {
                 let selected = self
@@ -497,7 +507,7 @@ impl App {
                 }
             };
         }
-        let (places, folders) = self.completions();
+        let (places, folders, labels) = self.completions();
         let Some(line) = self.command_line.as_mut() else {
             return Vec::new();
         };
@@ -517,6 +527,7 @@ impl App {
                 let after = |command: &str| match command {
                     "folder" => places.clone(),
                     "move" => folders.clone(),
+                    "label" | "unlabel" => labels.clone(),
                     _ => Vec::new(),
                 };
                 line.complete(after, backwards);
@@ -527,9 +538,10 @@ impl App {
         Vec::new()
     }
 
-    /// The names Tab offers after `:folder`, every place's, and after
-    /// `:move`, those of the folders a conversation can move to.
-    fn completions(&self) -> (Vec<String>, Vec<String>) {
+    /// The names Tab offers after `:folder`, every place's, after `:move`,
+    /// those of the folders a conversation can move to, and after `:label`
+    /// and `:unlabel`, those of the labels.
+    fn completions(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
         let names = |takes: fn(&Place) -> bool| -> Vec<String> {
             self.places
                 .iter()
@@ -537,7 +549,11 @@ impl App {
                 .map(|place| place.name.clone())
                 .collect()
         };
-        (names(|_| true), names(takes_moves))
+        (
+            names(|_| true),
+            names(takes_moves),
+            names(|place| place.kind == PlaceKind::Label),
+        )
     }
 
     /// Does what a command line asks for.
@@ -580,8 +596,32 @@ impl App {
             Command::Read(read) => return self.change(|_| Change::Read(read)),
             Command::Archive => return self.change(|_| Change::Move(label_ids::ARCHIVE.into())),
             Command::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
+            Command::Spam => return self.change(|_| Change::Move(label_ids::SPAM.into())),
+            Command::NotSpam => return self.change(|_| Change::Move(label_ids::INBOX.into())),
+            Command::Label(name) => match self.label_named(&name) {
+                Ok(id) => return self.change(|_| Change::Label(id)),
+                Err(error) => self.notice = Some(error),
+            },
+            Command::Unlabel(name) => match self.label_named(&name) {
+                Ok(id) => return self.change(|_| Change::Unlabel(id)),
+                Err(error) => self.notice = Some(error),
+            },
         }
         Vec::new()
+    }
+
+    /// The ID of the label named `name`, whatever its case, or what to say
+    /// when that names a folder or nothing.
+    fn label_named(&self, name: &str) -> Result<String, String> {
+        let place = &self.places[self.named(name)?];
+        match place.kind {
+            PlaceKind::Label => Ok(place.id.clone()),
+            PlaceKind::Folder => Err(format!(
+                "{} is a folder: :move moves mail to it",
+                place.name
+            )),
+            PlaceKind::System => Err(format!("{} is not a label", place.name)),
+        }
     }
 
     /// Which of the places is named `name`, whatever its case.
@@ -1034,7 +1074,17 @@ fn wording(change: &Change, count: usize) -> (String, String) {
             format!("Moving {what} to Trash"),
             format!("move {what} to Trash"),
         ),
+        Change::Move(folder) if folder == label_ids::SPAM => (
+            format!("Moving {what} to Spam"),
+            format!("move {what} to Spam"),
+        ),
+        Change::Move(folder) if folder == label_ids::INBOX => (
+            format!("Moving {what} to the Inbox"),
+            format!("move {what} to the Inbox"),
+        ),
         Change::Move(_) => (format!("Moving {what}"), format!("move {what}")),
+        Change::Label(_) => (format!("Labelling {what}"), format!("label {what}")),
+        Change::Unlabel(_) => (format!("Unlabelling {what}"), format!("unlabel {what}")),
     };
     (format!("{doing}…"), format!("Cannot {cannot}"))
 }
@@ -1099,6 +1149,8 @@ impl Message {
             KeyCode::Char('d') | KeyCode::Delete => Some(Self::Trash),
             KeyCode::Char(':') => Some(Self::Command),
             KeyCode::Char(' ') => Some(Self::Mark),
+            KeyCode::Char('!') => Some(Self::Spam),
+            KeyCode::Char('l') => Some(Self::Label),
             KeyCode::Char('/') => Some(Self::Search),
             _ => None,
         }
@@ -1929,6 +1981,87 @@ mod tests {
             result: Ok(()),
         });
         assert!(app.marked.is_empty());
+    }
+
+    #[test]
+    fn labels_go_on_and_off_by_name_and_spam_goes_both_ways() {
+        let mut app = loaded();
+        app.places = vec![
+            place(label_ids::INBOX, "Inbox"),
+            place(label_ids::SPAM, "Spam"),
+            Place {
+                kind: PlaceKind::Folder,
+                ..place("folder-1", "Work")
+            },
+            Place {
+                kind: PlaceKind::Label,
+                ..place("label-1", "Family")
+            },
+        ];
+        app.focus = Pane::Conversations;
+        let change = |change: Change| {
+            vec![Effect::Change {
+                ids: vec!["a".into()],
+                place: label_ids::INBOX.into(),
+                change,
+            }]
+        };
+        assert_eq!(
+            command(&mut app, "label family"),
+            change(Change::Label("label-1".into()))
+        );
+        assert_eq!(app.notice.as_deref(), Some("Labelling the conversation…"));
+        assert_eq!(
+            command(&mut app, "unlabel Family"),
+            change(Change::Unlabel("label-1".into()))
+        );
+        assert!(command(&mut app, "label Work").is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Work is a folder: :move moves mail to it")
+        );
+        assert!(command(&mut app, "label Inbox").is_empty());
+        assert_eq!(app.notice.as_deref(), Some("Inbox is not a label"));
+        // l starts the line at :label, and Tab offers only labels.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.command_line.as_ref().unwrap().text, "label ");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.command_line.as_ref().unwrap().text, "label Family");
+        press(&mut app, KeyCode::Esc);
+
+        // ! moves to Spam, and from Spam back to the Inbox.
+        assert_eq!(
+            press(&mut app, KeyCode::Char('!')),
+            change(Change::Move(label_ids::SPAM.into()))
+        );
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Moving the conversation to Spam…")
+        );
+        assert_eq!(
+            command(&mut app, "notspam"),
+            change(Change::Move(label_ids::INBOX.into()))
+        );
+        app.focus = Pane::Folders;
+        app.selected_place = 1;
+        press(&mut app, KeyCode::Enter);
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((1, vec![conversation("junk")])),
+        });
+        assert_eq!(
+            press(&mut app, KeyCode::Char('!')),
+            [Effect::Change {
+                ids: vec!["junk".into()],
+                place: label_ids::SPAM.into(),
+                change: Change::Move(label_ids::INBOX.into())
+            }]
+        );
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Moving the conversation to the Inbox…")
+        );
     }
 
     #[test]

@@ -27,22 +27,20 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 19] = [
+const KEYS: [(&str, &str); 17] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
     ("g, G, Home, End", "go to the top or the bottom"),
     ("Enter", "open the folder or conversation"),
     ("z", "show or hide quoted text"),
-    ("o", "list the conversation's links to open one"),
-    ("v", "list the conversation's attachments to save one"),
-    ("s", "star or unstar the conversation"),
-    ("u", "mark it read or unread"),
-    ("a", "archive it"),
-    ("d, Delete", "move it to Trash"),
+    ("o, v", "list its links, or its attachments"),
+    ("s, u", "star or unstar it, mark it read or unread"),
+    ("a, d, Delete", "archive it, or move it to Trash"),
+    ("!", "move it to Spam, or out of Spam"),
+    ("l", "label it"),
     ("Space", "mark it; an action acts on all marked"),
-    ("/", "search all mail"),
-    (":", "type a command; Tab completes it"),
+    ("/, :", "search all mail, or type a command"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys, clear the marks, or go back"),
@@ -872,6 +870,17 @@ mod tests {
         }
         // Even a terminal too small for the list draws without panicking.
         let _ = drawn(12, 4, &app, &Theme::new(false));
+    }
+
+    #[test]
+    fn the_keys_fit_a_terminal_of_24_rows() {
+        let mut app = App::new("demo".into());
+        app.help = true;
+        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
+        for (keys, action) in KEYS.iter().chain(SUSPEND_KEYS) {
+            assert!(screen.contains(keys), "{keys} missing:\n{screen}");
+            assert!(screen.contains(action), "{action} missing:\n{screen}");
+        }
     }
 
     #[test]

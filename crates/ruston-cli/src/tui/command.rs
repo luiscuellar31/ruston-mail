@@ -3,20 +3,24 @@
 //! asks for. Doing what it asks is the state's business, in `app`.
 
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 15] = [
+const COMMANDS: [&str; 19] = [
     "archive",
     "attachments",
     "folder",
     "help",
+    "label",
     "local",
     "move",
+    "notspam",
     "q",
     "quit",
     "read",
     "refresh",
     "search",
+    "spam",
     "star",
     "trash",
+    "unlabel",
     "unread",
     "unstar",
 ];
@@ -41,6 +45,14 @@ pub(crate) enum Command {
     Read(bool),
     Archive,
     Trash,
+    /// Put the label with this name on the conversations acted on.
+    Label(String),
+    /// Take the label with this name off them.
+    Unlabel(String),
+    /// Move them to Spam.
+    Spam,
+    /// Move them out of Spam, to the Inbox.
+    NotSpam,
 }
 
 impl Command {
@@ -68,6 +80,10 @@ impl Command {
             "move" => Self::Move(needs("the name of a folder")?),
             "search" => Self::Search(needs("the words to look for")?),
             "local" => Self::Local(needs("the words to look for")?),
+            "label" => Self::Label(needs("the name of a label")?),
+            "unlabel" => Self::Unlabel(needs("the name of a label")?),
+            "spam" => Self::Spam,
+            "notspam" => Self::NotSpam,
             "star" => Self::Star(true),
             "unstar" => Self::Star(false),
             "read" => Self::Read(true),
@@ -78,7 +94,12 @@ impl Command {
         };
         let takes_words = matches!(
             command,
-            Self::Folder(_) | Self::Move(_) | Self::Search(_) | Self::Local(_)
+            Self::Folder(_)
+                | Self::Move(_)
+                | Self::Search(_)
+                | Self::Local(_)
+                | Self::Label(_)
+                | Self::Unlabel(_)
         );
         if !argument.is_empty() && !takes_words {
             return Err(format!(":{name} takes nothing after it"));
@@ -220,6 +241,15 @@ mod tests {
             Ok(Some(Command::Local("budget 2024".into())))
         );
         assert_eq!(
+            Command::parse("label Family trips"),
+            Ok(Some(Command::Label("Family trips".into())))
+        );
+        assert_eq!(
+            Command::parse("unlabel"),
+            Err(":unlabel needs the name of a label".into())
+        );
+        assert_eq!(Command::parse("notspam"), Ok(Some(Command::NotSpam)));
+        assert_eq!(
             Command::parse("folder"),
             Err(":folder needs the name of a folder or label".into())
         );
@@ -267,9 +297,9 @@ mod tests {
         line.clear();
         line.type_char('u');
         line.complete(places, false);
-        assert_eq!(line.text, "unread");
+        assert_eq!(line.text, "unlabel");
         line.complete(places, false);
-        assert_eq!(line.text, "unstar");
+        assert_eq!(line.text, "unread");
     }
 
     #[test]

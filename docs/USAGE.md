@@ -525,7 +525,9 @@ conversation selected in the list, or the one the reader shows, `u` marks it
 read or unread, `a` archives it, and `d` or Delete moves it to Trash; then the
 list and the counts load again. Space marks the selected conversation and
 moves down: with some marked, an action from the list acts on all of them,
-and Esc takes the marks away. The demo keeps such changes until the
+and Esc takes the marks away. `!` moves the conversation to Spam, or out of
+Spam back to the Inbox when the list is Spam's, and `l` starts `:label`, which
+puts one of your labels on it. The demo keeps such changes until the
 interface closes. `:` opens a command line at the foot; Tab completes a
 command or a name, Up and Down bring back the lines run before, Enter runs
 it and Esc closes it. `/` starts one at `:search`, which looks for words in
@@ -551,6 +553,8 @@ and ends with status 2.
 | `u` | Mark it read or unread |
 | `a` | Archive it |
 | `d`, Delete | Move it to Trash |
+| `!` | Move it to Spam, or out of Spam |
+| `l` | Label it |
 | Space | Mark it, for an action on all marked |
 | `/` | Search all mail |
 | `:` | Type a command |
@@ -567,6 +571,8 @@ and ends with status 2.
 | `:star`, `:unstar` | Star the conversation, or take its star away |
 | `:read`, `:unread` | Mark it read or unread |
 | `:archive`, `:trash` | Archive it, or move it to Trash |
+| `:spam`, `:notspam` | Move it to Spam, or out of Spam to the Inbox |
+| `:label LABEL`, `:unlabel LABEL` | Put one of your labels on it, or take it off |
 | `:search WORDS` | Search all mail for the words |
 | `:local WORDS` | Search the local index for the words, offline |
 | `:refresh` | Refresh the folders and the list, or the search |

@@ -880,6 +880,13 @@ impl DemoSession {
                 let moved = whole(folder, conversation);
                 conversation.labels.push(moved);
             }
+            Change::Label(label) => {
+                if !conversation.labels.iter().any(|l| &l.id == label) {
+                    let labelled = whole(label, conversation);
+                    conversation.labels.push(labelled);
+                }
+            }
+            Change::Unlabel(label) => conversation.labels.retain(|l| &l.id != label),
         }
     }
 }
@@ -1832,6 +1839,40 @@ mod tests {
         );
         let (_, page) = session.search("offsite", 0, 50);
         assert!(page[0].labels.iter().any(|l| l.id == label_ids::TRASH));
+    }
+
+    #[test]
+    fn a_session_labels_and_unlabels_as_proton_would() {
+        let session = DemoSession::new();
+        let listed = |label: &str| {
+            let (_, page) = session.conversations(label, 0, 50);
+            page.into_iter().map(|c| c.id).collect::<Vec<_>>()
+        };
+        let id = "conv-demo-03";
+        session.change(
+            id,
+            label_ids::INBOX,
+            &Change::Label("label-demo-personal".into()),
+        );
+        session.change(
+            id,
+            label_ids::INBOX,
+            &Change::Label("label-demo-personal".into()),
+        );
+        assert_eq!(
+            listed("label-demo-personal"),
+            ["conv-demo-03", "conv-demo-05"]
+        );
+        // A label stays when the conversation moves.
+        session.change(id, label_ids::INBOX, &Change::Move(label_ids::SPAM.into()));
+        assert!(listed("label-demo-personal").contains(&id.to_string()));
+        assert!(listed(label_ids::SPAM).contains(&id.to_string()));
+        session.change(
+            id,
+            label_ids::SPAM,
+            &Change::Unlabel("label-demo-personal".into()),
+        );
+        assert_eq!(listed("label-demo-personal"), ["conv-demo-05"]);
     }
 
     #[test]

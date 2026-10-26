@@ -47,6 +47,10 @@ pub(crate) enum Change {
     Read(bool),
     /// Move it to the folder with this label ID, such as Archive or Trash.
     Move(String),
+    /// Put the label with this ID on it.
+    Label(String),
+    /// Take the label with this ID off it.
+    Unlabel(String),
 }
 
 /// A place to list mail from: a system folder, or one of the account's own
@@ -208,6 +212,8 @@ impl Mailbox {
                 Change::Star(starred) => client.star_conversations(ids, *starred).await,
                 Change::Read(read) => client.mark_conversations_read(ids, *read, place).await,
                 Change::Move(folder) => client.move_conversations(ids, folder).await,
+                Change::Label(label) => client.label_conversations(ids, label).await,
+                Change::Unlabel(label) => client.unlabel_conversations(ids, label).await,
             },
             Self::Demo(session) => {
                 for id in ids {
