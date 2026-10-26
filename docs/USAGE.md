@@ -570,7 +570,9 @@ Windows Terminal. First a question names who gets it and how Proton will
 protect it for each of them, and only `y` sends it. When Proton may have
 taken it without confirming so, the message stays open and says to check Sent
 before sending it again. Esc or Ctrl+C closes it, first asking when something
-is written. A message being written is kept only in memory, never on disk;
+is written. On Linux and macOS, what you paste comes whole: its lines stay
+lines in the text, and in To, Cc, Bcc or Subject they are joined, addresses
+by commas. A message being written is kept only in memory, never on disk;
 the demo puts what it sends in its Sent.
 
 | Key | Action |

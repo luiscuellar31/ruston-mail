@@ -543,6 +543,46 @@ impl Compose {
         Asked::Nothing
     }
 
+    /// Types `text`, pasted whole, as the focused field takes it: in the
+    /// text, its lines stay lines; in a field of one line, they are joined,
+    /// with commas between addresses and spaces in the subject; in the path
+    /// of a file to attach, they go. Tabs become spaces.
+    pub(crate) fn paste(&mut self, text: &str) {
+        if self.sending == Sending::InFlight {
+            return;
+        }
+        let text = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\t', "    ");
+        if let Some(files) = self.files.as_mut() {
+            files.chosen = None;
+            files.matches.clear();
+            files.notice = None;
+            for c in text.chars().filter(|c| *c != '\n') {
+                files.path.insert(c);
+            }
+            return;
+        }
+        let focus = self.focus;
+        let between = match focus {
+            Field::To | Field::Cc | Field::Bcc => Some(", "),
+            Field::Subject => Some(" "),
+            Field::Body => None,
+        };
+        let editor = self.field_mut(focus);
+        for (index, line) in text.split('\n').enumerate() {
+            if index > 0 {
+                match between {
+                    Some(joint) => joint.chars().for_each(|c| editor.insert(c)),
+                    None => editor.break_line(),
+                }
+            }
+            line.chars().for_each(|c| editor.insert(c));
+        }
+        self.notice = None;
+    }
+
     /// The message to send, or why it cannot go yet: each recipient field
     /// read with the rules the desktop reads them with, taking domains in
     /// ASCII only, as the desktop does unless told otherwise.
@@ -874,6 +914,28 @@ mod tests {
                 leave_out: vec!["a1".into()],
             }
         );
+    }
+
+    #[test]
+    fn a_paste_keeps_its_lines_in_the_text_and_joins_them_in_a_field() {
+        let mut compose = Compose::new(String::new());
+        compose.paste("alex@example.test\r\nsam@example.test\n");
+        assert_eq!(compose.to.text(), "alex@example.test, sam@example.test, ");
+        compose.focus = Field::Subject;
+        compose.paste("Plans\nfor May");
+        assert_eq!(compose.subject.text(), "Plans for May");
+        compose.focus = Field::Body;
+        compose.paste("Hi,\r\n\tsee you\rthere\u{1b}[2J.");
+        assert_eq!(compose.body.text(), "Hi,\n    see you\nthere[2J.");
+        // The path of a file to attach is one line.
+        ctrl(&mut compose, KeyCode::Char('a'));
+        compose.paste("~/notes\n.txt");
+        assert_eq!(compose.files.as_ref().unwrap().path.text(), "~/notes.txt");
+        // On its way, nothing changes it.
+        compose.files = None;
+        compose.sending = Sending::InFlight;
+        compose.paste("more");
+        assert_eq!(compose.body.text(), "Hi,\n    see you\nthere[2J.");
     }
 
     #[test]

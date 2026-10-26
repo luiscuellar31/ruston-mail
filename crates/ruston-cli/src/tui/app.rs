@@ -256,6 +256,8 @@ pub(crate) enum Message {
     Answer(AnswerKind),
     /// A key typed while a message is being written.
     Edit(KeyEvent),
+    /// Text pasted whole, where the terminal marks pastes.
+    Pasted(String),
     Refresh,
     ToggleHelp,
     /// Closes the list of keys, or else goes back a pane.
@@ -517,6 +519,7 @@ impl App {
             Message::Compose => self.compose = Some(Compose::new(self.sender.clone())),
             Message::Answer(how) => self.open_answer(how),
             Message::Edit(key) => return self.edit(&key),
+            Message::Pasted(text) => self.paste(&text),
             Message::Refresh => return self.reload(),
             Message::PlacesLoaded(Ok(places)) => {
                 let selected = self
@@ -668,6 +671,10 @@ impl App {
     /// the folder to go to, or else what [`Message::from_event`] makes of it.
     pub(crate) fn message_for(&self, event: &Event) -> Option<Message> {
         match event {
+            // Pasted text goes where keys type, and never answers a question.
+            Event::Paste(text) => (self.question.is_none()
+                && (self.command_line.is_some() || self.compose.is_some()))
+            .then(|| Message::Pasted(text.clone())),
             Event::Key(key) if self.command_line.is_some() => {
                 (key.kind != KeyEventKind::Release).then_some(Message::Typed(*key))
             }
@@ -1022,6 +1029,22 @@ impl App {
             }
             Question::Send { outgoing, .. } if yes => self.send(outgoing),
             Question::Discard | Question::Send { .. } => Vec::new(),
+        }
+    }
+
+    /// Types `text`, pasted whole, where the keys type: on the command line
+    /// as one line, and in the message being written as its field takes it.
+    fn paste(&mut self, text: &str) {
+        if let Some(line) = self.command_line.as_mut() {
+            for c in text.chars() {
+                if c.is_whitespace() {
+                    line.type_char(' ');
+                } else if !crate::terminal::is_filtered(c) {
+                    line.type_char(c);
+                }
+            }
+        } else if let Some(compose) = self.compose.as_mut() {
+            compose.paste(text);
         }
     }
 
@@ -3066,6 +3089,27 @@ mod tests {
                 attached: vec![PathBuf::from("notes.txt")],
             }]
         );
+    }
+
+    #[test]
+    fn a_paste_goes_where_keys_type_and_never_answers_a_question() {
+        let mut app = loaded();
+        let paste = |text: &str| Event::Paste(text.into());
+        // In the list, it does nothing.
+        assert!(app.message_for(&paste("q")).is_none());
+        press(&mut app, KeyCode::Char(':'));
+        let message = app.message_for(&paste("folder\nInbox\u{7}")).unwrap();
+        app.update(message);
+        assert_eq!(app.command_line.as_ref().unwrap().text, "folder Inbox");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('n'));
+        let message = app.message_for(&paste("sam@proton.me")).unwrap();
+        app.update(message);
+        assert_eq!(app.compose.as_ref().unwrap().to.text(), "sam@proton.me");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.question, Some(Question::Discard));
+        assert!(app.message_for(&paste("y")).is_none());
+        assert_eq!(app.question, Some(Question::Discard));
     }
 
     #[test]

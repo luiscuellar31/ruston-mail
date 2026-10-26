@@ -42,7 +42,8 @@ pub(crate) fn has_terminal() -> bool {
 /// Opens the interface and runs it until it is closed. Signing in, when no
 /// session is saved, happens first, as text. The terminal is put back as it
 /// was however the interface ends: a panic of its loop restores it through
-/// the hook `ratatui::try_init` installs, before the panic is reported.
+/// the hook `ratatui::try_init` installs, before the panic is reported, and
+/// stops marking pastes, as a normal end does.
 pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let mailbox = if ctx.demo {
         Mailbox::demo()
@@ -55,7 +56,9 @@ pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let theme = view::Theme::from_env();
     let mut terminal = ratatui::try_init()?;
     report_panics_of(std::thread::current().id());
+    mark_pastes(true);
     let result = run_loop(&mut terminal, &mut app, &theme, &mailbox).await;
+    mark_pastes(false);
     ratatui::restore();
     // Back to the default hook, which reports any panic as usual.
     drop(std::panic::take_hook());
@@ -70,10 +73,30 @@ fn report_panics_of(loop_thread: ThreadId) {
     let report = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().id() == loop_thread {
+            mark_pastes(false);
             report(info);
         }
     }));
 }
+
+/// Asks the terminal to mark what is pasted, or to stop, so a paste comes
+/// whole, as one event, rather than as a key for each character: on Unix,
+/// crossterm's reader stops after the first kilobyte of keys that come at
+/// once, until another key comes, while a marked paste it reads to its end.
+/// Windows reads keys from the console, which marks no pastes, so nothing is
+/// asked there. A terminal that cannot mark them goes on typing them.
+#[cfg(unix)]
+fn mark_pastes(on: bool) {
+    use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+    let _ = if on {
+        crossterm::execute!(io::stdout(), EnableBracketedPaste)
+    } else {
+        crossterm::execute!(io::stdout(), DisableBracketedPaste)
+    };
+}
+
+#[cfg(not(unix))]
+fn mark_pastes(_on: bool) {}
 
 /// The profile's saved session, after signing in as `ruston-cli login` does
 /// when there is none.
@@ -288,10 +311,12 @@ fn suspends(event: &crossterm::event::Event) -> bool {
 fn suspend(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen};
     terminal.show_cursor()?;
+    mark_pastes(false);
     ratatui::try_restore()?;
     signal_hook::low_level::raise(signal_hook::consts::SIGTSTP)?;
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(io::stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
+    mark_pastes(true);
     *terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
     Ok(())
 }

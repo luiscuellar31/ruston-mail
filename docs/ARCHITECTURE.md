@@ -796,7 +796,13 @@ instead of an unknown outcome.
   read on the blocking pool, and Tab reads the path's folder there too, so a
   share that stopped answering never holds up the interface; both are
   reads, numbered and aborted by a newer one. A forward lists the
-  original's files too, and those left out go to core as `leave_out`.
+  original's files too, and those left out go to core as `leave_out`. On
+  Unix the interface asks the terminal to mark pastes, and stops asking
+  whenever it gives the terminal back, on Ctrl+Z and on a panic too:
+  crossterm's reader there stops after the first kilobyte of keys that come
+  at once, until another key comes, while it reads a marked paste to its
+  end, which arrives as one event. Windows reads keys from the console,
+  which marks no pastes.
   [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) is the command
   line `:` opens: its text, the lines run before, Tab's completion and what a
   line asks for; while it is open the state gets each key as typed, and runs
