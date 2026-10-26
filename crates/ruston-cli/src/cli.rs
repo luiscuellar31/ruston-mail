@@ -57,6 +57,15 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+/// How the terminal interface opens.
+#[derive(Debug, Default, Args)]
+pub struct TuiArgs {
+    /// Leave the conversations you open unread, instead of marking them
+    /// read as the desktop does.
+    #[arg(long)]
+    pub keep_unread: bool,
+}
+
 /// What `login` alone takes: where and as which client to sign in, and the
 /// secrets a sign-in may ask for. The username and password come from
 /// `PROTON_USER` and `PROTON_PASSWORD`, or are asked for.
@@ -240,7 +249,7 @@ pub enum Command {
     Whoami,
     /// Open the terminal interface: folders, conversations and a reader in
     /// one screen. `ruston-cli` with no command opens it too.
-    Tui,
+    Tui(TuiArgs),
     /// Message operations.
     Messages {
         #[command(subcommand)]
@@ -975,6 +984,18 @@ mod tests {
                 "help would print the value of {id}"
             );
         }
+    }
+
+    #[test]
+    fn the_interface_marks_read_unless_asked_to_keep_unread() {
+        let Command::Tui(args) = parse(&["ruston-cli", "tui"]).cmd() else {
+            panic!("not the interface");
+        };
+        assert!(!args.keep_unread);
+        let Command::Tui(args) = parse(&["ruston-cli", "tui", "--keep-unread"]).cmd() else {
+            panic!("not the interface");
+        };
+        assert!(args.keep_unread);
     }
 
     #[test]

@@ -10,7 +10,7 @@ mod terminal;
 mod tui;
 
 use clap::{CommandFactory, Parser};
-use cli::{Cli, Command, Ctx};
+use cli::{Cli, Command, Ctx, TuiArgs};
 use ruston_core::Result;
 
 /// The exit status of a usage error, as clap uses it.
@@ -29,7 +29,7 @@ async fn main() {
             std::process::exit(error.exit_code());
         }
     };
-    let opens_interface = matches!(cli.command, None | Some(Command::Tui));
+    let opens_interface = matches!(cli.command, None | Some(Command::Tui(_)));
     if opens_interface && !tui::has_terminal() {
         // Without a command and away from a terminal, as in a script, the
         // help is a usage error, as it was before the interface existed.
@@ -75,7 +75,9 @@ fn with_causes(error: &ruston_core::Error) -> String {
 async fn dispatch(cli: Cli) -> Result<()> {
     let ctx: Ctx = (&cli).into();
     // `main` has made sure a terminal is there to open the interface in.
-    let command = cli.command.unwrap_or(Command::Tui);
+    let command = cli
+        .command
+        .unwrap_or_else(|| Command::Tui(TuiArgs::default()));
     if ctx.demo {
         return demo::dispatch(&ctx, command).await;
     }
@@ -83,7 +85,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Command::Login(args) => commands::auth::login(&ctx, args).await,
         Command::Logout => commands::auth::logout(&ctx).await,
         Command::Whoami => commands::auth::whoami(&ctx).await,
-        Command::Tui => tui::run(&ctx).await,
+        Command::Tui(args) => tui::run(&ctx, &args).await,
         Command::Messages { cmd } => commands::messages::run(&ctx, cmd).await,
         Command::Conversations { cmd } => commands::conversations::run(&ctx, cmd).await,
         Command::Attachments { cmd } => commands::attachments::run(&ctx, cmd).await,

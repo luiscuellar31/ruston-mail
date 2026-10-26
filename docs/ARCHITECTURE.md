@@ -704,10 +704,11 @@ instead of an unknown outcome.
   would draw over it. [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs)
   holds the state and what each key or answer does, without a terminal; what
   must load comes back from `update` as an effect, which `tui.rs` runs in a
-  task, aborting the one still running an effect of the same kind: they only
-  read, and a token refresh that one of them starts finishes on a task of its
-  own. Each list or conversation request is numbered so an answer for an
-  earlier one, sent before its task was aborted, is dropped. A list loads a
+  task. A read aborts the one still running a read of the same kind, which is
+  safe: a token refresh that one of them starts finishes on a task of its own.
+  Marking read, the one write so far, always runs to its end. Each list or
+  conversation request is numbered so an answer for an earlier one, sent
+  before its task was aborted, is dropped. A list loads a
   page at a time: moving past its last row, once its first page has come, asks
   for the next under the same number, and the page is added below without the
   conversations already listed. Keys count on press only, since Windows also
@@ -715,10 +716,13 @@ instead of an unknown outcome.
   [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
   an opened conversation into the reader's lines, each message's headers,
   verdict and body as `conversations read` shows it, inside the task that
-  loads it, since a large HTML body takes a while; reading it does not mark
-  it read. It also notes where each body quotes another message, in lines
-  that start with `>`, which the view folds into a line each, as the desktop
-  does, until `z` shows them.
+  loads it, since a large HTML body takes a while. It also notes where each
+  body quotes another message, in lines that start with `>`, which the view
+  folds into a line each, as the desktop does, until `z` shows them. Once the
+  reader shows an unread conversation, the state asks for it to be marked
+  read, as the desktop does, unless `tui --keep-unread` says not to; once
+  Proton confirms it, the row shows it read and each place it was unread in
+  counts one fewer.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with

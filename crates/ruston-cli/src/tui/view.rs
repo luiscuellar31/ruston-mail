@@ -438,6 +438,7 @@ mod tests {
         );
 
         app.reading = Some(Reading {
+            id: "plans".into(),
             subject: "Plans for May".into(),
             lines: (0..100).map(|n| format!("line {n}")).collect(),
             quotes: Vec::new(),
@@ -466,6 +467,7 @@ mod tests {
             "Thanks!", "", "> a", "", "> b", "> c", "", "Then:", "> d", "> e", "> f", "", "Bye",
         ];
         app.reading = Some(Reading {
+            id: "plans".into(),
             subject: "Plans".into(),
             lines: lines.map(str::to_owned).to_vec(),
             quotes: vec![2..6, 8..11],
@@ -494,6 +496,7 @@ mod tests {
     fn long_reader_lines_wrap_to_the_pane() {
         let mut app = with_mail("alex@example.test", "Quarterly report");
         app.reading = Some(Reading {
+            id: "long".into(),
             subject: "Long".into(),
             lines: vec!["word ".repeat(60)],
             quotes: Vec::new(),

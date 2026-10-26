@@ -19,6 +19,8 @@ const FOLDED_MIN_LINES: usize = 3;
 /// A conversation as the reader shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Reading {
+    /// The conversation's ID.
+    pub(crate) id: String,
     pub(crate) subject: String,
     /// Its lines, before the pane wraps them to its width.
     pub(crate) lines: Vec<String>,
@@ -63,6 +65,7 @@ impl Reading {
             }
         }
         Self {
+            id: conversation.id.clone(),
             subject: screen_line(render::subject_or_empty(&conversation.subject)),
             lines,
             quotes,

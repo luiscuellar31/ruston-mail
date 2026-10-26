@@ -7,7 +7,7 @@ mod app;
 mod reading;
 mod view;
 
-use crate::cli::{Ctx, LoginArgs};
+use crate::cli::{Ctx, LoginArgs, TuiArgs};
 use crate::commands;
 use crate::mailbox::Mailbox;
 use crate::terminal;
@@ -32,13 +32,14 @@ pub(crate) fn has_terminal() -> bool {
 /// session is saved, happens first, as text. The terminal is put back as it
 /// was however the interface ends: a panic restores it through the hook
 /// `ratatui::try_init` installs, before the panic is reported.
-pub(crate) async fn run(ctx: &Ctx) -> Result<()> {
+pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let mailbox = if ctx.demo {
         Mailbox::Demo
     } else {
         Mailbox::Proton(Arc::new(signed_in(ctx).await?))
     };
     let mut app = App::new(mailbox.account());
+    app.marks_read = !args.keep_unread;
     let theme = view::Theme::from_env();
     let mut terminal = ratatui::try_init()?;
     let result = run_loop(&mut terminal, &mut app, &theme, &mailbox).await;
@@ -146,15 +147,20 @@ struct Tasks {
 }
 
 impl Tasks {
-    /// Runs `effect` as [`spawn`] does, aborting the task still running an
-    /// effect of its kind, whose answer would come too late or be overtaken.
-    /// That is safe, as they only read, and a token refresh that one of them
-    /// starts finishes on a task of its own.
+    /// Runs `effect` as [`spawn`] does. A read aborts the task still running
+    /// one of its kind, whose answer would come too late or be overtaken;
+    /// that is safe, and a token refresh that one of them starts finishes on
+    /// a task of its own. Marking read changes the account, so it always
+    /// runs to its end: stopped halfway, nobody would know whether it did.
     fn run(&mut self, effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) {
         let running = match effect {
             Effect::Places => &mut self.places,
             Effect::Conversations { .. } => &mut self.list,
             Effect::Conversation { .. } => &mut self.conversation,
+            Effect::MarkRead { .. } => {
+                spawn(effect, mailbox, answers);
+                return;
+            }
         };
         if let Some(before) = running.replace(spawn(effect, mailbox, answers)) {
             before.abort();
@@ -183,6 +189,13 @@ fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) 
                     .await
                     .map_err(|error| error.to_string()),
             },
+            Effect::MarkRead { id, place } => {
+                let result = mailbox.mark_read(&id, &place).await;
+                Message::MarkedRead {
+                    id,
+                    result: result.map_err(|error| error.to_string()),
+                }
+            }
             // The reading is made here, off the loop: a large HTML body
             // takes a while to turn into text.
             Effect::Conversation { request, id } => Message::ConversationLoaded {
@@ -228,6 +241,32 @@ mod tests {
         }
         seen.sort();
         assert_eq!(seen, ["conversation 2", "places"]);
+    }
+
+    #[tokio::test]
+    async fn marking_read_runs_to_its_end_however_often_it_is_asked() {
+        let (sender, mut answers) = mpsc::unbounded_channel();
+        let mut tasks = Tasks::default();
+        for id in ["a", "b"] {
+            let effect = Effect::MarkRead {
+                id: id.into(),
+                place: "0".into(),
+            };
+            tasks.run(effect, &Mailbox::Demo, &sender);
+        }
+        drop(sender);
+        let mut marked = Vec::new();
+        while let Some(answer) = answers.recv().await {
+            match answer {
+                Message::MarkedRead { id, result } => {
+                    assert!(result.is_ok());
+                    marked.push(id);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        marked.sort();
+        assert_eq!(marked, ["a", "b"]);
     }
 
     #[cfg(unix)]

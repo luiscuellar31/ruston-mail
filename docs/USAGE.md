@@ -501,8 +501,10 @@ open, with each message's headers, its signature's verdict and its body as
 `conversations read` shows it. The list holds 50 conversations at first and
 loads 50 more each time you move down past its last. A quoted passage of three
 lines or more, such as the message a reply answers, folds into one line unless
-the whole message is quoted; `z` shows or hides them. Opening a conversation
-there does not mark it read yet. With no session saved, it signs in first, as
+the whole message is quoted; `z` shows or hides them. Opening an unread
+conversation marks it read once it shows, as the desktop does, unless you
+start it with `ruston-cli tui --keep-unread`; the demo forgets it when the
+list loads again. With no session saved, it signs in first, as
 `ruston-cli login` does; `--demo` opens the fictional mailbox. Away from a
 terminal, as in a script, `ruston-cli` with no command still prints the help
 and ends with status 2.

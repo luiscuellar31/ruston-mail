@@ -79,6 +79,9 @@ pub(crate) struct App {
     pub(crate) scroll: u16,
     /// Whether the reader shows quoted passages instead of folding them.
     pub(crate) show_quotes: bool,
+    /// Whether an unread conversation is marked read once the reader shows
+    /// it, as the desktop marks it; `tui --keep-unread` turns it off.
+    pub(crate) marks_read: bool,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
@@ -120,6 +123,10 @@ pub(crate) enum Message {
         request: u64,
         result: Result<Reading, String>,
     },
+    MarkedRead {
+        id: String,
+        result: Result<(), String>,
+    },
 }
 
 /// Work the interface hands out, whose answer comes back as a [`Message`].
@@ -134,6 +141,10 @@ pub(crate) enum Effect {
     Conversation {
         request: u64,
         id: String,
+    },
+    MarkRead {
+        id: String,
+        place: String,
     },
 }
 
@@ -156,6 +167,7 @@ impl App {
             reading: None,
             scroll: 0,
             show_quotes: false,
+            marks_read: true,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
@@ -254,14 +266,22 @@ impl App {
             Message::ConversationLoaded { request, .. } if request != self.read_request => {}
             Message::ConversationLoaded { result, .. } => match result {
                 Ok(reading) => {
+                    let id = reading.id.clone();
                     self.reading = Some(reading);
                     self.scroll = 0;
                     self.notice = None;
+                    return self.mark_read(id);
                 }
                 Err(error) => {
                     self.notice = Some(format!("Cannot open the conversation: {error}"));
                 }
             },
+            Message::MarkedRead { id, result: Ok(()) } => self.marked_read(&id),
+            Message::MarkedRead {
+                result: Err(error), ..
+            } => {
+                self.notice = Some(format!("Cannot mark the conversation read: {error}"));
+            }
         }
         Vec::new()
     }
@@ -357,6 +377,44 @@ impl App {
             page: 0,
         }
     }
+
+    /// Asks for the conversation `id`, which the reader now shows, to be
+    /// marked read, as the desktop does, when the list has it unread and
+    /// conversations are not to be kept unread.
+    fn mark_read(&self, id: String) -> Vec<Effect> {
+        let unread = self
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == id && conversation.num_unread > 0);
+        if !self.marks_read || !unread {
+            return Vec::new();
+        }
+        vec![Effect::MarkRead {
+            id,
+            place: self.listed_id.clone(),
+        }]
+    }
+
+    /// Shows the conversation `id` read, now that it is, and one fewer
+    /// unread conversation in each place that had it unread.
+    fn marked_read(&mut self, id: &str) {
+        let Some(conversation) = self
+            .conversations
+            .iter_mut()
+            .find(|conversation| conversation.id == id)
+        else {
+            return;
+        };
+        conversation.num_unread = 0;
+        for label in &mut conversation.labels {
+            if label.context_num_unread.unwrap_or(0) > 0 {
+                label.context_num_unread = Some(0);
+                if let Some(place) = self.places.iter_mut().find(|place| place.id == label.id) {
+                    place.unread = (place.unread - 1).max(0);
+                }
+            }
+        }
+    }
 }
 
 /// Whether `message` came from a key, not from an answer.
@@ -366,6 +424,7 @@ fn is_key(message: &Message) -> bool {
         Message::PlacesLoaded(_)
             | Message::ConversationsLoaded { .. }
             | Message::ConversationLoaded { .. }
+            | Message::MarkedRead { .. }
     )
 }
 
@@ -414,6 +473,7 @@ impl Message {
 mod tests {
     use super::*;
     use crate::mailbox::PlaceKind;
+    use ruston_core::model::ConversationLabel;
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -543,6 +603,7 @@ mod tests {
 
     fn reading(lines: usize) -> Reading {
         Reading {
+            id: "b".into(),
             subject: "Plans".into(),
             lines: (0..lines).map(|n| format!("line {n}")).collect(),
             quotes: Vec::new(),
@@ -617,6 +678,97 @@ mod tests {
         assert!(app.show_quotes);
         press(&mut app, KeyCode::Char('z'));
         assert!(!app.show_quotes);
+    }
+
+    /// An unread conversation, in the Inbox and in `label`.
+    fn unread(id: &str, label: &str) -> Conversation {
+        let unread_in = |label: &str| ConversationLabel {
+            id: label.into(),
+            context_num_unread: Some(1),
+            ..ConversationLabel::default()
+        };
+        Conversation {
+            id: id.into(),
+            num_unread: 1,
+            labels: vec![unread_in(label_ids::INBOX), unread_in(label)],
+            ..Conversation::default()
+        }
+    }
+
+    #[test]
+    fn an_unread_conversation_is_marked_read_once_the_reader_shows_it() {
+        let mut app = loaded();
+        app.conversations[1] = unread("b", "folder-1");
+        app.places[0].unread = 3;
+        app.places[1].unread = 1;
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Down);
+        // Nothing is marked before it shows.
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            [Effect::Conversation {
+                request: 1,
+                id: "b".into()
+            }]
+        );
+        let effects = app.update(Message::ConversationLoaded {
+            request: 1,
+            result: Ok(reading(3)),
+        });
+        assert_eq!(
+            effects,
+            [Effect::MarkRead {
+                id: "b".into(),
+                place: label_ids::INBOX.into()
+            }]
+        );
+        assert_eq!(app.conversations[1].num_unread, 1);
+
+        app.update(Message::MarkedRead {
+            id: "b".into(),
+            result: Ok(()),
+        });
+        assert_eq!(app.conversations[1].num_unread, 0);
+        let unread: Vec<i64> = app.places.iter().map(|place| place.unread).collect();
+        assert_eq!(unread, [2, 0]);
+        // Read now, it is not marked again.
+        press(&mut app, KeyCode::BackTab);
+        press(&mut app, KeyCode::Enter);
+        let effects = app.update(Message::ConversationLoaded {
+            request: 2,
+            result: Ok(reading(3)),
+        });
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn keep_unread_leaves_an_opened_conversation_unread() {
+        let mut app = loaded();
+        app.marks_read = false;
+        app.conversations[1] = unread("b", "folder-1");
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        let effects = app.update(Message::ConversationLoaded {
+            request: 1,
+            result: Ok(reading(3)),
+        });
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn a_failed_mark_says_so_and_leaves_the_conversation_unread() {
+        let mut app = loaded();
+        app.conversations[1] = unread("b", "folder-1");
+        app.update(Message::MarkedRead {
+            id: "b".into(),
+            result: Err("offline".into()),
+        });
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Cannot mark the conversation read: offline")
+        );
+        assert_eq!(app.conversations[1].num_unread, 1);
     }
 
     #[test]

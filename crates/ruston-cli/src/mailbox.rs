@@ -1,6 +1,7 @@
-//! What the terminal interface reads, from a Proton account or from the
-//! offline demo through the same calls, opened once for the whole session.
-//! It returns core's types; how they look is the interface's business.
+//! What the terminal interface reads from a Proton account or from the
+//! offline demo, through the same calls, and the one change it makes so far,
+//! marking a conversation read; opened once for the whole session. It
+//! returns core's types; how they look is the interface's business.
 
 use crate::demo;
 use ruston_core::model::enums::{label_ids, label_type};
@@ -100,6 +101,19 @@ impl Mailbox {
         match self {
             Self::Proton(client) => client.read_conversation_each(id).await,
             Self::Demo => demo::conversation(id),
+        }
+    }
+
+    /// Marks the conversation `id`, listed in the place `place`, read. The
+    /// demo keeps nothing: its mail is unread again once listed anew.
+    pub(crate) async fn mark_read(&self, id: &str, place: &str) -> Result<()> {
+        match self {
+            Self::Proton(client) => {
+                client
+                    .mark_conversations_read(&[id.to_owned()], true, place)
+                    .await
+            }
+            Self::Demo => Ok(()),
         }
     }
 }
@@ -240,5 +254,9 @@ mod tests {
                 .all(|message| matches!(message, ConversationMessage::Opened(_)))
         );
         assert!(mailbox.conversation("no-such-conversation").await.is_err());
+        mailbox
+            .mark_read(&page[0].id, label_ids::INBOX)
+            .await
+            .unwrap();
     }
 }
