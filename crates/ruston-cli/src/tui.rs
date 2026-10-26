@@ -314,16 +314,19 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
                 .map_err(|error| error.to_string()),
         },
         Effect::MarkRead { id, place } => {
-            let result = mailbox.change(&id, &place, &Change::Read(true)).await;
+            let result = mailbox
+                .change(std::slice::from_ref(&id), &place, &Change::Read(true))
+                .await;
             Message::MarkedRead {
                 id,
                 result: result.map_err(|error| error.to_string()),
             }
         }
-        Effect::Change { id, place, change } => {
-            let result = mailbox.change(&id, &place, &change).await;
+        Effect::Change { ids, place, change } => {
+            let result = mailbox.change(&ids, &place, &change).await;
             Message::Changed {
                 change,
+                count: ids.len(),
                 result: result.map_err(|error| error.to_string()),
             }
         }
@@ -407,7 +410,7 @@ mod tests {
         let mut tasks = Tasks::default();
         let mailbox = Mailbox::demo();
         let change = Effect::Change {
-            id: "conv-demo-01".into(),
+            ids: vec!["conv-demo-01".into()],
             place: "0".into(),
             change: Change::Star(false),
         };
@@ -445,7 +448,7 @@ mod tests {
         }
         for star in [true, false] {
             let effect = Effect::Change {
-                id: "c".into(),
+                ids: vec!["c".into()],
                 place: "0".into(),
                 change: Change::Star(star),
             };
@@ -459,7 +462,7 @@ mod tests {
                     assert!(result.is_ok());
                     done.push(id);
                 }
-                Message::Changed { change, result } => {
+                Message::Changed { change, result, .. } => {
                     assert!(result.is_ok());
                     done.push(format!("{change:?}"));
                 }

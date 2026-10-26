@@ -746,8 +746,9 @@ instead of an unknown outcome.
   asks for it to be marked read, as the desktop does, unless
   `tui --keep-unread` says not to; once Proton confirms it, the row shows it
   read and each place it was unread in counts one fewer. The quick actions
-  (star, read or unread, archive, Trash) act on the list's selection or the
-  conversation the reader shows, through `Mailbox::change`, and then load
+  (star, read or unread, archive, Trash) act on the conversations marked
+  with Space, from the list, or else on its selection or the conversation the
+  reader shows, through `Mailbox::change`, one request for all, and then load
   the list and the counts again, which Proton owns, as the desktop does.
   [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) is the command
   line `:` opens: its text, the lines run before, Tab's completion and what a

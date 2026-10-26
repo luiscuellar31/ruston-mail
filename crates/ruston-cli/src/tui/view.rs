@@ -27,7 +27,7 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 18] = [
+const KEYS: [(&str, &str); 19] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
@@ -40,11 +40,12 @@ const KEYS: [(&str, &str); 18] = [
     ("u", "mark it read or unread"),
     ("a", "archive it"),
     ("d, Delete", "move it to Trash"),
+    ("Space", "mark it; an action acts on all marked"),
     ("/", "search all mail"),
     (":", "type a command; Tab completes it"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
-    ("Esc", "close these keys, or go back a pane"),
+    ("Esc", "close these keys, clear the marks, or go back"),
     ("q, Ctrl+C", "quit"),
 ];
 
@@ -226,7 +227,9 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
             frame.render_widget(hint.block(block), area);
         }
         Pane::Conversations => {
-            let items = app.conversations.iter().map(conversation_row);
+            let items = app.conversations.iter().map(|conversation| {
+                conversation_row(conversation, app.marked.contains(&conversation.id))
+            });
             draw_list(
                 frame,
                 items,
@@ -312,17 +315,18 @@ fn raw(lines: &[String]) -> impl Iterator<Item = Line<'_>> {
     lines.iter().map(|line| Line::raw(line.as_str()))
 }
 
-/// One row of the list: whether it is unread (•), starred (★) or has
-/// attachments (+), its day, who wrote it and its subject. Unread
+/// One row of the list: whether it is marked (✓), unread (•), starred (★)
+/// or has attachments (+), its day, who wrote it and its subject. Unread
 /// conversations are bold.
-fn conversation_row(conversation: &Conversation) -> ListItem<'static> {
+fn conversation_row(conversation: &Conversation, marked: bool) -> ListItem<'static> {
     let unread = conversation.num_unread > 0;
     let starred = conversation
         .labels
         .iter()
         .any(|label| label.id == label_ids::STARRED);
     let flags = format!(
-        "{}{}{}",
+        "{}{}{}{}",
+        if marked { "✓" } else { " " },
         if unread { "•" } else { " " },
         if starred { "★" } else { " " },
         if conversation.num_attachments > 0 {
@@ -386,6 +390,10 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             )
         }
         None => format!("{} conversation(s)", app.total),
+    };
+    let detail = match app.marked.len() {
+        0 => detail,
+        marked => format!("{marked} marked · {detail}"),
     };
     let text = format!(" {} · {} · {detail}", app.account, app.listed);
     frame.render_widget(Paragraph::new(screen_line(&text)), state);
@@ -512,7 +520,7 @@ mod tests {
         assert!(screen.contains("  2024"), "{screen}");
         // The pane is 48 columns wide: the subject is cut where it ends.
         assert!(
-            screen.contains("•   2024-04-24  alex@example.test   Quarterly │"),
+            screen.contains(" •   2024-04-24  alex@example.test   Quarterly│"),
             "{screen}"
         );
         let status = screen.lines().last().unwrap();
@@ -521,6 +529,19 @@ mod tests {
             "{status}"
         );
         assert!(status.contains("q quit"), "{status}");
+    }
+
+    #[test]
+    fn a_marked_row_says_so_and_the_status_bar_counts_them() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.marked = vec![app.conversations[0].id.clone()];
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(
+            screen.contains("✓•   2024-04-24  alex@example.test"),
+            "{screen}"
+        );
+        let status = screen.lines().last().unwrap();
+        assert!(status.contains("Inbox · 1 marked · "), "{status}");
     }
 
     #[test]

@@ -199,18 +199,20 @@ impl Mailbox {
         }
     }
 
-    /// Makes `change` to the conversation `id`, listed in the place
-    /// `place`. The demo keeps it until the interface closes.
-    pub(crate) async fn change(&self, id: &str, place: &str, change: &Change) -> Result<()> {
-        let ids = [id.to_owned()];
+    /// Makes `change` to the conversations `ids`, listed in the place
+    /// `place`, all in one request. The demo keeps it until the interface
+    /// closes.
+    pub(crate) async fn change(&self, ids: &[String], place: &str, change: &Change) -> Result<()> {
         match self {
             Self::Proton(client) => match change {
-                Change::Star(starred) => client.star_conversations(&ids, *starred).await,
-                Change::Read(read) => client.mark_conversations_read(&ids, *read, place).await,
-                Change::Move(folder) => client.move_conversations(&ids, folder).await,
+                Change::Star(starred) => client.star_conversations(ids, *starred).await,
+                Change::Read(read) => client.mark_conversations_read(ids, *read, place).await,
+                Change::Move(folder) => client.move_conversations(ids, folder).await,
             },
             Self::Demo(session) => {
-                session.change(id, place, change);
+                for id in ids {
+                    session.change(id, place, change);
+                }
                 Ok(())
             }
         }
@@ -394,7 +396,7 @@ mod tests {
         );
         assert!(mailbox.conversation("no-such-conversation").await.is_err());
         mailbox
-            .change(&page[0].id, label_ids::INBOX, &Change::Read(true))
+            .change(&[page[0].id.clone()], label_ids::INBOX, &Change::Read(true))
             .await
             .unwrap();
     }

@@ -523,7 +523,9 @@ unread conversation marks it read once it shows, as the desktop does, unless
 you start it with `ruston-cli tui --keep-unread`. `s` stars or unstars the
 conversation selected in the list, or the one the reader shows, `u` marks it
 read or unread, `a` archives it, and `d` or Delete moves it to Trash; then the
-list and the counts load again. The demo keeps such changes until the
+list and the counts load again. Space marks the selected conversation and
+moves down: with some marked, an action from the list acts on all of them,
+and Esc takes the marks away. The demo keeps such changes until the
 interface closes. `:` opens a command line at the foot; Tab completes a
 command or a name, Up and Down bring back the lines run before, Enter runs
 it and Esc closes it. `/` starts one at `:search`, which looks for words in
@@ -549,11 +551,12 @@ and ends with status 2.
 | `u` | Mark it read or unread |
 | `a` | Archive it |
 | `d`, Delete | Move it to Trash |
+| Space | Mark it, for an action on all marked |
 | `/` | Search all mail |
 | `:` | Type a command |
 | Ctrl+R | Refresh the folders and the list |
 | `?` | Show or hide the keys |
-| Esc | Close the keys, or go back a pane |
+| Esc | Close the keys, clear the marks, or go back a pane |
 | `q`, Ctrl+C | Quit |
 | Ctrl+Z | Suspend to the shell, on Linux and macOS |
 

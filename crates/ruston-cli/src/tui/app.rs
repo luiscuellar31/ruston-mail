@@ -112,6 +112,9 @@ pub(crate) struct App {
     history: Vec<String>,
     /// The search the list shows the results of, if it shows one.
     pub(crate) search: Option<Search>,
+    /// The conversations marked with Space, by ID, which an action from the
+    /// list acts on all of.
+    pub(crate) marked: Vec<String>,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
@@ -145,6 +148,8 @@ pub(crate) enum Message {
     ShowAttachments,
     /// Answers yes to the question on screen.
     Yes,
+    /// Marks the selected conversation, or takes its mark away.
+    Mark,
     /// Opens the command line.
     Command,
     /// Opens the command line at `:search`.
@@ -185,6 +190,8 @@ pub(crate) enum Message {
     },
     Changed {
         change: Change,
+        /// How many conversations it was made to.
+        count: usize,
         result: Result<(), String>,
     },
     /// A task stopped on a bug, saying what it was.
@@ -228,7 +235,7 @@ pub(crate) enum Effect {
         name: String,
     },
     Change {
-        id: String,
+        ids: Vec<String>,
         place: String,
         change: Change,
     },
@@ -259,6 +266,7 @@ impl App {
             command_line: None,
             history: Vec::new(),
             search: None,
+            marked: Vec::new(),
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
@@ -290,6 +298,10 @@ impl App {
             _ if self.picking_attachment.is_some() && is_key(&message) => {
                 return self.pick_attachment(&message);
             }
+            // Marks go first.
+            Message::Back if self.focus == Pane::Conversations && !self.marked.is_empty() => {
+                self.marked.clear();
+            }
             // Back from a search's results to the place listed before it.
             Message::Back if self.focus == Pane::Conversations && self.search.is_some() => {
                 let (id, name) = self
@@ -320,14 +332,18 @@ impl App {
             Message::ShowAttachments => self.show_attachments(),
             // Nothing on screen waits for a yes.
             Message::Yes => {}
+            Message::Mark => self.mark(),
             Message::Command => self.command_line = Some(CommandLine::default()),
             Message::Search => self.command_line = Some(CommandLine::with("search ")),
             Message::Typed(key) => return self.type_in_command_line(&key),
+            // Several marked: all starred unless they all are, all read
+            // while one is unread.
             Message::Star => {
-                return self.change(|conversation| Change::Star(!is_starred(conversation)));
+                return self.change(|targets| Change::Star(!targets.iter().all(|c| is_starred(c))));
             }
             Message::ToggleRead => {
-                return self.change(|conversation| Change::Read(conversation.num_unread > 0));
+                return self
+                    .change(|targets| Change::Read(targets.iter().any(|c| c.num_unread > 0)));
             }
             Message::Archive => return self.change(|_| Change::Move(label_ids::ARCHIVE.into())),
             Message::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
@@ -432,9 +448,10 @@ impl App {
             Message::Changed { result: Ok(()), .. } => return self.reload(),
             Message::Changed {
                 change,
+                count,
                 result: Err(error),
             } => {
-                let (_, failed) = wording(&change);
+                let (_, failed) = wording(&change, count);
                 self.notice = Some(format!("{failed}: {error}"));
             }
             Message::Failed(error) => {
@@ -583,6 +600,38 @@ impl App {
         }
     }
 
+    /// Marks the selected conversation, for an action on all marked, or
+    /// takes its mark away, and moves down a row, as marking several goes.
+    fn mark(&mut self) {
+        if self.focus != Pane::Conversations {
+            return;
+        }
+        let Some(conversation) = self.conversations.get(self.selected_conversation) else {
+            return;
+        };
+        let id = conversation.id.clone();
+        match self.marked.iter().position(|marked| *marked == id) {
+            Some(at) => {
+                self.marked.remove(at);
+            }
+            None => self.marked.push(id),
+        }
+        self.step(1);
+    }
+
+    /// The conversations an action acts on: the marked ones, from the list,
+    /// in its order, or else the one `acted_on` names.
+    fn targets(&self) -> Vec<&Conversation> {
+        if self.focus == Pane::Conversations && !self.marked.is_empty() {
+            return self
+                .conversations
+                .iter()
+                .filter(|conversation| self.marked.contains(&conversation.id))
+                .collect();
+        }
+        self.acted_on().into_iter().collect()
+    }
+
     /// The conversation a quick action acts on: the list's selection, or the
     /// one the reader shows while it is listed; none from the folders.
     fn acted_on(&self) -> Option<&Conversation> {
@@ -596,23 +645,28 @@ impl App {
             .find(|conversation| &conversation.id == id)
     }
 
-    /// Asks for the change `make` works out for the conversation acted on,
+    /// Asks for the change `make` works out for the conversations acted on,
     /// saying so in the status bar meanwhile.
-    fn change(&mut self, make: impl FnOnce(&Conversation) -> Change) -> Vec<Effect> {
+    fn change(&mut self, make: impl FnOnce(&[&Conversation]) -> Change) -> Vec<Effect> {
         // Until its first page comes, the list shows another place's rows.
         if self.focus != Pane::Folders && self.next_page == 0 {
             self.notice = Some("Wait for the list to load.".to_owned());
             return Vec::new();
         }
-        let Some(conversation) = self.acted_on() else {
+        let targets = self.targets();
+        if targets.is_empty() {
             self.notice = Some("Choose a conversation in the list first.".to_owned());
             return Vec::new();
-        };
-        let (id, change) = (conversation.id.clone(), make(conversation));
-        let (doing, _) = wording(&change);
-        self.notice = Some(doing.to_owned());
+        }
+        let change = make(&targets);
+        let ids: Vec<String> = targets
+            .iter()
+            .map(|conversation| conversation.id.clone())
+            .collect();
+        let (doing, _) = wording(&change, ids.len());
+        self.notice = Some(doing);
         vec![Effect::Change {
-            id,
+            ids,
             place: self.listed_id.clone(),
             change,
         }]
@@ -868,6 +922,8 @@ impl App {
     /// Makes the list the place `name`, listed from the label ID `id`, its
     /// first page on its way under a new number, saying `notice` meanwhile.
     fn relist(&mut self, id: String, name: String, notice: String) -> u64 {
+        // Marks belong to the rows they were made on.
+        self.marked.clear();
         self.list_request += 1;
         self.next_page = 0;
         self.loading_more = false;
@@ -955,32 +1011,32 @@ fn is_starred(conversation: &Conversation) -> bool {
         .any(|label| label.id == label_ids::STARRED)
 }
 
-/// What the status bar says while `change` is made, and if it fails.
-fn wording(change: &Change) -> (&'static str, &'static str) {
-    match change {
-        Change::Star(true) => ("Starring the conversation…", "Cannot star the conversation"),
-        Change::Star(false) => (
-            "Taking the conversation's star away…",
-            "Cannot take the conversation's star away",
-        ),
-        Change::Read(true) => (
-            "Marking the conversation read…",
-            "Cannot mark the conversation read",
-        ),
+/// What the status bar says while `change` is made to `count`
+/// conversations, and if it fails.
+fn wording(change: &Change, count: usize) -> (String, String) {
+    let what = if count == 1 {
+        "the conversation".to_owned()
+    } else {
+        format!("{count} conversations")
+    };
+    let (doing, cannot) = match change {
+        Change::Star(true) => (format!("Starring {what}"), format!("star {what}")),
+        Change::Star(false) => (format!("Unstarring {what}"), format!("unstar {what}")),
+        Change::Read(true) => (format!("Marking {what} read"), format!("mark {what} read")),
         Change::Read(false) => (
-            "Marking the conversation unread…",
-            "Cannot mark the conversation unread",
+            format!("Marking {what} unread"),
+            format!("mark {what} unread"),
         ),
-        Change::Move(folder) if folder == label_ids::ARCHIVE => (
-            "Archiving the conversation…",
-            "Cannot archive the conversation",
-        ),
+        Change::Move(folder) if folder == label_ids::ARCHIVE => {
+            (format!("Archiving {what}"), format!("archive {what}"))
+        }
         Change::Move(folder) if folder == label_ids::TRASH => (
-            "Moving the conversation to Trash…",
-            "Cannot move the conversation to Trash",
+            format!("Moving {what} to Trash"),
+            format!("move {what} to Trash"),
         ),
-        Change::Move(_) => ("Moving the conversation…", "Cannot move the conversation"),
-    }
+        Change::Move(_) => (format!("Moving {what}"), format!("move {what}")),
+    };
+    (format!("{doing}…"), format!("Cannot {cannot}"))
 }
 
 /// Whether `message` came from a key, not from an answer.
@@ -1042,6 +1098,7 @@ impl Message {
             KeyCode::Char('a') => Some(Self::Archive),
             KeyCode::Char('d') | KeyCode::Delete => Some(Self::Trash),
             KeyCode::Char(':') => Some(Self::Command),
+            KeyCode::Char(' ') => Some(Self::Mark),
             KeyCode::Char('/') => Some(Self::Search),
             _ => None,
         }
@@ -1737,7 +1794,7 @@ mod tests {
         press(&mut app, KeyCode::Down);
         let change = |change: Change| {
             vec![Effect::Change {
-                id: "b".into(),
+                ids: vec!["b".into()],
                 place: label_ids::INBOX.into(),
                 change,
             }]
@@ -1760,6 +1817,7 @@ mod tests {
         // Done, the folders and the list load again.
         let effects = app.update(Message::Changed {
             change: trash.clone(),
+            count: 1,
             result: Ok(()),
         });
         assert_eq!(
@@ -1783,6 +1841,7 @@ mod tests {
         });
         app.update(Message::Changed {
             change: trash,
+            count: 1,
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -1802,6 +1861,74 @@ mod tests {
             press(&mut app, KeyCode::Char('s')),
             change(Change::Star(false))
         );
+    }
+
+    #[test]
+    fn space_marks_conversations_and_an_action_acts_on_all_marked() {
+        let mut app = loaded();
+        app.conversations.push(unread("c", "folder-1"));
+        app.total = 3;
+        app.focus = Pane::Conversations;
+        // Space marks and moves down, so several mark in a row.
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.marked, ["a", "c"]);
+        assert_eq!(app.selected_conversation, 2);
+        // Space on a marked one takes its mark away.
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.marked, ["c", "b"]);
+
+        // Marked: one unread among them, so all are marked read, in the
+        // list's order.
+        assert_eq!(
+            press(&mut app, KeyCode::Char('u')),
+            [Effect::Change {
+                ids: vec!["b".into(), "c".into()],
+                place: label_ids::INBOX.into(),
+                change: Change::Read(true)
+            }]
+        );
+        assert_eq!(app.notice.as_deref(), Some("Marking 2 conversations read…"));
+        // None starred: all are starred.
+        let effects = press(&mut app, KeyCode::Char('s'));
+        assert!(
+            matches!(&effects[..], [Effect::Change { change: Change::Star(true), ids, .. }] if ids.len() == 2),
+            "{effects:?}"
+        );
+        app.update(Message::Changed {
+            change: Change::Star(true),
+            count: 2,
+            result: Err("offline".into()),
+        });
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Cannot star 2 conversations: offline")
+        );
+        // From the reader, the open conversation alone is acted on.
+        app.focus = Pane::Reader;
+        app.reading = Some(reading(1));
+        let effects = press(&mut app, KeyCode::Char('a'));
+        assert!(
+            matches!(&effects[..], [Effect::Change { ids, .. }] if ids == &["b".to_owned()]),
+            "{effects:?}"
+        );
+        // Esc in the list takes the marks away before going back.
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Esc);
+        assert!(app.marked.is_empty());
+        assert_eq!(app.focus, Pane::Conversations);
+        // A change made, the list loads again without them.
+        press(&mut app, KeyCode::Char(' '));
+        app.update(Message::Changed {
+            change: Change::Star(true),
+            count: 1,
+            result: Ok(()),
+        });
+        assert!(app.marked.is_empty());
     }
 
     #[test]
@@ -1914,7 +2041,7 @@ mod tests {
         app.focus = Pane::Conversations;
         let change = |change: Change| {
             vec![Effect::Change {
-                id: "a".into(),
+                ids: vec!["a".into()],
                 place: label_ids::INBOX.into(),
                 change,
             }]
@@ -2076,13 +2203,14 @@ mod tests {
         assert_eq!(
             press(&mut app, KeyCode::Char('s')),
             [Effect::Change {
-                id: "p1".into(),
+                ids: vec!["p1".into()],
                 place: label_ids::ALL_MAIL.into(),
                 change: Change::Star(true)
             }]
         );
         let effects = app.update(Message::Changed {
             change: Change::Star(true),
+            count: 1,
             result: Ok(()),
         });
         assert_eq!(
