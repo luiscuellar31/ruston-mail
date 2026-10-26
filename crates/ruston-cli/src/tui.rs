@@ -22,8 +22,12 @@ use std::io::{self, IsTerminal};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::thread::ThreadId;
+use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinHandle};
+
+/// How long quitting waits at most for what is still on its way.
+const QUIT_WAIT: Duration = Duration::from_secs(3);
 
 /// Whether standard input and output are both a terminal, as the interface
 /// needs: it reads keys from one and draws over the other.
@@ -126,6 +130,11 @@ async fn run_loop(
             }
         }
     }
+    if tasks.busy() {
+        app.notice = Some("Finishing what is on its way…".to_owned());
+        terminal.draw(|frame| view::draw(frame, app, theme))?;
+    }
+    tasks.finish(mailbox, QUIT_WAIT).await;
     Ok(())
 }
 
@@ -174,6 +183,8 @@ struct Tasks {
     places: Option<AbortHandle>,
     list: Option<AbortHandle>,
     conversation: Option<AbortHandle>,
+    /// The changes and links on their way, which quitting waits for.
+    writes: Vec<JoinHandle<()>>,
 }
 
 impl Tasks {
@@ -189,25 +200,43 @@ impl Tasks {
             Effect::Conversations { .. } => &mut self.list,
             Effect::Conversation { .. } => &mut self.conversation,
             Effect::MarkRead { .. } | Effect::Change { .. } | Effect::OpenLink { .. } => {
-                spawn(effect, mailbox, answers);
+                self.writes.retain(|write| !write.is_finished());
+                self.writes.push(spawn(effect, mailbox, answers));
                 return;
             }
         };
-        if let Some(before) = running.replace(spawn(effect, mailbox, answers)) {
+        let task = spawn(effect, mailbox, answers).abort_handle();
+        if let Some(before) = running.replace(task) {
             before.abort();
         }
+    }
+
+    /// Whether a change or a link is still on its way.
+    fn busy(&self) -> bool {
+        self.writes.iter().any(|write| !write.is_finished())
+    }
+
+    /// Waits, for at most `limit`, for the changes still on their way, then
+    /// for a token refresh under way, which ending the program would cut
+    /// short: a change half made, or the session lost.
+    async fn finish(self, mailbox: &Mailbox, limit: Duration) {
+        let finished = async {
+            futures::future::join_all(self.writes).await;
+            mailbox.settle().await;
+        };
+        let _ = tokio::time::timeout(limit, finished).await;
     }
 }
 
 /// Runs `effect` in a task of its own, which sends its answer back as a
-/// message. Once the interface has closed, nobody waits for it.
-fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) -> AbortHandle {
+/// message. Quitting waits a little for those that change the account, and
+/// for no other.
+fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) -> JoinHandle<()> {
     let (mailbox, answers) = (mailbox.clone(), answers.clone());
-    let task = tokio::spawn(async move {
+    tokio::spawn(async move {
         let answer = guarded(answer(effect, &mailbox)).await;
         let _ = answers.send(answer);
-    });
-    task.abort_handle()
+    })
 }
 
 /// The message `work` answers with, or, should it panic, one that says
@@ -314,6 +343,36 @@ mod tests {
         );
         let answer = guarded(async { Message::Quit }).await;
         assert!(matches!(answer, Message::Quit), "{answer:?}");
+    }
+
+    #[tokio::test]
+    async fn quitting_waits_a_while_for_the_changes_on_their_way() {
+        let (sender, mut answers) = mpsc::unbounded_channel();
+        let mut tasks = Tasks::default();
+        let mailbox = Mailbox::demo();
+        let change = Effect::Change {
+            id: "conv-demo-01".into(),
+            place: "0".into(),
+            change: Change::Star(false),
+        };
+        tasks.run(change, &mailbox, &sender);
+        // The test's runtime has not run it yet.
+        assert!(tasks.busy());
+        assert!(answers.try_recv().is_err());
+        tasks.finish(&mailbox, Duration::from_secs(5)).await;
+        assert!(matches!(
+            answers.try_recv(),
+            Ok(Message::Changed { result: Ok(()), .. })
+        ));
+
+        // One that never ends holds quitting up only so long.
+        let mut stuck = Tasks::default();
+        stuck
+            .writes
+            .push(tokio::spawn(std::future::pending::<()>()));
+        let started = std::time::Instant::now();
+        stuck.finish(&mailbox, Duration::from_millis(100)).await;
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[tokio::test]

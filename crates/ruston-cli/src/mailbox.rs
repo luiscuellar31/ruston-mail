@@ -120,6 +120,14 @@ impl Mailbox {
         }
     }
 
+    /// Waits until no token refresh is under way, so quitting cuts none
+    /// short and loses the session; the demo has none.
+    pub(crate) async fn settle(&self) {
+        if let Self::Proton(client) = self {
+            client.settle().await;
+        }
+    }
+
     /// Makes `change` to the conversation `id`, listed in the place
     /// `place`. The demo keeps it until the interface closes.
     pub(crate) async fn change(&self, id: &str, place: &str, change: &Change) -> Result<()> {

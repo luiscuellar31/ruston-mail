@@ -704,7 +704,9 @@ instead of an unknown outcome.
   where the shell has job control, and an async loop over crossterm's event
   stream and the answers of the tasks it runs. A task that panics answers
   with a message the status bar shows, and its panic is not reported, so the
-  interface keeps its screen. It starts no logging, which
+  interface keeps its screen. Quitting waits up to three seconds for the
+  changes still on their way and then, through `Client::settle`, for a token
+  refresh under way, so neither is cut short. It starts no logging, which
   would draw over it. [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs)
   holds the state and what each key or answer does, without a terminal; what
   must load comes back from `update` as an effect, which `tui.rs` runs in a
