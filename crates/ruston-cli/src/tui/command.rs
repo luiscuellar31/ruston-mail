@@ -3,9 +3,9 @@
 //! asks for. Doing what it asks is the state's business, in `app`.
 
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 13] = [
-    "archive", "folder", "help", "move", "q", "quit", "read", "refresh", "search", "star", "trash",
-    "unread", "unstar",
+const COMMANDS: [&str; 14] = [
+    "archive", "folder", "help", "local", "move", "q", "quit", "read", "refresh", "search", "star",
+    "trash", "unread", "unstar",
 ];
 
 /// What a command line asks for.
@@ -20,6 +20,8 @@ pub(crate) enum Command {
     Move(String),
     /// Search all mail for these words.
     Search(String),
+    /// Search the local index for these words, without a connection.
+    Local(String),
     Star(bool),
     Read(bool),
     Archive,
@@ -49,6 +51,7 @@ impl Command {
             "folder" => Self::Folder(needs("the name of a folder or label")?),
             "move" => Self::Move(needs("the name of a folder")?),
             "search" => Self::Search(needs("the words to look for")?),
+            "local" => Self::Local(needs("the words to look for")?),
             "star" => Self::Star(true),
             "unstar" => Self::Star(false),
             "read" => Self::Read(true),
@@ -57,7 +60,10 @@ impl Command {
             "trash" => Self::Trash,
             other => return Err(format!("Not a command: :{other}")),
         };
-        let takes_words = matches!(command, Self::Folder(_) | Self::Move(_) | Self::Search(_));
+        let takes_words = matches!(
+            command,
+            Self::Folder(_) | Self::Move(_) | Self::Search(_) | Self::Local(_)
+        );
         if !argument.is_empty() && !takes_words {
             return Err(format!(":{name} takes nothing after it"));
         }
@@ -192,6 +198,10 @@ mod tests {
         assert_eq!(
             Command::parse("search"),
             Err(":search needs the words to look for".into())
+        );
+        assert_eq!(
+            Command::parse("local budget 2024"),
+            Ok(Some(Command::Local("budget 2024".into())))
         );
         assert_eq!(
             Command::parse("folder"),

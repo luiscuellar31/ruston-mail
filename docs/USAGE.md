@@ -513,7 +513,9 @@ interface closes. `:` opens a command line at the foot; Tab completes a
 command or a name, Up and Down bring back the lines run before, Enter runs
 it and Esc closes it. `/` starts one at `:search`, which looks for words in
 all of your mail and lists what it finds; Esc in that list goes back to the
-folder listed before. With no session saved, it signs in first, as
+folder listed before. `:local` looks instead in the local index that
+`ruston-cli index` builds, without a connection; opening what it finds still
+needs one. With no session saved, it signs in first, as
 `ruston-cli login` does; `--demo` opens the fictional mailbox. Away from a
 terminal, as in a script, `ruston-cli` with no command still prints the help
 and ends with status 2.
@@ -547,6 +549,7 @@ and ends with status 2.
 | `:read`, `:unread` | Mark it read or unread |
 | `:archive`, `:trash` | Archive it, or move it to Trash |
 | `:search WORDS` | Search all mail for the words |
+| `:local WORDS` | Search the local index for the words, offline |
 | `:refresh` | Refresh the folders and the list, or the search |
 | `:help` | Show the keys |
 | `:q`, `:quit` | Quit |

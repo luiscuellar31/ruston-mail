@@ -169,6 +169,14 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
         // Without this, the keys would seem to do nothing in an empty list.
         Pane::Conversations if app.listed_nothing() => {
             let hint = match &app.search {
+                Some(search) if search.local => vec![
+                    Line::raw(format!(
+                        "Nothing in the local index matches {}.",
+                        screen_line(&search.words)
+                    )),
+                    Line::raw("`ruston-cli index` puts mail in it."),
+                    Line::raw(format!("Esc goes back to {}.", screen_line(&search.back.1))),
+                ],
                 Some(search) => vec![
                     Line::raw(format!("Nothing matches {}.", screen_line(&search.words))),
                     Line::raw(format!("Esc goes back to {}.", screen_line(&search.back.1))),
@@ -708,6 +716,38 @@ mod tests {
         let status = screen.lines().last().unwrap();
         assert!(
             status.contains("Search: zebra[2J · 0 conversation(s)"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn a_local_search_that_finds_nothing_says_how_mail_gets_indexed() {
+        let mut app = App::new("me@example.test".into());
+        app.update(Message::Command);
+        for c in "local zebra".chars() {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            app.update(Message::Typed(key));
+        }
+        app.update(Message::Typed(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        app.update(Message::ConversationsLoaded {
+            request: 1,
+            page: 0,
+            result: Ok((0, Vec::new())),
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        for said in [
+            "Nothing in the local index matches zebra.",
+            "`ruston-cli index` puts mail in it.",
+            "Esc goes back to Inbox.",
+        ] {
+            assert!(screen.contains(said), "{said:?} missing:\n{screen}");
+        }
+        let status = screen.lines().last().unwrap();
+        assert!(
+            status.contains("Local: zebra · 0 conversation(s)"),
             "{status}"
         );
     }

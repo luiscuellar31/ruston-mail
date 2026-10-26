@@ -884,6 +884,23 @@ impl DemoSession {
     }
 }
 
+/// Up to `limit` of the demo's messages whose subject or body has `query`,
+/// whatever its case: the demo's local index, for `search` and the terminal
+/// interface's `:local` alike.
+pub(crate) fn search_local(query: &str, limit: u32) -> Vec<MessageMetadata> {
+    let query = query.to_lowercase();
+    let mut found: Vec<MessageMetadata> = fixtures()
+        .0
+        .into_iter()
+        .filter(|m| {
+            m.meta.subject.to_lowercase().contains(&query) || m.body.to_lowercase().contains(&query)
+        })
+        .map(|m| m.meta)
+        .collect();
+    found.truncate(limit as usize);
+    found
+}
+
 /// Whether `conversation`'s subject has `words`, whatever their case: how
 /// the demo finds conversations, in `conversations search` and the terminal
 /// interface alike.
@@ -1585,19 +1602,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             Ok(())
         }
         Command::Search { query, limit } => {
-            let mut results: Vec<MessageMetadata> = fixtures_messages
-                .into_iter()
-                .filter(|m| {
-                    m.meta
-                        .subject
-                        .to_lowercase()
-                        .contains(&query.to_lowercase())
-                        || m.body.to_lowercase().contains(&query.to_lowercase())
-                })
-                .map(|m| m.meta)
-                .collect();
-
-            results.truncate(limit as usize);
+            let results = search_local(&query, limit);
             render::messages_list(ctx.json, results.len() as u32, &results);
             Ok(())
         }

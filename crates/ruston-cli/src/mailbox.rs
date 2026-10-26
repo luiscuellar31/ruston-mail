@@ -4,14 +4,19 @@
 //! how they look is the interface's business.
 
 use crate::demo::{self, DemoSession};
+use ruston_core::model::ConversationLabel;
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{
-    Client, Conversation, ConversationMessage, Label, LabelCount, Result, SearchOpts,
+    Client, Conversation, ConversationMessage, Error, Label, LabelCount, MessageMetadata, Result,
+    SearchOpts,
 };
 use std::sync::Arc;
 
 /// How many conversations a page of the list holds.
 pub(crate) const PAGE_SIZE: u32 = 50;
+
+/// How many messages a search of the local index finds at most.
+const LOCAL_LIMIT: u32 = 200;
 
 /// The system folders the desktop shows, in its order.
 const SYSTEM_FOLDERS: [(&str, &str); 7] = [
@@ -128,6 +133,25 @@ impl Mailbox {
         }
     }
 
+    /// The conversations of the messages that `words` find in the local
+    /// index `ruston-cli index` builds, best matches first, with how many
+    /// there are: a search that needs no connection. The demo looks in its
+    /// messages, as its `search` does.
+    pub(crate) async fn search_local(&self, words: &str) -> Result<(u32, Vec<Conversation>)> {
+        let messages = match self {
+            Self::Proton(client) => {
+                // SQLite, which may first bring an older index up to date.
+                let (client, words) = (Arc::clone(client), words.to_owned());
+                tokio::task::spawn_blocking(move || client.search_local(&words, LOCAL_LIMIT))
+                    .await
+                    .map_err(|error| Error::Other(format!("local search stopped: {error}")))??
+            }
+            Self::Demo(_) => demo::search_local(words, LOCAL_LIMIT),
+        };
+        let conversations = conversations_of(messages);
+        Ok((conversations.len() as u32, conversations))
+    }
+
     /// The conversation `id` with its messages, oldest first, each opened
     /// or said to be unreadable. Reading it does not mark it read.
     pub(crate) async fn conversation(
@@ -164,6 +188,57 @@ impl Mailbox {
             }
         }
     }
+}
+
+/// The conversations `messages` belong to, in the order the first message of
+/// each comes, made of what those messages say, as the list shows them: a
+/// search of the local index finds messages, and has nothing else offline.
+fn conversations_of(messages: Vec<MessageMetadata>) -> Vec<Conversation> {
+    let mut conversations: Vec<Conversation> = Vec::new();
+    for message in messages {
+        if message.conversation_id.is_empty() {
+            continue;
+        }
+        let at = conversations
+            .iter()
+            .position(|conversation| conversation.id == message.conversation_id)
+            .unwrap_or_else(|| {
+                conversations.push(Conversation {
+                    id: message.conversation_id.clone(),
+                    subject: message.subject.clone(),
+                    ..Conversation::default()
+                });
+                conversations.len() - 1
+            });
+        let conversation = &mut conversations[at];
+        let unread = i64::from(message.unread > 0);
+        conversation.num_messages += 1;
+        conversation.num_unread += unread;
+        conversation.num_attachments += message.num_attachments;
+        conversation.time = conversation.time.max(message.time);
+        if !conversation
+            .senders
+            .iter()
+            .any(|sender| sender.address == message.sender.address)
+        {
+            conversation.senders.push(message.sender.clone());
+        }
+        for id in &message.label_ids {
+            match conversation.labels.iter_mut().find(|label| &label.id == id) {
+                Some(label) => {
+                    label.context_num_messages = Some(label.context_num_messages.unwrap_or(0) + 1);
+                    label.context_num_unread = Some(label.context_num_unread.unwrap_or(0) + unread);
+                }
+                None => conversation.labels.push(ConversationLabel {
+                    id: id.clone(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(unread),
+                    context_time: Some(message.time),
+                }),
+            }
+        }
+    }
+    conversations
 }
 
 /// The places to list: the system folders, then the account's folders in
@@ -261,6 +336,38 @@ mod tests {
         assert_eq!(places[10].kind, PlaceKind::Label);
     }
 
+    fn message(id: &str, conversation: &str, sender: &str, unread: i64) -> MessageMetadata {
+        MessageMetadata {
+            id: id.into(),
+            conversation_id: conversation.into(),
+            subject: format!("About {conversation}"),
+            sender: ruston_core::Recipient::new(sender),
+            unread,
+            time: 1_700_000_000 + id.len() as i64,
+            label_ids: vec![label_ids::INBOX.into()],
+            ..MessageMetadata::default()
+        }
+    }
+
+    #[test]
+    fn messages_found_offline_list_as_their_conversations_in_the_order_found() {
+        let messages = vec![
+            message("m1", "c-b", "alex@example.test", 1),
+            message("m2", "c-a", "sam@example.test", 0),
+            message("m-three", "c-b", "sam@example.test", 0),
+            message("m4", "", "lost@example.test", 1),
+        ];
+        let conversations = conversations_of(messages);
+        let ids: Vec<&str> = conversations.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["c-b", "c-a"]);
+        let first = &conversations[0];
+        assert_eq!((first.num_messages, first.num_unread), (2, 1));
+        assert_eq!(first.time, 1_700_000_007);
+        assert_eq!(first.senders.len(), 2);
+        assert_eq!(first.labels[0].context_num_unread, Some(1));
+        assert_eq!(first.subject, "About c-b");
+    }
+
     #[tokio::test]
     async fn the_demo_lists_its_places_and_conversations_as_its_commands_do() {
         let mailbox = Mailbox::demo();
@@ -295,6 +402,10 @@ mod tests {
         let (found, matching) = mailbox.search("AGENDA", 0).await.unwrap();
         assert_eq!(found, 1);
         assert_eq!(matching[0].subject, "Offsite planning and agenda");
+        // The demo's local search looks in bodies too.
+        let (found, matching) = mailbox.search_local("glossary").await.unwrap();
+        assert_eq!(found, 1);
+        assert_eq!(matching[0].id, "conv-demo-02");
 
         let (conversation, messages) = mailbox.conversation(&page[0].id).await.unwrap();
         assert_eq!(conversation.id, page[0].id);

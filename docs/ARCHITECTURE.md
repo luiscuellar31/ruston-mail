@@ -744,7 +744,10 @@ instead of an unknown outcome.
   as a folder's list, under the same request numbers; Esc lists again the
   place shown before, and a refresh or a change searches again. The demo
   finds conversations by their subjects, as its `conversations search`
-  does.
+  does. `:local` asks `Mailbox::search_local` instead, which searches the
+  local index that `ruston-cli index` builds, as `search` does, on Tokio's
+  blocking pool, and makes list rows of the conversations the messages it
+  finds belong to; it needs no connection, though opening a result does.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with

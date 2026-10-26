@@ -54,11 +54,13 @@ pub(crate) struct LinkPick {
     pub(crate) confirming: bool,
 }
 
-/// A search whose results the list shows: its words, and the label ID and
-/// name of the place listed before it, which Esc lists again.
+/// A search whose results the list shows: its words, whether it looked in
+/// the local index rather than asking Proton, and the label ID and name of
+/// the place listed before it, which Esc lists again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Search {
     pub(crate) words: String,
+    pub(crate) local: bool,
     pub(crate) back: (String, String),
 }
 
@@ -193,6 +195,11 @@ pub(crate) enum Effect {
         request: u64,
         words: String,
         page: u32,
+    },
+    /// What `words` find in the local index, all of it at once.
+    LocalSearch {
+        request: u64,
+        words: String,
     },
     Conversation {
         request: u64,
@@ -496,7 +503,12 @@ impl App {
             Command::Search(words) => {
                 self.focus = Pane::Conversations;
                 self.selected_conversation = 0;
-                return vec![self.search_for(words)];
+                return vec![self.search_for(words, false)];
+            }
+            Command::Local(words) => {
+                self.focus = Pane::Conversations;
+                self.selected_conversation = 0;
+                return vec![self.search_for(words, true)];
             }
             Command::Folder(name) => match self.named(&name) {
                 Ok(index) => {
@@ -638,7 +650,9 @@ impl App {
     /// is on its way, the rows shown are from before it, so none follow.
     fn down(&mut self) -> Vec<Effect> {
         let at_end = self.selected_conversation + 1 >= self.conversations.len();
-        let more = self.conversations.len() < usize::try_from(self.total).unwrap_or(usize::MAX);
+        // The local index gives all it finds at once.
+        let more = self.conversations.len() < usize::try_from(self.total).unwrap_or(usize::MAX)
+            && !self.search.as_ref().is_some_and(|search| search.local);
         if self.focus == Pane::Conversations
             && at_end
             && more
@@ -733,26 +747,41 @@ impl App {
         }
     }
 
-    /// Asks for the first page of what `words` find in all mail, as `list`
-    /// does for a place, keeping the place listed before the first search
-    /// to go back to.
-    fn search_for(&mut self, words: String) -> Effect {
+    /// Asks for the first page of what `words` find in all mail, or, when
+    /// `local`, in the local index, as `list` does for a place, keeping the
+    /// place listed before the first search to go back to.
+    fn search_for(&mut self, words: String, local: bool) -> Effect {
         let back = match self.search.take() {
             Some(search) => search.back,
             None => (self.listed_id.clone(), self.listed.clone()),
         };
-        let notice = format!("Searching for {words}…");
+        let (name, notice) = if local {
+            (
+                format!("Local: {words}"),
+                format!("Searching the local index for {words}…"),
+            )
+        } else {
+            (
+                format!("Search: {words}"),
+                format!("Searching for {words}…"),
+            )
+        };
         // All mail holds the results, so marking one unread does it there.
         let id = label_ids::ALL_MAIL.to_owned();
-        let request = self.relist(id, format!("Search: {words}"), notice);
+        let request = self.relist(id, name, notice);
         self.search = Some(Search {
             words: words.clone(),
+            local,
             back,
         });
-        Effect::Search {
-            request,
-            words,
-            page: 0,
+        if local {
+            Effect::LocalSearch { request, words }
+        } else {
+            Effect::Search {
+                request,
+                words,
+                page: 0,
+            }
         }
     }
 
@@ -772,8 +801,8 @@ impl App {
     fn reload(&mut self) -> Vec<Effect> {
         let list = match &self.search {
             Some(search) => {
-                let words = search.words.clone();
-                self.search_for(words)
+                let (words, local) = (search.words.clone(), search.local);
+                self.search_for(words, local)
             }
             None => {
                 let (id, name) = (self.listed_id.clone(), self.listed.clone());
@@ -1847,6 +1876,44 @@ mod tests {
         );
         assert_eq!((app.search.clone(), app.focus), (None, Pane::Conversations));
         assert_eq!(app.listed, "Inbox");
+    }
+
+    #[test]
+    fn a_local_search_lists_all_it_finds_at_once_and_searches_the_index_again() {
+        let mut app = loaded();
+        assert_eq!(
+            command(&mut app, "local budget"),
+            [Effect::LocalSearch {
+                request: 2,
+                words: "budget".into()
+            }]
+        );
+        assert_eq!(app.listed, "Local: budget");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Searching the local index for budget…")
+        );
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((2, vec![conversation("b1"), conversation("b2")])),
+        });
+        // All of it came: Down at the end asks for nothing more.
+        press(&mut app, KeyCode::End);
+        assert!(press(&mut app, KeyCode::Down).is_empty());
+        let refresh = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(
+            app.update(Message::from_event(&refresh).unwrap()),
+            [
+                Effect::Places,
+                Effect::LocalSearch {
+                    request: 3,
+                    words: "budget".into()
+                }
+            ]
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
     }
 
     #[test]
