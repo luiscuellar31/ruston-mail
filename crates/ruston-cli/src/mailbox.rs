@@ -73,10 +73,12 @@ pub(crate) enum OutgoingKind {
         everyone: bool,
         quote: Quote,
     },
-    /// The message `message_id` passed on, with its files.
+    /// The message `message_id` passed on, with its files but those whose
+    /// IDs are in `leave_out`.
     Forward {
         message_id: String,
         quote: Quote,
+        leave_out: Vec<String>,
     },
 }
 
@@ -101,6 +103,8 @@ pub(crate) struct Outgoing {
     pub(crate) bcc: Vec<String>,
     pub(crate) subject: String,
     pub(crate) body: String,
+    /// Files of this computer it carries.
+    pub(crate) attachments: Vec<PathBuf>,
 }
 
 impl Outgoing {
@@ -266,7 +270,7 @@ impl Mailbox {
                     .download_attachment(message_id, attachment_id)
                     .await?
             }
-            Self::Demo(_) => demo::download_attachment(message_id, attachment_id)?,
+            Self::Demo(session) => session.download_attachment(message_id, attachment_id)?,
         };
         let folder = folder.to_owned();
         tokio::task::spawn_blocking(move || save_under_free_name(&folder, &name, &contents))
@@ -331,7 +335,12 @@ impl Mailbox {
                     bcc: outgoing.bcc.clone(),
                     subject: outgoing.subject.clone(),
                     body: outgoing.body.clone(),
+                    attachments: outgoing.attachments.clone(),
                     quote: outgoing.kind.quote(),
+                    leave_out: match &outgoing.kind {
+                        OutgoingKind::Forward { leave_out, .. } => leave_out.clone(),
+                        OutgoingKind::New | OutgoingKind::Reply { .. } => Vec::new(),
+                    },
                     ..SendOptions::default()
                 };
                 let sent = match &outgoing.kind {
@@ -625,6 +634,7 @@ mod tests {
             bcc: vec![addresses[1].clone()],
             subject: "Plans".into(),
             body: "See you there.".into(),
+            attachments: Vec::new(),
         };
         mailbox.send(&outgoing).await.unwrap();
         // The newest, so the first in Sent.
@@ -649,6 +659,7 @@ mod tests {
             bcc: Vec::new(),
             subject: String::new(),
             body: body.into(),
+            attachments: Vec::new(),
         };
         let reply = OutgoingKind::Reply {
             message_id: "msg-demo-04".into(),
@@ -676,6 +687,7 @@ mod tests {
         let forward = OutgoingKind::Forward {
             message_id: "msg-demo-04".into(),
             quote: Quote::Omitted,
+            leave_out: Vec::new(),
         };
         mailbox.send(&answer(forward, "FYI")).await.unwrap();
         let (_, messages) = mailbox.conversation("conv-demo-03").await.unwrap();
@@ -684,6 +696,50 @@ mod tests {
         };
         assert_eq!(sent.meta.subject, "Fw: Offsite planning and agenda");
         assert_eq!(sent.body, "FYI");
+    }
+
+    #[tokio::test]
+    async fn the_demo_sends_files_and_forwards_the_original_s_but_those_left_out() {
+        let mailbox = Mailbox::demo();
+        let file =
+            std::env::temp_dir().join(format!("ruston-tui-demo-file-{}.txt", std::process::id()));
+        std::fs::write(&file, b"twelve bytes").unwrap();
+        let forward = |leave_out: Vec<String>| Outgoing {
+            kind: OutgoingKind::Forward {
+                message_id: "msg-demo-03".into(),
+                quote: Quote::Omitted,
+                leave_out,
+            },
+            to: vec!["sam.chen@example.com".into()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: String::new(),
+            body: "FYI".into(),
+            attachments: vec![file.clone()],
+        };
+        let names = |messages: &[ConversationMessage]| -> Vec<(String, u64)> {
+            let Some(ConversationMessage::Opened(sent)) = messages.last() else {
+                panic!("{messages:?}");
+            };
+            sent.attachments
+                .iter()
+                .map(|attachment| (attachment.name.clone(), attachment.size))
+                .collect()
+        };
+        mailbox.send(&forward(Vec::new())).await.unwrap();
+        let (_, messages) = mailbox.conversation("conv-demo-02").await.unwrap();
+        let file_name = file.file_name().unwrap().to_string_lossy().into_owned();
+        let attached = names(&messages);
+        assert_eq!(attached[0].0, "translation_proposal.pdf");
+        assert_eq!(attached[1], (file_name.clone(), 12));
+        // Left out, the original's goes no more; what was sent saves.
+        mailbox
+            .send(&forward(vec!["att-demo-01".into()]))
+            .await
+            .unwrap();
+        let (_, messages) = mailbox.conversation("conv-demo-02").await.unwrap();
+        assert_eq!(names(&messages), [(file_name, 12)]);
+        std::fs::remove_file(file).unwrap();
     }
 
     #[tokio::test]

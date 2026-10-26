@@ -809,7 +809,9 @@ impl DemoSession {
     /// Proton would: a new one in a conversation of its own, an answer in
     /// the conversation of the message it answers, with the subject core
     /// gives it and, unless left out, that message quoted under its text as
-    /// core quotes it in plain text. Sent lists either.
+    /// core quotes it in plain text. It carries the files attached, by their
+    /// names and sizes, and a forward the original's but those left out.
+    /// Sent lists either.
     pub(crate) fn send(&self, outgoing: &Outgoing) {
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -850,6 +852,32 @@ impl DemoSession {
             }
             _ => outgoing.body.clone(),
         };
+        let forwarded = match (&outgoing.kind, &answered) {
+            (OutgoingKind::Forward { leave_out, .. }, Some(original)) => original
+                .attachments
+                .iter()
+                .filter(|attachment| !leave_out.contains(&attachment.id))
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
+        let attached = outgoing.attachments.iter().map(|path| Attachment {
+            name: path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+            size: std::fs::metadata(path).map_or(0, |metadata| metadata.len()),
+            disposition: Some("attachment".to_string()),
+            ..Attachment::default()
+        });
+        let attachments: Vec<Attachment> = forwarded
+            .into_iter()
+            .chain(attached)
+            .enumerate()
+            .map(|(index, attachment)| Attachment {
+                id: format!("att-demo-sent-{number}-{}", index + 1),
+                ..attachment
+            })
+            .collect();
         let meta = MessageMetadata {
             id: format!("msg-demo-sent-{number}"),
             order: i64::try_from(number).unwrap_or(i64::MAX),
@@ -865,10 +893,11 @@ impl DemoSession {
             address_id: "addr-demo-01".to_string(),
             label_ids: vec![label_ids::SENT.to_string()],
             external_id: None,
-            num_attachments: 0,
+            num_attachments: i64::try_from(attachments.len()).unwrap_or(i64::MAX),
             flags: message_flag::SENT,
             expiration_time: None,
         };
+        let carries = meta.num_attachments;
         let recipients: Vec<Recipient> = meta
             .to_list
             .iter()
@@ -880,7 +909,7 @@ impl DemoSession {
             meta,
             body,
             mime_type: "text/plain".to_string(),
-            attachments: Vec::new(),
+            attachments,
         });
         drop(messages);
         let sent = |messages: i64| ConversationLabel {
@@ -896,6 +925,7 @@ impl DemoSession {
         match conversations.iter_mut().find(|c| c.id == conversation_id) {
             Some(conversation) => {
                 conversation.num_messages += 1;
+                conversation.num_attachments += carries;
                 conversation.time = time;
                 match conversation
                     .labels
@@ -916,13 +946,35 @@ impl DemoSession {
                 time,
                 num_messages: 1,
                 num_unread: 0,
-                num_attachments: 0,
+                num_attachments: carries,
                 senders: vec![sender],
                 recipients,
                 labels: vec![sent(1)],
                 expiration_time: None,
             }),
         }
+    }
+
+    /// The attachment `attachment_id` of the message `message_id`: its name
+    /// and the stand-in a download of it saves, as the demo's
+    /// `attachments download` saves one.
+    pub(crate) fn download_attachment(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<(String, Vec<u8>)> {
+        let messages = self.messages.lock().expect("demo mailbox lock poisoned");
+        let attachment = messages
+            .iter()
+            .find(|message| message.meta.id == message_id)
+            .and_then(|message| message.attachments.iter().find(|a| a.id == attachment_id))
+            .ok_or_else(|| Error::NotFound {
+                kind: "attachment".into(),
+            })?;
+        Ok((
+            attachment.name.clone(),
+            simulated_attachment(&attachment.name),
+        ))
     }
 
     /// The conversations as they stand now.
@@ -1055,29 +1107,6 @@ impl DemoSession {
 /// What the demo's attachments hold: a stand-in, as its downloads save it.
 fn simulated_attachment(name: &str) -> Vec<u8> {
     format!("%PDF-1.4\n% Demo simulated attachment content for {name}\n").into_bytes()
-}
-
-/// The demo's attachment `attachment_id` of the message `message_id`: its
-/// name and the stand-in a download of it saves.
-pub(crate) fn download_attachment(
-    message_id: &str,
-    attachment_id: &str,
-) -> Result<(String, Vec<u8>)> {
-    let attachment = fixtures()
-        .0
-        .into_iter()
-        .find(|message| message.meta.id == message_id)
-        .and_then(|message| {
-            message
-                .attachments
-                .into_iter()
-                .find(|a| a.id == attachment_id)
-        })
-        .ok_or_else(|| Error::NotFound {
-            kind: "attachment".into(),
-        })?;
-    let contents = simulated_attachment(&attachment.name);
-    Ok((attachment.name, contents))
 }
 
 /// `original` quoted under an answer's text as core quotes it in plain

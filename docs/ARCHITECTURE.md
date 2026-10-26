@@ -787,7 +787,13 @@ instead of an unknown outcome.
   `forward_subject`, and quotes the original unless Ctrl+Q left it out. The
   demo keeps what it sends, with its messages, in its `DemoSession`, so Sent
   lists it and the reader opens it; an answer joins the conversation it
-  answers, quoting it as core does in plain text.
+  answers, quoting it as core does in plain text. Ctrl+A lists the files a
+  message carries over it: a path typed there goes to core's
+  `validate_attachments`, with the files attached already, and its size is
+  read on the blocking pool, and Tab reads the path's folder there too, so a
+  share that stopped answering never holds up the interface; both are
+  reads, numbered and aborted by a newer one. A forward lists the
+  original's files too, and those left out go to core as `leave_out`.
   [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs) is the command
   line `:` opens: its text, the lines run before, Tab's completion and what a
   line asks for; while it is open the state gets each key as typed, and runs

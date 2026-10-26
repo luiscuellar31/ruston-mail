@@ -173,13 +173,17 @@ fn draw_question(frame: &mut Frame, question: &Question, theme: &Theme) {
             (" Discard ".to_owned(), lines)
         }
         Question::Send {
-            outgoing, checks, ..
+            outgoing,
+            files,
+            checks,
+            ..
         } => {
             let mut lines = vec![Line::raw("Send this message?"), Line::default()];
             for (field, people) in [
                 ("To", &outgoing.to),
                 ("Cc", &outgoing.cc),
                 ("Bcc", &outgoing.bcc),
+                ("Files", files),
             ] {
                 if !people.is_empty() {
                     let named = format!("{field}: {}", people.join(", "));
@@ -282,7 +286,7 @@ fn draw_compose(frame: &mut Frame, compose: &Compose, theme: &Theme, cursor: boo
     let inner = block.inner(main);
     frame.render_widget(block, main);
     let dim = Style::new().add_modifier(Modifier::DIM);
-    let notes = answer_notes(compose, theme, dim);
+    let notes = notes(compose, theme, dim);
     let headers = compose.headers();
     let header_rows = 1 + headers.len() + notes.len();
     let [header, rule, body] = Layout::vertical([
@@ -353,22 +357,139 @@ fn draw_compose(frame: &mut Frame, compose: &Compose, theme: &Theme, cursor: boo
             Span::raw(" send  "),
             Span::styled("Tab", theme.accent),
             Span::raw(" next field  "),
+            Span::styled("Ctrl+A", theme.accent),
+            Span::raw(" attach  "),
             Span::styled("Esc", theme.accent),
             Span::raw(" close"),
         ]),
     };
     frame.render_widget(Paragraph::new(said), foot);
+    if let Some(files) = &compose.files {
+        at = Some(draw_files(frame, compose, files, theme));
+    }
     if let (true, Some(at)) = (cursor, at) {
         frame.set_cursor_position(at);
     }
 }
 
-/// What the editor says under the fields of an answer: what it answers,
+/// The files the message carries, listed over it while Ctrl+A has them
+/// open: each with its size, the chosen one inverted, the original's said
+/// so, then the path being typed to attach one, the names it may go on as
+/// and what went wrong. Returns where the cursor stands in the path.
+fn draw_files(
+    frame: &mut Frame,
+    compose: &Compose,
+    files: &super::compose::Files,
+    theme: &Theme,
+) -> (u16, u16) {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let listed = compose.listed();
+    let mut rows: Vec<Line> = listed
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            let from = match (file.original, file.left_out) {
+                (true, false) => " · from the original",
+                (true, true) => " · from the original, left out",
+                (false, _) => "",
+            };
+            let style = if files.chosen == Some(index) {
+                Style::new().add_modifier(Modifier::REVERSED)
+            } else if file.left_out {
+                dim
+            } else {
+                Style::new()
+            };
+            Line::styled(
+                format!(" {} · {}{from}", file.name, size_label(file.size)),
+                style,
+            )
+        })
+        .collect();
+    if rows.is_empty() {
+        rows.push(Line::styled(" No files yet.", dim));
+    }
+    let matches = (!files.matches.is_empty()).then(|| {
+        let names: Vec<&str> = files
+            .matches
+            .iter()
+            .map(|path| {
+                let at = path
+                    .trim_end_matches(std::path::is_separator)
+                    .rfind(std::path::is_separator)
+                    .map_or(0, |at| at + 1);
+                &path[at..]
+            })
+            .collect();
+        Line::styled(screen_line(&format!("  {}", names.join("  "))), dim)
+    });
+    let notice = files
+        .notice
+        .as_ref()
+        .map(|notice| Line::styled(screen_line(notice), theme.accent));
+    let heights = [
+        rows.len(),
+        1,
+        1,
+        usize::from(matches.is_some()),
+        usize::from(notice.is_some()),
+    ];
+    let inner_rows: usize = heights.iter().sum();
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(100);
+    let area = centered(
+        area,
+        width,
+        u16::try_from(inner_rows + 2).unwrap_or(u16::MAX),
+    );
+    let block = Block::bordered()
+        .title(" Attachments ")
+        .title_bottom(" Enter attaches · Tab completes · Delete takes one away · Esc closes ")
+        .border_style(theme.accent);
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    let [list, _, path, shown, said] = Layout::vertical(
+        heights.map(|rows| Constraint::Length(u16::try_from(rows).unwrap_or(u16::MAX))),
+    )
+    .areas(inner);
+    frame.render_widget(Paragraph::new(rows), list);
+    if let Some(matches) = matches {
+        frame.render_widget(Paragraph::new(matches), shown);
+    }
+    if let Some(notice) = notice {
+        frame.render_widget(Paragraph::new(notice), said);
+    }
+    let name = if files.chosen.is_none() {
+        Span::styled("Attach", theme.accent.add_modifier(Modifier::BOLD))
+    } else {
+        Span::raw("Attach")
+    };
+    draw_field(
+        frame,
+        path,
+        name,
+        Span::raw(files.path.text()),
+        files.path.column(),
+    )
+}
+
+/// What the editor says under the fields: for an answer, what it answers,
 /// that the message asked for replies to go elsewhere, whether the
-/// original goes under the text, and what files a forward carries.
-fn answer_notes(compose: &Compose, theme: &Theme, dim: Style) -> Vec<Line<'static>> {
+/// original goes under the text and which of its files a forward carries;
+/// and which files of this computer go with the message.
+fn notes(compose: &Compose, theme: &Theme, dim: Style) -> Vec<Line<'static>> {
+    let attached = (!compose.attached.is_empty()).then(|| {
+        let names: Vec<String> = compose
+            .listed()
+            .into_iter()
+            .filter(|file| !file.original)
+            .map(|file| format!("{} ({})", file.name, size_label(file.size)))
+            .collect();
+        Line::styled(format!("Attached: {}", names.join(", ")), dim)
+    });
     let Some(answering) = &compose.answering else {
-        return Vec::new();
+        return attached.into_iter().collect();
     };
     let mut notes = vec![Line::styled(
         format!(
@@ -394,12 +515,19 @@ fn answer_notes(compose: &Compose, theme: &Theme, dim: Style) -> Vec<Line<'stati
             dim,
         ));
     }
-    if matches!(compose.kind, OutgoingKind::Forward { .. }) && !answering.files.is_empty() {
+    let forwarded: Vec<String> = compose
+        .listed()
+        .into_iter()
+        .filter(|file| file.original && !file.left_out)
+        .map(|file| file.name)
+        .collect();
+    if !forwarded.is_empty() {
         notes.push(Line::styled(
-            format!("Forwarding: {}", answering.files.join(", ")),
+            format!("Forwarding: {}", forwarded.join(", ")),
             dim,
         ));
     }
+    notes.extend(attached);
     notes
 }
 
@@ -1134,7 +1262,12 @@ mod tests {
             cc: Vec::new(),
             redirected_from: Some("alex@example.test".into()),
             opened: true,
-            files: vec!["plan.pdf".into()],
+            files: vec![super::super::reading::ReadingAttachment {
+                message_id: "m1".into(),
+                id: "a1".into(),
+                name: "plan.pdf".into(),
+                size: 24_576,
+            }],
         };
         app.compose = Some(Compose::answer(
             "me@example.test".into(),
@@ -1170,6 +1303,42 @@ mod tests {
     }
 
     #[test]
+    fn the_files_a_message_carries_are_listed_over_it() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.update(Message::Compose);
+        let compose = app.compose.as_mut().unwrap();
+        compose.attached = vec![(
+            std::path::PathBuf::from("/home/me/report\x1b[2J.pdf"),
+            1_536,
+        )];
+        let screen = text(&drawn(100, 24, &app, &Theme::new(false)));
+        assert!(
+            screen.contains("Attached: report[2J.pdf (1.5 KB)"),
+            "{screen}"
+        );
+        assert!(screen.contains("Ctrl+A attach"), "{screen}");
+        let compose = app.compose.as_mut().unwrap();
+        compose.files = Some(super::super::compose::Files {
+            path: super::super::editor::Editor::with("~/no"),
+            chosen: Some(0),
+            matches: vec!["~/notes/".into(), "~/november.txt".into()],
+            notice: Some("Cannot attach ~/x: gone".into()),
+        });
+        let screen = text(&drawn(100, 24, &app, &Theme::new(false)));
+        for line in [
+            " Attachments ",
+            " report[2J.pdf · 1.5 KB",
+            "Attach   ~/no",
+            "notes/  november.txt",
+            "Cannot attach ~/x: gone",
+            "Enter attaches",
+        ] {
+            assert!(screen.contains(line), "{line} missing:\n{screen}");
+        }
+        assert!(!screen.contains('\u{1b}'));
+    }
+
+    #[test]
     fn sending_asks_naming_who_gets_it_and_how_proton_protects_it() {
         let mut app = with_mail("alex@example.test", "Quarterly report");
         app.update(Message::Compose);
@@ -1183,7 +1352,9 @@ mod tests {
                     bcc: Vec::new(),
                     subject: String::new(),
                     body: String::new(),
+                    attachments: Vec::new(),
                 },
+                files: vec!["plan.pdf (24 KB)".into()],
                 checks,
             });
             text(&drawn(100, 30, app, &Theme::new(false)))
@@ -1197,6 +1368,7 @@ mod tests {
             "Send this message?",
             "To: sam@proton.me",
             "Cc: alex@example.test",
+            "Files: plan.pdf (24 KB)",
             "Checking how this message will be protected…",
             "y sends it; any other key goes back to it.",
         ] {

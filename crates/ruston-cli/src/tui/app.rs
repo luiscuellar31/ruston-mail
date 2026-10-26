@@ -4,12 +4,13 @@
 
 use super::command::{Command, CommandLine};
 use super::compose::{AnswerKind, Asked, Checked, Compose, Sending};
-use super::reading::Reading;
+use super::reading::{Reading, size_label};
 use crate::mailbox::{Change, Outgoing, Place, PlaceKind, SendFailure, deletes_forever};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, RecipientProtection};
 use std::cell::Cell;
+use std::path::PathBuf;
 
 /// The three panes, in the order Tab visits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,11 +97,13 @@ pub(crate) enum Question {
     /// Whether to throw away the message being written, which is kept
     /// nowhere else.
     Discard,
-    /// Whether to send `outgoing`, saying how Proton would protect it for
-    /// each recipient as the lookups numbered `request` answer.
+    /// Whether to send `outgoing`, with the files named in `files`,
+    /// saying how Proton would protect it for each recipient as the
+    /// lookups numbered `request` answer.
     Send {
         request: u64,
         outgoing: Outgoing,
+        files: Vec<String>,
         checks: Vec<(String, Checked)>,
     },
 }
@@ -158,6 +161,8 @@ pub(crate) struct App {
     pub(crate) sender: String,
     /// The last send asked about; lookups for any other come too late.
     send_request: u64,
+    /// The last file checked or path completed, likewise.
+    file_request: u64,
     /// The command line, while `:` has it open at the foot.
     pub(crate) command_line: Option<CommandLine>,
     /// The lines run from it, oldest first, for Up and Down.
@@ -295,6 +300,18 @@ pub(crate) enum Message {
     },
     /// Whether the message went.
     Sent(Result<(), SendFailure>),
+    /// The file a path named, checked to go with the message being written,
+    /// and its size, or what keeps it from going.
+    Attached {
+        request: u64,
+        result: Result<(PathBuf, u64), String>,
+    },
+    /// The names the path `typed` may go on as.
+    Completions {
+        request: u64,
+        typed: String,
+        matches: Vec<String>,
+    },
     /// A task stopped on a bug, saying what it was.
     Failed(String),
 }
@@ -351,6 +368,18 @@ pub(crate) enum Effect {
         addresses: Vec<String>,
     },
     Send(Outgoing),
+    /// Checks the file the path `typed` names to go with the message, beside
+    /// the files `attached` already.
+    Attach {
+        request: u64,
+        typed: String,
+        attached: Vec<PathBuf>,
+    },
+    /// Finds the names the path `typed` may go on as.
+    Complete {
+        request: u64,
+        typed: String,
+    },
 }
 
 impl App {
@@ -380,6 +409,7 @@ impl App {
             compose: None,
             sender: String::new(),
             send_request: 0,
+            file_request: 0,
             command_line: None,
             history: Vec::new(),
             search: None,
@@ -603,6 +633,22 @@ impl App {
             } => self.notice = Some(format!("Cannot empty {name}: {error}")),
             Message::Protected { request, checks } => self.protected(request, checks),
             Message::Sent(result) => return self.sent(result),
+            Message::Attached { request, result } if request == self.file_request => {
+                if let Some(compose) = self.compose.as_mut() {
+                    compose.attached(result);
+                }
+            }
+            Message::Completions {
+                request,
+                typed,
+                matches,
+            } if request == self.file_request => {
+                if let Some(compose) = self.compose.as_mut() {
+                    compose.completed(&typed, matches);
+                }
+            }
+            // Asked for before another, they come too late.
+            Message::Attached { .. } | Message::Completions { .. } => {}
             Message::Failed(error) => {
                 self.notice = Some(format!("Something went wrong: {error}"));
             }
@@ -984,6 +1030,26 @@ impl App {
             Asked::Close if compose.untouched() => self.compose = None,
             Asked::Close => self.question = Some(Question::Discard),
             Asked::Send => return self.ask_to_send(),
+            Asked::Attach(typed) => {
+                let attached = compose
+                    .attached
+                    .iter()
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                self.file_request += 1;
+                return vec![Effect::Attach {
+                    request: self.file_request,
+                    typed,
+                    attached,
+                }];
+            }
+            Asked::Complete(typed) => {
+                self.file_request += 1;
+                return vec![Effect::Complete {
+                    request: self.file_request,
+                    typed,
+                }];
+            }
         }
         Vec::new()
     }
@@ -1007,9 +1073,16 @@ impl App {
                     .iter()
                     .map(|address| (address.clone(), Checked::Checking))
                     .collect();
+                let files = compose
+                    .listed()
+                    .into_iter()
+                    .filter(|file| !file.left_out)
+                    .map(|file| format!("{} ({})", file.name, size_label(file.size)))
+                    .collect();
                 self.question = Some(Question::Send {
                     request: self.send_request,
                     outgoing,
+                    files,
                     checks,
                 });
                 vec![Effect::Protection {
@@ -1525,6 +1598,8 @@ fn is_key(message: &Message) -> bool {
             | Message::Emptied { .. }
             | Message::Protected { .. }
             | Message::Sent(_)
+            | Message::Attached { .. }
+            | Message::Completions { .. }
             | Message::Failed(_)
     )
 }
@@ -2906,6 +2981,54 @@ mod tests {
     }
 
     #[test]
+    fn a_file_is_checked_before_it_is_attached_and_a_late_answer_is_dropped() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('n'));
+        ctrl(&mut app, KeyCode::Char('a'));
+        write(&mut app, "notes");
+        assert_eq!(
+            press(&mut app, KeyCode::Tab),
+            [Effect::Complete {
+                request: 1,
+                typed: "notes".into(),
+            }]
+        );
+        write(&mut app, ".txt");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            [Effect::Attach {
+                request: 2,
+                typed: "notes.txt".into(),
+                attached: Vec::new(),
+            }]
+        );
+        // The completion asked for first comes too late.
+        app.update(Message::Completions {
+            request: 1,
+            typed: "notes".into(),
+            matches: vec!["notes/".into()],
+        });
+        let compose = app.compose.as_ref().unwrap();
+        assert_eq!(compose.files.as_ref().unwrap().path.text(), "notes.txt");
+        app.update(Message::Attached {
+            request: 2,
+            result: Ok((PathBuf::from("notes.txt"), 12)),
+        });
+        let compose = app.compose.as_ref().unwrap();
+        assert_eq!(compose.attached, [(PathBuf::from("notes.txt"), 12)]);
+        // The next check names the files attached already.
+        write(&mut app, "more.txt");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            [Effect::Attach {
+                request: 3,
+                typed: "more.txt".into(),
+                attached: vec![PathBuf::from("notes.txt")],
+            }]
+        );
+    }
+
+    #[test]
     fn r_shift_r_and_shift_f_answer_the_conversation_the_reader_shows() {
         let mut app = loaded();
         app.sender = "me@example.test".into();
@@ -2976,7 +3099,7 @@ mod tests {
         ctrl(&mut app, KeyCode::Char('s'));
         let effects = press(&mut app, KeyCode::Char('y'));
         assert!(
-            matches!(&effects[..], [Effect::Send(outgoing)] if outgoing.kind == OutgoingKind::Forward { message_id: "m1".into(), quote: ruston_core::Quote::Original }),
+            matches!(&effects[..], [Effect::Send(outgoing)] if outgoing.kind == OutgoingKind::Forward { message_id: "m1".into(), quote: ruston_core::Quote::Original, leave_out: Vec::new() }),
             "{effects:?}"
         );
     }

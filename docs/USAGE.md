@@ -553,7 +553,12 @@ which you can change, and says when the message asked for replies to go to
 someone other than its sender. Proton writes an answer's subject, and the
 original goes under your text unless Ctrl+Q leaves it out. A message goes
 from your primary address, or an answer from the one the original reached;
-From shows which.
+From shows which. Ctrl+A, for Proton's Ctrl+Shift+A, which many terminals
+cannot tell from it, lists the files the message carries: type the path of
+one, Tab completes it as a shell does, `~` being your home folder, and Enter
+attaches it, once it is a file that can be read, of at most 32 MiB, with all
+the files together at most 128 MiB. Up and Down choose a file listed, and
+Delete takes it away, or leaves one of a forwarded message's files out.
 To, Cc and Bcc take addresses separated by commas or semicolons; a domain in
 another script is refused unless you type it in its `xn--` form, as the
 desktop does unless told otherwise. Tab and Shift+Tab move between the fields
@@ -605,6 +610,7 @@ the demo puts what it sends in its Sent.
 | Enter | Start a new line in the text, or go to the next field |
 | Ctrl+Enter, Ctrl+S | Send it, once you answer `y` |
 | Ctrl+Q | In an answer, leave the original out, or put it back |
+| Ctrl+A | List the files it carries, to attach one or take one away |
 | Esc, Ctrl+C | Close it, asking first when something is written |
 
 | Command | Action |

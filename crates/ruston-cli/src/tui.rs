@@ -19,9 +19,11 @@ use clap::{Args, FromArgMatches};
 use crossterm::event::EventStream;
 use futures::{FutureExt, StreamExt};
 use reading::Reading;
+use ruston_core::mail::send::validate_attachments;
 use ruston_core::{Client, Error, Result};
 use std::io::{self, IsTerminal};
 use std::panic::AssertUnwindSafe;
+use std::path::{MAIN_SEPARATOR_STR, PathBuf, is_separator};
 use std::sync::Arc;
 use std::thread::ThreadId;
 use std::time::Duration;
@@ -157,6 +159,104 @@ fn downloads_folder() -> io::Result<std::path::PathBuf> {
     std::env::current_dir()
 }
 
+/// The path `typed` names: under the home folder when it starts with `~`,
+/// as a shell has it.
+fn typed_path(typed: &str) -> PathBuf {
+    let typed = typed.trim();
+    let home = || directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+    match typed.strip_prefix('~') {
+        Some("") => home().unwrap_or_else(|| PathBuf::from(typed)),
+        Some(rest) if rest.starts_with(is_separator) => {
+            home().map_or_else(|| PathBuf::from(typed), |home| home.join(&rest[1..]))
+        }
+        _ => PathBuf::from(typed),
+    }
+}
+
+/// The file the path `typed` names, with its size, once core finds it can
+/// go with a message beside the files `attached`, as it checks them before
+/// sending; or what keeps it from going. The file system is asked on the
+/// blocking pool, since a share that stopped answering would hold up the
+/// interface.
+async fn attachable(
+    typed: &str,
+    attached: Vec<PathBuf>,
+) -> std::result::Result<(PathBuf, u64), String> {
+    let path = typed_path(typed);
+    let mut all = attached;
+    all.push(path.clone());
+    validate_attachments(&all)
+        .await
+        .map_err(|error| refused(&error))?;
+    let read = path.clone();
+    match tokio::task::spawn_blocking(move || std::fs::metadata(read).map(|file| file.len())).await
+    {
+        Ok(Ok(size)) => Ok((path, size)),
+        Ok(Err(error)) => Err(format!("Cannot attach {}: {error}", path.display())),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// What the attachments say when core refuses a file.
+fn refused(error: &Error) -> String {
+    const MIB: usize = 1024 * 1024;
+    match error {
+        Error::AttachmentUnavailable { path, source } => {
+            format!("Cannot attach {}: {source}", path.display())
+        }
+        Error::AttachmentTooLarge { limit } => {
+            format!("Each file can be at most {} MiB.", limit / MIB)
+        }
+        Error::AttachmentBatchTooLarge { limit } => {
+            format!("The files can come to at most {} MiB.", limit / MIB)
+        }
+        other => other.to_string(),
+    }
+}
+
+/// The paths `typed`, a path being typed, may go on as: each name in its
+/// folder that begins as its last part does, whatever its case where the
+/// file system ignores case, a folder's ending in a separator. Names that
+/// begin with a dot come only when that part does. At most a hundred, in
+/// order.
+fn completions(typed: &str) -> Vec<String> {
+    let split = typed.rfind(is_separator).map_or(0, |at| at + 1);
+    let (folder, start) = typed.split_at(split);
+    let read = if folder.is_empty() {
+        PathBuf::from(".")
+    } else {
+        typed_path(folder)
+    };
+    let Ok(entries) = std::fs::read_dir(read) else {
+        return Vec::new();
+    };
+    let begins = |name: &str| {
+        if cfg!(windows) {
+            name.to_lowercase().starts_with(&start.to_lowercase())
+        } else {
+            name.starts_with(start)
+        }
+    };
+    let mut matches: Vec<String> = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            let hidden = name.starts_with('.') && !start.starts_with('.');
+            (!hidden && begins(&name)).then(|| {
+                let mark = if entry.path().is_dir() {
+                    MAIN_SEPARATOR_STR
+                } else {
+                    ""
+                };
+                format!("{folder}{name}{mark}")
+            })
+        })
+        .collect();
+    matches.sort();
+    matches.truncate(100);
+    matches
+}
+
 /// Opens `url` in the default browser, as signing in opens a challenge,
 /// with nothing to read from the terminal the interface holds, and waits for
 /// the opener on a thread of its own, so it leaves nothing behind.
@@ -203,6 +303,8 @@ struct Tasks {
     list: Option<AbortHandle>,
     conversation: Option<AbortHandle>,
     protection: Option<AbortHandle>,
+    /// A file being checked or a path being completed for the editor.
+    files: Option<AbortHandle>,
     /// The changes and links on their way, which quitting waits for.
     writes: Vec<JoinHandle<()>>,
 }
@@ -223,6 +325,7 @@ impl Tasks {
             }
             Effect::Conversation { .. } => &mut self.conversation,
             Effect::Protection { .. } => &mut self.protection,
+            Effect::Attach { .. } | Effect::Complete { .. } => &mut self.files,
             Effect::MarkRead { .. }
             | Effect::Change { .. }
             | Effect::Empty { .. }
@@ -343,6 +446,25 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
             checks: mailbox.protection(&addresses).await,
         },
         Effect::Send(outgoing) => Message::Sent(mailbox.send(&outgoing).await),
+        Effect::Attach {
+            request,
+            typed,
+            attached,
+        } => Message::Attached {
+            request,
+            result: attachable(&typed, attached).await,
+        },
+        Effect::Complete { request, typed } => {
+            let looked = typed.clone();
+            let matches = tokio::task::spawn_blocking(move || completions(&looked))
+                .await
+                .unwrap_or_default();
+            Message::Completions {
+                request,
+                typed,
+                matches,
+            }
+        }
         Effect::Empty { place, name } => Message::Emptied {
             name,
             result: mailbox
@@ -457,6 +579,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_file_to_attach_is_checked_as_core_checks_it_before_sending() {
+        let folder = std::env::temp_dir().join(format!(
+            "ruston-tui-attach-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(folder.join("notes")).unwrap();
+        std::fs::write(folder.join("plan.pdf"), b"plan").unwrap();
+        std::fs::write(folder.join("Plans.txt"), b"plans").unwrap();
+        std::fs::write(folder.join(".hidden"), b"").unwrap();
+        let typed = |name: &str| format!("{}{MAIN_SEPARATOR_STR}{name}", folder.display());
+
+        let (path, size) = attachable(&typed("plan.pdf"), Vec::new()).await.unwrap();
+        assert_eq!((path, size), (folder.join("plan.pdf"), 4));
+        let missing = attachable(&typed("gone.pdf"), Vec::new())
+            .await
+            .unwrap_err();
+        assert!(missing.starts_with("Cannot attach "), "{missing}");
+        let folder_refused = attachable(&typed("notes"), Vec::new()).await.unwrap_err();
+        assert!(folder_refused.contains("regular file"), "{folder_refused}");
+
+        // A folder ends in a separator; dotted names come only when asked.
+        assert_eq!(
+            completions(&typed("n")),
+            [format!("{}{MAIN_SEPARATOR_STR}", typed("notes"))]
+        );
+        assert!(
+            completions(&typed(""))
+                .iter()
+                .all(|name| !name.contains(".hidden"))
+        );
+        assert_eq!(completions(&typed(".h")), [typed(".hidden")]);
+        let plans = completions(&typed("pl"));
+        if cfg!(windows) {
+            assert_eq!(plans, [typed("Plans.txt"), typed("plan.pdf")]);
+        } else {
+            assert_eq!(plans, [typed("plan.pdf")]);
+        }
+        assert!(completions(&typed("zz")).is_empty());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_tilde_names_the_home_folder() {
+        let home = directories::BaseDirs::new()
+            .unwrap()
+            .home_dir()
+            .to_path_buf();
+        assert_eq!(typed_path("~"), home);
+        assert_eq!(typed_path(" ~/notes.txt "), home.join("notes.txt"));
+        assert_eq!(typed_path("plain.txt"), PathBuf::from("plain.txt"));
+        assert_eq!(typed_path("~other"), PathBuf::from("~other"));
+    }
+
+    #[tokio::test]
     async fn quitting_waits_for_a_message_on_its_way() {
         let (sender, mut answers) = mpsc::unbounded_channel();
         let mut tasks = Tasks::default();
@@ -468,6 +648,7 @@ mod tests {
             bcc: Vec::new(),
             subject: "Plans".into(),
             body: "See you there.".into(),
+            attachments: Vec::new(),
         };
         tasks.run(Effect::Send(outgoing), &mailbox, &sender);
         assert!(tasks.busy());

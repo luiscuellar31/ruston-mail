@@ -5,10 +5,12 @@
 use super::editor::Editor;
 use super::reading::Answerable;
 use crate::mailbox::{Outgoing, OutgoingKind};
+use crate::terminal::screen_line;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ruston_core::mail::recipients::{Domains, recipients};
 use ruston_core::{Quote, RecipientProtection};
 use std::cell::Cell;
+use std::path::{Path, PathBuf};
 
 /// What the editor says when Proton may have sent the message or may not:
 /// sending it again could deliver it twice.
@@ -84,11 +86,40 @@ pub(crate) enum Checked {
 }
 
 /// What a key asks of the interface beyond the message itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Asked {
     Nothing,
     Close,
     Send,
+    /// To check the file the path typed names, and attach it.
+    Attach(String),
+    /// To find the names the path typed may go on as.
+    Complete(String),
+}
+
+/// The files listed over the message while Ctrl+A has them open: the path
+/// typed to attach one, a file chosen to take away, the names the path may
+/// go on as, and what went wrong.
+#[derive(Debug, Default)]
+pub(crate) struct Files {
+    pub(crate) path: Editor,
+    /// Which of the files listed is chosen, or none while a path is typed.
+    pub(crate) chosen: Option<usize>,
+    /// The names the path may go on as, once Tab found several.
+    pub(crate) matches: Vec<String>,
+    pub(crate) notice: Option<String>,
+}
+
+/// A file the message carries, as the attachments list it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Listed {
+    /// Its name, safe to draw.
+    pub(crate) name: String,
+    pub(crate) size: u64,
+    /// Whether it is the original's, which a forward carries.
+    pub(crate) original: bool,
+    /// Whether the forward leaves it out.
+    pub(crate) left_out: bool,
 }
 
 /// A message being written.
@@ -104,6 +135,10 @@ pub(crate) struct Compose {
     /// Leaving them as they were is not writing.
     opened_to: String,
     opened_cc: String,
+    /// Files of this computer it carries, with their sizes.
+    pub(crate) attached: Vec<(PathBuf, u64)>,
+    /// The files it carries, while listed over it.
+    pub(crate) files: Option<Files>,
     pub(crate) to: Editor,
     pub(crate) cc: Editor,
     pub(crate) bcc: Editor,
@@ -132,6 +167,8 @@ impl Compose {
             answering: None,
             opened_to: String::new(),
             opened_cc: String::new(),
+            attached: Vec::new(),
+            files: None,
             to: Editor::default(),
             cc: Editor::default(),
             bcc: Editor::default(),
@@ -173,7 +210,11 @@ impl Compose {
                 answering.cc.join(", "),
             ),
             AnswerKind::Forward => (
-                OutgoingKind::Forward { message_id, quote },
+                OutgoingKind::Forward {
+                    message_id,
+                    quote,
+                    leave_out: Vec::new(),
+                },
                 String::new(),
                 String::new(),
             ),
@@ -241,6 +282,156 @@ impl Compose {
         }
     }
 
+    /// The files it carries: those attached, then a forward's of the
+    /// original, saying which the forward leaves out.
+    pub(crate) fn listed(&self) -> Vec<Listed> {
+        let attached = self.attached.iter().map(|(path, size)| Listed {
+            name: file_name(path),
+            size: *size,
+            original: false,
+            left_out: false,
+        });
+        let (forwarded, leave_out) = match (&self.kind, &self.answering) {
+            (OutgoingKind::Forward { leave_out, .. }, Some(answering)) => {
+                (answering.files.as_slice(), leave_out.as_slice())
+            }
+            _ => (&[][..], &[][..]),
+        };
+        let originals = forwarded.iter().map(|file| Listed {
+            name: file.name.clone(),
+            size: file.size,
+            original: true,
+            left_out: leave_out.contains(&file.id),
+        });
+        attached.chain(originals).collect()
+    }
+
+    /// Takes away the file listed at `index`: an attached one goes, and a
+    /// forward's of the original is left out, or put back.
+    fn take_away(&mut self, index: usize) {
+        if index < self.attached.len() {
+            self.attached.remove(index);
+            return;
+        }
+        let Some(id) = self
+            .answering
+            .as_ref()
+            .and_then(|answering| answering.files.get(index - self.attached.len()))
+            .map(|file| file.id.clone())
+        else {
+            return;
+        };
+        if let OutgoingKind::Forward { leave_out, .. } = &mut self.kind {
+            match leave_out.iter().position(|left| *left == id) {
+                Some(at) => {
+                    leave_out.remove(at);
+                }
+                None => leave_out.push(id),
+            }
+        }
+    }
+
+    /// What a key does while the files are listed over the message: it
+    /// types the path of one to attach, Tab completes it and Enter attaches
+    /// it; Up and Down choose a file listed, which Delete takes away; Esc
+    /// puts the list away.
+    fn files_key(&mut self, key: &KeyEvent, ctrl: bool) -> Asked {
+        let listed = self.listed().len();
+        let Some(files) = self.files.as_mut() else {
+            return Asked::Nothing;
+        };
+        let mut take_away = None;
+        match key.code {
+            KeyCode::Esc => {
+                self.files = None;
+                return Asked::Nothing;
+            }
+            KeyCode::Tab => {
+                files.chosen = None;
+                return Asked::Complete(files.path.text());
+            }
+            KeyCode::Enter if files.chosen.is_none() && !files.path.is_blank() => {
+                return Asked::Attach(files.path.text());
+            }
+            KeyCode::Up => {
+                files.chosen = match files.chosen {
+                    None => listed.checked_sub(1),
+                    Some(at) => Some(at.saturating_sub(1)),
+                };
+            }
+            KeyCode::Down => {
+                files.chosen = files
+                    .chosen
+                    .and_then(|at| (at + 1 < listed).then_some(at + 1));
+            }
+            KeyCode::Delete | KeyCode::Backspace if files.chosen.is_some() => {
+                take_away = files.chosen;
+            }
+            KeyCode::Backspace => files.path.backspace(),
+            KeyCode::Delete => files.path.delete(),
+            KeyCode::Left => files.path.left(),
+            KeyCode::Right => files.path.right(),
+            KeyCode::Home => files.path.home(false),
+            KeyCode::End => files.path.end(false),
+            KeyCode::Char(c) if !ctrl => {
+                files.chosen = None;
+                files.matches.clear();
+                files.path.insert(c);
+            }
+            _ => return Asked::Nothing,
+        }
+        files.notice = None;
+        if let Some(at) = take_away {
+            self.take_away(at);
+            let left = self.listed().len();
+            if let Some(files) = self.files.as_mut() {
+                files.chosen = (left > 0).then(|| at.min(left - 1));
+            }
+        }
+        Asked::Nothing
+    }
+
+    /// Lists `path`, `size` bytes, among the files the message carries,
+    /// once checked, or says what keeps it from going.
+    pub(crate) fn attached(&mut self, checked: Result<(PathBuf, u64), String>) {
+        let Some(files) = self.files.as_mut() else {
+            return;
+        };
+        match checked {
+            Ok((path, size)) => {
+                *files = Files::default();
+                if !self.attached.iter().any(|(listed, _)| *listed == path) {
+                    self.attached.push((path, size));
+                }
+            }
+            Err(why) => files.notice = Some(why),
+        }
+    }
+
+    /// Goes on with the path `typed` as the names `matches` say: to the one
+    /// that fits, or as far as several share, listing them. A path typed on
+    /// meanwhile is left as it is.
+    pub(crate) fn completed(&mut self, typed: &str, matches: Vec<String>) {
+        let Some(files) = self
+            .files
+            .as_mut()
+            .filter(|files| files.path.text() == typed)
+        else {
+            return;
+        };
+        match matches.as_slice() {
+            [] => files.notice = Some("No file or folder there begins so.".to_owned()),
+            [only] => {
+                files.path = Editor::with(only);
+                files.matches.clear();
+            }
+            several => {
+                files.path = Editor::with(&shared_start(several));
+                files.matches = several.to_vec();
+            }
+        }
+    }
+
     pub(crate) fn field(&self, field: Field) -> &Editor {
         match field {
             Field::To => &self.to,
@@ -276,7 +467,8 @@ impl Compose {
     /// Whether nothing was written, so closing it loses nothing: a reply
     /// still addressed as it opened is untouched.
     pub(crate) fn untouched(&self) -> bool {
-        self.to.text().trim() == self.opened_to.trim()
+        self.attached.is_empty()
+            && self.to.text().trim() == self.opened_to.trim()
             && self.cc.text().trim() == self.opened_cc.trim()
             && [&self.bcc, &self.subject, &self.body]
                 .iter()
@@ -288,7 +480,9 @@ impl Compose {
     /// it; Ctrl+Enter, Proton Mail's key, sends it, and so does Ctrl+S,
     /// since many terminals send Ctrl+Enter as Enter alone and some as
     /// Ctrl+J. Ctrl+Q puts the original under an answer or leaves it out.
-    /// Nothing changes it while it is on its way.
+    /// Ctrl+A, as Proton Mail's Ctrl+Shift+A, which many terminals cannot
+    /// tell from it, lists the files it carries, to attach more. Nothing
+    /// changes it while it is on its way.
     pub(crate) fn key(&mut self, key: &KeyEvent) -> Asked {
         if self.sending == Sending::InFlight {
             return Asked::Nothing;
@@ -296,7 +490,14 @@ impl Compose {
         // Windows reports what AltGr types as Ctrl with Alt.
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL)
             && !key.modifiers.contains(KeyModifiers::ALT);
+        if self.files.is_some() {
+            return self.files_key(key, ctrl);
+        }
         match key.code {
+            KeyCode::Char('a' | 'A') if ctrl => {
+                self.files = Some(Files::default());
+                return Asked::Nothing;
+            }
             KeyCode::Esc => return Asked::Close,
             KeyCode::Char('c') if ctrl => return Asked::Close,
             KeyCode::Enter if ctrl => return Asked::Send,
@@ -380,12 +581,38 @@ impl Compose {
             bcc: bcc.accepted,
             subject: self.subject.text().trim().to_owned(),
             body: self.body.text(),
+            attachments: self.attached.iter().map(|(path, _)| path.clone()).collect(),
         })
     }
 }
 
+/// The name of the file at `path`, safe to draw.
+fn file_name(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+    screen_line(&name)
+}
+
+/// How far all of `words` begin alike, in whole characters.
+fn shared_start(words: &[String]) -> String {
+    let Some((first, rest)) = words.split_first() else {
+        return String::new();
+    };
+    let mut end = first.len();
+    for word in rest {
+        end = first
+            .char_indices()
+            .zip(word.chars())
+            .find(|((_, a), b)| a != b)
+            .map_or(end.min(word.len()), |((at, _), _)| at.min(end));
+    }
+    first[..end].to_owned()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::reading::ReadingAttachment;
     use super::*;
 
     fn press(compose: &mut Compose, code: KeyCode) -> Asked {
@@ -500,6 +727,7 @@ mod tests {
                 bcc: vec!["alex@example.test".into()],
                 subject: "Plans".into(),
                 body: "Hi".into(),
+                attachments: Vec::new(),
             }
         );
         // The same person in two fields is looked up once.
@@ -519,7 +747,12 @@ mod tests {
             cc: vec!["sam@example.test".into()],
             redirected_from: None,
             opened: true,
-            files: vec!["plan.pdf".into()],
+            files: vec![ReadingAttachment {
+                message_id: "m1".into(),
+                id: "a1".into(),
+                name: "plan.pdf".into(),
+                size: 24_576,
+            }],
         }
     }
 
@@ -571,6 +804,76 @@ mod tests {
         let mut reply = Compose::answer("me@example.test".into(), AnswerKind::Reply, unopened);
         ctrl(&mut reply, KeyCode::Char('q'));
         assert_eq!(reply.kind.quote(), Quote::Original);
+    }
+
+    #[test]
+    fn ctrl_a_lists_the_files_to_attach_more_or_take_one_away() {
+        let mut compose =
+            Compose::answer("me@example.test".into(), AnswerKind::Forward, answering());
+        assert_eq!(ctrl(&mut compose, KeyCode::Char('a')), Asked::Nothing);
+        assert!(compose.files.is_some());
+        // Keys type the path; Tab asks to complete it, Enter to attach it.
+        write(&mut compose, "~/re");
+        assert_eq!(
+            press(&mut compose, KeyCode::Tab),
+            Asked::Complete("~/re".into())
+        );
+        compose.completed("~/re", vec!["~/report.pdf".into(), "~/reports/".into()]);
+        let files = compose.files.as_ref().unwrap();
+        assert_eq!(files.path.text(), "~/report");
+        assert_eq!(files.matches.len(), 2);
+        // Completions for a path typed on since come too late.
+        write(&mut compose, ".");
+        compose.completed("~/report", vec!["~/report.pdf".into()]);
+        assert_eq!(compose.files.as_ref().unwrap().path.text(), "~/report.");
+        compose.completed("~/report.", vec!["~/report.pdf".into()]);
+        assert_eq!(compose.files.as_ref().unwrap().path.text(), "~/report.pdf");
+        assert_eq!(
+            press(&mut compose, KeyCode::Enter),
+            Asked::Attach("~/report.pdf".into())
+        );
+        compose.attached(Err("Cannot attach ~/report.pdf: gone".into()));
+        assert_eq!(
+            compose.files.as_ref().unwrap().notice.as_deref(),
+            Some("Cannot attach ~/report.pdf: gone")
+        );
+        compose.attached(Ok((PathBuf::from("/home/me/report.pdf"), 1_536)));
+        assert!(compose.files.as_ref().unwrap().path.is_blank());
+        assert!(!compose.untouched());
+        let listed = compose.listed();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|file| (file.name.as_str(), file.original, file.left_out))
+                .collect::<Vec<_>>(),
+            [("report.pdf", false, false), ("plan.pdf", true, false)]
+        );
+        // Up chooses the last file; Delete leaves the original's out, then
+        // puts it back; on an attached one, it takes it away.
+        press(&mut compose, KeyCode::Up);
+        assert_eq!(compose.files.as_ref().unwrap().chosen, Some(1));
+        press(&mut compose, KeyCode::Delete);
+        assert!(compose.listed()[1].left_out);
+        press(&mut compose, KeyCode::Up);
+        press(&mut compose, KeyCode::Delete);
+        assert_eq!(compose.listed().len(), 1);
+        assert_eq!(compose.files.as_ref().unwrap().chosen, Some(0));
+        // Typing goes back to the path; Esc puts the list away.
+        write(&mut compose, "x");
+        assert_eq!(compose.files.as_ref().unwrap().chosen, None);
+        press(&mut compose, KeyCode::Esc);
+        assert!(compose.files.is_none());
+        compose.to = Editor::with("sam@example.test");
+        let outgoing = compose.ready().unwrap();
+        assert!(outgoing.attachments.is_empty());
+        assert_eq!(
+            outgoing.kind,
+            OutgoingKind::Forward {
+                message_id: "m1".into(),
+                quote: Quote::Original,
+                leave_out: vec!["a1".into()],
+            }
+        );
     }
 
     #[test]

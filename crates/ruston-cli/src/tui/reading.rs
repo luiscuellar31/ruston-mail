@@ -51,8 +51,8 @@ pub(crate) struct Answerable {
     pub(crate) redirected_from: Option<String>,
     /// Whether it opened: only then can an answer quote it.
     pub(crate) opened: bool,
-    /// The names of the files a forward carries, safe to draw.
-    pub(crate) files: Vec<String>,
+    /// The files a forward carries, inline ones aside, unless left out.
+    pub(crate) files: Vec<ReadingAttachment>,
 }
 
 /// A conversation as the reader shows it.
@@ -159,30 +159,39 @@ fn answerable(messages: &[ConversationMessage], own: &[AddressInfo]) -> Option<A
             .iter()
             .any(|label| label == label_ids::DRAFTS || label == label_ids::ALL_DRAFTS)
     };
-    let (meta, reply_tos, files, opened): (&MessageMetadata, &[Recipient], Vec<String>, bool) =
-        messages
-            .iter()
-            .rev()
-            .map(|message| match message {
-                ConversationMessage::Opened(message) => (
-                    &message.meta,
-                    message.reply_tos.as_slice(),
-                    message
-                        .attachments
-                        .iter()
-                        .filter(|attachment| !attachment.is_inline())
-                        .map(|attachment| screen_line(&attachment.name))
-                        .collect(),
-                    true,
-                ),
-                ConversationMessage::Unreadable(message) => (
-                    &message.meta,
-                    message.reply_tos.as_slice(),
-                    Vec::new(),
-                    false,
-                ),
-            })
-            .find(|(meta, ..)| !draft(meta))?;
+    let (meta, reply_tos, files, opened): (
+        &MessageMetadata,
+        &[Recipient],
+        Vec<ReadingAttachment>,
+        bool,
+    ) = messages
+        .iter()
+        .rev()
+        .map(|message| match message {
+            ConversationMessage::Opened(message) => (
+                &message.meta,
+                message.reply_tos.as_slice(),
+                message
+                    .attachments
+                    .iter()
+                    .filter(|attachment| !attachment.is_inline())
+                    .map(|attachment| ReadingAttachment {
+                        message_id: message.meta.id.clone(),
+                        id: attachment.id.clone(),
+                        name: screen_line(&attachment.name),
+                        size: attachment.size,
+                    })
+                    .collect(),
+                true,
+            ),
+            ConversationMessage::Unreadable(message) => (
+                &message.meta,
+                message.reply_tos.as_slice(),
+                Vec::new(),
+                false,
+            ),
+        })
+        .find(|(meta, ..)| !draft(meta))?;
     let emails: Vec<String> = own.iter().map(|address| address.email.clone()).collect();
     let recipients = reply_recipients(meta, reply_tos, &emails);
     let from = own
