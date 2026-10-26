@@ -718,11 +718,15 @@ instead of an unknown outcome.
   verdict and body as `conversations read` shows it, inside the task that
   loads it, since a large HTML body takes a while. It also notes where each
   body quotes another message, in lines that start with `>`, which the view
-  folds into a line each, as the desktop does, until `z` shows them. Once the
-  reader shows an unread conversation, the state asks for it to be marked
-  read, as the desktop does, unless `tui --keep-unread` says not to; once
-  Proton confirms it, the row shows it read and each place it was unread in
-  counts one fewer.
+  folds into a line each, as the desktop does, until `z` shows them, and
+  gathers the web addresses the bodies link to, each read by `url` so it is
+  listed as it would open, a host in another script in ASCII. `o` lists them
+  over the panes; one opens only after a yes, through the browser opener
+  `hv.rs` uses, with no terminal input to read and its opener waited for on a
+  thread of its own. Once the reader shows an unread conversation, the state
+  asks for it to be marked read, as the desktop does, unless
+  `tui --keep-unread` says not to; once Proton confirms it, the row shows it
+  read and each place it was unread in counts one fewer.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with

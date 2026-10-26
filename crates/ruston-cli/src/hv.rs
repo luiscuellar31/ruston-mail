@@ -456,8 +456,9 @@ fn open_browser(url: &str) -> std::io::Result<()> {
     browser_command(url)?.spawn().map(|_| ())
 }
 
-/// The system's way to open `url` in the default browser, from core.
-fn browser_command(url: &str) -> std::io::Result<std::process::Command> {
+/// The system's way to open `url` in the default browser, from core; the
+/// terminal interface opens links with it too.
+pub(crate) fn browser_command(url: &str) -> std::io::Result<std::process::Command> {
     let mut cmd = ruston_core::browser::opener()?;
     cmd.arg(url);
     cmd.stdout(std::process::Stdio::null())

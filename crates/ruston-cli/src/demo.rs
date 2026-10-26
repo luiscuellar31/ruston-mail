@@ -189,7 +189,7 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
                 flags: 0,
                 expiration_time: None,
             },
-            body: "Hi Demo,\n\nI attached the first proposal for the translation workflow. It covers string extraction, reviewer assignment, and the release cutoff.\n\nCould you check the engineering steps?\n\nThanks,\nRiley\n".to_string(),
+            body: "Hi Demo,\n\nI attached the first proposal for the translation workflow. It covers string extraction, reviewer assignment, and the release cutoff. The glossary we agreed on is at https://example.com/translation-glossary.\n\nCould you check the engineering steps?\n\nThanks,\nRiley\n".to_string(),
             mime_type: "text/plain".to_string(),
             attachments: vec![Attachment {
                 id: "att-demo-01".to_string(),

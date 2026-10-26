@@ -1,8 +1,8 @@
 //! What the reader shows of a conversation: each message's headers, its
 //! signature's verdict and its body as `conversations read` shows it, with
-//! every line safe to draw, and where its quoted passages are. It is built
-//! once, in the task that loads the conversation, since turning a large HTML
-//! body into text takes a while.
+//! every line safe to draw, where its quoted passages are and the web
+//! addresses it links to. It is built once, in the task that loads the
+//! conversation, since turning a large HTML body into text takes a while.
 
 use crate::render;
 use crate::terminal::{screen_line, screen_text};
@@ -16,6 +16,9 @@ const SEPARATOR: &str = "──────────────────�
 /// shorter one would take about as many rows folded.
 const FOLDED_MIN_LINES: usize = 3;
 
+/// How many links of a conversation the reader lists at most.
+const MAX_LINKS: usize = 100;
+
 /// A conversation as the reader shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Reading {
@@ -27,12 +30,16 @@ pub(crate) struct Reading {
     /// The ranges of `lines` that quote another message, in order, which
     /// the reader folds into a line each until asked to show them.
     pub(crate) quotes: Vec<Range<usize>>,
+    /// The web addresses its bodies link to, each once, in order: what `o`
+    /// lists to open one.
+    pub(crate) links: Vec<String>,
 }
 
 impl Reading {
     pub(crate) fn new(conversation: &Conversation, messages: &[ConversationMessage]) -> Self {
         let mut lines = Vec::new();
         let mut quotes = Vec::new();
+        let mut links: Vec<String> = Vec::new();
         for (index, message) in messages.iter().enumerate() {
             if index > 0 {
                 lines.extend([String::new(), SEPARATOR.to_owned(), String::new()]);
@@ -53,6 +60,11 @@ impl Reading {
                             .into_iter()
                             .map(|quote| start + quote.start..start + quote.end),
                     );
+                    for link in web_links(&body) {
+                        if links.len() < MAX_LINKS && !links.contains(&link) {
+                            links.push(link);
+                        }
+                    }
                 }
                 ConversationMessage::Unreadable(message) => {
                     headers(&mut lines, &message.meta, "not decrypted");
@@ -69,8 +81,48 @@ impl Reading {
             subject: screen_line(render::subject_or_empty(&conversation.subject)),
             lines,
             quotes,
+            links,
         }
     }
+}
+
+/// The web addresses in `text`, written out or left by the HTML renderer as
+/// `[words](address)`: each from `http://` or `https://` to the first space,
+/// quote or square bracket, less the punctuation that ends a sentence around
+/// it, as `url` reads it, so the address shown is the one that opens, its
+/// host in ASCII. Words that are an address themselves count as one too.
+fn web_links(text: &str) -> Vec<String> {
+    let mut links = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("http") {
+        let start = from + found;
+        let rest = &text[start..];
+        let end = rest
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`' | '[' | ']')
+            })
+            .unwrap_or(rest.len());
+        from = start + end.max(1);
+        let mut address = &rest[..end];
+        while let Some(last) = address.chars().last() {
+            // A closing bracket ends the address unless it closes one of its own.
+            let unopened =
+                last == ')' && address.matches('(').count() < address.matches(')').count();
+            if !(unopened || matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | ']' | '}' | '*')) {
+                break;
+            }
+            address = &address[..address.len() - last.len_utf8()];
+        }
+        if !(address.starts_with("http://") || address.starts_with("https://")) {
+            continue;
+        }
+        if let Ok(url) = url::Url::parse(address)
+            && matches!(url.scheme(), "http" | "https")
+        {
+            links.push(url.to_string());
+        }
+    }
+    links
 }
 
 /// The passages of a message's `body` that quote another message: runs of
@@ -207,6 +259,7 @@ mod tests {
             opened("sam@example.test", "> all\n> of it\n\n> quoted"),
         ];
         let reading = Reading::new(&Conversation::default(), &messages);
+        assert!(reading.links.is_empty());
         let at = |text: &str| reading.lines.iter().position(|line| line == text).unwrap();
         let (first, second) = (at("> Shall we meet?"), at("> x"));
         // The blank line between two quoted ones belongs to the passage; the
@@ -214,5 +267,67 @@ mod tests {
         assert_eq!(reading.quotes, [first..first + 4, second..second + 3]);
         assert_eq!(reading.lines[first + 3], "> Tuesday works.");
         assert_eq!(reading.lines[first + 4], "");
+    }
+
+    #[test]
+    fn links_are_the_web_addresses_of_the_bodies_as_they_open() {
+        let text = "See https://example.test/a, the [report](https://example.test/r%281%29) \
+                    and (https://example.test/b). Also http://xn--bcher-kva.example/ and \
+                    https://bücher.example/x, mailto:me@example.test, javascript:alert(1), \
+                    httpd, **https://example.test/c**, \
+                    [https://example.test/d](https://example.test/d) and \
+                    https://en.wikipedia.org/wiki/Rust_(programming_language) too.";
+        assert_eq!(
+            web_links(text),
+            [
+                "https://example.test/a",
+                "https://example.test/r%281%29",
+                "https://example.test/b",
+                "http://xn--bcher-kva.example/",
+                "https://xn--bcher-kva.example/x",
+                "https://example.test/c",
+                "https://example.test/d",
+                "https://example.test/d",
+                "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_html_link_lists_where_it_goes_as_well_as_what_it_says() {
+        let html = "<p>Pay at <a href=\"https://real.example/pay\">https://bank.example</a></p>";
+        let mut message = opened("alex@example.test", html);
+        if let ConversationMessage::Opened(full) = &mut message {
+            full.mime_type = "text/html".into();
+        }
+        let reading = Reading::new(&Conversation::default(), &[message]);
+        let text = reading.lines.join(
+            "
+",
+        );
+        assert!(
+            text.contains("[https://bank.example](https://real.example/pay)"),
+            "{text}"
+        );
+        assert_eq!(
+            reading.links,
+            ["https://bank.example/", "https://real.example/pay"]
+        );
+    }
+
+    #[test]
+    fn a_conversation_lists_each_link_of_its_bodies_once() {
+        let messages = [
+            opened("alex@example.test", "Plans: https://example.test/plan"),
+            opened(
+                "sam@example.test",
+                "> Plans: https://example.test/plan\nNotes: https://example.test/notes",
+            ),
+        ];
+        let reading = Reading::new(&Conversation::default(), &messages);
+        assert_eq!(
+            reading.links,
+            ["https://example.test/plan", "https://example.test/notes"]
+        );
     }
 }

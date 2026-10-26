@@ -110,6 +110,17 @@ async fn run_loop(
     Ok(())
 }
 
+/// Opens `url` in the default browser, as signing in opens a challenge,
+/// with nothing to read from the terminal the interface holds, and waits for
+/// the opener on a thread of its own, so it leaves nothing behind.
+fn open_link(url: &str) -> io::Result<()> {
+    let mut opener = crate::hv::browser_command(url)?
+        .stdin(std::process::Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || opener.wait());
+    Ok(())
+}
+
 /// Whether `event` is Ctrl+Z, which suspends the interface where the shell
 /// has job control, as it suspends any program there. In raw mode the
 /// terminal sends it as a key instead of stopping the process.
@@ -150,14 +161,15 @@ impl Tasks {
     /// Runs `effect` as [`spawn`] does. A read aborts the task still running
     /// one of its kind, whose answer would come too late or be overtaken;
     /// that is safe, and a token refresh that one of them starts finishes on
-    /// a task of its own. Marking read changes the account, so it always
-    /// runs to its end: stopped halfway, nobody would know whether it did.
+    /// a task of its own. Marking read changes the account, and opening a
+    /// link starts a browser, so each always runs to its end: stopped
+    /// halfway, nobody would know whether it happened.
     fn run(&mut self, effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) {
         let running = match effect {
             Effect::Places => &mut self.places,
             Effect::Conversations { .. } => &mut self.list,
             Effect::Conversation { .. } => &mut self.conversation,
-            Effect::MarkRead { .. } => {
+            Effect::MarkRead { .. } | Effect::OpenLink { .. } => {
                 spawn(effect, mailbox, answers);
                 return;
             }
@@ -195,6 +207,9 @@ fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) 
                     id,
                     result: result.map_err(|error| error.to_string()),
                 }
+            }
+            Effect::OpenLink { url } => {
+                Message::LinkOpened(open_link(&url).map_err(|error| error.to_string()))
             }
             // The reading is made here, off the loop: a large HTML body
             // takes a while to turn into text.

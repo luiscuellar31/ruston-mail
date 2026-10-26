@@ -4,7 +4,7 @@
 //! Every piece of text that comes with the mail goes through
 //! `terminal::screen_line` first.
 
-use super::app::{App, Pane};
+use super::app::{App, LinkPick, Pane};
 use crate::render;
 use crate::terminal::screen_line;
 use ratatui::Frame;
@@ -26,13 +26,14 @@ const FOLDERS_WIDTH: u16 = 24;
 const SENDER_WIDTH: usize = 18;
 
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 10] = [
+const KEYS: [(&str, &str); 11] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, arrows", "move, or scroll the reader"),
     ("PageUp, PageDown", "scroll the reader a page"),
     ("g, G, Home, End", "go to the top or the bottom"),
     ("Enter", "open the folder or conversation"),
     ("z", "show or hide quoted text"),
+    ("o", "list the conversation's links to open one"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys, or go back a pane"),
@@ -84,9 +85,58 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         draw_pane(frame, app, theme, app.focus, main);
     }
     draw_status(frame, app, theme, status);
+    if let Some(pick) = app.picking_link {
+        draw_links(frame, app, pick, theme);
+    }
     if app.help {
         draw_keys(frame, theme);
     }
+}
+
+/// The open conversation's links over the panes, the selected one inverted,
+/// or the question whether to open it, with all of its address.
+fn draw_links(frame: &mut Frame, app: &App, pick: LinkPick, theme: &Theme) {
+    let Some(reading) = &app.reading else {
+        return;
+    };
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(100);
+    if pick.confirming {
+        let url = reading.links.get(pick.selected).map_or("", String::as_str);
+        let question = Paragraph::new(vec![
+            Line::raw("Open this link in your browser?"),
+            Line::default(),
+            Line::styled(screen_line(url), theme.accent),
+            Line::default(),
+            Line::raw("y opens it; any other key goes back."),
+        ])
+        .wrap(Wrap { trim: false });
+        let rows = question.line_count(width.saturating_sub(2)) + 2;
+        let area = centered(area, width, u16::try_from(rows).unwrap_or(u16::MAX));
+        let block = Block::bordered()
+            .title(" Open link ")
+            .border_style(theme.accent);
+        frame.render_widget(Clear, area);
+        frame.render_widget(question.block(block), area);
+        return;
+    }
+    let items = reading
+        .links
+        .iter()
+        .enumerate()
+        .map(|(index, url)| ListItem::new(format!("{:>2}. {}", index + 1, screen_line(url))));
+    let rows = u16::try_from(reading.links.len() + 2).unwrap_or(u16::MAX);
+    let area = centered(area, width, rows);
+    let block = Block::bordered()
+        .title(" Links ")
+        .title_bottom(" Enter opens one · Esc closes ")
+        .border_style(theme.accent);
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(pick.selected));
+    frame.render_widget(Clear, area);
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect) {
@@ -454,6 +504,7 @@ mod tests {
             subject: "Plans for May".into(),
             lines: (0..100).map(|n| format!("line {n}")).collect(),
             quotes: Vec::new(),
+            links: Vec::new(),
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(screen.contains("Plans for May"), "{screen}");
@@ -483,6 +534,7 @@ mod tests {
             subject: "Plans".into(),
             lines: lines.map(str::to_owned).to_vec(),
             quotes: vec![2..6, 8..11],
+            links: Vec::new(),
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         for shown in [
@@ -512,6 +564,7 @@ mod tests {
             subject: "Long".into(),
             lines: vec!["word ".repeat(60)],
             quotes: Vec::new(),
+            links: Vec::new(),
         });
         let _ = drawn(120, 30, &app, &Theme::new(false));
         // 300 columns wrap into several rows of the 46-column pane.
@@ -541,6 +594,47 @@ mod tests {
             status.contains("Inbox · 1 of 120 conversation(s)"),
             "{status}"
         );
+    }
+
+    #[test]
+    fn the_links_list_over_the_panes_and_ask_before_one_opens() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.reading = Some(Reading {
+            id: "plans".into(),
+            subject: "Plans".into(),
+            lines: Vec::new(),
+            quotes: Vec::new(),
+            links: vec![
+                "https://example.test/a".into(),
+                "https://xn--bcher-kva.example/\u{1b}[2J".into(),
+            ],
+        });
+        app.picking_link = Some(LinkPick {
+            selected: 1,
+            confirming: false,
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains(" 1. https://example.test/a"), "{screen}");
+        assert!(
+            screen.contains(" 2. https://xn--bcher-kva.example/[2J"),
+            "{screen}"
+        );
+        assert!(screen.contains("Enter opens one"), "{screen}");
+
+        app.picking_link = Some(LinkPick {
+            selected: 1,
+            confirming: true,
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(
+            screen.contains("Open this link in your browser?"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("https://xn--bcher-kva.example/[2J"),
+            "{screen}"
+        );
+        assert!(screen.contains("y opens it"), "{screen}");
     }
 
     #[test]

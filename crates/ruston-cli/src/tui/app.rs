@@ -45,6 +45,14 @@ impl Pane {
     }
 }
 
+/// The open conversation's links listed over the panes: which one is
+/// selected, and whether opening it waits for a yes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LinkPick {
+    pub(crate) selected: usize,
+    pub(crate) confirming: bool,
+}
+
 /// What the interface shows and where the keys go.
 pub(crate) struct App {
     /// Whose mail this is, for the status bar.
@@ -82,6 +90,8 @@ pub(crate) struct App {
     /// Whether an unread conversation is marked read once the reader shows
     /// it, as the desktop marks it; `tui --keep-unread` turns it off.
     pub(crate) marks_read: bool,
+    /// The open conversation's links, while `o` lists them over the panes.
+    pub(crate) picking_link: Option<LinkPick>,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
@@ -109,6 +119,10 @@ pub(crate) enum Message {
     Bottom,
     Open,
     ToggleQuotes,
+    /// Lists the open conversation's links, to open one.
+    ShowLinks,
+    /// Answers yes to the question on screen.
+    Yes,
     Refresh,
     ToggleHelp,
     /// Closes the list of keys, or else goes back a pane.
@@ -128,6 +142,7 @@ pub(crate) enum Message {
         id: String,
         result: Result<(), String>,
     },
+    LinkOpened(Result<(), String>),
 }
 
 /// Work the interface hands out, whose answer comes back as a [`Message`].
@@ -146,6 +161,9 @@ pub(crate) enum Effect {
     MarkRead {
         id: String,
         place: String,
+    },
+    OpenLink {
+        url: String,
     },
 }
 
@@ -169,6 +187,7 @@ impl App {
             scroll: 0,
             show_quotes: false,
             marks_read: true,
+            picking_link: None,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
@@ -193,6 +212,10 @@ impl App {
             Message::Back if self.help => self.help = false,
             // The open list of keys covers the panes, so they keep still.
             _ if self.help && is_key(&message) => {}
+            // So does the list of links, which takes the keys meanwhile.
+            _ if self.picking_link.is_some() && is_key(&message) => {
+                return self.pick_link(&message);
+            }
             // Back from the list or the reader to the pane before it; the
             // folders come first, so nothing is before them.
             Message::Back if self.focus != Pane::Folders => {
@@ -209,6 +232,9 @@ impl App {
             Message::Bottom => self.step(isize::MAX),
             Message::Open => return self.open(),
             Message::ToggleQuotes => self.show_quotes = !self.show_quotes,
+            Message::ShowLinks => self.show_links(),
+            // Nothing on screen waits for a yes.
+            Message::Yes => {}
             Message::Refresh => {
                 let (id, name) = (self.listed_id.clone(), self.listed.clone());
                 return vec![Effect::Places, self.list(id, name)];
@@ -274,6 +300,8 @@ impl App {
             Message::ConversationLoaded { result, .. } => match result {
                 Ok(reading) => {
                     let id = reading.id.clone();
+                    // Links listed for the conversation before are not its.
+                    self.picking_link = None;
                     self.reading = Some(reading);
                     self.scroll = 0;
                     self.notice = None;
@@ -289,7 +317,62 @@ impl App {
             } => {
                 self.notice = Some(format!("Cannot mark the conversation read: {error}"));
             }
+            Message::LinkOpened(Ok(())) => {}
+            Message::LinkOpened(Err(error)) => {
+                self.notice = Some(format!("Cannot open the link: {error}"));
+            }
         }
+        Vec::new()
+    }
+
+    /// Lists the open conversation's links, to open one, or says why not.
+    fn show_links(&mut self) {
+        match &self.reading {
+            Some(reading) if !reading.links.is_empty() => {
+                self.picking_link = Some(LinkPick {
+                    selected: 0,
+                    confirming: false,
+                });
+            }
+            Some(_) => self.notice = Some("This conversation has no links.".to_owned()),
+            None => self.notice = Some("Open a conversation to list its links.".to_owned()),
+        }
+    }
+
+    /// What a key does while the links are listed: move through them, ask
+    /// whether to open the selected one, or put them away. At that question
+    /// only `y` opens it; any other key goes back to the links.
+    fn pick_link(&mut self, message: &Message) -> Vec<Effect> {
+        let (Some(mut pick), Some(reading)) = (self.picking_link, &self.reading) else {
+            self.picking_link = None;
+            return Vec::new();
+        };
+        let last = reading.links.len().saturating_sub(1);
+        if pick.confirming {
+            pick.confirming = false;
+            if matches!(message, Message::Yes)
+                && let Some(url) = reading.links.get(pick.selected)
+            {
+                let url = url.clone();
+                self.picking_link = None;
+                self.notice = Some("Opening the link in your browser…".to_owned());
+                return vec![Effect::OpenLink { url }];
+            }
+        } else {
+            match message {
+                Message::Up => pick.selected = pick.selected.saturating_sub(1),
+                Message::Down => pick.selected = (pick.selected + 1).min(last),
+                Message::Top => pick.selected = 0,
+                Message::Bottom => pick.selected = last,
+                Message::Open => pick.confirming = true,
+                Message::Back | Message::ShowLinks => {
+                    self.picking_link = None;
+                    return Vec::new();
+                }
+                _ => {}
+            }
+        }
+        self.picking_link = Some(pick);
         Vec::new()
     }
 
@@ -438,6 +521,7 @@ fn is_key(message: &Message) -> bool {
             | Message::ConversationsLoaded { .. }
             | Message::ConversationLoaded { .. }
             | Message::MarkedRead { .. }
+            | Message::LinkOpened(_)
     )
 }
 
@@ -477,6 +561,8 @@ impl Message {
             KeyCode::End | KeyCode::Char('G') => Some(Self::Bottom),
             KeyCode::Enter => Some(Self::Open),
             KeyCode::Char('z') => Some(Self::ToggleQuotes),
+            KeyCode::Char('o') => Some(Self::ShowLinks),
+            KeyCode::Char('y') => Some(Self::Yes),
             _ => None,
         }
     }
@@ -620,6 +706,7 @@ mod tests {
             subject: "Plans".into(),
             lines: (0..lines).map(|n| format!("line {n}")).collect(),
             quotes: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -1009,6 +1096,76 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         press(&mut app, KeyCode::Char('?'));
         assert!(!app.help);
+    }
+
+    #[test]
+    fn o_lists_the_links_and_only_a_yes_opens_the_one_selected() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Open a conversation to list its links.")
+        );
+        app.reading = Some(reading(1));
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("This conversation has no links.")
+        );
+
+        let mut linked = reading(1);
+        linked.links = vec![
+            "https://example.test/a".into(),
+            "https://example.test/b".into(),
+        ];
+        app.reading = Some(linked);
+        press(&mut app, KeyCode::Char('o'));
+        // The keys move through the links now, not the folders.
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_place, 0);
+        let asked = LinkPick {
+            selected: 1,
+            confirming: true,
+        };
+        assert!(press(&mut app, KeyCode::Enter).is_empty());
+        assert_eq!(app.picking_link, Some(asked));
+        // Any other key goes back to the links.
+        assert!(press(&mut app, KeyCode::Char('j')).is_empty());
+        assert_eq!(app.picking_link.map(|pick| pick.confirming), Some(false));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            press(&mut app, KeyCode::Char('y')),
+            [Effect::OpenLink {
+                url: "https://example.test/b".into()
+            }]
+        );
+        assert_eq!(app.picking_link, None);
+
+        app.update(Message::LinkOpened(Err("no browser".into())));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Cannot open the link: no browser")
+        );
+        // Esc puts the links away, and y alone asks nothing.
+        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.picking_link, None);
+        assert!(press(&mut app, KeyCode::Char('y')).is_empty());
+    }
+
+    #[test]
+    fn a_conversation_that_loads_puts_away_the_links_of_the_one_before() {
+        let mut app = loaded();
+        let mut linked = reading(1);
+        linked.links = vec!["https://example.test/a".into()];
+        app.reading = Some(linked);
+        press(&mut app, KeyCode::Char('o'));
+        app.update(Message::ConversationLoaded {
+            request: 0,
+            result: Ok(reading(2)),
+        });
+        assert_eq!(app.picking_link, None);
     }
 
     #[test]
