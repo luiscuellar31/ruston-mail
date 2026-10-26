@@ -416,6 +416,12 @@ impl Client {
         .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?
     }
 
+    /// Waits until no token refresh is under way, so a program about to end
+    /// lets one finish saving the new tokens instead of losing the session.
+    pub async fn settle(&self) {
+        self.http.settled().await;
+    }
+
     /// The primary sending address email.
     pub fn primary_email(&self) -> Option<&str> {
         self.keys.primary_address().map(|a| a.email.as_str())

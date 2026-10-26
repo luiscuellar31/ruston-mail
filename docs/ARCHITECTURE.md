@@ -1050,8 +1050,9 @@ session signs it out, including one found while saving an attachment. That reloa
 only the tokens and the bound API address, never the key passphrase. Once the refresh
 request is sent, the rotation finishes on a task of its own that holds both
 locks, so cancelling the request that needed it, through a view deadline or a
-discarded load, cannot lose the new token pair. A refresh
-answered with 429, a 5xx status or a verification challenge reports that error
+discarded load, cannot lose the new token pair. A program about to end,
+which would cut that task short as well, waits for it with `Client::settle`.
+A refresh answered with 429, a 5xx status or a verification challenge reports that error
 and keeps the session; only a refused refresh token is `Unauthorized`. Signing out of a
 shared profile signs out both frontends. Core runs local session cleanup under
 that lock on a blocking worker before trying remote revocation. The 30-second

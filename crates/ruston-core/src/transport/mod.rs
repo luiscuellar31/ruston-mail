@@ -322,6 +322,13 @@ impl HttpClient {
     pub fn auth_state(&self) -> Arc<RwLock<AuthState>> {
         self.auth.clone()
     }
+
+    /// Waits until no token refresh is under way. A refresh holds the
+    /// tokens until the new pair is stored and saved, on a task of its own
+    /// that a program ending right away would cut short, losing the session.
+    pub async fn settled(&self) {
+        drop(self.auth.read().await);
+    }
     /// A client for requests made after the saved session is gone. It shares
     /// connections and cookies and starts from a copy of the current tokens;
     /// a 401 refreshes them in memory only, never loading or saving the
@@ -795,6 +802,78 @@ mod tests {
 
     fn client(base: &str) -> HttpClient {
         HttpClient::new(base, "Other")
+    }
+
+    #[tokio::test]
+    async fn settled_outlasts_a_request_cut_short_during_its_refresh() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"Code":401,"Error":"expired"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!(
+                        {"Code":1000,"AccessToken":"new-acc","RefreshToken":"new-ref"}
+                    ))
+                    .set_delay(Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+        let c = Arc::new(client(&server.uri()));
+        c.set_tokens(
+            "uid".into(),
+            SecretString::from("old-acc"),
+            SecretString::from("old-ref"),
+        )
+        .await;
+        let request = tokio::spawn({
+            let c = c.clone();
+            async move { c.decode::<ValueResp>(Request::get("/protected")).await }
+        });
+        // Once the refresh is on its way, the request is cut short, as
+        // quitting a program would.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let received = server.received_requests().await.unwrap_or_default();
+                if received.iter().any(|r| r.url.path() == "/auth/v4/refresh") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the refresh was sent");
+        request.abort();
+        tokio::time::timeout(Duration::from_secs(5), c.settled())
+            .await
+            .expect("settled once the refresh ended");
+        let auth = c.auth.read().await;
+        assert_eq!(
+            auth.refresh.as_ref().map(|t| t.expose_secret().to_owned()),
+            Some("new-ref".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn settled_waits_for_a_token_refresh_under_way() {
+        let c = client("http://127.0.0.1:9");
+        // As a refresh holds the tokens until it has saved the new pair.
+        let refreshing = c.auth.clone().write_owned().await;
+        let settled = c.settled();
+        tokio::pin!(settled);
+        let waited = tokio::time::timeout(Duration::from_millis(50), &mut settled).await;
+        assert!(waited.is_err(), "settled before the refresh ended");
+        drop(refreshing);
+        tokio::time::timeout(Duration::from_secs(5), settled)
+            .await
+            .expect("settled once the refresh ended");
     }
 
     #[test]
