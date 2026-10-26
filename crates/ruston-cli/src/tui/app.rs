@@ -163,6 +163,8 @@ pub(crate) enum Message {
         change: Change,
         result: Result<(), String>,
     },
+    /// A task stopped on a bug, saying what it was.
+    Failed(String),
 }
 
 /// Work the interface hands out, whose answer comes back as a [`Message`].
@@ -374,6 +376,9 @@ impl App {
             } => {
                 let (_, failed) = wording(&change);
                 self.notice = Some(format!("{failed}: {error}"));
+            }
+            Message::Failed(error) => {
+                self.notice = Some(format!("Something went wrong: {error}"));
             }
         }
         Vec::new()
@@ -794,6 +799,7 @@ fn is_key(message: &Message) -> bool {
             | Message::MarkedRead { .. }
             | Message::LinkOpened(_)
             | Message::Changed { .. }
+            | Message::Failed(_)
     )
 }
 
@@ -1680,6 +1686,18 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         command(&mut app, "help");
         assert!(app.help);
+    }
+
+    #[test]
+    fn a_task_that_stopped_on_a_bug_says_so() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('?'));
+        // An answer, even with the keys open.
+        app.update(Message::Failed("the renderer broke".into()));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Something went wrong: the renderer broke")
+        );
     }
 
     #[test]

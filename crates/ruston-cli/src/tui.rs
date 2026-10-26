@@ -15,11 +15,13 @@ use crate::terminal;
 use app::{App, Effect, Message};
 use clap::{Args, FromArgMatches};
 use crossterm::event::EventStream;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use reading::Reading;
 use ruston_core::{Client, Error, Result};
 use std::io::{self, IsTerminal};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::thread::ThreadId;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::AbortHandle;
 
@@ -31,8 +33,8 @@ pub(crate) fn has_terminal() -> bool {
 
 /// Opens the interface and runs it until it is closed. Signing in, when no
 /// session is saved, happens first, as text. The terminal is put back as it
-/// was however the interface ends: a panic restores it through the hook
-/// `ratatui::try_init` installs, before the panic is reported.
+/// was however the interface ends: a panic of its loop restores it through
+/// the hook `ratatui::try_init` installs, before the panic is reported.
 pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let mailbox = if ctx.demo {
         Mailbox::demo()
@@ -43,9 +45,25 @@ pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     app.marks_read = !args.keep_unread;
     let theme = view::Theme::from_env();
     let mut terminal = ratatui::try_init()?;
+    report_panics_of(std::thread::current().id());
     let result = run_loop(&mut terminal, &mut app, &theme, &mailbox).await;
     ratatui::restore();
+    // Back to the default hook, which reports any panic as usual.
+    drop(std::panic::take_hook());
     result
+}
+
+/// Reports only the panics of the interface's loop, on `loop_thread`,
+/// through the hook `ratatui::try_init` installs, which puts the terminal
+/// back first. A task that panics answers with a message instead, and the
+/// interface goes on with its screen, which a report would draw over.
+fn report_panics_of(loop_thread: ThreadId) {
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().id() == loop_thread {
+            report(info);
+        }
+    }));
 }
 
 /// The profile's saved session, after signing in as `ruston-cli login` does
@@ -186,53 +204,73 @@ impl Tasks {
 fn spawn(effect: Effect, mailbox: &Mailbox, answers: &UnboundedSender<Message>) -> AbortHandle {
     let (mailbox, answers) = (mailbox.clone(), answers.clone());
     let task = tokio::spawn(async move {
-        let answer = match effect {
-            Effect::Places => {
-                Message::PlacesLoaded(mailbox.places().await.map_err(|error| error.to_string()))
-            }
-            Effect::Conversations {
-                request,
-                place,
-                page,
-            } => Message::ConversationsLoaded {
-                request,
-                page,
-                result: mailbox
-                    .conversations(&place, page)
-                    .await
-                    .map_err(|error| error.to_string()),
-            },
-            Effect::MarkRead { id, place } => {
-                let result = mailbox.change(&id, &place, &Change::Read(true)).await;
-                Message::MarkedRead {
-                    id,
-                    result: result.map_err(|error| error.to_string()),
-                }
-            }
-            Effect::Change { id, place, change } => {
-                let result = mailbox.change(&id, &place, &change).await;
-                Message::Changed {
-                    change,
-                    result: result.map_err(|error| error.to_string()),
-                }
-            }
-            Effect::OpenLink { url } => {
-                Message::LinkOpened(open_link(&url).map_err(|error| error.to_string()))
-            }
-            // The reading is made here, off the loop: a large HTML body
-            // takes a while to turn into text.
-            Effect::Conversation { request, id } => Message::ConversationLoaded {
-                request,
-                result: mailbox
-                    .conversation(&id)
-                    .await
-                    .map(|(conversation, messages)| Reading::new(&conversation, &messages))
-                    .map_err(|error| error.to_string()),
-            },
-        };
+        let answer = guarded(answer(effect, &mailbox)).await;
         let _ = answers.send(answer);
     });
     task.abort_handle()
+}
+
+/// The message `work` answers with, or, should it panic, one that says
+/// what went wrong: a bug then stops one task, not the interface.
+async fn guarded(work: impl Future<Output = Message>) -> Message {
+    AssertUnwindSafe(work)
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            let said = panic
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_owned())
+                .or_else(|| panic.downcast_ref::<String>().cloned());
+            Message::Failed(said.unwrap_or_else(|| "a task stopped".to_owned()))
+        })
+}
+
+/// What `effect` comes to once done, as the message that answers it.
+async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
+    match effect {
+        Effect::Places => {
+            Message::PlacesLoaded(mailbox.places().await.map_err(|error| error.to_string()))
+        }
+        Effect::Conversations {
+            request,
+            place,
+            page,
+        } => Message::ConversationsLoaded {
+            request,
+            page,
+            result: mailbox
+                .conversations(&place, page)
+                .await
+                .map_err(|error| error.to_string()),
+        },
+        Effect::MarkRead { id, place } => {
+            let result = mailbox.change(&id, &place, &Change::Read(true)).await;
+            Message::MarkedRead {
+                id,
+                result: result.map_err(|error| error.to_string()),
+            }
+        }
+        Effect::Change { id, place, change } => {
+            let result = mailbox.change(&id, &place, &change).await;
+            Message::Changed {
+                change,
+                result: result.map_err(|error| error.to_string()),
+            }
+        }
+        Effect::OpenLink { url } => {
+            Message::LinkOpened(open_link(&url).map_err(|error| error.to_string()))
+        }
+        // The reading is made here, off the loop: a large HTML body
+        // takes a while to turn into text.
+        Effect::Conversation { request, id } => Message::ConversationLoaded {
+            request,
+            result: mailbox
+                .conversation(&id)
+                .await
+                .map(|(conversation, messages)| Reading::new(&conversation, &messages))
+                .map_err(|error| error.to_string()),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +299,21 @@ mod tests {
         }
         seen.sort();
         assert_eq!(seen, ["conversation 2", "places"]);
+    }
+
+    async fn panics(text: &str) -> Message {
+        panic!("{text}")
+    }
+
+    #[tokio::test]
+    async fn a_task_that_panics_answers_with_what_went_wrong() {
+        let answer = guarded(panics("the renderer broke")).await;
+        assert!(
+            matches!(&answer, Message::Failed(said) if said == "the renderer broke"),
+            "{answer:?}"
+        );
+        let answer = guarded(async { Message::Quit }).await;
+        assert!(matches!(answer, Message::Quit), "{answer:?}");
     }
 
     #[tokio::test]
