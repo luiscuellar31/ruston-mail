@@ -346,6 +346,18 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
                     context_num_unread: Some(0),
                     context_time: Some(now - 1800),
                 },
+                ConversationLabel {
+                    id: label_ids::STARRED.to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(1),
+                    context_time: Some(now - 3600),
+                },
+                ConversationLabel {
+                    id: "label-demo-work".to_string(),
+                    context_num_messages: Some(2),
+                    context_num_unread: Some(1),
+                    context_time: Some(now - 1800),
+                },
             ],
             expiration_time: None,
         },
@@ -358,12 +370,20 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
             num_attachments: 1,
             senders: vec![riley.clone()],
             recipients: vec![user_recipient.clone()],
-            labels: vec![ConversationLabel {
-                id: label_ids::INBOX.to_string(),
-                context_num_messages: Some(1),
-                context_num_unread: Some(1),
-                context_time: Some(now - 7200),
-            }],
+            labels: vec![
+                ConversationLabel {
+                    id: label_ids::INBOX.to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(1),
+                    context_time: Some(now - 7200),
+                },
+                ConversationLabel {
+                    id: "label-demo-work".to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(1),
+                    context_time: Some(now - 7200),
+                },
+            ],
             expiration_time: None,
         },
         Conversation {
@@ -409,12 +429,20 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
             num_attachments: 0,
             senders: vec![robin.clone()],
             recipients: vec![user_recipient.clone()],
-            labels: vec![ConversationLabel {
-                id: label_ids::INBOX.to_string(),
-                context_num_messages: Some(1),
-                context_num_unread: Some(0),
-                context_time: Some(now - 259200),
-            }],
+            labels: vec![
+                ConversationLabel {
+                    id: label_ids::INBOX.to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(0),
+                    context_time: Some(now - 259200),
+                },
+                ConversationLabel {
+                    id: "label-demo-personal".to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(0),
+                    context_time: Some(now - 259200),
+                },
+            ],
             expiration_time: None,
         },
         Conversation {
@@ -579,6 +607,16 @@ pub(crate) fn demo_counts(conversations: bool) -> Vec<LabelCount> {
                 label_id: label_ids::STARRED.to_string(),
                 total: 1,
                 unread: 1,
+            },
+            LabelCount {
+                label_id: "label-demo-work".to_string(),
+                total: 2,
+                unread: 2,
+            },
+            LabelCount {
+                label_id: "label-demo-personal".to_string(),
+                total: 1,
+                unread: 0,
             },
         ]
     } else {
@@ -1429,6 +1467,83 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 );
             }
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_conversation_carries_the_labels_of_its_messages() {
+        let (messages, conversations) = fixtures();
+        for conversation in &conversations {
+            let own: Vec<&MessageMetadata> = messages
+                .iter()
+                .map(|message| &message.meta)
+                .filter(|meta| meta.conversation_id == conversation.id)
+                .collect();
+            let mut carried: Vec<&str> = own
+                .iter()
+                .flat_map(|meta| meta.label_ids.iter().map(String::as_str))
+                .collect();
+            carried.sort_unstable();
+            carried.dedup();
+            let mut labelled: Vec<&str> = conversation
+                .labels
+                .iter()
+                .map(|label| label.id.as_str())
+                .collect();
+            labelled.sort_unstable();
+            assert_eq!(labelled, carried, "{}", conversation.id);
+            for label in &conversation.labels {
+                let with: Vec<_> = own
+                    .iter()
+                    .filter(|meta| meta.label_ids.contains(&label.id))
+                    .collect();
+                let unread = with.iter().filter(|meta| meta.unread > 0).count();
+                let at = format!("{} in {}", conversation.id, label.id);
+                assert_eq!(label.context_num_messages, Some(with.len() as i64), "{at}");
+                assert_eq!(label.context_num_unread, Some(unread as i64), "{at}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_conversation_counts_agree_with_the_conversations() {
+        let conversations = fixtures().1;
+        let unread_in = |conversation: &Conversation, id: &str| {
+            conversation
+                .labels
+                .iter()
+                .any(|label| label.id == id && label.context_num_unread.unwrap_or(0) > 0)
+        };
+        let counts = demo_counts(true);
+        for count in &counts {
+            let (total, unread) = if count.label_id == label_ids::ALL_MAIL {
+                let unread = conversations.iter().filter(|c| c.num_unread > 0).count();
+                (conversations.len(), unread)
+            } else {
+                let id = count.label_id.as_str();
+                let listed = conversations
+                    .iter()
+                    .filter(|c| c.labels.iter().any(|label| label.id == id))
+                    .count();
+                let unread = conversations.iter().filter(|c| unread_in(c, id)).count();
+                (listed, unread)
+            };
+            assert_eq!(count.total, total as i64, "{}", count.label_id);
+            assert_eq!(count.unread, unread as i64, "{}", count.label_id);
+        }
+        // Every place with unread mail says how much, as Proton's counts do.
+        for conversation in &conversations {
+            for label in &conversation.labels {
+                if unread_in(conversation, &label.id) {
+                    let counted = counts.iter().any(|count| count.label_id == label.id);
+                    assert!(counted, "{} has no count", label.id);
+                }
+            }
         }
     }
 }
