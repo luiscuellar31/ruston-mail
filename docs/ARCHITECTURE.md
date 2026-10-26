@@ -726,7 +726,10 @@ instead of an unknown outcome.
   page at a time: moving past its last row, once its first page has come, asks
   for the next under the same number, and the page is added below without the
   conversations already listed. Keys count on press only, since Windows also
-  reports releases.
+  reports releases. `Message::from_key` maps Proton Mail's shortcuts, as its
+  open-source web client lists them, wherever Proton has one for the action,
+  the desktop's Ctrl+R, Ctrl+F and Delete, and keys Proton leaves free for
+  what only a terminal needs; after `g`, the next key names a folder to go to.
   [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
   an opened conversation into the reader's lines, each message's headers,
   verdict and body as `conversations read` shows it, inside the task that
@@ -734,7 +737,7 @@ instead of an unknown outcome.
   body quotes another message, in lines that start with `>`, which the view
   folds into a line each, as the desktop does, until `z` shows them, and
   gathers the web addresses the bodies link to, each read by `url` so it is
-  listed as it would open, a host in another script in ASCII. `o` lists them
+  listed as it would open, a host in another script in ASCII. `b` lists them
   over the panes; one opens only after a yes to a question that takes every
   key, `y` alone saying yes, through the browser opener
   `hv.rs` uses, with no terminal input to read and its opener waited for on a
@@ -749,11 +752,11 @@ instead of an unknown outcome.
   `tui --keep-unread` says not to; once Proton confirms it, the row shows it
   read and each place it was unread in counts one fewer. The quick actions
   (star, read or unread, archive, Trash, Spam, labels) act on the
-  conversations marked with Space, from the list, or else on its selection or
+  conversations marked with Space or `x`, from the list, or else on its selection or
   the conversation the reader shows, through `Mailbox::change`, one request
   for all, and then load the list and the counts again, which Proton owns, as
-  the desktop does. Deleting forever, with `D` or `:delete`, and `:empty`
-  work only in Trash and Spam, as `messages empty` does, and `Mailbox`
+  the desktop does. Deleting forever, with Ctrl+Backspace or `:delete`, and
+  `:empty` work only in Trash and Spam, as `messages empty` does, and `Mailbox`
   refuses them anywhere else; each first asks a question over the panes,
   naming what it deletes, which takes every key until one answers it: `y`
   alone says yes.

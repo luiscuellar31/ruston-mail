@@ -64,6 +64,19 @@ pub(crate) struct Search {
     pub(crate) back: (String, String),
 }
 
+/// The folders `g` goes to, each with the key after it that names it, its
+/// label ID and its name: Proton Mail's own, All mail included.
+pub(crate) const GO_TO: [(char, &str, &str); 8] = [
+    ('i', label_ids::INBOX, "Inbox"),
+    ('a', label_ids::ARCHIVE, "Archive"),
+    ('e', label_ids::SENT, "Sent"),
+    ('*', label_ids::STARRED, "Starred"),
+    ('d', label_ids::DRAFTS, "Drafts"),
+    ('t', label_ids::TRASH, "Trash"),
+    ('s', label_ids::SPAM, "Spam"),
+    ('m', label_ids::ALL_MAIL, "All mail"),
+];
+
 /// A question over the panes before something that cannot be undone. Only
 /// `y` answers yes; any other key leaves everything as it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,13 +131,15 @@ pub(crate) struct App {
     /// Whether an unread conversation is marked read once the reader shows
     /// it, as the desktop marks it; `tui --keep-unread` turns it off.
     pub(crate) marks_read: bool,
-    /// The open conversation's links, while `o` lists them over the panes.
+    /// The open conversation's links, while `b` lists them over the panes.
     pub(crate) picking_link: Option<LinkPick>,
     /// Which of the open conversation's attachments is selected, while `v`
     /// lists them over the panes.
     pub(crate) picking_attachment: Option<usize>,
     /// The question over the panes that waits for a yes, if one does.
     pub(crate) question: Option<Question>,
+    /// Whether `g` was pressed, so the next key names a folder to go to.
+    pub(crate) going: bool,
     /// The command line, while `:` has it open at the foot.
     pub(crate) command_line: Option<CommandLine>,
     /// The lines run from it, oldest first, for Up and Down.
@@ -153,6 +168,10 @@ pub(crate) struct App {
 pub(crate) enum Message {
     NextPane,
     PreviousPane,
+    /// Opens what the focused list's selection is on, as Enter does.
+    Right,
+    /// Moves to the pane on the left, when there is one.
+    Left,
     Up,
     Down,
     PageUp,
@@ -160,6 +179,11 @@ pub(crate) enum Message {
     Top,
     Bottom,
     Open,
+    /// Waits for the key that names a folder to go to.
+    Go,
+    /// Goes to the folder at this place in [`GO_TO`], or nowhere when the
+    /// key after `g` names none.
+    GoTo(Option<usize>),
     ToggleQuotes,
     /// Lists the open conversation's links, to open one.
     ShowLinks,
@@ -169,6 +193,9 @@ pub(crate) enum Message {
     Yes,
     /// Marks the selected conversation, or takes its mark away.
     Mark,
+    /// Marks every conversation listed, or takes the marks away when all
+    /// of them are.
+    MarkAll,
     /// Opens the command line.
     Command,
     /// Opens the command line at `:search`.
@@ -177,15 +204,21 @@ pub(crate) enum Message {
     Typed(KeyEvent),
     /// Stars the conversation acted on, or takes its star away.
     Star,
-    /// Marks the conversation acted on read, or unread.
-    ToggleRead,
+    /// Marks the conversation acted on read.
+    Read,
+    /// Marks the conversation acted on unread.
+    Unread,
     Archive,
     /// Moves the conversation acted on to Trash.
     Trash,
-    /// Moves the conversation acted on to Spam, or out of it from there.
+    /// Moves the conversation acted on to Spam.
     Spam,
+    /// Moves the conversation acted on to the Inbox, out of Spam as well.
+    Inbox,
     /// Opens the command line at `:label`.
     Label,
+    /// Opens the command line at `:move`.
+    Move,
     /// Asks whether to delete the conversation acted on forever.
     DeleteForever,
     Refresh,
@@ -299,6 +332,7 @@ impl App {
             picking_link: None,
             picking_attachment: None,
             question: None,
+            going: false,
             command_line: None,
             history: Vec::new(),
             search: None,
@@ -358,39 +392,48 @@ impl App {
             Message::Back => {}
             Message::NextPane => self.focus = self.focus.next(),
             Message::PreviousPane => self.focus = self.focus.previous(),
+            Message::Left if self.focus != Pane::Folders => {
+                self.focus = self.focus.previous();
+            }
+            Message::Left => {}
             Message::Up => self.step(-1),
             Message::Down => return self.down(),
             Message::PageUp => self.step(-self.page()),
             Message::PageDown => self.step(self.page()),
             Message::Top => self.step(isize::MIN),
             Message::Bottom => self.step(isize::MAX),
-            Message::Open => return self.open(),
+            Message::Open | Message::Right => return self.open(),
+            Message::Go => self.going = true,
+            Message::GoTo(to) => {
+                self.going = false;
+                if let Some(&(_, id, name)) = to.and_then(|at| GO_TO.get(at)) {
+                    return self.go_to(id, name);
+                }
+            }
             Message::ToggleQuotes => self.show_quotes = !self.show_quotes,
             Message::ShowLinks => self.show_links(),
             Message::ShowAttachments => self.show_attachments(),
             // Nothing on screen waits for a yes.
             Message::Yes => {}
             Message::Mark => self.mark(),
+            Message::MarkAll => self.mark_all(),
             Message::Command => self.command_line = Some(CommandLine::default()),
             Message::Search => self.command_line = Some(CommandLine::with("search ")),
             Message::Typed(key) => return self.type_in_command_line(&key),
-            // Several marked: all starred unless they all are, all read
-            // while one is unread.
+            // Several marked: all starred unless they all are.
             Message::Star => {
                 return self.change(|targets| Change::Star(!targets.iter().all(|c| is_starred(c))));
             }
-            Message::ToggleRead => {
-                return self
-                    .change(|targets| Change::Read(targets.iter().any(|c| c.num_unread > 0)));
-            }
+            // In the reader, Proton Mail's `r` answers the message instead.
+            Message::Read if self.focus == Pane::Reader => {}
+            Message::Read => return self.change(|_| Change::Read(true)),
+            Message::Unread => return self.change(|_| Change::Read(false)),
             Message::Archive => return self.change(|_| Change::Move(label_ids::ARCHIVE.into())),
             Message::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
-            // Not spam, from Spam, goes back to the Inbox, as Proton's does.
-            Message::Spam if self.listed_id == label_ids::SPAM => {
-                return self.change(|_| Change::Move(label_ids::INBOX.into()));
-            }
             Message::Spam => return self.change(|_| Change::Move(label_ids::SPAM.into())),
+            Message::Inbox => return self.change(|_| Change::Move(label_ids::INBOX.into())),
             Message::Label => self.command_line = Some(CommandLine::with("label ")),
+            Message::Move => self.command_line = Some(CommandLine::with("move ")),
             Message::DeleteForever => self.ask_to_delete(),
             Message::Refresh => return self.reload(),
             Message::PlacesLoaded(Ok(places)) => {
@@ -512,8 +555,8 @@ impl App {
     }
 
     /// What a terminal event asks for: while the command line is open, the
-    /// key typed in it, while a question waits, a yes or a no, or else what
-    /// [`Message::from_event`] makes of it.
+    /// key typed in it, while a question waits, a yes or a no, after `g`,
+    /// the folder to go to, or else what [`Message::from_event`] makes of it.
     pub(crate) fn message_for(&self, event: &Event) -> Option<Message> {
         match event {
             Event::Key(key) if self.command_line.is_some() => {
@@ -524,6 +567,9 @@ impl App {
                     || self.picking_link.is_some_and(|pick| pick.confirming) =>
             {
                 (key.kind != KeyEventKind::Release).then(|| answer_of(key))
+            }
+            Event::Key(key) if self.going => {
+                (key.kind != KeyEventKind::Release).then(|| Message::GoTo(going_to(key)))
             }
             _ => Message::from_event(event),
         }
@@ -706,6 +752,37 @@ impl App {
             None => self.marked.push(id),
         }
         self.step(1);
+    }
+
+    /// Marks every conversation listed, for an action on all of them, or
+    /// takes the marks away when all of them are marked already.
+    fn mark_all(&mut self) {
+        if self.focus != Pane::Conversations {
+            return;
+        }
+        let all = self
+            .conversations
+            .iter()
+            .all(|conversation| self.marked.contains(&conversation.id));
+        self.marked = if all {
+            Vec::new()
+        } else {
+            self.conversations
+                .iter()
+                .map(|conversation| conversation.id.clone())
+                .collect()
+        };
+    }
+
+    /// Lists the folder with label ID `id`, named `name`, as Enter on it
+    /// would, selecting it among the folders when they hold it.
+    fn go_to(&mut self, id: &str, name: &str) -> Vec<Effect> {
+        if let Some(index) = self.places.iter().position(|place| place.id == id) {
+            self.selected_place = index;
+        }
+        self.focus = Pane::Conversations;
+        self.selected_conversation = 0;
+        vec![self.list(id.to_owned(), name.to_owned())]
     }
 
     /// The conversations an action acts on: the marked ones, from the list,
@@ -1220,6 +1297,23 @@ fn answer_of(key: &KeyEvent) -> Message {
     }
 }
 
+/// Which of [`GO_TO`] `key` names after `g`, if any: a key alone, as Proton
+/// Mail's are, whatever its case.
+fn going_to(key: &KeyEvent) -> Option<usize> {
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return None;
+    }
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    GO_TO
+        .iter()
+        .position(|(letter, _, _)| *letter == c.to_ascii_lowercase())
+}
+
 /// Whether `message` came from a key, not from an answer.
 fn is_key(message: &Message) -> bool {
     !matches!(
@@ -1250,11 +1344,21 @@ impl Message {
         Self::from_key(key)
     }
 
+    /// Proton Mail's keys where it has one for the action, the desktop's
+    /// Ctrl+R, Ctrl+F and Delete, and keys Proton leaves free for what only
+    /// a terminal needs.
     fn from_key(key: &KeyEvent) -> Option<Self> {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
                 KeyCode::Char('c') => Some(Self::Quit),
                 KeyCode::Char('r') => Some(Self::Refresh),
+                KeyCode::Char('f') => Some(Self::Search),
+                KeyCode::Char('k') => Some(Self::Command),
+                KeyCode::Char('a') => Some(Self::MarkAll),
+                KeyCode::Up => Some(Self::Top),
+                KeyCode::Down => Some(Self::Bottom),
+                // Many terminals send Ctrl+Backspace as Ctrl+H.
+                KeyCode::Backspace | KeyCode::Char('h') => Some(Self::DeleteForever),
                 _ => None,
             };
         }
@@ -1264,26 +1368,31 @@ impl Message {
             KeyCode::Esc => Some(Self::Back),
             KeyCode::Tab => Some(Self::NextPane),
             KeyCode::BackTab => Some(Self::PreviousPane),
+            KeyCode::Right => Some(Self::Right),
+            KeyCode::Left => Some(Self::Left),
             KeyCode::Up | KeyCode::Char('k') => Some(Self::Up),
             KeyCode::Down | KeyCode::Char('j') => Some(Self::Down),
             KeyCode::PageUp => Some(Self::PageUp),
             KeyCode::PageDown => Some(Self::PageDown),
-            KeyCode::Home | KeyCode::Char('g') => Some(Self::Top),
-            KeyCode::End | KeyCode::Char('G') => Some(Self::Bottom),
+            KeyCode::Home => Some(Self::Top),
+            KeyCode::End => Some(Self::Bottom),
             KeyCode::Enter => Some(Self::Open),
+            KeyCode::Char('g') => Some(Self::Go),
             KeyCode::Char('z') => Some(Self::ToggleQuotes),
-            KeyCode::Char('o') => Some(Self::ShowLinks),
+            KeyCode::Char('b') => Some(Self::ShowLinks),
             KeyCode::Char('v') => Some(Self::ShowAttachments),
             KeyCode::Char('y') => Some(Self::Yes),
-            KeyCode::Char('s') => Some(Self::Star),
-            KeyCode::Char('u') => Some(Self::ToggleRead),
+            KeyCode::Char('*') => Some(Self::Star),
+            KeyCode::Char('r') => Some(Self::Read),
+            KeyCode::Char('u') => Some(Self::Unread),
             KeyCode::Char('a') => Some(Self::Archive),
-            KeyCode::Char('d') | KeyCode::Delete => Some(Self::Trash),
-            KeyCode::Char(':') => Some(Self::Command),
-            KeyCode::Char(' ') => Some(Self::Mark),
-            KeyCode::Char('!') => Some(Self::Spam),
+            KeyCode::Char('s') => Some(Self::Spam),
+            KeyCode::Char('i') => Some(Self::Inbox),
+            KeyCode::Char('t') | KeyCode::Delete => Some(Self::Trash),
             KeyCode::Char('l') => Some(Self::Label),
-            KeyCode::Char('D') => Some(Self::DeleteForever),
+            KeyCode::Char('m') => Some(Self::Move),
+            KeyCode::Char(' ' | 'x') => Some(Self::Mark),
+            KeyCode::Char(':') => Some(Self::Command),
             KeyCode::Char('/') => Some(Self::Search),
             _ => None,
         }
@@ -1301,6 +1410,13 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) -> Vec<Effect> {
         app.message_for(&key(code))
+            .map_or_else(Vec::new, |message| app.update(message))
+    }
+
+    /// Presses `code` with Ctrl held.
+    fn ctrl(app: &mut App, code: KeyCode) -> Vec<Effect> {
+        let event = Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
+        app.message_for(&event)
             .map_or_else(Vec::new, |message| app.update(message))
     }
 
@@ -1491,13 +1607,13 @@ mod tests {
         assert_eq!(app.scroll, 1);
         press(&mut app, KeyCode::PageDown);
         assert_eq!(app.scroll, 31);
-        press(&mut app, KeyCode::Char('G'));
+        ctrl(&mut app, KeyCode::Down);
         assert_eq!(app.scroll, 70);
         press(&mut app, KeyCode::Down);
         assert_eq!(app.scroll, 70);
         press(&mut app, KeyCode::PageUp);
         assert_eq!(app.scroll, 40);
-        press(&mut app, KeyCode::Char('g'));
+        ctrl(&mut app, KeyCode::Up);
         assert_eq!(app.scroll, 0);
         press(&mut app, KeyCode::Up);
         assert_eq!(app.scroll, 0);
@@ -1611,6 +1727,81 @@ mod tests {
         assert_eq!(app.selected_conversation, 1);
         press(&mut app, KeyCode::Home);
         assert_eq!(app.selected_conversation, 0);
+        ctrl(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_conversation, 1);
+        ctrl(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_conversation, 0);
+    }
+
+    #[test]
+    fn g_then_a_letter_goes_to_a_folder_as_in_proton_mail() {
+        let mut app = loaded();
+        app.places.push(place(label_ids::TRASH, "Trash"));
+        assert!(press(&mut app, KeyCode::Char('g')).is_empty());
+        assert!(app.going);
+        let effects = press(&mut app, KeyCode::Char('t'));
+        assert!(
+            matches!(&effects[..], [Effect::Conversations { place, page: 0, .. }] if place == label_ids::TRASH),
+            "{effects:?}"
+        );
+        assert!(!app.going);
+        assert_eq!(
+            (app.focus, app.listed.as_str()),
+            (Pane::Conversations, "Trash")
+        );
+        assert_eq!(app.selected_place, 2);
+        // All mail is not among the folders, and is listed all the same.
+        press(&mut app, KeyCode::Char('g'));
+        let effects = press(&mut app, KeyCode::Char('m'));
+        assert!(
+            matches!(&effects[..], [Effect::Conversations { place, .. }] if place == label_ids::ALL_MAIL),
+            "{effects:?}"
+        );
+        assert_eq!((app.listed.as_str(), app.selected_place), ("All mail", 2));
+        // A key that names no folder goes nowhere, and does nothing else.
+        press(&mut app, KeyCode::Char('g'));
+        assert!(press(&mut app, KeyCode::Char('q')).is_empty());
+        assert!(!app.quit && !app.going);
+        assert_eq!(app.listed, "All mail");
+    }
+
+    #[test]
+    fn proton_mail_keys_move_between_panes_mark_and_open_commands() {
+        let mut app = loaded();
+        // Right opens, as Enter does; Left goes back, but not past the
+        // folders.
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.focus, Pane::Conversations);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.focus, Pane::Folders);
+        press(&mut app, KeyCode::Tab);
+        app.update(Message::ConversationsLoaded {
+            request: 2,
+            page: 0,
+            result: Ok((2, vec![conversation("a"), conversation("b")])),
+        });
+        // x marks as Space does; Ctrl+A marks all, then none.
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.marked, ["a"]);
+        ctrl(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.marked, ["a", "b"]);
+        ctrl(&mut app, KeyCode::Char('a'));
+        assert!(app.marked.is_empty());
+        // i moves to the Inbox; m, Ctrl+K and Ctrl+F open the command line.
+        let effects = press(&mut app, KeyCode::Char('i'));
+        assert!(
+            matches!(&effects[..], [Effect::Change { change: Change::Move(to), .. }] if to == label_ids::INBOX),
+            "{effects:?}"
+        );
+        press(&mut app, KeyCode::Char('m'));
+        assert_eq!(app.command_line.as_ref().unwrap().text, "move ");
+        press(&mut app, KeyCode::Esc);
+        ctrl(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.command_line.as_ref().unwrap().text, "");
+        press(&mut app, KeyCode::Esc);
+        ctrl(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.command_line.as_ref().unwrap().text, "search ");
     }
 
     #[test]
@@ -1833,13 +2024,13 @@ mod tests {
     #[test]
     fn o_lists_the_links_and_only_a_yes_opens_the_one_selected() {
         let mut app = loaded();
-        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Char('b'));
         assert_eq!(
             app.notice.as_deref(),
             Some("Open a conversation to list its links.")
         );
         app.reading = Some(reading(1));
-        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Char('b'));
         assert_eq!(
             app.notice.as_deref(),
             Some("This conversation has no links.")
@@ -1851,7 +2042,7 @@ mod tests {
             "https://example.test/b".into(),
         ];
         app.reading = Some(linked);
-        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Char('b'));
         // The keys move through the links now, not the folders.
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Down);
@@ -1885,7 +2076,7 @@ mod tests {
             Some("Cannot open the link: no browser")
         );
         // Esc puts the links away, and y alone asks nothing.
-        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Char('b'));
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.picking_link, None);
         assert!(press(&mut app, KeyCode::Char('y')).is_empty());
@@ -1962,7 +2153,7 @@ mod tests {
         let mut linked = reading(1);
         linked.links = vec!["https://example.test/a".into()];
         app.reading = Some(linked);
-        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Char('b'));
         app.update(Message::ConversationLoaded {
             request: 0,
             result: Ok(reading(2)),
@@ -1975,7 +2166,7 @@ mod tests {
         let mut app = loaded();
         app.conversations[1] = unread("b", "folder-1");
         // From the folders, nothing is acted on.
-        assert!(press(&mut app, KeyCode::Char('s')).is_empty());
+        assert!(press(&mut app, KeyCode::Char('*')).is_empty());
         assert_eq!(
             app.notice.as_deref(),
             Some("Choose a conversation in the list first.")
@@ -1990,18 +2181,22 @@ mod tests {
             }]
         };
         assert_eq!(
-            press(&mut app, KeyCode::Char('s')),
+            press(&mut app, KeyCode::Char('*')),
             change(Change::Star(true))
         );
         assert_eq!(app.notice.as_deref(), Some("Starring the conversation…"));
         assert_eq!(
-            press(&mut app, KeyCode::Char('u')),
+            press(&mut app, KeyCode::Char('r')),
             change(Change::Read(true))
+        );
+        assert_eq!(
+            press(&mut app, KeyCode::Char('u')),
+            change(Change::Read(false))
         );
         let archive = Change::Move(label_ids::ARCHIVE.into());
         assert_eq!(press(&mut app, KeyCode::Char('a')), change(archive));
         let trash = Change::Move(label_ids::TRASH.into());
-        assert_eq!(press(&mut app, KeyCode::Char('d')), change(trash.clone()));
+        assert_eq!(press(&mut app, KeyCode::Char('t')), change(trash.clone()));
         assert_eq!(press(&mut app, KeyCode::Delete), change(trash.clone()));
 
         // Done, the folders and the list load again.
@@ -2022,7 +2217,7 @@ mod tests {
             ]
         );
         // Meanwhile the rows are the old ones: nothing is acted on.
-        assert!(press(&mut app, KeyCode::Char('s')).is_empty());
+        assert!(press(&mut app, KeyCode::Char('*')).is_empty());
         assert_eq!(app.notice.as_deref(), Some("Wait for the list to load."));
         app.update(Message::ConversationsLoaded {
             request: 2,
@@ -2048,9 +2243,11 @@ mod tests {
         });
         app.reading = Some(reading(1));
         assert_eq!(
-            press(&mut app, KeyCode::Char('s')),
+            press(&mut app, KeyCode::Char('*')),
             change(Change::Star(false))
         );
+        // In the reader, r is Proton's reply, not marking read.
+        assert!(press(&mut app, KeyCode::Char('r')).is_empty());
     }
 
     #[test]
@@ -2072,10 +2269,9 @@ mod tests {
         press(&mut app, KeyCode::Char(' '));
         assert_eq!(app.marked, ["c", "b"]);
 
-        // Marked: one unread among them, so all are marked read, in the
-        // list's order.
+        // Marked: all are marked read, in the list's order.
         assert_eq!(
-            press(&mut app, KeyCode::Char('u')),
+            press(&mut app, KeyCode::Char('r')),
             [Effect::Change {
                 ids: vec!["b".into(), "c".into()],
                 place: label_ids::INBOX.into(),
@@ -2084,7 +2280,7 @@ mod tests {
         );
         assert_eq!(app.notice.as_deref(), Some("Marking 2 conversations read…"));
         // None starred: all are starred.
-        let effects = press(&mut app, KeyCode::Char('s'));
+        let effects = press(&mut app, KeyCode::Char('*'));
         assert!(
             matches!(&effects[..], [Effect::Change { change: Change::Star(true), ids, .. }] if ids.len() == 2),
             "{effects:?}"
@@ -2167,9 +2363,9 @@ mod tests {
         assert_eq!(app.command_line.as_ref().unwrap().text, "label Family");
         press(&mut app, KeyCode::Esc);
 
-        // ! moves to Spam, and from Spam back to the Inbox.
+        // s moves to Spam, and i to the Inbox.
         assert_eq!(
-            press(&mut app, KeyCode::Char('!')),
+            press(&mut app, KeyCode::Char('s')),
             change(Change::Move(label_ids::SPAM.into()))
         );
         assert_eq!(
@@ -2189,7 +2385,7 @@ mod tests {
             result: Ok((1, vec![conversation("junk")])),
         });
         assert_eq!(
-            press(&mut app, KeyCode::Char('!')),
+            press(&mut app, KeyCode::Char('i')),
             [Effect::Change {
                 ids: vec!["junk".into()],
                 place: label_ids::SPAM.into(),
@@ -2208,7 +2404,7 @@ mod tests {
         app.places.push(place(label_ids::TRASH, "Trash"));
         app.focus = Pane::Conversations;
         // Nothing outside Trash and Spam is deleted forever.
-        assert!(press(&mut app, KeyCode::Char('D')).is_empty());
+        assert!(ctrl(&mut app, KeyCode::Backspace).is_empty());
         assert_eq!(app.question, None);
         assert_eq!(
             app.notice.as_deref(),
@@ -2234,8 +2430,9 @@ mod tests {
             page: 0,
             result: Ok((2, vec![old("x"), old("y")])),
         });
-        // D asks about the selected conversation; any key but y keeps it.
-        assert!(press(&mut app, KeyCode::Char('D')).is_empty());
+        // Ctrl+Backspace asks about the selected conversation; any key but
+        // y keeps it.
+        assert!(ctrl(&mut app, KeyCode::Backspace).is_empty());
         assert_eq!(
             app.question,
             Some(Question::Delete {
@@ -2248,8 +2445,10 @@ mod tests {
         assert!(press(&mut app, KeyCode::Char('n')).is_empty());
         assert_eq!(app.question, None);
         assert_eq!(app.notice.as_deref(), Some("Nothing was deleted."));
-        // q too, which quits only once nothing is asked.
-        press(&mut app, KeyCode::Char('D'));
+        // q too, which quits only once nothing is asked; Ctrl+H asks as
+        // Ctrl+Backspace does.
+        ctrl(&mut app, KeyCode::Char('h'));
+        assert!(app.question.is_some());
         let ctrl_y = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
         assert!(matches!(app.message_for(&ctrl_y), Some(Message::Back)));
         assert!(press(&mut app, KeyCode::Char('q')).is_empty());
@@ -2259,7 +2458,7 @@ mod tests {
         // all.
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Char(' '));
-        press(&mut app, KeyCode::Char('D'));
+        ctrl(&mut app, KeyCode::Backspace);
         assert!(
             matches!(&app.question, Some(Question::Delete { ids, .. }) if ids == &["x", "y"]),
             "{:?}",
@@ -2332,7 +2531,7 @@ mod tests {
 
         // A search's results hold mail from anywhere.
         command(&mut app, "search news");
-        press(&mut app, KeyCode::Char('D'));
+        ctrl(&mut app, KeyCode::Backspace);
         assert_eq!(app.question, None);
         assert_eq!(
             app.notice.as_deref(),
@@ -2610,7 +2809,7 @@ mod tests {
             result: Ok((1, vec![conversation("p1")])),
         });
         assert_eq!(
-            press(&mut app, KeyCode::Char('s')),
+            press(&mut app, KeyCode::Char('*')),
             [Effect::Change {
                 ids: vec!["p1".into()],
                 place: label_ids::ALL_MAIL.into(),

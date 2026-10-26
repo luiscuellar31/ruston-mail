@@ -4,7 +4,7 @@
 //! Every piece of text that comes with the mail goes through
 //! `terminal::screen_line` first.
 
-use super::app::{App, LinkPick, Pane, Question};
+use super::app::{App, GO_TO, LinkPick, Pane, Question};
 use super::reading::size_label;
 use crate::render;
 use crate::terminal::screen_line;
@@ -29,21 +29,30 @@ const SENDER_WIDTH: usize = 18;
 /// How many conversations a question names before it counts the rest.
 const NAMED: usize = 5;
 
-/// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 17] = [
+/// Each key and what it does, as the list of keys shows them: Proton Mail's
+/// where it has one, and keys it leaves free for what only a terminal needs.
+const KEYS: [(&str, &str); 19] = [
     ("Tab, Shift+Tab", "next or previous pane"),
-    ("j, k, arrows", "move, or scroll the reader"),
+    ("j, k, Up, Down", "move, or scroll the reader"),
+    ("Enter, Right, Left", "open it, or go back a pane"),
     ("PageUp, PageDown", "scroll the reader a page"),
-    ("g, G, Home, End", "go to the top or the bottom"),
-    ("Enter", "open the folder or conversation"),
+    ("Home, End, Ctrl+Up/Down", "go to the top or the bottom"),
+    (
+        "g, then i, a, e, *…",
+        "go to the Inbox, Archive, Sent, Starred…",
+    ),
     ("z", "show or hide quoted text"),
-    ("o, v", "list its links, or its attachments"),
-    ("s, u", "star or unstar it, mark it read or unread"),
-    ("a, d, Delete", "archive it, or move it to Trash"),
-    ("!", "move it to Spam, or out of Spam"),
-    ("l, D", "label it, or delete it forever"),
-    ("Space", "mark it; an action acts on all marked"),
-    ("/, :", "search all mail, or type a command"),
+    ("b, v", "list its links, or its attachments"),
+    ("*, r, u", "star or unstar it, mark it read or unread"),
+    ("a, s, i", "archive it, or move it to Spam or the Inbox"),
+    ("t, Delete", "move it to Trash"),
+    ("Ctrl+Backspace", "delete it forever, in Trash or Spam"),
+    ("l, m", "label it, or move it to a folder"),
+    (
+        "Space, x, Ctrl+A",
+        "mark it, or all; an action acts on all marked",
+    ),
+    ("/, Ctrl+F, :, Ctrl+K", "search all mail, or type a command"),
     ("Ctrl+R", "refresh the folders and the list"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys, clear the marks, or go back"),
@@ -422,6 +431,10 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         draw_command_line(frame, &line.text, area);
         return;
     }
+    if app.going {
+        draw_going(frame, theme, area);
+        return;
+    }
     let hints = Line::from(vec![
         Span::styled("Tab", theme.accent),
         Span::raw(" panes  "),
@@ -465,13 +478,33 @@ fn draw_command_line(frame: &mut Frame, text: &str, area: Rect) {
     frame.set_cursor_position((area.x + width - hidden, area.y));
 }
 
-fn draw_keys(frame: &mut Frame, theme: &Theme) {
-    let lines: Vec<Line> = KEYS
+/// The folders `g` goes to, each after the key that names it, in place of
+/// the status bar until that key comes.
+fn draw_going(frame: &mut Frame, theme: &Theme, area: Rect) {
+    let spans: Vec<Span> = GO_TO
         .iter()
-        .chain(SUSPEND_KEYS)
+        .flat_map(|(key, _, name)| {
+            [
+                Span::styled(format!(" {key}"), theme.accent),
+                Span::raw(format!(" {name} ")),
+            ]
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn draw_keys(frame: &mut Frame, theme: &Theme) {
+    let keys: Vec<&(&str, &str)> = KEYS.iter().chain(SUSPEND_KEYS).collect();
+    let column = keys
+        .iter()
+        .map(|(keys, _)| keys.chars().count())
+        .max()
+        .unwrap_or(0);
+    let lines: Vec<Line> = keys
+        .iter()
         .map(|(keys, action)| {
             Line::from(vec![
-                Span::styled(format!(" {keys:<18}"), theme.accent),
+                Span::styled(format!(" {keys:<column$} "), theme.accent),
                 Span::raw(*action),
             ])
         })
@@ -985,6 +1018,17 @@ mod tests {
         }
         // Even a terminal too small for the list draws without panicking.
         let _ = drawn(12, 4, &app, &Theme::new(false));
+    }
+
+    #[test]
+    fn after_g_the_status_bar_names_the_folders_it_goes_to() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.going = true;
+        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
+        let status = screen.lines().last().unwrap();
+        for (key, _, name) in GO_TO {
+            assert!(status.contains(&format!("{key} {name}")), "{status}");
+        }
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub(crate) struct Reading {
     /// The ranges of `lines` that quote another message, in order, which
     /// the reader folds into a line each until asked to show them.
     pub(crate) quotes: Vec<Range<usize>>,
-    /// The web addresses its bodies link to, each once, in order: what `o`
+    /// The web addresses its bodies link to, each once, in order: what `b`
     /// lists to open one.
     pub(crate) links: Vec<String>,
     /// The attachments of its opened messages, in order, inline ones aside.
