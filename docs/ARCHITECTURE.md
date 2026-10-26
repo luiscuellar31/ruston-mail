@@ -691,16 +691,26 @@ instead of an unknown outcome.
   without asking.
 - [`tui.rs`](../crates/ruston-cli/src/tui.rs) is the terminal interface that
   `ruston-cli tui`, or no command in a terminal, opens; away from a terminal,
-  `main.rs` treats either as a usage error. It owns the terminal: raw mode and
-  the alternate screen, put back however the interface ends, a panic included,
-  and an async loop over crossterm's event stream. It starts no logging, which
+  `main.rs` treats either as a usage error. It resumes the profile's session
+  before taking over the screen, signing in first as `login` does when none
+  is saved, and opens one [`Mailbox`](../crates/ruston-cli/src/mailbox.rs)
+  for the whole session: the account behind an `Arc<Client>`, or the demo,
+  whose listing `demo.rs` shares with its own `conversations list`. It owns
+  the terminal: raw mode and the alternate screen, put back however the
+  interface ends, a panic included, and an async loop over crossterm's event
+  stream and the answers of the tasks it runs. It starts no logging, which
   would draw over it. [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs)
-  holds the state and what each key does, without a terminal; keys count on
-  press only, since Windows also reports releases.
+  holds the state and what each key or answer does, without a terminal; what
+  must load comes back from `update` as an effect, which `tui.rs` runs in a
+  task, and each list request is numbered so an answer for an earlier one is
+  dropped. Keys count on press only, since Windows also reports releases.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with
-  one accent, and none under `NO_COLOR`.
+  one accent, and none under `NO_COLOR`. Every piece of text from the mail
+  passes through `terminal.rs`'s `screen_line` or `screen_text`, which drop
+  what output filtering drops and turn tabs, and on one line line breaks, into
+  spaces, since a cell holding one would move the cursor.
 - Command handlers call `ruston_core::Client`. Put terminal prompts and output
   formatting in the CLI; put shared mail behavior in the core. Output helpers
   are in [`render.rs`](../crates/ruston-cli/src/render.rs); `action_result`
@@ -958,7 +968,7 @@ instead of an unknown outcome.
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
-| CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) | [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs) |
+| CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) | [`mailbox.rs`](../crates/ruston-cli/src/mailbox.rs), [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs), [`demo.rs`](../crates/ruston-cli/src/demo.rs) |
 | CLI syntax, behavior, or output | [`crates/ruston-cli/src/cli.rs`](../crates/ruston-cli/src/cli.rs), [`commands/`](../crates/ruston-cli/src/commands/) | [`render.rs`](../crates/ruston-cli/src/render.rs), corresponding core `mail/` operation |
 | Proton request or response | [`crates/ruston-core/src/api/`](../crates/ruston-core/src/api/) | [`transport/`](../crates/ruston-core/src/transport/), [`model/`](../crates/ruston-core/src/model/), [wire tests](../crates/ruston-core/tests/api_wiremock.rs) |
 | Sessions and desktop preferences | Core [`session/`](../crates/ruston-core/src/session/) | Desktop [`settings.rs`](../src/settings.rs), [privacy guide](PRIVACY.md) |

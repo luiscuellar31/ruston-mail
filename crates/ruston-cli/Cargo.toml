@@ -18,7 +18,7 @@ path = "src/main.rs"
 ruston-core = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 serde_json = { workspace = true }
 html5ever = { workspace = true }
 getrandom = { workspace = true }

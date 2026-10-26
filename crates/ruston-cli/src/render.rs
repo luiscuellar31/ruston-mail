@@ -174,7 +174,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-fn subject_or_empty(s: &str) -> &str {
+pub(crate) fn subject_or_empty(s: &str) -> &str {
     if s.is_empty() { "(no subject)" } else { s }
 }
 

@@ -4,6 +4,7 @@ mod cli;
 mod commands;
 mod demo;
 mod hv;
+mod mailbox;
 mod render;
 mod terminal;
 mod tui;

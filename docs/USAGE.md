@@ -494,10 +494,13 @@ every command, and `ruston-cli <command> --help` its options.
 
 `ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
 terminal interface with folders, conversations and a reader. It is being built
-for 0.9.0: for now it shows its three panes, moves between them with Tab and
-Shift+Tab, lists its keys with `?`, and quits with `q` or Ctrl+C. Away from a
-terminal, as in a script, `ruston-cli` with no command still prints the help
-and ends with status 2.
+for 0.9.0: for now it lists the folders and labels with how many of their
+conversations are unread, and a folder's 50 newest conversations. `j`, `k` or
+the arrows move, Enter opens a folder, Tab and Shift+Tab move between the
+panes, `?` lists the keys, and `q` or Ctrl+C quits. With no session saved, it
+signs in first, as `ruston-cli login` does; `--demo` opens the fictional
+mailbox. Away from a terminal, as in a script, `ruston-cli` with no command
+still prints the help and ends with status 2.
 
 The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with

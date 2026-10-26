@@ -1,13 +1,18 @@
 //! How the interface looks: the three panes side by side, or the focused one
 //! alone in a narrow terminal, a status bar, and the keys over them on `?`.
 //! It draws from the state alone, so it can be tested on a `TestBackend`.
+//! Every piece of text that comes with the mail goes through
+//! `terminal::screen_line` first.
 
 use super::app::{App, Pane};
+use crate::render;
+use crate::terminal::screen_line;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
+use ruston_core::Conversation;
 
 /// Below this width the panes take turns on the screen, as the desktop's
 /// compact view does.
@@ -16,9 +21,14 @@ const THREE_PANES_MIN_WIDTH: u16 = 100;
 /// The folder list's width when the panes stand side by side.
 const FOLDERS_WIDTH: u16 = 24;
 
+/// How many columns a conversation's sender takes in its row.
+const SENDER_WIDTH: usize = 18;
+
 /// Each key and what it does, as the list of keys shows them.
-const KEYS: [(&str, &str); 4] = [
+const KEYS: [(&str, &str); 6] = [
     ("Tab, Shift+Tab", "next or previous pane"),
+    ("j, k, arrows", "move down or up the list"),
+    ("Enter", "open the folder"),
     ("?", "show or hide these keys"),
     ("Esc", "close these keys"),
     ("q, Ctrl+C", "quit"),
@@ -68,11 +78,90 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
 }
 
 fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect) {
+    let focused = pane == app.focus;
     let mut block = Block::bordered().title(format!(" {} ", pane.title()));
-    if pane == app.focus {
+    if focused {
         block = block.border_style(theme.accent);
     }
-    frame.render_widget(block, area);
+    match pane {
+        Pane::Folders => {
+            let items = app.places.iter().map(|place| {
+                let mut spans = vec![Span::raw(format!(
+                    "{}{}",
+                    "  ".repeat(place.depth),
+                    screen_line(&place.name)
+                ))];
+                if place.unread > 0 {
+                    spans.push(Span::styled(format!(" {}", place.unread), theme.accent));
+                }
+                ListItem::new(Line::from(spans))
+            });
+            draw_list(frame, items, app.selected_place, focused, block, area);
+        }
+        Pane::Conversations => {
+            let items = app.conversations.iter().map(conversation_row);
+            draw_list(
+                frame,
+                items,
+                app.selected_conversation,
+                focused,
+                block,
+                area,
+            );
+        }
+        Pane::Reader => frame.render_widget(block, area),
+    }
+}
+
+/// A list with its selection on `selected`, shown inverted in the focused
+/// pane, which reads without colors too, and in bold elsewhere.
+fn draw_list<'a>(
+    frame: &mut Frame,
+    items: impl Iterator<Item = ListItem<'a>>,
+    selected: usize,
+    focused: bool,
+    block: Block,
+    area: Rect,
+) {
+    let highlight = if focused {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD)
+    };
+    let list = List::new(items).block(block).highlight_style(highlight);
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// One row of the list: whether it is unread, its day, who wrote it and its
+/// subject. Unread conversations are bold.
+fn conversation_row(conversation: &Conversation) -> ListItem<'static> {
+    let unread = conversation.num_unread > 0;
+    let time = render::fmt_time(conversation.time);
+    let day = time.get(..10).unwrap_or(&time);
+    let sender = conversation.senders.first().map_or("-", |sender| {
+        if sender.name.is_empty() {
+            &sender.address
+        } else {
+            &sender.name
+        }
+    });
+    let style = if unread {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    };
+    ListItem::new(Line::from(vec![
+        Span::raw(format!("{} {day}  ", if unread { "•" } else { " " })),
+        Span::styled(
+            format!("{:<SENDER_WIDTH$.SENDER_WIDTH$}  ", screen_line(sender)),
+            style,
+        ),
+        Span::styled(
+            screen_line(render::subject_or_empty(&conversation.subject)),
+            style,
+        ),
+    ]))
 }
 
 fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
@@ -84,15 +173,17 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         Span::styled("q", theme.accent),
         Span::raw(" quit "),
     ]);
-    let [account, hints_area] = Layout::horizontal([
+    let [state, hints_area] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(u16::try_from(hints.width()).unwrap_or(u16::MAX)),
     ])
     .areas(area);
-    frame.render_widget(
-        Paragraph::new(format!(" Ruston Mail · {}", app.account)),
-        account,
-    );
+    let detail = match &app.notice {
+        Some(notice) => notice.clone(),
+        None => format!("{} conversation(s)", app.total),
+    };
+    let text = format!(" {} · {} · {detail}", app.account, app.listed);
+    frame.render_widget(Paragraph::new(screen_line(&text)), state);
     frame.render_widget(Paragraph::new(hints), hints_area);
 }
 
@@ -134,9 +225,11 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mailbox::{Place, PlaceKind};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ruston_core::Recipient;
 
     fn drawn(width: u16, height: u16, app: &App, theme: &Theme) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -156,26 +249,97 @@ mod tests {
             .join("\n")
     }
 
+    /// An app showing two folders and one conversation from `sender` about
+    /// `subject`.
+    fn with_mail(sender: &str, subject: &str) -> App {
+        let mut app = App::new("me@example.test".into());
+        app.places = vec![
+            Place {
+                id: "0".into(),
+                name: "Inbox".into(),
+                depth: 0,
+                kind: PlaceKind::System,
+                unread: 3,
+            },
+            Place {
+                id: "f-2024".into(),
+                name: "2024".into(),
+                depth: 1,
+                kind: PlaceKind::Folder,
+                unread: 0,
+            },
+        ];
+        app.conversations = vec![Conversation {
+            subject: subject.into(),
+            time: 1_714_000_000,
+            num_unread: 1,
+            senders: vec![Recipient::new(sender)],
+            ..Conversation::default()
+        }];
+        app.total = 1;
+        app.notice = None;
+        app
+    }
+
     #[test]
     fn a_wide_terminal_shows_the_three_panes_and_the_status_bar() {
-        let app = App::new("demo".into());
+        let app = with_mail("alex@example.test", "Quarterly report");
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         for title in ["Folders", "Conversations", "Reader"] {
             assert!(screen.contains(title), "{title} missing:\n{screen}");
         }
+        assert!(screen.contains("Inbox 3"), "{screen}");
+        assert!(screen.contains("  2024"), "{screen}");
+        // The pane is 48 columns wide: the subject is cut where it ends.
+        assert!(
+            screen.contains("• 2024-04-24  alex@example.test   Quarterly re│"),
+            "{screen}"
+        );
         let status = screen.lines().last().unwrap();
-        assert!(status.contains("Ruston Mail · demo"), "{status}");
+        assert!(
+            status.contains("me@example.test · Inbox · 1 conversation(s)"),
+            "{status}"
+        );
         assert!(status.contains("q quit"), "{status}");
     }
 
     #[test]
+    fn mail_text_cannot_draw_controls_or_spill_into_other_rows() {
+        let app = with_mail(
+            "evil\x1b[2J\u{202e}@example.test",
+            "first\nsecond\x1b]52;c;payload\x07\tend",
+        );
+        let buffer = drawn(120, 30, &app, &Theme::new(false));
+        assert!(
+            buffer.content().iter().all(|cell| cell
+                .symbol()
+                .chars()
+                .all(|c| !c.is_control() && c != '\u{202e}')),
+            "{}",
+            text(&buffer)
+        );
+        let screen = text(&buffer);
+        assert!(screen.contains("first second"), "{screen}");
+    }
+
+    #[test]
     fn a_narrow_terminal_shows_the_focused_pane_alone() {
-        let mut app = App::new("demo".into());
+        let mut app = with_mail("alex@example.test", "Quarterly report");
         app.focus = Pane::Conversations;
         let screen = text(&drawn(60, 20, &app, &Theme::new(false)));
         assert!(screen.contains("Conversations"), "{screen}");
+        assert!(screen.contains("Quarterly report"), "{screen}");
         assert!(!screen.contains("Folders"), "{screen}");
         assert!(!screen.contains("Reader"), "{screen}");
+    }
+
+    #[test]
+    fn the_status_bar_says_what_is_loading_or_what_went_wrong() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.notice = Some("Cannot load Inbox: offline\x1b[2J".into());
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        let status = screen.lines().last().unwrap();
+        assert!(status.contains("Cannot load Inbox: offline[2J"), "{status}");
     }
 
     #[test]
@@ -193,7 +357,7 @@ mod tests {
 
     #[test]
     fn no_color_leaves_every_color_to_the_terminal() {
-        let mut app = App::new("demo".into());
+        let mut app = with_mail("alex@example.test", "Quarterly report");
         app.help = true;
         let buffer = drawn(120, 30, &app, &Theme::new(true));
         assert!(
@@ -202,7 +366,7 @@ mod tests {
                 .iter()
                 .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
         );
-        // With colors, the accent marks the focused pane.
+        // With colors, the accent marks the focused pane and unread counts.
         let buffer = drawn(120, 30, &app, &Theme::new(false));
         assert!(buffer.content().iter().any(|cell| cell.fg == Color::Cyan));
     }

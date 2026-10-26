@@ -32,7 +32,7 @@ const NOTICE: &str =
     "note: offline demo (--demo or RUSTON_DEMO); nothing is sent to or changed on Proton";
 
 /// Fictional user details.
-const DEMO_EMAIL: &str = "demo@example.com";
+pub(crate) const DEMO_EMAIL: &str = "demo@example.com";
 const DEMO_NAME: &str = "Demo User";
 const DEMO_ALIAS: &str = "volunteers@example.org";
 
@@ -517,7 +517,7 @@ fn demo_addresses() -> Vec<AddressInfo> {
     ]
 }
 
-fn demo_labels() -> Vec<Label> {
+pub(crate) fn demo_labels() -> Vec<Label> {
     vec![
         Label {
             id: "label-demo-work".to_string(),
@@ -552,7 +552,7 @@ fn demo_labels() -> Vec<Label> {
     ]
 }
 
-fn demo_counts(conversations: bool) -> Vec<LabelCount> {
+pub(crate) fn demo_counts(conversations: bool) -> Vec<LabelCount> {
     if conversations {
         vec![
             LabelCount {
@@ -655,6 +655,38 @@ fn page_of<T>(items: Vec<T>, page: u32, page_size: u32) -> Vec<T> {
         .skip(usize::try_from(start).unwrap_or(usize::MAX))
         .take(page_size as usize)
         .collect()
+}
+
+/// Page `page` of `conversations` in `label`, newest first, with how many
+/// there are in all; `is_all` takes every one, and `unread` only the unread.
+fn list_page(
+    conversations: Vec<Conversation>,
+    label: &str,
+    is_all: bool,
+    unread: bool,
+    page: u32,
+    page_size: u32,
+) -> (u32, Vec<Conversation>) {
+    let mut matching: Vec<Conversation> = conversations
+        .into_iter()
+        .filter(|c| {
+            is_all
+                || c.labels
+                    .iter()
+                    .any(|l| l.id == label && l.context_num_messages.unwrap_or(0) > 0)
+        })
+        .filter(|c| !unread || c.num_unread > 0)
+        .collect();
+    matching.sort_by_key(|a| std::cmp::Reverse(a.time));
+    let total = matching.len() as u32;
+    (total, page_of(matching, page, page_size))
+}
+
+/// Page `page` of the demo's conversations in the folder or label `label`,
+/// as `conversations list` would list them, for the terminal interface.
+pub(crate) fn conversations(label: &str, page: u32, page_size: u32) -> (u32, Vec<Conversation>) {
+    let is_all = label == label_ids::ALL_MAIL;
+    list_page(fixtures().1, label, is_all, false, page, page_size)
 }
 
 /// Dispatcher for CLI commands in offline demo mode.
@@ -924,21 +956,14 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     || folder.eq_ignore_ascii_case("all")
                     || folder.eq_ignore_ascii_case("allmail");
 
-                let mut matching: Vec<Conversation> = fixtures_convs
-                    .into_iter()
-                    .filter(|c| {
-                        is_all
-                            || c.labels.iter().any(|l| {
-                                l.id == target_label && l.context_num_messages.unwrap_or(0) > 0
-                            })
-                    })
-                    .filter(|c| !unread || c.num_unread > 0)
-                    .collect();
-
-                matching.sort_by_key(|a| std::cmp::Reverse(a.time));
-                let total = matching.len() as u32;
-                let paged = page_of(matching, page, page_size);
-
+                let (total, paged) = list_page(
+                    fixtures_convs,
+                    &target_label,
+                    is_all,
+                    unread,
+                    page,
+                    page_size,
+                );
                 render::conversations_list(ctx.json, total, &paged);
                 Ok(())
             }

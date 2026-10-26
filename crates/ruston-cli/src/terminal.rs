@@ -150,6 +150,28 @@ fn is_filtered(c: char) -> bool {
     (c.is_control() && !matches!(c, '\n' | '\t')) || is_invisible_mark(c)
 }
 
+/// Mail text as the terminal interface may draw it: the characters output
+/// filtering drops are dropped here too, and a tab becomes spaces, since a
+/// cell holding one would move the cursor. Line breaks stay, for the caller
+/// to split lines at.
+pub(crate) fn screen_text(text: &str) -> String {
+    let mut clean = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\t' => clean.push_str("    "),
+            c if is_filtered(c) => {}
+            c => clean.push(c),
+        }
+    }
+    clean
+}
+
+/// [`screen_text`] for text kept to one line, such as a subject or a name:
+/// a line break becomes a space, so it cannot spill into the next row.
+pub(crate) fn screen_line(text: &str) -> String {
+    screen_text(text).replace('\n', " ")
+}
+
 impl fmt::Write for ControlFilter<'_> {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         let mut start = 0;
@@ -353,6 +375,21 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn the_terminal_interface_draws_mail_text_without_controls_or_tabs() {
+        let text = screen_text(&format!("Subject: {ATTACK}\r\n\tsecond line"));
+        assert_safe(&text);
+        assert!(!text.contains('\t'), "{text:?}");
+        assert!(text.contains("\n    second line"), "{text:?}");
+        assert!(text.contains("fdp.scr"), "{text:?}");
+
+        // A one-line field keeps to its row, however many lines it holds.
+        let line = screen_line(&format!("a\nb\r\nc\t{ATTACK}"));
+        assert_safe(&line);
+        assert!(!line.contains('\n') && !line.contains('\t'), "{line:?}");
+        assert!(line.starts_with("a b c    "), "{line:?}");
     }
 
     #[test]
