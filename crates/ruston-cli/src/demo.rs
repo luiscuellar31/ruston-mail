@@ -698,6 +698,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             }
             Ok(())
         }
+        Command::Tui => crate::tui::run(ctx).await,
         Command::Messages { cmd } => match cmd {
             MessagesCmd::List {
                 folder,

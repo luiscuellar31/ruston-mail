@@ -51,8 +51,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub demo: bool,
 
+    /// Without one, a terminal opens the terminal interface; anywhere else
+    /// the help is shown, as a usage error.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 /// What `login` alone takes: where and as which client to sign in, and the
@@ -236,6 +238,9 @@ pub enum Command {
     Logout,
     /// Print the primary email address of the active session.
     Whoami,
+    /// Open the terminal interface: folders, conversations and a reader in
+    /// one screen. `ruston-cli` with no command opens it too.
+    Tui,
     /// Message operations.
     Messages {
         #[command(subcommand)]
@@ -938,6 +943,13 @@ mod tests {
     use super::*;
     use clap::{CommandFactory, Parser};
 
+    impl Cli {
+        /// The command parsed, for tests that always give one.
+        fn cmd(self) -> Command {
+            self.command.expect("a command")
+        }
+    }
+
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
     }
@@ -989,8 +1001,7 @@ mod tests {
             "web",
             "--captcha-chrome",
         ])
-        .command
-        else {
+        .cmd() else {
             panic!("not a login");
         };
         assert_eq!(login.api_url.as_deref(), Some("https://mail.example/api"));
@@ -1082,7 +1093,7 @@ mod tests {
         ]);
         let Command::Messages {
             cmd: MessagesCmd::Send(a),
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };
@@ -1116,7 +1127,7 @@ mod tests {
         ]);
         let Command::Messages {
             cmd: MessagesCmd::Send(a),
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };
@@ -1143,7 +1154,7 @@ mod tests {
             args.extend(extra);
             let Command::Messages {
                 cmd: MessagesCmd::Send(a),
-            } = parse(&args).command
+            } = parse(&args).cmd()
             else {
                 panic!("wrong command");
             };
@@ -1179,7 +1190,7 @@ mod tests {
         ];
         let Command::Drafts {
             cmd: DraftsCmd::Save(a),
-        } = parse(&draft).command
+        } = parse(&draft).cmd()
         else {
             panic!("wrong command");
         };
@@ -1227,7 +1238,7 @@ mod tests {
                     body_only,
                     ..
                 },
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };
@@ -1241,7 +1252,7 @@ mod tests {
         let cli = parse(&["ruston-cli", "messages", "read", "abc"]);
         let Command::Messages {
             cmd: MessagesCmd::Read { format, .. },
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };
@@ -1253,7 +1264,7 @@ mod tests {
         let cli = parse(&["ruston-cli", "messages", "move", "REF", "--dest", "archive"]);
         let Command::Messages {
             cmd: MessagesCmd::Move { references, dest },
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };
@@ -1273,7 +1284,7 @@ mod tests {
         }
         let Command::Messages {
             cmd: MessagesCmd::Empty { folder, yes },
-        } = parse(&["ruston-cli", "messages", "empty", "spam", "--yes"]).command
+        } = parse(&["ruston-cli", "messages", "empty", "spam", "--yes"]).cmd()
         else {
             panic!("wrong command");
         };
@@ -1281,7 +1292,7 @@ mod tests {
         assert!(yes);
         let Command::Messages {
             cmd: MessagesCmd::Delete { references, yes },
-        } = parse(&["ruston-cli", "messages", "delete", "id1"]).command
+        } = parse(&["ruston-cli", "messages", "delete", "id1"]).cmd()
         else {
             panic!("wrong command");
         };
@@ -1291,7 +1302,7 @@ mod tests {
         assert!(Cli::try_parse_from(["ruston-cli", "drafts", "delete"]).is_err());
         let Command::Drafts {
             cmd: DraftsCmd::Delete { ids, yes },
-        } = parse(&["ruston-cli", "drafts", "delete", "draft1"]).command
+        } = parse(&["ruston-cli", "drafts", "delete", "draft1"]).cmd()
         else {
             panic!("wrong command");
         };
@@ -1304,7 +1315,7 @@ mod tests {
         let cli = parse(&["ruston-cli", "messages", "mark", "read", "id1", "id2"]);
         let Command::Messages {
             cmd: MessagesCmd::Mark { state, references },
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };
@@ -1338,7 +1349,7 @@ mod tests {
                     unread,
                     ..
                 },
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };
@@ -1352,7 +1363,7 @@ mod tests {
         let cli = parse(&["ruston-cli", "conversations", "mark", "unread", "conv1"]);
         let Command::Conversations {
             cmd: ConversationsCmd::Mark { state, folder, ids },
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };
@@ -1513,7 +1524,7 @@ mod tests {
         use ruston_core::model::enums::{label_ids, resolve_folder};
 
         let folder = |args: &[&str]| {
-            let Command::Index { folder, .. } = parse(args).command else {
+            let Command::Index { folder, .. } = parse(args).cmd() else {
                 panic!("wrong command");
             };
             resolve_folder(&folder)
@@ -1537,7 +1548,7 @@ mod tests {
                     folder,
                     parent,
                 },
-        } = cli.command
+        } = cli.cmd()
         else {
             panic!("wrong command");
         };

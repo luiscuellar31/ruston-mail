@@ -689,6 +689,18 @@ instead of an unknown outcome.
   `organize::folder_id_among`; the demo applies that rule to its own labels.
   `messages list --cached` reads offline and resolves only what core does
   without asking.
+- [`tui.rs`](../crates/ruston-cli/src/tui.rs) is the terminal interface that
+  `ruston-cli tui`, or no command in a terminal, opens; away from a terminal,
+  `main.rs` treats either as a usage error. It owns the terminal: raw mode and
+  the alternate screen, put back however the interface ends, a panic included,
+  and an async loop over crossterm's event stream. It starts no logging, which
+  would draw over it. [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs)
+  holds the state and what each key does, without a terminal; keys count on
+  press only, since Windows also reports releases.
+  [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
+  ratatui: three panes side by side, or the focused one alone in a narrow
+  terminal, a status bar and the list of keys, in the terminal's colors with
+  one accent, and none under `NO_COLOR`.
 - Command handlers call `ruston_core::Client`. Put terminal prompts and output
   formatting in the CLI; put shared mail behavior in the core. Output helpers
   are in [`render.rs`](../crates/ruston-cli/src/render.rs); `action_result`
@@ -946,6 +958,7 @@ instead of an unknown outcome.
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
+| CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) | [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs) |
 | CLI syntax, behavior, or output | [`crates/ruston-cli/src/cli.rs`](../crates/ruston-cli/src/cli.rs), [`commands/`](../crates/ruston-cli/src/commands/) | [`render.rs`](../crates/ruston-cli/src/render.rs), corresponding core `mail/` operation |
 | Proton request or response | [`crates/ruston-core/src/api/`](../crates/ruston-core/src/api/) | [`transport/`](../crates/ruston-core/src/transport/), [`model/`](../crates/ruston-core/src/model/), [wire tests](../crates/ruston-core/tests/api_wiremock.rs) |
 | Sessions and desktop preferences | Core [`session/`](../crates/ruston-core/src/session/) | Desktop [`settings.rs`](../src/settings.rs), [privacy guide](PRIVACY.md) |

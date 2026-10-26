@@ -492,6 +492,13 @@ inside the app:
 From source, run `cargo run -p ruston-cli -- --help`. `ruston-cli --help` lists
 every command, and `ruston-cli <command> --help` its options.
 
+`ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
+terminal interface with folders, conversations and a reader. It is being built
+for 0.9.0: for now it shows its three panes, moves between them with Tab and
+Shift+Tab, lists its keys with `?`, and quits with `q` or Ctrl+C. Away from a
+terminal, as in a script, `ruston-cli` with no command still prints the help
+and ends with status 2.
+
 The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with
 `--profile default`. `NAME` must be a single path component without separators.
