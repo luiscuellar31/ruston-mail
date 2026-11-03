@@ -108,7 +108,9 @@ the CLI on your `PATH`, separate profiles, and exports.
 
 ## Build from source
 
-You need Rust 1.96 or newer.
+You need Rust 1.96 or newer. With [rustup](https://rustup.rs), `cargo` builds
+with the version `rust-toolchain.toml` names, as CI and releases do, and
+fetches it the first time.
 
 ```sh
 git clone https://github.com/luiscuellar31/ruston-mail.git

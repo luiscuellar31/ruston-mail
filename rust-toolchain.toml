@@ -1,0 +1,8 @@
+# The Rust that `cargo` builds this repository with, here, in CI and in
+# releases. It moves only when this file does, so a new Rust release cannot
+# fail a build on its own. The oldest Rust supported is `rust-version` in
+# Cargo.toml, which CI checks as well.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

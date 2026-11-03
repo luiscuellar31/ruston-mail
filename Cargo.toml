@@ -1,5 +1,6 @@
 [workspace]
-resolver = "2"
+# Picks dependency versions that `rust-version` below can build, when it can.
+resolver = "3"
 members = [
     ".",
     "crates/ruston-core",

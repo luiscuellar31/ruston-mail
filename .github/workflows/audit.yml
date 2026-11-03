@@ -6,13 +6,13 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - .cargo/audit.toml
+      - deny.toml
       - .github/workflows/audit.yml
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - .cargo/audit.toml
+      - deny.toml
       - .github/workflows/audit.yml
   schedule:
     # Advisories can appear without a dependency change.
@@ -40,11 +40,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Toolchain
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked --version 0.22.2
-
-      - name: Audit dependencies
-        run: cargo audit
+      # deny.toml holds the one list of advisories let pass, each with why.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories

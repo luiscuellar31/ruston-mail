@@ -107,10 +107,10 @@ jobs:
           persist-credentials: false
 
       # No build cache: a release is built from scratch from the lockfile.
+      # rust-toolchain.toml names the toolchain.
       - name: Toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install
           rustc --version
 
       - name: Build the app and its disk image
@@ -237,10 +237,10 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # No build cache: a release is built from scratch from the lockfile.
+      # rust-toolchain.toml names the toolchain.
       - name: Toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install
           rustc --version
 
       - name: Build the AppImage
@@ -317,10 +317,10 @@ jobs:
           "INNO_SETUP=$iscc" >> $env:GITHUB_ENV
 
       # No build cache: a release is built from scratch from the lockfile.
+      # rust-toolchain.toml names the toolchain.
       - name: Toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install
           rustc --version
 
       # aws-lc-sys builds its ARM64 code with clang-cl from LLVM.

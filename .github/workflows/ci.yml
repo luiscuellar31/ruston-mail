@@ -63,10 +63,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # rust-toolchain.toml names the toolchain and its components.
       - name: Toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install
           rustc --version
 
       # aws-lc-sys builds its ARM64 code with clang-cl from LLVM.
@@ -163,6 +163,31 @@ jobs:
       - name: Ensure clean workspace
         run: git diff --exit-code
 
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The oldest Rust that rust-version in Cargo.toml promises, in place of
+      # rust-toolchain.toml's; keep the two in step.
+      RUSTUP_TOOLCHAIN: "1.96"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustc --version
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: msrv
+
+      - name: Check
+        run: cargo check --locked --workspace --all-targets --all-features
+
   deny:
     name: Dependency & license integrity
     runs-on: ubuntu-24.04
@@ -171,14 +196,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Advisories are the dependency audit's (audit.yml): one published
+      # meanwhile fails that, not a pull request that changed no dependency.
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          command: check
+          command: check bans licenses sources
 
   unused-deps:
     name: Unused dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      # cargo-machete reads only the sources; it asks rustc for the host
+      # alone, which the runner's own Rust answers without a download.
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
