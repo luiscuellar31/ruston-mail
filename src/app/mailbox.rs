@@ -381,6 +381,9 @@ pub struct Mailbox {
     reader: ReaderState,
     reader_stamp: Option<ReaderStamp>,
     cached_readers: Vec<CachedReader>,
+    /// The conversation loading into the reader cache in the background,
+    /// with its row's stamp when it was asked for: only its answer is kept.
+    preloading: Option<(ReaderRequest, ReaderStamp)>,
     search_query: String,
     /// Results of the last server search, while they are on screen.
     search: Option<SearchState>,
@@ -451,6 +454,7 @@ impl Mailbox {
             reader: ReaderState::Empty,
             reader_stamp: None,
             cached_readers: Vec::new(),
+            preloading: None,
             search_query: String::new(),
             search: None,
             device_index: None,
@@ -938,6 +942,12 @@ impl Mailbox {
         &self.reader
     }
 
+    /// The conversation loading into the reader cache, if any.
+    #[cfg(test)]
+    pub fn preloading(&self) -> Option<&ReaderRequest> {
+        self.preloading.as_ref().map(|(request, _)| request)
+    }
+
     #[cfg(test)]
     pub fn action_pending(&self) -> bool {
         self.action_in_flight.is_some()
@@ -1127,9 +1137,81 @@ impl Mailbox {
         (cached.stamp == stamp).then_some(cached.reader)
     }
 
+    /// Starts loading into the reader cache the row that would take the open
+    /// conversation's place were it moved out of the view, as
+    /// `open_row_after` picks it: the one below, or the one above at the end
+    /// of the list. Only once the open one shows, and not when that row is
+    /// cached already or on its way.
+    pub fn start_preload(&mut self, request: RequestId) -> Option<ReaderRequest> {
+        if !matches!(self.reader, ReaderState::Loaded(_)) {
+            return None;
+        }
+        let selected = self.selected_conversation()?;
+        let index = self
+            .visible_conversations()
+            .position(|row| row.id == selected)?;
+        let next = self
+            .visible_row(index + 1)
+            .or_else(|| self.visible_row(index.checked_sub(1)?))?;
+        let stamp = ReaderStamp::of(next);
+        let wanted = |id: &str, at: ReaderStamp| id == next.id && at == stamp;
+        let cached = self
+            .cached_readers
+            .iter()
+            .any(|cached| wanted(cached.reader.conversation_id(), cached.stamp));
+        let on_its_way = self
+            .preloading
+            .as_ref()
+            .is_some_and(|(request, at)| wanted(&request.conversation_id, *at));
+        if cached || on_its_way {
+            return None;
+        }
+        let request = ReaderRequest {
+            id: request,
+            conversation_id: next.id.clone(),
+            kind: next.kind,
+            messages: next.message_count,
+        };
+        self.preloading = Some((request.clone(), stamp));
+        Some(request)
+    }
+
+    /// Lets go of the preload on its way, which was stopped: its answer is
+    /// not kept.
+    pub fn forget_preload(&mut self) {
+        self.preloading = None;
+    }
+
+    /// Keeps a preloaded conversation in the reader cache, if it is still
+    /// the one wanted, as the row was when it was asked for: a row changed
+    /// since loads afresh when opened. Nothing shows it or marks it read.
+    pub fn finish_preload(
+        &mut self,
+        request: &ReaderRequest,
+        result: Result<ConversationDetail, MailboxError>,
+    ) -> Option<MailboxError> {
+        if self.preloading.as_ref().map(|(wanted, _)| wanted) != Some(request) {
+            return None;
+        }
+        let (_, stamp) = self.preloading.take()?;
+        match result {
+            // The reader may have opened it meanwhile, from a load of its own.
+            Ok(detail)
+                if detail.id == request.conversation_id
+                    && self.selected_conversation() != Some(detail.id.as_str()) =>
+            {
+                self.cache_reader(ConversationReader::new(detail), stamp);
+                None
+            }
+            Ok(_) => None,
+            Err(error) => Some(error),
+        }
+    }
+
     /// A successful send can add a message to a previously loaded thread.
     pub(super) fn invalidate_reader_cache(&mut self) {
         self.cached_readers.clear();
+        self.preloading = None;
         // Keep the open reader visible, but reload it after navigating away.
         self.reader_stamp = None;
     }

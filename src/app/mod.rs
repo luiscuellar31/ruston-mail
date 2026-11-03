@@ -131,6 +131,7 @@ pub enum Message {
         result: Result<Option<Vec<ConversationSummary>>, MailboxError>,
     },
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
+    ConversationPreloaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
     NewMailLoaded(
         SessionEpoch,
@@ -286,6 +287,9 @@ pub struct App {
     /// The reader's conversation load in flight. A newer load, a folder
     /// change or the end of the session abandons it.
     reader_load: Option<AbortHandle>,
+    /// The conversation loading into the reader cache in the background. It
+    /// stops whenever the reader's load would, and when another replaces it.
+    preload: Option<AbortHandle>,
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
     folders: Vec<Folder>,
@@ -368,6 +372,7 @@ impl App {
             last_request: 0,
             inspections: Inspections::default(),
             reader_load: None,
+            preload: None,
             folders: Vec::new(),
             place_looks: HashMap::new(),
             refetch_folders: false,
@@ -843,8 +848,15 @@ impl App {
                     .and_then(|mailbox| mailbox.finish_conversation(&request, result));
                 self.end_session_if_expired(error);
                 if awaited {
-                    return self.mark_opened_read();
+                    return Effects::batch([self.mark_opened_read(), self.preload_successor()]);
                 }
+            }
+            Message::ConversationPreloaded(request, result) => {
+                let error = self
+                    .mailbox
+                    .as_mut()
+                    .and_then(|mailbox| mailbox.finish_preload(&request, result));
+                self.end_session_if_expired(error);
             }
             Message::FoldersLoaded(epoch, result) => {
                 if !self.is_current_session(epoch) {
@@ -1497,7 +1509,7 @@ impl App {
 
         let content = match request {
             Some(request) => self.fetch_conversation(Some(request)),
-            None => self.mark_opened_read(),
+            None => Effects::batch([self.mark_opened_read(), self.preload_successor()]),
         };
 
         // A new conversation starts at its top, not where the last one was
@@ -1874,10 +1886,56 @@ impl App {
         )
     }
 
-    /// Stops the conversation load in flight, if any: nobody will read it.
+    /// Loads into the reader's cache, in the background, the conversation
+    /// that would open next were the open one archived or deleted, so it
+    /// shows at once then. Only opening it marks it read.
+    fn preload_successor(&mut self) -> Effects {
+        let Some(backend) = self.backend.clone() else {
+            return Effects::none();
+        };
+        let request = self.next_request();
+        let Some(request) = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.start_preload(request))
+        else {
+            return Effects::none();
+        };
+        if let Some(before) = self.preload.take() {
+            before.abort();
+        }
+        let (handle, registration) = AbortHandle::new_pair();
+        self.preload = Some(handle);
+        let (kind, id, messages) = (
+            request.kind,
+            request.conversation_id.clone(),
+            request.messages,
+        );
+
+        Effects::perform(
+            Abortable::new(
+                async move { backend.conversation_detail(kind, &id, messages).await },
+                registration,
+            ),
+            move |result| {
+                Message::ConversationPreloaded(
+                    request.clone(),
+                    result.unwrap_or(Err(MailboxError::Unavailable)),
+                )
+            },
+        )
+    }
+
+    /// Stops the conversation loads in flight, the reader's and the one
+    /// into its cache, if any: nobody will read them.
     fn abandon_reader_load(&mut self) {
         if let Some(load) = self.reader_load.take() {
             load.abort();
+        }
+        if let Some(preload) = self.preload.take() {
+            preload.abort();
+            if let Some(mailbox) = self.mailbox.as_mut() {
+                mailbox.forget_preload();
+            }
         }
     }
 

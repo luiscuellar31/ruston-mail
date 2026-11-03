@@ -255,6 +255,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   when its row no longer matches; a move of that hidden row opens nothing in its
   place. Server results, folder changes, and organizing actions retain their
   existing selection behavior. Reader scroll resets only when opening another row.
+  Readers left behind stay in a memory-only cache of eight, each with the
+  stamp of its row (kind, time, message count), and reopen from it while the
+  row still has that stamp. Once the open conversation shows, from the network
+  or that cache, `App` preloads into the cache the row a move out of the view
+  would open in its place: the one below, or the one above at the end of the
+  list. It keeps the stamp its row had when asked for, so a row changed since
+  loads afresh; one preload runs at a time, a newer one or the reader's next
+  load stops it, and nothing marks a preloaded conversation read until it opens.
   [`ui/mailbox.rs`](../src/ui/mailbox.rs) keeps two visible row IDs, their parent
   conversation, indices, and the scroll offset for the current folder and search.
   Appends with unchanged
