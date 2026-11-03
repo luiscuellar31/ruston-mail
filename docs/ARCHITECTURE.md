@@ -697,6 +697,13 @@ instead of an unknown outcome.
   `organize::folder_id_among`; the demo applies that rule to its own labels.
   `messages list --cached` reads offline and resolves only what core does
   without asking.
+- [`interrupt.rs`](../crates/ruston-cli/src/interrupt.rs) handles Ctrl+C in
+  every command but the terminal interface, which reads it as a key, and the
+  demo, which has no session. Ctrl+C waits through core's
+  `Client::settle_session` for any token refresh of the profile to be saved,
+  saying so after a quarter of a second, and then ends the program as its
+  default would: by SIGINT on Unix, with `STATUS_CONTROL_C_EXIT` on Windows.
+  A second Ctrl+C ends it at once.
 - [`tui.rs`](../crates/ruston-cli/src/tui.rs) is the terminal interface that
   `ruston-cli tui`, or no command in a terminal, opens; away from a terminal,
   `main.rs` treats either as a usage error. It resumes the profile's session
@@ -1129,6 +1136,10 @@ request is sent, the rotation finishes on a task of its own that holds both
 locks, so cancelling the request that needed it, through a view deadline or a
 discarded load, cannot lose the new token pair. A program about to end,
 which would cut that task short as well, waits for it with `Client::settle`.
+The task lets the tokens go once stored and saves them right after, which a
+program returning from `main` lets finish. One ending at once, as on Ctrl+C,
+waits with `Client::settle_session` for the profile lock instead: the rotation
+holds it until the new pair is saved, and the wait needs no client.
 A refresh answered with 429, a 5xx status or a verification challenge reports that error
 and keeps the session; only a refused refresh token is `Unauthorized`. Signing out of a
 shared profile signs out both frontends. Core runs local session cleanup under

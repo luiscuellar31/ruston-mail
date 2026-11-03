@@ -324,8 +324,11 @@ impl HttpClient {
     }
 
     /// Waits until no token refresh is under way. A refresh holds the
-    /// tokens until the new pair is stored and saved, on a task of its own
-    /// that a program ending right away would cut short, losing the session.
+    /// tokens until the new pair is stored, on a task of its own that a
+    /// program ending right away would cut short, losing the session. That
+    /// task then saves the pair without yielding, which a program returning
+    /// from `main` lets finish; one ending at once, as on Ctrl+C, waits with
+    /// [`crate::Client::settle_session`] instead.
     pub async fn settled(&self) {
         drop(self.auth.read().await);
     }
@@ -1651,6 +1654,129 @@ mod tests {
         assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
         assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
         server.verify().await;
+    }
+
+    // Two workers: the slow save blocks one while the test waits on the other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn waiting_for_the_profile_outlasts_a_refresh_until_its_tokens_are_saved() {
+        /// A store whose writes take a while once `slow` is set, as a
+        /// keychain's can.
+        #[derive(Default)]
+        struct SlowStore {
+            inner: MemoryStore,
+            slow: std::sync::atomic::AtomicBool,
+        }
+        impl SecretStore for SlowStore {
+            fn set(&self, key: &str, value: &str) -> Result<()> {
+                if self.slow.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                self.inner.set(key, value)
+            }
+            fn get(&self, key: &str) -> Result<Option<String>> {
+                self.inner.get(key)
+            }
+            fn delete(&self, key: &str) -> Result<()> {
+                self.inner.delete(key)
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer old-acc"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code": 401})),
+            )
+            .mount(&server)
+            .await;
+        let requested = Arc::new(tokio::sync::Notify::new());
+        let received = requested.clone();
+        Mock::given(method("POST"))
+            .and(path("/auth/v4/refresh"))
+            .respond_with(move |_: &wiremock::Request| {
+                received.notify_one();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Code": 1000,
+                    "AccessToken": "new-acc",
+                    "RefreshToken": "new-ref",
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/protected"))
+            .and(header("authorization", "Bearer new-acc"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code":1000,"Value":99})),
+            )
+            .mount(&server)
+            .await;
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "ruston-settle-session-{}-{unique}",
+            std::process::id()
+        ));
+        let paths = Paths::with_base(&base);
+        let slow_store = Arc::new(SlowStore::default());
+        let store: Arc<dyn SecretStore> = slow_store.clone();
+        Session {
+            uid: "uid".into(),
+            app_version: "Other".into(),
+            base_url: server.uri(),
+            password_mode: 1,
+            user_agent: None,
+            user_id: None,
+        }
+        .save(
+            &paths,
+            "ruston",
+            store.as_ref(),
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("old-acc"),
+                refresh: SecretString::from("old-ref"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
+        slow_store
+            .slow
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut client = client(&server.uri());
+        client
+            .set_tokens(
+                "uid".into(),
+                SecretString::from("old-acc"),
+                SecretString::from("old-ref"),
+            )
+            .await;
+        crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
+
+        let request =
+            tokio::spawn(
+                async move { client.decode::<ValueResp>(Request::get("/protected")).await },
+            );
+        requested.notified().await;
+        // As Ctrl+C would, once Proton has spent the old refresh token.
+        let waiting = paths.clone();
+        tokio::task::spawn_blocking(move || Session::wait_unlocked(&waiting, "ruston"))
+            .await
+            .unwrap()
+            .unwrap();
+        let saved = Session::load(&paths, "ruston", store.as_ref())
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.tokens.refresh.expose_secret(), "new-ref");
+        assert_eq!(request.await.unwrap().unwrap().value, 99);
+        server.verify().await;
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[tokio::test]

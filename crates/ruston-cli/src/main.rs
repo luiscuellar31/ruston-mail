@@ -4,6 +4,7 @@ mod cli;
 mod commands;
 mod demo;
 mod hv;
+mod interrupt;
 mod mailbox;
 mod render;
 mod terminal;
@@ -47,6 +48,11 @@ async fn main() {
         // -v debug, -vv trace(core), -vvv trace(all); RUST_LOG overrides.
         // The interface draws over the terminal, so it logs nothing.
         terminal::init_tracing(cli.verbose);
+        // The interface reads Ctrl+C as a key; the demo has no session.
+        let ctx = Ctx::from(&cli);
+        if !ctx.demo {
+            tokio::spawn(interrupt::end_on_ctrl_c(ctx.profile));
+        }
     }
 
     if let Err(e) = dispatch(cli).await {

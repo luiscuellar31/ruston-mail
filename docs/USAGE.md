@@ -503,6 +503,11 @@ inside the app:
 From source, run `cargo run -p ruston-cli -- --help`. `ruston-cli --help` lists
 every command, and `ruston-cli <command> --help` its options.
 
+Ctrl+C stops a command. When it comes while the session is renewing its
+sign-in tokens, the command first lets the new ones be saved, so you stay
+signed in, and says so if that takes a moment; a second Ctrl+C stops it at
+once.
+
 ### Terminal interface
 
 `ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a

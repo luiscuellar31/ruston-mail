@@ -18,7 +18,8 @@ path = "src/main.rs"
 ruston-core = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+# `signal`: Ctrl+C in a command waits for a token refresh to be saved.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 serde_json = { workspace = true }
 html5ever = { workspace = true }
 getrandom = { workspace = true }
