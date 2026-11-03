@@ -1852,8 +1852,14 @@ fn times_are_formatted_relative_to_now() {
             .timestamp()
     };
     assert_eq!(format_time(at(2026, 9, 11, 9, 5), &now), "09:05");
+    assert_eq!(format_time(at(2026, 9, 10, 23, 59), &now), "Yesterday");
+    assert_eq!(format_time(at(2026, 9, 10, 0, 0), &now), "Yesterday");
+    assert_eq!(format_time(at(2026, 9, 9, 23, 59), &now), "Sep 9");
     assert_eq!(format_time(at(2026, 3, 2, 9, 5), &now), "Mar 2");
     assert_eq!(format_time(at(2025, 12, 31, 9, 5), &now), "2025-12-31");
+    // Yesterday wins over last year's date on the first of January.
+    let new_year = Utc.with_ymd_and_hms(2027, 1, 1, 8, 0, 0).unwrap();
+    assert_eq!(format_time(at(2026, 12, 31, 22, 0), &new_year), "Yesterday");
 }
 
 #[test]
@@ -2080,30 +2086,34 @@ fn a_row_is_exactly_the_height_the_list_places_it_at() {
 
 #[test]
 fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
-    let sender = "A sender whose name runs on and on, well past the time";
-    let mut conversation = pagination_row("A subject", 1_700_000_000);
-    conversation.correspondents = Some(sender.into());
-    let context = egui::Context::default();
+    let name = "A sender whose name runs on and on, well past the time";
     let now = Local::now();
-    let output = context.run_ui(egui::RawInput::default(), |ui| {
-        ui.set_width(320.0);
-        conversation_row(ui, &conversation, false, &now);
-    });
-    let shapes = output.shapes.clone();
-    output.drop_without_applying_deltas();
+    // A full date, and the longest word the time column shows.
+    let yesterday = (now - chrono::Duration::days(1)).timestamp();
+    for timestamp in [1_700_000_000, yesterday] {
+        let mut conversation = pagination_row("A subject", timestamp);
+        conversation.correspondents = Some(name.into());
+        let context = egui::Context::default();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(320.0);
+            conversation_row(ui, &conversation, false, &now);
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
 
-    let sender = visible_text_rect(&shapes, sender).expect("the sender line");
-    let subject = visible_text_rect(&shapes, "A subject").expect("the subject line");
-    let time = visible_text_rect(&shapes, &format_time(1_700_000_000, &now)).expect("the time");
-    assert!(
-        sender.center().y < subject.center().y,
-        "{sender:?} {subject:?}"
-    );
-    assert_eq!(sender.left(), subject.left());
-    assert!(
-        sender.right() <= time.left(),
-        "{sender:?} runs into {time:?}"
-    );
+        let sender = visible_text_rect(&shapes, name).expect("the sender line");
+        let subject = visible_text_rect(&shapes, "A subject").expect("the subject line");
+        let time = visible_text_rect(&shapes, &format_time(timestamp, &now)).expect("the time");
+        assert!(
+            sender.center().y < subject.center().y,
+            "{sender:?} {subject:?}"
+        );
+        assert_eq!(sender.left(), subject.left());
+        assert!(
+            sender.right() <= time.left(),
+            "{sender:?} runs into {time:?}"
+        );
+    }
 }
 
 #[test]

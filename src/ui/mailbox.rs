@@ -1390,7 +1390,11 @@ where
     let Some(time) = now.timezone().timestamp_opt(timestamp, 0).single() else {
         return String::new();
     };
-    let format = if time.date_naive() == now.date_naive() {
+    let today = now.date_naive();
+    if today.pred_opt() == Some(time.date_naive()) {
+        return "Yesterday".to_owned();
+    }
+    let format = if time.date_naive() == today {
         "%H:%M"
     } else if time.year() == now.year() {
         "%b %-d"
