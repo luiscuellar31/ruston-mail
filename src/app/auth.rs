@@ -98,6 +98,12 @@ impl App {
         &self.auth_state
     }
 
+    /// Whether the session being checked is one found saved at startup,
+    /// which opens the mailbox unless it fails.
+    pub fn opening_saved_session(&self) -> bool {
+        self.session_saved && self.auth_state == AuthState::CheckingSession
+    }
+
     pub(crate) fn username_mut(&mut self) -> &mut String {
         &mut self.login_form.username
     }

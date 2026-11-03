@@ -12,6 +12,10 @@ use crate::settings::{ComposePlacement, Panels, Settings};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
 const CONVERSATION_PANEL_ID: &str = "conversation-list";
+/// The columns shown while a saved session opens, kept apart from the
+/// mailbox's so their fixed widths never become its own.
+const OPENING_SIDEBAR_ID: &str = "opening-sidebar";
+const OPENING_CONVERSATIONS_ID: &str = "opening-conversations";
 /// Drawing the saved panel ratios measures back ratios a little off them, so
 /// a smaller difference is not a resize: saving it would rewrite the settings
 /// on frames where nothing was dragged.
@@ -113,6 +117,61 @@ pub(super) fn show(
         || (actual.conversations - stored.conversations).abs() > PANEL_RATIO_TOLERANCE
     {
         messages.push(Message::PanelsResized(actual));
+    }
+}
+
+/// The mailbox's columns while a saved session opens, as skeletons with the
+/// widths they keep: the sidebar, the list, and an empty reader. A window
+/// too narrow for them shows the list's alone.
+pub(super) fn show_opening(root: &mut egui::Ui, app: &App) {
+    let window_width = root.available_width();
+    let inset = theme::titlebar_inset(root.ctx());
+    if !compact_layout(window_width) {
+        let widths = panel_widths(app.panels(), window_width);
+        egui::Panel::left(OPENING_SIDEBAR_ID)
+            .default_size(widths.sidebar)
+            .size_range(widths.sidebar..=widths.sidebar)
+            .resizable(false)
+            .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
+            .show(root, sidebar_skeleton);
+        egui::Panel::left(OPENING_CONVERSATIONS_ID)
+            .default_size(widths.conversations)
+            .size_range(widths.conversations..=widths.conversations)
+            .resizable(false)
+            .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
+            .show(root, conversation_skeleton);
+    }
+    egui::CentralPanel::default()
+        .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
+        .show(root, |ui| {
+            if compact_layout(window_width) {
+                conversation_skeleton(ui);
+            }
+        });
+}
+
+/// The sidebar while a saved session opens: its name, and skeletons where
+/// its button and Proton's folders go.
+fn sidebar_skeleton(ui: &mut egui::Ui) {
+    const NAME_WIDTHS: [f32; 4] = [0.42, 0.3, 0.5, 0.36];
+    ui.heading(
+        egui::RichText::new("Ruston Mail")
+            .size(theme::APP_NAME_SIZE)
+            .strong(),
+    );
+    ui.add_space(12.0);
+    let fill = theme::skeleton_fill(ui);
+    let width = ui.available_width();
+    let (button, _) = ui.allocate_exact_size(egui::vec2(width, NEW_MESSAGE_HEIGHT), Sense::hover());
+    theme::paint_skeleton(ui.painter(), button, fill);
+    ui.add_space(12.0);
+    for index in 0..MailFolder::ALL.len() {
+        let (row, _) = ui.allocate_exact_size(egui::vec2(width, FOLDER_HEIGHT), Sense::hover());
+        let name = egui::Rect::from_min_size(
+            egui::pos2(row.left() + 10.0, row.center().y - 5.0),
+            egui::vec2(width * NAME_WIDTHS[index % NAME_WIDTHS.len()], 10.0),
+        );
+        theme::paint_skeleton(ui.painter(), name, fill);
     }
 }
 
@@ -404,7 +463,7 @@ fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
                 .atom_id(egui::Id::new(NEW_MESSAGE_LABEL_ID)),
             egui::Atom::grow(),
         ))
-        .min_size(egui::vec2(width, 34.0))
+        .min_size(egui::vec2(width, NEW_MESSAGE_HEIGHT))
         .stroke(Stroke::NONE)
         .atom_ui(ui)
     })
@@ -863,6 +922,7 @@ fn notice_remaining(
 }
 
 const FOLDER_HEIGHT: f32 = 31.0;
+const NEW_MESSAGE_HEIGHT: f32 = 34.0;
 /// How far each folder a subfolder sits in moves it right.
 const SUBFOLDER_INDENT: f32 = 14.0;
 /// Virtualized rows must draw at this height to stay aligned with scrolling.

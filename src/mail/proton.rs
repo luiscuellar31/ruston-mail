@@ -177,6 +177,12 @@ impl ProtonMailService {
         resume_within(Client::resume(PROFILE), SIGN_IN_TIMEOUT).await
     }
 
+    /// Whether a saved session waits to be resumed, from its file alone,
+    /// so the answer comes at once.
+    pub fn has_saved_session() -> bool {
+        Client::has_saved_session(PROFILE)
+    }
+
     /// Signs in, forwarding interactive prompts and always emitting `Finished`.
     pub async fn sign_in(request: LoginRequest, mut events: mpsc::Sender<SignInEvent>) {
         let given = Supplied {

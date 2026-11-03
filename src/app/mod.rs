@@ -256,6 +256,9 @@ pub struct App {
     /// never signs in to Proton, even after its demo mailbox is closed.
     demo_process: bool,
     auth_state: AuthState,
+    /// A saved session was found when the app started, so checking it is
+    /// opening the mailbox rather than finding out whether to sign in.
+    session_saved: bool,
     login_form: LoginForm,
     auth_error: Option<AuthError>,
     /// The saved session could not open for a reason that may pass, such as
@@ -338,6 +341,7 @@ impl App {
         let task = if demo {
             app.open_mailbox(MailBackend::demo(), None, None)
         } else {
+            app.session_saved = ProtonMailService::has_saved_session();
             Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
         };
 
@@ -348,6 +352,7 @@ impl App {
         Self {
             demo_process: false,
             auth_state: AuthState::CheckingSession,
+            session_saved: false,
             login_form: LoginForm::default(),
             auth_error: None,
             resume_may_retry: false,

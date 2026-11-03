@@ -1094,6 +1094,9 @@ impl eframe::App for DesktopApp {
             self.pending_settings_exit = None;
         }
         match self.app.auth_state() {
+            AuthState::CheckingSession if self.app.opening_saved_session() => {
+                mailbox::show_opening(ui, &self.app);
+            }
             AuthState::CheckingSession => status_view(ui, "Opening Ruston Mail…"),
             AuthState::SignedOut
             | AuthState::SigningIn(_)

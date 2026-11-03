@@ -417,6 +417,13 @@ impl Client {
         .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?
     }
 
+    /// Whether `profile` has a saved session to resume, judged by its
+    /// metadata file alone: the keychain is not asked, so the answer comes
+    /// at once, and a session whose secrets are gone still counts.
+    pub fn has_saved_session(profile: &str) -> bool {
+        Paths::system().is_ok_and(|paths| Session::is_saved(&paths, profile))
+    }
+
     /// Waits until no token refresh is under way, so a program about to end
     /// lets one finish saving the new tokens instead of losing the session.
     pub async fn settle(&self) {

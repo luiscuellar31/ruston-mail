@@ -1178,6 +1178,60 @@ fn a_waiting_screen_repaints_on_a_delay_and_holds_still_without_focus() {
 }
 
 #[test]
+fn opening_a_saved_session_shows_the_columns_it_opens_into_and_waits_alike() {
+    use std::time::Duration;
+
+    let (app, _) = App::boot(true, Settings::default());
+    // The panel widths a frame of `width` gives, and its repaint delay. The
+    // first frames settle fonts and layout.
+    let frame = |width: f32, focused: bool| {
+        let context = egui::Context::default();
+        let mut delay = Duration::ZERO;
+        for _ in 0..3 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    focused,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| mailbox::show_opening(ui, &app),
+            );
+            delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            output.drop_without_applying_deltas();
+        }
+        let width_of = |id: &str| {
+            egui::containers::panel::PanelState::load(&context, egui::Id::new(id))
+                .map(|state| state.outer_rect.width())
+        };
+        (
+            width_of("opening-sidebar"),
+            width_of("opening-conversations"),
+            delay,
+        )
+    };
+
+    let (sidebar, conversations, focused) = frame(1200.0, true);
+    let widths = crate::app::panel_widths(app.panels(), 1200.0);
+    // As stored, to the pixel egui rounds them to.
+    let near = |width: Option<f32>, stored: f32| width.is_some_and(|w| (w - stored).abs() < 0.5);
+    assert!(near(sidebar, widths.sidebar), "{sidebar:?} {widths:?}");
+    assert!(
+        near(conversations, widths.conversations),
+        "{conversations:?} {widths:?}"
+    );
+    assert!(
+        focused > Duration::ZERO && focused <= Duration::from_millis(100),
+        "{focused:?}"
+    );
+    assert_eq!(frame(1200.0, false).2, Duration::MAX);
+    // Too narrow for columns: the list alone.
+    assert_eq!(frame(500.0, true).0, None);
+}
+
+#[test]
 fn execute_only_requests_repaint_for_visual_effects() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};

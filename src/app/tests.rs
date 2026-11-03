@@ -1344,6 +1344,20 @@ fn initial_state_checks_saved_session() {
 }
 
 #[test]
+fn only_a_session_found_saved_at_startup_is_opened_as_the_mailbox() {
+    let mut app = App::new(Settings::default());
+    assert!(!app.opening_saved_session());
+
+    app.session_saved = true;
+    assert!(app.opening_saved_session());
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    assert!(!app.opening_saved_session());
+
+    let (demo, _) = App::boot(true, Settings::default());
+    assert!(!demo.opening_saved_session());
+}
+
+#[test]
 fn normal_startup_checks_the_proton_session() {
     let (app, _) = App::boot(false, Settings::default());
 

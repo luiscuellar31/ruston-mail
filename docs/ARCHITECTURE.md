@@ -352,7 +352,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   as no network, Proton being busy or down by core's `ApiError` rule, or
   locked password storage, keeps the session saved, and `App` offers the sign-in screen's **Try again**,
   which resumes it again; only the check the startup screen waits for is
-  applied.
+  applied. Before the first frame, `App::boot` asks core's
+  `Client::has_saved_session`, which looks only for the session's metadata
+  file, never the keychain. With one, the startup screen is the mailbox's
+  columns as skeletons, at their stored widths, from
+  [`src/ui/mailbox.rs`](../src/ui/mailbox.rs)'s `show_opening`; without
+  one, it is the plain waiting screen, so whoever has to sign in sees no
+  mailbox flash by first.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
   process in a file of its own, and moves a file it cannot read aside before
   saving defaults in its place. `App` writes settled settings off the
