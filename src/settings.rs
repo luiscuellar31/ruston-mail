@@ -57,6 +57,12 @@ pub struct Settings {
     /// before this choice existed keep it off.
     #[serde(default)]
     pub accept_international_domains: bool,
+    /// When Proton cannot be reached, search the index `ruston-cli index`
+    /// builds on this device instead, reading it without changing it. Off
+    /// by default, and for settings saved before this choice existed: that
+    /// index holds decrypted mail, unencrypted.
+    #[serde(default)]
+    pub search_device_offline: bool,
     /// Color scheme of the desktop interface.
     #[serde(default)]
     pub appearance: Appearance,
@@ -101,6 +107,7 @@ impl Default for Settings {
             compose_placement: ComposePlacement::ReadingPane,
             check_recipient_protection: true,
             accept_international_domains: false,
+            search_device_offline: false,
             appearance: Appearance::Dark,
             follow_system_appearance: false,
             system_font: false,
@@ -460,6 +467,24 @@ mod tests {
         let text = serde_json::to_string(&chosen).unwrap();
         let restored: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(restored.recipient_domains(), Domains::International);
+    }
+
+    #[test]
+    fn this_device_is_searched_only_once_asked() {
+        assert!(!Settings::default().search_device_offline);
+        // Settings saved before this choice existed leave it off.
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("search_device_offline");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert!(!restored.search_device_offline);
+
+        let chosen = Settings {
+            search_device_offline: true,
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&chosen).unwrap();
+        let restored: Settings = serde_json::from_str(&text).unwrap();
+        assert!(restored.search_device_offline);
     }
 
     #[test]

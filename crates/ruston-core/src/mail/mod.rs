@@ -7,6 +7,7 @@ pub mod export;
 pub mod filters;
 pub mod organize;
 pub mod read;
+pub mod recipients;
 pub mod send;
 pub mod sync;
 #[cfg(test)]
@@ -414,6 +415,33 @@ impl Client {
         })
         .await
         .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?
+    }
+
+    /// Whether `profile` has a saved session to resume, judged by its
+    /// metadata file alone: the keychain is not asked, so the answer comes
+    /// at once, and a session whose secrets are gone still counts.
+    pub fn has_saved_session(profile: &str) -> bool {
+        Paths::system().is_ok_and(|paths| Session::is_saved(&paths, profile))
+    }
+
+    /// Waits until no token refresh is under way, so a program about to end
+    /// lets one finish saving the new tokens instead of losing the session.
+    pub async fn settle(&self) {
+        self.http.settled().await;
+    }
+
+    /// Waits until no token refresh of `profile`'s saved session is under
+    /// way, in this program or another: one holds the profile lock from
+    /// sending the old refresh token until the new pair is saved. A program
+    /// stopped from outside, as by Ctrl+C, can then end at once, with no
+    /// client at hand, and keep the session. Gives up with an error after as
+    /// long as any other wait for that lock.
+    pub async fn settle_session(profile: &str) -> Result<()> {
+        validate_profile_name(profile)?;
+        let profile = profile.to_owned();
+        tokio::task::spawn_blocking(move || Session::wait_unlocked(&Paths::system()?, &profile))
+            .await
+            .map_err(|error| Error::Session(format!("session wait task failed: {error}")))?
     }
 
     /// The primary sending address email.

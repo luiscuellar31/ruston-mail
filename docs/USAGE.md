@@ -92,6 +92,15 @@ search starts once it has loaded. What Proton finds is titled **Search
 results**, since it comes from every folder. Clear the field to return to the
 open folder.
 
+When Proton cannot be reached, a search can look on this device instead: turn
+on **Search this device when Proton cannot be reached** under Settings ›
+Advanced. It then searches the index that `ruston-cli index` builds, which
+Ruston Mail reads without changing, and the line under the search field says
+the results come from this device. That index holds your mail decrypted and
+unencrypted, so the setting is off until you turn it on; without an index the
+search fails as before and says there was none to look in. Opening a result
+still needs Proton.
+
 Folder lists and server search load 50 conversations at a time. Use **Load more**
 at the end of the list to request another page when available. Loading another
 page keeps the open message and your position in the list. Refresh keeps verified
@@ -257,6 +266,14 @@ without a signature can still be saved; their contents have not been
 authenticated by a signature. These checks also apply to CLI downloads and EML
 exports.
 
+A PGP/MIME message, as PGP users outside Proton send, carries its attachments
+inside its encrypted body, where Proton cannot see them. Ruston lists them
+with the message's other attachments; in the CLI their IDs are `mime-1`,
+`mime-2` and so on, by their place in the message. They have no signature of
+their own: the body's covers them. Ruston refuses to save one only when the
+body's signature is invalid, and saves it otherwise, as it shows such a body:
+unsigned, or unverified because the sender's keys are not available.
+
 New local attachments are limited to 32 MiB per file and 128 MiB combined in
 both the desktop and CLI. These are Ruston's safety limits; Proton may impose
 additional limits. Files that become too large before upload are rejected too.
@@ -383,6 +400,8 @@ Settings control:
 - Plain-text or HTML sending.
 - Whether the composer checks recipient encryption while you write (Advanced).
 - Whether recipient fields accept international domain names (Advanced).
+- Whether a search looks in this device's index when Proton cannot be reached
+  (Advanced).
 - The folder shown at startup.
 - Dark or light appearance, or on macOS and Windows the system's. Dark remains
   the default.
@@ -491,6 +510,151 @@ inside the app:
 
 From source, run `cargo run -p ruston-cli -- --help`. `ruston-cli --help` lists
 every command, and `ruston-cli <command> --help` its options.
+
+Ctrl+C stops a command. When it comes while the session is renewing its
+sign-in tokens, the command first lets the new ones be saved, so you stay
+signed in, and says so if that takes a moment; a second Ctrl+C stops it at
+once.
+
+### Terminal interface
+
+`ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
+terminal interface with folders, conversations and a reader, whose keys are
+Proton Mail's wherever Proton has one; `?` lists them. With no session saved,
+it signs in first, as `ruston-cli login` does, and `--demo` opens the
+fictional mailbox, which keeps the changes you make until the interface
+closes. Away from a terminal, as in a script, `ruston-cli` with no command
+still prints the help and ends with status 2.
+
+It lists the folders and labels with how many of their conversations are
+unread, a folder's conversations, newest first, each marked unread (•),
+starred (★) or with attachments (+), and the conversation you open, with each
+message's headers, its signature's verdict and its body as
+`conversations read` shows it. The list holds 50 conversations at first and
+loads 50 more each time you move down past its last. `g` followed by a letter
+goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
+Starred, `d` Drafts, `t` Trash, `s` Spam and `m` All mail. A quoted passage of
+three lines or more, such as the message a reply answers, folds into one line
+unless the whole message is quoted; `z` shows or hides them. Links show as
+text with the address they open; `b` lists those of the open conversation, and
+one opens in your browser only once you answer `y` to the address it shows.
+Each message lists its attachments under its headers, and `v` lists those of
+the open conversation: Enter saves one, checking its signature as
+`ruston-cli attachments download` does, into your Downloads folder, or the
+current folder when there is none, never over a file already there. Opening an
+unread conversation marks it read once it shows, as the desktop does, unless
+you start it with `ruston-cli tui --keep-unread`.
+
+`*` stars or unstars the conversation selected in the list, or the one the
+reader shows, `u` marks it unread and `r`, in the list, read, `a` archives it,
+`s` moves it to Spam, `i` to the Inbox, and `t` or Delete to Trash; then the
+list and the counts load again, and a conversation the reader shows that left
+the folder listed is put away. `l` starts `:label`, which puts one of your
+labels on it, and `m` starts `:move`. Space or `x` marks the selected
+conversation and moves down, and Ctrl+A marks them all: with some marked, an
+action from the list acts on all of them, and Esc takes the marks away. In
+Trash or Spam, Ctrl+Backspace or `:delete` deletes the conversation forever,
+and `:empty` everything in the folder, only once you answer `y` to the
+question that names it; any other key keeps the mail.
+
+`:` or Ctrl+K opens a command line at the foot; Tab completes a command or a
+name, Up and Down bring back the lines run before, Enter runs it and Esc
+closes it. `/` or Ctrl+F starts one at `:search`, which looks for words in all
+of your mail and lists what it finds; Esc in that list goes back to the folder
+listed before. `:local` looks instead in the local index that
+`ruston-cli index` builds, without a connection; opening what it finds still
+needs one.
+
+`n` or Ctrl+N, as in Proton Mail, or `:compose` writes a new message, which
+takes the whole screen. In the reader, `r` replies to the conversation's last
+message, `R` (Shift+R) replies to everyone it went to, and `F` (Shift+F)
+forwards it with its files, as in Proton; `:reply`, `:replyall` and
+`:forward` do the same. A reply opens addressed as Proton would address it,
+which you can change, and says when the message asked for replies to go to
+someone other than its sender. Proton writes an answer's subject, and the
+original goes under your text unless Ctrl+Q leaves it out. A message goes
+from your primary address, or an answer from the one the original reached;
+From shows which. Ctrl+A, for Proton's Ctrl+Shift+A, which many terminals
+cannot tell from it, lists the files the message carries: type the path of
+one, Tab completes it as a shell does, `~` being your home folder, and Enter
+attaches it, once it is a file that can be read, of at most 32 MiB, with all
+the files together at most 128 MiB. Up and Down choose a file listed, and
+Delete takes it away, or leaves one of a forwarded message's files out.
+To, Cc and Bcc take addresses separated by commas or semicolons; a domain in
+another script is refused unless you type it in its `xn--` form, as the
+desktop does unless told otherwise. Tab and Shift+Tab move between the fields
+and the text under them, and Up and Down do too; Enter starts a new line in
+the text, and in a field moves to the next one. Ctrl+Enter sends it, as in
+Proton, or Ctrl+S, for terminals that send Ctrl+Enter as Enter, such as WSL in
+Windows Terminal. First a question names who gets it and how Proton will
+protect it for each of them, and only `y` sends it. When Proton may have
+taken it without confirming so, the message stays open and says to check Sent
+before sending it again. Esc or Ctrl+C closes it, first asking when something
+is written. On Linux and macOS, what you paste comes whole: its lines stay
+lines in the text, and in To, Cc, Bcc or Subject they are joined, addresses
+by commas. A message being written is kept only in memory, never on disk,
+and goes as plain text; the demo puts what it sends in its Sent.
+
+| Key | Action |
+| --- | --- |
+| Tab, Shift+Tab | Next or previous pane |
+| `j`, `k`, Up, Down | Move, or scroll the reader |
+| Enter, Right | Open the folder or conversation |
+| Left | Go back a pane |
+| PageUp, PageDown | Scroll the reader a page |
+| Home, End, Ctrl+Up, Ctrl+Down | Go to the top or the bottom |
+| `g`, then `i`, `a`, `e`, `*`, `d`, `t`, `s` or `m` | Go to the Inbox, Archive, Sent, Starred, Drafts, Trash, Spam or All mail |
+| `z` | Show or hide quoted text |
+| `b` | List the open conversation's links, to open one |
+| `v` | List the open conversation's attachments, to save one |
+| `*` | Star or unstar the conversation |
+| `r`, `u` | Mark it read, from the list, or unread |
+| `a` | Archive it |
+| `s`, `i` | Move it to Spam, or to the Inbox |
+| `t`, Delete | Move it to Trash |
+| Ctrl+Backspace | Delete it forever, in Trash or Spam, once you answer `y` |
+| `l`, `m` | Label it, or move it to a folder |
+| `n`, Ctrl+N | Write a new message |
+| `r`, `R`, `F` | In the reader: reply, reply to all, or forward |
+| Space, `x` | Mark it, for an action on all marked |
+| Ctrl+A | Mark them all, or none |
+| `/`, Ctrl+F | Search all mail |
+| `:`, Ctrl+K | Type a command |
+| Ctrl+R | Refresh the folders and the list |
+| `?` | Show or hide the keys |
+| Esc | Close the keys, clear the marks, or go back a pane |
+| `q`, Ctrl+C | Quit |
+| Ctrl+Z | Suspend to the shell, on Linux and macOS |
+
+| While writing | Action |
+| --- | --- |
+| Tab, Shift+Tab | Next or previous field |
+| Up, Down | Move a row, or to the field above or below |
+| Enter | Start a new line in the text, or go to the next field |
+| Ctrl+Enter, Ctrl+S | Send it, once you answer `y` |
+| Ctrl+Q | In an answer, leave the original out, or put it back |
+| Ctrl+A | List the files it carries, to attach one or take one away |
+| Esc, Ctrl+C | Close it, asking first when something is written |
+
+| Command | Action |
+| --- | --- |
+| `:folder NAME` | Open the folder or label with that name |
+| `:move FOLDER` | Move the conversation to a folder of yours, or to Inbox, Archive, Spam or Trash |
+| `:star`, `:unstar` | Star the conversation, or take its star away |
+| `:read`, `:unread` | Mark it read or unread |
+| `:archive`, `:trash` | Archive it, or move it to Trash |
+| `:spam`, `:notspam` | Move it to Spam, or out of Spam to the Inbox |
+| `:label LABEL`, `:unlabel LABEL` | Put one of your labels on it, or take it off |
+| `:compose` | Write a new message |
+| `:reply`, `:replyall`, `:forward` | Reply to the open conversation, reply to all, or forward it |
+| `:delete` | Delete it forever, in Trash or Spam, once you answer `y` |
+| `:empty` | Delete everything in Trash or Spam forever, once you answer `y` |
+| `:search WORDS` | Search all mail for the words |
+| `:local WORDS` | Search the local index for the words, offline |
+| `:refresh` | Refresh the folders and the list, or the search |
+| `:attachments` | List the conversation's attachments, to save one |
+| `:help` | Show the keys |
+| `:q`, `:quit` | Quit |
 
 The CLI shares the desktop session by default. Use `--profile NAME` when you
 want a separate login; an existing CLI `default` session remains available with

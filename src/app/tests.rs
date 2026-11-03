@@ -1344,6 +1344,20 @@ fn initial_state_checks_saved_session() {
 }
 
 #[test]
+fn only_a_session_found_saved_at_startup_is_opened_as_the_mailbox() {
+    let mut app = App::new(Settings::default());
+    assert!(!app.opening_saved_session());
+
+    app.session_saved = true;
+    assert!(app.opening_saved_session());
+    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    assert!(!app.opening_saved_session());
+
+    let (demo, _) = App::boot(true, Settings::default());
+    assert!(!demo.opening_saved_session());
+}
+
+#[test]
 fn normal_startup_checks_the_proton_session() {
     let (app, _) = App::boot(false, Settings::default());
 
@@ -1493,8 +1507,11 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
 
     open_conversation(&mut app, "demo-2");
     let effects = app.update(Message::SelectConversation("demo-0".into()));
-    // The only work is scrolling the restored reader to its top.
-    assert_eq!(effects.units(), 1);
+    // The only work is scrolling the restored reader to its top and
+    // preloading the row after it, not loading it again.
+    assert_eq!(effects.units(), 2);
+    let preload = app.mailbox().unwrap().preloading().cloned();
+    assert_eq!(preload.unwrap().conversation_id, "demo-1");
     assert!(
         app.mailbox()
             .unwrap()
@@ -1825,6 +1842,44 @@ fn a_mutation_during_refresh_is_followed_by_a_fresh_request() {
 }
 
 #[test]
+fn an_open_conversation_preloads_the_one_archiving_it_opens_at_once() {
+    let mut app = loaded_demo_app();
+    // A row with an unread one below it, so reading that one would show.
+    let (open, next) = {
+        let rows: Vec<_> = app.mailbox().unwrap().visible_conversations().collect();
+        let index = rows
+            .windows(2)
+            .position(|pair| pair[1].unread)
+            .expect("an unread row below another");
+        (rows[index].id.clone(), rows[index + 1].id.clone())
+    };
+    let _ = app.update(Message::SelectConversation(open.clone()));
+    deliver_selected_demo_detail(&mut app);
+
+    let preload = app
+        .mailbox()
+        .unwrap()
+        .preloading()
+        .cloned()
+        .expect("a preload on its way");
+    assert_eq!(preload.conversation_id, next);
+    let result = demo_service(&app).conversation_detail(&next, NOW);
+    let _ = app.update(Message::ConversationPreloaded(preload, result));
+    let mailbox = app.mailbox().unwrap();
+    assert_eq!(mailbox.reader().unwrap().conversation_id(), open);
+    assert!(mailbox.row(&next).unwrap().unread, "preloading read it");
+
+    let _ = app.update(Message::ApplyAction(MailAction::MoveTo(sys(
+        MailFolder::Archive,
+    ))));
+    let reader = app.mailbox().unwrap().reader();
+    assert_eq!(
+        reader.map(|reader| reader.conversation_id()),
+        Some(next.as_str())
+    );
+}
+
+#[test]
 fn detail_failure_and_retry_use_a_new_request() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::SelectConversation("demo-3".into()));
@@ -1937,7 +1992,10 @@ fn demo_star_actions_update_starred_folder_and_selection() {
     assert!(is_listed(&app, "demo-1"));
 
     let effects = app.update(Message::SelectConversation("demo-1".into()));
-    assert_eq!(effects.units(), 1);
+    // Restored, not loaded: besides scrolling, only the row after it loads.
+    assert_eq!(effects.units(), 2);
+    let preload = app.mailbox().unwrap().preloading().cloned().unwrap();
+    assert_ne!(preload.conversation_id, "demo-1");
     let _ = app.update(Message::ApplyAction(MailAction::SetStarred(false)));
     let mailbox = app.mailbox().unwrap();
     assert!(!is_listed(&app, "demo-1"));
@@ -1975,6 +2033,101 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
     // Leaving the results shows the folder that loaded meanwhile.
     let _ = app.update(Message::SearchChanged(String::new()));
     assert!(app.mailbox().unwrap().visible_conversations().len() > 0);
+}
+
+/// The app with its first page in, a search for `query` sent, and the
+/// request it is waiting on.
+fn searching(settings: Settings, query: &str) -> (App, SearchRequest) {
+    let (mut app, _) = App::boot(true, settings);
+    let folder = app.mailbox().unwrap().folder();
+    let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
+    let _ = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
+    let _ = app.update(Message::SearchChanged(query.to_owned()));
+    let _ = app.update(Message::SearchSubmitted);
+    let request = SearchRequest {
+        id: pending_list_request(&app),
+        query: query.to_owned(),
+        page: 0,
+        page_size: demo::PAGE_SIZE,
+    };
+    (app, request)
+}
+
+#[test]
+fn a_search_proton_cannot_answer_looks_on_this_device_only_once_asked() {
+    // Not asked: the search fails as it always has.
+    let (mut app, request) = searching(Settings::default(), "Avery");
+    let effects = app.update(Message::SearchLoaded(
+        request,
+        Err(MailboxError::Connection),
+    ));
+    assert_eq!(effects.units(), 0);
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Search)
+    ));
+
+    // Asked: this device's index is searched instead, and what it finds shows.
+    let mut settings = Settings::default();
+    settings.search_device_offline = true;
+    let (mut app, request) = searching(settings.clone(), "Avery");
+    let effects = app.update(Message::SearchLoaded(
+        request.clone(),
+        Err(MailboxError::Connection),
+    ));
+    assert_eq!(effects.units(), 1, "this device's index is searched");
+    assert!(matches!(
+        app.mailbox().unwrap().status(),
+        ListStatus::Loading(_)
+    ));
+    let found = demo_service(&app)
+        .search("Avery", demo::PAGE_SIZE, NOW)
+        .unwrap();
+    let _ = app.update(Message::DeviceSearchLoaded(request, Ok(Some(found))));
+    let mailbox = app.mailbox().unwrap();
+    assert_eq!(mailbox.shown_search_query(), Some("Avery"));
+    assert!(mailbox.shown_search_is_on_device());
+    assert!(mailbox.visible_conversations().len() > 0);
+
+    // Any other failure is not Proton being out of reach.
+    let (mut app, request) = searching(settings.clone(), "Avery");
+    let effects = app.update(Message::SearchLoaded(request, Err(MailboxError::Service)));
+    assert_eq!(effects.units(), 0);
+
+    // With no index here, the search fails, saying there was none to look in.
+    let (mut app, request) = searching(settings, "Avery");
+    let _ = app.update(Message::SearchLoaded(
+        request.clone(),
+        Err(MailboxError::Connection),
+    ));
+    let _ = app.update(Message::DeviceSearchLoaded(request, Ok(None)));
+    let mailbox = app.mailbox().unwrap();
+    assert!(matches!(
+        mailbox.status(),
+        ListStatus::Failed(MailboxError::Connection, ListAttempt::Search)
+    ));
+    assert_eq!(mailbox.device_index(), Some(DeviceIndex::Missing));
+    // A new search starts afresh.
+    let _ = app.update(Message::SearchChanged(String::new()));
+    assert_eq!(app.mailbox().unwrap().device_index(), None);
+}
+
+#[test]
+fn a_search_from_this_device_that_comes_too_late_is_dropped() {
+    let mut settings = Settings::default();
+    settings.search_device_offline = true;
+    let (mut app, request) = searching(settings, "Avery");
+    let _ = app.update(Message::SearchLoaded(
+        request.clone(),
+        Err(MailboxError::Connection),
+    ));
+    // The query changed meanwhile.
+    let _ = app.update(Message::SearchChanged(String::new()));
+    let found = demo_service(&app)
+        .search("Avery", demo::PAGE_SIZE, NOW)
+        .unwrap();
+    let _ = app.update(Message::DeviceSearchLoaded(request, Ok(Some(found))));
+    assert_eq!(app.mailbox().unwrap().shown_search_query(), None);
 }
 
 #[test]

@@ -7,14 +7,17 @@ use crate::terminal;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::mail::organize::folder_id_among;
+use ruston_core::mail::send::{forward_subject, reply_subject};
 use ruston_core::model::ConversationLabel;
-use ruston_core::model::enums::{filter, label_ids, label_type};
+use ruston_core::model::enums::{filter, label_ids, label_type, message_flag};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
-    Filter, FullMessage, Label, LabelCount, MessageMetadata, Recipient, Result, Verdict,
+    Filter, FullMessage, Label, LabelCount, MessageMetadata, Quote, Recipient, RecipientProtection,
+    Result, Verdict,
 };
 use serde_json::json;
 
@@ -23,6 +26,7 @@ use crate::cli::{
     FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd,
 };
 use crate::commands::contacts;
+use crate::mailbox::{Change, Outgoing, OutgoingKind};
 use crate::render;
 
 /// Said on standard error before every demo command, so a fictional send,
@@ -32,10 +36,11 @@ const NOTICE: &str =
     "note: offline demo (--demo or RUSTON_DEMO); nothing is sent to or changed on Proton";
 
 /// Fictional user details.
-const DEMO_EMAIL: &str = "demo@example.com";
+pub(crate) const DEMO_EMAIL: &str = "demo@example.com";
 const DEMO_NAME: &str = "Demo User";
 const DEMO_ALIAS: &str = "volunteers@example.org";
 
+#[derive(Clone)]
 struct DemoMessage {
     meta: MessageMetadata,
     body: String,
@@ -189,7 +194,7 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
                 flags: 0,
                 expiration_time: None,
             },
-            body: "Hi Demo,\n\nI attached the first proposal for the translation workflow. It covers string extraction, reviewer assignment, and the release cutoff.\n\nCould you check the engineering steps?\n\nThanks,\nRiley\n".to_string(),
+            body: "Hi Demo,\n\nI attached the first proposal for the translation workflow. It covers string extraction, reviewer assignment, and the release cutoff. The glossary we agreed on is at https://example.com/translation-glossary.\n\nCould you check the engineering steps?\n\nThanks,\nRiley\n".to_string(),
             mime_type: "text/plain".to_string(),
             attachments: vec![Attachment {
                 id: "att-demo-01".to_string(),
@@ -221,8 +226,22 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
                 flags: 0,
                 expiration_time: None,
             },
-            body: "Hi everyone,\n\nPlease add your topics for the offsite by Friday. I have reserved the morning for planning and the afternoon for team discussions.\n\nThanks,\nSam\n".to_string(),
-            mime_type: "text/plain".to_string(),
+            // In HTML, quoting the message it answers, with a link whose
+            // words are not its address.
+            body: concat!(
+                "<p>Hi everyone,</p>",
+                "<p>Please add your topics for the offsite by Friday. I have reserved the morning ",
+                "for planning and the afternoon for team discussions. The draft is in ",
+                "<a href=\"https://example.com/offsite/agenda\">the shared agenda</a>.</p>",
+                "<p>Thanks,<br>Sam</p>",
+                "<p>On Monday, Priya Natarajan wrote:</p>",
+                "<blockquote><p>Hi Sam,</p>",
+                "<p>The venue is booked for the whole day, and lunch is included.</p>",
+                "<p>The room has a projector and two whiteboards.</p>",
+                "<p>Best,<br>Priya</p></blockquote>",
+            )
+            .to_string(),
+            mime_type: "text/html".to_string(),
             attachments: Vec::new(),
         },
         DemoMessage {
@@ -346,6 +365,18 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
                     context_num_unread: Some(0),
                     context_time: Some(now - 1800),
                 },
+                ConversationLabel {
+                    id: label_ids::STARRED.to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(1),
+                    context_time: Some(now - 3600),
+                },
+                ConversationLabel {
+                    id: "label-demo-work".to_string(),
+                    context_num_messages: Some(2),
+                    context_num_unread: Some(1),
+                    context_time: Some(now - 1800),
+                },
             ],
             expiration_time: None,
         },
@@ -358,12 +389,20 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
             num_attachments: 1,
             senders: vec![riley.clone()],
             recipients: vec![user_recipient.clone()],
-            labels: vec![ConversationLabel {
-                id: label_ids::INBOX.to_string(),
-                context_num_messages: Some(1),
-                context_num_unread: Some(1),
-                context_time: Some(now - 7200),
-            }],
+            labels: vec![
+                ConversationLabel {
+                    id: label_ids::INBOX.to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(1),
+                    context_time: Some(now - 7200),
+                },
+                ConversationLabel {
+                    id: "label-demo-work".to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(1),
+                    context_time: Some(now - 7200),
+                },
+            ],
             expiration_time: None,
         },
         Conversation {
@@ -409,12 +448,20 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
             num_attachments: 0,
             senders: vec![robin.clone()],
             recipients: vec![user_recipient.clone()],
-            labels: vec![ConversationLabel {
-                id: label_ids::INBOX.to_string(),
-                context_num_messages: Some(1),
-                context_num_unread: Some(0),
-                context_time: Some(now - 259200),
-            }],
+            labels: vec![
+                ConversationLabel {
+                    id: label_ids::INBOX.to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(0),
+                    context_time: Some(now - 259200),
+                },
+                ConversationLabel {
+                    id: "label-demo-personal".to_string(),
+                    context_num_messages: Some(1),
+                    context_num_unread: Some(0),
+                    context_time: Some(now - 259200),
+                },
+            ],
             expiration_time: None,
         },
         Conversation {
@@ -504,7 +551,7 @@ fn demo_contacts() -> Vec<Contact> {
     ]
 }
 
-fn demo_addresses() -> Vec<AddressInfo> {
+pub(crate) fn demo_addresses() -> Vec<AddressInfo> {
     vec![
         AddressInfo {
             id: "addr-demo-01".to_string(),
@@ -517,7 +564,7 @@ fn demo_addresses() -> Vec<AddressInfo> {
     ]
 }
 
-fn demo_labels() -> Vec<Label> {
+pub(crate) fn demo_labels() -> Vec<Label> {
     vec![
         Label {
             id: "label-demo-work".to_string(),
@@ -552,7 +599,7 @@ fn demo_labels() -> Vec<Label> {
     ]
 }
 
-fn demo_counts(conversations: bool) -> Vec<LabelCount> {
+pub(crate) fn demo_counts(conversations: bool) -> Vec<LabelCount> {
     if conversations {
         vec![
             LabelCount {
@@ -579,6 +626,16 @@ fn demo_counts(conversations: bool) -> Vec<LabelCount> {
                 label_id: label_ids::STARRED.to_string(),
                 total: 1,
                 unread: 1,
+            },
+            LabelCount {
+                label_id: "label-demo-work".to_string(),
+                total: 2,
+                unread: 2,
+            },
+            LabelCount {
+                label_id: "label-demo-personal".to_string(),
+                total: 1,
+                unread: 0,
             },
         ]
     } else {
@@ -657,6 +714,476 @@ fn page_of<T>(items: Vec<T>, page: u32, page_size: u32) -> Vec<T> {
         .collect()
 }
 
+/// Page `page` of `conversations` in `label`, newest first, with how many
+/// there are in all; `is_all` takes every one, and `unread` only the unread.
+fn list_page(
+    conversations: Vec<Conversation>,
+    label: &str,
+    is_all: bool,
+    unread: bool,
+    page: u32,
+    page_size: u32,
+) -> (u32, Vec<Conversation>) {
+    let mut matching: Vec<Conversation> = conversations
+        .into_iter()
+        .filter(|c| {
+            is_all
+                || c.labels
+                    .iter()
+                    .any(|l| l.id == label && l.context_num_messages.unwrap_or(0) > 0)
+        })
+        .filter(|c| !unread || c.num_unread > 0)
+        .collect();
+    matching.sort_by_key(|a| std::cmp::Reverse(a.time));
+    let total = matching.len() as u32;
+    (total, page_of(matching, page, page_size))
+}
+
+/// The conversation whose ID is or holds `id`, with its messages, all of
+/// which open in the demo.
+fn read_conversation(
+    messages: Vec<DemoMessage>,
+    conversations: Vec<Conversation>,
+    id: &str,
+) -> Result<(Conversation, Vec<ConversationMessage>)> {
+    let conversation = conversations
+        .into_iter()
+        .find(|c| c.id == id || c.id.contains(id))
+        .ok_or_else(|| Error::Other(format!("demo conversation not found for id '{id}'")))?;
+    let messages = messages
+        .into_iter()
+        .filter(|m| m.meta.conversation_id == conversation.id)
+        .map(|m| ConversationMessage::Opened(m.to_full()))
+        .collect();
+    Ok((conversation, messages))
+}
+
+/// How Proton would protect a message from the demo to `address`: end to
+/// end for Proton's own domains, as the desktop's demo has it, and without
+/// end-to-end encryption for any other.
+pub(crate) fn protection(address: &str) -> RecipientProtection {
+    let domain = address.rsplit('@').next().unwrap_or_default();
+    let proton = ["proton.me", "protonmail.com", "pm.me"]
+        .iter()
+        .any(|known| domain.eq_ignore_ascii_case(known));
+    if proton {
+        RecipientProtection::EndToEnd
+    } else {
+        RecipientProtection::Unencrypted
+    }
+}
+
+/// The demo's mail as the terminal interface changes it: the fixtures at
+/// first, then each change it makes and each message it sends, for as long
+/// as it runs. Its counts come from its conversations, so the two always
+/// agree.
+pub(crate) struct DemoSession {
+    conversations: Mutex<Vec<Conversation>>,
+    messages: Mutex<Vec<DemoMessage>>,
+}
+
+impl DemoSession {
+    pub(crate) fn new() -> Self {
+        let (messages, conversations) = fixtures();
+        Self {
+            conversations: Mutex::new(conversations),
+            messages: Mutex::new(messages),
+        }
+    }
+
+    /// The conversation whose ID is or holds `id`, with its messages, as
+    /// `conversations read` shows it.
+    pub(crate) fn conversation(
+        &self,
+        id: &str,
+    ) -> Result<(Conversation, Vec<ConversationMessage>)> {
+        let messages = self
+            .messages
+            .lock()
+            .expect("demo mailbox lock poisoned")
+            .clone();
+        read_conversation(messages, self.snapshot(), id)
+    }
+
+    /// Keeps `outgoing` as a message the demo's user sent just now, as
+    /// Proton would: a new one in a conversation of its own, an answer in
+    /// the conversation of the message it answers, with the subject core
+    /// gives it and, unless left out, that message quoted under its text as
+    /// core quotes it in plain text. It carries the files attached, by their
+    /// names and sizes, and a forward the original's but those left out.
+    /// Sent lists either.
+    pub(crate) fn send(&self, outgoing: &Outgoing) {
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+            });
+        let people = |addresses: &[String]| -> Vec<Recipient> {
+            addresses.iter().map(Recipient::new).collect()
+        };
+        let sender = Recipient {
+            name: DEMO_NAME.to_string(),
+            address: DEMO_EMAIL.to_string(),
+            contact_id: None,
+            is_proton: Some(1),
+        };
+        let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
+        let number = messages.len() + 1;
+        let answered = match &outgoing.kind {
+            OutgoingKind::New => None,
+            OutgoingKind::Reply { message_id, .. } | OutgoingKind::Forward { message_id, .. } => {
+                messages.iter().find(|m| m.meta.id == *message_id).cloned()
+            }
+        };
+        let (subject, conversation_id) = match (&outgoing.kind, &answered) {
+            (OutgoingKind::Reply { .. }, Some(original)) => (
+                reply_subject(&original.meta.subject),
+                original.meta.conversation_id.clone(),
+            ),
+            (OutgoingKind::Forward { .. }, Some(original)) => (
+                forward_subject(&original.meta.subject),
+                original.meta.conversation_id.clone(),
+            ),
+            _ => (outgoing.subject.clone(), format!("conv-demo-sent-{number}")),
+        };
+        let body = match &answered {
+            Some(original) if outgoing.kind.quote() == Quote::Original => {
+                format!("{}\n\n{}", outgoing.body, quoted(original))
+            }
+            _ => outgoing.body.clone(),
+        };
+        let forwarded = match (&outgoing.kind, &answered) {
+            (OutgoingKind::Forward { leave_out, .. }, Some(original)) => original
+                .attachments
+                .iter()
+                .filter(|attachment| !leave_out.contains(&attachment.id))
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
+        let attached = outgoing.attachments.iter().map(|path| Attachment {
+            name: path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+            size: std::fs::metadata(path).map_or(0, |metadata| metadata.len()),
+            disposition: Some("attachment".to_string()),
+            ..Attachment::default()
+        });
+        let attachments: Vec<Attachment> = forwarded
+            .into_iter()
+            .chain(attached)
+            .enumerate()
+            .map(|(index, attachment)| Attachment {
+                id: format!("att-demo-sent-{number}-{}", index + 1),
+                ..attachment
+            })
+            .collect();
+        let meta = MessageMetadata {
+            id: format!("msg-demo-sent-{number}"),
+            order: i64::try_from(number).unwrap_or(i64::MAX),
+            conversation_id: conversation_id.clone(),
+            subject: subject.clone(),
+            unread: 0,
+            sender: sender.clone(),
+            to_list: people(&outgoing.to),
+            cc_list: people(&outgoing.cc),
+            bcc_list: people(&outgoing.bcc),
+            time,
+            size: body.len() as u64,
+            address_id: "addr-demo-01".to_string(),
+            label_ids: vec![label_ids::SENT.to_string()],
+            external_id: None,
+            num_attachments: i64::try_from(attachments.len()).unwrap_or(i64::MAX),
+            flags: message_flag::SENT,
+            expiration_time: None,
+        };
+        let carries = meta.num_attachments;
+        let recipients: Vec<Recipient> = meta
+            .to_list
+            .iter()
+            .chain(&meta.cc_list)
+            .chain(&meta.bcc_list)
+            .cloned()
+            .collect();
+        messages.push(DemoMessage {
+            meta,
+            body,
+            mime_type: "text/plain".to_string(),
+            attachments,
+        });
+        drop(messages);
+        let sent = |messages: i64| ConversationLabel {
+            id: label_ids::SENT.to_string(),
+            context_num_messages: Some(messages),
+            context_num_unread: Some(0),
+            context_time: Some(time),
+        };
+        let mut conversations = self
+            .conversations
+            .lock()
+            .expect("demo mailbox lock poisoned");
+        match conversations.iter_mut().find(|c| c.id == conversation_id) {
+            Some(conversation) => {
+                conversation.num_messages += 1;
+                conversation.num_attachments += carries;
+                conversation.time = time;
+                match conversation
+                    .labels
+                    .iter_mut()
+                    .find(|l| l.id == label_ids::SENT)
+                {
+                    Some(label) => {
+                        label.context_num_messages =
+                            Some(label.context_num_messages.unwrap_or(0) + 1);
+                        label.context_time = Some(time);
+                    }
+                    None => conversation.labels.push(sent(1)),
+                }
+            }
+            None => conversations.push(Conversation {
+                id: conversation_id,
+                subject,
+                time,
+                num_messages: 1,
+                num_unread: 0,
+                num_attachments: carries,
+                senders: vec![sender],
+                recipients,
+                labels: vec![sent(1)],
+                expiration_time: None,
+            }),
+        }
+    }
+
+    /// The attachment `attachment_id` of the message `message_id`: its name
+    /// and the stand-in a download of it saves, as the demo's
+    /// `attachments download` saves one.
+    pub(crate) fn download_attachment(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<(String, Vec<u8>)> {
+        let messages = self.messages.lock().expect("demo mailbox lock poisoned");
+        let attachment = messages
+            .iter()
+            .find(|message| message.meta.id == message_id)
+            .and_then(|message| message.attachments.iter().find(|a| a.id == attachment_id))
+            .ok_or_else(|| Error::NotFound {
+                kind: "attachment".into(),
+            })?;
+        Ok((
+            attachment.name.clone(),
+            simulated_attachment(&attachment.name),
+        ))
+    }
+
+    /// The conversations as they stand now.
+    fn snapshot(&self) -> Vec<Conversation> {
+        self.conversations
+            .lock()
+            .expect("demo mailbox lock poisoned")
+            .clone()
+    }
+
+    /// Page `page` of the conversations in the folder or label `label`, as
+    /// `conversations list` would list them.
+    pub(crate) fn conversations(
+        &self,
+        label: &str,
+        page: u32,
+        page_size: u32,
+    ) -> (u32, Vec<Conversation>) {
+        let is_all = label == label_ids::ALL_MAIL;
+        list_page(self.snapshot(), label, is_all, false, page, page_size)
+    }
+
+    /// Page `page` of the conversations whose subject has `words`, in any
+    /// place, newest first, with how many there are in all.
+    pub(crate) fn search(
+        &self,
+        words: &str,
+        page: u32,
+        page_size: u32,
+    ) -> (u32, Vec<Conversation>) {
+        let mut found: Vec<Conversation> = self
+            .snapshot()
+            .into_iter()
+            .filter(|conversation| subject_has(conversation, words))
+            .collect();
+        found.sort_by_key(|conversation| std::cmp::Reverse(conversation.time));
+        let total = found.len() as u32;
+        (total, page_of(found, page, page_size))
+    }
+
+    /// How many conversations each place holds, and how many are unread.
+    pub(crate) fn counts(&self) -> Vec<LabelCount> {
+        conversation_counts(&self.snapshot())
+    }
+
+    /// Makes `change` to the conversation `id`, listed in `place`, much as
+    /// Proton would: a star labels it Starred, reading marks it read
+    /// wherever it is and unread only where it is listed, a move takes it
+    /// out of the folders it was in, keeping its labels, Sent and Drafts,
+    /// and deleting it forever takes it away whole, as a move brings all of
+    /// it to Trash or Spam.
+    pub(crate) fn change(&self, id: &str, place: &str, change: &Change) {
+        let mut conversations = self
+            .conversations
+            .lock()
+            .expect("demo mailbox lock poisoned");
+        let Some(conversation) = conversations.iter_mut().find(|c| c.id == id) else {
+            return;
+        };
+        let whole = |id: &str, conversation: &Conversation| ConversationLabel {
+            id: id.to_string(),
+            context_num_messages: Some(conversation.num_messages),
+            context_num_unread: Some(conversation.num_unread),
+            context_time: Some(conversation.time),
+        };
+        match change {
+            Change::Star(true) => {
+                if !conversation
+                    .labels
+                    .iter()
+                    .any(|l| l.id == label_ids::STARRED)
+                {
+                    let starred = whole(label_ids::STARRED, conversation);
+                    conversation.labels.push(starred);
+                }
+            }
+            Change::Star(false) => conversation.labels.retain(|l| l.id != label_ids::STARRED),
+            Change::Read(true) => {
+                conversation.num_unread = 0;
+                for label in &mut conversation.labels {
+                    label.context_num_unread = Some(0);
+                }
+            }
+            Change::Read(false) => {
+                conversation.num_unread = conversation.num_unread.max(1);
+                if let Some(label) = conversation.labels.iter_mut().find(|l| l.id == place) {
+                    label.context_num_unread = Some(label.context_num_unread.unwrap_or(0).max(1));
+                }
+            }
+            Change::Move(folder) => {
+                let folders = demo_labels()
+                    .into_iter()
+                    .filter(|label| label.label_type == label_type::MESSAGE_FOLDER)
+                    .map(|label| label.id);
+                let left: Vec<String> = [
+                    label_ids::INBOX,
+                    label_ids::ARCHIVE,
+                    label_ids::SPAM,
+                    label_ids::TRASH,
+                ]
+                .map(String::from)
+                .into_iter()
+                .chain(folders)
+                .collect();
+                conversation.labels.retain(|l| !left.contains(&l.id));
+                let moved = whole(folder, conversation);
+                conversation.labels.push(moved);
+            }
+            Change::Label(label) => {
+                if !conversation.labels.iter().any(|l| &l.id == label) {
+                    let labelled = whole(label, conversation);
+                    conversation.labels.push(labelled);
+                }
+            }
+            Change::Unlabel(label) => conversation.labels.retain(|l| &l.id != label),
+            Change::Delete => conversations.retain(|c| c.id != id),
+        }
+    }
+
+    /// Deletes forever every conversation in the place `place`, as emptying
+    /// it does.
+    pub(crate) fn empty(&self, place: &str) {
+        let (_, listed) = self.conversations(place, 0, u32::MAX);
+        for conversation in listed {
+            self.change(&conversation.id, place, &Change::Delete);
+        }
+    }
+}
+
+/// What the demo's attachments hold: a stand-in, as its downloads save it.
+fn simulated_attachment(name: &str) -> Vec<u8> {
+    format!("%PDF-1.4\n% Demo simulated attachment content for {name}\n").into_bytes()
+}
+
+/// `original` quoted under an answer's text as core quotes it in plain
+/// text, from what the reader shows of its body.
+fn quoted(original: &DemoMessage) -> String {
+    let sender = &original.meta.sender;
+    let who = if sender.name.is_empty() {
+        sender.address.clone()
+    } else {
+        format!("{} <{}>", sender.name, sender.address)
+    };
+    let lines: String = render::thread_body(&original.to_full())
+        .lines()
+        .map(|line| format!("> {line}\n"))
+        .collect();
+    format!("------- Original Message -------\nOn {who} wrote:\n{lines}")
+}
+
+/// Up to `limit` of the demo's messages whose subject or body has `query`,
+/// whatever its case: the demo's local index, for `search` and the terminal
+/// interface's `:local` alike.
+pub(crate) fn search_local(query: &str, limit: u32) -> Vec<MessageMetadata> {
+    let query = query.to_lowercase();
+    let mut found: Vec<MessageMetadata> = fixtures()
+        .0
+        .into_iter()
+        .filter(|m| {
+            m.meta.subject.to_lowercase().contains(&query) || m.body.to_lowercase().contains(&query)
+        })
+        .map(|m| m.meta)
+        .collect();
+    found.truncate(limit as usize);
+    found
+}
+
+/// Whether `conversation`'s subject has `words`, whatever their case: how
+/// the demo finds conversations, in `conversations search` and the terminal
+/// interface alike.
+fn subject_has(conversation: &Conversation, words: &str) -> bool {
+    conversation
+        .subject
+        .to_lowercase()
+        .contains(&words.to_lowercase())
+}
+
+/// How many of `conversations` each place holds and how many of those are
+/// unread there, as Proton counts them; All mail holds every one.
+fn conversation_counts(conversations: &[Conversation]) -> Vec<LabelCount> {
+    let mut counts: Vec<LabelCount> = Vec::new();
+    for conversation in conversations {
+        for label in &conversation.labels {
+            let at = counts
+                .iter()
+                .position(|count| count.label_id == label.id)
+                .unwrap_or_else(|| {
+                    counts.push(LabelCount {
+                        label_id: label.id.clone(),
+                        total: 0,
+                        unread: 0,
+                    });
+                    counts.len() - 1
+                });
+            counts[at].total += 1;
+            if label.context_num_unread.unwrap_or(0) > 0 {
+                counts[at].unread += 1;
+            }
+        }
+    }
+    let unread = conversations.iter().filter(|c| c.num_unread > 0).count();
+    counts.push(LabelCount {
+        label_id: label_ids::ALL_MAIL.to_string(),
+        total: conversations.len() as i64,
+        unread: unread as i64,
+    });
+    counts
+}
+
 /// Dispatcher for CLI commands in offline demo mode.
 pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
     terminal::eprintln!("{NOTICE}");
@@ -698,6 +1225,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             }
             Ok(())
         }
+        Command::Tui(args) => crate::tui::run(ctx, &args).await,
         Command::Messages { cmd } => match cmd {
             MessagesCmd::List {
                 folder,
@@ -923,21 +1451,14 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     || folder.eq_ignore_ascii_case("all")
                     || folder.eq_ignore_ascii_case("allmail");
 
-                let mut matching: Vec<Conversation> = fixtures_convs
-                    .into_iter()
-                    .filter(|c| {
-                        is_all
-                            || c.labels.iter().any(|l| {
-                                l.id == target_label && l.context_num_messages.unwrap_or(0) > 0
-                            })
-                    })
-                    .filter(|c| !unread || c.num_unread > 0)
-                    .collect();
-
-                matching.sort_by_key(|a| std::cmp::Reverse(a.time));
-                let total = matching.len() as u32;
-                let paged = page_of(matching, page, page_size);
-
+                let (total, paged) = list_page(
+                    fixtures_convs,
+                    &target_label,
+                    is_all,
+                    unread,
+                    page,
+                    page_size,
+                );
                 render::conversations_list(ctx.json, total, &paged);
                 Ok(())
             }
@@ -946,12 +1467,12 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     .into_iter()
                     .filter(|c| {
                         if let Some(kw) = &args.keyword
-                            && !c.subject.to_lowercase().contains(&kw.to_lowercase())
+                            && !subject_has(c, kw)
                         {
                             return false;
                         }
                         if let Some(subject) = &args.subject
-                            && !c.subject.to_lowercase().contains(&subject.to_lowercase())
+                            && !subject_has(c, subject)
                         {
                             return false;
                         }
@@ -970,20 +1491,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             ConversationsCmd::Read { id } => {
-                let conv = fixtures_convs
-                    .into_iter()
-                    .find(|c| c.id == id || c.id.contains(&id))
-                    .ok_or_else(|| {
-                        Error::Other(format!("demo conversation not found for id '{id}'"))
-                    })?;
-
-                // Every demo message opens.
-                let conv_messages: Vec<_> = fixtures_messages
-                    .into_iter()
-                    .filter(|m| m.meta.conversation_id == conv.id)
-                    .map(|m| ConversationMessage::Opened(m.to_full()))
-                    .collect();
-
+                let (conv, conv_messages) =
+                    read_conversation(fixtures_messages, fixtures_convs, &id)?;
                 render::conversation_read(ctx.json, &conv, &conv_messages);
                 Ok(())
             }
@@ -1074,11 +1583,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 // through a link already there.
                 let mut written = Vec::new();
                 for a in &atts {
-                    let sample_content = format!(
-                        "%PDF-1.4\n% Demo simulated attachment content for {}\n",
-                        a.name
-                    );
-                    let path = save_under_free_name(&out_dir, &a.name, sample_content.as_bytes())?;
+                    let path =
+                        save_under_free_name(&out_dir, &a.name, &simulated_attachment(&a.name))?;
                     written.push(path.to_string_lossy().to_string());
                 }
                 render::downloaded(ctx.json, &written);
@@ -1334,19 +1840,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             Ok(())
         }
         Command::Search { query, limit } => {
-            let mut results: Vec<MessageMetadata> = fixtures_messages
-                .into_iter()
-                .filter(|m| {
-                    m.meta
-                        .subject
-                        .to_lowercase()
-                        .contains(&query.to_lowercase())
-                        || m.body.to_lowercase().contains(&query.to_lowercase())
-                })
-                .map(|m| m.meta)
-                .collect();
-
-            results.truncate(limit as usize);
+            let results = search_local(&query, limit);
             render::messages_list(ctx.json, results.len() as u32, &results);
             Ok(())
         }
@@ -1389,6 +1883,266 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 );
             }
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_conversation_carries_the_labels_of_its_messages() {
+        let (messages, conversations) = fixtures();
+        for conversation in &conversations {
+            let own: Vec<&MessageMetadata> = messages
+                .iter()
+                .map(|message| &message.meta)
+                .filter(|meta| meta.conversation_id == conversation.id)
+                .collect();
+            let mut carried: Vec<&str> = own
+                .iter()
+                .flat_map(|meta| meta.label_ids.iter().map(String::as_str))
+                .collect();
+            carried.sort_unstable();
+            carried.dedup();
+            let mut labelled: Vec<&str> = conversation
+                .labels
+                .iter()
+                .map(|label| label.id.as_str())
+                .collect();
+            labelled.sort_unstable();
+            assert_eq!(labelled, carried, "{}", conversation.id);
+            for label in &conversation.labels {
+                let with: Vec<_> = own
+                    .iter()
+                    .filter(|meta| meta.label_ids.contains(&label.id))
+                    .collect();
+                let unread = with.iter().filter(|meta| meta.unread > 0).count();
+                let at = format!("{} in {}", conversation.id, label.id);
+                assert_eq!(label.context_num_messages, Some(with.len() as i64), "{at}");
+                assert_eq!(label.context_num_unread, Some(unread as i64), "{at}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_session_starts_with_the_counts_the_demo_gives() {
+        let counts = DemoSession::new().counts();
+        for expected in demo_counts(true) {
+            let counted = counts
+                .iter()
+                .find(|count| count.label_id == expected.label_id)
+                .unwrap();
+            assert_eq!(
+                (counted.total, counted.unread),
+                (expected.total, expected.unread),
+                "{}",
+                expected.label_id
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_keeps_what_it_marks_read_and_counts_it() {
+        let session = DemoSession::new();
+        let unread = |label: &str| {
+            session
+                .counts()
+                .iter()
+                .find(|count| count.label_id == label)
+                .map_or(0, |count| count.unread)
+        };
+        assert_eq!(
+            (unread(label_ids::INBOX), unread(label_ids::STARRED)),
+            (2, 1)
+        );
+        session.change("conv-demo-01", label_ids::INBOX, &Change::Read(true));
+        assert_eq!(
+            (unread(label_ids::INBOX), unread(label_ids::STARRED)),
+            (1, 0)
+        );
+        assert_eq!(unread("label-demo-work"), 1);
+        let (_, inbox) = session.conversations(label_ids::INBOX, 0, 50);
+        let first = inbox.iter().find(|c| c.id == "conv-demo-01").unwrap();
+        assert_eq!(first.num_unread, 0);
+        // A new session starts from the fixtures again.
+        assert_eq!(
+            DemoSession::new()
+                .counts()
+                .iter()
+                .find(|count| count.label_id == label_ids::INBOX)
+                .map(|count| count.unread),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn a_session_stars_marks_unread_and_moves_as_proton_would() {
+        let session = DemoSession::new();
+        let count = |label: &str| {
+            session
+                .counts()
+                .iter()
+                .find(|count| count.label_id == label)
+                .map_or((0, 0), |count| (count.total, count.unread))
+        };
+        let listed = |label: &str| {
+            let (_, page) = session.conversations(label, 0, 50);
+            page.into_iter().map(|c| c.id).collect::<Vec<_>>()
+        };
+        // Offsite planning, read and in the Inbox only.
+        let id = "conv-demo-03";
+        session.change(id, label_ids::INBOX, &Change::Star(true));
+        session.change(id, label_ids::INBOX, &Change::Star(true));
+        assert_eq!(count(label_ids::STARRED), (2, 1));
+        session.change(id, label_ids::INBOX, &Change::Read(false));
+        assert_eq!(count(label_ids::INBOX), (4, 3));
+        session.change(
+            id,
+            label_ids::INBOX,
+            &Change::Move(label_ids::ARCHIVE.into()),
+        );
+        assert!(!listed(label_ids::INBOX).contains(&id.to_string()));
+        assert!(listed(label_ids::ARCHIVE).contains(&id.to_string()));
+        // Still starred, and unread wherever it is now.
+        assert!(listed(label_ids::STARRED).contains(&id.to_string()));
+        assert_eq!(count(label_ids::ARCHIVE), (2, 1));
+        session.change(id, label_ids::ARCHIVE, &Change::Star(false));
+        assert_eq!(count(label_ids::STARRED), (1, 1));
+        // The reply in Sent stays there when its conversation is trashed.
+        let first = "conv-demo-01";
+        session.change(
+            first,
+            label_ids::INBOX,
+            &Change::Move(label_ids::TRASH.into()),
+        );
+        assert!(listed(label_ids::TRASH).contains(&first.to_string()));
+        assert!(listed(label_ids::SENT).contains(&first.to_string()));
+        assert!(!listed(label_ids::INBOX).contains(&first.to_string()));
+    }
+
+    #[test]
+    fn a_session_deletes_forever_and_empties_what_was_thrown_away() {
+        let session = DemoSession::new();
+        let listed = |label: &str| {
+            let (_, page) = session.conversations(label, 0, 50);
+            page.into_iter().map(|c| c.id).collect::<Vec<_>>()
+        };
+        // Garden fence, in Trash alone.
+        session.change("conv-demo-06", label_ids::TRASH, &Change::Delete);
+        assert!(listed(label_ids::TRASH).is_empty());
+        assert!(!listed(label_ids::ALL_MAIL).contains(&"conv-demo-06".to_owned()));
+        // Emptying Spam takes all that is in it, wherever else it was
+        // labelled, and nothing else.
+        for id in ["conv-demo-02", "conv-demo-03"] {
+            session.change(id, label_ids::INBOX, &Change::Move(label_ids::SPAM.into()));
+        }
+        session.empty(label_ids::SPAM);
+        assert!(listed(label_ids::SPAM).is_empty());
+        assert_eq!(listed(label_ids::INBOX), ["conv-demo-01", "conv-demo-05"]);
+        assert_eq!(listed("label-demo-work"), ["conv-demo-01"]);
+        let all = session
+            .counts()
+            .into_iter()
+            .find(|count| count.label_id == label_ids::ALL_MAIL)
+            .map(|count| count.total);
+        assert_eq!(all, Some(3));
+    }
+
+    #[test]
+    fn a_session_finds_conversations_by_their_subject_wherever_they_are() {
+        let session = DemoSession::new();
+        let found = |words: &str| {
+            let (total, page) = session.search(words, 0, 50);
+            (total, page.into_iter().map(|c| c.id).collect::<Vec<_>>())
+        };
+        assert_eq!(found("OFFSITE"), (1, vec!["conv-demo-03".to_owned()]));
+        // In Trash too, and newest first.
+        let (total, ids) = found("e");
+        assert!(
+            total > 1 && ids.contains(&"conv-demo-06".to_owned()),
+            "{ids:?}"
+        );
+        assert_eq!(found("nothing like this"), (0, Vec::new()));
+        // A change made in the session shows in what it finds.
+        session.change(
+            "conv-demo-03",
+            label_ids::INBOX,
+            &Change::Move(label_ids::TRASH.into()),
+        );
+        let (_, page) = session.search("offsite", 0, 50);
+        assert!(page[0].labels.iter().any(|l| l.id == label_ids::TRASH));
+    }
+
+    #[test]
+    fn a_session_labels_and_unlabels_as_proton_would() {
+        let session = DemoSession::new();
+        let listed = |label: &str| {
+            let (_, page) = session.conversations(label, 0, 50);
+            page.into_iter().map(|c| c.id).collect::<Vec<_>>()
+        };
+        let id = "conv-demo-03";
+        session.change(
+            id,
+            label_ids::INBOX,
+            &Change::Label("label-demo-personal".into()),
+        );
+        session.change(
+            id,
+            label_ids::INBOX,
+            &Change::Label("label-demo-personal".into()),
+        );
+        assert_eq!(
+            listed("label-demo-personal"),
+            ["conv-demo-03", "conv-demo-05"]
+        );
+        // A label stays when the conversation moves.
+        session.change(id, label_ids::INBOX, &Change::Move(label_ids::SPAM.into()));
+        assert!(listed("label-demo-personal").contains(&id.to_string()));
+        assert!(listed(label_ids::SPAM).contains(&id.to_string()));
+        session.change(
+            id,
+            label_ids::SPAM,
+            &Change::Unlabel("label-demo-personal".into()),
+        );
+        assert_eq!(listed("label-demo-personal"), ["conv-demo-05"]);
+    }
+
+    #[test]
+    fn the_conversation_counts_agree_with_the_conversations() {
+        let conversations = fixtures().1;
+        let unread_in = |conversation: &Conversation, id: &str| {
+            conversation
+                .labels
+                .iter()
+                .any(|label| label.id == id && label.context_num_unread.unwrap_or(0) > 0)
+        };
+        let counts = demo_counts(true);
+        for count in &counts {
+            let (total, unread) = if count.label_id == label_ids::ALL_MAIL {
+                let unread = conversations.iter().filter(|c| c.num_unread > 0).count();
+                (conversations.len(), unread)
+            } else {
+                let id = count.label_id.as_str();
+                let listed = conversations
+                    .iter()
+                    .filter(|c| c.labels.iter().any(|label| label.id == id))
+                    .count();
+                let unread = conversations.iter().filter(|c| unread_in(c, id)).count();
+                (listed, unread)
+            };
+            assert_eq!(count.total, total as i64, "{}", count.label_id);
+            assert_eq!(count.unread, unread as i64, "{}", count.label_id);
+        }
+        // Every place with unread mail says how much, as Proton's counts do.
+        for conversation in &conversations {
+            for label in &conversation.labels {
+                if unread_in(conversation, &label.id) {
+                    let counted = counts.iter().any(|count| count.label_id == label.id);
+                    assert!(counted, "{} has no count", label.id);
+                }
+            }
         }
     }
 }

@@ -182,6 +182,172 @@ async fn verified_and_unsigned_attachments_remain_downloadable() {
     );
 }
 
+/// A PGP/MIME body: text, a file and an inline image with no name.
+const PGP_MIME_BODY: &str = "Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+    --b\r\nContent-Type: text/plain\r\n\r\nSee the report.\r\n\
+    --b\r\nContent-Type: application/pdf; name=report.pdf\r\n\
+    Content-Disposition: attachment; filename=report.pdf\r\n\
+    Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n\
+    --b\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\
+    Content-ID: <logo>\r\nContent-Transfer-Encoding: base64\r\n\r\n\
+    iVBORw0KGgo=\r\n--b--\r\n";
+
+/// A PGP/MIME message to the test account from sender@proton.me, signed
+/// with the key `attachment_client` makes for both.
+fn pgp_mime_message(client: &Client) -> Message {
+    let provider = crypto::provider();
+    let address = client.keys().primary_address().unwrap();
+    let mut message = message_with_attachment(Attachment::default());
+    message.attachments.clear();
+    message.body = crypto::encrypt_self_draft(&provider, address, PGP_MIME_BODY).unwrap();
+    message.mime_type = "multipart/mixed".into();
+    message
+}
+
+async fn serve_message(server: &MockServer, message: &Message) {
+    Mock::given(method("GET"))
+        .and(path("/mail/v4/messages/message"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"Code": 1000, "Message": message})),
+        )
+        .mount(server)
+        .await;
+}
+
+/// Answers the sender key lookup with `response` ahead of the sender's key.
+async fn answer_key_lookup(server: &MockServer, response: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .respond_with(response)
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn attachments_inside_a_pgp_mime_body_list_and_download_by_position() {
+    let server = MockServer::start().await;
+    let (client, _) = attachment_client(&server).await;
+    let message = pgp_mime_message(&client);
+    serve_message(&server, &message).await;
+
+    let ids = |attachments: Vec<Attachment>| {
+        attachments
+            .into_iter()
+            .map(|attachment| attachment.id)
+            .collect::<Vec<_>>()
+    };
+    let listed = client.list_attachments("message", false).await.unwrap();
+    assert_eq!(ids(listed), ["mime-1"]);
+    let listed = client.list_attachments("message", true).await.unwrap();
+    assert_eq!(ids(listed), ["mime-1", "mime-2"]);
+
+    let (name, bytes) = client
+        .download_attachment("message", "mime-1")
+        .await
+        .unwrap();
+    assert_eq!(name, "report.pdf");
+    assert_eq!(bytes, b"%PDF-1.4\n");
+    let read = client.open_message(message).await.unwrap();
+    assert_eq!(read.verdict, crypto::Verdict::Verified);
+    let (name, bytes) = client
+        .download_listed_attachment(&read.meta, &read.attachments[1])
+        .await
+        .unwrap();
+    assert_eq!((name.as_str(), bytes.len()), ("attachment-2", 8));
+    let mut received = Vec::new();
+    client
+        .for_each_attachment("message", false, |name, _| {
+            received.push(name);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(received, ["report.pdf"]);
+
+    for missing in ["mime-3", "mime-0", "mime-"] {
+        assert!(
+            matches!(
+                client.download_attachment("message", missing).await,
+                Err(Error::NotFound { .. })
+            ),
+            "{missing}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_pgp_mime_attachment_is_refused_only_with_an_invalid_body_signature() {
+    // Signed with a key that is not the sender's: invalid, so refused.
+    let server = MockServer::start().await;
+    let (client, _) = attachment_client(&server).await;
+    let provider = crypto::provider();
+    let unrelated = provider
+        .new_key_generator()
+        .with_user_id("Other", "other@proton.me")
+        .with_algorithm(KeyGeneratorAlgorithm::ECC)
+        .generate()
+        .unwrap();
+    let unrelated = provider.private_key_to_public_key(&unrelated).unwrap();
+    let unrelated = String::from_utf8(
+        provider
+            .public_key_export(&unrelated, DataEncoding::Armor)
+            .unwrap()
+            .as_ref()
+            .to_vec(),
+    )
+    .unwrap();
+    answer_key_lookup(
+        &server,
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Code": 1000,
+            "Address": { "Keys": [{
+                "PublicKey": unrelated,
+                "Flags": key_flag::NOT_COMPROMISED | key_flag::NOT_OBSOLETE
+            }] }
+        })),
+    )
+    .await;
+    let mut message = pgp_mime_message(&client);
+    serve_message(&server, &message).await;
+    assert!(matches!(
+        client.download_attachment("message", "mime-1").await,
+        Err(Error::AttachmentVerificationFailed)
+    ));
+    let read = client.open_message(message.clone()).await.unwrap();
+    assert_eq!(read.verdict, crypto::Verdict::Invalid);
+    assert!(matches!(
+        client
+            .download_listed_attachment(&read.meta, &read.attachments[0])
+            .await,
+        Err(Error::AttachmentVerificationFailed)
+    ));
+
+    // No keys to check it with: let through, as reading shows such a body.
+    let server = MockServer::start().await;
+    let (client, _) = attachment_client(&server).await;
+    answer_key_lookup(&server, ResponseTemplate::new(503)).await;
+    message = pgp_mime_message(&client);
+    serve_message(&server, &message).await;
+    let (name, _) = client
+        .download_attachment("message", "mime-1")
+        .await
+        .unwrap();
+    assert_eq!(name, "report.pdf");
+
+    // A body that is not PGP/MIME has none inside it.
+    let server = MockServer::start().await;
+    let (client, _) = attachment_client(&server).await;
+    message = pgp_mime_message(&client);
+    message.mime_type = "text/plain".into();
+    serve_message(&server, &message).await;
+    assert!(matches!(
+        client.download_attachment("message", "mime-1").await,
+        Err(Error::NotFound { .. })
+    ));
+}
+
 #[tokio::test]
 async fn an_attachment_listed_by_a_read_downloads_without_its_message() {
     let server = MockServer::start().await;

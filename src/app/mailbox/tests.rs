@@ -1152,6 +1152,89 @@ fn reader_cache_evicts_the_least_recent_entry_at_its_limit() {
 }
 
 #[test]
+fn the_row_a_move_would_open_preloads_into_the_reader_cache_once() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(
+        request.id,
+        page_of(vec![summary("a"), unread("b"), summary("c")], 3),
+    );
+    // Nothing shows yet, so nothing comes after it.
+    assert_eq!(mailbox.start_preload(3), None);
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 4);
+
+    let preload = mailbox.start_preload(5).expect("the row below");
+    assert_eq!(preload.conversation_id, "b");
+    assert_eq!(mailbox.start_preload(6), None, "asked for twice");
+    assert_eq!(
+        mailbox.finish_preload(&preload, Ok(detail("b", &["b1"]))),
+        None
+    );
+    assert_eq!(mailbox.reader().unwrap().conversation_id(), "a");
+    assert!(mailbox.row("b").unwrap().unread);
+    assert_eq!(mailbox.start_preload(7), None, "cached already");
+
+    // Moving the open one out of the view opens the preloaded one at once.
+    let start = mailbox
+        .start_action(MailAction::MoveTo(sys(MailFolder::Archive)), 8)
+        .unwrap();
+    assert_eq!(start.opened.as_deref(), Some("b"));
+    assert_eq!(mailbox.start_conversation_load("b".into(), 9), None);
+    assert_eq!(mailbox.reader().unwrap().conversation_id(), "b");
+}
+
+#[test]
+fn the_last_row_preloads_the_one_above_and_a_lone_row_none() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+    load_detail(&mut mailbox, "b", detail("b", &["b1"]), 3);
+    assert_eq!(
+        mailbox
+            .start_preload(4)
+            .map(|request| request.conversation_id),
+        Some("a".into())
+    );
+
+    let mut alone = loaded_inbox(&["a"], 1);
+    load_detail(&mut alone, "a", detail("a", &["a1"]), 3);
+    assert_eq!(alone.start_preload(4), None);
+}
+
+#[test]
+fn a_preload_no_longer_wanted_or_failed_is_not_kept() {
+    let mut mailbox = loaded_inbox(&["a", "b", "c"], 3);
+    load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
+    let first = mailbox.start_preload(4).unwrap();
+    // Another open conversation wants another row.
+    load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
+    let second = mailbox.start_preload(6).unwrap();
+    assert_eq!(second.conversation_id, "c");
+
+    assert_eq!(
+        mailbox.finish_preload(&first, Ok(detail("b", &["b1"]))),
+        None
+    );
+    assert_eq!(
+        mailbox.finish_preload(&second, Err(MailboxError::Connection)),
+        Some(MailboxError::Connection)
+    );
+    assert!(
+        mailbox
+            .cached_readers
+            .iter()
+            .all(|cached| cached.reader.conversation_id() == "a"),
+        "only the reader left behind is cached"
+    );
+
+    // One stopped is let go, so the row can be asked for again.
+    let third = mailbox.start_preload(7).unwrap();
+    mailbox.forget_preload();
+    assert_eq!(
+        mailbox.finish_preload(&third, Ok(detail("c", &["c1"]))),
+        None
+    );
+    assert!(mailbox.start_preload(8).is_some());
+}
+
+#[test]
 fn invalidating_readers_for_a_send_forces_the_next_open_to_reload() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);

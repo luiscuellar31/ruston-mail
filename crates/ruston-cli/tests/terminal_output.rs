@@ -397,3 +397,25 @@ fn reading_a_message_or_a_thread_names_its_verdict_and_ends_each_body_once() {
     );
     assert!(thread.ends_with("Thanks,\nDemo\n"), "{thread}");
 }
+
+#[test]
+fn without_a_command_away_from_a_terminal_the_help_is_a_usage_error() {
+    // A test's standard input and output are not a terminal, as a script's are not.
+    for args in [&[][..], &["--demo"][..]] {
+        let output = run(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let help = assert_safe(&output.stderr);
+        assert!(help.contains("Usage:"), "{help}");
+        assert!(help.contains("tui"), "{help}");
+    }
+}
+
+#[test]
+fn the_terminal_interface_needs_a_terminal() {
+    let output = run(&["tui"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let error = assert_safe(&output.stderr);
+    assert!(error.contains("needs a terminal"), "{error}");
+}

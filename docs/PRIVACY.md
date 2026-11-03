@@ -150,11 +150,15 @@ until you index again. Remove old databases yourself if you no longer need them.
 
 Sync and backfill store message metadata. Running `index` also stores decrypted
 message bodies and other searchable fields in SQLite full-text search. This
-database is **not encrypted at rest by Ruston Mail**. The desktop client does
-not use this cache. By default `index` reads every folder except Trash and Spam
-(`--folder almost-all`); `--folder all` includes them. A message moved to Trash
-or Spam after it was indexed keeps its indexed body until `sync` applies its
-deletion or the cache is rebuilt. Once `sync` applies a deletion, it removes the active search
+database is **not encrypted at rest by Ruston Mail**. The desktop client
+reads this cache only when **Search this device when Proton cannot be reached**
+is on, and only to search it when Proton cannot be reached: it opens an
+existing database read-only and never creates, upgrades or writes one, so it
+still keeps no mail on disk itself. By default `index` reads every folder
+except Trash and Spam (`--folder almost-all`); `--folder all` includes them.
+A message moved to Trash or Spam after it was indexed keeps its indexed body
+until `sync` applies its deletion or the cache is rebuilt. Once `sync` applies
+a deletion, it removes the active search
 entry. A full message update removes its indexed body; run `index` again to
 make the updated body searchable. Removed or replaced bodies and search
 entries are overwritten inside the database file, with SQLite's
@@ -344,7 +348,10 @@ session stops verifying. Missing usable keys, malformed signatures, and
 signature mismatches fail the download; plaintext
 discarded on this path is zeroized. This check is shared by desktop and CLI
 downloads, including bulk downloads and EML export. Unsigned attachments remain
-downloadable without a signature-based authenticity guarantee. Body signature
+downloadable without a signature-based authenticity guarantee. An attachment
+inside a PGP/MIME body has no signature of its own; the body's covers it, so
+an invalid body signature fails its download, while an unsigned or unverified
+body lets it through, as such a body is shown. Body signature
 status is shown beside the sender's address in the desktop reader: a closed lock
 means the body signature verified against an available sender key; an open lock
 means unsigned or unverified, and a red warning means invalid: altered, or

@@ -85,10 +85,13 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps --all-featur
 cargo test --locked --workspace --all-features
 ```
 
-CI also checks dependencies and licenses with `cargo-deny`, unused
-dependencies with `cargo-machete`, and advisories with `cargo-audit` in its
-separate workflow. For documentation-only changes, check the links and run
-`git diff --check`; code compilation is not needed to validate Markdown.
+CI also checks dependency bans, licenses and sources with `cargo-deny`,
+unused dependencies with `cargo-machete`, and that the workspace still builds
+with the oldest Rust it supports. Advisories are checked with
+`cargo deny check advisories` in a separate workflow, when dependencies change
+and weekly; `deny.toml` lists those let pass, each with why. For
+documentation-only changes, check the links and run `git diff --check`; code
+compilation is not needed to validate Markdown.
 
 ## Commits
 

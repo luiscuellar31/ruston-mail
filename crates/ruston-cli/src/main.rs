@@ -4,12 +4,18 @@ mod cli;
 mod commands;
 mod demo;
 mod hv;
+mod interrupt;
+mod mailbox;
 mod render;
 mod terminal;
+mod tui;
 
-use clap::Parser;
-use cli::{Cli, Command, Ctx};
+use clap::{CommandFactory, Parser};
+use cli::{Cli, Command, Ctx, TuiArgs};
 use ruston_core::Result;
+
+/// The exit status of a usage error, as clap uses it.
+const USAGE_ERROR: i32 = 2;
 
 #[tokio::main]
 async fn main() {
@@ -24,9 +30,30 @@ async fn main() {
             std::process::exit(error.exit_code());
         }
     };
-    // Logs go to stderr so stdout stays clean for text/JSON output.
-    // -v debug, -vv trace(core), -vvv trace(all); RUST_LOG overrides.
-    terminal::init_tracing(cli.verbose);
+    let opens_interface = matches!(cli.command, None | Some(Command::Tui(_)));
+    if opens_interface && !tui::has_terminal() {
+        // Without a command and away from a terminal, as in a script, the
+        // help is a usage error, as it was before the interface existed.
+        if cli.command.is_none() {
+            terminal::eprint!("{}", Cli::command().render_help());
+        } else {
+            terminal::eprintln!(
+                "error: the terminal interface needs a terminal; run a command such as `ruston-cli messages list` instead"
+            );
+        }
+        std::process::exit(USAGE_ERROR);
+    }
+    if !opens_interface {
+        // Logs go to stderr so stdout stays clean for text/JSON output.
+        // -v debug, -vv trace(core), -vvv trace(all); RUST_LOG overrides.
+        // The interface draws over the terminal, so it logs nothing.
+        terminal::init_tracing(cli.verbose);
+        // The interface reads Ctrl+C as a key; the demo has no session.
+        let ctx = Ctx::from(&cli);
+        if !ctx.demo {
+            tokio::spawn(interrupt::end_on_ctrl_c(ctx.profile));
+        }
+    }
 
     if let Err(e) = dispatch(cli).await {
         terminal::eprintln!("error: {}", with_causes(&e));
@@ -53,13 +80,18 @@ fn with_causes(error: &ruston_core::Error) -> String {
 
 async fn dispatch(cli: Cli) -> Result<()> {
     let ctx: Ctx = (&cli).into();
+    // `main` has made sure a terminal is there to open the interface in.
+    let command = cli
+        .command
+        .unwrap_or_else(|| Command::Tui(TuiArgs::default()));
     if ctx.demo {
-        return demo::dispatch(&ctx, cli.command).await;
+        return demo::dispatch(&ctx, command).await;
     }
-    match cli.command {
+    match command {
         Command::Login(args) => commands::auth::login(&ctx, args).await,
         Command::Logout => commands::auth::logout(&ctx).await,
         Command::Whoami => commands::auth::whoami(&ctx).await,
+        Command::Tui(args) => tui::run(&ctx, &args).await,
         Command::Messages { cmd } => commands::messages::run(&ctx, cmd).await,
         Command::Conversations { cmd } => commands::conversations::run(&ctx, cmd).await,
         Command::Attachments { cmd } => commands::attachments::run(&ctx, cmd).await,

@@ -2,7 +2,12 @@
 
 All three packages use Rust 2024 and require Rust 1.96 or newer. Their shared
 version, edition, and minimum Rust version are set in the root
-[`Cargo.toml`](../Cargo.toml) under `[workspace.package]`. Development happens
+[`Cargo.toml`](../Cargo.toml) under `[workspace.package]`, whose
+`resolver = "3"` prefers dependency versions that minimum can build.
+[`rust-toolchain.toml`](../rust-toolchain.toml) names the Rust that builds
+them here, in CI and in releases, which rustup fetches on first use; it moves
+up only when that file does, so a new Rust release cannot fail a build on its
+own. Development happens
 on macOS, and CI checks macOS, Linux, and Windows. For ownership and code paths,
 see the [architecture map](ARCHITECTURE.md); for contribution rules, see
 [Contributing](../CONTRIBUTING.md).
@@ -48,6 +53,13 @@ The CLI has its own fictional demo data:
 cargo run -p ruston-cli -- --demo messages list
 ```
 
+The terminal interface runs on it too, and keeps the changes it makes, the
+messages it sends included, until it closes:
+
+```sh
+cargo run -p ruston-cli -- --demo tui
+```
+
 `RUSTON_DEMO` turns the CLI demo on as well, so every demo command first says
 on standard error that nothing reaches Proton, and its JSON says `"demo": true`,
 so a script cannot take fictional mail for real. Text output stays as it is.
@@ -71,7 +83,12 @@ new Ubuntu reaches CI only through a workflow change. The Windows jobs use the
 toolchain; on ARM64, aws-lc-sys also needs LLVM's clang-cl, which the job puts
 on the `PATH`. Their caches are separate from the Linux and macOS caches. All
 platforms run the same checks; a failure on one platform does not cancel the
-other jobs.
+other jobs. A Linux job also checks the workspace with the minimum Rust
+version, which its `RUSTUP_TOOLCHAIN` sets in place of `rust-toolchain.toml`'s;
+the two must change together. Pull requests check dependency bans, licenses and
+sources with `cargo-deny`; its advisories run in the dependency audit
+workflow, when dependencies or `deny.toml` change and weekly, so an advisory
+published meanwhile does not fail an unrelated pull request.
 
 Linux also validates the desktop entry with `desktop-file-validate` and its
 AppStream metadata with `appstreamcli validate`. Windows builds `ruston.exe`

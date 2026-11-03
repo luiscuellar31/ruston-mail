@@ -117,26 +117,75 @@ fn looks_like_id(reference: &str) -> bool {
 /// version, in order, or of its text version when it has no HTML one. A body
 /// of several parts, such as text, an image and more text, is all of them.
 /// It is parsed from its bytes, so each part is decoded in its own charset.
-fn extract_mime(raw: &[u8]) -> (String, String) {
-    let parsed = mail_parser::MessageParser::default().parse(raw);
-    if let Some(msg) = parsed {
-        let html: Vec<_> = (0..msg.html_body_count())
-            .filter_map(|part| msg.body_html(part))
-            .collect();
-        if !html.is_empty() {
-            return (html.join("\n"), "text/html".to_string());
-        }
-        let text: Vec<_> = (0..msg.text_body_count())
-            .filter_map(|part| msg.body_text(part))
-            .collect();
-        if !text.is_empty() {
-            return (text.join("\n"), "text/plain".to_string());
-        }
+/// The attachments inside it come along, as [`mime_attachments`] names them.
+fn extract_mime(raw: &[u8]) -> (String, String, Vec<Attachment>) {
+    let Some(msg) = mail_parser::MessageParser::default().parse(raw) else {
+        return (
+            String::from_utf8_lossy(raw).into_owned(),
+            "text/plain".to_string(),
+            Vec::new(),
+        );
+    };
+    let attachments = mime_attachments(&msg);
+    let html: Vec<_> = (0..msg.html_body_count())
+        .filter_map(|part| msg.body_html(part))
+        .collect();
+    if !html.is_empty() {
+        return (html.join("\n"), "text/html".to_string(), attachments);
+    }
+    let text: Vec<_> = (0..msg.text_body_count())
+        .filter_map(|part| msg.body_text(part))
+        .collect();
+    if !text.is_empty() {
+        return (text.join("\n"), "text/plain".to_string(), attachments);
     }
     (
         String::from_utf8_lossy(raw).into_owned(),
         "text/plain".to_string(),
+        attachments,
     )
+}
+
+/// The attachments inside a PGP/MIME body, which Proton cannot see, named by
+/// their position in it: `mime-1`, `mime-2` and on. They have no key packets
+/// or signature of their own; the body's signature covers them.
+fn mime_attachments(msg: &mail_parser::Message) -> Vec<Attachment> {
+    use mail_parser::MimeHeaders as _;
+    msg.attachments()
+        .enumerate()
+        .map(|(index, part)| Attachment {
+            id: super::attachments::mime_attachment_id(index + 1),
+            name: mime_attachment_name(part, index + 1),
+            size: part.contents().len() as u64,
+            mime_type: part.content_type().map(|kind| match kind.subtype() {
+                Some(subtype) => format!("{}/{subtype}", kind.ctype()),
+                None => kind.ctype().to_owned(),
+            }),
+            disposition: part
+                .content_disposition()
+                .map(|disposition| disposition.ctype().to_ascii_lowercase()),
+            ..Attachment::default()
+        })
+        .collect()
+}
+
+/// The name and bytes of the attachment at `position`, from 1, inside a
+/// PGP/MIME body, as [`mime_attachments`] names it.
+pub(super) fn mime_attachment(raw: &[u8], position: usize) -> Option<(String, Vec<u8>)> {
+    let msg = mail_parser::MessageParser::default().parse(raw)?;
+    let part = msg.attachment(u32::try_from(position.checked_sub(1)?).ok()?)?;
+    Some((
+        mime_attachment_name(part, position),
+        part.contents().to_vec(),
+    ))
+}
+
+/// A part's file name, or one made from its position when it has none.
+fn mime_attachment_name(part: &mail_parser::MessagePart, position: usize) -> String {
+    use mail_parser::MimeHeaders as _;
+    part.attachment_name()
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(|| format!("attachment-{position}"), str::to_owned)
 }
 
 impl Client {
@@ -256,15 +305,21 @@ impl Client {
     /// Decrypts `message`, checking its signature against its sender's keys.
     /// A failed lookup leaves the body unverified.
     pub(super) async fn open_message(&self, message: Message) -> Result<FullMessage> {
-        let sender_pubs = match self.sender_pubkeys(&message.meta.sender.address).await {
+        let sender_pubs = self.verifier_keys(&message.meta.sender.address).await;
+        self.open_message_with(message, sender_pubs).await
+    }
+
+    /// The sender's keys to check a body's signature with. A failed lookup
+    /// leaves none: the body still opens, without claiming a verified
+    /// signature.
+    pub(super) async fn verifier_keys(&self, sender: &str) -> Vec<String> {
+        match self.sender_pubkeys(sender).await {
             Ok(keys) => keys,
-            // The body still opens, without claiming a verified signature.
             Err(e) => {
                 tracing::warn!(target: "ruston_core::mail", error = %e, "sender key lookup failed — body left unverified");
                 Vec::new()
             }
-        };
-        self.open_message_with(message, sender_pubs).await
+        }
     }
 
     /// Decrypts `message`, checking its signature against `sender_pubs`; with
@@ -418,8 +473,11 @@ fn open_body(
     let provider = crypto::provider();
     let (body, verdict) =
         crypto::message::decrypt_body_bytes(&provider, addr, sender_pubs, &m.body)?;
+    let mut attachments = m.attachments;
     let (body, mime_type) = if m.mime_type.starts_with("multipart/") {
-        extract_mime(&body)
+        let (body, mime_type, inside) = extract_mime(&body);
+        attachments.extend(inside);
+        (body, mime_type)
     } else {
         let mime_type = if m.mime_type.is_empty() {
             "text/plain".into()
@@ -439,7 +497,7 @@ fn open_body(
         body,
         mime_type,
         verdict,
-        attachments: m.attachments,
+        attachments,
         reply_tos: m.reply_tos,
     })
 }
@@ -994,17 +1052,65 @@ mod tests {
             --b\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\
             Content-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n\
             --b\r\nContent-Type: text/plain\r\n\r\nSecond part\r\n--b--\r\n";
-        let (body, _) = extract_mime(mixed.as_bytes());
+        let (body, _, _) = extract_mime(mixed.as_bytes());
         assert!(body.contains("First part"), "{body}");
         assert!(body.contains("Second part"), "{body}");
 
         let alternative = "Content-Type: multipart/alternative; boundary=a\r\n\r\n\
             --a\r\nContent-Type: text/plain\r\n\r\nPlain version\r\n\
             --a\r\nContent-Type: text/html\r\n\r\n<p>Rich version</p>\r\n--a--\r\n";
-        let (body, mime_type) = extract_mime(alternative.as_bytes());
+        let (body, mime_type, _) = extract_mime(alternative.as_bytes());
         assert_eq!(mime_type, "text/html");
         assert!(body.contains("Rich version"), "{body}");
         assert!(!body.contains("Plain version"), "{body}");
+    }
+
+    #[test]
+    fn a_pgp_mime_body_names_its_attachments_by_position() {
+        let mixed = "Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+    --b\r\nContent-Type: text/plain\r\n\r\nSee the report.\r\n\
+    --b\r\nContent-Type: application/pdf; name=report.pdf\r\n\
+    Content-Disposition: attachment; filename=report.pdf\r\n\
+    Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n\
+    --b\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\n\
+    Content-ID: <logo>\r\nContent-Transfer-Encoding: base64\r\n\r\n\
+    iVBORw0KGgo=\r\n--b--\r\n";
+        let (body, _, attachments) = extract_mime(mixed.as_bytes());
+        assert!(body.contains("See the report."), "{body}");
+        let listed: Vec<_> = attachments
+            .iter()
+            .map(|a| {
+                (
+                    a.id.as_str(),
+                    a.name.as_str(),
+                    a.mime_type.as_deref(),
+                    a.is_inline(),
+                    a.size,
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("mime-1", "report.pdf", Some("application/pdf"), false, 9),
+                ("mime-2", "attachment-2", Some("image/png"), true, 8),
+            ]
+        );
+        // The body's signature covers them; they carry none of their own.
+        assert!(
+            attachments
+                .iter()
+                .all(|a| a.key_packets.is_none() && a.signature.is_none())
+        );
+
+        let part = |position| mime_attachment(mixed.as_bytes(), position);
+        assert_eq!(part(1), Some(("report.pdf".into(), b"%PDF-1.4\n".to_vec())));
+        assert_eq!(
+            part(2).map(|(name, bytes)| (name, bytes.len())),
+            Some(("attachment-2".into(), 8))
+        );
+        assert_eq!(part(0), None);
+        assert_eq!(part(3), None);
     }
 
     #[tokio::test]

@@ -24,6 +24,86 @@ fn the_cache_identity_format_never_changes() {
 }
 
 #[test]
+fn reading_an_account_index_that_is_not_there_creates_nothing() {
+    let root = temp_cache_dir();
+    let identity = CacheIdentity::new("https://mail.example.test/api", "account-a").unwrap();
+    let path = Cache::account_file(&root, "ruston", &identity).unwrap();
+    assert!(
+        Cache::open_existing_for_account(&path, &identity)
+            .unwrap()
+            .is_none()
+    );
+    assert!(!root.join("accounts").exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reading_an_account_index_finds_its_mail_and_leaves_the_file_as_it_was() {
+    let root = temp_cache_dir();
+    let identity = CacheIdentity::new("https://mail.example.test/api", "account-a").unwrap();
+    let path = Cache::account_path(&root, "ruston", &identity).unwrap();
+    let cache = Cache::open_for_account(&path, &identity).unwrap();
+    cache
+        .index_message(&meta("m1", "0", 1, 10), "the quarterly budget is ready")
+        .unwrap();
+    drop(cache);
+    let before = std::fs::read(&path).unwrap();
+
+    let read = Cache::open_existing_for_account(&path, &identity)
+        .unwrap()
+        .unwrap();
+    let hits = read.search("budget", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, "m1");
+    // A reader cannot write.
+    assert!(read.conn.execute("DELETE FROM messages", []).is_err());
+    drop(read);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // Another account's index is refused.
+    let other = CacheIdentity::new("https://mail.example.test/api", "account-b").unwrap();
+    assert!(matches!(
+        Cache::open_existing_for_account(&path, &other),
+        Err(Error::Cache(_))
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reading_an_index_that_needs_migrating_leaves_it_to_a_writer() {
+    let root = temp_cache_dir();
+    let identity = CacheIdentity::new("https://mail.example.test/api", "account-a").unwrap();
+    let path = Cache::account_path(&root, "ruston", &identity).unwrap();
+    let cache = Cache::open_for_account(&path, &identity).unwrap();
+    // As a cache written before this schema.
+    cache.conn.execute_batch("PRAGMA user_version = 0").unwrap();
+    drop(cache);
+    let before = std::fs::read(&path).unwrap();
+    assert!(matches!(
+        Cache::open_existing_for_account(&path, &identity),
+        Err(Error::Cache(_))
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn reading_an_index_through_a_symlink_is_refused() {
+    let root = temp_cache_dir();
+    let identity = CacheIdentity::new("https://mail.example.test/api", "account-a").unwrap();
+    let path = Cache::account_path(&root, "ruston", &identity).unwrap();
+    drop(Cache::open_for_account(&path, &identity).unwrap());
+    let link = path.with_extension("link.db");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    assert!(matches!(
+        Cache::open_existing_for_account(&link, &identity),
+        Err(Error::Cache(_))
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cache_path_rejects_profile_with_parent_component() {
     assert!(matches!(
         Cache::default_path("../outside"),

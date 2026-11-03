@@ -42,7 +42,8 @@ use mailbox::ActionStart;
 use mailbox::PageRequest;
 pub(crate) use mailbox::RequestId;
 pub use mailbox::{
-    ActionRequest, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest, Step, UndoMove,
+    ActionRequest, DeviceIndex, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest,
+    Step, UndoMove,
 };
 pub use reader::{ConversationReader, ReaderState};
 
@@ -94,6 +95,11 @@ pub enum Message {
     /// Asks the server for the first page matching what was typed, across folders.
     SearchSubmitted,
     SearchLoaded(SearchRequest, Result<ConversationPage, MailboxError>),
+    /// What this device's index found for a search Proton could not answer.
+    DeviceSearchLoaded(
+        SearchRequest,
+        Result<Option<ConversationPage>, MailboxError>,
+    ),
     ToggleMessageExpanded(String),
     /// Folds or unfolds one quoted passage of a message.
     ToggleQuoteExpanded(String, usize),
@@ -125,6 +131,7 @@ pub enum Message {
         result: Result<Option<Vec<ConversationSummary>>, MailboxError>,
     },
     ConversationLoaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
+    ConversationPreloaded(ReaderRequest, Result<ConversationDetail, MailboxError>),
     CountsLoaded(RequestId, Result<MailboxCounts, MailboxError>),
     NewMailLoaded(
         SessionEpoch,
@@ -189,6 +196,8 @@ pub enum Message {
     /// Takes recipient domains written in another script, sent in their
     /// ASCII form, or refuses them.
     SetAcceptInternationalDomains(bool),
+    /// Searches this device's index when Proton cannot be reached, or not.
+    SetSearchDeviceOffline(bool),
     /// Starts a new message.
     OpenCompose,
     ReceiveMailto(crate::mailto::Request),
@@ -248,6 +257,9 @@ pub struct App {
     /// never signs in to Proton, even after its demo mailbox is closed.
     demo_process: bool,
     auth_state: AuthState,
+    /// A saved session was found when the app started, so checking it is
+    /// opening the mailbox rather than finding out whether to sign in.
+    session_saved: bool,
     login_form: LoginForm,
     auth_error: Option<AuthError>,
     /// The saved session could not open for a reason that may pass, such as
@@ -275,6 +287,9 @@ pub struct App {
     /// The reader's conversation load in flight. A newer load, a folder
     /// change or the end of the session abandons it.
     reader_load: Option<AbortHandle>,
+    /// The conversation loading into the reader cache in the background. It
+    /// stops whenever the reader's load would, and when another replaces it.
+    preload: Option<AbortHandle>,
     /// The folders the account made, which the sidebar shows below Proton's
     /// own. Empty until they arrive, and in demo mode for good.
     folders: Vec<Folder>,
@@ -330,6 +345,7 @@ impl App {
         let task = if demo {
             app.open_mailbox(MailBackend::demo(), None, None)
         } else {
+            app.session_saved = ProtonMailService::has_saved_session();
             Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
         };
 
@@ -340,6 +356,7 @@ impl App {
         Self {
             demo_process: false,
             auth_state: AuthState::CheckingSession,
+            session_saved: false,
             login_form: LoginForm::default(),
             auth_error: None,
             resume_may_retry: false,
@@ -355,6 +372,7 @@ impl App {
             last_request: 0,
             inspections: Inspections::default(),
             reader_load: None,
+            preload: None,
             folders: Vec::new(),
             place_looks: HashMap::new(),
             refetch_folders: false,
@@ -685,11 +703,27 @@ impl App {
             }
             Message::SearchSubmitted => return self.start_search(),
             Message::SearchLoaded(request, result) => {
+                // With Proton out of reach, this device's index answers
+                // instead when asked to; never for a later page, as the
+                // index gives all it finds at once.
+                let unreachable = matches!(result, Err(MailboxError::Connection));
+                if unreachable
+                    && request.page == 0
+                    && self.settings.search_device_offline
+                    && self.backend.is_some()
+                {
+                    return self.fetch_device_search(request);
+                }
                 let error = self
                     .mailbox
                     .as_mut()
                     .and_then(|mailbox| mailbox.finish_search(&request, result));
                 self.end_session_if_expired(error);
+            }
+            Message::DeviceSearchLoaded(request, found) => {
+                if let Some(mailbox) = self.mailbox.as_mut() {
+                    mailbox.finish_device_search(&request, found);
+                }
             }
             Message::ToggleMessageExpanded(id) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -814,8 +848,15 @@ impl App {
                     .and_then(|mailbox| mailbox.finish_conversation(&request, result));
                 self.end_session_if_expired(error);
                 if awaited {
-                    return self.mark_opened_read();
+                    return Effects::batch([self.mark_opened_read(), self.preload_successor()]);
                 }
+            }
+            Message::ConversationPreloaded(request, result) => {
+                let error = self
+                    .mailbox
+                    .as_mut()
+                    .and_then(|mailbox| mailbox.finish_preload(&request, result));
+                self.end_session_if_expired(error);
             }
             Message::FoldersLoaded(epoch, result) => {
                 if !self.is_current_session(epoch) {
@@ -1021,6 +1062,9 @@ impl App {
             Message::SetCheckRecipientProtection(on) => self.set_check_recipient_protection(on),
             Message::SetAcceptInternationalDomains(on) => {
                 self.set_accept_international_domains(on);
+            }
+            Message::SetSearchDeviceOffline(on) => {
+                self.remember(|settings| settings.search_device_offline = on);
             }
             Message::OpenCompose => {
                 self.showing_settings = false;
@@ -1465,7 +1509,7 @@ impl App {
 
         let content = match request {
             Some(request) => self.fetch_conversation(Some(request)),
-            None => self.mark_opened_read(),
+            None => Effects::batch([self.mark_opened_read(), self.preload_successor()]),
         };
 
         // A new conversation starts at its top, not where the last one was
@@ -1603,6 +1647,18 @@ impl App {
         Effects::perform(
             async move { backend.search(&query, page, page_size).await },
             move |result| Message::SearchLoaded(request.clone(), result),
+        )
+    }
+
+    /// Looks in this device's index for a search Proton could not answer.
+    fn fetch_device_search(&self, request: SearchRequest) -> Effects {
+        let Some(backend) = self.backend.clone() else {
+            return Effects::none();
+        };
+        let query = request.query.clone();
+        Effects::perform(
+            async move { backend.search_local(&query).await },
+            move |found| Message::DeviceSearchLoaded(request, found),
         )
     }
 
@@ -1830,10 +1886,56 @@ impl App {
         )
     }
 
-    /// Stops the conversation load in flight, if any: nobody will read it.
+    /// Loads into the reader's cache, in the background, the conversation
+    /// that would open next were the open one archived or deleted, so it
+    /// shows at once then. Only opening it marks it read.
+    fn preload_successor(&mut self) -> Effects {
+        let Some(backend) = self.backend.clone() else {
+            return Effects::none();
+        };
+        let request = self.next_request();
+        let Some(request) = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.start_preload(request))
+        else {
+            return Effects::none();
+        };
+        if let Some(before) = self.preload.take() {
+            before.abort();
+        }
+        let (handle, registration) = AbortHandle::new_pair();
+        self.preload = Some(handle);
+        let (kind, id, messages) = (
+            request.kind,
+            request.conversation_id.clone(),
+            request.messages,
+        );
+
+        Effects::perform(
+            Abortable::new(
+                async move { backend.conversation_detail(kind, &id, messages).await },
+                registration,
+            ),
+            move |result| {
+                Message::ConversationPreloaded(
+                    request.clone(),
+                    result.unwrap_or(Err(MailboxError::Unavailable)),
+                )
+            },
+        )
+    }
+
+    /// Stops the conversation loads in flight, the reader's and the one
+    /// into its cache, if any: nobody will read them.
     fn abandon_reader_load(&mut self) {
         if let Some(load) = self.reader_load.take() {
             load.abort();
+        }
+        if let Some(preload) = self.preload.take() {
+            preload.abort();
+            if let Some(mailbox) = self.mailbox.as_mut() {
+                mailbox.forget_preload();
+            }
         }
     }
 

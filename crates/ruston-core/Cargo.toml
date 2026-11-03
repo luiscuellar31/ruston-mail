@@ -30,6 +30,7 @@ secrecy = { workspace = true }
 zeroize = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+url = { workspace = true }
 urlencoding = { workspace = true }
 rusqlite = { workspace = true }
 ammonia = { workspace = true }

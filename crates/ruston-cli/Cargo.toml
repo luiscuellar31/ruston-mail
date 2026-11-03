@@ -18,7 +18,8 @@ path = "src/main.rs"
 ruston-core = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# `signal`: Ctrl+C in a command waits for a token refresh to be saved.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 serde_json = { workspace = true }
 html5ever = { workspace = true }
 getrandom = { workspace = true }
@@ -27,6 +28,19 @@ rpassword = { workspace = true }
 secrecy = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+futures = { workspace = true }
+directories = { workspace = true }
+# The terminal interface's editor wraps text and moves through it as a
+# terminal shows it: in columns and whole characters. Ratatui uses both.
+unicode-segmentation = "1"
+unicode-width = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+# Ctrl+Z in the terminal interface stops the process, once the terminal is
+# put back, as the shell's job control expects. Crossterm already uses it.
+signal-hook = "0.3"
 
 [build-dependencies]
 winresource = { version = "0.1.31", default-features = false }

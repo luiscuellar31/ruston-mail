@@ -20,12 +20,13 @@ pub use model::{
     UNREADABLE_NOTICE,
 };
 pub use outgoing::{
-    BodyFormat, Domains, InternationalDomain, Outgoing, OutgoingKind, Protection, ProtectionCheck,
-    Recipients, SendError, recipients, validate_attachments,
+    BodyFormat, Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError,
+    validate_attachments,
 };
 #[cfg(test)]
 pub use proton::PromptAnswer;
 pub use proton::{ProtonMailService, ResumeOutcome, SignInEvent, SignInOutcome, SignInPrompt};
+pub use ruston_core::mail::recipients::{Domains, InternationalDomain, Recipients, recipients};
 
 /// The source of mailbox data for an open mailbox.
 #[derive(Clone)]
@@ -144,6 +145,19 @@ impl MailBackend {
         match self {
             Self::Proton(service) => service.search(query, page, page_size).await,
             Self::Demo(service) => service.search_page(query, page, page_size, demo::now()),
+        }
+    }
+
+    /// Searches this device's index, the one `ruston-cli index` builds,
+    /// without changing it, for a search Proton could not answer: `None`
+    /// when this device holds none. The demo, never out of reach, has none.
+    pub async fn search_local(
+        &self,
+        query: &str,
+    ) -> Result<Option<ConversationPage>, MailboxError> {
+        match self {
+            Self::Proton(service) => service.search_local(query).await,
+            Self::Demo(_) => Ok(None),
         }
     }
 

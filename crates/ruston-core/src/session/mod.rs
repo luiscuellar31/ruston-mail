@@ -181,6 +181,24 @@ impl Session {
         }
     }
 
+    /// Whether the profile's session metadata is on disk. Its secrets are
+    /// not looked at, so no keychain is asked.
+    pub(crate) fn is_saved(paths: &Paths, profile: &str) -> bool {
+        validate_profile_name(profile).is_ok() && paths.session_file(profile).is_file()
+    }
+
+    /// Waits for whoever holds the profile lock, and lets it go at once. A
+    /// token refresh holds it from sending the old refresh token until the
+    /// new pair is saved. A profile never signed in to has no lock file,
+    /// and nothing to wait for.
+    pub(crate) fn wait_unlocked(paths: &Paths, profile: &str) -> Result<()> {
+        validate_profile_name(profile)?;
+        if !paths.lock_file(profile).exists() {
+            return Ok(());
+        }
+        Self::lock(paths, profile).map(drop)
+    }
+
     pub(crate) fn lock_and_load(
         paths: &Paths,
         profile: &str,
@@ -445,6 +463,62 @@ mod tests {
 
         drop(held);
         Session::lock_within(&paths, "default", Duration::from_millis(200)).unwrap();
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_session_counts_as_saved_by_its_metadata_alone() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        assert!(!Session::is_saved(&paths, "default"));
+        let store = MemoryStore::new();
+        Session {
+            uid: "uid".into(),
+            app_version: "Other".into(),
+            base_url: crate::DEFAULT_BASE_URL.into(),
+            password_mode: 1,
+            user_agent: None,
+            user_id: None,
+        }
+        .save(
+            &paths,
+            "default",
+            &store,
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("access"),
+                refresh: SecretString::from("refresh"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
+        assert!(Session::is_saved(&paths, "default"));
+        assert!(!Session::is_saved(&paths, "other"));
+        assert!(!Session::is_saved(&paths, "../default"));
+        // Its secrets gone, it still counts: resuming it says what is wrong.
+        store.delete(K_TOKENS).unwrap();
+        assert!(Session::is_saved(&paths, "default"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn waiting_for_a_profile_lasts_while_it_is_held_and_lets_it_go() {
+        let base = unique_base();
+        let paths = Paths::with_base(&base);
+        // Never signed in to: nothing to wait for, and nothing is made.
+        Session::wait_unlocked(&paths, "default").unwrap();
+        assert!(!base.exists());
+
+        let held = Session::lock(&paths, "default").unwrap();
+        let waiter = {
+            let paths = paths.clone();
+            std::thread::spawn(move || Session::wait_unlocked(&paths, "default"))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!waiter.is_finished(), "stopped waiting while it was held");
+        drop(held);
+        waiter.join().unwrap().unwrap();
+        Session::lock_within(&paths, "default", Duration::ZERO).unwrap();
         let _ = std::fs::remove_dir_all(base);
     }
 
