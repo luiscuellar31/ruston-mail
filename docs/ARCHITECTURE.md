@@ -992,6 +992,16 @@ instead of an unknown outcome.
   failure through its adapter and shows that the file was not saved; the CLI
   reports the core error. Low-level crypto decryption remains separate from
   signature verification for compatibility.
+  A PGP/MIME body (a `multipart/` MIME type) carries attachments Proton cannot
+  see. Reading one appends them to `FullMessage::attachments`, named `mime-`
+  and their position in the body, with no key packets or signature, and
+  `list_attachments` and `for_each_attachment` open such a body, unverified,
+  to list them. Downloading one fetches and decrypts the message again with
+  the sender's keys and returns that part; only an `Invalid` body verdict
+  refuses it with `AttachmentVerificationFailed`, while an unsigned body, or
+  one left unverified because no sender keys were found, lets it through, as
+  reading shows such a body. Every caller, export included, reaches them
+  through those methods.
 - [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs) owns live CLI EML
   reconstruction. It decrypts one message and then downloads each attachment
   using the same metadata, writing MIME parts sequentially to a hidden

@@ -348,7 +348,10 @@ session stops verifying. Missing usable keys, malformed signatures, and
 signature mismatches fail the download; plaintext
 discarded on this path is zeroized. This check is shared by desktop and CLI
 downloads, including bulk downloads and EML export. Unsigned attachments remain
-downloadable without a signature-based authenticity guarantee. Body signature
+downloadable without a signature-based authenticity guarantee. An attachment
+inside a PGP/MIME body has no signature of its own; the body's covers it, so
+an invalid body signature fails its download, while an unsigned or unverified
+body lets it through, as such a body is shown. Body signature
 status is shown beside the sender's address in the desktop reader: a closed lock
 means the body signature verified against an available sender key; an open lock
 means unsigned or unverified, and a red warning means invalid: altered, or

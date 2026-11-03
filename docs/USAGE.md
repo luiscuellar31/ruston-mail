@@ -266,6 +266,14 @@ without a signature can still be saved; their contents have not been
 authenticated by a signature. These checks also apply to CLI downloads and EML
 exports.
 
+A PGP/MIME message, as PGP users outside Proton send, carries its attachments
+inside its encrypted body, where Proton cannot see them. Ruston lists them
+with the message's other attachments; in the CLI their IDs are `mime-1`,
+`mime-2` and so on, by their place in the message. They have no signature of
+their own: the body's covers them. Ruston refuses to save one only when the
+body's signature is invalid, and saves it otherwise, as it shows such a body:
+unsigned, or unverified because the sender's keys are not available.
+
 New local attachments are limited to 32 MiB per file and 128 MiB combined in
 both the desktop and CLI. These are Ruston's safety limits; Proton may impose
 additional limits. Files that become too large before upload are rejected too.

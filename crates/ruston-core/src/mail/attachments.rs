@@ -4,7 +4,7 @@ use super::Client;
 use crate::api;
 use crate::crypto;
 use crate::error::{Error, Result};
-use crate::model::message::{Attachment, MessageMetadata};
+use crate::model::message::{Attachment, Message, MessageMetadata};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
@@ -205,29 +205,65 @@ fn is_windows_reserved(name: &str) -> bool {
         && digit.is_some_and(|c| c.is_ascii_digit() || matches!(c, '¹' | '²' | '³'))
 }
 
+/// What the ID of an attachment inside a PGP/MIME body starts with; its
+/// position in that body follows. Proton's own IDs never take this form.
+const MIME_ATTACHMENT_PREFIX: &str = "mime-";
+
+/// The ID of the attachment at `position`, from 1, inside a PGP/MIME body.
+pub(super) fn mime_attachment_id(position: usize) -> String {
+    format!("{MIME_ATTACHMENT_PREFIX}{position}")
+}
+
+/// The position, from 1, that an attachment ID names inside a PGP/MIME
+/// body, if it names one.
+fn mime_attachment_position(id: &str) -> Option<usize> {
+    let digits = id.strip_prefix(MIME_ATTACHMENT_PREFIX)?;
+    if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().filter(|&position| position >= 1)
+}
+
 impl Client {
-    /// List a message's attachments (inline filtered unless `include_inline`).
+    /// List a message's attachments (inline filtered unless `include_inline`),
+    /// those inside a PGP/MIME body included.
     pub async fn list_attachments(
         &self,
         message_id: &str,
         include_inline: bool,
     ) -> Result<Vec<Attachment>> {
         let msg = api::messages::get_message(self.http(), message_id).await?;
-        Ok(msg
-            .attachments
+        let (_, attachments) = self.attachments_of(msg).await?;
+        Ok(attachments
             .into_iter()
             .filter(|a| include_inline || !a.is_inline())
             .collect())
     }
 
+    /// A message's metadata and attachments: Proton's, and those inside a
+    /// PGP/MIME body, which only show once it is opened. Listing them
+    /// refuses nothing, so it opens without checking the signature.
+    async fn attachments_of(&self, msg: Message) -> Result<(MessageMetadata, Vec<Attachment>)> {
+        if msg.mime_type.starts_with("multipart/") {
+            let opened = self.open_message_with(msg, Vec::new()).await?;
+            return Ok((opened.meta, opened.attachments));
+        }
+        Ok((msg.meta, msg.attachments))
+    }
+
     /// Download + decrypt one attachment. Returns (filename, bytes).
     /// A nonempty detached signature must verify before plaintext is returned;
-    /// unavailable sender keys or an invalid signature fail the download.
+    /// unavailable sender keys or an invalid signature fail the download. One
+    /// inside a PGP/MIME body, named `mime-` and its position, follows its
+    /// body's signature instead: only an invalid one refuses it.
     pub async fn download_attachment(
         &self,
         message_id: &str,
         attachment_id: &str,
     ) -> Result<(String, Vec<u8>)> {
+        if let Some(position) = mime_attachment_position(attachment_id) {
+            return self.download_mime_attachment(message_id, position).await;
+        }
         let msg = api::messages::get_message(self.http(), message_id).await?;
         let att = msg
             .attachments
@@ -248,6 +284,9 @@ impl Client {
         meta: &MessageMetadata,
         att: &Attachment,
     ) -> Result<(String, Vec<u8>)> {
+        if let Some(position) = mime_attachment_position(&att.id) {
+            return self.download_mime_attachment(&meta.id, position).await;
+        }
         let too_large = || Error::AttachmentTooLarge {
             limit: MAX_ATTACHMENT_PLAINTEXT_BYTES,
         };
@@ -314,13 +353,48 @@ impl Client {
         F: FnMut(String, Vec<u8>) -> Result<()>,
     {
         let msg = api::messages::get_message(self.http(), message_id).await?;
-        for att in &msg.attachments {
+        let (meta, attachments) = self.attachments_of(msg).await?;
+        for att in &attachments {
             if include_inline || !att.is_inline() {
-                let (name, bytes) = self.download_listed_attachment(&msg.meta, att).await?;
+                let (name, bytes) = self.download_listed_attachment(&meta, att).await?;
                 receive(name, bytes)?;
             }
         }
         Ok(())
+    }
+
+    /// Downloads the message again and returns the attachment at `position`,
+    /// from 1, inside its PGP/MIME body. It has no signature of its own: the
+    /// body's covers it, so an invalid one refuses it, while an unsigned body,
+    /// or one whose sender's keys cannot be found, lets it through, as
+    /// reading shows such a body.
+    async fn download_mime_attachment(
+        &self,
+        message_id: &str,
+        position: usize,
+    ) -> Result<(String, Vec<u8>)> {
+        let not_found = || Error::NotFound {
+            kind: "attachment".into(),
+        };
+        let msg = api::messages::get_message(self.http(), message_id).await?;
+        if !msg.mime_type.starts_with("multipart/") {
+            return Err(not_found());
+        }
+        let addr = self
+            .keys_for_message(&msg.meta.address_id)
+            .ok_or_else(|| Error::Crypto("no address key for message".into()))?
+            .clone();
+        let sender_pubs = self.verifier_keys(&msg.meta.sender.address).await;
+        super::off_thread(move || {
+            let provider = crypto::provider();
+            let (body, verdict) =
+                crypto::message::decrypt_body_bytes(&provider, &addr, &sender_pubs, &msg.body)?;
+            if verdict == crypto::Verdict::Invalid {
+                return Err(Error::AttachmentVerificationFailed);
+            }
+            super::read::mime_attachment(&body, position).ok_or_else(not_found)
+        })
+        .await
     }
 
     /// Download all (non-inline) attachments of a message, up to 128 MiB total.
