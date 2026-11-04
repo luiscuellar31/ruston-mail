@@ -527,7 +527,12 @@ Proton Mail's wherever Proton has one; `?` lists them. With no session saved,
 it signs in first, as `ruston-cli login` does, and `--demo` opens the
 fictional mailbox, which keeps the changes you make until the interface
 closes. Away from a terminal, as in a script, `ruston-cli` with no command
-still prints the help and ends with status 2.
+still prints the help and ends with status 2. It keeps your terminal's colors
+and draws its accent, on the pane in use, its questions and the keys it names,
+in Ruston Mail's violet: exactly in terminals that say they show any color
+(`COLORTERM=truecolor`) and on Windows, the nearest violet of the 256-color
+palette in others, and the terminal's magenta where it has only the basic
+colors. `NO_COLOR` turns colors off.
 
 It lists the folders and labels with how many of their conversations are
 unread, a folder's conversations, newest first, each marked unread (•),

@@ -851,7 +851,10 @@ instead of an unknown outcome.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with
-  one accent, and none under `NO_COLOR`. The reader wraps its lines to the
+  one accent, Ruston Mail's violet: exact where `COLORTERM` says the terminal
+  shows any color, and on Windows; the 256-color palette's nearest where
+  `TERM` says it has those, since a color a terminal cannot show may come out
+  as another; its magenta otherwise; and none under `NO_COLOR`. The reader wraps its lines to the
   pane; ratatui's unstable `Paragraph::line_count` gives the wrapped rows, and
   the view records how far the state may scroll, as only it knows the pane's
   size. Every piece of text from the mail

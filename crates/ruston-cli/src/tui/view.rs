@@ -76,24 +76,62 @@ const SUSPEND_KEYS: &[(&str, &str)] = if cfg!(unix) {
     &[]
 };
 
-/// The terminal's own colors with one accent, or none at all when
-/// `NO_COLOR` is set, as <https://no-color.org> asks.
+/// Ruston Mail's violet, the accent the desktop draws.
+const ACCENT: Color = Color::Rgb(109, 92, 245);
+
+/// The terminal's own colors with one accent, Ruston Mail's violet, or none
+/// at all when `NO_COLOR` is set, as <https://no-color.org> asks.
 pub(crate) struct Theme {
     accent: Style,
 }
 
 impl Theme {
     pub(crate) fn from_env() -> Self {
-        Self::new(std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()))
+        if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+            return Self::new(true);
+        }
+        Self {
+            accent: Style::new().fg(accent_color()),
+        }
     }
 
     fn new(no_color: bool) -> Self {
         let accent = if no_color {
             Style::new().add_modifier(Modifier::BOLD)
         } else {
-            Style::new().fg(Color::Cyan)
+            Style::new().fg(ACCENT)
         };
         Self { accent }
+    }
+}
+
+/// Ruston Mail's violet as this terminal shows it: the Windows console and
+/// Windows Terminal show any color.
+#[cfg(windows)]
+fn accent_color() -> Color {
+    ACCENT
+}
+
+/// Ruston Mail's violet as this terminal shows it, by what its environment
+/// says it can show.
+#[cfg(not(windows))]
+fn accent_color() -> Color {
+    let var = |name| std::env::var(name).unwrap_or_default();
+    accent_among(&var("COLORTERM"), &var("TERM"))
+}
+
+/// Ruston Mail's violet as a terminal can show it: exactly where `COLORTERM`
+/// says it shows any color, the 256-color palette's nearest violet, #875fff,
+/// where `TERM` says it has those, and its own magenta otherwise. A color a
+/// terminal cannot show could come out as another, green in some.
+#[cfg(not(windows))]
+fn accent_among(colorterm: &str, term: &str) -> Color {
+    if matches!(colorterm, "truecolor" | "24bit") {
+        ACCENT
+    } else if term.contains("256color") {
+        Color::Indexed(99)
+    } else {
+        Color::Magenta
     }
 }
 
@@ -1685,6 +1723,17 @@ mod tests {
         );
         // With colors, the accent marks the focused pane and unread counts.
         let buffer = drawn(120, 30, &app, &Theme::new(false));
-        assert!(buffer.content().iter().any(|cell| cell.fg == Color::Cyan));
+        assert!(buffer.content().iter().any(|cell| cell.fg == ACCENT));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn the_accent_is_ruston_mails_violet_as_near_as_the_terminal_shows_it() {
+        assert_eq!(accent_among("truecolor", "xterm-256color"), ACCENT);
+        assert_eq!(accent_among("24bit", ""), ACCENT);
+        // As Terminal.app says it, without COLORTERM.
+        assert_eq!(accent_among("", "xterm-256color"), Color::Indexed(99));
+        assert_eq!(accent_among("", "screen-256color"), Color::Indexed(99));
+        assert_eq!(accent_among("", "linux"), Color::Magenta);
     }
 }
