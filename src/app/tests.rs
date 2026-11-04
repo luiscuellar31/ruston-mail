@@ -3665,6 +3665,31 @@ fn escape_puts_an_unsent_message_away() {
 }
 
 #[test]
+fn a_reply_looks_up_its_recipients_as_it_opens_but_a_forward_has_none() {
+    let answer = |kind: AnswerKind, check: bool| {
+        let mut app = loaded_demo_app();
+        let _ = app.update(Message::SetCheckRecipientProtection(check));
+        open_conversation(&mut app, "demo-0");
+        let effects = app.update(Message::Answer {
+            message_id: "demo-0-2".into(),
+            kind,
+        });
+        (app, effects.units())
+    };
+    // Its notice shows without leaving a field, and nothing is asked twice.
+    let (mut app, asked) = answer(AnswerKind::ReplyAll, true);
+    assert_eq!(asked, 1);
+    assert_eq!(
+        app.compose().unwrap().protection_notice(),
+        Some(compose::ProtectionNotice::Checking)
+    );
+    assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 0);
+    // Off in Settings, nothing is asked before sending.
+    assert_eq!(answer(AnswerKind::Reply, false).1, 0);
+    assert_eq!(answer(AnswerKind::Forward, true).1, 0);
+}
+
+#[test]
 fn a_reply_opens_addressed_and_its_recipients_can_change() {
     // A reply opens addressed to whom core would answer, Cc included for
     // Reply all, and like any message it goes to whoever is typed.

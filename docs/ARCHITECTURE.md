@@ -629,8 +629,10 @@ drops it, the sign-in screen says whose sign-in brings it back, and closing
 the window asks before discarding it. Nothing of it is written to disk.
 
 The composer's protection notice takes the same path. When a recipient field
-loses focus, [`app/compose.rs`](../src/app/compose.rs) asks the backend about
-addresses it has not looked up for this draft;
+loses focus, or a reply opens with the recipients of a conversation Proton
+already holds, [`app/compose.rs`](../src/app/compose.rs) asks the backend
+about addresses it has not looked up for this draft; a `mailto:` draft's,
+which come from outside, wait for a field to lose focus;
 [`mail/proton.rs`](../src/mail/proton.rs) calls core's `recipient_protection`,
 which classifies the key lookup the way sending picks a package. It looks up
 four addresses at a time, in their order, and the whole batch shares one

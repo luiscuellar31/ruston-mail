@@ -772,7 +772,9 @@ impl App {
         };
         compose.reread_recipients();
         self.compose = Some(compose);
-        Effects::none()
+        // Its recipients come from a conversation Proton already holds, so
+        // they are looked up at once, unlike a mailto: link's.
+        self.check_compose_protection()
     }
 
     /// Puts an unsent message away. Untouched messages close at once;

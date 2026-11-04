@@ -310,8 +310,9 @@ fails, the warning names that address too and claims nothing about it. Only
 the first 100 recipients are looked up, one request each; the warning counts
 any more as not checked, as the terminal interface's question before sending
 does. A reply
-opens with its recipients filled in, so their notice shows once you leave one of
-its recipient fields. Turn off **Check
+opens with its recipients filled in and looks them up at once, so their notice
+shows as it opens; the recipients an email link fills in wait until you leave
+one of their fields, since the link comes from outside. Turn off **Check
 recipient encryption while writing** under Settings → Advanced to ask Proton
 nothing until you send; the notice is not shown then.
 
