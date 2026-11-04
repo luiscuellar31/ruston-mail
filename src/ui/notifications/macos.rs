@@ -14,14 +14,17 @@ use objc2_user_notifications::{
 
 use super::Status;
 
-pub(super) fn request_permission(status: Arc<AtomicU8>, context: egui::Context) {
-    // currentNotificationCenter can raise an Objective-C exception for a bare
-    // executable. The packaged application provides the required identity.
-    let bundle = NSBundle::mainBundle();
-    if bundle
+/// Whether this is the packaged application, whose identity a notification
+/// center needs: `currentNotificationCenter` can raise an Objective-C
+/// exception for a bare executable, as tests run.
+fn has_app_identity() -> bool {
+    NSBundle::mainBundle()
         .bundleIdentifier()
-        .is_none_or(|id| id.to_string() != crate::ui::identity::APP_ID)
-    {
+        .is_some_and(|id| id.to_string() == crate::ui::identity::APP_ID)
+}
+
+pub(super) fn request_permission(status: Arc<AtomicU8>, context: egui::Context) {
+    if !has_app_identity() {
         status.store(Status::Unavailable as u8, Ordering::Release);
         return;
     }
@@ -51,10 +54,7 @@ pub(super) fn show(
     status: Arc<AtomicU8>,
     context: egui::Context,
 ) {
-    if NSBundle::mainBundle()
-        .bundleIdentifier()
-        .is_none_or(|id| id.to_string() != crate::ui::identity::APP_ID)
-    {
+    if !has_app_identity() {
         return;
     }
     let sender = sender.to_owned();
@@ -81,6 +81,13 @@ pub(super) fn show(
     });
     UNUserNotificationCenter::currentNotificationCenter()
         .getNotificationSettingsWithCompletionHandler(&settings);
+}
+
+/// Takes what Ruston delivered away from the screen and Notification Center.
+pub(super) fn clear() {
+    if has_app_identity() {
+        UNUserNotificationCenter::currentNotificationCenter().removeAllDeliveredNotifications();
+    }
 }
 
 fn deliver(sender: &str, subject: &str, status: Arc<AtomicU8>, context: egui::Context) {

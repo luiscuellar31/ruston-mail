@@ -596,9 +596,11 @@ of its own. Windows reports no notification setting for the app until its
 first toast shows, so only a reported setting denies one. COM and file
 operations stay on a blocking worker. macOS uses UserNotifications authorization
 only with the matching `.app` bundle; it rereads authorization for each arrival
-and submits local notifications through completion blocks. Native errors update
-status without interrupting mail operations. Already delivered OS notifications
-are outside pending-work cancellation. Demo mode never requests OS authorization
+and submits local notifications through completion blocks, under one
+identifier, so a new one replaces the last, and when notifications stop for an
+account it removes what it delivered from Notification Center. Native errors
+update status without interrupting mail operations. Already delivered OS
+notifications are outside pending-work cancellation. Demo mode never requests OS authorization
 or delivers notifications.
 
 Sending follows the same return path: [`ui/compose.rs`](../src/ui/compose.rs)
