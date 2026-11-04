@@ -491,7 +491,7 @@ impl App {
                     return self.go_to(id, name);
                 }
             }
-            Message::ToggleQuotes => self.show_quotes = !self.show_quotes,
+            Message::ToggleQuotes => self.toggle_quotes(),
             Message::ShowLinks => self.show_links(),
             Message::ShowAttachments => self.show_attachments(),
             // Nothing on screen waits for a yes.
@@ -1213,6 +1213,18 @@ impl App {
             }
             Some(_) => self.notice = Some("This conversation has no links.".to_owned()),
             None => self.notice = Some("Open a conversation to list its links.".to_owned()),
+        }
+    }
+
+    /// Shows the open conversation's folded quoted passages, or folds them
+    /// again, or says why there is nothing to show.
+    fn toggle_quotes(&mut self) {
+        match &self.reading {
+            Some(reading) if !reading.quotes.is_empty() => self.show_quotes = !self.show_quotes,
+            Some(_) => {
+                self.notice = Some("This conversation has no quoted text to fold.".to_owned());
+            }
+            None => self.notice = Some("Open a conversation to show its quoted text.".to_owned()),
         }
     }
 
@@ -1963,8 +1975,22 @@ mod tests {
     }
 
     #[test]
-    fn z_shows_quoted_text_and_hides_it_again() {
+    fn z_shows_quoted_text_and_hides_it_again_or_says_there_is_none() {
         let mut app = loaded();
+        press(&mut app, KeyCode::Char('z'));
+        assert!(!app.show_quotes);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Open a conversation to show its quoted text.")
+        );
+        app.reading = Some(reading(3));
+        press(&mut app, KeyCode::Char('z'));
+        assert!(!app.show_quotes);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("This conversation has no quoted text to fold.")
+        );
+        app.reading.as_mut().unwrap().quotes = vec![0..1, 2..3];
         press(&mut app, KeyCode::Char('z'));
         assert!(app.show_quotes);
         press(&mut app, KeyCode::Char('z'));
