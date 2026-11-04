@@ -1317,7 +1317,11 @@ on events from the new cursor, taken before the first page, after the
 replacement, so mail that comes, goes or changes while the pages are listed
 does not stop the rebuild; a total that shrinks lists the pages already
 listed again, where deleted mail moved later messages, and only a listing
-that kept its total is checked against what was staged. The full refresh clears
+that kept its total is checked against what was staged. A page that fails in
+a way that may pass (`Error::may_pass`: the connection, or Proton busy or
+down) is asked for again after half a second and after two; the staging
+stays in temporary tables, private to the connection, so a rebuild that
+stops still starts over. The full refresh clears
 the local body index by dropping and recreating its FTS5 table in that
 transaction: `secure_delete` overwrites the freed pages at once, where deleting
 the rows one by one under FTS5's `secure-delete` took seconds per thousand

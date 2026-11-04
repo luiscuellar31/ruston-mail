@@ -40,11 +40,7 @@ fn needs_index(report: &SyncReport, round: Round) -> bool {
 /// Proton being busy or down, or the cache changing during a sync. Anything
 /// else, a refused session first, stops it.
 fn is_transient(error: &Error) -> bool {
-    match error {
-        Error::Http(_) | Error::CacheChanged(_) => true,
-        Error::Api(api) => api.may_pass(),
-        _ => false,
-    }
+    error.may_pass() || matches!(error, Error::CacheChanged(_))
 }
 
 /// How long to wait after `failures` errors in a row: the interval, doubled

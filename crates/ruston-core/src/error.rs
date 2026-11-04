@@ -295,6 +295,17 @@ impl From<reqwest::Error> for Error {
 }
 
 impl Error {
+    /// Whether the same request may succeed later: the connection failed, or
+    /// Proton was busy or down ([`ApiError::may_pass`]), rather than refusing
+    /// the request or the session.
+    pub fn may_pass(&self) -> bool {
+        match self {
+            Error::Http(_) => true,
+            Error::Api(api) => api.may_pass(),
+            _ => false,
+        }
+    }
+
     /// Map this error to the CLI's process exit status: an API error by its
     /// HTTP status, and any other [`exit_status::OTHER`] unless it names a
     /// session, something not found, or a conflict.
@@ -476,6 +487,8 @@ mod tests {
         }
         assert!(api(401).is_unauthorized());
         assert!(!api(403).is_unauthorized());
+        assert!(Error::Api(api(503)).may_pass() && !Error::Api(api(401)).may_pass());
+        assert!(!Error::Other("refused".into()).may_pass());
         assert!(api(401).refuses_session() && api(403).refuses_session());
         for status in [400, 404, 429, 500] {
             assert!(!api(status).refuses_session(), "{status}");

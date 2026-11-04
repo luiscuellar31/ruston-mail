@@ -14,8 +14,13 @@ use futures::{FutureExt, StreamExt, stream};
 use std::borrow::{Borrow, Cow};
 use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
 const RESYNC_PAGE_SIZE: u32 = 100;
+/// How long a resync waits before asking again for a page that failed in a
+/// way that may pass, once for each try: so one bad answer among hundreds of
+/// pages does not start it over.
+const RESYNC_PAGE_RETRIES: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
 /// How many bodies `index` downloads at once, as conversation reads do.
 const INDEX_BODY_FETCH_CONCURRENCY: usize = 3;
 
@@ -97,7 +102,7 @@ async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
             page_size: Some(page_size),
             ..Default::default()
         };
-        let (total, messages) = api::messages::list_messages(http, &query).await?;
+        let (total, messages) = resync_page(http, &query).await?;
         let listed_before = u64::from(page) * u64::from(page_size);
         if messages.is_empty() && listed_before < u64::from(total) {
             return Err(Error::cache_changed(
@@ -127,6 +132,22 @@ async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
         cursor,
         count,
     })
+}
+
+/// One page of a resync's listing, asked for again after each of
+/// [`RESYNC_PAGE_RETRIES`] while it fails in a way that may pass, Proton
+/// busy or down or the connection; any other failure, or the last, ends it.
+async fn resync_page<D: Doer>(http: &D, query: &ListQuery) -> Result<(u32, Vec<MessageMetadata>)> {
+    let mut waits = RESYNC_PAGE_RETRIES.iter();
+    loop {
+        match api::messages::list_messages(http, query).await {
+            Err(error) if error.may_pass() => match waits.next() {
+                Some(wait) => tokio::time::sleep(*wait).await,
+                None => return Err(error),
+            },
+            listed => return listed,
+        }
+    }
 }
 
 /// Applies Proton's events since the cached cursor. The cache comes by value
@@ -1669,6 +1690,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_page_proton_failed_once_is_asked_for_again_and_the_rebuild_goes_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "fresh"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3, "Messages": [message("m1"), message("m2")]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "Code": 503, "Error": "unavailable"
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3, "Messages": [message("m3")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+
+        let Rebuilt { count, cursor, .. } =
+            rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2)
+                .await
+                .unwrap();
+
+        assert_eq!((count, cursor.as_str()), (3, "fresh"));
+    }
+
+    #[tokio::test]
     async fn interrupted_rebuild_preserves_offline_cache_and_cursor() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1696,7 +1765,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
                 "Code": 503, "Error": "unavailable"
             })))
-            .expect(1)
+            // Asked again after each wait, then given up on.
+            .expect(1 + RESYNC_PAGE_RETRIES.len() as u64)
             .mount(&server)
             .await;
 
