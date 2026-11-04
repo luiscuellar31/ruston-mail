@@ -1650,12 +1650,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 render::draft_saved(ctx.json, "draft-demo-saved-01");
                 Ok(())
             }
-            DraftsCmd::Edit { id, args } => {
-                if ctx.json {
-                    render::sent(true, &id);
-                } else {
-                    terminal::println!("Draft updated (id {id}) for subject: '{}'", args.subject);
-                }
+            DraftsCmd::Edit { id, .. } => {
+                render::action_result(ctx.json, "edit", &[id]);
                 Ok(())
             }
             DraftsCmd::Delete { ids, .. } => {

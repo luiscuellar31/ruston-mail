@@ -65,6 +65,36 @@ fn a_folder_or_label_of_ones_own_is_named_as_people_see_it() {
 }
 
 #[test]
+fn editing_a_draft_in_the_demo_says_what_the_real_command_says() {
+    let edit = |output: &[&str]| {
+        let args = [
+            "drafts",
+            "edit",
+            "msg-demo-08",
+            "--to",
+            "team@example.com",
+            "--subject",
+            "Plan",
+            "--body",
+            "Notes",
+        ];
+        run_ok(&[&["--demo"][..], output, &args[..]].concat())
+    };
+    // As render::action_result writes it for the real one.
+    let json: serde_json::Value = serde_json::from_slice(&edit(&["--json"]).stdout).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "status": "ok", "action": "edit", "count": 1, "ids": ["msg-demo-08"], "demo": true
+        })
+    );
+    assert_eq!(
+        String::from_utf8(edit(&[]).stdout).unwrap(),
+        "edit: 1 item(s)\n"
+    );
+}
+
+#[test]
 fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
     let json = |args: &[&str]| -> serde_json::Value {
         let output = run_ok(&[&["--demo", "--json"][..], args].concat());
