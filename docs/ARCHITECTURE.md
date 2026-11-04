@@ -315,8 +315,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   screen, but not while a folder first loads, a search's answer is on its way
   or Load more asks Proton by position (`Mailbox::takes_actions`). Proton may
   have read a folder's first page before applying the actions still on their
-  way or those confirmed since the page was asked for, so the page shows them
-  again in order: a move out keeps its row out, a move that keeps its row here
+  way or those confirmed since the page was asked for, an automatic read among
+  them, so the page shows them again in order: a move out keeps its row out, a move that keeps its row here
   keeps it listed as it was, and a flag stays changed. A page of search
   results shows them again the same way, those confirmed since the search was
   asked for included, so a row moved out of the view stays out of them.

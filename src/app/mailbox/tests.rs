@@ -2304,6 +2304,22 @@ fn search_results_read_before_proton_applied_an_action_still_show_it() {
 }
 
 #[test]
+fn a_read_confirmed_while_the_list_refreshes_stays_shown() {
+    let (mut mailbox, first) = open();
+    mailbox.finish_page(first.id, page_of(vec![unread("a"), unread("b")], 2));
+    load_detail(&mut mailbox, "a", detail("a", &["message"]), 3);
+    let read = mailbox.start_mark_read(4).expect("the open row is unread");
+    let refresh = mailbox.refresh(5).unwrap();
+    assert!(mailbox.finish_mark_read(&read, Ok(())).read_confirmed);
+    assert!(!mailbox.row("a").unwrap().unread);
+
+    // Proton read the page before it marked "a" read.
+    mailbox.finish_page(refresh.id, page_of(vec![unread("a"), unread("b")], 2));
+    assert!(!mailbox.row("a").unwrap().unread, "it stays read");
+    assert!(mailbox.row("b").unwrap().unread);
+}
+
+#[test]
 fn a_move_confirmed_while_an_emptied_folder_loads_again_stays_shown() {
     let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
     let archive = send(

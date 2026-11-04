@@ -1345,6 +1345,15 @@ impl Mailbox {
             };
         }
         self.invalidate_listings();
+        // A page on its way may have been read before it, as for any action.
+        if self.shows(&request.folder)
+            && matches!(
+                self.status,
+                ListStatus::Loading(_) | ListStatus::Refreshing(_)
+            )
+        {
+            self.confirmed_while_loading.push(request.clone());
+        }
         // The row is only marked here while its folder is open, but Proton's
         // counts changed wherever the person went meanwhile. A thread split
         // into its messages is read in them.
