@@ -11,7 +11,7 @@ use crate::model::message::MessageMetadata;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
 use crate::transport::Doer;
 use futures::{FutureExt, StreamExt, stream};
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::future::Future;
 use std::path::PathBuf;
 
@@ -228,6 +228,16 @@ async fn backfill_cache<D: Doer>(
     Ok(n)
 }
 
+/// What the local index keeps of a message's body: an HTML body's text,
+/// without the addresses its links lead to, or a plain one as it is.
+fn searchable_body(full: &FullMessage) -> Cow<'_, str> {
+    if crate::html::is_html_mime(&full.mime_type) {
+        Cow::Owned(crate::html::searchable_text(&full.body))
+    } else {
+        Cow::Borrowed(&full.body)
+    }
+}
+
 async fn index_cache<D, F, Fut>(
     http: &D,
     cache: impl Borrow<Cache>,
@@ -280,7 +290,7 @@ where
                     cache.borrow().store_index_result(
                         Some(&cursor),
                         &full.meta,
-                        Some(&full.body),
+                        Some(&searchable_body(&full)),
                     )?;
                     n += 1;
                 }
@@ -1052,6 +1062,51 @@ mod tests {
             .find(|meta| meta.id == "kept")
             .unwrap();
         assert_eq!(kept.unread, 0, "the listing's metadata is stored");
+    }
+
+    #[tokio::test]
+    async fn indexing_keeps_what_mail_says_and_not_where_its_links_go() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        let person = |name: &str, address: &str| crate::model::message::Recipient {
+            name: name.into(),
+            address: address.into(),
+            ..Default::default()
+        };
+        let meta = MessageMetadata {
+            sender: person("Ana Diaz", "ana@example.test"),
+            cc_list: vec![person("Bea Ortiz", "bea@example.test")],
+            ..cached_message("m1")
+        };
+        let http = ListingDoer {
+            pages: vec![vec![meta.clone()]],
+            gate: Semaphore::new(1),
+        };
+
+        index_cache(&http, &cache, "inbox", 1, 10, |_| {
+            let meta = meta.clone();
+            async move {
+                Ok(FullMessage {
+                    body: concat!(
+                        r#"<p><a href="https://example.test/reset?token=s3cret">Reset</a> "#,
+                        r#"your password</p><img src="https://track.example/p.gif">"#
+                    )
+                    .into(),
+                    mime_type: "text/html".into(),
+                    ..full_message(meta)
+                })
+            }
+        })
+        .await
+        .unwrap();
+
+        let found = |words: &str| !cache.search(words, 10).unwrap().is_empty();
+        assert!(found("reset your password"));
+        for address_or_markup in ["s3cret", "token", "track", "href", "img"] {
+            assert!(!found(address_or_markup), "{address_or_markup}");
+        }
+        // Who sent it and who had a copy, by name as well.
+        assert!(found("Diaz") && found("Ortiz") && found("bea"));
     }
 
     #[tokio::test]

@@ -1231,7 +1231,14 @@ run CLI sync/backfill and `index` to recreate them for the current account.
 Signing out clears credentials, but retains the account's disk cache.
 Indexing a folder stores decrypted message bodies in that local database;
 it is not encrypted at rest
-by this code. It keeps no signature verdicts, so it decrypts without looking up
+by this code. An HTML body goes in as `html::searchable_text` writes it, its
+visible text without the addresses its links lead to, and the searchable
+participants are the names and addresses of the sender and every recipient.
+`msg_fts_rows.as_text` marks a body indexed that way; rows from before it,
+which held the HTML, and rows an older version still writes read 0, so
+`index` reads those bodies again. Only opening to write adds the column,
+keeping the schema version, so an older version still opens the cache and
+reading one without it needs no migration. It keeps no signature verdicts, so it decrypts without looking up
 sender keys. Up to three bodies download at once and are saved in listing
 order, so a stop leaves exactly the messages before it indexed. Mail sent or
 received keeps its body, so a message already in the index is not downloaded

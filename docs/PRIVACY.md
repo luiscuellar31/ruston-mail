@@ -152,7 +152,13 @@ and `index` again to rebuild the current account's cache; local search is empty
 until you index again. Remove old databases yourself if you no longer need them.
 
 Sync and backfill store message metadata. Running `index` also stores decrypted
-message bodies and other searchable fields in SQLite full-text search. This
+message bodies and other searchable fields in SQLite full-text search: a
+plain-text body as it is, an HTML body's visible text without its markup, its
+images or the addresses its links lead to, which can sign someone in or
+unsubscribe them, and the names and addresses of the sender and of every
+recipient, copies included. Bodies that earlier versions indexed kept the
+HTML itself, links included; the next `index` reads them again and replaces
+them, and until then they stay searchable. This
 database is **not encrypted at rest by Ruston Mail**. The desktop client
 reads this cache only when **Search this device when Proton cannot be reached**
 is on, and only to search it when Proton cannot be reached: it opens an

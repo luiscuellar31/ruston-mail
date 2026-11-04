@@ -976,6 +976,58 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
 }
 
 #[test]
+fn bodies_an_older_version_indexed_are_read_again_and_searchable_meanwhile() {
+    let dir = temp_cache_dir();
+    let path = dir.join("cache.db");
+    {
+        // A body as an older version indexed it: its HTML, with no mark.
+        let cache = Cache::open(&path).unwrap();
+        cache
+            .index_message(
+                &meta("old", "0", 0, 1),
+                r#"<a href="https://x.test/t">oldhtml</a>"#,
+            )
+            .unwrap();
+        cache
+            .conn
+            .execute_batch("ALTER TABLE msg_fts_rows DROP COLUMN as_text")
+            .unwrap();
+        // Opening it to read leaves it as it is, still searchable.
+        assert!(!needs_migration(&cache.conn).unwrap());
+        assert!(needs_migration_to_write(&cache.conn).unwrap());
+    }
+
+    let cache = Cache::open(&path).unwrap();
+    let version: i64 = cache
+        .conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION, "older versions keep opening it");
+    assert!(
+        !cache.has_indexed_body("old").unwrap(),
+        "index reads it again"
+    );
+    assert_eq!(cache.search("oldhtml", 10).unwrap()[0].id, "old");
+    // A row an older version writes now has no mark either.
+    cache
+        .conn
+        .execute(
+            "INSERT INTO msg_fts(id, subject, body, participants) VALUES('older', '', 'b', '')",
+            [],
+        )
+        .unwrap();
+    assert!(!cache.has_indexed_body("older").unwrap());
+
+    cache
+        .index_message(&meta("old", "0", 0, 1), "oldtext")
+        .unwrap();
+    assert!(cache.has_indexed_body("old").unwrap());
+    assert!(cache.search("oldhtml", 10).unwrap().is_empty());
+    drop(cache);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn incomplete_rebuild_cannot_replace_cache_or_cursor() {
     let c = Cache::open(Path::new(":memory:")).unwrap();
     c.set_last_event_id("old").unwrap();

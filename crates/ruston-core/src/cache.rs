@@ -93,9 +93,15 @@ fn private_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The searchable names and addresses of everyone a message names: who sent
+/// it and whom it went to, copies included.
 fn participants(m: &MessageMetadata) -> String {
-    std::iter::once(m.sender.address.as_str())
-        .chain(m.to_list.iter().map(|r| r.address.as_str()))
+    std::iter::once(&m.sender)
+        .chain(&m.to_list)
+        .chain(&m.cc_list)
+        .chain(&m.bcc_list)
+        .flat_map(|r| [r.name.as_str(), r.address.as_str()])
+        .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -146,6 +152,11 @@ fn replace_index(conn: &Connection, m: &MessageMetadata, body: Option<&str>) -> 
         conn.execute(
             "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
             rusqlite::params![m.id, m.subject, body, participants(m)],
+        )
+        .map_err(map)?;
+        conn.execute(
+            "UPDATE msg_fts_rows SET as_text=1 WHERE message_id=?1",
+            [&m.id],
         )
         .map_err(map)?;
     }
@@ -275,6 +286,38 @@ fn needs_migration(conn: &Connection) -> Result<bool> {
     .map_err(map)
 }
 
+/// Whether opening to write has to migrate the cache: [`needs_migration`]
+/// says so, or its index rows cannot yet say which bodies were indexed as
+/// text, which only writing bodies needs, so a cache opened to read stays
+/// searchable without it.
+fn needs_migration_to_write(conn: &Connection) -> Result<bool> {
+    Ok(needs_migration(conn)? || !has_as_text_column(conn)?)
+}
+
+/// Whether the index rows say which bodies were indexed as text.
+fn has_as_text_column(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('msg_fts_rows') WHERE name='as_text')",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(map)
+}
+
+/// Marks which indexed bodies hold text alone, as this version indexes an
+/// HTML body. Those indexed before held the HTML itself, with every address
+/// its links led to, and an older version still writes rows without the mark;
+/// both read 0, so `index` reads those bodies again, and until then they stay
+/// searchable. The schema version stays, so older versions keep opening it.
+fn ensure_as_text_column(conn: &Connection) -> Result<()> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    if !has_as_text_column(&tx)? {
+        tx.execute_batch("ALTER TABLE msg_fts_rows ADD COLUMN as_text INTEGER NOT NULL DEFAULT 0")
+            .map_err(map)?;
+    }
+    tx.commit().map_err(map)
+}
+
 /// The cache's schema version, refusing one newer than this version's.
 fn schema_version(conn: &Connection) -> Result<i64> {
     let version: i64 = conn
@@ -301,6 +344,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     .map_err(map)?;
     ensure_label_time_index(conn)?;
     ensure_fts_rowid_index(conn)?;
+    ensure_as_text_column(conn)?;
     ensure_fts_secure_delete(conn)?;
     // A newer version may have migrated it further meanwhile.
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
@@ -715,7 +759,7 @@ impl Cache {
         conn.execute_batch("PRAGMA secure_delete=ON").map_err(map)?;
         // A cache that needs no migration opens without the write lock, so a
         // command that only reads never waits for another process's sync.
-        if needs_migration(&conn)? {
+        if needs_migration_to_write(&conn)? {
             migrate(&conn)?;
         }
         Ok(Cache { conn })
@@ -759,10 +803,13 @@ impl Cache {
         Ok(tx)
     }
 
-    /// Whether a body of the message `id` is indexed.
+    /// Whether a body of the message `id` is indexed as text, as this
+    /// version indexes one; a body an older version indexed is not.
     pub(crate) fn has_indexed_body(&self, id: &str) -> Result<bool> {
         self.conn
-            .prepare_cached("SELECT EXISTS(SELECT 1 FROM msg_fts_rows WHERE message_id=?1)")
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM msg_fts_rows WHERE message_id=?1 AND as_text=1)",
+            )
             .and_then(|mut statement| statement.query_row([id], |row| row.get(0)))
             .map_err(map)
     }

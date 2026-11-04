@@ -106,7 +106,22 @@ const MAX_TEXT_DEPTH: usize = 8;
 /// quotes are kept. A link is written as its text followed by `<url>`. Hidden
 /// content and images are dropped, and nothing is cut short.
 pub(crate) fn to_text(html: &str) -> String {
-    let tokenizer = Tokenizer::new(TextSink::default(), TokenizerOpts::default());
+    text_of(html, Links::WithAddress)
+}
+
+/// An HTML body's words as the local search index keeps them: its text as
+/// [`to_text`] writes it, without the addresses its links lead to, which can
+/// sign someone in or unsubscribe them.
+pub(crate) fn searchable_text(html: &str) -> String {
+    text_of(html, Links::TextOnly)
+}
+
+fn text_of(html: &str, links: Links) -> String {
+    let builder = TextBuilder {
+        links,
+        ..TextBuilder::default()
+    };
+    let tokenizer = Tokenizer::new(TextSink(RefCell::new(builder)), TokenizerOpts::default());
     let input = BufferQueue::default();
     input.push_back(StrTendril::from_slice(html));
     let _ = tokenizer.feed(&input);
@@ -114,7 +129,16 @@ pub(crate) fn to_text(html: &str) -> String {
     tokenizer.sink.0.take().finish()
 }
 
-#[derive(Default)]
+/// What a link becomes in text.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Links {
+    /// Its text, followed by the address it leads to.
+    #[default]
+    WithAddress,
+    /// Its text alone.
+    TextOnly,
+}
+
 struct TextSink(RefCell<TextBuilder>);
 
 impl TokenSink for TextSink {
@@ -154,6 +178,8 @@ struct TextBuilder {
     pre_depth: usize,
     /// The open link's address, and where its text starts in `block`.
     link: Option<(String, usize)>,
+    /// What links become.
+    links: Links,
 }
 
 impl TextBuilder {
@@ -216,7 +242,7 @@ impl TextBuilder {
                 self.flush();
                 self.pre_depth += 1;
             }
-            "a" => {
+            "a" if self.links == Links::WithAddress => {
                 self.link = link_target(tag).map(|url| {
                     self.separate();
                     (url, self.block.len())
@@ -490,6 +516,19 @@ mod tests {
                 r#"<p>Visible<img src="https://track.example/p.gif" alt="pixel"></p>"#
             )),
             "Visible"
+        );
+    }
+
+    #[test]
+    fn searchable_text_keeps_what_links_say_and_not_where_they_go() {
+        assert_eq!(
+            searchable_text(concat!(
+                r#"<p><a href="https://example.test/reset?token=s3cret">Reset your password</a>, "#,
+                r#"<a href="https://example.test/u?id=42"></a>or write to "#,
+                r#"<a href="mailto:ana@example.org">ana@example.org</a>.</p>"#,
+                r#"<img src="https://track.example/p.gif?u=42">"#
+            )),
+            "Reset your password, or write to ana@example.org."
         );
     }
 

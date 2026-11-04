@@ -730,7 +730,10 @@ for details.
 
 `index` builds an optional local search index for `search`. It stores
 decrypted message bodies in a SQLite database that Ruston Mail does not
-encrypt. A network, session, or rate-limit failure stops `index` with an
+encrypt: the text of each body, without the addresses an HTML body's links
+lead to, and the names and addresses of the sender and recipients, copies
+included. A network, session, or rate-limit failure stops `index` with an
 error and keeps what was already indexed; run it again to continue. Running it
-again downloads only the bodies it does not hold yet, and drafts, which can
-change; the count it prints includes the messages already indexed.
+again downloads only the bodies it does not hold yet, drafts, which can
+change, and bodies that earlier versions indexed as HTML; the count it prints
+includes the messages already indexed.
