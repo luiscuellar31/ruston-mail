@@ -962,7 +962,7 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
     cache
         .stage_rebuild_page(&[meta("rebuilt", "0", 0, 50)])
         .unwrap();
-    cache.finish_rebuild("old", "new", 1).unwrap();
+    cache.finish_rebuild("old", "new", Some(1)).unwrap();
     assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "rebuilt");
     let time: i64 = cache
         .conn
@@ -984,7 +984,7 @@ fn incomplete_rebuild_cannot_replace_cache_or_cursor() {
     c.begin_rebuild().unwrap();
     c.stage_rebuild_page(&[meta("new", "0", 0, 2)]).unwrap();
 
-    assert!(c.finish_rebuild("old", "fresh", 2).is_err());
+    assert!(c.finish_rebuild("old", "fresh", Some(2)).is_err());
     assert_eq!(c.last_event_id().unwrap().as_deref(), Some("old"));
     assert_eq!(c.list("0", false, 10, 0).unwrap()[0].id, "keep");
     assert_eq!(c.search("privatebody", 10).unwrap()[0].id, "keep");
@@ -1016,7 +1016,7 @@ fn a_resync_leaves_no_indexed_body_in_the_file_and_search_working() {
     let path = dir.join("cache.db");
     let cache = staged_resync(&path, 50, 0);
 
-    assert_eq!(cache.finish_rebuild("old", "fresh", 50).unwrap(), 50);
+    assert_eq!(cache.finish_rebuild("old", "fresh", Some(50)).unwrap(), 50);
     assert!(cache.search("ibexcanary", 10).unwrap().is_empty());
     assert_eq!(cache.list("0", false, 100, 0).unwrap().len(), 50);
     // Bodies indexed again are found, and stay wiped once deleted.
@@ -1054,7 +1054,9 @@ fn measure_resync_index_reset() {
         // About the words of a short email each.
         let cache = staged_resync(&dir.join("cache.db"), count, 300);
         let start = std::time::Instant::now();
-        cache.finish_rebuild("old", "fresh", count as u32).unwrap();
+        cache
+            .finish_rebuild("old", "fresh", Some(count as u32))
+            .unwrap();
         eprintln!(
             "Cache::finish_rebuild: {count} indexed messages in {:?}",
             start.elapsed()

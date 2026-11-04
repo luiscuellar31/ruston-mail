@@ -879,19 +879,21 @@ impl Cache {
         tx.commit().map_err(map)
     }
 
-    /// Replace metadata, labels, index, and cursor in one transaction.
+    /// Replace metadata, labels, index, and cursor in one transaction, once
+    /// the staged messages number `expected_total`, when the listing kept
+    /// one total; returns how many there are.
     pub(crate) fn finish_rebuild(
         &self,
         previous_cursor: &str,
         new_cursor: &str,
-        expected_total: u32,
+        expected_total: Option<u32>,
     ) -> Result<usize> {
         let tx =
             self.transaction_at_cursor(Some(previous_cursor), "sync cursor changed during resync")?;
         let staged: i64 = tx
             .query_row("SELECT COUNT(*) FROM resync_messages", [], |row| row.get(0))
             .map_err(map)?;
-        if staged != i64::from(expected_total) {
+        if expected_total.is_some_and(|total| staged != i64::from(total)) {
             return Err(Error::cache_changed(
                 "incomplete mailbox listing during resync",
             ));
@@ -916,7 +918,7 @@ impl Cache {
         ensure_fts_secure_delete(&tx)?;
         write_cursor(&tx, new_cursor)?;
         tx.commit().map_err(map)?;
-        Ok(expected_total as usize)
+        Ok(usize::try_from(staged).unwrap_or_default())
     }
 
     /// The messages whose indexed subject, body or people hold every word

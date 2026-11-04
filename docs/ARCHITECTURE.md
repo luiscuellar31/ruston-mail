@@ -1290,7 +1290,11 @@ Initial cursor creation is also conditional. When Proton
 requests a full refresh, sync pages through all message metadata into temporary
 SQLite tables, then replaces the cache and event cursor in one transaction. A
 failed rebuild leaves the cached offline data and cursor intact. Sync catches up
-on events from the new cursor after the replacement. The full refresh clears
+on events from the new cursor, taken before the first page, after the
+replacement, so mail that comes, goes or changes while the pages are listed
+does not stop the rebuild; a total that shrinks lists the pages already
+listed again, where deleted mail moved later messages, and only a listing
+that kept its total is checked against what was staged. The full refresh clears
 the local body index by dropping and recreating its FTS5 table in that
 transaction: `secure_delete` overwrites the freed pages at once, where deleting
 the rows one by one under FTS5's `secure-delete` took seconds per thousand

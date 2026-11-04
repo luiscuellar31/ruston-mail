@@ -74,6 +74,12 @@ struct Rebuilt<C> {
 
 /// Relists every message into `cache`. Like the other cache operations, it
 /// takes the cache by value, so no reference to it lives across a request.
+///
+/// Mail that comes, goes or changes meanwhile does not stop it: the cursor
+/// is taken first, so the next sync applies those changes as events. Only
+/// what was there all along must be listed, and mail deleted meanwhile
+/// moves later messages up into pages already listed, shrinking the total,
+/// so a smaller total lists those pages again.
 async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
     http: &D,
     cache: C,
@@ -82,7 +88,8 @@ async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
 ) -> Result<Rebuilt<C>> {
     let cursor = api::events::get_latest_event_id(http).await?;
     cache.borrow().begin_rebuild()?;
-    let mut expected_total = None;
+    let mut last_total = None;
+    let mut changed = false;
     let mut page = 0;
     let total = loop {
         let query = ListQuery {
@@ -91,10 +98,6 @@ async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
             ..Default::default()
         };
         let (total, messages) = api::messages::list_messages(http, &query).await?;
-        if expected_total.is_some_and(|expected| expected != total) {
-            return Err(Error::cache_changed("mailbox changed during resync"));
-        }
-        expected_total = Some(total);
         let listed_before = u64::from(page) * u64::from(page_size);
         if messages.is_empty() && listed_before < u64::from(total) {
             return Err(Error::cache_changed(
@@ -102,14 +105,23 @@ async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
             ));
         }
         cache.borrow().stage_rebuild_page(&messages)?;
+        let shrunk = last_total.map_or(0, |before: u32| before.saturating_sub(total));
+        changed |= last_total.is_some_and(|before| before != total);
+        last_total = Some(total);
+        if shrunk > 0 {
+            page = page.saturating_sub(shrunk.div_ceil(page_size));
+            continue;
+        }
         if listed_before + u64::from(page_size) >= u64::from(total) {
             break total;
         }
         page += 1;
     };
+    // A total that changed cannot be checked against what was staged.
+    let expected = (!changed).then_some(total);
     let count = cache
         .borrow()
-        .finish_rebuild(previous_cursor, &cursor, total)?;
+        .finish_rebuild(previous_cursor, &cursor, expected)?;
     Ok(Rebuilt {
         cache,
         cursor,
@@ -1486,12 +1498,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rebuild_refuses_a_listing_that_changes_or_runs_short() {
+    async fn a_rebuild_takes_a_listing_that_changes_and_refuses_one_that_runs_short() {
+        // Mail that came meanwhile is left to the events after the cursor.
         let changed = rebuild_with_second_page([3, 4], vec![message("m3")]).await;
-        assert!(matches!(
-            changed,
-            Err(Error::CacheChanged(ref reason)) if reason.starts_with("mailbox changed during resync")
-        ));
+        assert_eq!(changed.unwrap(), 3);
         // An empty page before the total is reached ends the rebuild there.
         let short = rebuild_with_second_page([5, 5], Vec::new()).await;
         assert!(matches!(
@@ -1499,6 +1509,64 @@ mod tests {
             Err(Error::CacheChanged(ref reason))
                 if reason.starts_with("incomplete mailbox listing during resync")
         ));
+    }
+
+    #[tokio::test]
+    async fn mail_deleted_during_a_rebuild_moves_none_past_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "fresh"
+            })))
+            .mount(&server)
+            .await;
+        // m1 goes once the first page is listed, so m3 moves up into it.
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 4, "Messages": [message("m1"), message("m2")]
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3, "Messages": [message("m2"), message("m3")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3, "Messages": [message("m4")]
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+
+        let Rebuilt { count, .. } =
+            rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2)
+                .await
+                .unwrap();
+
+        // m1 stays until its deletion comes as an event.
+        assert_eq!(count, 4);
+        let listed: Vec<_> = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        assert!(listed.contains(&"m3".to_owned()), "{listed:?}");
     }
 
     #[tokio::test]
