@@ -368,6 +368,30 @@ async fn a_resume_signs_out_only_when_proton_refuses_the_session() {
     ));
 }
 
+#[tokio::test]
+async fn proton_refuses_a_session_or_its_credentials_with_401_or_403() {
+    for status in [401, 403] {
+        let resumed = resume_within(async move { Err(api_error(status)) }, SIGN_IN_TIMEOUT).await;
+        assert!(matches!(resumed, ResumeOutcome::SignedOut), "{status}");
+        let signed_in = map_sign_in_error(api_error(status), Supplied::default());
+        assert!(
+            matches!(
+                signed_in,
+                SignInOutcome::Failed(AuthError::InvalidCredentials)
+            ),
+            "{status}"
+        );
+    }
+    let busy = resume_within(async { Err(api_error(500)) }, SIGN_IN_TIMEOUT).await;
+    assert!(matches!(busy, ResumeOutcome::Failed(_)));
+    // In the middle of a session, a 403 can refuse one action alone.
+    assert_eq!(
+        map_mailbox_error(api_error(401)),
+        MailboxError::SessionExpired
+    );
+    assert_eq!(map_mailbox_error(api_error(403)), MailboxError::Service);
+}
+
 #[test]
 fn a_verification_says_whether_signing_in_again_answers_it() {
     let email = HvChallenge {

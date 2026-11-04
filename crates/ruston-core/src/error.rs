@@ -96,7 +96,7 @@ impl ApiError {
     /// Map to the CLI's process exit status, one of [`exit_status`].
     pub fn exit_code(&self) -> i32 {
         match self.http_status {
-            401 | 403 => exit_status::SESSION,
+            _ if self.refuses_session() => exit_status::SESSION,
             404 => exit_status::NOT_FOUND,
             409 | 422 => exit_status::CONFLICT,
             _ if self.is_server_error() => exit_status::SERVER,
@@ -107,6 +107,15 @@ impl ApiError {
     /// Whether Proton refused the session's access token (HTTP 401).
     pub fn is_unauthorized(&self) -> bool {
         self.http_status == 401
+    }
+
+    /// Whether Proton refused the session, or the credentials that sign in
+    /// or open one: HTTP 401 or 403. Signing in and opening a session end
+    /// there; in the middle of one, only a 401 does, once renewing the tokens
+    /// fails ([`is_unauthorized`](Self::is_unauthorized)), since a 403 there
+    /// can refuse one action alone.
+    pub fn refuses_session(&self) -> bool {
+        matches!(self.http_status, 401 | 403)
     }
 
     /// Whether Proton is asking the client to slow down (HTTP 429).
@@ -467,6 +476,10 @@ mod tests {
         }
         assert!(api(401).is_unauthorized());
         assert!(!api(403).is_unauthorized());
+        assert!(api(401).refuses_session() && api(403).refuses_session());
+        for status in [400, 404, 429, 500] {
+            assert!(!api(status).refuses_session(), "{status}");
+        }
     }
 
     #[test]
