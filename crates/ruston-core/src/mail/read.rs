@@ -221,6 +221,16 @@ impl Client {
     }
 
     fn search_query(&self, opts: &SearchOpts) -> Result<ListQuery> {
+        let after = opts.after.as_deref().map(parse_date).transpose()?;
+        let before = opts.before.as_deref().map(parse_date).transpose()?;
+        // Proton finds nothing in such a range, which would read as no mail.
+        if let (Some(first), Some(last)) = (after, before)
+            && first > last
+        {
+            return Err(Error::Other(format!(
+                "invalid date range: {first} is after {last}"
+            )));
+        }
         let folder = opts.folder.as_deref().unwrap_or("all");
         Ok(ListQuery {
             label_id: Some(resolve_folder(folder)),
@@ -230,18 +240,8 @@ impl Client {
             from: opts.from.clone(),
             to: opts.to.clone(),
             subject: opts.subject.clone(),
-            begin: opts
-                .after
-                .as_deref()
-                .map(parse_date)
-                .transpose()?
-                .map(day_start),
-            end: opts
-                .before
-                .as_deref()
-                .map(parse_date)
-                .transpose()?
-                .map(day_end),
+            begin: after.map(day_start),
+            end: before.map(day_end),
             ..Default::default()
         })
     }
@@ -1040,6 +1040,21 @@ mod tests {
                 );
             }
         }
+        // A range that ends before it starts finds nothing, which is no answer.
+        let backwards = SearchOpts {
+            after: Some("2024-02-01".into()),
+            before: Some("2024-01-31".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            client.search_conversations(&backwards).await,
+            Err(Error::Other(ref reason)) if reason == "invalid date range: 2024-02-01 is after 2024-01-31"
+        ));
+        let one_day = SearchOpts {
+            before: Some("2024-02-01".into()),
+            ..backwards
+        };
+        assert!(client.search_query(&one_day).is_ok());
     }
 
     #[test]
