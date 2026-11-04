@@ -317,8 +317,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   have read a folder's first page before applying the actions still on their
   way or those confirmed since the page was asked for, so the page shows them
   again in order: a move out keeps its row out, a move that keeps its row here
-  keeps it listed as it was, and a flag stays changed. Actions asked for in
-  another folder change nothing there.
+  keeps it listed as it was, and a flag stays changed. A page of search
+  results shows them again the same way, those confirmed since the search was
+  asked for included, so a row moved out of the view stays out of them.
+  Actions asked for in another folder change nothing there.
   The mailbox state machine also orders read mutations by row. An explicit
   read/unread action accepted during an automatic read waits at the head of
   that line until the read succeeds. A failed or timed-out predecessor fails it

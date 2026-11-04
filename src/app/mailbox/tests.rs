@@ -2267,6 +2267,43 @@ fn a_page_read_before_proton_applied_an_action_still_shows_it() {
 }
 
 #[test]
+fn search_results_read_before_proton_applied_an_action_still_show_it() {
+    let mut mailbox = selected_in(MailFolder::Inbox, &["a", "b", "c"], "a");
+    let archive = send(
+        &mut mailbox,
+        MailAction::MoveTo(sys(MailFolder::Archive)),
+        3,
+    );
+    let star = mailbox
+        .start_action_on(
+            "c".into(),
+            SummaryKind::Conversation,
+            MailAction::SetStarred(true),
+            4,
+        )
+        .expect("the star waits behind the move");
+    assert!(star.send.is_none());
+    mailbox.set_search_query("report".into());
+    let search = mailbox.start_search(5).unwrap();
+    let star = mailbox
+        .finish_action(&archive, Ok(()))
+        .next_action
+        .expect("the star goes once the move is confirmed");
+
+    // Proton read the results before it archived "a" or starred "c": the
+    // move was confirmed meanwhile, and the star is still on its way.
+    mailbox.finish_search(&search, page(&["a", "b", "c"], 3));
+    let shown: Vec<_> = mailbox
+        .visible_conversations()
+        .map(|row| row.id.as_str())
+        .collect();
+    assert_eq!(shown, ["b", "c"]);
+    assert!(mailbox.row("c").unwrap().starred);
+    let _ = mailbox.finish_action(&star, Ok(()));
+    assert!(mailbox.row("c").unwrap().starred);
+}
+
+#[test]
 fn a_move_confirmed_while_an_emptied_folder_loads_again_stays_shown() {
     let mut mailbox = selected_in(MailFolder::Inbox, &["a"], "a");
     let archive = send(

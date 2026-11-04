@@ -584,6 +584,8 @@ impl Mailbox {
         self.search_request = Some(request);
         self.device_index = None;
         self.status = ListStatus::Loading(request);
+        // Only actions confirmed from now on can be missing from its answer.
+        self.confirmed_while_loading.clear();
 
         Some(SearchRequest {
             id: request,
@@ -661,6 +663,13 @@ impl Mailbox {
                         on_device: false,
                     });
                     self.recompute_visible();
+                }
+                // Proton may have read the results before applying these, so
+                // what they showed stays: a row moved out leaves them again.
+                for request in self.unseen_actions() {
+                    self.record_action(&request.row_id, &request.action);
+                }
+                if request.page == 0 {
                     self.close_reader_if_hidden();
                 }
                 self.status = ListStatus::Loaded;
