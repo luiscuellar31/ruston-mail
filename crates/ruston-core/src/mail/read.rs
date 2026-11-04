@@ -91,6 +91,26 @@ pub fn validate_search_date(date: &str) -> Result<()> {
     parse_date(date).map(drop)
 }
 
+/// The first and the last second a search covers, as [`SearchOpts`]'s
+/// `after` and `before` name its days: whole days in UTC. A range that ends
+/// before it starts is refused, since Proton would find nothing in it, which
+/// reads as no mail.
+pub fn search_window(
+    after: Option<&str>,
+    before: Option<&str>,
+) -> Result<(Option<i64>, Option<i64>)> {
+    let after = after.map(parse_date).transpose()?;
+    let before = before.map(parse_date).transpose()?;
+    if let (Some(first), Some(last)) = (after, before)
+        && first > last
+    {
+        return Err(Error::Other(format!(
+            "invalid date range: {first} is after {last}"
+        )));
+    }
+    Ok((after.map(day_start), before.map(day_end)))
+}
+
 fn parse_date(s: &str) -> Result<chrono::NaiveDate> {
     chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
         .map_err(|_| Error::Other(format!("invalid date '{s}': expected YYYY-MM-DD")))
@@ -221,16 +241,7 @@ impl Client {
     }
 
     fn search_query(&self, opts: &SearchOpts) -> Result<ListQuery> {
-        let after = opts.after.as_deref().map(parse_date).transpose()?;
-        let before = opts.before.as_deref().map(parse_date).transpose()?;
-        // Proton finds nothing in such a range, which would read as no mail.
-        if let (Some(first), Some(last)) = (after, before)
-            && first > last
-        {
-            return Err(Error::Other(format!(
-                "invalid date range: {first} is after {last}"
-            )));
-        }
+        let (begin, end) = search_window(opts.after.as_deref(), opts.before.as_deref())?;
         let folder = opts.folder.as_deref().unwrap_or("all");
         Ok(ListQuery {
             label_id: Some(resolve_folder(folder)),
@@ -240,8 +251,8 @@ impl Client {
             from: opts.from.clone(),
             to: opts.to.clone(),
             subject: opts.subject.clone(),
-            begin: after.map(day_start),
-            end: before.map(day_end),
+            begin,
+            end,
             ..Default::default()
         })
     }

@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::mail::organize::folder_id_among;
+use ruston_core::mail::read::search_window;
 use ruston_core::mail::send::{forward_subject, reply_subject};
 use ruston_core::model::ConversationLabel;
 use ruston_core::model::enums::{filter, label_ids, label_type, message_flag};
@@ -1145,6 +1146,31 @@ pub(crate) fn search_local(query: &str, limit: u32) -> Vec<MessageMetadata> {
 /// Whether `conversation`'s subject has `words`, whatever their case: how
 /// the demo finds conversations, in `conversations search` and the terminal
 /// interface alike.
+/// Whether any of `people` has `words` in their address or name, whatever
+/// the case, as a demo search matches a sender or a recipient.
+fn someone_matches<'a>(people: impl IntoIterator<Item = &'a Recipient>, words: &str) -> bool {
+    let words = words.to_lowercase();
+    people.into_iter().any(|person| {
+        person.address.to_lowercase().contains(&words)
+            || person.name.to_lowercase().contains(&words)
+    })
+}
+
+/// The place a demo search looks in, as the real search resolves it: none
+/// for All mail, which holds every message.
+fn search_label(folder: Option<&str>) -> Result<Option<String>> {
+    let label = folder
+        .map(|folder| folder_id_among(&demo_labels(), folder))
+        .transpose()?;
+    Ok(label.filter(|label| label != label_ids::ALL_MAIL))
+}
+
+/// Whether `time` falls on the days a search covers, as `search_window`
+/// gives them.
+fn within((begin, end): (Option<i64>, Option<i64>), time: i64) -> bool {
+    begin.is_none_or(|begin| time >= begin) && end.is_none_or(|end| time <= end)
+}
+
 fn subject_has(conversation: &Conversation, words: &str) -> bool {
     conversation
         .subject
@@ -1254,6 +1280,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::Search(args) => {
+                let window = search_window(args.after.as_deref(), args.before.as_deref())?;
+                let label = search_label(args.folder.as_deref())?;
                 let mut results: Vec<MessageMetadata> = fixtures_messages
                     .into_iter()
                     .filter(|m| {
@@ -1266,18 +1294,13 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                             }
                         }
                         if let Some(from) = &args.from
-                            && !m
-                                .meta
-                                .sender
-                                .address
-                                .to_lowercase()
-                                .contains(&from.to_lowercase())
-                            && !m
-                                .meta
-                                .sender
-                                .name
-                                .to_lowercase()
-                                .contains(&from.to_lowercase())
+                            && !someone_matches([&m.meta.sender], from)
+                        {
+                            return false;
+                        }
+                        let recipients = m.meta.to_list.iter().chain(&m.meta.cc_list);
+                        if let Some(to) = &args.to
+                            && !someone_matches(recipients.chain(&m.meta.bcc_list), to)
                         {
                             return false;
                         }
@@ -1293,7 +1316,10 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                         if args.unread && m.meta.unread == 0 {
                             return false;
                         }
-                        true
+                        within(window, m.meta.time)
+                            && label
+                                .as_ref()
+                                .is_none_or(|label| m.meta.label_ids.contains(label))
                     })
                     .map(|m| m.meta)
                     .collect();
@@ -1463,6 +1489,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             ConversationsCmd::Search(args) => {
+                let window = search_window(args.after.as_deref(), args.before.as_deref())?;
+                let label = search_label(args.folder.as_deref())?;
                 let mut results: Vec<Conversation> = fixtures_convs
                     .into_iter()
                     .filter(|c| {
@@ -1476,10 +1504,23 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                         {
                             return false;
                         }
+                        if let Some(from) = &args.from
+                            && !someone_matches(&c.senders, from)
+                        {
+                            return false;
+                        }
+                        if let Some(to) = &args.to
+                            && !someone_matches(&c.recipients, to)
+                        {
+                            return false;
+                        }
                         if args.unread && c.num_unread == 0 {
                             return false;
                         }
-                        true
+                        within(window, c.time)
+                            && label
+                                .as_ref()
+                                .is_none_or(|label| c.labels.iter().any(|on| &on.id == label))
                     })
                     .collect();
 
@@ -1924,6 +1965,31 @@ mod tests {
                 assert_eq!(label.context_num_unread, Some(unread as i64), "{at}");
             }
         }
+    }
+
+    #[test]
+    fn a_search_narrows_by_place_days_and_people_as_the_real_one_does() {
+        assert_eq!(search_label(Some("all")).unwrap(), None);
+        assert_eq!(search_label(None).unwrap(), None);
+        assert_eq!(
+            search_label(Some("archive")).unwrap().as_deref(),
+            Some(label_ids::ARCHIVE)
+        );
+        assert!(search_label(Some("No such folder")).is_err());
+
+        // 2024-04-23, all of it in UTC.
+        let day = search_window(Some("2024-04-23"), Some("2024-04-23")).unwrap();
+        assert!(within(day, 1_713_830_400) && within(day, 1_713_916_799));
+        assert!(!within(day, 1_713_830_399) && !within(day, 1_713_916_800));
+        assert!(within((None, None), 0));
+
+        let alex = Recipient {
+            name: "Alex Reed".into(),
+            address: "alex.reed@example.com".into(),
+            ..Recipient::default()
+        };
+        assert!(someone_matches([&alex], "REED") && someone_matches([&alex], "alex.reed@"));
+        assert!(!someone_matches([&alex], "sam"));
     }
 
     #[test]
