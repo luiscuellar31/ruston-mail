@@ -43,7 +43,10 @@ Passwords and codes typed at sign-in are kept in buffers with room reserved
 for them, so typing does not move them and leave earlier copies behind, and
 they are erased when the form is cleared. The sign-in screen measures its
 layout without them. The interface library still makes short-lived copies of a
-field's text while drawing it, which are freed without being erased.
+field's text while drawing it, which are freed without being erased. On macOS,
+a password field that has the keys turns on secure keyboard entry, as Safari
+and Terminal do, so other programs cannot watch what is typed in it; it turns
+off when the field or the window loses focus.
 
 While Ruston is running, desktop activation listens on Linux and macOS on a
 Unix socket inside its private `activation` directory, which other users cannot

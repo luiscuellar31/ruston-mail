@@ -156,7 +156,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   reapplies the saved zoom every pass. It retains
   selector targets, validates authentication/modal availability, and restores
   owned menu and responder changes on drop; it does not replace winit's
-  application or window delegates.
+  application or window delegates. Its `SecureInput` keeps the system's
+  secure keyboard entry on while a password field, as egui reports it to the
+  system, has the keys in the focused main window. The `logic` pass turns it
+  off once the window loses focus, since eframe skips drawing a covered
+  window; each turn on is paired with a turn off, the last when the shell is
+  dropped.
 - [`ui/mod.rs`](../src/ui/mod.rs) handles root close requests in `logic`,
   including minimized windows. An in-flight send or native file dialog blocks
   closing. Unapplied preferences use the existing Settings exit decisions

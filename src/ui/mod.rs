@@ -171,6 +171,8 @@ struct DesktopApp {
     composer_title_bar: theme::TitleBar,
     #[cfg(target_os = "macos")]
     native_menu: Option<macos::Menu>,
+    #[cfg(target_os = "macos")]
+    secure_input: macos::SecureInput,
 }
 
 enum SettingsExit {
@@ -227,6 +229,8 @@ impl DesktopApp {
             composer_title_bar: theme::TitleBar::default(),
             #[cfg(target_os = "macos")]
             native_menu: None,
+            #[cfg(target_os = "macos")]
+            secure_input: macos::SecureInput::default(),
         };
         desktop.execute(effects, context);
         desktop
@@ -948,6 +952,17 @@ impl DesktopApp {
         }
     }
 
+    /// Keeps macOS's secure keyboard entry on while a password field in the
+    /// main window takes the keys.
+    #[cfg(target_os = "macos")]
+    fn keep_secure_input(&mut self, context: &egui::Context) {
+        self.secure_input.follow(context);
+    }
+
+    /// Other systems have no secure keyboard entry to keep.
+    #[cfg(not(target_os = "macos"))]
+    fn keep_secure_input(&mut self, _context: &egui::Context) {}
+
     fn update_unread_badge(&mut self) {
         let badge = unread_badge_count(&self.app);
         if badge != self.unread_badge && set_unread_badge(self.main_window.as_deref(), badge) {
@@ -1044,6 +1059,7 @@ impl eframe::App for DesktopApp {
         self.drain_runtime(context);
         #[cfg(target_os = "macos")]
         {
+            self.secure_input.follow_focus(context);
             macos::update_window_chrome(context, _frame);
             let actions = self
                 .native_menu
@@ -1167,6 +1183,7 @@ impl eframe::App for DesktopApp {
             close::confirm_wait(&context, leaving, holding)
         });
         theme::paint_focus_ring(&context);
+        self.keep_secure_input(&context);
         if let Some(step) = composer_zoom {
             self.step_zoom(step, &context);
         }
