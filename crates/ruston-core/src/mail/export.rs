@@ -9,6 +9,7 @@ use crate::mail::attachments::safe_attachment_name;
 use crate::model::enums::resolve_folder;
 use crate::model::message::{Attachment, Message, Recipient};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -91,27 +92,56 @@ impl Client {
         out_dir: &Path,
         max: u32,
     ) -> Result<ExportReport> {
+        self.export_folder_pages(folder, out_dir, max, EXPORT_PAGE_SIZE)
+            .await
+    }
+
+    /// [`export_folder_report`](Self::export_folder_report), listing the
+    /// folder `page_size` messages at a time.
+    ///
+    /// The folder may change while it runs. Mail that comes meanwhile pushes
+    /// the last messages of a page onto the next, where they are passed over;
+    /// mail deleted or moved out moves later messages up into pages already
+    /// gone through, shrinking the total, so those pages are listed again.
+    pub(crate) async fn export_folder_pages(
+        &self,
+        folder: &str,
+        out_dir: &Path,
+        max: u32,
+        page_size: u32,
+    ) -> Result<ExportReport> {
         std::fs::create_dir_all(out_dir)?;
         let label = resolve_folder(folder);
+        let max = usize::try_from(max).unwrap_or(usize::MAX);
         let mut report = ExportReport::default();
-        // Every message gone through counts, so a rerun covers the same ones.
-        let mut considered = 0u32;
+        // Every message gone through counts, once, so a rerun covers the
+        // same ones.
+        let mut gone_through = HashSet::new();
+        let mut last_total = None;
         let mut page = 0u32;
-        while considered < max {
-            let q = ListQuery::folder_page(label.clone(), page, EXPORT_PAGE_SIZE);
-            let (_total, msgs) = api::messages::list_messages(self.http(), &q).await?;
-            if msgs.is_empty() {
-                break;
-            }
-            for meta in msgs.iter().take((max - considered) as usize) {
+        while gone_through.len() < max {
+            let q = ListQuery::folder_page(label.clone(), page, page_size);
+            let (total, msgs) = api::messages::list_messages(self.http(), &q).await?;
+            for meta in &msgs {
+                if gone_through.len() == max {
+                    break;
+                }
+                if !gone_through.insert(meta.id.clone()) {
+                    continue;
+                }
                 match self.export_message(&meta.id, out_dir).await? {
                     Exported::Written => report.written += 1,
                     Exported::AlreadyThere => report.already_exported += 1,
                     Exported::Skipped(skipped) => report.skipped.push(*skipped),
                 }
-                considered += 1;
             }
-            if is_last_page(msgs.len(), EXPORT_PAGE_SIZE) {
+            let shrunk = last_total.map_or(0, |before: u32| before.saturating_sub(total));
+            last_total = Some(total);
+            if shrunk > 0 {
+                page = page.saturating_sub(shrunk.div_ceil(page_size));
+                continue;
+            }
+            if msgs.is_empty() || is_last_page(msgs.len(), page_size) {
                 break;
             }
             page += 1;

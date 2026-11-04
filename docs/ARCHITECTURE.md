@@ -1024,7 +1024,11 @@ instead of an unknown outcome.
   links rename it once the name is checked free. A message whose file already
   exists counts as exported, so a rerun resumes. `export_folder_report` lists
   the messages it skipped because they, or their attachments, could not be
-  opened; a failed request or write stops the export. The CLI
+  opened; a failed request or write stops the export. It goes through each
+  message once while the folder changes: one that mail arriving meanwhile
+  pushes onto the next page is passed over there, and a total that shrinks
+  lists the pages already gone through again, where deleted or moved mail
+  moved later messages. The CLI
   [export handler](../crates/ruston-cli/src/commands/export.rs) chooses the
   destination and reports the result, exiting with an error when a message was
   skipped; demo mode writes fictional sample mail.

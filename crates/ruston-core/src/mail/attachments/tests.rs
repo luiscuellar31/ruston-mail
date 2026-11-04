@@ -630,6 +630,57 @@ async fn messages_after_one_that_cannot_be_exported_are_still_exported() {
 }
 
 #[tokio::test]
+async fn an_export_goes_through_each_message_once_while_the_folder_changes() {
+    let server = MockServer::start().await;
+    let (client, attachment) = attachment_client(&server).await;
+    let address = client.keys().primary_address().unwrap();
+    let body = crypto::encrypt_self_draft(&crypto::provider(), address, "body").unwrap();
+    let mut messages = std::collections::HashMap::new();
+    for id in ["m1", "m2", "m3", "m4"] {
+        let mut message = message_with_attachment(attachment.clone());
+        message.meta.id = id.into();
+        message.body = body.clone();
+        message.mime_type = "text/plain".into();
+        Mock::given(method("GET"))
+            .and(path(format!("/mail/v4/messages/{id}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"Code": 1000, "Message": message})),
+            )
+            .mount(&server)
+            .await;
+        messages.insert(id, message.meta);
+    }
+    // Pages of two, as the folder changes between them: m0 comes once the
+    // first is listed, pushing m2 onto the second, then m1 goes, moving m4
+    // up into the second.
+    let listing = |page: u32, total: usize, ids: &[&str], times: u64| {
+        let listed: Vec<_> = ids.iter().map(|id| &messages[id]).collect();
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", page.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": total, "Messages": listed
+            })))
+            .up_to_n_times(times)
+            .expect(times)
+    };
+    listing(0, 4, &["m1", "m2"], 1).mount(&server).await;
+    listing(1, 5, &["m2", "m3"], 1).mount(&server).await;
+    listing(1, 4, &["m3", "m4"], 1).mount(&server).await;
+    listing(2, 4, &[], 2).mount(&server).await;
+    let folder = export_directory("export-changing");
+
+    let report = client.export_folder_pages("inbox", &folder, 10, 2).await;
+    let files = std::fs::read_dir(&folder).unwrap().count();
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    let report = report.unwrap();
+    assert_eq!((report.written, report.already_exported), (4, 0));
+    assert_eq!(files, 4);
+}
+
+#[tokio::test]
 async fn an_export_stops_at_its_maximum_inside_a_page() {
     let server = MockServer::start().await;
     let (client, attachment) = attachment_client(&server).await;

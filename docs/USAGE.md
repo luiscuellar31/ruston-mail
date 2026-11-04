@@ -722,7 +722,9 @@ resumes it, skipping the messages already there, so use an empty directory to
 start over. A message that cannot be decrypted, or whose attachments cannot,
 is skipped and listed, the rest are still exported, and the command then exits
 with an error. A network or session failure stops the export; run it again to
-continue. Each file keeps the headers a mail program needs to place it in its
+continue. Mail that arrives, or is deleted or moved, while it runs does not
+make it count a message twice toward `--max` or pass over one that was in
+the folder all along. Each file keeps the headers a mail program needs to place it in its
 conversation (Message-ID, In-Reply-To and References) and a Reply-To that
 names someone besides the sender. The export does not preserve the original
 wire message or every original header; see [Privacy and local data](PRIVACY.md)
