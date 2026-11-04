@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use ruston_core::Quote;
+use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 
 use crate::mail::{
     BodyFormat, Domains, InternationalDomain, MailAttachment, MailMessage, MailboxError,
@@ -73,6 +74,9 @@ pub enum ProtectionNotice {
     Warning {
         unencrypted: Vec<String>,
         unknown: Vec<String>,
+        /// How many recipients past [`PROTECTION_LOOKUP_LIMIT`] were not
+        /// looked up, counted rather than named.
+        unchecked: usize,
     },
 }
 
@@ -90,6 +94,7 @@ impl ProtectionNotice {
             Self::Warning {
                 unencrypted,
                 unknown,
+                unchecked,
             } => {
                 let mut lines = Vec::new();
                 if !unencrypted.is_empty() {
@@ -104,10 +109,24 @@ impl ProtectionNotice {
                         unknown.join(", ")
                     ));
                 }
+                if *unchecked > 0 {
+                    lines.push(unchecked_line(*unchecked));
+                }
                 lines.join("\n")
             }
         }
     }
+}
+
+/// The warning's line for the `count` recipients past
+/// [`PROTECTION_LOOKUP_LIMIT`], which were not looked up.
+fn unchecked_line(count: usize) -> String {
+    let recipients = if count == 1 {
+        "recipient"
+    } else {
+        "recipients"
+    };
+    format!("Not checked: {count} more {recipients}, past the first {PROTECTION_LOOKUP_LIMIT}.")
 }
 
 /// How far along a message is.
@@ -366,10 +385,12 @@ impl Compose {
     /// never reads as the whole one.
     pub fn protection_notice(&self) -> Option<ProtectionNotice> {
         let typed = &self.typed.addresses;
-        let mut checked = Vec::with_capacity(typed.len());
-        for address in typed {
+        let looked_up = typed.len().min(PROTECTION_LOOKUP_LIMIT);
+        let mut checked = Vec::with_capacity(looked_up);
+        for address in &typed[..looked_up] {
             checked.push((address, *self.protection.get(address)?));
         }
+        let unchecked = typed.len() - looked_up;
         let with = |wanted: fn(Checked) -> bool| -> Vec<String> {
             checked
                 .iter()
@@ -381,10 +402,11 @@ impl Compose {
         let unknown = with(|state| state == Checked::Unknown);
         if checked.is_empty() {
             None
-        } else if !unencrypted.is_empty() || !unknown.is_empty() {
+        } else if !unencrypted.is_empty() || !unknown.is_empty() || unchecked > 0 {
             Some(ProtectionNotice::Warning {
                 unencrypted,
                 unknown,
+                unchecked,
             })
         } else if checked.iter().any(|(_, state)| *state == Checked::Checking) {
             Some(ProtectionNotice::Checking)
@@ -900,6 +922,8 @@ impl App {
             .typed
             .addresses
             .iter()
+            // One request each; the warning counts the rest.
+            .take(PROTECTION_LOOKUP_LIMIT)
             .filter(|address| !compose.protection.contains_key(address.as_str()))
             .cloned()
             .collect();
@@ -1117,7 +1141,45 @@ mod tests {
             Some(ProtectionNotice::Warning {
                 unencrypted: vec!["plain@example.com".into()],
                 unknown: Vec::new(),
+                unchecked: 0,
             })
+        );
+    }
+
+    #[test]
+    fn past_the_lookup_limit_recipients_are_counted_not_looked_up() {
+        let addresses: Vec<String> = (0..120).map(|n| format!("person{n}@proton.me")).collect();
+        let mut app = composing(&addresses.join(", "));
+        assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 1);
+        let asked: Vec<String> = app.compose().unwrap().protection.keys().cloned().collect();
+        assert_eq!(asked.len(), PROTECTION_LOOKUP_LIMIT);
+        assert!(
+            asked
+                .iter()
+                .all(|address| addresses[..100].contains(address))
+        );
+        checked(
+            &mut app,
+            addresses[..100]
+                .iter()
+                .map(|address| (address.clone(), Ok(Protection::EndToEnd)))
+                .collect(),
+        );
+
+        // Nothing more is asked, and the rest are counted in one line.
+        assert_eq!(app.update(Message::ComposeRecipientsLeft).units(), 0);
+        let notice = notice(&app).unwrap();
+        assert_eq!(
+            notice,
+            ProtectionNotice::Warning {
+                unencrypted: Vec::new(),
+                unknown: Vec::new(),
+                unchecked: 20,
+            }
+        );
+        assert_eq!(
+            notice.message(),
+            "Not checked: 20 more recipients, past the first 100."
         );
     }
 
@@ -1135,6 +1197,7 @@ mod tests {
             Some(ProtectionNotice::Warning {
                 unencrypted: Vec::new(),
                 unknown: vec!["ada@proton.me".into()],
+                unchecked: 0,
             })
         );
     }
@@ -1157,6 +1220,7 @@ mod tests {
             ProtectionNotice::Warning {
                 unencrypted: vec!["plain@example.com".into()],
                 unknown: vec!["ada@proton.me".into()],
+                unchecked: 0,
             }
         );
         let message = notice.message();
@@ -1467,6 +1531,7 @@ mod tests {
             Some(ProtectionNotice::Warning {
                 unencrypted: vec!["ana@xn--mnchen-3ya.de".into()],
                 unknown: Vec::new(),
+                unchecked: 0,
             })
         );
 

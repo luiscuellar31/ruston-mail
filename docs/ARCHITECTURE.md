@@ -635,7 +635,10 @@ addresses it has not looked up for this draft;
 which classifies the key lookup the way sending picks a package. It looks up
 four addresses at a time, in their order, and the whole batch shares one
 request deadline; an address still waiting when it runs out reads as a failed
-lookup. Answers carry
+lookup. Only the first `PROTECTION_LOOKUP_LIMIT` addresses (100, from core's
+`mail/send.rs`) are asked about, and the notice counts the rest in one line
+as not checked; the terminal interface's question before sending applies the
+same limit. Answers carry
 the session epoch and draft ID, and an address removed meanwhile is ignored.
 The `check_recipient_protection` preference in
 [`settings.rs`](../src/settings.rs) turns the lookup off; turning it off also

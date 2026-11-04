@@ -21,7 +21,8 @@ two-factor code cannot be forwarded off the API, and plain HTTP is refused
 except for a server on the same machine.
 
 While a new message is being written, the desktop asks Proton for the public
-keys of each well-formed recipient address after its field loses focus, to show
+keys of each well-formed recipient address, up to the first 100, after its
+field loses focus, to show
 whether that copy will be end-to-end encrypted. This is the request sending
 makes for the same address; it happens earlier, and also for a message that is
 never sent. Addresses are not looked up while you type. The demo answers

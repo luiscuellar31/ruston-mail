@@ -733,6 +733,11 @@ impl Carried {
     }
 }
 
+/// The most recipients of one message whose protection is looked up while
+/// it is written or before it goes, one request each, as many as a `mailto:`
+/// link may bring; the frontends say how many more went unchecked.
+pub const PROTECTION_LOOKUP_LIMIT: usize = 100;
+
 impl Client {
     /// Look up how a message to `email` would be protected. This is the key
     /// request sending makes for each recipient; it creates no draft.

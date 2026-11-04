@@ -7,6 +7,7 @@ use super::compose::{AnswerKind, Asked, Checked, Compose, Sending};
 use super::reading::{Reading, size_label};
 use crate::mailbox::{Change, Outgoing, Place, PlaceKind, SendFailure, deletes_forever};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, RecipientProtection};
 use std::cell::Cell;
@@ -1141,7 +1142,12 @@ impl App {
             }
             Ok(outgoing) => {
                 self.send_request += 1;
-                let addresses = outgoing.recipients();
+                // One request each; the question counts the rest.
+                let addresses: Vec<String> = outgoing
+                    .recipients()
+                    .into_iter()
+                    .take(PROTECTION_LOOKUP_LIMIT)
+                    .collect();
                 let checks = addresses
                     .iter()
                     .map(|address| (address.clone(), Checked::Checking))
@@ -3068,6 +3074,33 @@ mod tests {
         assert!(app.compose.is_none() && app.question.is_none());
         command(&mut app, "compose");
         assert!(app.compose.is_some());
+    }
+
+    #[test]
+    fn only_the_first_hundred_recipients_are_looked_up_before_sending() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('n'));
+        let addresses: Vec<String> = (0..101).map(|n| format!("p{n}@proton.me")).collect();
+        write(&mut app, &addresses.join(", "));
+        let effects = ctrl(&mut app, KeyCode::Enter);
+        let [
+            Effect::Protection {
+                addresses: asked, ..
+            },
+        ] = effects.as_slice()
+        else {
+            panic!("{effects:?}");
+        };
+        assert_eq!(asked.as_slice(), &addresses[..PROTECTION_LOOKUP_LIMIT]);
+        let Some(Question::Send {
+            outgoing, checks, ..
+        }) = &app.question
+        else {
+            panic!("{:?}", app.question);
+        };
+        assert_eq!(checks.len(), PROTECTION_LOOKUP_LIMIT);
+        // The message still goes to every one of them.
+        assert_eq!(outgoing.recipients().len(), 101);
     }
 
     #[test]

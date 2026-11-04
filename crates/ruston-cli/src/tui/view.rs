@@ -15,6 +15,7 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Quote, RecipientProtection};
 
@@ -232,8 +233,10 @@ fn draw_question(frame: &mut Frame, question: &Question, theme: &Theme) {
                 }
             }
             lines.push(Line::default());
+            // Recipients past the lookup limit were not asked about.
+            let unchecked = outgoing.recipients().len().saturating_sub(checks.len());
             lines.extend(
-                protection(checks)
+                protection(checks, unchecked)
                     .iter()
                     .map(|said| Line::raw(screen_line(said))),
             );
@@ -268,10 +271,10 @@ fn undone(yes: &'static str) -> [Line<'static>; 3] {
 
 /// What the question before sending says about how Proton would protect
 /// the message, as the desktop's editor says it: who would not get it
-/// end-to-end encrypted, and who could not be checked, as soon as either is
-/// known; until every recipient is, that it is checking; then that every
-/// one would.
-fn protection(checks: &[(String, Checked)]) -> Vec<String> {
+/// end-to-end encrypted, who could not be checked, and how many `unchecked`
+/// past the lookup limit were not asked about, as soon as any is known;
+/// until every recipient is, that it is checking; then that every one would.
+fn protection(checks: &[(String, Checked)], unchecked: usize) -> Vec<String> {
     let with = |wanted: Checked| -> Vec<&str> {
         checks
             .iter()
@@ -292,6 +295,16 @@ fn protection(checks: &[(String, Checked)]) -> Vec<String> {
         said.push(format!(
             "Could not check how this message will be protected for: {}",
             unknown.join(", ")
+        ));
+    }
+    if unchecked > 0 {
+        let recipients = if unchecked == 1 {
+            "recipient"
+        } else {
+            "recipients"
+        };
+        said.push(format!(
+            "Not checked: {unchecked} more {recipients}, past the first {PROTECTION_LOOKUP_LIMIT}."
         ));
     }
     if said.is_empty() {
@@ -1740,6 +1753,24 @@ mod tests {
         for (key, _, name) in GO_TO {
             assert!(status.contains(&format!("{key} {name}")), "{status}");
         }
+    }
+
+    #[test]
+    fn recipients_past_the_lookup_limit_are_counted_in_one_line() {
+        let encrypted = Checked::Known(RecipientProtection::EndToEnd);
+        let checks = vec![("sam@proton.me".to_owned(), encrypted)];
+        assert_eq!(
+            protection(&checks, 0),
+            ["Proton will end-to-end encrypt this message for every recipient."]
+        );
+        assert_eq!(
+            protection(&checks, 1),
+            ["Not checked: 1 more recipient, past the first 100."]
+        );
+        assert_eq!(
+            protection(&checks, 7),
+            ["Not checked: 7 more recipients, past the first 100."]
+        );
     }
 
     #[test]

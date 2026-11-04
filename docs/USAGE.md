@@ -306,7 +306,10 @@ names the addresses that will not get an end-to-end encrypted copy. That
 includes a Proton address whose owner turned end-to-end encryption off, for
 example because it forwards mail to another provider. Addresses
 are looked up once per draft and only after the field loses focus. If a lookup
-fails, the warning names that address too and claims nothing about it. A reply
+fails, the warning names that address too and claims nothing about it. Only
+the first 100 recipients are looked up, one request each; the warning counts
+any more as not checked, as the terminal interface's question before sending
+does. A reply
 opens with its recipients filled in, so their notice shows once you leave one of
 its recipient fields. Turn off **Check
 recipient encryption while writing** under Settings → Advanced to ask Proton
