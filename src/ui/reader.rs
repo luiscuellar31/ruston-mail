@@ -1449,7 +1449,11 @@ fn rich_spans(
     for span in spans {
         let job = span_layout(ui, span, heading);
         if let Some(link) = &span.link {
-            let response = ui.add(egui::Link::new(job));
+            // Where it goes shows before a click, as a browser shows it, also
+            // when Settings open links without asking.
+            let response = ui
+                .add(egui::Link::new(job))
+                .on_hover_text(link_hover_text(link));
             if response.clicked() {
                 messages.push(Message::LinkClicked(link.to_string()));
             }
@@ -1458,6 +1462,21 @@ fn rich_spans(
             ui.add(egui::Label::new(job).selectable(true).wrap());
         }
     }
+}
+
+/// The most of a link's address its tooltip shows. The host comes first, and
+/// a tracking address can run to thousands of characters.
+const LINK_HOVER_CHARS: usize = 200;
+
+/// A link's address as its tooltip shows it: normalized, with the host in
+/// ASCII, so a look-alike in another script shows as such, and cut short.
+fn link_hover_text(link: &str) -> String {
+    if link.chars().count() <= LINK_HOVER_CHARS {
+        return link.to_owned();
+    }
+    let mut shown: String = link.chars().take(LINK_HOVER_CHARS).collect();
+    shown.push('…');
+    shown
 }
 
 /// A link's right-click menu. Opening it still asks first, when Settings say

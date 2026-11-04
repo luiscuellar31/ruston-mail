@@ -198,9 +198,11 @@ Right-click a message's header for **Copy sender's address** or **Copy
 recipients' addresses**, which copy the addresses without names, separated by
 commas, ready to paste into a recipient field.
 
-Web links open in the system browser. A confirmation dialog over the window
-shows the destination first by default; a long address scrolls inside it, and
-`Esc` dismisses it before anything else. Email (`mailto:`) links use Ruston's
+Web links open in the system browser. Resting the pointer on a link shows its
+address, with a host in another script written in ASCII and a long address
+cut short, even when links open without asking. A confirmation dialog over the
+window shows the destination first by default; a long address scrolls inside
+it, and `Esc` dismisses it before anything else. Email (`mailto:`) links use Ruston's
 composer after the same confirmation, which names every recipient the new
 message would get, those a `?to=` adds included; past three it names the
 first three and how many more.
