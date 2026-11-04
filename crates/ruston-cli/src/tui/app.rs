@@ -849,6 +849,15 @@ impl App {
                 Err(error) => self.notice = Some(error),
             },
             Command::Unlabel(name) => match self.label_named(&name) {
+                // Proton would take nothing off, and the status bar say it did.
+                Ok(id)
+                    if self.cannot_act().is_none()
+                        && !self.targets().iter().any(|conversation| {
+                            conversation.labels.iter().any(|label| label.id == id)
+                        }) =>
+                {
+                    self.notice = Some(format!("No conversation chosen has the label {name}."));
+                }
                 Ok(id) => return self.change(|_| Change::Unlabel(id)),
                 Err(error) => self.notice = Some(error),
             },
@@ -2766,6 +2775,16 @@ mod tests {
             change(Change::Label("label-1".into()))
         );
         assert_eq!(app.notice.as_deref(), Some("Labelling the conversation…"));
+        // Only a label it bears comes off, as Proton reports once it has.
+        assert!(command(&mut app, "unlabel Family").is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("No conversation chosen has the label Family.")
+        );
+        app.conversations[0].labels = vec![ConversationLabel {
+            id: "label-1".into(),
+            ..ConversationLabel::default()
+        }];
         assert_eq!(
             command(&mut app, "unlabel Family"),
             change(Change::Unlabel("label-1".into()))
