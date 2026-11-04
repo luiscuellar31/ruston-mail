@@ -39,6 +39,11 @@ html5ever = { workspace = true }
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
 
+# Already built for the platform's TLS verifier and keychain; it marks saved
+# attachments for Gatekeeper.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }

@@ -236,9 +236,10 @@ Apps > Default apps.
 
 Choose **Save** to save an attachment in the system Downloads folder. Ruston Mail
 uses a safe file name and never replaces an existing file; it adds a number to
-the new name instead. On Windows, saved attachments are marked as downloaded
-from the internet, like a browser's downloads, so SmartScreen checks a program
-before it runs and Office opens documents in Protected View.
+the new name instead. Saved attachments are marked as downloaded from the
+internet, like a browser's downloads: on macOS, Gatekeeper checks a program
+before it opens, and on Windows, SmartScreen checks it before it runs and
+Office opens documents in Protected View.
 
 Choose **Save as…** to select another folder or filename in the native save
 dialog. Cancelling does not download or write the attachment. Choose a new

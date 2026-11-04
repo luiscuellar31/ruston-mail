@@ -835,6 +835,21 @@ fn a_marked_download_carries_the_internet_zone() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+#[cfg(target_os = "macos")]
+fn a_saved_attachment_carries_the_quarantine_mark() {
+    let folder = save_folder("quarantine");
+    let path = save_under_free_name(&folder, "informe ñ, 100%.pdf", b"%PDF").unwrap();
+    let mark = std::process::Command::new("xattr")
+        .args(["-p", "com.apple.quarantine"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&folder).unwrap();
+    assert!(mark.status.success(), "{mark:?}");
+    assert!(!mark.stdout.trim_ascii().is_empty(), "{mark:?}");
+}
+
 /// An empty directory of its own for one test.
 fn save_folder(label: &str) -> PathBuf {
     let folder = export_directory(label);

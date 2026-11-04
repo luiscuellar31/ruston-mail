@@ -336,7 +336,10 @@ are never overwritten. On Windows,
 both mark a saved attachment as downloaded from the internet, as browsers do
 (a `Zone.Identifier` stream naming the Internet zone), so SmartScreen checks it
 before it runs and Office opens it in Protected View. A file system without
-such streams, such as FAT32, keeps the file unmarked.
+such streams, such as FAT32, keeps the file unmarked. On macOS, both give it
+the quarantine mark of an email attachment, so Gatekeeper checks it before it
+opens; macOS logs each mark, with the program that saved the file and the
+time, in its own quarantine record.
 Sender-provided names are sanitized before suggesting a name in the save
 dialog too. Revealing a saved file sends its local path to the operating
 system's file manager (a file URI over the session bus on Linux).

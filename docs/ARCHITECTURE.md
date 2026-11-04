@@ -971,9 +971,10 @@ instead of an unknown outcome.
   `save_under_free_name` saves into a folder under the first free name,
   `report.pdf`, then `report (1).pdf` and so on, and `write_new_file` writes to
   a path the user chose. Both create the file exclusively, then mark it with
-  `mark_downloaded`: on Windows a `Zone.Identifier` stream naming the Internet
-  zone, best effort, so SmartScreen and Office's Protected View apply; nothing
-  elsewhere. Core can pass decrypted
+  `mark_downloaded`, best effort: on Windows a `Zone.Identifier` stream naming
+  the Internet zone, so SmartScreen and Office's Protected View apply, and on
+  macOS the quarantine properties of an email attachment, set through
+  CoreFoundation, so Gatekeeper applies; nothing on Linux. Core can pass decrypted
   attachments to a caller one at a time; the CLI uses this path for `--all`,
   fetching message metadata once and saving each file before the next download.
   The convenience API that returns all attachment bytes has a total size limit.

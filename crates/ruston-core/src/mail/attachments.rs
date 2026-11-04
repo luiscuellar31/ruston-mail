@@ -112,23 +112,83 @@ pub fn is_invisible_mark(c: char) -> bool {
 }
 
 /// Marks a saved attachment as downloaded from the internet, as browsers mark
-/// their downloads: on Windows, SmartScreen then checks the file before it
-/// runs and Office opens it in Protected View. Elsewhere this does nothing.
-/// The mark is an NTFS alternate data stream, so on a file system without
-/// them, such as FAT32, the file stays unmarked and this returns the error.
+/// their downloads: SmartScreen then checks the file before it runs and
+/// Office opens it in Protected View. The mark is an NTFS alternate data
+/// stream, so on a file system without them, such as FAT32, the file stays
+/// unmarked and this returns the error.
+#[cfg(windows)]
 pub fn mark_downloaded(path: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        let mut stream = path.as_os_str().to_owned();
-        stream.push(":Zone.Identifier");
-        // Zone 3 is the Internet zone.
-        std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
+    let mut stream = path.as_os_str().to_owned();
+    stream.push(":Zone.Identifier");
+    // Zone 3 is the Internet zone.
+    std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
+}
+
+/// Marks a saved attachment as an email attachment from the internet, with
+/// the quarantine mark browsers give their downloads: Gatekeeper then checks
+/// the file before it runs. The system records this program's name and the
+/// time; a volume that cannot hold the mark leaves the file unmarked.
+#[cfg(target_os = "macos")]
+pub fn mark_downloaded(path: &Path) -> std::io::Result<()> {
+    use core_foundation::base::TCFType;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::error::CFError;
+    use core_foundation::string::{CFString, CFStringRef};
+    use core_foundation::url::{CFURL, CFURLSetResourcePropertyForKey};
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        // core-foundation leaves this key out.
+        static kCFURLQuarantinePropertiesKey: CFStringRef;
     }
-    #[cfg(not(windows))]
-    {
-        let _ = path;
-        Ok(())
+    #[link(name = "CoreServices", kind = "framework")]
+    unsafe extern "C" {
+        static kLSQuarantineTypeKey: CFStringRef;
+        static kLSQuarantineTypeEmailAttachment: CFStringRef;
     }
+
+    let url = CFURL::from_path(path, false)
+        .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidInput, "not a file path"))?;
+    // SAFETY: both are constant strings that LaunchServices owns; the
+    // wrappers retain them for as long as they live.
+    let (key, kind) = unsafe {
+        (
+            CFString::wrap_under_get_rule(kLSQuarantineTypeKey),
+            CFString::wrap_under_get_rule(kLSQuarantineTypeEmailAttachment),
+        )
+    };
+    let properties = CFDictionary::from_CFType_pairs(&[(key, kind)]);
+    let mut error = std::ptr::null_mut();
+    // SAFETY: the URL, the key and the dictionary live through the call, and
+    // the error it may return is ours, released by its wrapper below.
+    let marked = unsafe {
+        CFURLSetResourcePropertyForKey(
+            url.as_concrete_TypeRef(),
+            kCFURLQuarantinePropertiesKey,
+            properties.as_CFTypeRef(),
+            &mut error,
+        )
+    };
+    if marked != 0 {
+        return Ok(());
+    }
+    let reason = if error.is_null() {
+        "the quarantine mark was refused".to_owned()
+    } else {
+        // SAFETY: a returned error follows the create rule.
+        unsafe { CFError::wrap_under_create_rule(error) }
+            .description()
+            .to_string()
+    };
+    Err(std::io::Error::other(reason))
+}
+
+/// Marks a saved attachment as downloaded from the internet, as browsers mark
+/// their downloads where the system has such a mark; this one has none, so
+/// nothing is done.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn mark_downloaded(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Saves an attachment's `contents` in `folder` under its name made safe,
