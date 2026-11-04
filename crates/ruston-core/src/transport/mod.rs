@@ -427,6 +427,8 @@ impl HttpClient {
 
     /// Move byte buffers into reqwest once. Its buffered requests share their
     /// body allocation when cloned for authentication, rate-limit or HV retries.
+    /// A JSON body leaves `req` as it is written out, so the value, which can
+    /// hold session keys, is not kept through those retries.
     fn prepare_request(&self, req: &mut Request) -> Result<reqwest::Request> {
         let builder = self
             .client
@@ -434,7 +436,7 @@ impl HttpClient {
             .timeout(req.timeout);
         let builder = match &mut req.body {
             Body::Empty => builder,
-            Body::Json(v) => builder.body(serde_json::to_vec(v)?),
+            Body::Json(v) => builder.body(serde_json::to_vec(&std::mem::take(v))?),
             Body::Bytes(bytes) => builder.body(std::mem::take(bytes)),
         };
         Ok(builder.build()?)
@@ -1076,6 +1078,24 @@ mod tests {
             assert_eq!(data.len(), 64 * 1024);
             assert_eq!(data.as_ptr(), pointer);
         }
+    }
+
+    #[test]
+    fn a_json_body_is_kept_only_as_the_bytes_retries_share() {
+        let mut request =
+            Request::post("/mail/v4/messages/send").json(serde_json::json!({"Key": "session"}));
+        let prepared = client("http://127.0.0.1")
+            .prepare_request(&mut request)
+            .unwrap();
+        // The value is gone; what goes out stays, for every retry.
+        assert!(matches!(request.body, Body::Json(serde_json::Value::Null)));
+        let sent = prepared.body().unwrap().as_bytes().unwrap();
+        assert_eq!(sent, br#"{"Key":"session"}"#);
+        let retry = prepared.try_clone().unwrap();
+        assert_eq!(
+            retry.body().unwrap().as_bytes().unwrap().as_ptr(),
+            sent.as_ptr()
+        );
     }
 
     #[tokio::test]

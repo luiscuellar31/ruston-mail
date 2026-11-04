@@ -1083,6 +1083,9 @@ instead of an unknown outcome.
   moves raw buffers into a prepared reqwest request and shares its allocation
   between attempts, including authentication, rate-limit, and verification
   retries; it does not clone the byte vector or rebuild JSON on each attempt.
+  A JSON body leaves the `Request` as it is written out, so its value, which
+  can hold session keys, is dropped before the first attempt rather than kept
+  through the retries.
   The public `Request` and `Body` types retain their existing constructors and
   representations. Requests sharing auth state coordinate refresh
   after a 401 and reuse successfully rotated tokens.
