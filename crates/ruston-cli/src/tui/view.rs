@@ -54,7 +54,10 @@ const KEYS: [(&str, &str); 21] = [
     ("a, s, i", "archive it, or move it to Spam or the Inbox"),
     ("t, Delete", "move it to Trash"),
     ("Ctrl+Backspace", "delete it forever, in Trash or Spam"),
-    ("l, m", "label it, or move it to a folder"),
+    (
+        "l, L, m",
+        "label it, remove a label, or move it to a folder",
+    ),
     (
         "Space, x, Ctrl+A",
         "mark it, or all; an action acts on all marked",
@@ -707,8 +710,8 @@ fn draw_list<'a>(
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// The open conversation, its quoted passages folded into a line each
-/// unless the state shows them, wrapped to the pane and scrolled as far as
+/// The open conversation, the labels it bears under its subject and its
+/// quoted passages folded into a line each unless the state shows them, wrapped to the pane and scrolled as far as
 /// the state asks, within what there is. Since only the drawing knows how many
 /// rows the text wraps to, it tells the state how far it can scroll.
 fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
@@ -722,13 +725,22 @@ fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
         frame.render_widget(Paragraph::new(hint).block(block), area);
         return;
     };
-    let mut lines = vec![
-        Line::styled(
-            reading.subject.as_str(),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-        Line::default(),
-    ];
+    let mut lines = vec![Line::styled(
+        reading.subject.as_str(),
+        Style::new().add_modifier(Modifier::BOLD),
+    )];
+    // From the list, which loads again after each change, so they follow it.
+    let labels = app
+        .conversations
+        .iter()
+        .find(|conversation| conversation.id == reading.id)
+        .map(|conversation| app.label_names(&[conversation]))
+        .unwrap_or_default();
+    if !labels.is_empty() {
+        let named = format!("Labels: {}", labels.join(", "));
+        lines.push(Line::raw(screen_line(&named)));
+    }
+    lines.push(Line::default());
     if app.show_quotes {
         lines.extend(raw(&reading.lines));
     } else {
@@ -927,6 +939,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ruston_core::Recipient;
+    use ruston_core::model::ConversationLabel;
 
     fn drawn(width: u16, height: u16, app: &App, theme: &Theme) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1083,6 +1096,41 @@ mod tests {
         app.scroll = 500;
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(screen.contains("line 99"), "{screen}");
+    }
+
+    #[test]
+    fn the_reader_names_the_labels_the_conversation_bears() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let label = |id: &str, name: &str| Place {
+            id: id.into(),
+            name: name.into(),
+            depth: 0,
+            kind: PlaceKind::Label,
+            unread: 0,
+        };
+        app.places
+            .extend([label("l-1", "Family"), label("l-2", "Travel")]);
+        app.conversations[0].id = "plans".into();
+        app.reading = Some(Reading {
+            id: "plans".into(),
+            subject: "Plans".into(),
+            lines: vec!["Hi".into()],
+            quotes: Vec::new(),
+            links: Vec::new(),
+            attachments: Vec::new(),
+            answer: None,
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(!screen.contains("Labels:"), "{screen}");
+
+        app.conversations[0].labels = ["0", "l-2"]
+            .map(|id| ConversationLabel {
+                id: id.into(),
+                ..ConversationLabel::default()
+            })
+            .to_vec();
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains("Labels: Travel "), "{screen}");
     }
 
     #[test]

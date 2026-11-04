@@ -528,8 +528,9 @@ still prints the help and ends with status 2.
 
 It lists the folders and labels with how many of their conversations are
 unread, a folder's conversations, newest first, each marked unread (•),
-starred (★) or with attachments (+), and the conversation you open, with each
-message's headers, its signature's verdict and its body as
+starred (★) or with attachments (+), and the conversation you open, with the
+labels it bears under its subject, then each message's headers, its
+signature's verdict and its body as
 `conversations read` shows it. The list holds 50 conversations at first and
 loads 50 more each time you move down past its last. `g` followed by a letter
 goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
@@ -551,7 +552,8 @@ reader shows, `u` marks it unread and `r`, in the list, read, `a` archives it,
 `s` moves it to Spam, `i` to the Inbox, and `t` or Delete to Trash; then the
 list and the counts load again, and a conversation the reader shows that left
 the folder listed is put away. `l` starts `:label`, which puts one of your
-labels on it, and `m` starts `:move`. Space or `x` marks the selected
+labels on it, `L` (Shift+L) starts `:unlabel`, which takes one off, with Tab
+offering only its labels, and `m` starts `:move`. Space or `x` marks the selected
 conversation and moves down, and Ctrl+A marks them all: with some marked, an
 action from the list acts on all of them, and Esc takes the marks away. In
 Trash or Spam, Ctrl+Backspace or `:delete` deletes the conversation forever,
@@ -614,7 +616,7 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | `s`, `i` | Move it to Spam, or to the Inbox |
 | `t`, Delete | Move it to Trash |
 | Ctrl+Backspace | Delete it forever, in Trash or Spam, once you answer `y` |
-| `l`, `m` | Label it, or move it to a folder |
+| `l`, `L`, `m` | Label it, remove a label, or move it to a folder |
 | `n`, Ctrl+N | Write a new message |
 | `r`, `R`, `F` | In the reader: reply, reply to all, or forward |
 | Space, `x` | Mark it, for an action on all marked |

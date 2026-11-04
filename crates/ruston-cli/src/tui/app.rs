@@ -246,6 +246,9 @@ pub(crate) enum Message {
     Inbox,
     /// Opens the command line at `:label`.
     Label,
+    /// Opens the command line at `:unlabel`, when there is a label to take
+    /// off.
+    Unlabel,
     /// Opens the command line at `:move`.
     Move,
     /// Asks whether to delete the conversation acted on forever.
@@ -514,6 +517,7 @@ impl App {
             Message::Spam => return self.change(|_| Change::Move(label_ids::SPAM.into())),
             Message::Inbox => return self.change(|_| Change::Move(label_ids::INBOX.into())),
             Message::Label => self.command_line = Some(CommandLine::with("label ")),
+            Message::Unlabel => self.start_unlabel(),
             Message::Move => self.command_line = Some(CommandLine::with("move ")),
             Message::DeleteForever => self.ask_to_delete(),
             Message::Compose => self.compose = Some(Compose::new(self.sender.clone())),
@@ -719,7 +723,7 @@ impl App {
                 }
             };
         }
-        let (places, folders, labels) = self.completions();
+        let (places, folders, labels, their_labels) = self.completions();
         let Some(line) = self.command_line.as_mut() else {
             return Vec::new();
         };
@@ -739,7 +743,8 @@ impl App {
                 let after = |command: &str| match command {
                     "folder" => places.clone(),
                     "move" => folders.clone(),
-                    "label" | "unlabel" => labels.clone(),
+                    "label" => labels.clone(),
+                    "unlabel" => their_labels.clone(),
                     _ => Vec::new(),
                 };
                 line.complete(after, backwards);
@@ -751,9 +756,10 @@ impl App {
     }
 
     /// The names Tab offers after `:folder`, every place's, after `:move`,
-    /// those of the folders a conversation can move to, and after `:label`
-    /// and `:unlabel`, those of the labels.
-    fn completions(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
+    /// those of the folders a conversation can move to, after `:label`,
+    /// those of the labels, and after `:unlabel`, those of the labels the
+    /// conversations acted on bear.
+    fn completions(&self) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
         let names = |takes: fn(&Place) -> bool| -> Vec<String> {
             self.places
                 .iter()
@@ -765,7 +771,35 @@ impl App {
             names(|_| true),
             names(takes_moves),
             names(|place| place.kind == PlaceKind::Label),
+            self.label_names(&self.targets()),
         )
+    }
+
+    /// The names of the labels any of `conversations` bears, in the order
+    /// the folder list shows them.
+    pub(crate) fn label_names(&self, conversations: &[&Conversation]) -> Vec<String> {
+        self.places
+            .iter()
+            .filter(|place| place.kind == PlaceKind::Label)
+            .filter(|place| {
+                conversations.iter().any(|conversation| {
+                    conversation.labels.iter().any(|label| label.id == place.id)
+                })
+            })
+            .map(|place| place.name.clone())
+            .collect()
+    }
+
+    /// Opens the command line at `:unlabel` for the conversations acted on,
+    /// or says why not, as when they bear no label.
+    fn start_unlabel(&mut self) {
+        if let Some(why) = self.cannot_act() {
+            self.notice = Some(why.to_owned());
+        } else if self.label_names(&self.targets()).is_empty() {
+            self.notice = Some("There is no label to take off.".to_owned());
+        } else {
+            self.command_line = Some(CommandLine::with("unlabel "));
+        }
     }
 
     /// Does what a command line asks for.
@@ -1743,6 +1777,7 @@ impl Message {
             KeyCode::Char('i') => Some(Self::Inbox),
             KeyCode::Char('t') | KeyCode::Delete => Some(Self::Trash),
             KeyCode::Char('l') => Some(Self::Label),
+            KeyCode::Char('L') => Some(Self::Unlabel),
             KeyCode::Char('m') => Some(Self::Move),
             KeyCode::Char(' ' | 'x') => Some(Self::Mark),
             KeyCode::Char(':') => Some(Self::Command),
@@ -2781,6 +2816,60 @@ mod tests {
         assert_eq!(
             app.notice.as_deref(),
             Some("Moving the conversation to the Inbox…")
+        );
+    }
+
+    #[test]
+    fn shift_l_takes_off_one_of_the_labels_the_conversation_bears() {
+        let mut app = loaded();
+        let label = |id: &str, name: &str| Place {
+            kind: PlaceKind::Label,
+            ..place(id, name)
+        };
+        app.places = vec![
+            place(label_ids::INBOX, "Inbox"),
+            label("label-1", "Family"),
+            label("label-2", "Travel"),
+            label("label-3", "Work"),
+        ];
+        press(&mut app, KeyCode::Char('L'));
+        assert!(app.command_line.is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Choose a conversation in the list first.")
+        );
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Char('L'));
+        assert!(app.command_line.is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("There is no label to take off.")
+        );
+        // Tab offers only the labels it bears, in the folder list's order.
+        app.conversations[0].labels = ["label-3", label_ids::INBOX, "label-2"]
+            .map(|id| ConversationLabel {
+                id: id.into(),
+                ..ConversationLabel::default()
+            })
+            .to_vec();
+        press(&mut app, KeyCode::Char('L'));
+        assert_eq!(app.command_line.as_ref().unwrap().text, "unlabel ");
+        let mut offered = Vec::new();
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Tab);
+            offered.push(app.command_line.as_ref().unwrap().text.clone());
+        }
+        assert_eq!(
+            offered,
+            ["unlabel Travel", "unlabel Work", "unlabel Travel"]
+        );
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            [Effect::Change {
+                ids: vec!["a".into()],
+                place: label_ids::INBOX.into(),
+                change: Change::Unlabel("label-2".into())
+            }]
         );
     }
 

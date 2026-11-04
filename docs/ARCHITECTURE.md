@@ -778,7 +778,9 @@ instead of an unknown outcome.
   conversations marked with Space or `x`, from the list, or else on its selection or
   the conversation the reader shows, through `Mailbox::change`, one request
   for all, and then load the list and the counts again, which Proton owns, as
-  the desktop does. When a change took the conversation the reader shows out
+  the desktop does. The reader names the labels the conversation bears from
+  its row in that list, so they follow each change, and Tab after `:unlabel`
+  offers only those. When a change took the conversation the reader shows out
   of the place listed, the reader puts it away; the answer names the
   conversations changed, since a list loaded again holds only its first
   page and cannot tell. Deleting forever, with Ctrl+Backspace or `:delete`, and
