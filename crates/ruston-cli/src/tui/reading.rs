@@ -289,12 +289,17 @@ fn web_links(text: &str) -> Vec<String> {
     links
 }
 
+/// Whether a line of a body quotes another message, as mail marks it.
+pub(crate) fn is_quoted(line: &str) -> bool {
+    line.starts_with('>')
+}
+
 /// The passages of a message's `body` that quote another message: runs of
 /// lines that start with `>`, with the blank lines between them, at least
 /// [`FOLDED_MIN_LINES`] long. A body that is all quotes has none, as the
 /// desktop leaves it open: folded, nothing of it would show.
 fn quoted_passages(body: &[String]) -> Vec<Range<usize>> {
-    let quoted = |line: &String| line.starts_with('>');
+    let quoted = |line: &String| is_quoted(line);
     if body
         .iter()
         .all(|line| quoted(line) || line.trim().is_empty())

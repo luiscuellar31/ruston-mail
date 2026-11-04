@@ -545,8 +545,9 @@ goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
 Starred, `d` Drafts, `t` Trash, `s` Spam and `m` All mail. A quoted passage of
 three lines or more, such as the message a reply answers, folds into one line
 unless the whole message is quoted; `z` shows or hides them, and says so when
-the open conversation has none to fold. Links show as text with the address
-they open; `b` lists those of the open conversation, and
+the open conversation has none to fold. Quoted lines show dimmed, so one too
+long for the pane stays apart from new text on every row it wraps to. Links
+show as text with the address they open; `b` lists those of the open conversation, and
 one opens in your browser only once you answer `y` to the address it shows.
 Each message lists its attachments under its headers, and `v` lists those of
 the open conversation: Enter saves one, checking its signature as

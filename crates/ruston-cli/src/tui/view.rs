@@ -6,7 +6,7 @@
 
 use super::app::{App, GO_TO, LinkPick, Pane, Question};
 use super::compose::{Checked, Compose, Field};
-use super::reading::size_label;
+use super::reading::{is_quoted, size_label};
 use crate::mailbox::OutgoingKind;
 use crate::render;
 use crate::terminal::screen_line;
@@ -804,9 +804,16 @@ fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
     );
 }
 
-/// Each of `lines` as it is, without a style.
+/// Each of `lines` as it is, a quoted one dimmed: wrapped, its later rows
+/// lose the `>` that says it quotes.
 fn raw(lines: &[String]) -> impl Iterator<Item = Line<'_>> {
-    lines.iter().map(|line| Line::raw(line.as_str()))
+    lines.iter().map(|line| {
+        if is_quoted(line) {
+            Line::styled(line.as_str(), Style::new().add_modifier(Modifier::DIM))
+        } else {
+            Line::raw(line.as_str())
+        }
+    })
 }
 
 /// One row of the list: whether it is marked (✓), unread (•), starred (★)
@@ -1223,6 +1230,42 @@ mod tests {
         assert!(app.reader_bottom.get() == 0);
         let rows = drawn(120, 10, &app, &Theme::new(false));
         assert!(app.reader_bottom.get() > 0, "{}", text(&rows));
+    }
+
+    #[test]
+    fn a_quoted_line_stays_dim_on_every_row_it_wraps_to() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.reading = Some(Reading {
+            id: "long".into(),
+            subject: "Long".into(),
+            lines: vec![format!("> {}", "quoted ".repeat(20)), "Fresh words".into()],
+            quotes: Vec::new(),
+            links: Vec::new(),
+            attachments: Vec::new(),
+            answer: None,
+        });
+        let buffer = drawn(120, 30, &app, &Theme::new(false));
+        let screen = text(&buffer);
+        let dim_at = |row: usize, word: &str| {
+            let line = screen.lines().nth(row).unwrap();
+            let column = line[..line.find(word).unwrap()].chars().count();
+            let cell = &buffer[(u16::try_from(column).unwrap(), u16::try_from(row).unwrap())];
+            cell.modifier.contains(Modifier::DIM)
+        };
+        let quoted: Vec<usize> = screen
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains("quoted"))
+            .map(|(row, _)| row)
+            .collect();
+        // 140 columns wrap into several rows of the 46-column pane.
+        assert!(quoted.len() > 1, "{screen}");
+        assert!(quoted.iter().all(|&row| dim_at(row, "quoted")), "{screen}");
+        let fresh = screen
+            .lines()
+            .position(|line| line.contains("Fresh"))
+            .unwrap();
+        assert!(!dim_at(fresh, "Fresh"));
     }
 
     #[test]
