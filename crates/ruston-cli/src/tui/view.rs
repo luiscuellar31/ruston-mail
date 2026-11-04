@@ -26,6 +26,9 @@ const THREE_PANES_MIN_WIDTH: u16 = 100;
 /// The folder list's width when the panes stand side by side.
 const FOLDERS_WIDTH: u16 = 24;
 
+/// What the marks at the start of a conversation's row say, under the list.
+const ROW_MARKS: &str = " ✓ marked · • unread · ★ starred · + files ";
+
 /// How many columns a conversation's sender takes in its row.
 const SENDER_WIDTH: usize = 18;
 
@@ -728,12 +731,14 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
             let items = app.conversations.iter().map(|conversation| {
                 conversation_row(conversation, app.marked.contains(&conversation.id))
             });
+            // What the marks at the start of a row say, where they show.
+            let legend = Line::styled(ROW_MARKS, Style::new().add_modifier(Modifier::DIM));
             draw_list(
                 frame,
                 items,
                 app.selected_conversation,
                 focused,
-                block,
+                block.title_bottom(legend),
                 area,
             );
         }
@@ -742,7 +747,8 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
 }
 
 /// A list with its selection on `selected`, shown inverted in the focused
-/// pane, which reads without colors too, and in bold elsewhere.
+/// pane, which reads without colors too, and underlined elsewhere: bold
+/// says a conversation is unread.
 fn draw_list<'a>(
     frame: &mut Frame,
     items: impl Iterator<Item = ListItem<'a>>,
@@ -754,7 +760,7 @@ fn draw_list<'a>(
     let highlight = if focused {
         Style::new().add_modifier(Modifier::REVERSED)
     } else {
-        Style::new().add_modifier(Modifier::BOLD)
+        Style::new().add_modifier(Modifier::UNDERLINED)
     };
     let list = List::new(items).block(block).highlight_style(highlight);
     let mut state = ListState::default().with_selected(Some(selected));
@@ -1770,6 +1776,40 @@ mod tests {
         assert_eq!(
             protection(&checks, 7),
             ["Not checked: 7 more recipients, past the first 100."]
+        );
+    }
+
+    #[test]
+    fn the_selection_of_a_pane_without_the_keys_never_reads_as_unread() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.conversations.push(Conversation {
+            subject: "Read already".into(),
+            time: 1_713_000_000,
+            senders: vec![Recipient::new("sam@example.test")],
+            ..Conversation::default()
+        });
+        app.selected_conversation = 1;
+        app.focus = Pane::Reader;
+        let buffer = drawn(120, 30, &app, &Theme::new(false));
+        let screen = text(&buffer);
+        let style_of = |word: &str| {
+            let (row, line) = screen
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.contains(word))
+                .unwrap();
+            let column = line[..line.find(word).unwrap()].chars().count();
+            buffer[(u16::try_from(column).unwrap(), u16::try_from(row).unwrap())].modifier
+        };
+        // Bold is for unread mail; the selection elsewhere is underlined.
+        let selected = style_of("sam@example.test");
+        assert!(selected.contains(Modifier::UNDERLINED) && !selected.contains(Modifier::BOLD));
+        let unread = style_of("alex@example.test");
+        assert!(unread.contains(Modifier::BOLD) && !unread.contains(Modifier::UNDERLINED));
+        // And under the list, what its marks say.
+        assert!(
+            screen.contains("✓ marked · • unread · ★ starred · + files"),
+            "{screen}"
         );
     }
 

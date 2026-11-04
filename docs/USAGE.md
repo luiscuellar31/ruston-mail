@@ -543,8 +543,10 @@ unread, a folder's conversations, newest first, each marked unread (•),
 starred (★) or with attachments (+), and the conversation you open, with the
 labels it bears under its subject, then each message's headers, its
 signature's verdict and its body as
-`conversations read` shows it. The list holds 50 conversations at first and
-loads 50 more each time you move down past its last. `g` followed by a letter
+`conversations read` shows it. The list's bottom edge names those marks. The
+selected row shows inverted in the pane that has the keys and underlined in
+the others, since bold marks an unread conversation. The list holds 50
+conversations at first and loads 50 more each time you move down past its last. `g` followed by a letter
 goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
 Starred, `d` Drafts, `t` Trash, `s` Spam and `m` All mail. A quoted passage of
 three lines or more, such as the message a reply answers, folds into one line
