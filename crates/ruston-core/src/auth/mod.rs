@@ -27,15 +27,17 @@ use types::{AuthInfo, AuthResponse, SessionResp};
 /// code interactively and do not persist it.
 pub type TotpPrompt = Arc<dyn Fn() -> BoxFuture<'static, Result<SecretString>> + Send + Sync>;
 
-/// Result of a successful login.
+/// What a sign-in that went through leaves: the session, and how the
+/// account's passwords are set up.
 pub struct LoginResult {
-    /// Session tokens (UID, access, refresh) for the authenticated session.
+    /// The signed-in session's ID and tokens.
     pub tokens: Tokens,
     /// Password mode, one of [`password_mode`](crate::model::enums::password_mode).
     pub password_mode: u8,
 }
 
-/// Perform the full SRP login (+ 2FA if required).
+/// Signs in with SRP, then with the second factor when the account has
+/// one, using `totp` as the code.
 pub async fn login(
     http: &HttpClient,
     username: &str,
@@ -55,104 +57,119 @@ pub async fn login_with_prompt(
     totp_prompt: Option<&TotpPrompt>,
 ) -> Result<LoginResult> {
     tracing::info!(target: "ruston_core::auth", username, "login: starting SRP flow");
+    open_unauthenticated_session(http).await?;
+    let challenge = srp_challenge(http, username).await?;
+    let proofs = answer_challenge(username, password, &challenge)?;
+    let signed_in = exchange_proofs(http, username, &proofs, &challenge.srp_session).await?;
 
-    // 1. Unauthenticated session.
-    tracing::debug!(target: "ruston_core::auth", "login step 1/6: creating unauthenticated session (POST /auth/v4/sessions)");
-    let session: SessionResp = http
-        .decode(
-            Request::post("/auth/v4/sessions")
-                .json(serde_json::json!({}))
-                .enforce_unauth()
-                .no_refresh(),
-        )
-        .await?;
-    tracing::debug!(target: "ruston_core::auth", uid = %session.uid, "login: got unauth session");
+    // The tokens become secrets at once, and the client holds copies of those.
+    let tokens = Tokens {
+        uid: signed_in.uid,
+        access: SecretString::from(signed_in.access_token),
+        refresh: SecretString::from(signed_in.refresh_token),
+    };
     http.set_tokens(
-        session.uid,
-        SecretString::from(session.access_token),
-        SecretString::from(session.refresh_token),
+        tokens.uid.clone(),
+        tokens.access.clone(),
+        tokens.refresh.clone(),
     )
     .await;
 
-    // 2. SRP challenge.
-    tracing::debug!(target: "ruston_core::auth", "login step 2/6: fetching SRP challenge (POST /core/v4/auth/info)");
-    let info: AuthInfo = http
-        .decode(
-            Request::post("/core/v4/auth/info")
-                .json(serde_json::json!({ "Username": username }))
-                .no_refresh(),
-        )
-        .await?;
-    tracing::debug!(target: "ruston_core::auth", srp_version = info.version, salt_len = info.salt.len(), modulus_len = info.modulus.len(), "login: received modulus, salt, server ephemeral");
+    tracing::debug!(target: "ruston_core::auth", "login step 6/6: second factor, if the account has one");
+    let second = second_factor(http, signed_in.two_fa.enabled, totp, totp_prompt);
+    or_end_session(http, second).await?;
+    tracing::info!(target: "ruston_core::auth", "login: complete");
+    Ok(LoginResult {
+        tokens,
+        password_mode: signed_in.password_mode,
+    })
+}
 
-    // 3. Compute SRP proofs (modulus signature verified internally by RPGPVerifier).
-    let version = SrpHashVersion::try_from(info.version)
-        .map_err(|e| Error::Srp(format!("unsupported SRP version {}: {e}", info.version)))?;
+/// Opens a session that belongs to no one yet, and has the client use it:
+/// Proton answers the sign-in requests that follow only within a session.
+async fn open_unauthenticated_session(http: &HttpClient) -> Result<()> {
+    tracing::debug!(target: "ruston_core::auth", "login step 1/6: creating unauthenticated session (POST /auth/v4/sessions)");
+    let request = Request::post("/auth/v4/sessions")
+        .json(serde_json::json!({}))
+        .enforce_unauth()
+        .no_refresh();
+    let opened: SessionResp = http.decode(request).await?;
+    tracing::debug!(target: "ruston_core::auth", uid = %opened.uid, "login: got unauth session");
+    let access = SecretString::from(opened.access_token);
+    let refresh = SecretString::from(opened.refresh_token);
+    http.set_tokens(opened.uid, access, refresh).await;
+    Ok(())
+}
+
+/// The SRP challenge Proton sets for `username`: the signed modulus, the
+/// salt, and the server's ephemeral value.
+async fn srp_challenge(http: &HttpClient, username: &str) -> Result<AuthInfo> {
+    tracing::debug!(target: "ruston_core::auth", "login step 2/6: fetching SRP challenge (POST /core/v4/auth/info)");
+    let request = Request::post("/core/v4/auth/info")
+        .json(serde_json::json!({ "Username": username }))
+        .no_refresh();
+    let challenge: AuthInfo = http.decode(request).await?;
+    tracing::debug!(target: "ruston_core::auth", srp_version = challenge.version, salt_len = challenge.salt.len(), modulus_len = challenge.modulus.len(), "login: received modulus, salt, server ephemeral");
+    Ok(challenge)
+}
+
+/// The client's proofs that it knows `password`, worked out for
+/// `challenge` once its modulus is found to be signed with Proton's key.
+fn answer_challenge(
+    username: &str,
+    password: &SecretString,
+    challenge: &AuthInfo,
+) -> Result<SRPProofB64> {
+    let version = SrpHashVersion::try_from(challenge.version).map_err(|e| {
+        Error::Srp(format!(
+            "unsupported SRP version {}: {e}",
+            challenge.version
+        ))
+    })?;
     tracing::debug!(target: "ruston_core::auth", "login step 3/6: verifying signed modulus + generating client proof (proton-srp)");
-    let verifier = RPGPVerifier::default();
-    let srp = SRPAuth::new(
-        &verifier,
+    let proofs = SRPAuth::new(
+        &RPGPVerifier::default(),
         Some(username),
         password.expose_secret(),
         version,
-        &info.salt,
-        &info.modulus,
-        &info.server_ephemeral,
+        &challenge.salt,
+        &challenge.modulus,
+        &challenge.server_ephemeral,
     )
-    .map_err(|e| Error::Srp(format!("SRP setup failed: {e}")))?;
-    let proof = srp
-        .generate_proofs()
-        .map_err(|e| Error::Srp(format!("SRP proof failed: {e}")))?;
+    .map_err(|e| Error::Srp(format!("SRP setup failed: {e}")))?
+    .generate_proofs()
+    .map_err(|e| Error::Srp(format!("SRP proof failed: {e}")))?;
     tracing::debug!(target: "ruston_core::auth", "login: client proof + ephemeral generated; modulus signature verified");
-    let proofs: SRPProofB64 = proof.into();
+    Ok(SRPProofB64::from(proofs))
+}
 
-    // 4. Submit proof.
+/// Sends Proton the client's `proofs`, and checks the server's proof that
+/// comes back: only a server that holds the password's verifier can make
+/// it, so a wrong one ends the sign-in. Returns the session the proofs
+/// opened.
+async fn exchange_proofs(
+    http: &HttpClient,
+    username: &str,
+    proofs: &SRPProofB64,
+    srp_session: &str,
+) -> Result<AuthResponse> {
     tracing::debug!(target: "ruston_core::auth", "login step 4/6: submitting client proof (POST /core/v4/auth)");
-    let resp: AuthResponse = http
-        .decode(
-            Request::post("/core/v4/auth")
-                .json(serde_json::json!({
-                    "Username": username,
-                    "ClientProof": proofs.client_proof,
-                    "ClientEphemeral": proofs.client_ephemeral,
-                    "SRPSession": info.srp_session,
-                }))
-                .no_refresh(),
-        )
-        .await?;
-
-    // 5. Verify the server proof (MITM guard), then use the authenticated
-    // session.
-    if !proofs.compare_server_proof(&resp.server_proof) {
+    let request = Request::post("/core/v4/auth")
+        .json(serde_json::json!({
+            "Username": username,
+            "ClientProof": proofs.client_proof,
+            "ClientEphemeral": proofs.client_ephemeral,
+            "SRPSession": srp_session,
+        }))
+        .no_refresh();
+    let signed_in: AuthResponse = http.decode(request).await?;
+    if proofs.compare_server_proof(&signed_in.server_proof) {
+        tracing::info!(target: "ruston_core::auth", uid = %signed_in.uid, password_mode = signed_in.password_mode, two_fa = signed_in.two_fa.enabled, "login step 5/6: server proof verified; authenticated");
+        Ok(signed_in)
+    } else {
         tracing::error!(target: "ruston_core::auth", "login: SERVER PROOF MISMATCH — aborting (possible MITM)");
-        return Err(Error::Srp("server proof verification failed".into()));
+        Err(Error::Srp("server proof verification failed".into()))
     }
-    tracing::info!(target: "ruston_core::auth", uid = %resp.uid, password_mode = resp.password_mode, two_fa = resp.two_fa.enabled, "login step 5/6: server proof verified; authenticated");
-
-    http.set_tokens(
-        resp.uid.clone(),
-        SecretString::from(resp.access_token.clone()),
-        SecretString::from(resp.refresh_token.clone()),
-    )
-    .await;
-
-    // 6. The second factor, if the account has one.
-    tracing::debug!(target: "ruston_core::auth", "login step 6/6: second factor, if the account has one");
-    or_end_session(
-        http,
-        second_factor(http, resp.two_fa.enabled, totp, totp_prompt),
-    )
-    .await?;
-    tracing::info!(target: "ruston_core::auth", "login: complete");
-
-    Ok(LoginResult {
-        tokens: Tokens {
-            uid: resp.uid,
-            access: SecretString::from(resp.access_token),
-            refresh: SecretString::from(resp.refresh_token),
-        },
-        password_mode: resp.password_mode,
-    })
 }
 
 /// Submit the second factor if the account requires one. `enabled` is the 2FA
@@ -194,7 +211,7 @@ async fn second_factor(
     Ok(())
 }
 
-/// Revoke the current session server-side. An expired access token is
+/// Has Proton end the client's session. An expired access token is
 /// refreshed first, in memory only: revoking never saves tokens again.
 pub async fn logout(http: &HttpClient) -> Result<()> {
     let revoking = http.detached().await;
@@ -221,9 +238,163 @@ pub(crate) async fn or_end_session<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use proton_srp::{ServerClientProof, ServerClientVerifier, ServerInteraction};
+    use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // An SRP modulus signed with Proton's key, as the auth info hands it out.
+    const MODULUS: &str = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nW2z5HBi8RvsfYzZTS7qBaUxxPhsfHJFZpu3Kd6s1JafNrCCH9rfvPLrfuqocxWPgWDH2R8neK7PkNvjxto9TStuY5z7jAzWRvFWN9cQhAKkdWgy0JY6ywVn22+HFpF4cYesHrqFIKUPDMSSIlWjBVmEJZ/MusD44ZT29xcPrOqeZvwtCffKtGAIjLYPZIEbZKnDM1Dm3q2K/xS5h+xdhjnndhsrkwm9U9oyA2wxzSXFL+pdfj2fOdRwuR5nW0J2NFrq3kJjkRmpO/Genq1UW+TEknIWAb6VzJJJA244K/H8cnSx2+nSNZO3bbo6Ys228ruV9A8m6DhxmS+bihN3ttQ==\n-----BEGIN PGP SIGNATURE-----\nVersion: ProtonMail\nComment: https://protonmail.com\n\nwl4EARYIABAFAlwB1j0JEDUFhcTpUY8mAAD8CgEAnsFnF4cF0uSHKkXa1GIa\nGO86yMV4zDZEZcDSJo0fgr8A/AlupGN9EdHlsrZLmTA1vhIx+rOgxdEff28N\nkvNM7qIK\n=q6vu\n-----END PGP SIGNATURE-----";
+
+    /// A success answer carrying `fields`.
+    fn answer(mut fields: serde_json::Value) -> ResponseTemplate {
+        fields["Code"] = json!(1000);
+        ResponseTemplate::new(200).set_body_json(fields)
+    }
+
+    /// Mounts Proton's side of a sign-in with `password`: a session opened
+    /// for no one, the SRP challenge, and a session for a client that proves
+    /// the password, sent with the server's own proof, or with a wrong one
+    /// unless `proves_itself`. The account asks for a TOTP code.
+    async fn srp_server(server: &MockServer, password: &str, proves_itself: bool) {
+        let verifier =
+            SRPAuth::generate_verifier(&RPGPVerifier::default(), password, None, MODULUS).unwrap();
+        let mut srp = ServerInteraction::new_with_modulus_extractor(
+            &RPGPVerifier::default(),
+            MODULUS,
+            &ServerClientVerifier::from(&verifier),
+        )
+        .unwrap();
+        let challenge = json!({
+            "Version": 4, "Modulus": MODULUS, "ServerEphemeral": srp.generate_challenge().encode_b64(),
+            "Salt": STANDARD.encode(verifier.salt), "SRPSession": "srp-session"
+        });
+        let srp = std::sync::Mutex::new(srp);
+        let opened = json!({
+            "UID": "unauthenticated-uid", "AccessToken": "unauthenticated-access",
+            "RefreshToken": "unauthenticated-refresh"
+        });
+        for (route, answered) in [
+            ("/auth/v4/sessions", answer(opened)),
+            ("/core/v4/auth/info", answer(challenge)),
+            ("/core/v4/auth/2fa", answer(json!({}))),
+        ] {
+            let mock = Mock::given(method("POST")).and(path(route));
+            mock.respond_with(answered).mount(server).await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/core/v4/auth"))
+            .respond_with(move |request: &wiremock::Request| {
+                let sent: serde_json::Value = request.body_json().unwrap();
+                let field = |name: &str| sent[name].as_str().unwrap_or_default().to_owned();
+                let proof =
+                    ServerClientProof::new(&field("ClientEphemeral"), &field("ClientProof"));
+                let Ok(server_proof) =
+                    proof.and_then(|proof| srp.lock().unwrap().verify_proof(&proof))
+                else {
+                    return ResponseTemplate::new(422).set_body_json(json!({ "Code": 8002 }));
+                };
+                let server_proof = if proves_itself {
+                    server_proof.encode_b64()
+                } else {
+                    STANDARD.encode([0u8; 256])
+                };
+                answer(json!({
+                    "UID": "uid", "AccessToken": "access", "RefreshToken": "refresh",
+                    "ServerProof": server_proof, "2FA": { "Enabled": 1 }, "PasswordMode": 2
+                }))
+            })
+            .mount(server)
+            .await;
+    }
+
+    /// What `server` received, in order: each request's path, the access
+    /// token it carried, and its JSON body, in which the SRP proofs, new on
+    /// every sign-in, read `"proof"`.
+    async fn received(server: &MockServer) -> Vec<(String, Option<String>, serde_json::Value)> {
+        let requests = server.received_requests().await.unwrap();
+        let read = |request: &wiremock::Request| {
+            let token = request.headers.get("authorization");
+            let token = token.map(|token| token.to_str().unwrap().to_owned());
+            let mut body: serde_json::Value = request.body_json().unwrap();
+            for proof in ["ClientEphemeral", "ClientProof"] {
+                if let Some(value) = body.get_mut(proof) {
+                    *value = json!("proof");
+                }
+            }
+            (request.url.path().to_owned(), token, body)
+        };
+        requests.iter().map(read).collect()
+    }
+
+    #[tokio::test]
+    async fn signing_in_proves_the_password_then_the_server_in_a_session_of_its_own() {
+        let server = MockServer::start().await;
+        srp_server(&server, "the password", true).await;
+        let http = HttpClient::new(server.uri(), "Other");
+
+        let password = SecretString::from("the password");
+        let signed_in = login(&http, "user", &password, Some("123456"));
+        let signed_in = signed_in.await.unwrap();
+
+        let tokens = &signed_in.tokens;
+        let issued = [&tokens.access, &tokens.refresh].map(|token| token.expose_secret());
+        assert_eq!(
+            (tokens.uid.as_str(), issued),
+            ("uid", ["access", "refresh"])
+        );
+        assert_eq!(signed_in.password_mode, 2);
+        // The session is opened for no one; the challenge is fetched and
+        // answered in it; the code goes to the session the answer opened.
+        let request = |path: &str, token: Option<&str>, body| {
+            (path.to_owned(), token.map(str::to_owned), body)
+        };
+        let unauthenticated = Some("Bearer unauthenticated-access");
+        let proofs = json!({
+            "Username": "user", "ClientProof": "proof", "ClientEphemeral": "proof",
+            "SRPSession": "srp-session"
+        });
+        let code = json!({ "TwoFactorCode": "123456" });
+        assert_eq!(
+            received(&server).await,
+            [
+                request("/auth/v4/sessions", None, json!({})),
+                request(
+                    "/core/v4/auth/info",
+                    unauthenticated,
+                    json!({ "Username": "user" })
+                ),
+                request("/core/v4/auth", unauthenticated, proofs),
+                request("/core/v4/auth/2fa", Some("Bearer access"), code),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_cannot_prove_the_password_is_left_before_the_second_factor() {
+        let server = MockServer::start().await;
+        srp_server(&server, "the password", false).await;
+        let http = HttpClient::new(server.uri(), "Other");
+
+        let password = SecretString::from("the password");
+        let refused = login(&http, "user", &password, Some("123456")).await;
+
+        assert!(matches!(
+            refused,
+            Err(Error::Srp(message)) if message == "server proof verification failed"
+        ));
+        let routes: Vec<String> = received(&server)
+            .await
+            .into_iter()
+            .map(|sent| sent.0)
+            .collect();
+        assert_eq!(
+            routes,
+            ["/auth/v4/sessions", "/core/v4/auth/info", "/core/v4/auth"]
+        );
+    }
 
     #[tokio::test]
     async fn a_login_that_fails_after_the_password_ends_its_session() {
@@ -258,18 +429,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_calls_revoke() {
+    async fn logging_out_revokes_the_session_the_client_is_signed_in_to() {
         let server = MockServer::start().await;
+        let signed_in = HttpClient::new(server.uri(), "Other");
+        signed_in
+            .set_tokens(
+                "uid".into(),
+                SecretString::from("access"),
+                SecretString::from("refresh"),
+            )
+            .await;
         Mock::given(method("DELETE"))
             .and(path("/core/v4/auth"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
-            )
+            .and(header("x-pm-uid", "uid"))
+            .and(header("authorization", "Bearer access"))
+            .respond_with(answer(json!({})))
             .expect(1)
             .mount(&server)
             .await;
-        let http = HttpClient::new(server.uri(), "Other");
-        logout(&http).await.unwrap();
+
+        logout(&signed_in).await.unwrap();
+        server.verify().await;
     }
 
     #[tokio::test]

@@ -1,9 +1,11 @@
-//! Key hierarchy: wire types + unlock into an in-memory `KeyStore`.
+//! The account's keys as Proton lists them, and the opening of the address
+//! keys, by way of the user keys, into a [`KeyStore`] kept in memory.
 //!
-//! Because `proton-crypto`'s key/provider types are unnameable (private
-//! associated types), the `KeyStore` holds key material that each crypto op
-//! re-imports: an address key's unlocked export, which skips the passphrase
-//! derivation, with the armored key and its passphrase as the fallback.
+//! An imported key's type belongs to the provider [`super::provider`]
+//! returns, which cannot be named, so no struct can hold one. The store
+//! keeps what imports a key again for each operation instead: the unlocked
+//! copy exported when it first opened, which skips deriving its passphrase,
+//! or else the armored key and its passphrase.
 
 use super::kdf;
 use crate::error::{Error, Result};
@@ -15,32 +17,36 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
-/// A raw API key (user or address).
+/// A private key of the user or of an address, as Proton lists it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ApiKey {
-    /// The key's API ID.
+    /// The key's ID.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Armored PGP private key.
+    /// The key, armored and locked with its passphrase.
     pub private_key: String,
-    /// Encrypted passphrase (a PGP message to a user key) that unlocks this
-    /// address key; `None` for legacy keys unlocked with the mailbox password.
+    /// An address key's passphrase, encrypted to the user keys. A legacy
+    /// key, without it or without its signature, opens with the key password
+    /// instead.
     #[serde(default)]
     pub token: Option<String>,
-    /// Detached signature over the token, verified against the user keys.
+    /// A user key's detached signature over the token; a token whose
+    /// signature fails leaves its key locked.
     #[serde(default)]
     pub signature: Option<String>,
-    /// Activation token for a not-yet-activated key, if present.
+    /// The token of a key not yet activated. Nothing here activates keys,
+    /// so it is only read.
     #[serde(default)]
     pub activation: Option<String>,
-    /// `1` if this is the primary key in its ring.
+    /// `1` for the primary key of its user or address.
     #[serde(default)]
     pub primary: u8,
-    /// `1` if the key is active (usable); inactive (`0`) keys are skipped.
+    /// `0` for a key no longer in use, which is never opened. Proton leaving
+    /// it out reads as `1`.
     #[serde(default = "default_active")]
     pub active: u8,
-    /// Key capability flags (encrypt/sign), if present.
+    /// The key's [`key_flag`] bits, when Proton sends them.
     #[serde(default)]
     pub flags: Option<u32>,
 }
@@ -61,28 +67,28 @@ impl ApiKey {
     }
 }
 
-/// The account's user-level key ring.
+/// The account's user, with the keys that open its addresses' keys.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct User {
     /// Account identity returned by the authenticated user endpoint.
     #[serde(rename = "ID")]
     pub id: String,
-    /// User keys (the root of the key hierarchy).
+    /// The user keys.
     pub keys: Vec<ApiKey>,
 }
 
-/// An email address and its key ring.
+/// One of the account's addresses, with its keys, as Proton lists it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Address {
-    /// The address's API ID.
+    /// The address's ID.
     #[serde(rename = "ID")]
     pub id: String,
     /// The email address.
     pub email: String,
-    /// 1-based sort order from the API; the lowest-order address is the
-    /// account's default/primary sending address.
+    /// Where it sorts among the account's addresses, from 1. The lowest is
+    /// the address mail goes out from unless another is chosen.
     #[serde(default)]
     pub order: u32,
     /// The address's keys.
@@ -90,23 +96,25 @@ pub struct Address {
     pub keys: Vec<ApiKey>,
 }
 
-/// A per-key salt used to derive that key's passphrase from the mailbox password.
+/// The salt that, with the mailbox password, gives one user key's
+/// passphrase.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct KeySalt {
-    /// The ID of the key this salt belongs to.
+    /// The ID of the key it is for.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Base64-encoded salt; `None` for keys without one.
+    /// The salt, in base64. `None` or empty for a key from before key
+    /// passwords were salted, which opens with the mailbox password itself.
     pub key_salt: Option<String>,
 }
 
-/// An unlocked key, stored as armored material + the passphrase to re-import it.
+/// An address key that opened, kept in the forms that open it again.
 #[derive(Clone)]
 pub struct StoredKey {
-    /// Armored PGP private key.
+    /// The key as Proton lists it, armored and locked.
     pub armored: String,
-    /// Passphrase that unlocks the armored key on re-import.
+    /// What unlocks `armored`.
     pub passphrase: SecretString,
     /// The same key exported without passphrase protection when it was first
     /// unlocked. Re-importing it skips the passphrase derivation, which can
@@ -114,10 +122,10 @@ pub struct StoredKey {
     pub unlocked: Option<Zeroizing<Vec<u8>>>,
 }
 
-/// Unlocked keys for one address.
+/// The keys of one of the account's addresses that opened.
 #[derive(Clone)]
 pub struct AddressKeys {
-    /// The address's API ID.
+    /// The address's ID.
     pub address_id: String,
     /// The email address.
     pub email: String,
@@ -130,40 +138,33 @@ pub struct AddressKeys {
 /// so none is kept once they have.
 #[derive(Clone)]
 pub struct KeyStore {
-    /// Unlocked keys per address, ascending by API `Order` (default-first).
+    /// Each address whose keys opened, in Proton's `Order`: the default
+    /// address first.
     pub addresses: Vec<AddressKeys>,
 }
 
 impl KeyStore {
-    /// Look up an address's keys by address ID.
+    /// The keys of the address whose API ID is `address_id`.
     pub fn address(&self, address_id: &str) -> Option<&AddressKeys> {
-        self.addresses.iter().find(|a| a.address_id == address_id)
-    }
-
-    /// Look up an address's keys by email (case-insensitive).
-    pub fn address_for_email(&self, email: &str) -> Option<&AddressKeys> {
-        let e = email.to_ascii_lowercase();
         self.addresses
             .iter()
-            .find(|a| a.email.to_ascii_lowercase() == e)
+            .find(|keys| keys.address_id == address_id)
     }
 
-    /// Default sending address: the first address by API `Order` (matching the
-    /// web client's default). `addresses` is built in ascending-order during
-    /// unlock, so this is simply the first entry. Pick a different alias by
-    /// passing a `from`/`--from` address (resolved via [`Self::address_for_email`]).
+    /// The keys of `email`, whatever the case of its ASCII letters.
+    pub fn address_for_email(&self, email: &str) -> Option<&AddressKeys> {
+        self.addresses
+            .iter()
+            .find(|keys| keys.email.eq_ignore_ascii_case(email))
+    }
+
+    /// The address mail is sent from unless another is chosen, as in
+    /// Proton's web client: the one first in Proton's `Order`, which
+    /// unlocking puts first. A `from` address picks another through
+    /// [`Self::address_for_email`].
     pub fn primary_address(&self) -> Option<&AddressKeys> {
         self.addresses.first()
     }
-}
-
-/// Order addresses by ascending API `Order` (the default/primary sending
-/// address first). The sort is stable, so addresses with an absent or equal
-/// `Order` keep their original API order.
-fn addresses_by_order(addresses: &[Address]) -> Vec<&Address> {
-    let mut ordered: Vec<&Address> = addresses.iter().collect();
-    ordered.sort_by_key(|a| a.order);
-    ordered
 }
 
 /// Order an address's keys so the one to sign and encrypt with comes first:
@@ -181,10 +182,11 @@ fn keys_by_preference(keys: &[ApiKey]) -> Vec<&ApiKey> {
     ordered
 }
 
-/// Unlock the key hierarchy using the mailbox password + salts (login path).
-/// Returns the `KeyStore` and the key password (`skp`, the salted key
-/// password) for session persistence: the passphrase of the first user key
-/// that opens, which also opens address keys without a signed token.
+/// Opens the account's keys when signing in, each user key with the
+/// passphrase the mailbox password and its salt derive. Returns the
+/// `KeyStore` and the key password (`skp`, the salted key password) for
+/// session persistence: the passphrase of the first user key that opens,
+/// which also opens address keys without a signed token.
 pub fn unlock<P: PGPProviderSync>(
     provider: &P,
     user: &User,
@@ -192,11 +194,11 @@ pub fn unlock<P: PGPProviderSync>(
     password: &SecretString,
     salts: &[KeySalt],
 ) -> Result<(KeyStore, SecretString)> {
-    unlock_inner(provider, user, addresses, |k| {
+    unlock_with(provider, user, addresses, |key| {
         // A key without an entry of its own borrows the first salt. One
         // without a salt, from before key passwords were salted, opens with
         // the password itself, as in Proton's own clients.
-        let salt = match salts.iter().find(|s| s.id == k.id) {
+        let salt = match salts.iter().find(|s| s.id == key.id) {
             Some(own) => own.key_salt.as_deref(),
             None => salts.first().and_then(|s| s.key_salt.as_deref()),
         };
@@ -207,18 +209,22 @@ pub fn unlock<P: PGPProviderSync>(
     })
 }
 
-/// Unlock the key hierarchy using a stored `skp` directly (resume path; no
-/// password / KDF). The same passphrase is used for every user key.
+/// Opens the account's keys when resuming a session, with the key password
+/// `skp` it saved: no password is asked for and no passphrase derived.
 pub fn unlock_with_skp<P: PGPProviderSync>(
     provider: &P,
     user: &User,
     addresses: &[Address],
     skp: &SecretString,
 ) -> Result<KeyStore> {
-    Ok(unlock_inner(provider, user, addresses, |_k| Ok(skp.clone()))?.0)
+    // Every user key is tried with the one key password the session saved.
+    let (store, _) = unlock_with(provider, user, addresses, |_| Ok(skp.clone()))?;
+    Ok(store)
 }
 
-fn unlock_inner<P: PGPProviderSync>(
+/// Opens the user keys, each with the passphrase `passphrase_for` gives it,
+/// then the address keys they open. Returns those with the key password.
+fn unlock_with<P: PGPProviderSync>(
     provider: &P,
     user: &User,
     addresses: &[Address],
@@ -226,9 +232,12 @@ fn unlock_inner<P: PGPProviderSync>(
 ) -> Result<(KeyStore, SecretString)> {
     tracing::debug!(target: "ruston_core::crypto", user_keys = user.keys.len(), addresses = addresses.len(), "unlocking key hierarchy");
     let user_keys = unlock_user_keys(provider, user, passphrase_for)?;
-    // Build in ascending `Order` so the default/primary sending address is
-    // first; `primary_address()` then just takes `.first()`.
-    let addresses: Vec<AddressKeys> = addresses_by_order(addresses)
+    // In Proton's `Order`, the default address first. Addresses with the
+    // same `Order`, or none, keep the order they were listed in: the sort is
+    // stable.
+    let mut by_order: Vec<&Address> = addresses.iter().collect();
+    by_order.sort_by_key(|address| address.order);
+    let addresses: Vec<AddressKeys> = by_order
         .into_iter()
         .filter_map(|address| unlock_address_keys(provider, &user_keys, address))
         .collect();
@@ -375,9 +384,10 @@ fn address_key_passphrase<P: PGPProviderSync>(
     .ok()
 }
 
-/// Decrypt an address-key token (PGP message to the user key) and verify its
-/// detached signature with the user keys. Returns the token bytes (the address
-/// key passphrase). Verification failure is an error (the key is then skipped).
+/// The passphrase of an address key that its armored token holds, once a
+/// user key opens the token and `sig_armored`, a detached signature over
+/// it, proves one of them made it. A token that fails either check leaves
+/// its key locked.
 fn decrypt_token<P: PGPProviderSync>(
     provider: &P,
     user_privs: &[P::PrivateKey],
@@ -385,26 +395,25 @@ fn decrypt_token<P: PGPProviderSync>(
     token_armored: &str,
     sig_armored: &str,
 ) -> Result<SecretString> {
-    let verified = provider
+    let opened = provider
         .new_decryptor()
-        .with_decryption_keys(user_privs.iter())
-        .decrypt(token_armored.as_bytes(), DataEncoding::Armor)
+        .with_decryption_keys(user_privs)
+        .decrypt(token_armored, DataEncoding::Armor)
         .map_err(|e| Error::Crypto(format!("token decrypt failed: {e}")))?;
     // The token is the address key's passphrase: moved out, not copied, and
     // wiped once the passphrase holds it.
-    let bytes = Zeroizing::new(verified.into_vec());
-
-    let result = provider
+    let token = Zeroizing::new(opened.into_vec());
+    let signed_by_user = provider
         .new_verifier()
-        .with_verification_keys(user_pubs.iter())
-        .verify_detached(&bytes, sig_armored.as_bytes(), DataEncoding::Armor);
-    if result.is_err() {
+        .with_verification_keys(user_pubs)
+        .verify_detached(token.as_slice(), sig_armored, DataEncoding::Armor)
+        .is_ok();
+    if !signed_by_user {
         return Err(Error::Crypto("address key token signature invalid".into()));
     }
-
-    let s =
-        std::str::from_utf8(&bytes).map_err(|e| Error::Crypto(format!("non-utf8 token: {e}")))?;
-    Ok(SecretString::from(s.to_string()))
+    std::str::from_utf8(&token)
+        .map(SecretString::from)
+        .map_err(|e| Error::Crypto(format!("non-utf8 token: {e}")))
 }
 
 #[cfg(test)]
@@ -567,68 +576,92 @@ mod tests {
     }
 
     #[test]
-    fn primary_address_is_first() {
-        // `addresses` is built ascending-by-`Order` during unlock, so the
-        // primary/default sending address is simply the first entry.
-        let ks = KeyStore {
+    fn the_store_finds_an_address_by_id_or_by_email_in_any_ascii_case() {
+        let held = |id: &str, email: &str| AddressKeys {
+            address_id: id.into(),
+            email: email.into(),
+            keys: Vec::new(),
+        };
+        let store = KeyStore {
             addresses: vec![
-                AddressKeys {
-                    address_id: "1".into(),
-                    email: "me@protonmail.ch".into(),
-                    keys: vec![],
-                },
-                AddressKeys {
-                    address_id: "2".into(),
-                    email: "me@pm.me".into(),
-                    keys: vec![],
-                },
+                held("default", "me@proton.me"),
+                held("alias", "älias@pm.me"),
             ],
         };
-        assert_eq!(ks.primary_address().unwrap().address_id, "1");
-        assert_eq!(ks.primary_address().unwrap().email, "me@protonmail.ch");
+        fn found(address: Option<&AddressKeys>) -> Option<&str> {
+            address.map(|keys| keys.address_id.as_str())
+        }
+
+        // Unlocking puts the default address first.
+        assert_eq!(found(store.primary_address()), Some("default"));
+        assert_eq!(found(store.address("alias")), Some("alias"));
+        assert_eq!(found(store.address("ALIAS")), None);
+        assert_eq!(
+            found(store.address_for_email("ME@Proton.ME")),
+            Some("default")
+        );
+        assert_eq!(found(store.address_for_email("äLIAS@PM.ME")), Some("alias"));
+        // Only ASCII letters match in either case.
+        assert_eq!(found(store.address_for_email("ÄLIAS@pm.me")), None);
+        let empty = KeyStore {
+            addresses: Vec::new(),
+        };
+        assert!(empty.primary_address().is_none());
     }
 
     #[test]
-    fn addresses_by_order_sorts_ascending_stably() {
-        // Exercises the shipped ordering used by `unlock_inner`: an out-of-order
-        // API response yields default-first addresses, and equal `Order` keeps
-        // the original API sequence.
-        let addrs = [
+    fn addresses_unlock_by_their_order_and_ties_keep_the_api_order() {
+        let (user_key, _) = listed_key("user-key", "user@proton.me", "skp", 1, None);
+        let user = User {
+            id: "user".into(),
+            keys: vec![user_key],
+        };
+        // Listed as Proton might: out of order, and two sharing one.
+        let addresses = [("second", 2), ("first", 1), ("tied", 1)].map(|(id, order)| {
+            let email = format!("{id}@proton.me");
+            let (key, _) = listed_key(id, &email, "skp", 1, None);
             Address {
-                id: "b".into(),
-                email: "second@pm.me".into(),
-                order: 2,
-                keys: vec![],
-            },
-            Address {
-                id: "a".into(),
-                email: "first@protonmail.ch".into(),
-                order: 1,
-                keys: vec![],
-            },
-            Address {
-                id: "c".into(),
-                email: "tie@proton.me".into(),
-                order: 1,
-                keys: vec![],
-            },
-        ];
-        // Input order is [b(2), a(1), c(1)]; a stable ascending sort yields
-        // [a(1), c(1), b(2)] — the two `order == 1` entries keep their API order.
-        let ordered = addresses_by_order(&addrs);
-        assert_eq!(ordered[0].id, "a");
-        assert_eq!(ordered[0].email, "first@protonmail.ch");
-        assert_eq!(ordered[1].id, "c");
-        assert_eq!(ordered[2].id, "b");
+                id: id.into(),
+                email,
+                order,
+                keys: vec![key],
+            }
+        });
+
+        let provider = crate::crypto::provider();
+        let store = unlock_with_skp(&provider, &user, &addresses, &SecretString::from("skp"));
+        let unlocked: Vec<String> = store
+            .unwrap()
+            .addresses
+            .into_iter()
+            .map(|keys| keys.address_id)
+            .collect();
+        assert_eq!(unlocked, ["first", "tied", "second"]);
     }
 
     #[test]
-    fn apikey_active_defaults_to_one() {
-        let k: ApiKey = serde_json::from_value(serde_json::json!({
-            "ID": "k1", "PrivateKey": "ARM"
-        }))
-        .unwrap();
-        assert_eq!(k.active, 1);
+    fn a_listed_key_is_active_and_secondary_unless_it_says_otherwise() {
+        let listed = |json: serde_json::Value| serde_json::from_value::<ApiKey>(json).unwrap();
+
+        let plain = listed(serde_json::json!({ "ID": "k1", "PrivateKey": "ARMORED" }));
+        assert_eq!(
+            (plain.id.as_str(), plain.private_key.as_str()),
+            ("k1", "ARMORED")
+        );
+        assert!(plain.is_active() && !plain.is_primary());
+        assert_eq!((plain.active, plain.primary), (1, 0));
+        assert!(plain.token.is_none() && plain.signature.is_none());
+        assert!(plain.activation.is_none() && plain.flags.is_none());
+
+        let full = listed(serde_json::json!({
+            "ID": "k2", "PrivateKey": "ARMORED", "Token": "token", "Signature": "signature",
+            "Activation": "activation", "Primary": 1, "Active": 0, "Flags": 3
+        }));
+        assert!(!full.is_active() && full.is_primary());
+        assert_eq!(full.token.as_deref(), Some("token"));
+        assert_eq!(full.signature.as_deref(), Some("signature"));
+        assert_eq!(full.activation.as_deref(), Some("activation"));
+        assert_eq!(full.flags, Some(3));
     }
 
     /// The mailbox password the sign-in tests unlock with.
@@ -761,6 +794,40 @@ mod tests {
                 (unsigned.private_key.as_str(), user_password.as_str()),
             ]
         );
+    }
+
+    #[test]
+    fn a_token_opens_only_with_a_user_keys_signature_over_it() {
+        let provider = crate::crypto::provider();
+        let (user_key, _) = listed_key("user-key", "user@proton.me", "skp", 1, None);
+        let (stranger, _) = listed_key("stranger", "else@proton.me", "stranger", 1, None);
+        let private = provider
+            .private_key_import(user_key.private_key.as_bytes(), b"skp", DataEncoding::Armor)
+            .unwrap();
+        let public = provider.private_key_to_public_key(&private).unwrap();
+        let open = |sealed: &str, signature: &str| {
+            let (privs, pubs) = (
+                std::slice::from_ref(&private),
+                std::slice::from_ref(&public),
+            );
+            decrypt_token(&provider, privs, pubs, sealed, signature)
+        };
+        let user_side = (&user_key, "skp");
+
+        let (sealed, signature) = token("the passphrase", user_side, user_side);
+        assert_eq!(
+            open(&sealed, &signature).unwrap().expose_secret(),
+            "the passphrase"
+        );
+        let (sealed, forged) = token("the passphrase", user_side, (&stranger, "stranger"));
+        assert!(matches!(
+            open(&sealed, &forged),
+            Err(Error::Crypto(message)) if message == "address key token signature invalid"
+        ));
+        assert!(matches!(
+            open("not a message", &signature),
+            Err(Error::Crypto(message)) if message.starts_with("token decrypt failed: ")
+        ));
     }
 
     /// An account whose one user key and one address key are locked with

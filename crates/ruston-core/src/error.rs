@@ -1,17 +1,19 @@
-//! Error types for ruston-core.
-
-use std::fmt;
+//! How the operations of this crate fail, and the exit status the CLI gives
+//! each failure.
 
 use crate::model::enums::human_verification;
 
-/// A human-verification challenge returned by the API (code 9001).
+/// What Proton asks a person to solve, with a `Code` of 9001, before it
+/// answers a request.
 #[derive(Debug, Clone)]
 pub struct HvChallenge {
-    /// Opaque verification token to echo back once the challenge is solved.
+    /// The challenge's token, which the verification page is opened with.
     pub token: String,
-    /// Supported verification methods (e.g. `captcha`, `email`, `sms`).
+    /// The ways Proton accepts to solve it, such as `captcha`, `email` or
+    /// `sms`.
     pub methods: Vec<String>,
-    /// URL where the user completes the challenge in a browser.
+    /// The page Proton names for solving it. Only its host is used, and only
+    /// when it is one of Proton's; see [`HvChallenge::verification_url`].
     pub web_url: String,
 }
 
@@ -73,14 +75,18 @@ pub mod exit_status {
     pub const SERVER: i32 = 5;
 }
 
-/// A structured Proton API error (non-success `Code`, or a non-2xx HTTP status).
-#[derive(Debug, Clone)]
+/// An answer in which Proton refused a request: an error `Code`, or a
+/// failing HTTP status. It reads as the status, the code and Proton's
+/// message.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("[HTTP {http_status}] {code}: {message}")]
 pub struct ApiError {
-    /// HTTP status code of the response.
+    /// The answer's HTTP status.
     pub http_status: u16,
-    /// Proton API `Code` from the response body.
+    /// The `Code` Proton gave, or 0 when it gave none.
     pub code: i64,
-    /// Human-readable error message from the API.
+    /// What went wrong, for a person to read: Proton's `Error` text when it
+    /// sent one.
     pub message: String,
     /// The start of the raw response body, up to 4 KiB, kept for diagnostics.
     pub raw_body: String,
@@ -126,30 +132,20 @@ impl ApiError {
     }
 }
 
-impl fmt::Display for ApiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[HTTP {}] {}: {}",
-            self.http_status, self.code, self.message
-        )
-    }
-}
-
-impl std::error::Error for ApiError {}
-
-/// The crate-wide error type.
+/// Every way an operation of this crate can fail.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// A structured Proton API error (non-success code or non-2xx status).
+    /// Proton refused the request; it reads as Proton's answer.
     #[error(transparent)]
     Api(#[from] ApiError),
 
-    /// The session is expired or invalid.
+    /// There is no saved session, or Proton no longer accepts it and it
+    /// could not be renewed: signing in again is needed.
     #[error("unauthorized (session expired or invalid)")]
     Unauthorized,
 
-    /// The API demands human verification before proceeding.
+    /// Proton asks for proof that a person made the request before it
+    /// answers it.
     #[error("human verification required")]
     HumanVerification(HvChallenge),
 
@@ -202,11 +198,12 @@ pub enum Error {
         source: Box<Error>,
     },
 
-    /// JSON (de)serialization failed.
+    /// Reading or writing JSON failed.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// An OpenPGP encryption, decryption, or key operation failed.
+    /// Encrypting, decrypting, signing or unlocking a key failed; the text
+    /// says at which step.
     #[error("crypto error: {0}")]
     Crypto(String),
 
@@ -215,11 +212,13 @@ pub enum Error {
     #[error("attachment signature could not be verified; attachment was not released")]
     AttachmentVerificationFailed,
 
-    /// An SRP authentication step failed.
+    /// An SRP step failed: making the password proof or a verifier, hashing
+    /// a password, or checking the server's proof.
     #[error("srp error: {0}")]
     Srp(String),
 
-    /// A session load, save, or token-refresh operation failed.
+    /// Saving, loading, renewing or removing the session failed, in its
+    /// files, its profile's lock or the credential store.
     #[error("session error: {0}")]
     Session(String),
 
@@ -249,7 +248,8 @@ pub enum Error {
     #[error("crypto error: no user key could be unlocked (wrong password?)")]
     UserKeysLocked,
 
-    /// A local cache read or write failed.
+    /// The local cache could not be opened, read or written, or belongs to
+    /// another account.
     #[error("cache error: {0}")]
     Cache(String),
 
@@ -259,22 +259,22 @@ pub enum Error {
     #[error("cache error: {0}; retry")]
     CacheChanged(String),
 
-    /// A filesystem or other I/O operation failed.
+    /// Reading or writing a file, or other I/O, failed.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A referenced entity of the given kind was not found.
+    /// What the request named does not exist.
     #[error("{kind} not found")]
     NotFound {
-        /// The kind of entity that was not found (e.g. `message`).
+        /// What kind of thing it is, such as `message`.
         kind: String,
     },
 
-    /// A reference matched more than one entity (count of matches).
+    /// A reference fits more than one item; it holds how many.
     #[error("ambiguous reference: {0} matches")]
     Ambiguous(usize),
 
-    /// Any other error, carrying a message.
+    /// Anything else, as its text says.
     #[error("{0}")]
     Other(String),
 }
@@ -312,7 +312,8 @@ impl Error {
     }
 }
 
-/// Crate-wide `Result` alias using [`Error`].
+/// What this crate's operations return: their value, or the [`Error`] that
+/// kept them from it.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
@@ -436,14 +437,24 @@ mod tests {
     #[test]
     fn exit_codes_map_status() {
         // 2 is clap's, for a usage error.
-        assert_eq!(api(401).exit_code(), 6);
-        assert_eq!(api(403).exit_code(), 6);
-        assert_eq!(api(404).exit_code(), 3);
-        assert_eq!(api(409).exit_code(), 4);
-        assert_eq!(api(422).exit_code(), 4);
-        assert_eq!(api(500).exit_code(), 5);
-        assert_eq!(api(503).exit_code(), 5);
-        assert_eq!(api(400).exit_code(), 1);
+        let statuses = [401, 403, 404, 409, 422, 500, 503, 400];
+        let exit_codes = statuses.map(|status| api(status).exit_code());
+        assert_eq!(exit_codes, [6, 6, 3, 4, 4, 5, 5, 1]);
+    }
+
+    #[test]
+    fn an_api_error_reads_as_its_status_code_and_message_alone() {
+        let refused = ApiError {
+            http_status: 422,
+            code: 2001,
+            message: "Invalid input".into(),
+            raw_body: r#"{"Code":2001,"Error":"Invalid input"}"#.into(),
+        };
+        assert_eq!(refused.to_string(), "[HTTP 422] 2001: Invalid input");
+        assert!(std::error::Error::source(&refused).is_none());
+        let wrapped = Error::from(refused);
+        assert_eq!(wrapped.to_string(), "[HTTP 422] 2001: Invalid input");
+        assert!(std::error::Error::source(&wrapped).is_none());
     }
 
     #[test]
@@ -460,17 +471,17 @@ mod tests {
 
     #[test]
     fn error_exit_code_delegates() {
-        assert_eq!(Error::Api(api(404)).exit_code(), 3);
-        assert_eq!(Error::Unauthorized.exit_code(), 6);
-        assert_eq!(
-            Error::NotFound {
-                kind: "message".into()
-            }
-            .exit_code(),
-            3
-        );
-        assert_eq!(Error::Ambiguous(3).exit_code(), 4);
-        assert_eq!(Error::Other("x".into()).exit_code(), 1);
+        let missing = Error::NotFound {
+            kind: "message".into(),
+        };
+        let errors = [
+            Error::Api(api(404)),
+            Error::Unauthorized,
+            missing,
+            Error::Ambiguous(3),
+            Error::Other("x".into()),
+        ];
+        assert_eq!(errors.map(|error| error.exit_code()), [3, 6, 3, 4, 1]);
     }
 
     #[test]
