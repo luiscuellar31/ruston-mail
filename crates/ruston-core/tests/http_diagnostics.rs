@@ -36,7 +36,9 @@ async fn http_diagnostics_omit_urls_and_queries_without_changing_requests_or_ret
         .and(path("/api/messages"))
         .respond_with(move |_: &wiremock::Request| {
             if observed.fetch_add(1, Ordering::SeqCst) == 0 {
-                ResponseTemplate::new(429).set_body_json(serde_json::json!({"Code": 429}))
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "0")
+                    .set_body_json(serde_json::json!({"Code": 429}))
             } else {
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000}))
             }

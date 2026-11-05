@@ -1,4 +1,4 @@
-//! Sieve filters API (`/mail/v4/filters`).
+//! Filters (`/mail/v4/filters`): the Sieve scripts Proton runs on new mail.
 
 use crate::error::{Error, Result};
 use crate::model::enums::filter;
@@ -7,20 +7,20 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use serde_json::Value;
 
-/// A server-side (Sieve) filter.
+/// A filter Proton keeps for the account, as a Sieve script.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Filter {
-    /// Filter ID.
+    /// The filter's ID.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Filter display name.
+    /// The name shown for the filter.
     #[serde(default)]
     pub name: String,
     /// Status: [`filter::ENABLED`] when the filter applies to new mail.
     #[serde(default)]
     pub status: i64,
-    /// Sieve filter format version.
+    /// The version of Sieve its script is written in.
     #[serde(default)]
     pub version: i64,
 }
@@ -44,13 +44,14 @@ struct OneResp {
     filter: Filter,
 }
 
-/// List the account's Sieve filters.
+/// The account's filters.
 pub async fn list<D: Doer>(d: &D) -> Result<Vec<Filter>> {
     let r: ListResp = d.decode(Request::get("/mail/v4/filters")).await?;
     Ok(r.filters)
 }
 
-/// Create a filter from a raw Sieve script.
+/// Makes a filter named `name` from the Sieve script `sieve`, applying to
+/// new mail from then on.
 pub async fn create<D: Doer>(d: &D, name: &str, sieve: &str) -> Result<Filter> {
     let body = serde_json::json!({
         "Name": name,
@@ -72,8 +73,8 @@ struct CheckResp {
     issues: serde_json::Value,
 }
 
-/// Validate a Sieve script (does not create a filter). Problems Proton
-/// reports in it come back as an error that lists them.
+/// Has Proton check the Sieve script `sieve` without making a filter of it.
+/// Problems Proton reports in it come back as an error that lists them.
 pub async fn check<D: Doer>(d: &D, sieve: &str) -> Result<()> {
     let body = serde_json::json!({ "Sieve": sieve, "Version": filter::SIEVE_VERSION });
     let r: CheckResp = d
@@ -110,27 +111,25 @@ fn issue_texts(issues: &Value) -> Vec<String> {
     }
 }
 
-/// Delete a filter by ID.
+/// Deletes the filter `id`.
 pub async fn delete<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::delete(format!("/mail/v4/filters/{id}")))
-        .await?;
-    Ok(())
+    act(d, Request::delete(format!("/mail/v4/filters/{id}"))).await
 }
 
-/// Enable a filter by ID.
+/// Turns the filter `id` on, so it applies to new mail.
 pub async fn enable<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::put(format!("/mail/v4/filters/{id}/enable")))
-        .await?;
-    Ok(())
+    act(d, Request::put(format!("/mail/v4/filters/{id}/enable"))).await
 }
 
-/// Disable a filter by ID.
+/// Turns the filter `id` off.
 pub async fn disable<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::put(format!("/mail/v4/filters/{id}/disable")))
-        .await?;
+    act(d, Request::put(format!("/mail/v4/filters/{id}/disable"))).await
+}
+
+/// Sends `request` for its effect alone: the envelope says whether Proton
+/// did it, and the rest of the answer is skipped.
+async fn act<D: Doer>(d: &D, request: Request) -> Result<()> {
+    d.decode::<IgnoredAny>(request).await?;
     Ok(())
 }
 

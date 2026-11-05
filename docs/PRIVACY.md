@@ -21,7 +21,9 @@ two-factor code cannot be forwarded off the API, and plain HTTP is refused
 except for a server on the same machine.
 
 While a new message is being written, the desktop asks Proton for the public
-keys of each well-formed recipient address after its field loses focus, to show
+keys of each well-formed recipient address, up to the first 100, after its
+field loses focus, or as a reply opens for the recipients it opens with (an
+email link's wait until you leave a field), to show
 whether that copy will be end-to-end encrypted. This is the request sending
 makes for the same address; it happens earlier, and also for a message that is
 never sent. Addresses are not looked up while you type. The demo answers
@@ -43,7 +45,10 @@ Passwords and codes typed at sign-in are kept in buffers with room reserved
 for them, so typing does not move them and leave earlier copies behind, and
 they are erased when the form is cleared. The sign-in screen measures its
 layout without them. The interface library still makes short-lived copies of a
-field's text while drawing it, which are freed without being erased.
+field's text while drawing it, which are freed without being erased. On macOS,
+a password field that has the keys turns on secure keyboard entry, as Safari
+and Terminal do, so other programs cannot watch what is typed in it; it turns
+off when the field or the window loses focus.
 
 While Ruston is running, desktop activation listens on Linux and macOS on a
 Unix socket inside its private `activation` directory, which other users cannot
@@ -68,13 +73,11 @@ applications launched as URL handlers.
 When desktop notifications are enabled, a new-mail notification can show the
 sender and subject. A pending notification result is discarded during sign-out
 or after the session changes. Disabling the option also invalidates pending
-detection and native delivery work. On Windows and Linux, a new notification
-replaces the previous one. Signing out or turning notifications off removes
-Ruston's notifications from the Windows notification center, and on Linux
-closes the one on screen; a notification server that also keeps a history may
-keep its own copy there. On macOS, once handed to the operating system,
-notifications can remain in its notification history; signing out does not
-remove notifications already delivered. No
+detection and native delivery work. A new notification replaces the previous
+one. Signing out or turning notifications off removes Ruston's notifications
+from macOS's Notification Center and the Windows notification center, and on
+Linux closes the one on screen; a notification server that also keeps a
+history may keep its own copy there. No
 email content is logged by the
 notification integration. Headers are bounded and treated as literal text,
 without controls or invisible direction marks; notification delivery does not
@@ -149,7 +152,13 @@ and `index` again to rebuild the current account's cache; local search is empty
 until you index again. Remove old databases yourself if you no longer need them.
 
 Sync and backfill store message metadata. Running `index` also stores decrypted
-message bodies and other searchable fields in SQLite full-text search. This
+message bodies and other searchable fields in SQLite full-text search: a
+plain-text body as it is, an HTML body's visible text without its markup, its
+images or the addresses its links lead to, which can sign someone in or
+unsubscribe them, and the names and addresses of the sender and of every
+recipient, copies included. Bodies that earlier versions indexed kept the
+HTML itself, links included; the next `index` reads them again and replaces
+them, and until then they stay searchable. This
 database is **not encrypted at rest by Ruston Mail**. The desktop client
 reads this cache only when **Search this device when Proton cannot be reached**
 is on, and only to search it when Proton cannot be reached: it opens an
@@ -336,7 +345,10 @@ are never overwritten. On Windows,
 both mark a saved attachment as downloaded from the internet, as browsers do
 (a `Zone.Identifier` stream naming the Internet zone), so SmartScreen checks it
 before it runs and Office opens it in Protected View. A file system without
-such streams, such as FAT32, keeps the file unmarked.
+such streams, such as FAT32, keeps the file unmarked. On macOS, both give it
+the quarantine mark of an email attachment, so Gatekeeper checks it before it
+opens; macOS logs each mark, with the program that saved the file and the
+time, in its own quarantine record.
 Sender-provided names are sanitized before suggesting a name in the save
 dialog too. Revealing a saved file sends its local path to the operating
 system's file manager (a file URI over the session bus on Linux).

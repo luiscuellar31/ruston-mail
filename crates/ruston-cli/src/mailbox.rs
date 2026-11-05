@@ -6,11 +6,12 @@
 use crate::demo::{self, DemoSession};
 use futures::StreamExt;
 use ruston_core::mail::attachments::save_under_free_name;
+use ruston_core::mail::read::search_window;
 use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{
     AddressInfo, Client, Conversation, ConversationMessage, Error, Label, LabelCount, Quote,
-    RecipientProtection, Result, SearchOpts, SendOptions,
+    Recipient, RecipientProtection, Result, SearchOpts, SendOptions,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ use std::sync::Arc;
 /// How many conversations a page of the list holds.
 pub(crate) const PAGE_SIZE: u32 = 50;
 
-/// How many messages a search of the local index finds at most.
+/// How many messages a search of the local index lists at most.
 const LOCAL_LIMIT: u32 = 200;
 
 /// How many recipients' keys are looked up at once, as the desktop does.
@@ -138,6 +139,9 @@ pub(crate) struct Place {
     /// The label ID that lists it.
     pub(crate) id: String,
     pub(crate) name: String,
+    /// The names of the folders it sits in, then its own, joined by `/`, as
+    /// Proton gives them; a system folder's is its name.
+    pub(crate) path: String,
     /// How many folders of the account's own it sits under.
     pub(crate) depth: usize,
     pub(crate) kind: PlaceKind,
@@ -216,39 +220,68 @@ impl Mailbox {
         }
     }
 
-    /// Page `page` of the conversations that `words` find in all mail,
-    /// newest first, with how many there are in all; the demo looks in
-    /// their subjects, as its `conversations search` does.
-    pub(crate) async fn search(&self, words: &str, page: u32) -> Result<(u32, Vec<Conversation>)> {
+    /// Page `page` of the conversations Proton's search finds for `opts`, its
+    /// folder named by label ID, newest first, with how many there are in
+    /// all; the demo finds them as its `conversations search` does.
+    pub(crate) async fn search(
+        &self,
+        opts: &SearchOpts,
+        page: u32,
+    ) -> Result<(u32, Vec<Conversation>)> {
         match self {
             Self::Proton(client) => {
-                let opts = SearchOpts {
-                    keyword: Some(words.to_owned()),
-                    ..SearchOpts::default()
-                };
                 client
-                    .search_conversations_page(&opts, page, PAGE_SIZE)
+                    .search_conversations_page(opts, page, PAGE_SIZE)
                     .await
             }
-            Self::Demo(session) => Ok(session.search(words, page, PAGE_SIZE)),
+            Self::Demo(session) => session.search(opts, page, PAGE_SIZE),
         }
     }
 
-    /// The conversations of the messages that `words` find in the local
-    /// index `ruston-cli index` builds, best matches first, with how many
-    /// there are: a search that needs no connection. The demo looks in its
-    /// messages, as its `search` does.
-    pub(crate) async fn search_local(&self, words: &str) -> Result<(u32, Vec<Conversation>)> {
-        let messages = match self {
+    /// The conversations of the messages that the words of `opts` find in
+    /// the local index `ruston-cli index` builds, best matches first, with
+    /// how many there are: a search that needs no connection. The index
+    /// finds by words alone, so the filters of `opts` narrow all it finds,
+    /// by each message's sender, recipients, time and labels. The demo looks
+    /// in its messages, as its `search` does.
+    pub(crate) async fn search_local(&self, opts: &SearchOpts) -> Result<(u32, Vec<Conversation>)> {
+        let window = search_window(opts.after.as_deref(), opts.before.as_deref())?;
+        // All mail holds every message.
+        let label = opts
+            .folder
+            .as_deref()
+            .filter(|label| *label != label_ids::ALL_MAIL);
+        let filtered = opts.from.is_some()
+            || opts.to.is_some()
+            || opts.after.is_some()
+            || opts.before.is_some()
+            || label.is_some();
+        // What the filters keep may rank below the best matches a list holds.
+        let limit = if filtered { u32::MAX } else { LOCAL_LIMIT };
+        let words = opts.keyword.clone().unwrap_or_default();
+        let mut messages = match self {
             Self::Proton(client) => {
                 // SQLite, which may first bring an older index up to date.
-                let (client, words) = (Arc::clone(client), words.to_owned());
-                tokio::task::spawn_blocking(move || client.search_local(&words, LOCAL_LIMIT))
+                let client = Arc::clone(client);
+                tokio::task::spawn_blocking(move || client.search_local(&words, limit))
                     .await
                     .map_err(|error| Error::Other(format!("local search stopped: {error}")))??
             }
-            Self::Demo(_) => demo::search_local(words, LOCAL_LIMIT),
+            Self::Demo(_) => demo::search_local(&words, limit),
         };
+        messages.retain(|message| {
+            let recipients = message.to_list.iter().chain(&message.cc_list);
+            opts.from
+                .as_deref()
+                .is_none_or(|from| someone_matches([&message.sender], from))
+                && opts
+                    .to
+                    .as_deref()
+                    .is_none_or(|to| someone_matches(recipients.chain(&message.bcc_list), to))
+                && within(window, message.time)
+                && label.is_none_or(|label| message.label_ids.iter().any(|id| id == label))
+        });
+        messages.truncate(LOCAL_LIMIT as usize);
         let conversations = conversations_of(messages);
         Ok((conversations.len() as u32, conversations))
     }
@@ -433,6 +466,26 @@ fn only_thrown_away(place: &str) -> Result<()> {
     }
 }
 
+/// Whether any of `people` has `words` in their address or name, whatever
+/// the case, as a search of the local index, or of the demo, matches a
+/// sender or a recipient.
+pub(crate) fn someone_matches<'a>(
+    people: impl IntoIterator<Item = &'a Recipient>,
+    words: &str,
+) -> bool {
+    let words = words.to_lowercase();
+    people.into_iter().any(|person| {
+        person.address.to_lowercase().contains(&words)
+            || person.name.to_lowercase().contains(&words)
+    })
+}
+
+/// Whether `time` falls on the days a search covers, as `search_window`
+/// gives them.
+pub(crate) fn within((begin, end): (Option<i64>, Option<i64>), time: i64) -> bool {
+    begin.is_none_or(|begin| time >= begin) && end.is_none_or(|end| time <= end)
+}
+
 /// The places to list: the system folders, then the account's folders in
 /// the order of their paths, so each sits under its parent, then its labels
 /// as Proton orders them.
@@ -447,6 +500,7 @@ fn places(mut folders: Vec<Label>, labels: Vec<Label>, counts: &[LabelCount]) ->
     let system = SYSTEM_FOLDERS.iter().map(|(id, name)| Place {
         id: (*id).to_owned(),
         name: (*name).to_owned(),
+        path: (*name).to_owned(),
         depth: 0,
         kind: PlaceKind::System,
         unread: unread(id),
@@ -456,6 +510,7 @@ fn places(mut folders: Vec<Label>, labels: Vec<Label>, counts: &[LabelCount]) ->
         depth: folder.path.matches('/').count(),
         id: folder.id,
         name: folder.name,
+        path: folder.path,
         kind: PlaceKind::Folder,
     });
     let labels = labels.into_iter().map(|label| Place {
@@ -463,6 +518,7 @@ fn places(mut folders: Vec<Label>, labels: Vec<Label>, counts: &[LabelCount]) ->
         depth: 0,
         id: label.id,
         name: label.name,
+        path: label.path,
         kind: PlaceKind::Label,
     });
     system.chain(folders).chain(labels).collect()
@@ -526,6 +582,13 @@ mod tests {
         );
         assert_eq!(places[7].kind, PlaceKind::Folder);
         assert_eq!(places[10].kind, PlaceKind::Label);
+        // What `in:` finds a folder by.
+        let paths: Vec<&str> = places.iter().map(|place| place.path.as_str()).collect();
+        assert_eq!(paths[..2], ["Inbox", "Drafts"]);
+        assert_eq!(
+            paths[7..],
+            ["Taxes", "Taxes/2024", "Work", "Later", "Family"]
+        );
     }
 
     #[tokio::test]
@@ -592,11 +655,19 @@ mod tests {
         assert!(page.windows(2).all(|pair| pair[0].time >= pair[1].time));
         let (_, past_the_end) = mailbox.conversations(label_ids::INBOX, 9).await.unwrap();
         assert!(past_the_end.is_empty());
-        let (found, matching) = mailbox.search("AGENDA", 0).await.unwrap();
+        let agenda = SearchOpts {
+            keyword: Some("AGENDA".into()),
+            ..SearchOpts::default()
+        };
+        let (found, matching) = mailbox.search(&agenda, 0).await.unwrap();
         assert_eq!(found, 1);
         assert_eq!(matching[0].subject, "Offsite planning and agenda");
         // The demo's local search looks in bodies too.
-        let (found, matching) = mailbox.search_local("glossary").await.unwrap();
+        let glossary = SearchOpts {
+            keyword: Some("glossary".into()),
+            ..SearchOpts::default()
+        };
+        let (found, matching) = mailbox.search_local(&glossary).await.unwrap();
         assert_eq!(found, 1);
         assert_eq!(matching[0].id, "conv-demo-02");
 
@@ -613,6 +684,68 @@ mod tests {
             .change(&[page[0].id.clone()], label_ids::INBOX, &Change::Read(true))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_filters_of_a_local_search_narrow_what_its_words_find() {
+        // The demo's index finds two proposals: Riley's, with Alex in copy,
+        // in the Inbox on 2024-04-24, and Drew's, archived on 2024-04-22.
+        let proposals = async |opts: SearchOpts| -> Vec<String> {
+            let opts = SearchOpts {
+                keyword: Some("proposal".into()),
+                ..opts
+            };
+            let (found, conversations) = Mailbox::demo().search_local(&opts).await.unwrap();
+            assert_eq!(found as usize, conversations.len());
+            conversations.into_iter().map(|found| found.id).collect()
+        };
+        let (riley, drew) = ("conv-demo-02", "conv-demo-04");
+        assert_eq!(proposals(SearchOpts::default()).await, [riley, drew]);
+        for (opts, found) in [
+            (
+                SearchOpts {
+                    from: Some("RILEY".into()),
+                    ..SearchOpts::default()
+                },
+                riley,
+            ),
+            (
+                SearchOpts {
+                    to: Some("alex.reed@".into()),
+                    ..SearchOpts::default()
+                },
+                riley,
+            ),
+            (
+                SearchOpts {
+                    before: Some("2024-04-23".into()),
+                    ..SearchOpts::default()
+                },
+                drew,
+            ),
+            (
+                SearchOpts {
+                    after: Some("2024-04-24".into()),
+                    ..SearchOpts::default()
+                },
+                riley,
+            ),
+            (
+                SearchOpts {
+                    folder: Some(label_ids::ARCHIVE.into()),
+                    ..SearchOpts::default()
+                },
+                drew,
+            ),
+        ] {
+            assert_eq!(proposals(opts.clone()).await, [found], "{opts:?}");
+        }
+        // All mail holds them both.
+        let everywhere = SearchOpts {
+            folder: Some(label_ids::ALL_MAIL.into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(proposals(everywhere).await, [riley, drew]);
     }
 
     #[tokio::test]

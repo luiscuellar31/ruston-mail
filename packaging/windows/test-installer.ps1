@@ -33,7 +33,7 @@ if ($setup.ExitCode -ne 0) {
     Stop-Test "Setup exited with status $($setup.ExitCode)"
 }
 
-foreach ($file in 'ruston.exe', 'ruston-cli.exe', 'LICENSE.txt', 'unins000.exe') {
+foreach ($file in 'ruston.exe', 'ruston-cli.exe', 'LICENSE.txt', 'THIRD_PARTY_LICENSES.txt', 'unins000.exe') {
     if (-not (Test-Path -LiteralPath (Join-Path $app $file))) { Stop-Test "Missing $app\$file" }
 }
 if (-not (Test-Path -LiteralPath $shortcut)) { Stop-Test "Missing $shortcut" }

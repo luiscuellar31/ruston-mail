@@ -79,8 +79,8 @@ toasts under Ruston's identity, and UserNotifications on macOS. Use the installe
 macOS `.app` bundle and allow the system permission prompt. Settings shows the
 permission/service status. System notification preferences and Do Not Disturb
 still determine presentation; macOS normally suppresses banners while Ruston
-is in the foreground. On Windows and Linux, a new notification replaces the
-previous one, and signing out or turning notifications off takes Ruston's away.
+is in the foreground. A new notification replaces the previous one, and
+signing out or turning notifications off takes Ruston's away.
 On Windows, Ruston creates a per-user Start menu shortcut if needed. Clicking a
 transient toast while Ruston is running restores and focuses the mailbox
 window.
@@ -198,9 +198,11 @@ Right-click a message's header for **Copy sender's address** or **Copy
 recipients' addresses**, which copy the addresses without names, separated by
 commas, ready to paste into a recipient field.
 
-Web links open in the system browser. A confirmation dialog over the window
-shows the destination first by default; a long address scrolls inside it, and
-`Esc` dismisses it before anything else. Email (`mailto:`) links use Ruston's
+Web links open in the system browser. Resting the pointer on a link shows its
+address, with a host in another script written in ASCII and a long address
+cut short, even when links open without asking. A confirmation dialog over the
+window shows the destination first by default; a long address scrolls inside
+it, and `Esc` dismisses it before anything else. Email (`mailto:`) links use Ruston's
 composer after the same confirmation, which names every recipient the new
 message would get, those a `?to=` adds included; past three it names the
 first three and how many more.
@@ -236,9 +238,10 @@ Apps > Default apps.
 
 Choose **Save** to save an attachment in the system Downloads folder. Ruston Mail
 uses a safe file name and never replaces an existing file; it adds a number to
-the new name instead. On Windows, saved attachments are marked as downloaded
-from the internet, like a browser's downloads, so SmartScreen checks a program
-before it runs and Office opens documents in Protected View.
+the new name instead. Saved attachments are marked as downloaded from the
+internet, like a browser's downloads: on macOS, Gatekeeper checks a program
+before it opens, and on Windows, SmartScreen checks it before it runs and
+Office opens documents in Protected View.
 
 Choose **Save as…** to select another folder or filename in the native save
 dialog. Cancelling does not download or write the attachment. Choose a new
@@ -303,9 +306,13 @@ names the addresses that will not get an end-to-end encrypted copy. That
 includes a Proton address whose owner turned end-to-end encryption off, for
 example because it forwards mail to another provider. Addresses
 are looked up once per draft and only after the field loses focus. If a lookup
-fails, the warning names that address too and claims nothing about it. A reply
-opens with its recipients filled in, so their notice shows once you leave one of
-its recipient fields. Turn off **Check
+fails, the warning names that address too and claims nothing about it. Only
+the first 100 recipients are looked up, one request each; the warning counts
+any more as not checked, as the terminal interface's question before sending
+does. A reply
+opens with its recipients filled in and looks them up at once, so their notice
+shows as it opens; the recipients an email link fills in wait until you leave
+one of their fields, since the link comes from outside. Turn off **Check
 recipient encryption while writing** under Settings → Advanced to ask Proton
 nothing until you send; the notice is not shown then.
 
@@ -387,7 +394,10 @@ editing. The same confirmation appears before writing a new message or signing
 out from Settings.
 
 The **About** section at the bottom shows the app version, credits, and license.
-Choose **Source code** to open the project's repository in your browser.
+Choose **Source code** to open the project's repository in your browser, or
+**Third-party notices** to read the licenses of the software Ruston Mail
+includes, which open in your system's app for text files. Only a packaged app
+has that button: a build from source has no notices beside it.
 **Advanced**, above the keyboard shortcuts, holds choices most people can leave
 alone.
 
@@ -520,23 +530,49 @@ once.
 
 `ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
 terminal interface with folders, conversations and a reader, whose keys are
-Proton Mail's wherever Proton has one; `?` lists them. With no session saved,
+Proton Mail's wherever Proton has one; `?` lists them, in two columns where
+the terminal is wide enough, and `j` and `k` scroll the list where it does not
+all fit. With no session saved,
 it signs in first, as `ruston-cli login` does, and `--demo` opens the
 fictional mailbox, which keeps the changes you make until the interface
 closes. Away from a terminal, as in a script, `ruston-cli` with no command
-still prints the help and ends with status 2.
+still prints the help and ends with status 2. It keeps your terminal's colors
+and draws its accent, on the pane in use, its questions, the keys it names and
+the labels in the list, in Ruston Mail's violet: exactly in terminals that say they show any color
+(`COLORTERM=truecolor`) and on Windows, the nearest violet of the 256-color
+palette in others, and the terminal's magenta where it has only the basic
+colors. `NO_COLOR` turns colors off.
 
 It lists the folders and labels with how many of their conversations are
 unread, a folder's conversations, newest first, each marked unread (•),
-starred (★) or with attachments (+), and the conversation you open, with each
-message's headers, its signature's verdict and its body as
-`conversations read` shows it. The list holds 50 conversations at first and
-loads 50 more each time you move down past its last. `g` followed by a letter
+starred (★) or with attachments (+), and the conversation you open, with the
+labels it bears under its subject, then each message's headers, its
+signature's verdict and its body as
+`conversations read` shows it. The list's bottom edge names those marks. A
+row also names, in brackets after its subject, the labels its conversation
+bears, but the label listed: when the row lacks room for both, the subject
+gives up to a third of its room to them, and +2 says two more did not fit.
+Where the list is narrow, as beside the other panes in a terminal under 155
+columns wide, a row's day leaves out its year, which the reader shows, and
+its sender takes a quarter of the row, cut short with …, so the subject
+keeps room. The
+selected row shows inverted in the pane that has the keys and underlined in
+the others, since bold marks an unread conversation. The list holds 50
+conversations at first and loads 50 more each time you move down past its last. `g` followed by a letter
 goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
 Starred, `d` Drafts, `t` Trash, `s` Spam and `m` All mail. A quoted passage of
 three lines or more, such as the message a reply answers, folds into one line
-unless the whole message is quoted; `z` shows or hides them. Links show as
-text with the address they open; `b` lists those of the open conversation, and
+unless the whole message is quoted; `z` shows or hides them, and says so when
+the open conversation has none to fold. As on the desktop, a message you have
+read folds into one line, unless it is the newest: when it came, who sent it,
+with the address beside the name, its signature's verdict and its first
+words. The newest message and those not read yet stay open, and `e` shows
+them all, or folds them again. Enter, in the reader, folds the message at its
+top, or opens it; both keys keep that message at the top. A conversation opens at its first
+message not read yet, or else at its newest, as on the desktop, unless that
+message starts in the top third of the reader already. Quoted lines show dimmed, so one too
+long for the pane stays apart from new text on every row it wraps to. Links
+show as text with the address they open; `b` lists those of the open conversation, and
 one opens in your browser only once you answer `y` to the address it shows.
 Each message lists its attachments under its headers, and `v` lists those of
 the open conversation: Enter saves one, checking its signature as
@@ -545,12 +581,28 @@ current folder when there is none, never over a file already there. Opening an
 unread conversation marks it read once it shows, as the desktop does, unless
 you start it with `ruston-cli tui --keep-unread`.
 
+The mouse works too. A click on a folder or a conversation selects it, and a
+click on the one selected in the pane that has the keys opens it; a click
+anywhere in a pane gives it the keys. The wheel scrolls the list or the reader
+under it, leaving the keys where they are, or the keys while `?` shows them.
+The mouse does nothing while you write a message, while a question waits for
+an answer or while the command line is open. As the interface takes the
+mouse, your terminal selects text only with a key held as you drag: Shift in
+most terminals, Windows Terminal included, Option in iTerm2, and Fn in
+macOS's Terminal.
+
 `*` stars or unstars the conversation selected in the list, or the one the
 reader shows, `u` marks it unread and `r`, in the list, read, `a` archives it,
 `s` moves it to Spam, `i` to the Inbox, and `t` or Delete to Trash; then the
 list and the counts load again, and a conversation the reader shows that left
 the folder listed is put away. `l` starts `:label`, which puts one of your
-labels on it, and `m` starts `:move`. Space or `x` marks the selected
+labels on it, `L` (Shift+L) starts `:unlabel`, which takes one off, with Tab
+offering only its labels, and `m` starts `:move`. After a move out of the
+folder listed, `Z` (Shift+Z) or `:undo` takes the conversations moved back
+to it, as the desktop's Undo does, while the status bar offers `Z`: until
+another change is made, or another folder or a search is listed. Under a
+label, Starred, All mail or a search's results, where the folder each
+conversation came from is not known, no move is taken back. Space or `x` marks the selected
 conversation and moves down, and Ctrl+A marks them all: with some marked, an
 action from the list acts on all of them, and Esc takes the marks away. In
 Trash or Spam, Ctrl+Backspace or `:delete` deletes the conversation forever,
@@ -561,9 +613,21 @@ question that names it; any other key keeps the mail.
 name, Up and Down bring back the lines run before, Enter runs it and Esc
 closes it. `/` or Ctrl+F starts one at `:search`, which looks for words in all
 of your mail and lists what it finds; Esc in that list goes back to the folder
-listed before. `:local` looks instead in the local index that
+listed before. Filters beside the words narrow it, as the options of
+`messages search` do: `from:` and `to:` to mail from or to an address,
+`after:` and `before:` to the days from and up to one written YYYY-MM-DD, in
+UTC, and `in:` to a folder or label, named as `messages search --folder`
+names it: by its name or its path, such as `Taxes/2024`, by its ID, or `all`
+for all mail. Tab completes its name, and a name several folders or labels
+share is refused, naming their paths. A value with spaces goes between
+double quotes, and a range that ends before it starts is refused, as in
+`messages search`; for example, `:search budget from:alex after:2026-01-01
+in:"Bank statements"`. `?` names the filters
+under the keys. `:local` looks instead in the local index that
 `ruston-cli index` builds, without a connection; opening what it finds still
-needs one.
+needs one. It takes the same filters, which narrow all the index finds for
+the words by each message's sender, recipients, day, and folders and labels;
+the index finds mail by its words, so filters alone are refused.
 
 `n` or Ctrl+N, as in Proton Mail, or `:compose` writes a new message, which
 takes the whole screen. In the reader, `r` replies to the conversation's last
@@ -600,11 +664,15 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | Tab, Shift+Tab | Next or previous pane |
 | `j`, `k`, Up, Down | Move, or scroll the reader |
 | Enter, Right | Open the folder or conversation |
+| Enter, in the reader | Fold the message at its top, or open it |
 | Left | Go back a pane |
+| Click | Select a folder or conversation, or open the one selected |
+| Mouse wheel | Scroll the list or the reader under it, or the keys |
 | PageUp, PageDown | Scroll the reader a page |
 | Home, End, Ctrl+Up, Ctrl+Down | Go to the top or the bottom |
 | `g`, then `i`, `a`, `e`, `*`, `d`, `t`, `s` or `m` | Go to the Inbox, Archive, Sent, Starred, Drafts, Trash, Spam or All mail |
 | `z` | Show or hide quoted text |
+| `e` | Show the messages already read, or fold them again |
 | `b` | List the open conversation's links, to open one |
 | `v` | List the open conversation's attachments, to save one |
 | `*` | Star or unstar the conversation |
@@ -612,8 +680,9 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | `a` | Archive it |
 | `s`, `i` | Move it to Spam, or to the Inbox |
 | `t`, Delete | Move it to Trash |
+| `Z` | Take the last move back, while the status bar offers it |
 | Ctrl+Backspace | Delete it forever, in Trash or Spam, once you answer `y` |
-| `l`, `m` | Label it, or move it to a folder |
+| `l`, `L`, `m` | Label it, remove a label, or move it to a folder |
 | `n`, Ctrl+N | Write a new message |
 | `r`, `R`, `F` | In the reader: reply, reply to all, or forward |
 | Space, `x` | Mark it, for an action on all marked |
@@ -644,13 +713,14 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | `:read`, `:unread` | Mark it read or unread |
 | `:archive`, `:trash` | Archive it, or move it to Trash |
 | `:spam`, `:notspam` | Move it to Spam, or out of Spam to the Inbox |
+| `:undo` | Take the last move back |
 | `:label LABEL`, `:unlabel LABEL` | Put one of your labels on it, or take it off |
 | `:compose` | Write a new message |
 | `:reply`, `:replyall`, `:forward` | Reply to the open conversation, reply to all, or forward it |
 | `:delete` | Delete it forever, in Trash or Spam, once you answer `y` |
 | `:empty` | Delete everything in Trash or Spam forever, once you answer `y` |
-| `:search WORDS` | Search all mail for the words |
-| `:local WORDS` | Search the local index for the words, offline |
+| `:search WORDS` | Search all mail for the words, narrowed by `from:`, `to:`, `after:`, `before:` or `in:` beside them |
+| `:local WORDS` | Search the local index for the words, offline, narrowed by the same filters |
 | `:refresh` | Refresh the folders and the list, or the search |
 | `:attachments` | List the conversation's attachments, to save one |
 | `:help` | Show the keys |
@@ -702,12 +772,14 @@ missing session, exit status 6, which signing in again fixes, from a mistake in
 the command, exit status 2; `--help` lists them all. With `--json`, a command
 that acts on messages, conversations, drafts, labels or filters reports
 `{"status": "ok", "action": …, "count": …, "ids": […]}`, where `action` is the
-command's own name, such as `move`, `undelete` or `enable`. Lists come as an
+command's own name, such as `move`, `delete` or `enable`. Lists come as an
 object too, the list under its name (`{"labels": […]}`, `{"counts": […]}`), and
 the demo's JSON adds `"demo": true`.
 
 Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
-seconds. Commands with multiple requests or a rate-limit retry can take longer.
+seconds. Commands with multiple requests can take longer, and so can a request
+Proton answers busy: it is tried again up to three times, each after the wait
+Proton asks for, up to 30 seconds.
 A timed-out final send is reported as unconfirmed with its draft ID. Check Sent
 before retrying, since Proton may have accepted the message.
 
@@ -718,7 +790,9 @@ resumes it, skipping the messages already there, so use an empty directory to
 start over. A message that cannot be decrypted, or whose attachments cannot,
 is skipped and listed, the rest are still exported, and the command then exits
 with an error. A network or session failure stops the export; run it again to
-continue. Each file keeps the headers a mail program needs to place it in its
+continue. Mail that arrives, or is deleted or moved, while it runs does not
+make it count a message twice toward `--max` or pass over one that was in
+the folder all along. Each file keeps the headers a mail program needs to place it in its
 conversation (Message-ID, In-Reply-To and References) and a Reply-To that
 names someone besides the sender. The export does not preserve the original
 wire message or every original header; see [Privacy and local data](PRIVACY.md)
@@ -726,7 +800,10 @@ for details.
 
 `index` builds an optional local search index for `search`. It stores
 decrypted message bodies in a SQLite database that Ruston Mail does not
-encrypt. A network, session, or rate-limit failure stops `index` with an
+encrypt: the text of each body, without the addresses an HTML body's links
+lead to, and the names and addresses of the sender and recipients, copies
+included. A network, session, or rate-limit failure stops `index` with an
 error and keeps what was already indexed; run it again to continue. Running it
-again downloads only the bodies it does not hold yet, and drafts, which can
-change; the count it prints includes the messages already indexed.
+again downloads only the bodies it does not hold yet, drafts, which can
+change, and bodies that earlier versions indexed as HTML; the count it prints
+includes the messages already indexed.

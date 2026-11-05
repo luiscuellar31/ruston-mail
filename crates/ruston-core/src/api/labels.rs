@@ -1,10 +1,12 @@
-//! Labels / folders API (`/core/v4/labels`).
+//! Labels and folders (`/core/v4/labels`), which Proton keeps as one kind of
+//! item told apart by its `Type`.
 
 use crate::error::Result;
 use crate::model::label::Label;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
+use serde_json::json;
 
 #[derive(Deserialize)]
 struct ListResp {
@@ -18,15 +20,16 @@ struct CreateResp {
     label: Label,
 }
 
-/// List labels (`Type=1`) or folders (`Type=3`) etc.
+/// The labels of type `label_type`: 1 for labels, 3 for folders, as
+/// [`label_type`](crate::model::enums::label_type) names them.
 pub async fn list<D: Doer>(d: &D, label_type: i64) -> Result<Vec<Label>> {
-    let r: ListResp = d
-        .decode(Request::get("/core/v4/labels").query("Type", label_type.to_string()))
-        .await?;
-    Ok(r.labels)
+    let of_type = Request::get("/core/v4/labels").query("Type", label_type.to_string());
+    let ListResp { labels } = d.decode(of_type).await?;
+    Ok(labels)
 }
 
-/// Create a label/folder. `Type` 1=label, 3=folder.
+/// Makes a label, or a folder by `label_type`, named `name` in `color`;
+/// with `parent_id`, inside that folder.
 pub async fn create<D: Doer>(
     d: &D,
     name: &str,
@@ -34,29 +37,27 @@ pub async fn create<D: Doer>(
     label_type: i64,
     parent_id: Option<&str>,
 ) -> Result<Label> {
-    let mut body = serde_json::json!({ "Name": name, "Color": color, "Type": label_type });
-    if let Some(p) = parent_id {
-        body["ParentID"] = serde_json::Value::String(p.to_string());
+    let mut new_label = json!({ "Name": name, "Color": color, "Type": label_type });
+    if let Some(parent_id) = parent_id {
+        new_label["ParentID"] = parent_id.into();
     }
-    let r: CreateResp = d
-        .decode(Request::post("/core/v4/labels").json(body))
+    let CreateResp { label } = d
+        .decode(Request::post("/core/v4/labels").json(new_label))
         .await?;
-    Ok(r.label)
+    Ok(label)
 }
 
-/// Update a label/folder. `body` carries the changed fields (Name/Color/ParentID).
+/// Changes the label or folder `id` as `body` says: its `Name`, `Color` or
+/// `ParentID`.
 pub async fn update<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::put(format!("/core/v4/labels/{id}")).json(body))
-        .await?;
+    let changed = Request::put(format!("/core/v4/labels/{id}")).json(body);
+    d.decode::<IgnoredAny>(changed).await?;
     Ok(())
 }
 
-/// Delete labels/folders by ID.
+/// Deletes the labels and folders `ids`.
 pub async fn delete<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    let body = serde_json::json!({ "LabelIDs": ids });
-    let _: IgnoredAny = d
-        .decode(Request::delete("/core/v4/labels").json(body))
-        .await?;
+    let deleted = Request::delete("/core/v4/labels").json(json!({ "LabelIDs": ids }));
+    d.decode::<IgnoredAny>(deleted).await?;
     Ok(())
 }

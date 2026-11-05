@@ -2082,3 +2082,62 @@ fn a_failed_save_is_told_beside_its_own_file() {
     assert!(report.bottom() <= photo.top(), "not under the other file");
     output.drop_without_applying_deltas();
 }
+
+#[test]
+fn a_link_shows_where_it_goes_while_the_pointer_rests_on_it() {
+    let link = |address: &str| RichSpan {
+        text: "Your account".into(),
+        link: Some(address.into()),
+        ..RichSpan::default()
+    };
+    let hovered = |span: RichSpan| {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.style_mut_of(context.theme(), |style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        let mut texts = Vec::new();
+        // A tooltip shows once the pointer has rested for a few passes.
+        for _ in 0..10 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    events: vec![egui::Event::PointerMoved(egui::pos2(12.0, 8.0))],
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.set_width(420.0);
+                    rich_spans(ui, std::slice::from_ref(&span), None, &mut Vec::new());
+                },
+            );
+            texts = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect();
+            output.drop_without_applying_deltas();
+        }
+        texts
+    };
+
+    // As the address normalized it: a host in another script shows in ASCII.
+    let texts = hovered(link("https://xn--80ak6aa92e.com/sign-in"));
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == "https://xn--80ak6aa92e.com/sign-in"),
+        "{texts:?}"
+    );
+    // A long one is cut short, its host first.
+    let long = format!("https://track.example/{}", "a".repeat(500));
+    let texts = hovered(link(&long));
+    let shown = texts
+        .iter()
+        .find(|text| text.starts_with("https://track.example/"))
+        .unwrap();
+    assert_eq!(shown.chars().count(), LINK_HOVER_CHARS + 1, "{shown}");
+    assert!(shown.ends_with('…'));
+}

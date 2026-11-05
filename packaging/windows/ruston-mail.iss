@@ -75,6 +75,8 @@ Name: "path"; Description: "Add ruston-cli to the PATH"; GroupDescription: "Inte
 Source: "{#SourceDir}\ruston.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ruston-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+; Settings finds the notices beside ruston.exe (src/licenses.rs); keep the two in step.
+Source: "..\..\THIRD_PARTY_LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\Ruston Mail"; Filename: "{app}\ruston.exe"; AppUserModelID: "{#AppId}"; Comment: "Unofficial desktop client for Proton Mail"

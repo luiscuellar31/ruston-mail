@@ -1,4 +1,6 @@
-//! Crypto facade over `proton-crypto` (rustpgp backend) + `proton-srp`.
+//! End-to-end encryption: unlocking the account's keys, then opening,
+//! sealing and signing mail with them, through Proton's `proton-crypto`.
+//! Key passphrases come from `proton-srp`'s password hash.
 
 pub(crate) mod clock;
 pub mod kdf;
@@ -14,7 +16,8 @@ pub use message::{
     wrap_session_key_with_password,
 };
 
-/// Obtain a pure-Rust PGP provider (rustpgp backend; no cgo).
+/// The OpenPGP provider that each operation here is given: proton-crypto's
+/// `rustpgp` backend, written in Rust, the only one the workspace builds.
 pub fn provider() -> impl proton_crypto::crypto::PGPProviderSync {
     proton_crypto::new_pgp_provider()
 }

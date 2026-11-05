@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use eframe::egui::{self, Align, Layout};
 
 use super::theme::{self, Emphasis};
@@ -11,6 +13,7 @@ pub(super) fn show(
     draft: &mut Settings,
     messages: &mut Vec<Message>,
     notification_status: super::notifications::Status,
+    third_party_notices: Option<&Path>,
 ) {
     egui::Panel::bottom("settings-actions")
         .frame(
@@ -42,7 +45,15 @@ pub(super) fn show(
         ui.spacing_mut().scroll = theme::panel_scroll_style();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| page(ui, draft, messages, notification_status));
+            .show(ui, |ui| {
+                page(
+                    ui,
+                    draft,
+                    messages,
+                    notification_status,
+                    third_party_notices,
+                )
+            });
     });
 }
 
@@ -77,6 +88,7 @@ fn page(
     settings: &mut Settings,
     messages: &mut Vec<Message>,
     notification_status: super::notifications::Status,
+    third_party_notices: Option<&Path>,
 ) {
     ui.heading(egui::RichText::new("Settings").size(24.0).strong());
     ui.add_space(18.0);
@@ -327,10 +339,14 @@ fn page(
         }
     });
     ui.add_space(14.0);
-    about(ui, messages);
+    about(ui, messages, third_party_notices);
 }
 
-fn about(ui: &mut egui::Ui, messages: &mut Vec<Message>) -> egui::Response {
+fn about(
+    ui: &mut egui::Ui,
+    messages: &mut Vec<Message>,
+    third_party_notices: Option<&Path>,
+) -> egui::Response {
     section(ui, "About", |ui| {
         ui.horizontal_top(|ui| {
             ui.add(
@@ -371,9 +387,18 @@ fn about(ui: &mut egui::Ui, messages: &mut Vec<Message>) -> egui::Response {
             .gap(ui.spacing().item_spacing.x),
         );
         ui.add_space(8.0);
-        if ui.add(theme::compact_button("Source code")).clicked() {
-            messages.push(Message::OpenSourceCode);
-        }
+        ui.horizontal_wrapped(|ui| {
+            if ui.add(theme::compact_button("Source code")).clicked() {
+                messages.push(Message::OpenSourceCode);
+            }
+            if third_party_notices.is_some()
+                && ui
+                    .add(theme::compact_button("Third-party notices"))
+                    .clicked()
+            {
+                messages.push(Message::OpenThirdPartyNotices);
+            }
+        });
     })
 }
 
@@ -587,7 +612,7 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::test_support::shape_text_rect;
+    use crate::ui::test_support::{shape_text_rect, text_rect};
 
     #[test]
     fn every_shortcut_key_stays_inside_its_section() {
@@ -607,6 +632,7 @@ mod tests {
                     &mut Settings::default(),
                     &mut Vec::new(),
                     super::super::notifications::Status::Off,
+                    None,
                 )
             },
         );
@@ -656,6 +682,7 @@ mod tests {
                     &mut Settings::default(),
                     &mut Vec::new(),
                     super::super::notifications::Status::Off,
+                    Some(Path::new("THIRD_PARTY_LICENSES.txt")),
                 )
             },
         );
@@ -671,6 +698,7 @@ mod tests {
             find(concat!("Ruston Mail ", env!("CARGO_PKG_VERSION"))).top() > find("About").top()
         );
         assert!(find("Source code").top() > find("About").top());
+        assert!(find("Third-party notices").top() > find("About").top());
         output.drop_without_applying_deltas();
     }
 
@@ -692,6 +720,7 @@ mod tests {
                     &mut Settings::default(),
                     &mut Vec::new(),
                     super::super::notifications::Status::Off,
+                    None,
                 )
             },
         );
@@ -717,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn about_fits_both_themes_and_source_button_requests_the_repository() {
+    fn about_fits_both_themes_and_its_buttons_ask_for_what_they_name() {
         for appearance in [Appearance::Dark, Appearance::Light] {
             for width in [240.0, 720.0] {
                 let context = egui::Context::default();
@@ -735,18 +764,19 @@ mod tests {
                             ..Default::default()
                         },
                         |ui| {
-                            card = about(ui, &mut messages).rect;
+                            card = about(
+                                ui,
+                                &mut messages,
+                                Some(Path::new("THIRD_PARTY_LICENSES.txt")),
+                            )
+                            .rect;
                         },
                     )
                 };
                 draw(Vec::new()).drop_without_applying_deltas();
                 let output = draw(Vec::new());
-                let button = output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| shape_text_rect(&shape.shape, "Source code"))
-                    .unwrap();
-                assert!(viewport.contains_rect(button));
+                let buttons = ["Source code", "Third-party notices"]
+                    .map(|label| text_rect(&output.shapes, label));
                 for clipped in &output.shapes {
                     if let egui::epaint::Shape::Text(text) = &clipped.shape {
                         assert!(viewport.contains_rect(egui::Rect::from_min_size(
@@ -756,22 +786,52 @@ mod tests {
                     }
                 }
                 output.drop_without_applying_deltas();
-                for pressed in [true, false] {
-                    draw(vec![
-                        egui::Event::PointerMoved(button.center()),
-                        egui::Event::PointerButton {
-                            pos: button.center(),
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: Default::default(),
-                        },
-                    ])
-                    .drop_without_applying_deltas();
+                for button in buttons {
+                    assert!(viewport.contains_rect(button));
+                    for pressed in [true, false] {
+                        draw(vec![
+                            egui::Event::PointerMoved(button.center()),
+                            egui::Event::PointerButton {
+                                pos: button.center(),
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: Default::default(),
+                            },
+                        ])
+                        .drop_without_applying_deltas();
+                    }
                 }
                 assert!(viewport.contains_rect(card));
-                assert!(matches!(messages.as_slice(), [Message::OpenSourceCode]));
+                assert!(matches!(
+                    messages.as_slice(),
+                    [Message::OpenSourceCode, Message::OpenThirdPartyNotices]
+                ));
             }
         }
+    }
+
+    #[test]
+    fn about_offers_no_notices_the_app_did_not_come_with() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let draw = || {
+            context.run_ui(egui::RawInput::default(), |ui| {
+                about(ui, &mut Vec::new(), None);
+            })
+        };
+        draw().drop_without_applying_deltas();
+        let output = draw();
+        let drawn = |label| {
+            output
+                .shapes
+                .iter()
+                .any(|shape| shape_text_rect(&shape.shape, label).is_some())
+        };
+        let (source, notices) = (drawn("Source code"), drawn("Third-party notices"));
+        output.drop_without_applying_deltas();
+
+        assert!(source);
+        assert!(!notices);
     }
 
     #[test]

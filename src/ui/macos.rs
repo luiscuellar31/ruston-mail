@@ -513,9 +513,106 @@ pub(super) fn update_window_chrome(context: &egui::Context, frame: &eframe::Fram
     }
 }
 
+/// macOS's secure keyboard entry, which keeps other programs from watching
+/// the keys typed, on while a password field takes them, as Safari and
+/// Terminal do. The system counts each turn on, so each is paired with a
+/// turn off, here or when this is dropped.
+#[derive(Default)]
+pub(super) struct SecureInput {
+    on: bool,
+}
+
+impl SecureInput {
+    /// On while a password field in the window drawn takes the keys and the
+    /// window has focus; off otherwise, as Apple asks of an app that is not
+    /// active.
+    pub(super) fn follow(&mut self, context: &egui::Context) {
+        self.set(typing_secret(context));
+    }
+
+    /// Off once the window has lost focus. eframe may then skip drawing it,
+    /// and with that [`Self::follow`]; only the window's focus is current
+    /// when it does.
+    pub(super) fn follow_focus(&mut self, context: &egui::Context) {
+        if !context.input(|input| input.raw.focused) {
+            self.set(false);
+        }
+    }
+
+    fn set(&mut self, on: bool) {
+        if on == self.on {
+            return;
+        }
+        // SAFETY: neither takes arguments, and both run on the main thread,
+        // where egui draws, since they are not thread safe.
+        let status = unsafe {
+            if on {
+                EnableSecureEventInput()
+            } else {
+                DisableSecureEventInput()
+            }
+        };
+        // A call that fails leaves the system's count as it was.
+        if status == 0 {
+            self.on = on;
+        }
+    }
+}
+
+impl Drop for SecureInput {
+    fn drop(&mut self) {
+        self.set(false);
+    }
+}
+
+/// Whether a password field in the window drawn has the keys, with the
+/// window focused: egui tells the system it takes a password then.
+fn typing_secret(context: &egui::Context) -> bool {
+    context.input(|input| input.focused)
+        && context.output(|output| {
+            output
+                .ime
+                .as_ref()
+                .is_some_and(|ime| ime.purpose == egui::IMEPurpose::Password)
+        })
+}
+
+#[link(name = "Carbon", kind = "framework")]
+unsafe extern "C" {
+    fn EnableSecureEventInput() -> i32;
+    fn DisableSecureEventInput() -> i32;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_password_field_with_the_keys_in_a_focused_window_types_a_secret() {
+        let context = egui::Context::default();
+        let typed = |password: bool, focused: bool| {
+            let mut secret = typing_secret(&context);
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    focused,
+                    ..egui::RawInput::default()
+                };
+                context
+                    .run_ui(input, |ui| {
+                        let mut text = String::new();
+                        // Focus asked for in one pass shows in the next.
+                        ui.add(egui::TextEdit::singleline(&mut text).password(password))
+                            .request_focus();
+                        secret = typing_secret(ui.ctx());
+                    })
+                    .drop_without_applying_deltas();
+            }
+            secret
+        };
+        assert!(typed(true, true));
+        assert!(!typed(false, true));
+        assert!(!typed(true, false));
+    }
 
     #[test]
     fn edit_commands_become_what_their_keys_would_have_sent() {

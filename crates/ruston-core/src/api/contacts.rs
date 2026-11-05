@@ -1,38 +1,40 @@
-//! Contacts API (`/contacts/v4/contacts`) — read access.
+//! Contacts (`/contacts/v4/contacts`), read only: their names and the
+//! addresses filed under them.
 
 use crate::error::Result;
 use crate::transport::{Doer, Request};
 use serde::{Deserialize, Serialize};
 
-/// A contact email entry (plaintext metadata).
+/// One address filed under a contact, with the details Proton keeps
+/// unencrypted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ContactEmail {
-    /// Contact-email entry ID.
+    /// This entry's ID.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Email address.
+    /// The address.
     #[serde(default)]
     pub email: String,
-    /// Display name for this email entry.
+    /// The name shown for this address.
     #[serde(default)]
     pub name: String,
-    /// ID of the contact this email belongs to.
+    /// The ID of the contact the address is filed under.
     #[serde(rename = "ContactID", default)]
     pub contact_id: String,
 }
 
-/// A contact (name + its email entries).
+/// A contact: its name and the addresses filed under it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Contact {
-    /// Contact ID.
+    /// The contact's ID.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Contact display name.
+    /// The name shown for the contact.
     #[serde(default)]
     pub name: String,
-    /// Email entries belonging to this contact.
+    /// The addresses filed under the contact.
     #[serde(rename = "ContactEmails", default)]
     pub emails: Vec<ContactEmail>,
 }
@@ -51,28 +53,34 @@ struct EmailsResp {
     contact_emails: Vec<ContactEmail>,
 }
 
-/// List contacts (paged).
-pub async fn list<D: Doer>(d: &D, page: u32, page_size: u32) -> Result<(u32, Vec<Contact>)> {
-    let req = Request::get("/contacts/v4/contacts")
+/// A `GET` of page `page`, of `page_size` items, of the listing at `path`.
+fn page_of(path: &str, page: u32, page_size: u32) -> Request {
+    Request::get(path)
         .query("Page", page.to_string())
-        .query("PageSize", page_size.to_string());
-    let r: ContactsResp = d.decode(req).await?;
-    Ok((r.total, r.contacts))
+        .query("PageSize", page_size.to_string())
 }
 
-/// List contact email entries, optionally filtered by an email address.
+/// Page `page` of the contacts, `page_size` at a time, and how many there
+/// are in all.
+pub async fn list<D: Doer>(d: &D, page: u32, page_size: u32) -> Result<(u32, Vec<Contact>)> {
+    d.decode(page_of("/contacts/v4/contacts", page, page_size))
+        .await
+        .map(|found: ContactsResp| (found.total, found.contacts))
+}
+
+/// Page `page` of the addresses filed under contacts, `page_size` at a
+/// time; with `email`, only the entries for that address.
 pub async fn list_emails<D: Doer>(
     d: &D,
     page: u32,
     page_size: u32,
     email: Option<&str>,
 ) -> Result<Vec<ContactEmail>> {
-    let mut req = Request::get("/contacts/v4/contacts/emails")
-        .query("Page", page.to_string())
-        .query("PageSize", page_size.to_string());
-    if let Some(e) = email {
-        req = req.query("Email", e);
-    }
-    let r: EmailsResp = d.decode(req).await?;
-    Ok(r.contact_emails)
+    let listing = page_of("/contacts/v4/contacts/emails", page, page_size);
+    let request = match email {
+        Some(email) => listing.query("Email", email),
+        None => listing,
+    };
+    let EmailsResp { contact_emails } = d.decode(request).await?;
+    Ok(contact_emails)
 }

@@ -569,6 +569,8 @@ async fn forwarded_attachments_are_keyed_for_every_recipient() {
     let opened =
         crypto::decrypt_attachment(&provider, &friend, wrapped, &original.data_packet).unwrap();
     assert_eq!(opened, b"forwarded payload");
+    // The original's attachment carries no signature, so none is announced.
+    assert_eq!(internal["Signature"], 0);
 
     let clear = &package(package_type::CLEAR)["AttachmentKeys"]["draft-att"];
     assert_eq!(
@@ -687,6 +689,7 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
                     "ID": "draft-att",
                     "Name": "notes.txt",
                     "KeyPackets": STANDARD.encode(&attachment.key_packet),
+                    "Signature": STANDARD.encode(&attachment.signature),
                 }]
             }
         })))
@@ -820,6 +823,11 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
             open(internal, recipient),
             (html.to_owned(), b"attached".to_vec())
         );
+        // The attachment went up signed, so their apps are told to check it.
+        assert_eq!(
+            internal["Addresses"][recipient.email.as_str()]["Signature"],
+            1
+        );
     }
     // The package's own key packet is the sender's.
     let body_key =
@@ -835,6 +843,7 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
         open(pgp, &outsider),
         ("The plan".to_owned(), b"attached".to_vec())
     );
+    assert_eq!(pgp["Addresses"]["pgp@example.org"]["Signature"], 1);
 
     // Without a key, Proton is handed the keys of the same body.
     let clear = package(package_type::CLEAR);
@@ -844,6 +853,7 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
         clear["Addresses"]["plain@example.com"]["Type"],
         package_type::CLEAR
     );
+    assert_eq!(clear["Addresses"]["plain@example.com"]["Signature"], 0);
     assert_eq!(clear["Body"], internal["Body"]);
     assert_eq!(
         clear["BodyKey"]["Key"],
@@ -853,6 +863,18 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
         clear["AttachmentKeys"]["draft-att"]["Key"],
         STANDARD.encode(attachment.material.key.as_slice())
     );
+}
+
+#[test]
+fn packages_announce_signatures_only_when_every_attachment_has_one() {
+    let key = |signed| AttachmentKey {
+        id: "a".into(),
+        session_key: crypto::new_session_key(&crypto::provider()).unwrap().0,
+        signed,
+    };
+    assert_eq!(attachment_signatures(&[]), 1);
+    assert_eq!(attachment_signatures(&[key(true), key(true)]), 1);
+    assert_eq!(attachment_signatures(&[key(true), key(false)]), 0);
 }
 
 #[test]
@@ -1011,13 +1033,12 @@ async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
 
 #[tokio::test]
 async fn password_protected_recipients_get_keys_that_open_with_the_password() {
+    use crate::auth::test_support::MODULUS;
     use proton_crypto::crypto::{
         DataEncoding, Decryptor, DecryptorSync, PGPProviderSync, VerifiedData,
     };
     use wiremock::matchers::query_param;
 
-    // A modulus signed with Proton's key, from proton-srp's own tests.
-    const MODULUS: &str = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nW2z5HBi8RvsfYzZTS7qBaUxxPhsfHJFZpu3Kd6s1JafNrCCH9rfvPLrfuqocxWPgWDH2R8neK7PkNvjxto9TStuY5z7jAzWRvFWN9cQhAKkdWgy0JY6ywVn22+HFpF4cYesHrqFIKUPDMSSIlWjBVmEJZ/MusD44ZT29xcPrOqeZvwtCffKtGAIjLYPZIEbZKnDM1Dm3q2K/xS5h+xdhjnndhsrkwm9U9oyA2wxzSXFL+pdfj2fOdRwuR5nW0J2NFrq3kJjkRmpO/Genq1UW+TEknIWAb6VzJJJA244K/H8cnSx2+nSNZO3bbo6Ys228ruV9A8m6DhxmS+bihN3ttQ==\n-----BEGIN PGP SIGNATURE-----\nVersion: ProtonMail\nComment: https://protonmail.com\n\nwl4EARYIABAFAlwB1j0JEDUFhcTpUY8mAAD8CgEAnsFnF4cF0uSHKkXa1GIa\nGO86yMV4zDZEZcDSJo0fgr8A/AlupGN9EdHlsrZLmTA1vhIx+rOgxdEff28N\nkvNM7qIK\n=q6vu\n-----END PGP SIGNATURE-----";
     let server = MockServer::start().await;
     let (me, _) = test_address("me@proton.me", "address-1");
     let provider = crypto::provider();
@@ -1094,6 +1115,7 @@ async fn password_protected_recipients_get_keys_that_open_with_the_password() {
     };
     let entry = &package["Addresses"]["ana@example.com"];
     assert_eq!(entry["Type"], package_type::EO);
+    assert_eq!(entry["Signature"], 0);
     assert_eq!(entry["PasswordHint"], "our film");
     assert_eq!(entry["Auth"]["ModulusID"], "modulus-1");
     let token = provider
@@ -1794,6 +1816,31 @@ async fn explicit_send_rejection_remains_a_regular_api_error() {
 }
 
 #[tokio::test]
+async fn a_send_proton_answers_unavailable_is_not_sent_again() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages/draft-1"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .insert_header("Retry-After", "0")
+                .set_body_json(json!({"Code": 503, "Error": "unavailable"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let http = HttpClient::new(server.uri(), "Other");
+    let error = submit_send(&http, "draft-1", json!({"Packages": []}))
+        .await
+        .unwrap_err();
+    // Proton may have sent it before the gateway answered.
+    assert!(matches!(
+        error,
+        Error::SendUnconfirmed { message_id, .. } if message_id == "draft-1"
+    ));
+}
+
+#[tokio::test]
 async fn uncertain_send_does_not_delete_the_draft() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))
@@ -1815,11 +1862,15 @@ async fn uncertain_send_does_not_delete_the_draft() {
 }
 
 #[test]
-fn dedupe_case_insensitive() {
-    let a = vec!["A@x.com".to_string(), "b@x.com".to_string()];
-    let b = vec!["a@x.com".to_string(), "c@x.com".to_string()];
-    let out = dedupe(&[&a, &b]);
-    assert_eq!(out, vec!["A@x.com", "b@x.com", "c@x.com"]);
+fn each_recipient_is_sent_to_once_whatever_the_case_of_its_address() {
+    let to = vec!["Ana@Proton.me".to_string(), "bo@pm.me".to_string()];
+    let cc = vec!["ana@proton.me".to_string(), "cy@pm.me".to_string()];
+    let bcc = vec!["BO@PM.ME".to_string()];
+    // Each address keeps its first spelling and its first place.
+    assert_eq!(
+        dedupe(&[&to, &cc, &bcc]),
+        ["Ana@Proton.me", "bo@pm.me", "cy@pm.me"]
+    );
 }
 
 #[test]

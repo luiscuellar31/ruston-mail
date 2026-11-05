@@ -11,22 +11,23 @@ use std::sync::Mutex;
 
 use ruston_core::mail::attachments::save_under_free_name;
 use ruston_core::mail::organize::folder_id_among;
+use ruston_core::mail::read::search_window;
 use ruston_core::mail::send::{forward_subject, reply_subject};
 use ruston_core::model::ConversationLabel;
 use ruston_core::model::enums::{filter, label_ids, label_type, message_flag};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
     Filter, FullMessage, Label, LabelCount, MessageMetadata, Quote, Recipient, RecipientProtection,
-    Result, Verdict,
+    Result, SearchOpts, Verdict,
 };
 use serde_json::json;
 
 use crate::cli::{
     AddressesCmd, AttachmentsCmd, Command, ContactsCmd, ConversationsCmd, Ctx, DraftsCmd,
-    FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd,
+    FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd, unix_now,
 };
 use crate::commands::contacts;
-use crate::mailbox::{Change, Outgoing, OutgoingKind};
+use crate::mailbox::{Change, Outgoing, OutgoingKind, someone_matches, within};
 use crate::render;
 
 /// Said on standard error before every demo command, so a fictional send,
@@ -813,11 +814,7 @@ impl DemoSession {
     /// names and sizes, and a forward the original's but those left out.
     /// Sent lists either.
     pub(crate) fn send(&self, outgoing: &Outgoing) {
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| {
-                i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-            });
+        let time = unix_now();
         let people = |addresses: &[String]| -> Vec<Recipient> {
             addresses.iter().map(Recipient::new).collect()
         };
@@ -997,22 +994,28 @@ impl DemoSession {
         list_page(self.snapshot(), label, is_all, false, page, page_size)
     }
 
-    /// Page `page` of the conversations whose subject has `words`, in any
-    /// place, newest first, with how many there are in all.
+    /// Page `page` of the conversations a search for `opts` finds, as
+    /// `conversations search` finds them, its folder named by label ID,
+    /// newest first, with how many there are in all.
     pub(crate) fn search(
         &self,
-        words: &str,
+        opts: &SearchOpts,
         page: u32,
         page_size: u32,
-    ) -> (u32, Vec<Conversation>) {
+    ) -> Result<(u32, Vec<Conversation>)> {
+        let window = search_window(opts.after.as_deref(), opts.before.as_deref())?;
+        let label = opts
+            .folder
+            .as_deref()
+            .filter(|label| *label != label_ids::ALL_MAIL);
         let mut found: Vec<Conversation> = self
             .snapshot()
             .into_iter()
-            .filter(|conversation| subject_has(conversation, words))
+            .filter(|conversation| finds(conversation, opts, window, label))
             .collect();
         found.sort_by_key(|conversation| std::cmp::Reverse(conversation.time));
         let total = found.len() as u32;
-        (total, page_of(found, page, page_size))
+        Ok((total, page_of(found, page, page_size)))
     }
 
     /// How many conversations each place holds, and how many are unread.
@@ -1021,8 +1024,9 @@ impl DemoSession {
     }
 
     /// Makes `change` to the conversation `id`, listed in `place`, much as
-    /// Proton would: a star labels it Starred, reading marks it read
-    /// wherever it is and unread only where it is listed, a move takes it
+    /// Proton would: a star labels it Starred, reading marks it and all its
+    /// messages read wherever it is, and unread only where it is listed,
+    /// with its newest message there when none was unread, a move takes it
     /// out of the folders it was in, keeping its labels, Sent and Drafts,
     /// and deleting it forever takes it away whole, as a move brings all of
     /// it to Trash or Spam.
@@ -1057,8 +1061,28 @@ impl DemoSession {
                 for label in &mut conversation.labels {
                     label.context_num_unread = Some(0);
                 }
+                let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
+                for message in messages.iter_mut().filter(|m| m.meta.conversation_id == id) {
+                    message.meta.unread = 0;
+                }
             }
             Change::Read(false) => {
+                // Proton marks its newest message in the place unread. The
+                // demo's messages keep the places they started in and none
+                // is in All mail, so where none is, its newest is.
+                if conversation.num_unread == 0 {
+                    let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
+                    let newest = |in_place: bool| {
+                        let held = messages.iter().enumerate().filter(|(_, m)| {
+                            m.meta.conversation_id == id
+                                && (!in_place || m.meta.label_ids.iter().any(|l| l == place))
+                        });
+                        held.max_by_key(|(_, m)| m.meta.order).map(|(at, _)| at)
+                    };
+                    if let Some(at) = newest(true).or_else(|| newest(false)) {
+                        messages[at].meta.unread = 1;
+                    }
+                }
                 conversation.num_unread = conversation.num_unread.max(1);
                 if let Some(label) = conversation.labels.iter_mut().find(|l| l.id == place) {
                     label.context_num_unread = Some(label.context_num_unread.unwrap_or(0).max(1));
@@ -1125,6 +1149,32 @@ fn quoted(original: &DemoMessage) -> String {
     format!("------- Original Message -------\nOn {who} wrote:\n{lines}")
 }
 
+/// The first of `messages` that `reference` names, as a message reference
+/// names one in the demo: its ID, part of it, or words of its subject.
+fn message_named<'a>(messages: &'a [DemoMessage], reference: &str) -> Result<&'a DemoMessage> {
+    messages
+        .iter()
+        .find(|m| {
+            m.meta.id == reference
+                || m.meta.id.contains(reference)
+                || m.meta
+                    .subject
+                    .to_lowercase()
+                    .contains(&reference.to_lowercase())
+        })
+        .ok_or_else(|| Error::Other(format!("demo message not found for ref '{reference}'")))
+}
+
+/// The IDs of the messages `references` name, in their order, each found as
+/// [`message_named`] finds it: what an action on them reports, as the real
+/// commands report the IDs they resolve.
+fn ids_named(messages: &[DemoMessage], references: &[String]) -> Result<Vec<String>> {
+    references
+        .iter()
+        .map(|reference| Ok(message_named(messages, reference)?.meta.id.clone()))
+        .collect()
+}
+
 /// Up to `limit` of the demo's messages whose subject or body has `query`,
 /// whatever its case: the demo's local index, for `search` and the terminal
 /// interface's `:local` alike.
@@ -1142,6 +1192,15 @@ pub(crate) fn search_local(query: &str, limit: u32) -> Vec<MessageMetadata> {
     found
 }
 
+/// The place a demo search looks in, as the real search resolves it: none
+/// for All mail, which holds every message.
+fn search_label(folder: Option<&str>) -> Result<Option<String>> {
+    let label = folder
+        .map(|folder| folder_id_among(&demo_labels(), folder))
+        .transpose()?;
+    Ok(label.filter(|label| label != label_ids::ALL_MAIL))
+}
+
 /// Whether `conversation`'s subject has `words`, whatever their case: how
 /// the demo finds conversations, in `conversations search` and the terminal
 /// interface alike.
@@ -1150,6 +1209,34 @@ fn subject_has(conversation: &Conversation, words: &str) -> bool {
         .subject
         .to_lowercase()
         .contains(&words.to_lowercase())
+}
+
+/// Whether a demo search for `opts` finds `conversation`, in
+/// `conversations search` and the terminal interface alike: its subject
+/// has the words and the subject asked for, one of its senders and one of
+/// its recipients match those asked for, it is unread when asked, its last
+/// message falls within `window`, and it is in the place `label`, if any.
+fn finds(
+    conversation: &Conversation,
+    opts: &SearchOpts,
+    window: (Option<i64>, Option<i64>),
+    label: Option<&str>,
+) -> bool {
+    [&opts.keyword, &opts.subject]
+        .into_iter()
+        .flatten()
+        .all(|words| subject_has(conversation, words))
+        && opts
+            .from
+            .as_ref()
+            .is_none_or(|from| someone_matches(&conversation.senders, from))
+        && opts
+            .to
+            .as_ref()
+            .is_none_or(|to| someone_matches(&conversation.recipients, to))
+        && (!opts.unread || conversation.num_unread != 0)
+        && within(window, conversation.time)
+        && label.is_none_or(|label| conversation.labels.iter().any(|on| on.id == label))
 }
 
 /// How many of `conversations` each place holds and how many of those are
@@ -1254,6 +1341,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::Search(args) => {
+                let window = search_window(args.after.as_deref(), args.before.as_deref())?;
+                let label = search_label(args.folder.as_deref())?;
                 let mut results: Vec<MessageMetadata> = fixtures_messages
                     .into_iter()
                     .filter(|m| {
@@ -1266,18 +1355,13 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                             }
                         }
                         if let Some(from) = &args.from
-                            && !m
-                                .meta
-                                .sender
-                                .address
-                                .to_lowercase()
-                                .contains(&from.to_lowercase())
-                            && !m
-                                .meta
-                                .sender
-                                .name
-                                .to_lowercase()
-                                .contains(&from.to_lowercase())
+                            && !someone_matches([&m.meta.sender], from)
+                        {
+                            return false;
+                        }
+                        let recipients = m.meta.to_list.iter().chain(&m.meta.cc_list);
+                        if let Some(to) = &args.to
+                            && !someone_matches(recipients.chain(&m.meta.bcc_list), to)
                         {
                             return false;
                         }
@@ -1293,7 +1377,10 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                         if args.unread && m.meta.unread == 0 {
                             return false;
                         }
-                        true
+                        within(window, m.meta.time)
+                            && label
+                                .as_ref()
+                                .is_none_or(|label| m.meta.label_ids.contains(label))
                     })
                     .map(|m| m.meta)
                     .collect();
@@ -1311,19 +1398,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 body_only,
                 output,
             } => {
-                let msg = fixtures_messages
-                    .into_iter()
-                    .find(|m| {
-                        m.meta.id == reference
-                            || m.meta.id.contains(&reference)
-                            || m.meta
-                                .subject
-                                .to_lowercase()
-                                .contains(&reference.to_lowercase())
-                    })
-                    .ok_or_else(|| {
-                        Error::Other(format!("demo message not found for ref '{reference}'"))
-                    })?;
+                let msg = message_named(&fixtures_messages, &reference)?;
 
                 let full = msg.to_full();
                 if let Some(path) = output {
@@ -1369,28 +1444,34 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::CancelSend { reference } => {
-                render::action_result(ctx.json, "cancel-send", &[reference]);
+                let ids = ids_named(&fixtures_messages, &[reference])?;
+                render::action_result(ctx.json, "cancel-send", &ids);
                 Ok(())
             }
             MessagesCmd::Trash { references } => {
-                render::action_result(ctx.json, "trash", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "trash", &ids);
                 Ok(())
             }
             // The fictional mailbox loses nothing, so there is nothing to confirm.
             MessagesCmd::Delete { references, .. } => {
-                render::action_result(ctx.json, "delete", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "delete", &ids);
                 Ok(())
             }
             MessagesCmd::Spam { references } => {
-                render::action_result(ctx.json, "spam", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "spam", &ids);
                 Ok(())
             }
             MessagesCmd::Ham { references } => {
-                render::action_result(ctx.json, "ham", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "ham", &ids);
                 Ok(())
             }
             MessagesCmd::Unsubscribe { reference } => {
-                render::action_result(ctx.json, "unsubscribe", &[reference]);
+                let ids = ids_named(&fixtures_messages, &[reference])?;
+                render::action_result(ctx.json, "unsubscribe", &ids);
                 Ok(())
             }
             MessagesCmd::Empty { folder, .. } => {
@@ -1403,39 +1484,41 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 references,
             } => {
                 folder_id_among(&demo_labels(), &label_id)?;
+                let ids = ids_named(&fixtures_messages, &references)?;
                 let action = match action {
                     LabelAction::Add => "label",
                     LabelAction::Rm => "unlabel",
                 };
-                render::action_result(ctx.json, action, &references);
-                Ok(())
-            }
-            MessagesCmd::Undelete { ids } => {
-                render::action_result(ctx.json, "undelete", &ids);
+                render::action_result(ctx.json, action, &ids);
                 Ok(())
             }
             MessagesCmd::Receipt { reference } => {
-                render::action_result(ctx.json, "receipt", &[reference]);
+                let ids = ids_named(&fixtures_messages, &[reference])?;
+                render::action_result(ctx.json, "receipt", &ids);
                 Ok(())
             }
             MessagesCmd::Move { references, dest } => {
                 folder_id_among(&demo_labels(), &dest)?;
-                render::action_result(ctx.json, "move", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "move", &ids);
                 Ok(())
             }
             MessagesCmd::Mark {
                 state: _,
                 references,
             } => {
-                render::action_result(ctx.json, "mark", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "mark", &ids);
                 Ok(())
             }
             MessagesCmd::Star { references } => {
-                render::action_result(ctx.json, "star", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "star", &ids);
                 Ok(())
             }
             MessagesCmd::Unstar { references } => {
-                render::action_result(ctx.json, "unstar", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "unstar", &ids);
                 Ok(())
             }
         },
@@ -1463,28 +1546,16 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             ConversationsCmd::Search(args) => {
+                let window = search_window(args.after.as_deref(), args.before.as_deref())?;
+                let label = search_label(args.folder.as_deref())?;
+                let opts = SearchOpts::from(args);
                 let mut results: Vec<Conversation> = fixtures_convs
                     .into_iter()
-                    .filter(|c| {
-                        if let Some(kw) = &args.keyword
-                            && !subject_has(c, kw)
-                        {
-                            return false;
-                        }
-                        if let Some(subject) = &args.subject
-                            && !subject_has(c, subject)
-                        {
-                            return false;
-                        }
-                        if args.unread && c.num_unread == 0 {
-                            return false;
-                        }
-                        true
-                    })
+                    .filter(|c| finds(c, &opts, window, label.as_deref()))
                     .collect();
 
                 results.sort_by_key(|a| std::cmp::Reverse(a.time));
-                if let Some(limit) = args.limit {
+                if let Some(limit) = opts.limit {
                     results.truncate(limit as usize);
                 }
                 render::conversations_list(ctx.json, results.len() as u32, &results);
@@ -1609,12 +1680,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 render::draft_saved(ctx.json, "draft-demo-saved-01");
                 Ok(())
             }
-            DraftsCmd::Edit { id, args } => {
-                if ctx.json {
-                    render::sent(true, &id);
-                } else {
-                    terminal::println!("Draft updated (id {id}) for subject: '{}'", args.subject);
-                }
+            DraftsCmd::Edit { id, .. } => {
+                render::action_result(ctx.json, "edit", &[id]);
                 Ok(())
             }
             DraftsCmd::Delete { ids, .. } => {
@@ -1927,6 +1994,31 @@ mod tests {
     }
 
     #[test]
+    fn a_search_narrows_by_place_days_and_people_as_the_real_one_does() {
+        assert_eq!(search_label(Some("all")).unwrap(), None);
+        assert_eq!(search_label(None).unwrap(), None);
+        assert_eq!(
+            search_label(Some("archive")).unwrap().as_deref(),
+            Some(label_ids::ARCHIVE)
+        );
+        assert!(search_label(Some("No such folder")).is_err());
+
+        // 2024-04-23, all of it in UTC.
+        let day = search_window(Some("2024-04-23"), Some("2024-04-23")).unwrap();
+        assert!(within(day, 1_713_830_400) && within(day, 1_713_916_799));
+        assert!(!within(day, 1_713_830_399) && !within(day, 1_713_916_800));
+        assert!(within((None, None), 0));
+
+        let alex = Recipient {
+            name: "Alex Reed".into(),
+            address: "alex.reed@example.com".into(),
+            ..Recipient::default()
+        };
+        assert!(someone_matches([&alex], "REED") && someone_matches([&alex], "alex.reed@"));
+        assert!(!someone_matches([&alex], "sam"));
+    }
+
+    #[test]
     fn a_session_starts_with_the_counts_the_demo_gives() {
         let counts = DemoSession::new().counts();
         for expected in demo_counts(true) {
@@ -1975,6 +2067,36 @@ mod tests {
                 .map(|count| count.unread),
             Some(2)
         );
+    }
+
+    #[test]
+    fn a_session_marks_a_conversations_messages_read_or_unread_as_proton_would() {
+        let session = DemoSession::new();
+        let id = "conv-demo-01";
+        let unread = || -> Vec<i64> {
+            let (_, messages) = session.conversation(id).unwrap();
+            messages
+                .iter()
+                .map(|message| match message {
+                    ConversationMessage::Opened(full) => full.meta.unread,
+                    ConversationMessage::Unreadable(unreadable) => unreadable.meta.unread,
+                })
+                .collect()
+        };
+        // Alex's review, not read yet, then the reply sent to it.
+        assert_eq!(unread(), [1, 0]);
+        session.change(id, label_ids::INBOX, &Change::Read(true));
+        assert_eq!(unread(), [0, 0]);
+        // Unread again, its newest in the Inbox is, not the reply in Sent.
+        session.change(id, label_ids::INBOX, &Change::Read(false));
+        assert_eq!(unread(), [1, 0]);
+        // Unread already, it stays as it is.
+        session.change(id, label_ids::SENT, &Change::Read(false));
+        assert_eq!(unread(), [1, 0]);
+        // Where none of its messages is, as in All mail here, its newest is.
+        session.change(id, label_ids::INBOX, &Change::Read(true));
+        session.change(id, label_ids::ALL_MAIL, &Change::Read(false));
+        assert_eq!(unread(), [0, 1]);
     }
 
     #[test]
@@ -2053,8 +2175,15 @@ mod tests {
     #[test]
     fn a_session_finds_conversations_by_their_subject_wherever_they_are() {
         let session = DemoSession::new();
+        let search = |words: &str| {
+            let opts = SearchOpts {
+                keyword: Some(words.into()),
+                ..SearchOpts::default()
+            };
+            session.search(&opts, 0, 50).unwrap()
+        };
         let found = |words: &str| {
-            let (total, page) = session.search(words, 0, 50);
+            let (total, page) = search(words);
             (total, page.into_iter().map(|c| c.id).collect::<Vec<_>>())
         };
         assert_eq!(found("OFFSITE"), (1, vec!["conv-demo-03".to_owned()]));
@@ -2071,8 +2200,48 @@ mod tests {
             label_ids::INBOX,
             &Change::Move(label_ids::TRASH.into()),
         );
-        let (_, page) = session.search("offsite", 0, 50);
+        let (_, page) = search("offsite");
         assert!(page[0].labels.iter().any(|l| l.id == label_ids::TRASH));
+    }
+
+    #[test]
+    fn a_session_search_narrows_by_people_days_and_place() {
+        let session = DemoSession::new();
+        let found = |opts: SearchOpts| -> Vec<String> {
+            let (_, page) = session.search(&opts, 0, 50).unwrap();
+            page.into_iter().map(|c| c.id).collect()
+        };
+        let from = SearchOpts {
+            from: Some("RILEY".into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(found(from), ["conv-demo-02"]);
+        // The Archive's of 2024-04-22 is left out.
+        let inbox_days = SearchOpts {
+            after: Some("2024-04-21".into()),
+            before: Some("2024-04-23".into()),
+            folder: Some(label_ids::INBOX.into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(found(inbox_days), ["conv-demo-03", "conv-demo-05"]);
+        // A label by its ID; All mail holds every conversation.
+        let work = SearchOpts {
+            folder: Some("label-demo-work".into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(found(work), ["conv-demo-01", "conv-demo-02"]);
+        let to = SearchOpts {
+            to: Some(DEMO_EMAIL.into()),
+            folder: Some(label_ids::ALL_MAIL.into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(found(to).len(), 6);
+        let backwards = SearchOpts {
+            after: Some("2024-04-23".into()),
+            before: Some("2024-04-21".into()),
+            ..SearchOpts::default()
+        };
+        assert!(session.search(&backwards, 0, 50).is_err());
     }
 
     #[test]

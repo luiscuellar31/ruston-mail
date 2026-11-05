@@ -1,4 +1,5 @@
-//! Local SQLite cache of message metadata, indexed bodies, and the sync cursor.
+//! The local SQLite cache: message metadata, the full-text index of
+//! decrypted bodies, and the cursor sync goes on from.
 
 use crate::api::events::{EventBatch, MessageEvent, action};
 use crate::error::{Error, Result};
@@ -92,9 +93,15 @@ fn private_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The searchable names and addresses of everyone a message names: who sent
+/// it and whom it went to, copies included.
 fn participants(m: &MessageMetadata) -> String {
-    std::iter::once(m.sender.address.as_str())
-        .chain(m.to_list.iter().map(|r| r.address.as_str()))
+    std::iter::once(&m.sender)
+        .chain(&m.to_list)
+        .chain(&m.cc_list)
+        .chain(&m.bcc_list)
+        .flat_map(|r| [r.name.as_str(), r.address.as_str()])
+        .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -107,25 +114,54 @@ const UPDATE_INDEX_SQL: &str = "UPDATE msg_fts SET subject=?2, participants=?3 W
     SELECT fts_rowid FROM msg_fts_rows WHERE message_id=?1)
     AND (subject IS NOT ?2 OR participants IS NOT ?3)";
 
-fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
-    let json = serde_json::to_string(m)?;
-    conn.execute(
-        "INSERT INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
+/// The SQL that writes a message's metadata to one pair of tables, its row
+/// and its labels.
+struct MetadataSql {
+    /// Inserts the message's row, or replaces what an earlier one held.
+    upsert_message: &'static str,
+    /// Takes off every label the message had.
+    clear_labels: &'static str,
+    /// Puts one label on the message.
+    insert_label: &'static str,
+}
+
+/// The cache's own tables.
+const CACHED_SQL: MetadataSql = MetadataSql {
+    upsert_message: "INSERT INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
          ON CONFLICT(id) DO UPDATE SET
          time=excluded.time, unread=excluded.unread, json=excluded.json",
+    clear_labels: "DELETE FROM message_labels WHERE message_id=?1",
+    insert_label: "INSERT OR IGNORE INTO message_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
+};
+
+/// The tables a resync stages its listing in, which replace the cache's
+/// once it is complete.
+const STAGED_SQL: MetadataSql = MetadataSql {
+    upsert_message: "INSERT INTO resync_messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+         time=excluded.time, unread=excluded.unread, json=excluded.json",
+    clear_labels: "DELETE FROM resync_labels WHERE message_id=?1",
+    insert_label: "INSERT OR IGNORE INTO resync_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
+};
+
+/// Writes `m`'s row and labels with `sql`, replacing the labels it had.
+fn write_metadata(conn: &Connection, sql: &MetadataSql, m: &MessageMetadata) -> Result<()> {
+    let json = serde_json::to_string(m)?;
+    conn.execute(
+        sql.upsert_message,
         rusqlite::params![m.id, m.time, m.unread, json],
     )
     .map_err(map)?;
-    conn.execute("DELETE FROM message_labels WHERE message_id=?1", [&m.id])
-        .map_err(map)?;
+    conn.execute(sql.clear_labels, [&m.id]).map_err(map)?;
     for label in &m.label_ids {
-        conn.execute(
-            "INSERT OR IGNORE INTO message_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
-            rusqlite::params![m.id, label, m.time],
-        )
-        .map_err(map)?;
+        conn.execute(sql.insert_label, rusqlite::params![m.id, label, m.time])
+            .map_err(map)?;
     }
     Ok(())
+}
+
+fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
+    write_metadata(conn, &CACHED_SQL, m)
 }
 
 fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
@@ -145,6 +181,11 @@ fn replace_index(conn: &Connection, m: &MessageMetadata, body: Option<&str>) -> 
         conn.execute(
             "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
             rusqlite::params![m.id, m.subject, body, participants(m)],
+        )
+        .map_err(map)?;
+        conn.execute(
+            "UPDATE msg_fts_rows SET as_text=1 WHERE message_id=?1",
+            [&m.id],
         )
         .map_err(map)?;
     }
@@ -274,6 +315,38 @@ fn needs_migration(conn: &Connection) -> Result<bool> {
     .map_err(map)
 }
 
+/// Whether opening to write has to migrate the cache: [`needs_migration`]
+/// says so, or its index rows cannot yet say which bodies were indexed as
+/// text, which only writing bodies needs, so a cache opened to read stays
+/// searchable without it.
+fn needs_migration_to_write(conn: &Connection) -> Result<bool> {
+    Ok(needs_migration(conn)? || !has_as_text_column(conn)?)
+}
+
+/// Whether the index rows say which bodies were indexed as text.
+fn has_as_text_column(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('msg_fts_rows') WHERE name='as_text')",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(map)
+}
+
+/// Marks which indexed bodies hold text alone, as this version indexes an
+/// HTML body. Those indexed before held the HTML itself, with every address
+/// its links led to, and an older version still writes rows without the mark;
+/// both read 0, so `index` reads those bodies again, and until then they stay
+/// searchable. The schema version stays, so older versions keep opening it.
+fn ensure_as_text_column(conn: &Connection) -> Result<()> {
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    if !has_as_text_column(&tx)? {
+        tx.execute_batch("ALTER TABLE msg_fts_rows ADD COLUMN as_text INTEGER NOT NULL DEFAULT 0")
+            .map_err(map)?;
+    }
+    tx.commit().map_err(map)
+}
+
 /// The cache's schema version, refusing one newer than this version's.
 fn schema_version(conn: &Connection) -> Result<i64> {
     let version: i64 = conn
@@ -300,6 +373,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     .map_err(map)?;
     ensure_label_time_index(conn)?;
     ensure_fts_rowid_index(conn)?;
+    ensure_as_text_column(conn)?;
     ensure_fts_secure_delete(conn)?;
     // A newer version may have migrated it further meanwhile.
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
@@ -494,6 +568,39 @@ fn list_sql(unread_only: bool) -> String {
     )
 }
 
+/// The messages whose index entry matches an FTS5 query, best first, as
+/// `Cache::search` reads them.
+const SEARCH_SQL: &str = "SELECT m.json FROM msg_fts JOIN messages m ON m.id=msg_fts.id \
+     WHERE msg_fts MATCH ?1 ORDER BY rank LIMIT ?2";
+
+/// The FTS5 query for the words of `query`: each one a quoted phrase, with
+/// its double quotes taken out, so that every word must be there and none
+/// is read as FTS5's own syntax. `None` when there is no word.
+fn match_expression(query: &str) -> Option<String> {
+    let phrases: Vec<String> = query
+        .split_whitespace()
+        .map(|word| format!("\"{}\"", word.replace('"', "")))
+        .collect();
+    (!phrases.is_empty()).then(|| phrases.join(" "))
+}
+
+/// The messages a query of their metadata JSON returns, in its order. A row
+/// whose JSON no longer reads as metadata is left out rather than failing
+/// the rest.
+fn read_metadata(
+    statement: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+) -> Result<Vec<MessageMetadata>> {
+    let rows: Vec<String> = statement
+        .query_map(params, |row| row.get(0))
+        .and_then(|rows| rows.collect())
+        .map_err(map)?;
+    Ok(rows
+        .iter()
+        .filter_map(|json| serde_json::from_str(json).ok())
+        .collect())
+}
+
 /// The folder that holds the caches, created on first use.
 fn cache_root() -> Result<PathBuf> {
     let dir = cache_root_path()?;
@@ -651,7 +758,8 @@ impl Cache {
         Ok(cache)
     }
 
-    /// Open (creating if needed) the cache database at `path`, ensuring its schema.
+    /// Opens the cache database at `path`, creating it when it is not there
+    /// and bringing its schema up to date.
     /// This low-level API does not verify ownership; Client operations do so
     /// before returning a cache for use.
     /// On Unix, the parent must be a private directory; existing database files
@@ -680,13 +788,13 @@ impl Cache {
         conn.execute_batch("PRAGMA secure_delete=ON").map_err(map)?;
         // A cache that needs no migration opens without the write lock, so a
         // command that only reads never waits for another process's sync.
-        if needs_migration(&conn)? {
+        if needs_migration_to_write(&conn)? {
             migrate(&conn)?;
         }
         Ok(Cache { conn })
     }
 
-    /// The stored sync cursor, or `None` if not yet initialized.
+    /// The cursor sync goes on from, or `None` before a sync has stored one.
     pub fn last_event_id(&self) -> Result<Option<String>> {
         read_cursor(&self.conn)
     }
@@ -724,10 +832,13 @@ impl Cache {
         Ok(tx)
     }
 
-    /// Whether a body of the message `id` is indexed.
+    /// Whether a body of the message `id` is indexed as text, as this
+    /// version indexes one; a body an older version indexed is not.
     pub(crate) fn has_indexed_body(&self, id: &str) -> Result<bool> {
         self.conn
-            .prepare_cached("SELECT EXISTS(SELECT 1 FROM msg_fts_rows WHERE message_id=?1)")
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM msg_fts_rows WHERE message_id=?1 AND as_text=1)",
+            )
             .and_then(|mut statement| statement.query_row([id], |row| row.get(0)))
             .map_err(map)
     }
@@ -782,7 +893,8 @@ impl Cache {
         Ok(counts)
     }
 
-    /// Cached messages in a label, newest first.
+    /// A page of the messages cached in a label, newest first: only the
+    /// unread ones when `unread_only`.
     pub fn list(
         &self,
         label_id: &str,
@@ -790,23 +902,12 @@ impl Cache {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<MessageMetadata>> {
-        let mut stmt = self.conn.prepare(&list_sql(unread_only)).map_err(map)?;
-        let rows = stmt
-            .query_map(rusqlite::params![label_id, limit, offset], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(map)?;
-        let mut out = Vec::new();
-        for r in rows {
-            let json = r.map_err(map)?;
-            if let Ok(m) = serde_json::from_str::<MessageMetadata>(&json) {
-                out.push(m);
-            }
-        }
-        Ok(out)
+        let mut statement = self.conn.prepare(&list_sql(unread_only)).map_err(map)?;
+        read_metadata(&mut statement, rusqlite::params![label_id, limit, offset])
     }
 
-    /// (total, unread) cached for a label.
+    /// How many messages are cached in a label, and how many of those are
+    /// unread.
     pub fn count(&self, label_id: &str) -> Result<(i64, i64)> {
         self.conn
             .query_row(COUNT_SQL, [label_id], |row| {
@@ -833,40 +934,26 @@ impl Cache {
     pub(crate) fn stage_rebuild_page(&self, messages: &[MessageMetadata]) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
         for m in messages {
-            let json = serde_json::to_string(m)?;
-            tx.execute(
-                "INSERT INTO resync_messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
-                 ON CONFLICT(id) DO UPDATE SET
-                 time=excluded.time, unread=excluded.unread, json=excluded.json",
-                rusqlite::params![m.id, m.time, m.unread, json],
-            )
-            .map_err(map)?;
-            tx.execute("DELETE FROM resync_labels WHERE message_id=?1", [&m.id])
-                .map_err(map)?;
-            for label in &m.label_ids {
-                tx.execute(
-                    "INSERT OR IGNORE INTO resync_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
-                    rusqlite::params![m.id, label, m.time],
-                )
-                .map_err(map)?;
-            }
+            write_metadata(&tx, &STAGED_SQL, m)?;
         }
         tx.commit().map_err(map)
     }
 
-    /// Replace metadata, labels, index, and cursor in one transaction.
+    /// Replace metadata, labels, index, and cursor in one transaction, once
+    /// the staged messages number `expected_total`, when the listing kept
+    /// one total; returns how many there are.
     pub(crate) fn finish_rebuild(
         &self,
         previous_cursor: &str,
         new_cursor: &str,
-        expected_total: u32,
+        expected_total: Option<u32>,
     ) -> Result<usize> {
         let tx =
             self.transaction_at_cursor(Some(previous_cursor), "sync cursor changed during resync")?;
         let staged: i64 = tx
             .query_row("SELECT COUNT(*) FROM resync_messages", [], |row| row.get(0))
             .map_err(map)?;
-        if staged != i64::from(expected_total) {
+        if expected_total.is_some_and(|total| staged != i64::from(total)) {
             return Err(Error::cache_changed(
                 "incomplete mailbox listing during resync",
             ));
@@ -891,38 +978,18 @@ impl Cache {
         ensure_fts_secure_delete(&tx)?;
         write_cursor(&tx, new_cursor)?;
         tx.commit().map_err(map)?;
-        Ok(expected_total as usize)
+        Ok(usize::try_from(staged).unwrap_or_default())
     }
 
-    /// Full-text search the local index. Tokens are AND-ed; punctuation-safe.
+    /// The messages whose indexed subject, body or people hold every word
+    /// of `query`, best match first, at most `limit` of them. Nothing typed
+    /// finds nothing.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
-        let expr = query
-            .split_whitespace()
-            .map(|t| format!("\"{}\"", t.replace('"', "")))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if expr.is_empty() {
+        let Some(expression) = match_expression(query) else {
             return Ok(Vec::new());
-        }
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT m.json FROM msg_fts JOIN messages m ON m.id=msg_fts.id \
-                 WHERE msg_fts MATCH ?1 ORDER BY rank LIMIT ?2",
-            )
-            .map_err(map)?;
-        let rows = stmt
-            .query_map(rusqlite::params![expr, limit], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(map)?;
-        let mut out = Vec::new();
-        for r in rows {
-            if let Ok(m) = serde_json::from_str::<MessageMetadata>(&r.map_err(map)?) {
-                out.push(m);
-            }
-        }
-        Ok(out)
+        };
+        let mut statement = self.conn.prepare(SEARCH_SQL).map_err(map)?;
+        read_metadata(&mut statement, rusqlite::params![expression, limit])
     }
 }
 
@@ -932,7 +999,7 @@ impl Cache {
 /// another sync has moved since.
 #[cfg(test)]
 impl Cache {
-    /// Store the sync cursor.
+    /// Sets the cursor sync goes on from.
     pub(crate) fn set_last_event_id(&self, id: &str) -> Result<()> {
         write_cursor(&self.conn, id)
     }
@@ -982,7 +1049,7 @@ impl Cache {
         Ok(())
     }
 
-    /// Index a message's decrypted body for local full-text search.
+    /// Adds a message's decrypted body to the local search index.
     pub(crate) fn index_message(&self, m: &MessageMetadata, body: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
         replace_index(&tx, m, Some(body))?;

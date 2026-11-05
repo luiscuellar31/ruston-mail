@@ -1,32 +1,28 @@
-//! Draft commands: list, save, edit, delete.
+//! The `drafts` commands, which write messages without sending them.
 
-use crate::cli::{Ctx, DraftsCmd};
+use crate::cli::{Ctx, DraftArgs, DraftsCmd};
 use crate::commands::prompt::{confirm_deletion, require_consent};
-use crate::commands::{read_body, resume};
+use crate::commands::read_body;
 use crate::render;
-use ruston_core::Result;
+use ruston_core::{Client, Result, SendOptions};
 
+/// Lists drafts, saves a new one, rewrites one, or deletes some.
 pub async fn run(ctx: &Ctx, cmd: DraftsCmd) -> Result<()> {
     if let DraftsCmd::Delete { yes, .. } = &cmd {
         // Find out whether anyone can be asked before using the network.
         require_consent(ctx, *yes)?;
     }
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     match cmd {
         DraftsCmd::List { page, page_size } => {
             let (total, msgs) = client.list_drafts(page, page_size).await?;
             render::messages_list(ctx.json, total, &msgs);
         }
         DraftsCmd::Save(args) => {
-            let body = read_body(&args.body)?;
-            let opts = args.into_send_options(body);
-            let id = client.save_draft(&opts).await?;
-            render::draft_saved(ctx.json, &id);
+            render::draft_saved(ctx.json, &client.save_draft(&message(args)?).await?);
         }
         DraftsCmd::Edit { id, args } => {
-            let body = read_body(&args.body)?;
-            let opts = args.into_send_options(body);
-            client.update_draft(&id, &opts).await?;
+            client.update_draft(&id, &message(args)?).await?;
             render::action_result(ctx.json, "edit", &[id]);
         }
         DraftsCmd::Delete { ids, yes } => {
@@ -51,4 +47,11 @@ pub async fn run(ctx: &Ctx, cmd: DraftsCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The message a draft command describes, with the body read from where
+/// `--body` says.
+fn message(args: DraftArgs) -> std::io::Result<SendOptions> {
+    let body = read_body(&args.body)?;
+    Ok(args.into_send_options(body))
 }

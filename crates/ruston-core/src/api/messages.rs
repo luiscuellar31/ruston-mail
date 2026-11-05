@@ -1,35 +1,40 @@
-//! Messages API.
+//! Messages: listing and searching them, writing and sending drafts, and
+//! acting on one or many at a time.
 
+use super::events::LabelCount;
 use crate::error::Result;
 use crate::model::message::{Message, MessageMetadata};
 use crate::transport::{Doer, Request};
+use reqwest::Method;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
+use serde_json::json;
 
-/// Query parameters for listing/searching messages.
+/// What to list or search for, and which page of it. Each field that is set
+/// becomes one query parameter.
 #[derive(Debug, Default, Clone)]
 pub struct ListQuery {
-    /// Restrict to messages with this label/folder ID.
+    /// The folder or label to list, by its ID.
     pub label_id: Option<String>,
-    /// 0-based page number.
+    /// The page to return, counting from 0.
     pub page: Option<u32>,
-    /// Number of messages per page.
+    /// How many items a page holds.
     pub page_size: Option<u32>,
-    /// Only return unread messages.
+    /// Whether to list unread items only.
     pub unread: bool,
-    /// Full-text keyword to search for.
+    /// Words to search for.
     pub keyword: Option<String>,
-    /// Filter by sender address.
+    /// The sender to match.
     pub from: Option<String>,
-    /// Filter by recipient address.
+    /// The recipient to match.
     pub to: Option<String>,
-    /// Filter by subject.
+    /// The subject to match.
     pub subject: Option<String>,
-    /// Only include messages on or after this Unix timestamp.
+    /// The earliest time to include, in Unix seconds.
     pub begin: Option<i64>,
-    /// Only include messages on or before this Unix timestamp.
+    /// The latest time to include, in Unix seconds.
     pub end: Option<i64>,
-    /// Restrict to messages on this address ID.
+    /// The account address to list for, by its ID.
     pub address_id: Option<String>,
 }
 
@@ -45,44 +50,28 @@ impl ListQuery {
         }
     }
 
-    /// Apply to a request. `recipients=true` renames `To` → `Recipients`
-    /// (used by the conversations endpoint).
-    pub fn apply(&self, mut req: Request, recipients: bool) -> Request {
-        req = req.query("Sort", "Time").query("Desc", "1");
-        if let Some(l) = &self.label_id {
-            req = req.query("LabelID", l.clone());
-        }
-        if let Some(p) = self.page {
-            req = req.query("Page", p.to_string());
-        }
-        if let Some(ps) = self.page_size {
-            req = req.query("PageSize", ps.to_string());
-        }
-        if self.unread {
-            req = req.query("Unread", "1");
-        }
-        if let Some(k) = &self.keyword {
-            req = req.query("Keyword", k.clone());
-        }
-        if let Some(f) = &self.from {
-            req = req.query("From", f.clone());
-        }
-        if let Some(t) = &self.to {
-            req = req.query(if recipients { "Recipients" } else { "To" }, t.clone());
-        }
-        if let Some(s) = &self.subject {
-            req = req.query("Subject", s.clone());
-        }
-        if let Some(b) = self.begin {
-            req = req.query("Begin", b.to_string());
-        }
-        if let Some(e) = self.end {
-            req = req.query("End", e.to_string());
-        }
-        if let Some(a) = &self.address_id {
-            req = req.query("AddressID", a.clone());
-        }
-        req
+    /// `req` with this query's parameters added, newest items first. Both
+    /// the messages and the conversations endpoint take the recipient filter
+    /// as `Recipients`, as Proton's web app sends it.
+    pub fn apply(&self, req: Request) -> Request {
+        let filters = [
+            ("LabelID", self.label_id.clone()),
+            ("Page", self.page.map(|page| page.to_string())),
+            ("PageSize", self.page_size.map(|size| size.to_string())),
+            ("Unread", self.unread.then(|| "1".to_owned())),
+            ("Keyword", self.keyword.clone()),
+            ("From", self.from.clone()),
+            ("Recipients", self.to.clone()),
+            ("Subject", self.subject.clone()),
+            ("Begin", self.begin.map(|time| time.to_string())),
+            ("End", self.end.map(|time| time.to_string())),
+            ("AddressID", self.address_id.clone()),
+        ];
+        let newest_first = req.query("Sort", "Time").query("Desc", "1");
+        filters
+            .into_iter()
+            .filter_map(|(name, value)| Some((name, value?)))
+            .fold(newest_first, |req, (name, value)| req.query(name, value))
     }
 }
 
@@ -94,16 +83,19 @@ struct ListResp {
     messages: Vec<MessageMetadata>,
 }
 
+/// The answer to fetching, creating or saving a message.
 #[derive(Deserialize)]
-struct GetResp {
+struct MessageResp {
     #[serde(rename = "Message")]
     message: Message,
 }
 
+/// The answer of both `count` endpoints, the messages' and the
+/// conversations'.
 #[derive(Deserialize)]
-struct DraftResp {
-    #[serde(rename = "Message")]
-    message: Message,
+struct CountsResp {
+    #[serde(rename = "Counts", default)]
+    counts: Vec<LabelCount>,
 }
 
 /// Whether a page of `listed` items is a listing's last: Proton returns a
@@ -112,136 +104,181 @@ pub(crate) fn is_last_page(listed: usize, page_size: u32) -> bool {
     (listed as u32) < page_size
 }
 
-/// List/search messages, returning the total count and the matching metadata.
+/// One page of the messages `q` asks for, and how many match in all.
 pub async fn list_messages<D: Doer>(d: &D, q: &ListQuery) -> Result<(u32, Vec<MessageMetadata>)> {
-    let req = q.apply(Request::get("/mail/v4/messages"), false);
-    let r: ListResp = d.decode(req).await?;
-    Ok((r.total, r.messages))
+    d.decode(q.apply(Request::get("/mail/v4/messages")))
+        .await
+        .map(|page: ListResp| (page.total, page.messages))
 }
 
-/// Fetch a single full message (body + attachments) by ID.
+/// The message `id` whole, with its body and its attachments' details.
 pub async fn get_message<D: Doer>(d: &D, id: &str) -> Result<Message> {
-    let r: GetResp = d
-        .decode(Request::get(format!("/mail/v4/messages/{id}")))
-        .await?;
-    Ok(r.message)
+    whole_message(d, Request::get(format!("/mail/v4/messages/{id}"))).await
 }
 
-/// Create a draft. `body` is the full `{Message, ParentID?, Action?, AttachmentKeyPackets?}`.
+/// Creates a draft from `body`: its `Message`, with `ParentID` and `Action`
+/// when it answers or forwards another, and `AttachmentKeyPackets` for the
+/// attachments it takes from there.
 pub async fn create_draft<D: Doer>(d: &D, body: serde_json::Value) -> Result<Message> {
-    let r: DraftResp = d
-        .decode(Request::post("/mail/v4/messages").json(body))
-        .await?;
-    Ok(r.message)
+    whole_message(d, Request::post("/mail/v4/messages").json(body)).await
 }
 
-/// Update an existing draft. `body` is `{Message, AttachmentKeyPackets?}`.
+/// Saves the draft `id` from `body`: its `Message`, with
+/// `AttachmentKeyPackets` when there are attachment keys to give.
 pub async fn update_draft<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> Result<Message> {
-    let r: DraftResp = d
-        .decode(Request::put(format!("/mail/v4/messages/{id}")).json(body))
-        .await?;
-    Ok(r.message)
+    let request = Request::put(format!("/mail/v4/messages/{id}")).json(body);
+    whole_message(d, request).await
 }
 
-/// Send a draft. `body` is `{ExpirationTime, AutoSaveContacts, Packages, ...}`.
+/// Sends the draft `id`. `body` holds the `Packages` its recipients get, and
+/// how it is sent, such as `ExpirationTime` and `AutoSaveContacts`.
 pub async fn send_message<D: Doer>(d: &D, id: &str, body: serde_json::Value) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::post(format!("/mail/v4/messages/{id}")).json(body))
-        .await?;
+    let request = Request::post(format!("/mail/v4/messages/{id}")).json(body);
+    act(d, request).await
+}
+
+/// Sends `request` and returns the message Proton answers with.
+async fn whole_message<D: Doer>(d: &D, request: Request) -> Result<Message> {
+    let MessageResp { message } = d.decode(request).await?;
+    Ok(message)
+}
+
+/// Sends `request` for its effect alone: the envelope says whether Proton
+/// did it, and the rest of the answer is skipped.
+async fn act<D: Doer>(d: &D, request: Request) -> Result<()> {
+    d.decode::<IgnoredAny>(request).await?;
     Ok(())
 }
 
-async fn label_op<D: Doer>(d: &D, op: &str, label_id: &str, ids: &[String]) -> Result<()> {
-    let body = serde_json::json!({ "LabelID": label_id, "IDs": ids });
-    let each: super::EachResponse = d
-        .decode(Request::put(format!("/mail/v4/messages/{op}")).json(body))
-        .await?;
-    each.into_result()
+/// Sends `method` to the endpoint `action` of the message `id`, for its
+/// effect alone.
+async fn act_on<D: Doer>(d: &D, method: Method, id: &str, action: &str) -> Result<()> {
+    act(
+        d,
+        Request::new(method, format!("/mail/v4/messages/{id}/{action}")),
+    )
+    .await
 }
 
-/// Add a label (or move to a folder) for the given messages.
+/// Applies `action` to the messages whose `IDs` are in `body`, and fails
+/// naming those Proton refused.
+async fn act_on_each<D: Doer>(d: &D, action: &str, body: serde_json::Value) -> Result<()> {
+    let request = Request::put(format!("/mail/v4/messages/{action}")).json(body);
+    d.decode::<super::EachResponse>(request)
+        .await?
+        .into_result()
+}
+
+/// The counts the `count` endpoint at `path` gives: messages', or
+/// conversations'.
+pub(super) async fn label_counts<D: Doer>(d: &D, path: &str) -> Result<Vec<LabelCount>> {
+    let CountsResp { counts } = d.decode(Request::get(path)).await?;
+    Ok(counts)
+}
+
+/// Adds the label `label_id` to the messages `ids`; a folder's ID moves them
+/// into that folder.
 pub async fn label<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<()> {
-    label_op(d, "label", label_id, ids).await
+    act_on_each(d, "label", json!({ "LabelID": label_id, "IDs": ids })).await
 }
-/// Remove a label from the given messages.
+/// Takes the label `label_id` off the messages `ids`.
 pub async fn unlabel<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<()> {
-    label_op(d, "unlabel", label_id, ids).await
+    act_on_each(d, "unlabel", json!({ "LabelID": label_id, "IDs": ids })).await
 }
 
-async fn ids_op<D: Doer>(d: &D, op: &str, ids: &[String]) -> Result<()> {
-    let body = serde_json::json!({ "IDs": ids });
-    let each: super::EachResponse = d
-        .decode(Request::put(format!("/mail/v4/messages/{op}")).json(body))
-        .await?;
-    each.into_result()
+/// How many messages each label holds, and how many of them are unread.
+pub async fn counts<D: Doer>(d: &D) -> Result<Vec<LabelCount>> {
+    label_counts(d, "/mail/v4/messages/count").await
 }
 
-#[derive(serde::Deserialize)]
-struct CountsResp {
-    #[serde(rename = "Counts", default)]
-    counts: Vec<super::events::LabelCount>,
-}
-
-/// Per-label message counts (total + unread).
-pub async fn counts<D: Doer>(d: &D) -> Result<Vec<super::events::LabelCount>> {
-    let r: CountsResp = d.decode(Request::get("/mail/v4/messages/count")).await?;
-    Ok(r.counts)
-}
-
-/// Undelete (restore) permanently-deleted messages.
-pub async fn undelete<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    ids_op(d, "undelete", ids).await
-}
-
-/// Send a read receipt for a message.
+/// Tells the sender of the message `id`, who asked to know, that it was read.
 pub async fn send_receipt<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::post(format!("/mail/v4/messages/{id}/receipt")))
-        .await?;
-    Ok(())
+    act_on(d, Method::POST, id, "receipt").await
 }
 
-/// Mark the given messages as read.
+/// Marks the messages `ids` read.
 pub async fn mark_read<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    ids_op(d, "read", ids).await
+    act_on_each(d, "read", json!({ "IDs": ids })).await
 }
-/// Mark the given messages as unread.
+/// Marks the messages `ids` unread.
 pub async fn mark_unread<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    ids_op(d, "unread", ids).await
+    act_on_each(d, "unread", json!({ "IDs": ids })).await
 }
-/// Permanently delete the given messages.
+/// Deletes the messages `ids` for good.
 pub async fn delete<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    ids_op(d, "delete", ids).await
+    act_on_each(d, "delete", json!({ "IDs": ids })).await
 }
 
-/// Cancel a scheduled send for a message.
+/// Calls off the scheduled sending of the message `id`.
 pub async fn cancel_send<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::post(format!("/mail/v4/messages/{id}/cancel_send")))
-        .await?;
-    Ok(())
+    act_on(d, Method::POST, id, "cancel_send").await
 }
 
-/// Report a message as not-spam (trains the filter; server moves it to Inbox).
+/// Reports the message `id` as not spam: the spam filter learns from it, and
+/// Proton moves the message to the inbox.
 pub async fn mark_ham<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::put(format!("/mail/v4/messages/{id}/mark/ham")))
-        .await?;
-    Ok(())
+    act_on(d, Method::PUT, id, "mark/ham").await
 }
 
-/// One-click unsubscribe (RFC 8058) from a mailing list.
+/// Leaves the mailing list the message `id` came from, the one-click way of
+/// RFC 8058.
 pub async fn unsubscribe<D: Doer>(d: &D, id: &str) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::post(format!("/mail/v4/messages/{id}/unsubscribe")))
-        .await?;
-    Ok(())
+    act_on(d, Method::POST, id, "unsubscribe").await
 }
 
-/// Permanently empty a folder/label (e.g. Trash or Spam).
+/// Deletes everything in the folder or label `label_id` for good, as
+/// emptying Trash or Spam does.
 pub async fn empty<D: Doer>(d: &D, label_id: &str) -> Result<()> {
-    let _: IgnoredAny = d
-        .decode(Request::delete("/mail/v4/messages/empty").query("LabelID", label_id))
-        .await?;
-    Ok(())
+    let request = Request::delete("/mail/v4/messages/empty").query("LabelID", label_id);
+    act(d, request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The query parameters `q` adds, as `name=value` before encoding.
+    fn sent(q: &ListQuery) -> Vec<String> {
+        q.apply(Request::get("/x"))
+            .query
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect()
+    }
+
+    #[test]
+    fn a_query_sends_what_is_set_in_a_fixed_order_after_the_sort() {
+        assert_eq!(sent(&ListQuery::default()), ["Sort=Time", "Desc=1"]);
+        let every = ListQuery {
+            label_id: Some("0".into()),
+            page: Some(2),
+            page_size: Some(50),
+            unread: true,
+            keyword: Some("invoice".into()),
+            from: Some("a@example.com".into()),
+            to: Some("b@example.com".into()),
+            subject: Some("Hello".into()),
+            begin: Some(1_700_000_000),
+            end: Some(1_800_000_000),
+            address_id: Some("address".into()),
+        };
+        assert_eq!(
+            sent(&every),
+            [
+                "Sort=Time",
+                "Desc=1",
+                "LabelID=0",
+                "Page=2",
+                "PageSize=50",
+                "Unread=1",
+                "Keyword=invoice",
+                "From=a@example.com",
+                "Recipients=b@example.com",
+                "Subject=Hello",
+                "Begin=1700000000",
+                "End=1800000000",
+                "AddressID=address",
+            ]
+        );
+    }
 }

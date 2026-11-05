@@ -1,4 +1,6 @@
-//! Organizing: move / label / trash / delete / mark / star.
+//! Organizing mail: moving, labelling, starring, marking, trashing and
+//! deleting messages and conversations; the account's folders and labels;
+//! and the settings of its addresses and outgoing mail.
 
 use super::Client;
 use crate::api;
@@ -6,28 +8,86 @@ use crate::error::{Error, Result};
 use crate::model::Label;
 use crate::model::enums::{label_ids, label_type, resolve_folder};
 
+/// What an action changes: single messages, or whole conversations, which
+/// Proton changes by changing every message in them. Moving to a folder,
+/// trashing, reporting spam and starring all put a label on.
+#[derive(Clone, Copy)]
+enum Items {
+    Messages,
+    Conversations,
+}
+
 impl Client {
-    /// Move messages to a folder/label (accepts a folder name or label ID).
+    /// Puts the label `label_id` on the `ids` of `items`.
+    async fn put_label(&self, items: Items, label_id: &str, ids: &[String]) -> Result<()> {
+        match items {
+            Items::Messages => api::messages::label(self.http(), label_id, ids).await,
+            Items::Conversations => api::conversations::label(self.http(), label_id, ids).await,
+        }
+    }
+
+    /// Takes the label `label_id` off the `ids` of `items`.
+    async fn take_label(&self, items: Items, label_id: &str, ids: &[String]) -> Result<()> {
+        match items {
+            Items::Messages => api::messages::unlabel(self.http(), label_id, ids).await,
+            Items::Conversations => api::conversations::unlabel(self.http(), label_id, ids).await,
+        }
+    }
+
+    /// Stars the `ids` of `items`, or takes their star off.
+    async fn star(&self, items: Items, ids: &[String], starred: bool) -> Result<()> {
+        if starred {
+            self.put_label(items, label_ids::STARRED, ids).await
+        } else {
+            self.take_label(items, label_ids::STARRED, ids).await
+        }
+    }
+}
+
+/// Actions on messages.
+impl Client {
+    /// Moves messages to `folder`: a system folder by the name
+    /// [`resolve_folder`] reads, or a folder or label by its ID.
     pub async fn move_messages(&self, ids: &[String], folder: &str) -> Result<()> {
-        api::messages::label(self.http(), &resolve_folder(folder), ids).await
+        self.put_label(Items::Messages, &resolve_folder(folder), ids)
+            .await
     }
-    /// Apply a label to messages.
+
+    /// Puts the label `label_id` on messages.
     pub async fn apply_label(&self, ids: &[String], label_id: &str) -> Result<()> {
-        api::messages::label(self.http(), label_id, ids).await
+        self.put_label(Items::Messages, label_id, ids).await
     }
-    /// Remove a label from messages.
+
+    /// Takes the label `label_id` off messages.
     pub async fn remove_label(&self, ids: &[String], label_id: &str) -> Result<()> {
-        api::messages::unlabel(self.http(), label_id, ids).await
+        self.take_label(Items::Messages, label_id, ids).await
     }
-    /// Move messages to Trash.
+
+    /// Stars messages, or takes their star off.
+    pub async fn star_messages(&self, ids: &[String], starred: bool) -> Result<()> {
+        self.star(Items::Messages, ids, starred).await
+    }
+
+    /// Moves messages to Trash.
     pub async fn trash_messages(&self, ids: &[String]) -> Result<()> {
-        api::messages::label(self.http(), label_ids::TRASH, ids).await
+        self.put_label(Items::Messages, label_ids::TRASH, ids).await
     }
-    /// Permanently delete messages.
-    pub async fn delete_messages(&self, ids: &[String]) -> Result<()> {
-        api::messages::delete(self.http(), ids).await
+
+    /// Reports messages as spam, which moves them to Spam.
+    pub async fn report_spam(&self, ids: &[String]) -> Result<()> {
+        self.put_label(Items::Messages, label_ids::SPAM, ids).await
     }
-    /// Mark messages read or unread.
+
+    /// Reports messages as not spam, one request for each, stopping at the
+    /// first that fails.
+    pub async fn report_ham(&self, ids: &[String]) -> Result<()> {
+        for id in ids {
+            api::messages::mark_ham(self.http(), id).await?;
+        }
+        Ok(())
+    }
+
+    /// Marks messages read, or unread when `read` is false.
     pub async fn mark_messages_read(&self, ids: &[String], read: bool) -> Result<()> {
         if read {
             api::messages::mark_read(self.http(), ids).await
@@ -35,37 +95,67 @@ impl Client {
             api::messages::mark_unread(self.http(), ids).await
         }
     }
-    /// Star or unstar messages.
-    pub async fn star_messages(&self, ids: &[String], starred: bool) -> Result<()> {
-        if starred {
-            api::messages::label(self.http(), label_ids::STARRED, ids).await
-        } else {
-            api::messages::unlabel(self.http(), label_ids::STARRED, ids).await
-        }
+
+    /// Deletes messages permanently.
+    pub async fn delete_messages(&self, ids: &[String]) -> Result<()> {
+        api::messages::delete(self.http(), ids).await
     }
 
-    // --- conversations ---
-    /// Move conversations to a folder/label (accepts a folder name or label ID).
-    pub async fn move_conversations(&self, ids: &[String], folder: &str) -> Result<()> {
-        api::conversations::label(self.http(), &resolve_folder(folder), ids).await
+    /// Deletes every message in `folder` permanently, as emptying Trash or
+    /// Spam does.
+    pub async fn empty_folder(&self, folder: &str) -> Result<()> {
+        api::messages::empty(self.http(), &resolve_folder(folder)).await
     }
+
+    /// Sends the read receipt that message `id` asks for.
+    pub async fn send_read_receipt(&self, id: &str) -> Result<()> {
+        api::messages::send_receipt(self.http(), id).await
+    }
+
+    /// Unsubscribes from the mailing list that sent message `id`, in the one
+    /// step the list offers for it.
+    pub async fn unsubscribe(&self, id: &str) -> Result<()> {
+        api::messages::unsubscribe(self.http(), id).await
+    }
+
+    /// How many messages each label holds, and how many of them are unread.
+    pub async fn message_counts(&self) -> Result<Vec<api::events::LabelCount>> {
+        api::messages::counts(self.http()).await
+    }
+}
+
+/// Actions on whole conversations.
+impl Client {
+    /// Moves conversations to `folder`, named as for
+    /// [`Client::move_messages`].
+    pub async fn move_conversations(&self, ids: &[String], folder: &str) -> Result<()> {
+        self.put_label(Items::Conversations, &resolve_folder(folder), ids)
+            .await
+    }
+
     /// Apply a label to conversations; Proton puts it on every message in them.
     pub async fn label_conversations(&self, ids: &[String], label_id: &str) -> Result<()> {
-        api::conversations::label(self.http(), label_id, ids).await
+        self.put_label(Items::Conversations, label_id, ids).await
     }
+
     /// Remove a label from conversations, and so from every message in them.
     pub async fn unlabel_conversations(&self, ids: &[String], label_id: &str) -> Result<()> {
-        api::conversations::unlabel(self.http(), label_id, ids).await
+        self.take_label(Items::Conversations, label_id, ids).await
     }
-    /// Move conversations to Trash.
+
+    /// Stars conversations, or takes their star off.
+    pub async fn star_conversations(&self, ids: &[String], starred: bool) -> Result<()> {
+        self.star(Items::Conversations, ids, starred).await
+    }
+
+    /// Moves conversations to Trash.
     pub async fn trash_conversations(&self, ids: &[String]) -> Result<()> {
-        api::conversations::label(self.http(), label_ids::TRASH, ids).await
+        self.put_label(Items::Conversations, label_ids::TRASH, ids)
+            .await
     }
-    /// Permanently delete conversations from the given folder.
-    pub async fn delete_conversations(&self, ids: &[String], folder: &str) -> Result<()> {
-        api::conversations::delete(self.http(), ids, &resolve_folder(folder)).await
-    }
-    /// Mark conversations read or unread (unread is scoped to `folder`).
+
+    /// Marks conversations read, or unread when `read` is false. Marking
+    /// them unread tells Proton the folder they are in, `folder`.
     pub async fn mark_conversations_read(
         &self,
         ids: &[String],
@@ -74,21 +164,37 @@ impl Client {
     ) -> Result<()> {
         api::conversations::mark(self.http(), read, ids, &resolve_folder(folder)).await
     }
-    /// Star or unstar conversations.
-    pub async fn star_conversations(&self, ids: &[String], starred: bool) -> Result<()> {
-        if starred {
-            api::conversations::label(self.http(), label_ids::STARRED, ids).await
-        } else {
-            api::conversations::unlabel(self.http(), label_ids::STARRED, ids).await
-        }
+
+    /// Deletes conversations permanently from `folder`.
+    pub async fn delete_conversations(&self, ids: &[String], folder: &str) -> Result<()> {
+        api::conversations::delete(self.http(), ids, &resolve_folder(folder)).await
     }
 
-    // --- labels / folders CRUD ---
-    /// List the account's labels.
+    /// Snoozes conversations until `until`, a Unix time.
+    pub async fn snooze_conversations(&self, ids: &[String], until: i64) -> Result<()> {
+        api::conversations::snooze(self.http(), ids, until).await
+    }
+
+    /// Wakes snoozed conversations before their time.
+    pub async fn unsnooze_conversations(&self, ids: &[String]) -> Result<()> {
+        api::conversations::unsnooze(self.http(), ids).await
+    }
+
+    /// How many conversations each label holds, and how many of them are
+    /// unread.
+    pub async fn conversation_counts(&self) -> Result<Vec<api::events::LabelCount>> {
+        api::conversations::counts(self.http()).await
+    }
+}
+
+/// The account's folders and labels.
+impl Client {
+    /// The account's labels.
     pub async fn list_labels(&self) -> Result<Vec<Label>> {
         api::labels::list(self.http(), label_type::MESSAGE_LABEL).await
     }
-    /// List the account's folders.
+
+    /// The account's folders.
     pub async fn list_folders(&self) -> Result<Vec<Label>> {
         api::labels::list(self.http(), label_type::MESSAGE_FOLDER).await
     }
@@ -105,7 +211,9 @@ impl Client {
         own.extend(self.list_labels().await?);
         folder_id_among(&own, folder)
     }
-    /// Create a label, or a folder when `folder` is set, optionally nested under `parent`.
+
+    /// Makes a label named `name` in `color`, or with `folder` a folder,
+    /// inside `parent` when one is given.
     pub async fn create_label(
         &self,
         name: &str,
@@ -113,65 +221,18 @@ impl Client {
         folder: bool,
         parent: Option<&str>,
     ) -> Result<Label> {
-        let t = if folder {
+        let kind = if folder {
             label_type::MESSAGE_FOLDER
         } else {
             label_type::MESSAGE_LABEL
         };
-        api::labels::create(self.http(), name, color, t, parent).await
-    }
-    /// Delete labels or folders by ID.
-    pub async fn delete_labels(&self, ids: &[String]) -> Result<()> {
-        api::labels::delete(self.http(), ids).await
+        api::labels::create(self.http(), name, color, kind, parent).await
     }
 
-    // --- mailbox actions ---
-    /// Report messages as spam (move to the Spam folder).
-    pub async fn report_spam(&self, ids: &[String]) -> Result<()> {
-        api::messages::label(self.http(), label_ids::SPAM, ids).await
-    }
-    /// Report messages as not-spam (trains the filter; server moves to Inbox).
-    pub async fn report_ham(&self, ids: &[String]) -> Result<()> {
-        for id in ids {
-            api::messages::mark_ham(self.http(), id).await?;
-        }
-        Ok(())
-    }
-    /// One-click unsubscribe from a mailing list.
-    pub async fn unsubscribe(&self, id: &str) -> Result<()> {
-        api::messages::unsubscribe(self.http(), id).await
-    }
-    /// Permanently empty a folder (e.g. `trash`, `spam`).
-    pub async fn empty_folder(&self, folder: &str) -> Result<()> {
-        api::messages::empty(self.http(), &resolve_folder(folder)).await
-    }
-    /// Snooze conversations until a Unix timestamp.
-    pub async fn snooze_conversations(&self, ids: &[String], until: i64) -> Result<()> {
-        api::conversations::snooze(self.http(), ids, until).await
-    }
-    /// Unsnooze conversations.
-    pub async fn unsnooze_conversations(&self, ids: &[String]) -> Result<()> {
-        api::conversations::unsnooze(self.http(), ids).await
-    }
-
-    /// Fetch the account's mail settings (raw).
-    pub async fn mail_settings(&self) -> Result<serde_json::Value> {
-        api::settings::get_mail_settings(self.http()).await
-    }
-
-    /// Per-label message counts (total + unread).
-    pub async fn message_counts(&self) -> Result<Vec<api::events::LabelCount>> {
-        api::messages::counts(self.http()).await
-    }
-    /// Per-label conversation counts.
-    pub async fn conversation_counts(&self) -> Result<Vec<api::events::LabelCount>> {
-        api::conversations::counts(self.http()).await
-    }
-    /// Restore permanently-deleted messages.
-    pub async fn undelete_messages(&self, ids: &[String]) -> Result<()> {
-        api::messages::undelete(self.http(), ids).await
-    }
-    /// Rename / recolor / reparent a label or folder.
+    /// Renames, recolors or moves a label or folder. What is `None` stays as
+    /// it is. Proton's own apps send a label's name and color with every
+    /// change, so whichever of the two is not given is read from the account
+    /// first.
     pub async fn update_label(
         &self,
         id: &str,
@@ -179,32 +240,40 @@ impl Client {
         color: Option<&str>,
         parent: Option<&str>,
     ) -> Result<()> {
-        let mut body = serde_json::Map::new();
-        if let Some(n) = name {
-            body.insert("Name".into(), serde_json::json!(n));
+        let (name, color) = match (name, color) {
+            (Some(name), Some(color)) => (name.to_owned(), color.to_owned()),
+            _ => {
+                let mut own = self.list_folders().await?;
+                own.extend(self.list_labels().await?);
+                let current = own
+                    .into_iter()
+                    .find(|label| label.id == id)
+                    .ok_or_else(|| Error::NotFound {
+                        kind: "label or folder".into(),
+                    })?;
+                (
+                    name.map_or(current.name, str::to_owned),
+                    color.map_or(current.color, str::to_owned),
+                )
+            }
+        };
+        let mut changes = serde_json::json!({ "Name": name, "Color": color });
+        if let Some(parent) = parent {
+            changes["ParentID"] = parent.into();
         }
-        if let Some(c) = color {
-            body.insert("Color".into(), serde_json::json!(c));
-        }
-        if let Some(p) = parent {
-            body.insert("ParentID".into(), serde_json::json!(p));
-        }
-        api::labels::update(self.http(), id, serde_json::Value::Object(body)).await
+        api::labels::update(self.http(), id, changes).await
     }
 
-    /// Send a read receipt for a message.
-    pub async fn send_read_receipt(&self, id: &str) -> Result<()> {
-        api::messages::send_receipt(self.http(), id).await
+    /// Deletes labels or folders by ID.
+    pub async fn delete_labels(&self, ids: &[String]) -> Result<()> {
+        api::labels::delete(self.http(), ids).await
     }
-    /// Toggle signing outgoing mail.
-    pub async fn set_sign(&self, on: bool) -> Result<()> {
-        api::settings::set_sign(self.http(), on).await
-    }
-    /// Toggle attaching the public key to outgoing mail.
-    pub async fn set_attach_public_key(&self, on: bool) -> Result<()> {
-        api::settings::set_attach_public_key(self.http(), on).await
-    }
-    /// Update an address (display name / signature).
+}
+
+/// The settings of the account's addresses and outgoing mail.
+impl Client {
+    /// Changes an address's display name or signature. What is `None` stays
+    /// as it is.
     pub async fn update_address(
         &self,
         id: &str,
@@ -212,6 +281,21 @@ impl Client {
         signature: Option<&str>,
     ) -> Result<()> {
         api::keys::update_address(self.http(), id, display_name, signature).await
+    }
+
+    /// The account's mail settings, as Proton sends them.
+    pub async fn mail_settings(&self) -> Result<serde_json::Value> {
+        api::settings::get_mail_settings(self.http()).await
+    }
+
+    /// Turns signing outgoing mail on or off.
+    pub async fn set_sign(&self, on: bool) -> Result<()> {
+        api::settings::set_sign(self.http(), on).await
+    }
+
+    /// Turns attaching the account's public key to outgoing mail on or off.
+    pub async fn set_attach_public_key(&self, on: bool) -> Result<()> {
+        api::settings::set_attach_public_key(self.http(), on).await
     }
 }
 
@@ -271,8 +355,134 @@ fn own_label_id(own: &[Label], wanted: &str) -> Result<String> {
 mod tests {
     use super::*;
     use crate::mail::test_support;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{body_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Has `server` expect one PUT of `body` to `endpoint`, and succeed.
+    async fn expect_put(server: &MockServer, endpoint: &str, body: serde_json::Value) {
+        Mock::given(method("PUT"))
+            .and(path(endpoint))
+            .and(body_json(body))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn each_labelling_action_puts_on_or_takes_off_the_label_it_means() {
+        let server = MockServer::start().await;
+        for (endpoint, label) in [
+            ("/mail/v4/messages/label", "6"),
+            ("/mail/v4/messages/label", "own"),
+            ("/mail/v4/messages/label", "10"),
+            ("/mail/v4/messages/label", "3"),
+            ("/mail/v4/messages/label", "4"),
+            ("/mail/v4/messages/unlabel", "own"),
+            ("/mail/v4/messages/unlabel", "10"),
+            ("/mail/v4/conversations/label", "0"),
+            ("/mail/v4/conversations/label", "own"),
+            ("/mail/v4/conversations/label", "10"),
+            ("/mail/v4/conversations/label", "3"),
+            ("/mail/v4/conversations/unlabel", "own"),
+            ("/mail/v4/conversations/unlabel", "10"),
+        ] {
+            let body = serde_json::json!({"LabelID": label, "IDs": ["id-1"]});
+            expect_put(&server, endpoint, body).await;
+        }
+        let client = test_support::client(&server, Vec::new());
+        let ids = ["id-1".to_string()];
+
+        client.move_messages(&ids, " Archive ").await.unwrap();
+        client.apply_label(&ids, "own").await.unwrap();
+        client.star_messages(&ids, true).await.unwrap();
+        client.trash_messages(&ids).await.unwrap();
+        client.report_spam(&ids).await.unwrap();
+        client.remove_label(&ids, "own").await.unwrap();
+        client.star_messages(&ids, false).await.unwrap();
+        client.move_conversations(&ids, "inbox").await.unwrap();
+        client.label_conversations(&ids, "own").await.unwrap();
+        client.star_conversations(&ids, true).await.unwrap();
+        client.trash_conversations(&ids).await.unwrap();
+        client.unlabel_conversations(&ids, "own").await.unwrap();
+        client.star_conversations(&ids, false).await.unwrap();
+    }
+
+    /// Has `server` list `labels` as the account's labels and `folders` as
+    /// its folders.
+    async fn own_labels(
+        server: &MockServer,
+        labels: serde_json::Value,
+        folders: serde_json::Value,
+    ) {
+        for (kind, listed) in [("1", labels), ("3", folders)] {
+            Mock::given(method("GET"))
+                .and(path("/core/v4/labels"))
+                .and(query_param("Type", kind))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"Code": 1000, "Labels": listed})),
+                )
+                .mount(server)
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_label_update_keeps_the_name_and_color_it_does_not_change() {
+        let server = MockServer::start().await;
+        own_labels(
+            &server,
+            serde_json::json!([{"ID": "label-2", "Name": "Receipts", "Color": "#00AA00", "Type": 1}]),
+            serde_json::json!([{"ID": "label-1", "Name": "Tax", "Color": "#8080FF", "Type": 3}]),
+        )
+        .await;
+        let renamed =
+            serde_json::json!({"Name": "Taxes", "Color": "#8080FF", "ParentID": "folder-0"});
+        expect_put(&server, "/core/v4/labels/label-1", renamed).await;
+        let recolored = serde_json::json!({"Name": "Receipts", "Color": "#FF0000"});
+        expect_put(&server, "/core/v4/labels/label-2", recolored).await;
+        let client = test_support::client(&server, Vec::new());
+
+        client
+            .update_label("label-1", Some("Taxes"), None, Some("folder-0"))
+            .await
+            .unwrap();
+        client
+            .update_label("label-2", None, Some("#FF0000"), None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_label_update_with_both_name_and_color_asks_for_nothing_else() {
+        let server = MockServer::start().await;
+        let both = serde_json::json!({"Name": "Taxes", "Color": "#FF0000"});
+        expect_put(&server, "/core/v4/labels/label-1", both).await;
+        let client = test_support::client(&server, Vec::new());
+
+        client
+            .update_label("label-1", Some("Taxes"), Some("#FF0000"), None)
+            .await
+            .unwrap();
+        let asked = server.received_requests().await.unwrap();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+    }
+
+    #[tokio::test]
+    async fn updating_a_label_the_account_lacks_is_refused() {
+        let server = MockServer::start().await;
+        own_labels(&server, serde_json::json!([]), serde_json::json!([])).await;
+        let client = test_support::client(&server, Vec::new());
+
+        let missing = client.update_label("gone", Some("Taxes"), None, None).await;
+        assert!(
+            matches!(missing, Err(Error::NotFound { .. })),
+            "{missing:?}"
+        );
+    }
 
     fn label(id: &str, name: &str, path: &str) -> Label {
         Label {

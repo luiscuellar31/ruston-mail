@@ -1,13 +1,14 @@
-//! Human-verification (CAPTCHA) resolver for the CLI.
+//! The CAPTCHA Proton may ask a sign-in to pass, its human verification: how
+//! `login` gets a person to solve it.
 //!
-//! Proton's captcha widget can only be *iframed* by `https://mail.proton.me`
-//! (its `frame-ancestors` CSP), so we can't embed it. Instead we open it as a
-//! TOP-LEVEL page (CSP `frame-ancestors` doesn't apply to top-level nav) and
-//! capture the token with a one-line console snippet the user pastes: when the
-//! widget solves, it `postMessage`s `{type:'pm_captcha', token}` to
-//! `window.parent` which — for a top-level page — is the page itself, so a
-//! `message` listener on `window` receives it and navigates the tab to our
-//! local listener with it. No copy-paste.
+//! Proton's captcha page refuses to be framed by any site but
+//! `https://mail.proton.me` (its `frame-ancestors` policy), a rule that does
+//! not apply to it as a tab of its own, so it opens as one. Solved, the
+//! captcha posts a `pm_captcha` message with its token to `window.parent`,
+//! which for a page in its own tab is the page itself. A snippet run on that
+//! page, from the console or as a bookmarklet, listens for the message and
+//! takes the tab to a listener on this machine, token and all, so nothing has
+//! to be copied by hand.
 //!
 //! The page opens with `#ruston=<port>.<nonce>` at the end of its address; the
 //! fragment never reaches Proton. The console snippet carries the port and
@@ -15,13 +16,10 @@
 //! bookmarklet serves every sign-in. The listener takes a token only with this
 //! sign-in's nonce, so no other page can hand one in.
 //!
-//! Resolution order:
-//!   1. pre-supplied `--captcha-token` (sent verbatim),
-//!   2. open captcha top-level + console snippet → auto-return to local server,
-//!   3. user can always copy the token and re-run with `--captcha-token`.
-//!
-//! The captcha HV token is sent RAW (no `<challenge>:` prefix — that form is
-//! only for email/sms codes).
+//! A token given with `--captcha-token` answers the challenge without any of
+//! this, and one copied from the page can be given that way to a new
+//! `login`. A captcha's token goes to Proton as the captcha made it: only
+//! codes sent by email or SMS take a `<challenge>:` prefix.
 //!
 //! `--captcha-chrome` instead follows Proton's external-browser flow (the one
 //! Proton Bridge's CLI uses): open `verify.proton.me` for the challenge in an
@@ -30,13 +28,12 @@
 //! with the original challenge token. Nothing is captured from the page.
 
 use crate::terminal;
+use futures::FutureExt;
 use ruston_core::model::enums::human_verification;
 use ruston_core::{Error, HvChallenge, HvResolver, Result};
-use std::future::Future;
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -56,54 +53,74 @@ const NOT_THIS_SIGN_IN_PAGE: &str = "<h2>Not from this sign-in</h2><p>This reque
 const NO_TOKEN_PAGE: &str =
     "<h2>No token received</h2><p>Your terminal is still waiting: solve the captcha again.</p>";
 
-/// Build the HV resolver.
-/// - `api_base`: API root (used to derive the captcha widget URL).
-/// - `captcha_token`: short-circuits the interactive flow when present.
-/// - `use_chrome`: open the captcha in an isolated Chrome window instead of the default browser.
+/// The human-verification step of a sign-in. A `captcha_token` solved
+/// beforehand answers a challenge as it is. Otherwise the person solves the
+/// captcha in a browser: with `use_chrome`, on Proton's verification page in
+/// an isolated Chrome window; without, on the captcha page of the API at
+/// `api_base`, which hands the token back to a listener here.
 pub fn resolver(captcha_token: Option<String>, api_base: String, use_chrome: bool) -> HvResolver {
-    Arc::new(move |chal: HvChallenge| {
-        let pre = captcha_token.clone();
-        let api = api_base.clone();
-        Box::pin(solve(chal, pre, api, use_chrome))
-            as Pin<Box<dyn Future<Output = Result<(String, String)>> + Send>>
+    let verification = Arc::new(Verification {
+        token: captcha_token,
+        api_base,
+        chrome: use_chrome,
+    });
+    Arc::new(move |challenge: HvChallenge| {
+        let verification = Arc::clone(&verification);
+        async move { verification.solve(challenge).await }.boxed()
     })
 }
 
-async fn solve(
-    chal: HvChallenge,
-    pre: Option<String>,
+/// How this sign-in answers a human-verification challenge.
+struct Verification {
+    /// A token solved beforehand, sent as it is.
+    token: Option<String>,
+    /// The API the sign-in talks to; its host serves the captcha page.
     api_base: String,
-    use_chrome: bool,
-) -> Result<(String, String)> {
-    if !chal.offers_captcha() {
-        return Err(Error::Other(format!(
-            "human verification requires an unsupported method: {:?} (only 'captcha' is handled)",
-            chal.methods
-        )));
-    }
-    if let Some(t) = pre {
-        return Ok((t, human_verification::CAPTCHA.to_string()));
-    }
+    /// Whether Proton's verification page opens in an isolated Chrome window.
+    chrome: bool,
+}
 
-    if use_chrome {
-        let url = chal.verification_url();
-        tokio::task::spawn_blocking(move || run_external_flow(&url))
-            .await
-            .map_err(|e| Error::Other(format!("hv task: {e}")))??;
-        // The verify page attached the solved captcha to the challenge, so the
-        // retry echoes the challenge token itself (as Proton Bridge does).
-        return Ok((chal.token, human_verification::CAPTCHA.to_string()));
+impl Verification {
+    /// The token that answers `challenge`, with its type: a captcha's, the
+    /// only method answered here.
+    async fn solve(&self, challenge: HvChallenge) -> Result<(String, String)> {
+        if !challenge.offers_captcha() {
+            return Err(Error::Other(format!(
+                "human verification requires an unsupported method: {:?} (only 'captcha' is handled)",
+                challenge.methods
+            )));
+        }
+        let token = if let Some(token) = &self.token {
+            token.clone()
+        } else if self.chrome {
+            let page = challenge.verification_url();
+            off_the_runtime(move || run_external_flow(&page)).await?;
+            // That page attached the solved captcha to the challenge itself,
+            // so the retry sends the challenge's own token, as Proton Bridge
+            // does.
+            challenge.token
+        } else {
+            let page = captcha_page(&self.api_base, &challenge.token);
+            off_the_runtime(move || run_manual_flow(&page)).await?
+        };
+        Ok((token, human_verification::CAPTCHA.to_owned()))
     }
+}
 
-    let (endpoint, _origin) = captcha_endpoint(&api_base);
-    let page = format!(
-        "{endpoint}?Token={}&ForceWebMessaging=1",
-        urlencode(&chal.token)
-    );
-
-    tokio::task::spawn_blocking(move || run_manual_flow(&page))
+/// Runs `wait`, which blocks until the person at the terminal is done, on a
+/// thread of its own, so the runtime is not held up meanwhile.
+async fn off_the_runtime<T: Send + 'static>(
+    wait: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(wait)
         .await
-        .map_err(|e| Error::Other(format!("hv task: {e}")))?
+        .map_err(failed("hv task"))?
+}
+
+/// Turns a failure of the local verification helper into an error that
+/// says what it was doing.
+fn failed<E: std::fmt::Display>(doing: &'static str) -> impl FnOnce(E) -> Error {
+    move |error| Error::Other(format!("{doing}: {error}"))
 }
 
 /// `--captcha-chrome`: open the verification page in an isolated Chrome window
@@ -137,8 +154,8 @@ fn run_external_flow(url: &str) -> Result<()> {
             .is_some_and(|(c, _)| matches!(c.try_wait(), Ok(Some(_))))
     });
 
-    // Close the isolated Chrome window we opened (if any), then remove its
-    // throwaway profile. Best effort: a leftover only wastes temp space.
+    // A window opened here closes now, and its throwaway profile goes with
+    // it. Best effort: a leftover only wastes temp space.
     if let Some((mut c, profile)) = chrome {
         let _ = c.kill();
         let _ = c.wait();
@@ -208,19 +225,11 @@ fn wait_for_confirmation(
     }
 }
 
-/// Open the captcha top-level, print the capture snippets, wait for the token.
-/// `page` is the captcha page's address, without this sign-in's fragment.
-fn run_manual_flow(page: &str) -> Result<(String, String)> {
-    let listener = TcpListener::bind(("127.0.0.1", PREFERRED_PORT))
-        .or_else(|_| TcpListener::bind("127.0.0.1:0"))
-        .map_err(|e| Error::Other(format!("cannot start HV helper server: {e}")))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| Error::Other(format!("hv addr: {e}")))?
-        .port();
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| Error::Other(format!("hv nonblocking: {e}")))?;
+/// Opens the captcha page in the default browser, says how to hand the token
+/// back, and waits for it. `page` is the captcha page's address, without
+/// this sign-in's fragment.
+fn run_manual_flow(page: &str) -> Result<String> {
+    let (listener, port) = token_listener()?;
     let nonce = new_nonce()?;
     let captcha_url = captcha_page_url(page, port, &nonce);
 
@@ -234,7 +243,21 @@ fn run_manual_flow(page: &str) -> Result<(String, String)> {
 
     let token = wait_for_token(&listener, &nonce, Instant::now() + HV_TIMEOUT)?;
     let _ = terminal::writeln!(std::io::stderr(), "Token received — continuing login.");
-    Ok((token, human_verification::CAPTCHA.to_string()))
+    Ok(token)
+}
+
+/// A listener on this machine for the captcha page to hand the token to, on
+/// the preferred port when that is free, and the port it took. It does not
+/// block, so the wait for the token keeps to its deadline.
+fn token_listener() -> Result<(TcpListener, u16)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, PREFERRED_PORT))
+        .or_else(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
+        .map_err(failed("cannot start HV helper server"))?;
+    let port = listener.local_addr().map_err(failed("hv addr"))?.port();
+    listener
+        .set_nonblocking(true)
+        .map_err(failed("hv nonblocking"))?;
+    Ok((listener, port))
 }
 
 /// Tells the person how to hand this sign-in's token back: through the
@@ -319,10 +342,10 @@ fn captcha_page_url(page: &str, port: u16, nonce: &str) -> String {
     format!("{page}#{FRAGMENT_KEY}={port}.{nonce}")
 }
 
-/// The capture snippet. On the `pm_captcha` message it NAVIGATES the tab to
-/// our local listener (the page's CSP `connect-src https: wss:` blocks `fetch`
-/// to http://localhost, but top-level navigation is not governed by
-/// connect-src). Shows a small status banner until then.
+/// The snippet that hands the token back. On the `pm_captcha` message it
+/// sends the tab itself to the listener here: the page's `connect-src https:
+/// wss:` policy forbids a `fetch` to http://localhost, but not a navigation.
+/// Until then a banner at the foot of the page says what it is doing.
 ///
 /// With `target`, the snippet carries the port and nonce itself, for pasting
 /// into the console. Without, it reads them from the page's address, so one
@@ -343,15 +366,9 @@ fn capture_snippet(target: Option<(u16, &str)>) -> String {
 /// sign-in's nonce, or without a token, is answered as such and the wait goes
 /// on. CORS hides the answer from the page, but the request still arrives.
 fn handle_conn(stream: &mut std::net::TcpStream, nonce: &str) -> Option<String> {
-    // On macOS/BSD the accepted socket inherits the listener's non-blocking
-    // mode; without this a request that arrives after `accept` is dropped.
-    stream.set_nonblocking(false).ok();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    let mut buf = [0u8; 8192];
-    let n = stream.read(&mut buf).ok()?;
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let mut request_line = req.lines().next()?.split_whitespace();
-    let (method, target) = (request_line.next()?, request_line.next()?);
+    let line = request_line(stream)?;
+    let mut words = line.split_whitespace();
+    let (method, target) = (words.next()?, words.next()?);
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if method != "GET" || path != "/token" {
         respond(stream, "404 Not Found", "<h2>Not found</h2>");
@@ -382,6 +399,24 @@ fn handle_conn(stream: &mut std::net::TcpStream, nonce: &str) -> Option<String> 
     }
 }
 
+/// How long a browser that connected has to send its request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The first line of the request on `stream`, from a single read: a browser
+/// sends a request this short in one piece.
+fn request_line(stream: &mut std::net::TcpStream) -> Option<String> {
+    // On macOS/BSD the accepted socket inherits the listener's non-blocking
+    // mode; without this a request that arrives after `accept` is dropped.
+    stream.set_nonblocking(false).ok();
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT)).ok();
+    let mut received = [0_u8; 8192];
+    let length = stream.read(&mut received).ok()?;
+    String::from_utf8_lossy(&received[..length])
+        .lines()
+        .next()
+        .map(str::to_owned)
+}
+
 /// Compares without stopping at the first difference, so the time taken does
 /// not tell how much of a guess was right.
 fn same_nonce(sent: &str, expected: &str) -> bool {
@@ -404,52 +439,53 @@ fn respond(stream: &mut std::net::TcpStream, status: &str, message: &str) {
     );
 }
 
-/// Derive the captcha widget endpoint + origin from the API base.
-/// `https://mail.proton.me/api` -> (`https://mail-api.proton.me/core/v4/captcha`, origin).
-fn captcha_endpoint(api_base: &str) -> (String, String) {
-    let (scheme, host) = split_scheme_host(api_base);
-    let is_ip_or_local = host.starts_with("127.")
-        || host.starts_with("localhost")
-        || host
-            .split(':')
-            .next()
-            .unwrap_or("")
-            .parse::<std::net::IpAddr>()
-            .is_ok();
-    if is_ip_or_local || !host.contains('.') {
-        let origin = format!("{scheme}://{host}");
-        (format!("{origin}/api/core/v4/captcha"), origin)
-    } else {
-        let (first, rest) = host.split_once('.').unwrap();
-        let api_host = format!("{first}-api.{rest}");
-        let origin = format!("{scheme}://{api_host}");
-        (format!("{origin}/core/v4/captcha"), origin)
+/// The captcha page for the challenge `token` names, served by the API at
+/// `api_base`, asked to post the solved token as a message, which the
+/// capture snippet listens for.
+fn captcha_page(api_base: &str, token: &str) -> String {
+    format!(
+        "{}?Token={}&ForceWebMessaging=1",
+        captcha_endpoint(api_base),
+        urlencode(token)
+    )
+}
+
+/// Where the API at `api_base` serves its captcha page. Proton serves it
+/// from the API's own host: `mail-api.proton.me` for
+/// `https://mail.proton.me/api`. A server named by an address, by
+/// `localhost` or by a name without a dot is a local one, which serves it
+/// under its API path. Without a scheme, https is meant.
+fn captcha_endpoint(api_base: &str) -> String {
+    let (scheme, rest) = api_base.split_once("://").unwrap_or(("https", api_base));
+    // The host and any port, without the path.
+    let host = rest.split('/').next().unwrap_or(rest);
+    match host.split_once('.') {
+        Some((first, domain)) if !is_local(host) => {
+            format!("{scheme}://{first}-api.{domain}/core/v4/captcha")
+        }
+        _ => format!("{scheme}://{host}/api/core/v4/captcha"),
     }
 }
 
-fn split_scheme_host(url: &str) -> (String, String) {
-    if let Some(i) = url.find("://") {
-        let scheme = url[..i].to_string();
-        let rest = &url[i + 3..];
-        let host = rest.split('/').next().unwrap_or(rest).to_string();
-        (scheme, host)
-    } else {
-        (
-            "https".to_string(),
-            url.split('/').next().unwrap_or(url).to_string(),
-        )
-    }
+/// Whether `host`, perhaps with a port, names this machine or an address
+/// rather than a domain.
+fn is_local(host: &str) -> bool {
+    let name = host.split(':').next().unwrap_or(host);
+    host.starts_with("127.") || host.starts_with("localhost") || name.parse::<IpAddr>().is_ok()
 }
 
-fn urlencode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
+/// Percent-encodes every byte but those of the characters RFC 3986 leaves
+/// unreserved, so a token passes through a query unchanged.
+fn urlencode(text: &str) -> String {
+    let mut encoded = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 fn open_browser(url: &str) -> std::io::Result<()> {
@@ -535,12 +571,13 @@ fn launch_chrome(url: &str) -> std::result::Result<(std::process::Child, PathBuf
     }
 }
 
+/// The browser at `chrome` showing `url` alone, in an app window, on the
+/// throwaway `profile`, without asking the questions of a first run.
 fn chrome_command(chrome: &str, profile: &std::path::Path, url: &str) -> std::process::Command {
     let mut command = std::process::Command::new(chrome);
     command
         .arg(format!("--user-data-dir={}", profile.display()))
-        .arg("--no-first-run")
-        .arg("--no-default-browser-check")
+        .args(["--no-first-run", "--no-default-browser-check"])
         .arg(format!("--app={url}"))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -548,41 +585,42 @@ fn chrome_command(chrome: &str, profile: &std::path::Path, url: &str) -> std::pr
     command
 }
 
+/// The first Chromium-based browser installed in Applications: Chrome, then
+/// Chromium, Brave or Edge.
+#[cfg(target_os = "macos")]
 fn find_chrome() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        windows_browsers()
-            .into_iter()
-            .find(|path| std::path::Path::new(path).exists())
-    }
-    #[cfg(unix)]
-    {
-        #[cfg(target_os = "macos")]
-        let candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ];
-        #[cfg(target_os = "linux")]
-        let candidates = [
-            "google-chrome",
-            "google-chrome-stable",
-            "chromium",
-            "chromium-browser",
-            "brave-browser",
-        ];
-        for c in candidates {
-            if c.contains('/') {
-                if std::path::Path::new(c).exists() {
-                    return Some(c.to_string());
-                }
-            } else if let Some(p) = which(c) {
-                return Some(p);
-            }
-        }
-        None
-    }
+    [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ]
+    .into_iter()
+    .find(|app| std::path::Path::new(app).exists())
+    .map(str::to_owned)
+}
+
+/// The first Chromium-based browser on `PATH`: Chrome, then Chromium or
+/// Brave.
+#[cfg(target_os = "linux")]
+fn find_chrome() -> Option<String> {
+    [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "brave-browser",
+    ]
+    .into_iter()
+    .find_map(which)
+}
+
+/// The first of [`windows_browsers`] that is installed.
+#[cfg(target_os = "windows")]
+fn find_chrome() -> Option<String> {
+    windows_browsers()
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
 }
 
 /// Chromium-based browsers in the per-machine and per-user install folders.
@@ -606,16 +644,13 @@ fn windows_browsers() -> Vec<String> {
         .collect()
 }
 
-#[cfg(unix)]
-fn which(bin: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let p = dir.join(bin);
-        if p.exists() {
-            return Some(p.to_string_lossy().into_owned());
-        }
-    }
-    None
+/// The first place on `PATH` that holds `program`.
+#[cfg(target_os = "linux")]
+fn which(program: &str) -> Option<String> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|folder| folder.join(program))
+        .find(|candidate| candidate.exists())
+        .map(|found| found.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -692,23 +727,59 @@ mod tests {
     }
 
     #[test]
-    fn captcha_endpoint_uses_api_subdomain() {
-        let (url, origin) = captcha_endpoint("https://mail.proton.me/api");
-        assert_eq!(url, "https://mail-api.proton.me/core/v4/captcha");
-        assert_eq!(origin, "https://mail-api.proton.me");
+    fn protons_captcha_page_is_on_its_api_host() {
+        for (api, endpoint) in [
+            (
+                "https://mail.proton.me/api",
+                "https://mail-api.proton.me/core/v4/captcha",
+            ),
+            (
+                "https://account.proton.me",
+                "https://account-api.proton.me/core/v4/captcha",
+            ),
+            // Without a scheme, https is meant.
+            (
+                "mail.proton.me/api",
+                "https://mail-api.proton.me/core/v4/captcha",
+            ),
+        ] {
+            assert_eq!(captcha_endpoint(api), endpoint, "{api}");
+        }
+        assert_eq!(
+            captcha_page("https://mail.proton.me/api", "a b/c"),
+            "https://mail-api.proton.me/core/v4/captcha?Token=a%20b%2Fc&ForceWebMessaging=1"
+        );
     }
 
     #[test]
-    fn captcha_endpoint_localhost_path_form() {
-        let (url, _o) = captcha_endpoint("http://127.0.0.1:8080/api");
-        assert_eq!(url, "http://127.0.0.1:8080/api/core/v4/captcha");
+    fn a_local_server_serves_the_captcha_under_its_api_path() {
+        for (api, endpoint) in [
+            (
+                "http://127.0.0.1:8080/api",
+                "http://127.0.0.1:8080/api/core/v4/captcha",
+            ),
+            (
+                "http://localhost:8080/api",
+                "http://localhost:8080/api/core/v4/captcha",
+            ),
+            ("http://[::1]:8080", "http://[::1]:8080/api/core/v4/captcha"),
+            (
+                "http://devbox:8080/api",
+                "http://devbox:8080/api/core/v4/captcha",
+            ),
+        ] {
+            assert_eq!(captcha_endpoint(api), endpoint, "{api}");
+        }
     }
 
     const NONCE: &str = "0123456789abcdef0123456789abcdef";
 
     #[test]
-    fn url_codec() {
+    fn tokens_are_percent_encoded_but_for_unreserved_characters() {
         assert_eq!(urlencode("a b/c"), "a%20b%2Fc");
+        assert_eq!(urlencode("Az09-_.~"), "Az09-_.~");
+        // Every byte of a character beyond ASCII is encoded.
+        assert_eq!(urlencode("+=&é"), "%2B%3D%26%C3%A9");
     }
 
     #[test]
@@ -810,32 +881,38 @@ mod tests {
         assert_eq!(status, "HTTP/1.1 200 OK");
     }
 
-    #[test]
-    fn local_server_captures_token() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
+    /// A listener on a free port of this machine that does not block, as the
+    /// wait for the token takes one, and its port.
+    fn waiting_listener() -> (TcpListener, u16) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
 
-        let handle = std::thread::spawn(move || {
+    #[test]
+    fn the_wait_ends_with_the_token_the_page_hands_in() {
+        let (listener, port) = waiting_listener();
+        let waiting = std::thread::spawn(move || {
             wait_for_token(&listener, NONCE, Instant::now() + Duration::from_secs(5))
         });
 
-        // The listener is already bound, so the connection waits for the
-        // helper in its queue.
-        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        c.write_all(get(&format!("/token?nonce={NONCE}&value=raw%3Atoken+abc")).as_bytes())
-            .unwrap();
-        let mut resp = String::new();
-        let _ = c.read_to_string(&mut resp);
+        // Bound already, the listener queues the connection until the wait
+        // takes it.
+        let mut browser = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let request = get(&format!("/token?nonce={NONCE}&value=solved%2Btoken"));
+        browser.write_all(request.as_bytes()).unwrap();
+        let mut answer = String::new();
+        let _ = browser.read_to_string(&mut answer);
 
-        let got = handle.join().unwrap();
-        assert_eq!(got.ok().as_deref(), Some("raw:token abc"));
+        let token = waiting.join().unwrap().ok();
+        assert_eq!(token.as_deref(), Some("solved+token"));
+        assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
     }
 
     #[test]
     fn a_wait_for_the_token_ends_at_its_deadline() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
+        let (listener, _) = waiting_listener();
 
         let waited = wait_for_token(&listener, NONCE, Instant::now());
 
@@ -867,9 +944,7 @@ mod tests {
     fn token_request_arriving_after_accept_is_not_dropped() {
         // On macOS an accepted socket inherits the listener's non-blocking mode,
         // so a request line that arrives after `accept` must still be read.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        listener.set_nonblocking(true).unwrap();
+        let (listener, port) = waiting_listener();
 
         let client = std::thread::spawn(move || {
             let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();

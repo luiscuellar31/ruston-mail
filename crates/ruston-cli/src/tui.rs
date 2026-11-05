@@ -43,7 +43,7 @@ pub(crate) fn has_terminal() -> bool {
 /// session is saved, happens first, as text. The terminal is put back as it
 /// was however the interface ends: a panic of its loop restores it through
 /// the hook `ratatui::try_init` installs, before the panic is reported, and
-/// stops marking pastes, as a normal end does.
+/// stops marking pastes and reporting the mouse, as a normal end does.
 pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let mailbox = if ctx.demo {
         Mailbox::demo()
@@ -57,7 +57,9 @@ pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let mut terminal = ratatui::try_init()?;
     report_panics_of(std::thread::current().id());
     mark_pastes(true);
+    capture_mouse(true);
     let result = run_loop(&mut terminal, &mut app, &theme, &mailbox).await;
+    capture_mouse(false);
     mark_pastes(false);
     ratatui::restore();
     // Back to the default hook, which reports any panic as usual.
@@ -73,10 +75,23 @@ fn report_panics_of(loop_thread: ThreadId) {
     let report = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().id() == loop_thread {
+            capture_mouse(false);
             mark_pastes(false);
             report(info);
         }
     }));
+}
+
+/// Asks the terminal to report the mouse's clicks and wheel, or to stop.
+/// While it reports them, most terminals select text only with a key held
+/// as it is dragged, such as Shift.
+fn capture_mouse(on: bool) {
+    use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+    let _ = if on {
+        crossterm::execute!(io::stdout(), EnableMouseCapture)
+    } else {
+        crossterm::execute!(io::stdout(), DisableMouseCapture)
+    };
 }
 
 /// Asks the terminal to mark what is pasted, or to stop, so a paste comes
@@ -122,7 +137,9 @@ fn login_options() -> Result<LoginArgs> {
 
 /// Draws, then waits for a key or for an answer to work handed out, until
 /// the person quits or the terminal stops sending events. A resize needs no
-/// message: the next draw fits the new size.
+/// message: the next draw fits the new size. The mouse moving asks for
+/// nothing, so it never reaches the loop, which would draw again for every
+/// cell it crosses.
 async fn run_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
@@ -130,7 +147,7 @@ async fn run_loop(
     mailbox: &Mailbox,
 ) -> Result<()> {
     let (sender, mut answers) = mpsc::unbounded_channel();
-    let mut events = EventStream::new();
+    let mut events = EventStream::new().filter(|event| std::future::ready(!moves(event)));
     let mut tasks = Tasks::default();
     for effect in app.start() {
         tasks.run(effect, mailbox, &sender);
@@ -164,6 +181,13 @@ async fn run_loop(
     }
     tasks.finish(mailbox, QUIT_WAIT).await;
     Ok(())
+}
+
+/// Whether `event` is the mouse moving, with a button held or none.
+fn moves(event: &io::Result<crossterm::event::Event>) -> bool {
+    use crossterm::event::{Event, MouseEventKind};
+    matches!(event, Ok(Event::Mouse(mouse))
+        if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)))
 }
 
 /// Where an attachment is saved: the Downloads folder the system names, as
@@ -311,12 +335,14 @@ fn suspends(event: &crossterm::event::Event) -> bool {
 fn suspend(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen};
     terminal.show_cursor()?;
+    capture_mouse(false);
     mark_pastes(false);
     ratatui::try_restore()?;
     signal_hook::low_level::raise(signal_hook::consts::SIGTSTP)?;
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(io::stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
     mark_pastes(true);
+    capture_mouse(true);
     *terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
     Ok(())
 }
@@ -431,21 +457,21 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
         },
         Effect::Search {
             request,
-            words,
+            opts,
             page,
         } => Message::ConversationsLoaded {
             request,
             page,
             result: mailbox
-                .search(&words, page)
+                .search(&opts, page)
                 .await
                 .map_err(|error| error.to_string()),
         },
-        Effect::LocalSearch { request, words } => Message::ConversationsLoaded {
+        Effect::LocalSearch { request, opts } => Message::ConversationsLoaded {
             request,
             page: 0,
             result: mailbox
-                .search_local(&words)
+                .search_local(&opts)
                 .await
                 .map_err(|error| error.to_string()),
         },
@@ -463,6 +489,7 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
             Message::Changed {
                 change,
                 ids,
+                place,
                 result: result.map_err(|error| error.to_string()),
             }
         }
@@ -718,6 +745,85 @@ mod tests {
         }
         done.sort();
         assert_eq!(done, ["Star(false)", "Star(true)", "a", "b"]);
+    }
+
+    /// Does `effects`, as the loop would, and what their answers ask for,
+    /// until nothing is left to do.
+    async fn run_all(app: &mut App, mut effects: Vec<Effect>, mailbox: &Mailbox) {
+        while let Some(effect) = effects.pop() {
+            let answered = answer(effect, mailbox).await;
+            effects.extend(app.update(answered));
+        }
+    }
+
+    /// The IDs of the conversations `mailbox` lists in the place `id`.
+    async fn listed(mailbox: &Mailbox, id: &str) -> Vec<String> {
+        let (_, page) = mailbox.conversations(id, 0).await.unwrap();
+        page.into_iter()
+            .map(|conversation| conversation.id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn shift_z_takes_the_last_move_back_in_the_demo() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ruston_core::model::enums::label_ids;
+        let mailbox = Mailbox::demo();
+        let mut app = App::new(mailbox.account());
+        let start = app.start();
+        run_all(&mut app, start, &mailbox).await;
+        app.update(Message::NextPane);
+        let moved = app.conversations[0].id.clone();
+        let archived = app.update(Message::Archive);
+        run_all(&mut app, archived, &mailbox).await;
+        assert!(!listed(&mailbox, label_ids::INBOX).await.contains(&moved));
+
+        let shift_z = Event::Key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT));
+        let undone = app
+            .message_for(&shift_z)
+            .map_or_else(Vec::new, |message| app.update(message));
+        run_all(&mut app, undone, &mailbox).await;
+        assert!(listed(&mailbox, label_ids::INBOX).await.contains(&moved));
+        assert!(!listed(&mailbox, label_ids::ARCHIVE).await.contains(&moved));
+        // Listed again where it was.
+        assert!(app.conversations.iter().any(|c| c.id == moved));
+    }
+
+    #[test]
+    fn the_mouse_moving_never_reaches_the_loop() {
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mouse = |kind| {
+            Ok(Event::Mouse(MouseEvent {
+                kind,
+                column: 3,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }))
+        };
+        assert!(moves(&mouse(MouseEventKind::Moved)));
+        assert!(moves(&mouse(MouseEventKind::Drag(MouseButton::Left))));
+        assert!(!moves(&mouse(MouseEventKind::Down(MouseButton::Left))));
+        assert!(!moves(&mouse(MouseEventKind::ScrollDown)));
+        assert!(!moves(&Ok(Event::Resize(80, 24))));
+    }
+
+    #[tokio::test]
+    async fn a_conversation_read_in_the_demo_opens_again_with_its_messages_read() {
+        let mailbox = Mailbox::demo();
+        let mut app = App::new(mailbox.account());
+        let start = app.start();
+        run_all(&mut app, start, &mailbox).await;
+        app.update(Message::NextPane);
+        // Its first message is not read yet, so it stays open, and opening
+        // the conversation marks it read.
+        let opened = app.update(Message::Open);
+        run_all(&mut app, opened, &mailbox).await;
+        let reading = app.reading.as_ref().unwrap();
+        assert!(reading.messages.len() > 1 && !reading.folds(0));
+        app.update(Message::Left);
+        let opened = app.update(Message::Open);
+        run_all(&mut app, opened, &mailbox).await;
+        assert!(app.reading.as_ref().unwrap().folds(0));
     }
 
     #[cfg(unix)]

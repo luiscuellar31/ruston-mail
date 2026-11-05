@@ -4,9 +4,9 @@
 //! Every piece of text that comes with the mail goes through
 //! `terminal::screen_line` first.
 
-use super::app::{App, GO_TO, LinkPick, Pane, Question};
+use super::app::{App, Drawn, GO_TO, LinkPick, Pane, Query, Question};
 use super::compose::{Checked, Compose, Field};
-use super::reading::size_label;
+use super::reading::{Reading, is_quoted, size_label};
 use crate::mailbox::OutgoingKind;
 use crate::render;
 use crate::terminal::screen_line;
@@ -15,8 +15,12 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Quote, RecipientProtection};
+use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Below this width the panes take turns on the screen, as the desktop's
 /// compact view does.
@@ -25,8 +29,16 @@ const THREE_PANES_MIN_WIDTH: u16 = 100;
 /// The folder list's width when the panes stand side by side.
 const FOLDERS_WIDTH: u16 = 24;
 
-/// How many columns a conversation's sender takes in its row.
+/// What the marks at the start of a conversation's row say, under the list.
+const ROW_MARKS: &str = " ✓ marked · • unread · ★ starred · + files ";
+
+/// How many columns a conversation's sender takes in its row, at most: a
+/// narrower row gives it a quarter of its width.
 const SENDER_WIDTH: usize = 18;
+
+/// The narrowest row whose day shows its year; a narrower one, as beside the
+/// other panes below 155 columns, leaves it to the reader.
+const YEAR_WIDTH: usize = 60;
 
 /// How many conversations a question names before it counts the rest.
 const NAMED: usize = 5;
@@ -36,25 +48,39 @@ const LABEL_WIDTH: u16 = 9;
 
 /// Each key and what it does, as the list of keys shows them: Proton Mail's
 /// where it has one, and keys it leaves free for what only a terminal needs.
-const KEYS: [(&str, &str); 21] = [
+const KEYS: [(&str, &str); 23] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, Up, Down", "move, or scroll the reader"),
     ("Enter, Right, Left", "open it, or go back a pane"),
+    (
+        "Enter, in the reader",
+        "fold or open the message at its top",
+    ),
+    (
+        "Click, wheel",
+        "select it, open it once selected, or scroll",
+    ),
     ("PageUp, PageDown", "scroll the reader a page"),
     ("Home, End, Ctrl+Up/Down", "go to the top or the bottom"),
     (
         "g, then i, a, e, *…",
         "go to the Inbox, Archive, Sent, Starred…",
     ),
-    ("z", "show or hide quoted text"),
+    ("z, e", "show or hide quoted text, or messages already read"),
     ("b, v", "list its links, or its attachments"),
     ("n, Ctrl+N", "write a new message"),
     ("r, R, F", "in the reader: reply, reply to all, forward"),
     ("*, r, u", "star or unstar it, mark it read or unread"),
-    ("a, s, i", "archive it, or move it to Spam or the Inbox"),
-    ("t, Delete", "move it to Trash"),
+    (
+        "a, s, i, t, Delete",
+        "archive it, or move it to Spam, the Inbox or Trash",
+    ),
+    ("Z", "take the last move back"),
     ("Ctrl+Backspace", "delete it forever, in Trash or Spam"),
-    ("l, m", "label it, or move it to a folder"),
+    (
+        "l, L, m",
+        "label it, remove a label, or move it to a folder",
+    ),
     (
         "Space, x, Ctrl+A",
         "mark it, or all; an action acts on all marked",
@@ -66,6 +92,9 @@ const KEYS: [(&str, &str); 21] = [
     ("q, Ctrl+C", "quit"),
 ];
 
+/// What `:search` takes beside its words, under the list of keys.
+const SEARCH_FILTERS: &str = " :search words from:who to:who after:day before:day in:folder ";
+
 /// Ctrl+Z, where the shell has job control to suspend the interface with.
 const SUSPEND_KEYS: &[(&str, &str)] = if cfg!(unix) {
     &[("Ctrl+Z", "suspend to the shell")]
@@ -73,28 +102,78 @@ const SUSPEND_KEYS: &[(&str, &str)] = if cfg!(unix) {
     &[]
 };
 
-/// The terminal's own colors with one accent, or none at all when
-/// `NO_COLOR` is set, as <https://no-color.org> asks.
+/// Ruston Mail's violet, the accent the desktop draws.
+const ACCENT: Color = Color::Rgb(109, 92, 245);
+
+/// The terminal's own colors with one accent, Ruston Mail's violet, or none
+/// at all when `NO_COLOR` is set, as <https://no-color.org> asks.
 pub(crate) struct Theme {
     accent: Style,
+    /// The labels a row of the list names: in the accent's color, or in the
+    /// terminal's own without colors, since bold says a row is unread.
+    label: Style,
 }
 
 impl Theme {
     pub(crate) fn from_env() -> Self {
-        Self::new(std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()))
+        if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+            return Self::new(true);
+        }
+        let accent = Style::new().fg(accent_color());
+        Self {
+            accent,
+            label: accent,
+        }
     }
 
     fn new(no_color: bool) -> Self {
-        let accent = if no_color {
-            Style::new().add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(Color::Cyan)
-        };
-        Self { accent }
+        if no_color {
+            return Self {
+                accent: Style::new().add_modifier(Modifier::BOLD),
+                label: Style::new(),
+            };
+        }
+        let accent = Style::new().fg(ACCENT);
+        Self {
+            accent,
+            label: accent,
+        }
+    }
+}
+
+/// Ruston Mail's violet as this terminal shows it: the Windows console and
+/// Windows Terminal show any color.
+#[cfg(windows)]
+fn accent_color() -> Color {
+    ACCENT
+}
+
+/// Ruston Mail's violet as this terminal shows it, by what its environment
+/// says it can show.
+#[cfg(not(windows))]
+fn accent_color() -> Color {
+    let var = |name| std::env::var(name).unwrap_or_default();
+    accent_among(&var("COLORTERM"), &var("TERM"))
+}
+
+/// Ruston Mail's violet as a terminal can show it: exactly where `COLORTERM`
+/// says it shows any color, the 256-color palette's nearest violet, #875fff,
+/// where `TERM` says it has those, and its own magenta otherwise. A color a
+/// terminal cannot show could come out as another, green in some.
+#[cfg(not(windows))]
+fn accent_among(colorterm: &str, term: &str) -> Color {
+    if matches!(colorterm, "truecolor" | "24bit") {
+        ACCENT
+    } else if term.contains("256color") {
+        Color::Indexed(99)
+    } else {
+        Color::Magenta
     }
 }
 
 pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
+    // Each pane drawn below notes where it is.
+    app.drawn.set(Drawn::default());
     // The message being written takes the whole screen.
     if let Some(compose) = &app.compose {
         draw_compose(frame, compose, theme, app.question.is_none());
@@ -129,7 +208,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         draw_question(frame, question, theme);
     }
     if app.help {
-        draw_keys(frame, theme);
+        draw_keys(frame, app, theme);
     }
 }
 
@@ -191,8 +270,10 @@ fn draw_question(frame: &mut Frame, question: &Question, theme: &Theme) {
                 }
             }
             lines.push(Line::default());
+            // Recipients past the lookup limit were not asked about.
+            let unchecked = outgoing.recipients().len().saturating_sub(checks.len());
             lines.extend(
-                protection(checks)
+                protection(checks, unchecked)
                     .iter()
                     .map(|said| Line::raw(screen_line(said))),
             );
@@ -227,10 +308,10 @@ fn undone(yes: &'static str) -> [Line<'static>; 3] {
 
 /// What the question before sending says about how Proton would protect
 /// the message, as the desktop's editor says it: who would not get it
-/// end-to-end encrypted, and who could not be checked, as soon as either is
-/// known; until every recipient is, that it is checking; then that every
-/// one would.
-fn protection(checks: &[(String, Checked)]) -> Vec<String> {
+/// end-to-end encrypted, who could not be checked, and how many `unchecked`
+/// past the lookup limit were not asked about, as soon as any is known;
+/// until every recipient is, that it is checking; then that every one would.
+fn protection(checks: &[(String, Checked)], unchecked: usize) -> Vec<String> {
     let with = |wanted: Checked| -> Vec<&str> {
         checks
             .iter()
@@ -251,6 +332,16 @@ fn protection(checks: &[(String, Checked)]) -> Vec<String> {
         said.push(format!(
             "Could not check how this message will be protected for: {}",
             unknown.join(", ")
+        ));
+    }
+    if unchecked > 0 {
+        let recipients = if unchecked == 1 {
+            "recipient"
+        } else {
+            "recipients"
+        };
+        said.push(format!(
+            "Not checked: {unchecked} more {recipients}, past the first {PROTECTION_LOOKUP_LIMIT}."
         ));
     }
     if said.is_empty() {
@@ -630,7 +721,9 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
     if focused {
         block = block.border_style(theme.accent);
     }
-    match pane {
+    let inner = block.inner(area);
+    // The first row of its list it shows.
+    let first = match pane {
         Pane::Folders => {
             let items = app.places.iter().map(|place| {
                 let mut spans = vec![Span::raw(format!(
@@ -643,12 +736,12 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 }
                 ListItem::new(Line::from(spans))
             });
-            draw_list(frame, items, app.selected_place, focused, block, area);
+            draw_list(frame, items, app.selected_place, focused, block, area)
         }
         // Without this, the keys would seem to do nothing in an empty list.
         Pane::Conversations if app.listed_nothing() => {
             let hint = match &app.search {
-                Some(search) if search.local => vec![
+                Some(search) if matches!(search.query, Query::Local(_)) => vec![
                     Line::raw(format!(
                         "Nothing in the local index matches {}.",
                         screen_line(&search.words)
@@ -669,26 +762,40 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 .style(Style::new().add_modifier(Modifier::DIM))
                 .wrap(Wrap { trim: true });
             frame.render_widget(hint.block(block), area);
+            0
         }
         Pane::Conversations => {
+            let width = usize::from(block.inner(area).width);
             let items = app.conversations.iter().map(|conversation| {
-                conversation_row(conversation, app.marked.contains(&conversation.id))
+                let marked = app.marked.contains(&conversation.id);
+                let labels = app.row_labels(conversation);
+                conversation_row(conversation, marked, &labels, width, theme)
             });
+            // What the marks at the start of a row say, where they show.
+            let legend = Line::styled(ROW_MARKS, Style::new().add_modifier(Modifier::DIM));
             draw_list(
                 frame,
                 items,
                 app.selected_conversation,
                 focused,
-                block,
+                block.title_bottom(legend),
                 area,
-            );
+            )
         }
-        Pane::Reader => draw_reader(frame, app, block, area),
-    }
+        Pane::Reader => {
+            draw_reader(frame, app, block, area);
+            0
+        }
+    };
+    // For the mouse to find what it points at.
+    let mut drawn = app.drawn.get();
+    drawn.note(pane, inner, first);
+    app.drawn.set(drawn);
 }
 
 /// A list with its selection on `selected`, shown inverted in the focused
-/// pane, which reads without colors too, and in bold elsewhere.
+/// pane, which reads without colors too, and underlined elsewhere: bold
+/// says a conversation is unread. Returns the first row it shows.
 fn draw_list<'a>(
     frame: &mut Frame,
     items: impl Iterator<Item = ListItem<'a>>,
@@ -696,25 +803,30 @@ fn draw_list<'a>(
     focused: bool,
     block: Block,
     area: Rect,
-) {
+) -> usize {
     let highlight = if focused {
         Style::new().add_modifier(Modifier::REVERSED)
     } else {
-        Style::new().add_modifier(Modifier::BOLD)
+        Style::new().add_modifier(Modifier::UNDERLINED)
     };
     let list = List::new(items).block(block).highlight_style(highlight);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
+    state.offset()
 }
 
-/// The open conversation, its quoted passages folded into a line each
+/// The open conversation, the labels it bears under its subject, the
+/// messages the state folds in a row each, a run of them without the
+/// separators between, and the quoted passages of the rest in a line each,
 /// unless the state shows them, wrapped to the pane and scrolled as far as
 /// the state asks, within what there is. Since only the drawing knows how many
-/// rows the text wraps to, it tells the state how far it can scroll.
-fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
+/// rows the text wraps to, it tells the state how far it can scroll and which
+/// message is at the top, and brings there the one the state asks for.
+fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) {
     let inner = block.inner(area);
     let Some(reading) = &app.reading else {
         app.reader_bottom.set(0);
+        app.in_view.set(None);
         let hint = Line::styled(
             "Enter on a conversation opens it here.",
             Style::new().add_modifier(Modifier::DIM),
@@ -722,47 +834,144 @@ fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
         frame.render_widget(Paragraph::new(hint).block(block), area);
         return;
     };
-    let mut lines = vec![
-        Line::styled(
-            reading.subject.as_str(),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-        Line::default(),
-    ];
-    if app.show_quotes {
-        lines.extend(raw(&reading.lines));
-    } else {
-        let mut rest = 0;
-        for quote in &reading.quotes {
-            lines.extend(raw(&reading.lines[rest..quote.start]));
-            lines.push(Line::styled(
-                format!("… {} quoted lines (z shows them)", quote.len()),
-                Style::new().add_modifier(Modifier::DIM),
-            ));
-            rest = quote.end;
-        }
-        lines.extend(raw(&reading.lines[rest..]));
+    let mut lines = vec![Line::styled(
+        reading.subject.as_str(),
+        Style::new().add_modifier(Modifier::BOLD),
+    )];
+    // From the list, which loads again after each change, so they follow it.
+    let labels = app
+        .conversations
+        .iter()
+        .find(|conversation| conversation.id == reading.id)
+        .map(|conversation| app.label_names(&[conversation]))
+        .unwrap_or_default();
+    if !labels.is_empty() {
+        let named = format!("Labels: {}", labels.join(", "));
+        lines.push(Line::raw(screen_line(&named)));
     }
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let rows = paragraph.line_count(inner.width);
-    let bottom = u16::try_from(rows.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
+    lines.push(Line::default());
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let width = usize::from(inner.width);
+    // Where each message starts in `lines`, with the separator before it
+    // and without.
+    let mut starts = Vec::new();
+    let mut rest = 0;
+    for (index, message) in reading.messages.iter().enumerate() {
+        let folds = app.folds(index);
+        let separator = lines.len();
+        if !(folds && index > 0 && app.folds(index - 1)) {
+            lines.extend(raw(&reading.lines[rest..message.lines.start]));
+        }
+        starts.push((separator, lines.len()));
+        if folds {
+            lines.push(Line::styled(cut(&message.line, width), dim));
+        } else {
+            unfolded(&mut lines, reading, message.lines.clone(), app.show_quotes);
+        }
+        rest = message.lines.end;
+    }
+    unfolded(
+        &mut lines,
+        reading,
+        rest..reading.lines.len(),
+        app.show_quotes,
+    );
+    // The rows the lines wrap to before each start, counted a stretch at a
+    // time.
+    let (mut rows, mut counted) = (0, 0);
+    let mut rows_to = |line: usize| {
+        let stretch = Paragraph::new(lines[counted..line].to_vec()).wrap(Wrap { trim: false });
+        rows += stretch.line_count(inner.width);
+        counted = line;
+        rows
+    };
+    let starts: Vec<(usize, usize)> = starts
+        .into_iter()
+        .map(|(separator, own)| (rows_to(separator), rows_to(own)))
+        .collect();
+    let rows = rows_to(lines.len());
+    let height = usize::from(inner.height);
+    let bottom = rows.saturating_sub(height);
+    // As the desktop lands on a message: unless it starts in the upper third
+    // already, where a short conversation keeps its subject in view.
+    if let Some(&(_, start)) = app.landing.take().and_then(|index| starts.get(index)) {
+        let scroll = usize::from(app.scroll.get());
+        if start < scroll || start > scroll + height / 3 {
+            app.scroll
+                .set(u16::try_from(start.min(bottom)).unwrap_or(u16::MAX));
+        }
+    }
+    let top = usize::from(app.scroll.get()).min(bottom);
+    let at_top = starts.iter().rposition(|&(separator, _)| separator <= top);
+    app.in_view
+        .set(at_top.or((!starts.is_empty()).then_some(0)));
+    let bottom = u16::try_from(bottom).unwrap_or(u16::MAX);
     app.reader_bottom.set(bottom);
     app.reader_rows.set(inner.height.max(1));
+    if (0..reading.messages.len()).any(|index| reading.folds(index)) {
+        let hint = if app.show_read {
+            " e folds the messages read "
+        } else {
+            " e opens the messages read "
+        };
+        block = block.title_bottom(Line::styled(hint, dim));
+    }
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(
-        paragraph.scroll((app.scroll.min(bottom), 0)).block(block),
+        paragraph
+            .scroll((app.scroll.get().min(bottom), 0))
+            .block(block),
         area,
     );
 }
 
-/// Each of `lines` as it is, without a style.
-fn raw(lines: &[String]) -> impl Iterator<Item = Line<'_>> {
-    lines.iter().map(|line| Line::raw(line.as_str()))
+/// Adds the lines `range` of `reading`, each quoted passage that starts
+/// among them folded into a line unless `show_quotes`.
+fn unfolded<'a>(
+    lines: &mut Vec<Line<'a>>,
+    reading: &'a Reading,
+    range: Range<usize>,
+    show_quotes: bool,
+) {
+    let mut rest = range.start;
+    if !show_quotes {
+        for quote in reading.quotes.iter().filter(|q| range.contains(&q.start)) {
+            lines.extend(raw(&reading.lines[rest..quote.start]));
+            let said = format!("… {} quoted lines (z shows them)", quote.len());
+            lines.push(Line::styled(said, Style::new().add_modifier(Modifier::DIM)));
+            rest = quote.end.min(range.end);
+        }
+    }
+    lines.extend(raw(&reading.lines[rest..range.end]));
 }
 
-/// One row of the list: whether it is marked (✓), unread (•), starred (★)
-/// or has attachments (+), its day, who wrote it and its subject. Unread
-/// conversations are bold.
-fn conversation_row(conversation: &Conversation, marked: bool) -> ListItem<'static> {
+/// Each of `lines` as it is, a quoted one dimmed: wrapped, its later rows
+/// lose the `>` that says it quotes.
+fn raw(lines: &[String]) -> impl Iterator<Item = Line<'_>> {
+    lines.iter().map(|line| {
+        if is_quoted(line) {
+            Line::styled(line.as_str(), Style::new().add_modifier(Modifier::DIM))
+        } else {
+            Line::raw(line.as_str())
+        }
+    })
+}
+
+/// One row of the list, `width` columns wide: whether it is marked (✓),
+/// unread (•), starred (★) or has attachments (+), its day, who wrote it,
+/// its subject and the `labels` it bears. A narrow row, as beside the other
+/// panes, leaves out the day's year and cuts the sender short, so the
+/// subject keeps the largest share of it. The labels get what the subject
+/// leaves of the row, and at least a third of what follows the sender, the
+/// subject cut short for them; those that still do not fit are counted.
+/// Unread conversations are bold.
+fn conversation_row(
+    conversation: &Conversation,
+    marked: bool,
+    labels: &[String],
+    width: usize,
+    theme: &Theme,
+) -> ListItem<'static> {
     let unread = conversation.num_unread > 0;
     let starred = conversation
         .labels
@@ -780,7 +989,9 @@ fn conversation_row(conversation: &Conversation, marked: bool) -> ListItem<'stat
         },
     );
     let time = render::fmt_time(conversation.time);
-    let day = time.get(..10).unwrap_or(&time);
+    // YYYY-MM-DD, or in a narrow row MM-DD.
+    let day = if width >= YEAR_WIDTH { 0..10 } else { 5..10 };
+    let day = time.get(day).unwrap_or(&time);
     let sender = conversation.senders.first().map_or("-", |sender| {
         if sender.name.is_empty() {
             &sender.address
@@ -788,22 +999,75 @@ fn conversation_row(conversation: &Conversation, marked: bool) -> ListItem<'stat
             &sender.name
         }
     });
+    let sender_width = (width / 4).min(SENDER_WIDTH);
+    let sender = cut(&screen_line(sender), sender_width);
+    let padding = " ".repeat(sender_width.saturating_sub(sender.width()));
     let style = if unread {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     };
-    ListItem::new(Line::from(vec![
+    let mut spans = vec![
         Span::raw(format!("{flags} {day}  ")),
-        Span::styled(
-            format!("{:<SENDER_WIDTH$.SENDER_WIDTH$}  ", screen_line(sender)),
-            style,
-        ),
-        Span::styled(
-            screen_line(render::subject_or_empty(&conversation.subject)),
-            style,
-        ),
-    ]))
+        Span::styled(format!("{sender}{padding}  "), style),
+    ];
+    let subject = screen_line(render::subject_or_empty(&conversation.subject));
+    let room = width.saturating_sub(spans.iter().map(Span::width).sum());
+    let left = room.saturating_sub(subject.width() + 1);
+    let tags = tags(labels, left.max(room / 3));
+    if tags.is_empty() {
+        spans.push(Span::styled(subject, style));
+    } else {
+        let subject = cut(&subject, room.saturating_sub(tags.width() + 1));
+        spans.extend([
+            Span::styled(subject, style),
+            Span::raw(" "),
+            Span::styled(tags, theme.label),
+        ]);
+    }
+    ListItem::new(Line::from(spans))
+}
+
+/// The labels `names` as a row of the list shows them, in at most `room`
+/// columns: each in brackets, as many as fit with the count of the rest, or
+/// none when not even the first does.
+fn tags(names: &[String], room: usize) -> String {
+    (1..=names.len())
+        .rev()
+        .map(|shown| {
+            let mut tags: Vec<String> = names[..shown]
+                .iter()
+                .map(|name| format!("[{}]", screen_line(name)))
+                .collect();
+            if shown < names.len() {
+                tags.push(format!("+{}", names.len() - shown));
+            }
+            tags.join(" ")
+        })
+        .find(|tags| tags.width() <= room)
+        .unwrap_or_default()
+}
+
+/// `text` in at most `columns` columns: cut short with … between whole
+/// characters, as the terminal draws them, when it is longer.
+fn cut(text: &str, columns: usize) -> String {
+    if text.width() <= columns {
+        return text.to_owned();
+    }
+    let mut kept = String::new();
+    let mut used = 0;
+    for character in text.graphemes(true) {
+        used += character.width();
+        // One column is for the …
+        if used >= columns {
+            break;
+        }
+        kept.push_str(character);
+    }
+    if columns > 0 {
+        kept.push('…');
+    }
+    kept
 }
 
 fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
@@ -815,7 +1079,12 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         draw_going(frame, theme, area);
         return;
     }
-    let hints = Line::from(vec![
+    let mut hints = Vec::new();
+    // Only while there is a move to take back.
+    if app.undo.is_some() {
+        hints.extend([Span::styled("Z", theme.accent), Span::raw(" undo  ")]);
+    }
+    hints.extend([
         Span::styled("Tab", theme.accent),
         Span::raw(" panes  "),
         Span::styled("?", theme.accent),
@@ -823,6 +1092,7 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         Span::styled("q", theme.accent),
         Span::raw(" quit "),
     ]);
+    let hints = Line::from(hints);
     let [state, hints_area] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(u16::try_from(hints.width()).unwrap_or(u16::MAX)),
@@ -873,7 +1143,11 @@ fn draw_going(frame: &mut Frame, theme: &Theme, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_keys(frame: &mut Frame, theme: &Theme) {
+/// The keys over the panes: in two columns side by side where the terminal
+/// is wide enough, the first half of them in the first, and scrolled as far
+/// as the state asks where they do not all fit, which the view tells the
+/// state as it does for the reader.
+fn draw_keys(frame: &mut Frame, app: &App, theme: &Theme) {
     let keys: Vec<&(&str, &str)> = KEYS.iter().chain(SUSPEND_KEYS).collect();
     let column = keys
         .iter()
@@ -889,18 +1163,43 @@ fn draw_keys(frame: &mut Frame, theme: &Theme) {
             ])
         })
         .collect();
-    let width = lines.iter().map(Line::width).max().unwrap_or(0) + 3;
-    let height = lines.len() + 2;
+    // A column is as wide as its widest line and a space; the border takes
+    // two more.
+    let width = lines.iter().map(Line::width).max().unwrap_or(0) + 1;
+    let columns = if 2 * width + 2 <= usize::from(frame.area().width) {
+        2
+    } else {
+        1
+    };
+    let rows = lines.len().div_ceil(columns);
     let area = centered(
         frame.area(),
-        u16::try_from(width).unwrap_or(u16::MAX),
-        u16::try_from(height).unwrap_or(u16::MAX),
+        u16::try_from(columns * width + 2).unwrap_or(u16::MAX),
+        u16::try_from(rows + 2).unwrap_or(u16::MAX),
     );
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let mut block = Block::bordered()
+        .title(" Keys ")
+        .title_bottom(Line::styled(SEARCH_FILTERS, dim))
+        .border_style(theme.accent);
+    let shown = block.inner(area).height;
+    let bottom = u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .saturating_sub(shown);
+    app.help_bottom.set(bottom);
+    app.help_rows.set(shown.max(1));
+    if bottom > 0 {
+        block = block.title_bottom(Line::styled(" j, k scroll ", dim).right_aligned());
+    }
+    let inner = block.inner(area);
     frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" Keys ").border_style(theme.accent)),
-        area,
-    );
+    frame.render_widget(block, area);
+    let each = Constraint::Length(u16::try_from(width).unwrap_or(u16::MAX));
+    let halves = Layout::horizontal(vec![each; columns]).split(inner);
+    for (half, place) in lines.chunks(rows).zip(halves.iter()) {
+        let half = Paragraph::new(half.to_vec()).scroll((app.help_scroll.min(bottom), 0));
+        frame.render_widget(half, *place);
+    }
 }
 
 /// A `width` by `height` area in the middle of `area`, no larger than it.
@@ -916,17 +1215,20 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::super::app::Message;
+    use super::super::app::{Effect, Message};
     use super::super::compose::AnswerKind;
     use super::super::reading::Reading;
     use super::*;
     use crate::mailbox::{Outgoing, Place, PlaceKind};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::Terminal;
     use ratatui::backend::Backend;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ruston_core::Recipient;
+    use ruston_core::model::ConversationLabel;
+    use ruston_core::{ConversationMessage, FullMessage, MessageMetadata, Recipient, Verdict};
 
     fn drawn(width: u16, height: u16, app: &App, theme: &Theme) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -954,6 +1256,7 @@ mod tests {
             Place {
                 id: "0".into(),
                 name: "Inbox".into(),
+                path: "Inbox".into(),
                 depth: 0,
                 kind: PlaceKind::System,
                 unread: 3,
@@ -961,6 +1264,7 @@ mod tests {
             Place {
                 id: "f-2024".into(),
                 name: "2024".into(),
+                path: "Taxes/2024".into(),
                 depth: 1,
                 kind: PlaceKind::Folder,
                 unread: 0,
@@ -987,9 +1291,10 @@ mod tests {
         }
         assert!(screen.contains("Inbox 3"), "{screen}");
         assert!(screen.contains("  2024"), "{screen}");
-        // The pane is 48 columns wide: the subject is cut where it ends.
+        // The pane is 48 columns wide: the day leaves out its year and the
+        // sender is cut short, so the subject fits.
         assert!(
-            screen.contains(" •   2024-04-24  alex@example.test   Quarterly│"),
+            screen.contains(" •   04-24  alex@examp…  Quarterly report     │"),
             "{screen}"
         );
         let status = screen.lines().last().unwrap();
@@ -1005,10 +1310,7 @@ mod tests {
         let mut app = with_mail("alex@example.test", "Quarterly report");
         app.marked = vec![app.conversations[0].id.clone()];
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
-        assert!(
-            screen.contains("✓•   2024-04-24  alex@example.test"),
-            "{screen}"
-        );
+        assert!(screen.contains("✓•   04-24  alex@examp…"), "{screen}");
         let status = screen.lines().last().unwrap();
         assert!(status.contains("Inbox · 1 marked · "), "{status}");
     }
@@ -1024,10 +1326,111 @@ mod tests {
             ..Default::default()
         }];
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains(" ★+ 04-24  alex@examp…"), "{screen}");
+    }
+
+    /// One of the account's labels.
+    fn label(id: &str, name: &str) -> Place {
+        Place {
+            id: id.into(),
+            name: name.into(),
+            path: name.into(),
+            depth: 0,
+            kind: PlaceKind::Label,
+            unread: 0,
+        }
+    }
+
+    /// Bears the folders and labels `ids`.
+    fn bearing(ids: &[&str]) -> Vec<ConversationLabel> {
+        ids.iter()
+            .map(|id| ConversationLabel {
+                id: (*id).into(),
+                ..ConversationLabel::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_row_names_its_labels_after_its_subject_which_gives_way_first() {
+        let mut app = with_mail("alex@example.test", "Plans");
+        app.places
+            .extend([label("l-1", "Family"), label("l-2", "Travel")]);
+        app.conversations[0].labels = bearing(&["0", "l-2", "l-1"]);
+        app.focus = Pane::Conversations;
+        // The list alone: 78 columns inside its border, 41 of them after
+        // the sender. The labels come in the folder list's order, and the
+        // Inbox is no label of the account's.
+        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
         assert!(
-            screen.contains(" ★+ 2024-04-24  alex@example.test"),
+            screen.contains(" •   2024-04-24  alex@example.test   Plans [Family] [Travel] "),
             "{screen}"
         );
+        // A long subject gives way to a third of that room, and a label that
+        // does not fit there is counted.
+        app.conversations[0].subject = "Quarterly report for the board meeting in May".into();
+        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
+        assert!(
+            screen.contains(
+                " •   2024-04-24  alex@example.test   Quarterly report for the boa… [Family] +1│"
+            ),
+            "{screen}"
+        );
+        // Where the subject has only a few columns, they stay its own.
+        let screen = text(&drawn(100, 30, &app, &Theme::new(false)));
+        assert!(
+            screen.contains(" •   04-24  alex@exa…  Quarterly repor│"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn the_subject_keeps_a_share_of_a_row_beside_the_other_panes() {
+        let mut app = with_mail("alex@example.test", "Quarterly report for the board");
+        app.places.push(label("l-1", "Work"));
+        app.conversations[0].labels = bearing(&["l-1"]);
+        app.focus = Pane::Conversations;
+        let whole =
+            " •   2024-04-24  alex@example.test   Quarterly report for the board [Work]    │";
+        for (width, row) in [
+            // Beside the other panes, the day leaves out its year and the
+            // sender takes a quarter of the row, cut short, so the subject
+            // keeps the largest share, and from 115 columns a label fits too.
+            (100, " •   04-24  alex@exa…  Quarterly repor│"),
+            (115, " •   04-24  alex@examp…  Quarterly r… [Work]│"),
+            (130, " •   04-24  alex@exampl…  Quarterly report… [Work]│"),
+            // The list alone in a narrow terminal, and beside the other
+            // panes in a wide one, keeps the whole row.
+            (80, whole),
+            (200, whole),
+        ] {
+            let screen = text(&drawn(width, 24, &app, &Theme::new(false)));
+            assert!(screen.contains(row), "{width} columns:\n{screen}");
+        }
+    }
+
+    #[test]
+    fn labels_take_the_accent_and_without_colors_read_by_their_brackets() {
+        let mut app = with_mail("alex@example.test", "Plans");
+        app.places.push(label("l-1", "Family"));
+        app.conversations[0].labels = bearing(&["l-1"]);
+        app.focus = Pane::Conversations;
+        let label_cell = |theme: &Theme| {
+            let buffer = drawn(80, 24, &app, theme);
+            let screen = text(&buffer);
+            let (row, line) = screen
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.contains("[Family]"))
+                .unwrap_or_else(|| panic!("no label:\n{screen}"));
+            let column = line[..line.find("[Family]").unwrap()].chars().count();
+            buffer[(u16::try_from(column).unwrap(), u16::try_from(row).unwrap())].clone()
+        };
+        assert_eq!(label_cell(&Theme::new(false)).fg, ACCENT);
+        // Bold would say the conversation is unread.
+        let plain = label_cell(&Theme::new(true));
+        assert_eq!(plain.fg, Color::Reset);
+        assert!(!plain.modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -1066,6 +1469,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            messages: Vec::new(),
             answer: None,
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
@@ -1075,14 +1479,51 @@ mod tests {
         assert_eq!(app.reader_bottom.get(), 102 - 27);
         assert_eq!(app.reader_rows.get(), 27);
 
-        app.scroll = 50;
+        app.scroll.set(50);
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(!screen.contains("line 0 "), "{screen}");
         assert!(screen.contains("line 48"), "{screen}");
         // Scrolled past the end, as after the pane grew, it shows the end.
-        app.scroll = 500;
+        app.scroll.set(500);
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(screen.contains("line 99"), "{screen}");
+    }
+
+    #[test]
+    fn the_reader_names_the_labels_the_conversation_bears() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let label = |id: &str, name: &str| Place {
+            id: id.into(),
+            name: name.into(),
+            path: name.into(),
+            depth: 0,
+            kind: PlaceKind::Label,
+            unread: 0,
+        };
+        app.places
+            .extend([label("l-1", "Family"), label("l-2", "Travel")]);
+        app.conversations[0].id = "plans".into();
+        app.reading = Some(Reading {
+            id: "plans".into(),
+            subject: "Plans".into(),
+            lines: vec!["Hi".into()],
+            quotes: Vec::new(),
+            links: Vec::new(),
+            attachments: Vec::new(),
+            messages: Vec::new(),
+            answer: None,
+        });
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(!screen.contains("Labels:"), "{screen}");
+
+        app.conversations[0].labels = ["0", "l-2"]
+            .map(|id| ConversationLabel {
+                id: id.into(),
+                ..ConversationLabel::default()
+            })
+            .to_vec();
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(screen.contains("Labels: Travel "), "{screen}");
     }
 
     #[test]
@@ -1098,6 +1539,7 @@ mod tests {
             quotes: vec![2..6, 8..11],
             links: Vec::new(),
             attachments: Vec::new(),
+            messages: Vec::new(),
             answer: None,
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
@@ -1120,6 +1562,317 @@ mod tests {
         assert!(!screen.contains("quoted lines"), "{screen}");
     }
 
+    /// A message from `sender`, `hours` after the first, saying `body`; not
+    /// read yet when `unread` is 1.
+    fn message(sender: &str, hours: i64, unread: i64, body: &str) -> ConversationMessage {
+        ConversationMessage::Opened(FullMessage {
+            meta: MessageMetadata {
+                sender: Recipient::new(sender),
+                time: 1_714_000_000 + hours * 3_600,
+                unread,
+                ..MessageMetadata::default()
+            },
+            body: body.into(),
+            mime_type: "text/plain".into(),
+            verdict: Verdict::Verified,
+            attachments: Vec::new(),
+            reply_tos: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn the_reader_folds_the_messages_read_but_the_newest_until_e_shows_them() {
+        let messages = [
+            message("alex@example.test", 0, 0, "First thoughts\n> on the plan"),
+            message("sam@example.test", 1, 0, "Second thoughts"),
+            message("alex@example.test", 2, 1, "A reply not read yet"),
+            message("sam@example.test", 3, 0, "The newest words"),
+        ];
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let conversation = Conversation {
+            subject: "Plans".into(),
+            ..Conversation::default()
+        };
+        app.reading = Some(Reading::new(&conversation, &messages, &[]));
+        let screen = text(&drawn(200, 40, &app, &Theme::new(false)));
+        // One line each, with when, from whom and how sure, then its words.
+        for folded in [
+            "▸ 2024-04-24 23:06 · alex@example.test · verified · First thoughts > on the plan",
+            "▸ 2024-04-25 00:06 · sam@example.test · verified · Second thoughts",
+            "A reply not read yet",
+            "The newest words",
+            "e opens the messages read",
+        ] {
+            assert!(screen.contains(folded), "{folded:?} missing:\n{screen}");
+        }
+        assert!(!screen.contains("Date:    2024-04-24 23:06"), "{screen}");
+        // Folded in a row, they follow one another without a separator.
+        let row = |text: &str| screen.lines().position(|line| line.contains(text));
+        assert_eq!(
+            row("· Second thoughts"),
+            row("· First thoughts").map(|r| r + 1)
+        );
+
+        press(&mut app, KeyCode::Char('e'));
+        let screen = text(&drawn(200, 40, &app, &Theme::new(false)));
+        assert!(screen.contains("Date:    2024-04-24 23:06"), "{screen}");
+        assert!(screen.contains("Second thoughts"), "{screen}");
+        assert!(!screen.contains('▸'), "{screen}");
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        let key = crossterm::event::Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        if let Some(message) = app.message_for(&key) {
+            app.update(message);
+        }
+    }
+
+    /// An app that opened, as the list opens one, the conversation "Plans"
+    /// of `messages`.
+    fn opened(messages: &[ConversationMessage]) -> App {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.focus = Pane::Conversations;
+        app.update(Message::Open);
+        let conversation = Conversation {
+            subject: "Plans".into(),
+            ..Conversation::default()
+        };
+        app.update(Message::ConversationLoaded {
+            request: 1,
+            result: Ok(Reading::new(&conversation, messages, &[])),
+        });
+        app
+    }
+
+    /// Ten messages read, a row each folded, then `then`.
+    fn after_ten_read(then: Vec<ConversationMessage>) -> Vec<ConversationMessage> {
+        let read = (0..10).map(|n| message("alex@example.test", n, 0, &format!("read {n}")));
+        read.chain(then).collect()
+    }
+
+    /// Forty lines that say `what`.
+    fn long(what: &str) -> String {
+        (0..40).map(|n| format!("{what} line {n}\n")).collect()
+    }
+
+    /// The first row inside the reader's borders, beside the other panes'.
+    fn top_row(screen: &str) -> &str {
+        screen.lines().nth(1).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_conversation_opens_at_its_first_unread_message_unless_it_shows_already() {
+        let messages = after_ten_read(vec![
+            message("sam@example.test", 10, 1, &long("unread")),
+            message("alex@example.test", 11, 0, &long("newest")),
+        ]);
+        let app = opened(&messages);
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        // Past the subject, a blank row, the ten folded and a separator.
+        assert_eq!(app.scroll.get(), 15);
+        assert!(
+            top_row(&screen).contains("From:    sam@example.test"),
+            "{screen}"
+        );
+        assert_eq!(app.in_view.get(), Some(10));
+
+        // Read, it opens at its newest message.
+        let messages = after_ten_read(vec![message("sam@example.test", 10, 0, &long("newest"))]);
+        let app = opened(&messages);
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(
+            top_row(&screen).contains("From:    sam@example.test"),
+            "{screen}"
+        );
+
+        // In the upper third already, it leaves the subject in view.
+        let messages = [
+            message("alex@example.test", 0, 0, "Read"),
+            message("sam@example.test", 1, 1, &long("unread")),
+        ];
+        let app = opened(&messages);
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert_eq!(app.scroll.get(), 0);
+        assert!(top_row(&screen).contains("Plans"), "{screen}");
+    }
+
+    #[test]
+    fn enter_folds_or_opens_the_message_at_the_readers_top_and_e_keeps_it_there() {
+        let messages = after_ten_read(vec![
+            message("sam@example.test", 10, 1, &long("unread")),
+            message("alex@example.test", 11, 0, &long("newest")),
+        ]);
+        let mut app = opened(&messages);
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        // Folded, the unread message joins the run above it and stays on top.
+        press(&mut app, KeyCode::Enter);
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert_eq!(app.scroll.get(), 12);
+        let unread_folded = "▸ 2024-04-25 09:06 · sam@example.test";
+        assert!(top_row(&screen).contains(unread_folded), "{screen}");
+        press(&mut app, KeyCode::Up);
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        let rows: Vec<&str> = screen.lines().skip(1).take(2).collect();
+        assert!(
+            rows[0].contains("▸ 2024-04-25 08:06 · alex@example.test"),
+            "{screen}"
+        );
+        assert!(rows[1].contains(unread_folded), "{screen}");
+
+        // The read message at the top opens where it is.
+        press(&mut app, KeyCode::Enter);
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert_eq!(app.scroll.get(), 11);
+        assert!(
+            screen.contains("Date:    2024-04-25 08:06:40 UTC"),
+            "{screen}"
+        );
+        assert!(screen.contains(unread_folded), "{screen}");
+
+        // e shows every message read, all as it says, the message at the
+        // top brought back there.
+        press(&mut app, KeyCode::Char('e'));
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(
+            top_row(&screen).contains("From:    alex@example.test"),
+            "{screen}"
+        );
+        let date = screen.lines().nth(3).unwrap_or_default();
+        assert!(
+            date.contains("Date:    2024-04-25 08:06:40 UTC"),
+            "{screen}"
+        );
+        assert!(screen.contains("unread line 0"), "{screen}");
+        assert!(!screen.contains('▸'), "{screen}");
+    }
+
+    /// Does what the mouse's `kind` at `column` and `row` asks, as the loop
+    /// would.
+    fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) -> Vec<Effect> {
+        let event = crossterm::event::Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.message_for(&event)
+            .map_or_else(Vec::new, |message| app.update(message))
+    }
+
+    const CLICK: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
+
+    #[test]
+    fn a_click_selects_a_row_and_on_the_row_selected_opens_it() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.conversations.push(Conversation {
+            id: "plans".into(),
+            subject: "Plans".into(),
+            ..Conversation::default()
+        });
+        // At 120 columns, the folders' rows start at (1, 1), the
+        // conversations' at (25, 1) and the reader's at (73, 1).
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        assert!(mouse(&mut app, CLICK, 5, 2).is_empty());
+        assert_eq!((app.focus, app.selected_place), (Pane::Folders, 1));
+        let listed = mouse(&mut app, CLICK, 5, 2);
+        assert!(
+            matches!(&listed[..], [Effect::Conversations { place, .. }] if place == "f-2024"),
+            "{listed:?}"
+        );
+        assert_eq!(app.focus, Pane::Conversations);
+
+        // In a pane without the keys, the row selected already only gets
+        // them; a row past the list's last, or the reader, too.
+        app.focus = Pane::Reader;
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        assert!(mouse(&mut app, CLICK, 30, 1).is_empty());
+        assert_eq!(
+            (app.focus, app.selected_conversation),
+            (Pane::Conversations, 0)
+        );
+        assert!(mouse(&mut app, CLICK, 30, 9).is_empty());
+        assert_eq!(app.selected_conversation, 0);
+        assert!(mouse(&mut app, CLICK, 90, 5).is_empty());
+        assert_eq!(app.focus, Pane::Reader);
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        assert!(mouse(&mut app, CLICK, 30, 2).is_empty());
+        assert_eq!(app.selected_conversation, 1);
+        let opened = mouse(&mut app, CLICK, 30, 2);
+        assert!(
+            matches!(&opened[..], [Effect::Conversation { id, .. }] if id == "plans"),
+            "{opened:?}"
+        );
+        assert_eq!(app.focus, Pane::Reader);
+
+        // Nothing but a press of the left button clicks.
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        for kind in [
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Moved,
+        ] {
+            assert!(mouse(&mut app, kind, 5, 1).is_empty());
+            assert_eq!((app.focus, app.selected_place), (Pane::Reader, 1));
+        }
+
+        // A list scrolled to its selection: its nine rows show the
+        // conversations from the eighth on.
+        app.conversations = vec![Conversation::default(); 20];
+        app.focus = Pane::Conversations;
+        app.selected_conversation = 15;
+        let _ = drawn(120, 12, &app, &Theme::new(false));
+        mouse(&mut app, CLICK, 30, 1);
+        assert_eq!(app.selected_conversation, 7);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_what_it_is_over_and_the_keys_over_the_panes() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.conversations.push(Conversation::default());
+        app.reading = Some(Reading {
+            id: "plans".into(),
+            subject: "Plans for May".into(),
+            lines: (0..100).map(|n| format!("line {n}")).collect(),
+            quotes: Vec::new(),
+            links: Vec::new(),
+            attachments: Vec::new(),
+            messages: Vec::new(),
+            answer: None,
+        });
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        // The reader a few rows a notch, the list a row, the keys staying
+        // with the folders.
+        mouse(&mut app, MouseEventKind::ScrollDown, 90, 10);
+        mouse(&mut app, MouseEventKind::ScrollDown, 90, 10);
+        mouse(&mut app, MouseEventKind::ScrollUp, 90, 10);
+        assert_eq!(app.scroll.get(), 3);
+        mouse(&mut app, MouseEventKind::ScrollDown, 30, 10);
+        assert_eq!(app.selected_conversation, 1);
+        mouse(&mut app, MouseEventKind::ScrollUp, 30, 10);
+        assert_eq!(app.selected_conversation, 0);
+        assert_eq!(app.focus, Pane::Folders);
+
+        // Over the keys, it scrolls them, and a click does nothing.
+        app.update(Message::ToggleHelp);
+        let _ = drawn(80, 12, &app, &Theme::new(false));
+        assert!(app.help_bottom.get() > 3);
+        mouse(&mut app, MouseEventKind::ScrollDown, 40, 6);
+        assert_eq!(app.help_scroll, 3);
+        mouse(&mut app, CLICK, 5, 2);
+        assert!(app.help);
+        assert_eq!(app.selected_place, 0);
+
+        // The command line, like a question or a message being written,
+        // keeps the keys, and the mouse does nothing meanwhile.
+        app.update(Message::ToggleHelp);
+        app.update(Message::Command);
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        mouse(&mut app, CLICK, 30, 2);
+        mouse(&mut app, MouseEventKind::ScrollDown, 90, 10);
+        assert_eq!((app.focus, app.scroll.get()), (Pane::Folders, 3));
+        assert!(app.command_line.is_some());
+    }
+
     #[test]
     fn long_reader_lines_wrap_to_the_pane() {
         let mut app = with_mail("alex@example.test", "Quarterly report");
@@ -1130,6 +1883,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            messages: Vec::new(),
             answer: None,
         });
         let _ = drawn(120, 30, &app, &Theme::new(false));
@@ -1137,6 +1891,43 @@ mod tests {
         assert!(app.reader_bottom.get() == 0);
         let rows = drawn(120, 10, &app, &Theme::new(false));
         assert!(app.reader_bottom.get() > 0, "{}", text(&rows));
+    }
+
+    #[test]
+    fn a_quoted_line_stays_dim_on_every_row_it_wraps_to() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.reading = Some(Reading {
+            id: "long".into(),
+            subject: "Long".into(),
+            lines: vec![format!("> {}", "quoted ".repeat(20)), "Fresh words".into()],
+            quotes: Vec::new(),
+            links: Vec::new(),
+            attachments: Vec::new(),
+            messages: Vec::new(),
+            answer: None,
+        });
+        let buffer = drawn(120, 30, &app, &Theme::new(false));
+        let screen = text(&buffer);
+        let dim_at = |row: usize, word: &str| {
+            let line = screen.lines().nth(row).unwrap();
+            let column = line[..line.find(word).unwrap()].chars().count();
+            let cell = &buffer[(u16::try_from(column).unwrap(), u16::try_from(row).unwrap())];
+            cell.modifier.contains(Modifier::DIM)
+        };
+        let quoted: Vec<usize> = screen
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains("quoted"))
+            .map(|(row, _)| row)
+            .collect();
+        // 140 columns wrap into several rows of the 46-column pane.
+        assert!(quoted.len() > 1, "{screen}");
+        assert!(quoted.iter().all(|&row| dim_at(row, "quoted")), "{screen}");
+        let fresh = screen
+            .lines()
+            .position(|line| line.contains("Fresh"))
+            .unwrap();
+        assert!(!dim_at(fresh, "Fresh"));
     }
 
     #[test]
@@ -1175,6 +1966,7 @@ mod tests {
                 "https://xn--bcher-kva.example/\u{1b}[2J".into(),
             ],
             attachments: Vec::new(),
+            messages: Vec::new(),
             answer: None,
         });
         app.picking_link = Some(LinkPick {
@@ -1553,6 +2345,7 @@ mod tests {
                 name: "plan.pdf".into(),
                 size: 24_576,
             }],
+            messages: Vec::new(),
             answer: None,
         });
         app.picking_attachment = Some(0);
@@ -1578,6 +2371,27 @@ mod tests {
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(screen.contains("No conversations in Personal."), "{screen}");
         assert!(screen.contains("Esc goes back to the folders."), "{screen}");
+    }
+
+    #[test]
+    fn the_status_bar_offers_z_while_a_move_can_be_taken_back() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let status = |app: &App| {
+            let screen = text(&drawn(80, 24, app, &Theme::new(false)));
+            screen.lines().last().unwrap().to_owned()
+        };
+        assert!(!status(&app).contains("undo"), "{}", status(&app));
+        app.update(Message::Changed {
+            change: crate::mailbox::Change::Move(label_ids::ARCHIVE.into()),
+            ids: vec!["a".into()],
+            place: label_ids::INBOX.into(),
+            result: Ok(()),
+        });
+        assert!(
+            status(&app).ends_with("Z undo  Tab panes  ? keys  q quit "),
+            "{}",
+            status(&app)
+        );
     }
 
     #[test]
@@ -1614,14 +2428,105 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_fit_a_terminal_of_24_rows() {
-        let mut app = App::new("demo".into());
-        app.help = true;
-        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
-        for (keys, action) in KEYS.iter().chain(SUSPEND_KEYS) {
-            assert!(screen.contains(keys), "{keys} missing:\n{screen}");
-            assert!(screen.contains(action), "{action} missing:\n{screen}");
+    fn recipients_past_the_lookup_limit_are_counted_in_one_line() {
+        let encrypted = Checked::Known(RecipientProtection::EndToEnd);
+        let checks = vec![("sam@proton.me".to_owned(), encrypted)];
+        assert_eq!(
+            protection(&checks, 0),
+            ["Proton will end-to-end encrypt this message for every recipient."]
+        );
+        assert_eq!(
+            protection(&checks, 1),
+            ["Not checked: 1 more recipient, past the first 100."]
+        );
+        assert_eq!(
+            protection(&checks, 7),
+            ["Not checked: 7 more recipients, past the first 100."]
+        );
+    }
+
+    #[test]
+    fn the_selection_of_a_pane_without_the_keys_never_reads_as_unread() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.conversations.push(Conversation {
+            subject: "Read already".into(),
+            time: 1_713_000_000,
+            senders: vec![Recipient::new("sam@example.test")],
+            ..Conversation::default()
+        });
+        app.selected_conversation = 1;
+        app.focus = Pane::Reader;
+        let buffer = drawn(120, 30, &app, &Theme::new(false));
+        let screen = text(&buffer);
+        let style_of = |word: &str| {
+            let (row, line) = screen
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.contains(word))
+                .unwrap();
+            let column = line[..line.find(word).unwrap()].chars().count();
+            buffer[(u16::try_from(column).unwrap(), u16::try_from(row).unwrap())].modifier
+        };
+        // Bold is for unread mail; the selection elsewhere is underlined.
+        let selected = style_of("sam@exa");
+        assert!(selected.contains(Modifier::UNDERLINED) && !selected.contains(Modifier::BOLD));
+        let unread = style_of("alex@exa");
+        assert!(unread.contains(Modifier::BOLD) && !unread.contains(Modifier::UNDERLINED));
+        // And under the list, what its marks say.
+        assert!(
+            screen.contains("✓ marked · • unread · ★ starred · + files"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn every_key_can_be_reached_at_80_by_24_and_where_they_do_not_fit() {
+        let all = KEYS.len() + SUSPEND_KEYS.len();
+        for (width, height) in [(80, 24), (80, 12)] {
+            let mut app = App::new("demo".into());
+            app.update(Message::ToggleHelp);
+            // Each screen down to the last row, and one more.
+            let mut seen = String::new();
+            for _ in 0..=all {
+                seen.push_str(&text(&drawn(width, height, &app, &Theme::new(false))));
+                app.update(Message::Down);
+            }
+            for (keys, action) in KEYS.iter().chain(SUSPEND_KEYS) {
+                assert!(seen.contains(keys), "{keys} missing at {height} rows");
+                assert!(seen.contains(action), "{action} missing at {height} rows");
+            }
+            // With what `:search` takes beside its words.
+            assert!(seen.contains(SEARCH_FILTERS.trim()), "{seen}");
         }
+        // Too few rows for all of them, the first screen says how to see the rest.
+        let mut app = App::new("demo".into());
+        app.update(Message::ToggleHelp);
+        let screen = text(&drawn(80, 12, &app, &Theme::new(false)));
+        let (last, _) = SUSPEND_KEYS.last().unwrap_or(&KEYS[KEYS.len() - 1]);
+        assert!(!screen.contains(last), "{screen}");
+        assert!(screen.contains("j, k scroll"), "{screen}");
+    }
+
+    #[test]
+    fn the_keys_take_two_columns_where_the_terminal_is_wide_enough() {
+        let mut app = App::new("demo".into());
+        app.update(Message::ToggleHelp);
+        let half = (KEYS.len() + SUSPEND_KEYS.len()).div_ceil(2);
+        let row_of = |screen: &str, keys: &str| {
+            screen
+                .lines()
+                .position(|line| line.contains(keys))
+                .unwrap_or_else(|| panic!("{keys} missing:\n{screen}"))
+        };
+        let screen = text(&drawn(200, 30, &app, &Theme::new(false)));
+        assert_eq!(
+            row_of(&screen, KEYS[0].0),
+            row_of(&screen, KEYS[half].0),
+            "{screen}"
+        );
+        // One column where two would not fit.
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(row_of(&screen, KEYS[0].0) < row_of(&screen, KEYS[half].0));
     }
 
     #[test]
@@ -1637,6 +2542,17 @@ mod tests {
         );
         // With colors, the accent marks the focused pane and unread counts.
         let buffer = drawn(120, 30, &app, &Theme::new(false));
-        assert!(buffer.content().iter().any(|cell| cell.fg == Color::Cyan));
+        assert!(buffer.content().iter().any(|cell| cell.fg == ACCENT));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn the_accent_is_ruston_mails_violet_as_near_as_the_terminal_shows_it() {
+        assert_eq!(accent_among("truecolor", "xterm-256color"), ACCENT);
+        assert_eq!(accent_among("24bit", ""), ACCENT);
+        // As Terminal.app says it, without COLORTERM.
+        assert_eq!(accent_among("", "xterm-256color"), Color::Indexed(99));
+        assert_eq!(accent_among("", "screen-256color"), Color::Indexed(99));
+        assert_eq!(accent_among("", "linux"), Color::Magenta);
     }
 }

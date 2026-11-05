@@ -1,4 +1,5 @@
-//! Attachments API: binary download + multipart upload.
+//! Attachments: downloading their data, still encrypted, and uploading new
+//! ones as multipart forms.
 
 use crate::error::{Error, Result};
 use crate::transport::{Doer, Request};
@@ -110,7 +111,7 @@ fn build_multipart(parts: &[Part]) -> Result<Multipart> {
     })
 }
 
-/// Download the raw (encrypted) attachment data packet.
+/// The data packet of the attachment `id`, as encrypted as Proton keeps it.
 pub async fn get_attachment<D: Doer>(d: &D, id: &str) -> Result<Vec<u8>> {
     let resp = d
         .do_raw(
@@ -122,7 +123,8 @@ pub async fn get_attachment<D: Doer>(d: &D, id: &str) -> Result<Vec<u8>> {
     Ok(resp.body)
 }
 
-/// Upload an encrypted attachment to a draft. Returns the new attachment ID.
+/// Uploads an encrypted attachment to the draft `message_id`, and returns
+/// the ID Proton gives it.
 #[allow(clippy::too_many_arguments)]
 pub async fn upload_attachment<D: Doer>(
     d: &D,
@@ -234,18 +236,22 @@ mod tests {
     }
 
     #[test]
-    fn multipart_contains_all_parts() {
+    fn a_multipart_body_holds_each_part_under_its_name_then_its_end() {
         let Multipart { body, boundary } = build_multipart(&[
             Part::Text("Filename", "f.txt"),
             Part::File("DataPacket", b"\x00\x01"),
         ])
         .unwrap();
-        let s = String::from_utf8_lossy(&body);
-        assert!(s.contains("name=\"Filename\""));
-        assert!(s.contains("f.txt"));
-        assert!(s.contains("name=\"DataPacket\""));
-        assert!(s.contains("application/octet-stream"));
-        assert!(s.trim_end().ends_with(&format!("--{boundary}--")));
+        let mut expected = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"Filename\"\r\n\r\nf.txt\r\n\
+             --{boundary}\r\nContent-Disposition: form-data; name=\"DataPacket\"; \
+             filename=\"blob\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        expected.extend_from_slice(b"\x00\x01\r\n");
+        expected.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        assert_eq!(body, expected);
+        // The body was reserved at its final size, so it never grew.
         assert_eq!(body.capacity(), body.len());
     }
 

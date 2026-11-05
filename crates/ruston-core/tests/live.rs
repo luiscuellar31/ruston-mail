@@ -1,69 +1,96 @@
-//! Live integration tests against a real Proton account.
+//! Checks on a real Proton account, which run only when the environment
+//! names one with `PROTON_TEST_USER` and `PROTON_TEST_PASSWORD`, adding
+//! `PROTON_TEST_TOTP` and `PROTON_TEST_MAILBOX_PASSWORD` when the account
+//! asks for them. Otherwise each test returns at once, so the usual
+//! `cargo test` run passes without an account. `PROTON_TEST_API_URL`,
+//! `PROTON_TEST_APP_VERSION` and `PROTON_TEST_USER_AGENT` change where the
+//! client goes and what it presents. The test that sends a message to the
+//! account itself, and trashes it again, also needs `PROTON_TEST_SEND=1`.
 //!
-//! These are **skipped** unless `PROTON_TEST_USER` / `PROTON_TEST_PASSWORD`
-//! are set, so they are safe to leave in the normal `cargo test` run. The
-//! send/trash test additionally requires `PROTON_TEST_SEND=1` (it sends a real
-//! message to yourself and trashes it).
-//!
-//! Each test signs in under a profile of its own and signs out before its
-//! checks, so a failing check leaves no session or keychain entry behind. A
-//! run that was interrupted is cleared the next time the same test starts.
+//! Every test signs in under a profile of its own and signs out before it
+//! checks anything, so a failed check leaves no session or keychain entry
+//! behind; what an interrupted run left is removed when the same test runs
+//! again. One at a time, with their output:
 //!
 //! ```bash
-//! PROTON_TEST_USER=you@proton.me PROTON_TEST_PASSWORD=... \
-//!   PROTON_TEST_TOTP=123456 PROTON_TEST_SEND=1 \
+//! PROTON_TEST_USER=you@proton.me PROTON_TEST_PASSWORD=... PROTON_TEST_SEND=1 \
 //!   cargo test -p ruston-core --test live -- --nocapture --test-threads=1
 //! ```
 
 use ruston_core::{Client, Error, LoginOptions, SendOptions};
 use secrecy::SecretString;
 
-struct Creds {
-    user: String,
-    pass: String,
+/// The account the tests sign in to, and how to reach it.
+struct Account {
+    username: String,
+    password: String,
     totp: Option<String>,
-    mailbox: Option<String>,
+    mailbox_password: Option<String>,
+    api_url: Option<String>,
+    app_version: Option<String>,
+    user_agent: Option<String>,
 }
 
-fn creds() -> Option<Creds> {
-    let user = std::env::var("PROTON_TEST_USER").ok()?;
-    let pass = std::env::var("PROTON_TEST_PASSWORD").ok()?;
-    Some(Creds {
-        user,
-        pass,
-        totp: std::env::var("PROTON_TEST_TOTP").ok(),
-        mailbox: std::env::var("PROTON_TEST_MAILBOX_PASSWORD").ok(),
-    })
+impl Account {
+    /// The account the environment names, if it names a user and a
+    /// password; `test` is skipped without them, and says so.
+    fn from_env(test: &str) -> Option<Self> {
+        Self::named().or_else(|| {
+            eprintln!(
+                "skipping {test}: PROTON_TEST_USER and PROTON_TEST_PASSWORD are not both set"
+            );
+            None
+        })
+    }
+
+    fn named() -> Option<Self> {
+        let var = |name: &str| std::env::var(name).ok();
+        Some(Self {
+            username: var("PROTON_TEST_USER")?,
+            password: var("PROTON_TEST_PASSWORD")?,
+            totp: var("PROTON_TEST_TOTP"),
+            mailbox_password: var("PROTON_TEST_MAILBOX_PASSWORD"),
+            api_url: var("PROTON_TEST_API_URL"),
+            app_version: var("PROTON_TEST_APP_VERSION"),
+            user_agent: var("PROTON_TEST_USER_AGENT"),
+        })
+    }
+
+    /// Signs in under `profile`, after removing what an interrupted run of
+    /// the same test left saved there.
+    async fn sign_in(&self, profile: &str) -> Client {
+        Client::forget_session(profile)
+            .await
+            .expect("an earlier run's session should be removable");
+        let secret = |text: &str| SecretString::from(text.to_owned());
+        let options = LoginOptions {
+            username: self.username.clone(),
+            password: secret(&self.password),
+            totp: self.totp.as_deref().map(secret),
+            mailbox_password: self.mailbox_password.as_deref().map(secret),
+            profile: profile.to_owned(),
+            base_url: self.api_url.clone(),
+            app_version: self.app_version.clone(),
+            user_agent: self.user_agent.clone(),
+            hv: None,
+        };
+        Client::login(options)
+            .await
+            .expect("the test account should sign in")
+    }
 }
 
-/// Signs in under `profile`, first removing what an interrupted run of the
-/// same test left saved there.
-async fn login(c: &Creds, profile: &str) -> Client {
-    Client::forget_session(profile)
-        .await
-        .expect("an earlier run's session should be removable");
-    Client::login(LoginOptions {
-        username: c.user.clone(),
-        password: SecretString::from(c.pass.clone()),
-        totp: c.totp.clone().map(SecretString::from),
-        mailbox_password: c.mailbox.clone().map(SecretString::from),
-        profile: profile.into(),
-        base_url: std::env::var("PROTON_TEST_API_URL").ok(),
-        app_version: std::env::var("PROTON_TEST_APP_VERSION").ok(),
-        user_agent: std::env::var("PROTON_TEST_USER_AGENT").ok(),
-        hv: None,
-    })
-    .await
-    .expect("login should succeed")
+/// Whether the environment lets a test send mail, which it trashes again.
+fn sending_allowed() -> bool {
+    std::env::var("PROTON_TEST_SEND").is_ok_and(|value| value == "1")
 }
 
 #[tokio::test]
-async fn live_login_and_read_inbox() {
-    let Some(c) = creds() else {
-        eprintln!("skipping live_login_and_read_inbox (PROTON_TEST_USER not set)");
+async fn live_inbox_lists_and_its_newest_message_opens() {
+    let Some(account) = Account::from_env("live_inbox_lists_and_its_newest_message_opens") else {
         return;
     };
-    let client = login(&c, "live-test-read").await;
+    let client = account.sign_in("live-test-read").await;
     let primary = client.primary_email().map(str::to_owned);
 
     // Nothing in here panics, so the session is signed out whatever happens.
@@ -90,17 +117,17 @@ async fn live_login_and_read_inbox() {
 }
 
 #[tokio::test]
-async fn live_send_read_trash_roundtrip() {
-    let Some(c) = creds() else {
-        eprintln!("skipping live_send_read_trash_roundtrip (PROTON_TEST_USER not set)");
+async fn live_mail_sent_to_self_is_found_read_and_trashed() {
+    let test = "live_mail_sent_to_self_is_found_read_and_trashed";
+    let Some(account) = Account::from_env(test) else {
         return;
     };
-    if std::env::var("PROTON_TEST_SEND").ok().as_deref() != Some("1") {
-        eprintln!("skipping send roundtrip (set PROTON_TEST_SEND=1 to enable)");
+    if !sending_allowed() {
+        eprintln!("skipping {test}: set PROTON_TEST_SEND=1 to let it send mail");
         return;
     }
-    let client = login(&c, "live-test-send").await;
-    let token = format!("proton-rs selftest {}", std::process::id());
+    let client = account.sign_in("live-test-send").await;
+    let token = format!("ruston-core live test {}", std::process::id());
 
     // Nothing in here panics, so the session is signed out whatever happens.
     let roundtrip = async {
@@ -112,7 +139,7 @@ async fn live_send_read_trash_roundtrip() {
             .send(&SendOptions {
                 to: vec![me],
                 subject: token.clone(),
-                body: format!("Automated round-trip test: {token}"),
+                body: format!("Sent to itself by a live test: {token}"),
                 ..Default::default()
             })
             .await?;
@@ -138,7 +165,7 @@ async fn live_send_read_trash_roundtrip() {
             None => None,
         };
 
-        // Clean up: trash the found copies.
+        // Every copy found goes to Trash, so the account keeps none.
         let ids: Vec<String> = hits.iter().map(|m| m.id.clone()).collect();
         if !ids.is_empty() {
             client.trash_messages(&ids).await?;

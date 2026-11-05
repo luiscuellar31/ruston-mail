@@ -1,4 +1,4 @@
-//! Draft lifecycle: save / update / list / delete (without sending).
+//! Drafts: messages saved, changed, listed and deleted without being sent.
 
 use super::Client;
 use super::send::{SendOptions, recipient_list, upload_attachments, validate_attachments};
@@ -15,8 +15,7 @@ pub(super) fn draft_message_json(
     addr: &AddressKeys,
     opts: &SendOptions,
 ) -> Result<serde_json::Value> {
-    let provider = crypto::provider();
-    let armored = crypto::encrypt_self_draft(&provider, addr, &opts.body)?;
+    let body = crypto::encrypt_self_draft(&crypto::provider(), addr, &opts.body)?;
     Ok(json!({
         "Message": {
             "ToList": recipient_list(&opts.to),
@@ -24,7 +23,7 @@ pub(super) fn draft_message_json(
             "BCCList": recipient_list(&opts.bcc),
             "Subject": opts.subject,
             "Sender": { "Address": addr.email, "Name": "" },
-            "Body": armored,
+            "Body": body,
             "MIMEType": opts.body_mime_type(),
         }
     }))
@@ -58,9 +57,10 @@ impl Client {
         .ok_or_else(sender_not_found)
     }
 
-    /// Create a draft (encrypted to self, stored in Drafts) with its
-    /// attachments, without sending it. A draft whose attachments fail to
-    /// upload is deleted again, so trying again leaves no part-made copy.
+    /// Saves a new message in Drafts with its attachments, its body encrypted
+    /// to the sending address's own key, and sends nothing. A draft whose
+    /// attachments fail to upload is deleted again, so trying again leaves no
+    /// part-made copy.
     pub async fn save_draft(&self, opts: &SendOptions) -> Result<String> {
         tracing::info!(target: "ruston_core::mail", to = opts.to.len(), attachments = opts.attachments.len(), "save_draft");
         refuse_send_options(opts)?;
@@ -103,7 +103,7 @@ impl Client {
         Ok(())
     }
 
-    /// List drafts (the Drafts folder).
+    /// A page of the Drafts folder, with how many drafts it holds in all.
     pub async fn list_drafts(
         &self,
         page: u32,

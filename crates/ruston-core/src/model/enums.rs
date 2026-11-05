@@ -1,34 +1,37 @@
-//! Load-bearing Proton Mail enums and constants (verified against the spec §7.4).
+//! Proton Mail's own values, as its API sends and takes them: the IDs of
+//! the labels every mailbox has, bit flags, package and label types, and
+//! response codes. Each is written here once, for both frontends to share.
 
-/// System mailbox label IDs (string values, as the API uses them).
+/// The IDs of the labels every mailbox has. Proton sends them as strings,
+/// like the IDs of the labels an account makes.
 pub mod label_ids {
-    /// Inbox.
+    /// The inbox.
     pub const INBOX: &str = "0";
-    /// All drafts (across every folder).
+    /// Every draft, whichever folder it is in.
     pub const ALL_DRAFTS: &str = "1";
-    /// All sent messages (across every folder).
+    /// Every message the account sent, whichever folder it is in.
     pub const ALL_SENT: &str = "2";
     /// Trash.
     pub const TRASH: &str = "3";
     /// Spam.
     pub const SPAM: &str = "4";
-    /// All mail.
+    /// All mail, Trash and Spam included.
     pub const ALL_MAIL: &str = "5";
-    /// Archive.
+    /// The archive.
     pub const ARCHIVE: &str = "6";
-    /// Sent.
+    /// The Sent folder.
     pub const SENT: &str = "7";
-    /// Drafts.
+    /// The Drafts folder.
     pub const DRAFTS: &str = "8";
-    /// Outbox.
+    /// The outbox.
     pub const OUTBOX: &str = "9";
-    /// Starred.
+    /// Starred mail.
     pub const STARRED: &str = "10";
-    /// Scheduled send.
+    /// Mail scheduled to be sent later.
     pub const SCHEDULED: &str = "12";
-    /// Almost all mail (everything except Spam and Trash).
+    /// All mail except what is in Trash or Spam.
     pub const ALMOST_ALL_MAIL: &str = "15";
-    /// Snoozed.
+    /// Snoozed mail.
     pub const SNOOZED: &str = "16";
 
     /// Every system label with the name the CLI shows for it and takes in
@@ -67,8 +70,9 @@ pub mod label_ids {
     }
 }
 
-/// Resolve a human folder name to its label ID. Unknown names pass through
-/// unchanged (so raw label IDs work anywhere).
+/// The label ID that `name` stands for: a system folder's name, such as
+/// `inbox` or `all-mail`, in any case, gives its ID, and anything else is
+/// kept, trimmed, as a label ID, so an ID works wherever a name does.
 pub fn resolve_folder(name: &str) -> String {
     let folded = name.trim().to_ascii_lowercase();
     let canonical = match folded.as_str() {
@@ -85,31 +89,33 @@ pub fn resolve_folder(name: &str) -> String {
     }
 }
 
-/// Send package types (bitmask).
+/// How the copies of a sent message travel, as the `Type` of the package
+/// that carries them: one bit for each way.
 pub mod package_type {
-    /// Internal Proton (end-to-end encrypted).
-    pub const PM: i64 = 1; // internal Proton
-    /// Encrypted-outside (password-protected).
-    pub const EO: i64 = 2; // encrypted-outside (password)
-    /// Cleartext (unencrypted).
+    /// To Proton addresses, end-to-end encrypted.
+    pub const PM: i64 = 1;
+    /// Behind a message password, for recipients without a key.
+    pub const EO: i64 = 2;
+    /// Without end-to-end encryption.
     pub const CLEAR: i64 = 4;
-    /// PGP inline.
+    /// Encrypted to the recipient's own PGP key, as inline PGP.
     pub const PGP_INLINE: i64 = 8;
-    /// PGP/MIME.
+    /// Encrypted to the recipient's own PGP key, as PGP/MIME.
     pub const PGP_MIME: i64 = 16;
-    /// Cleartext MIME.
+    /// Without end-to-end encryption, as one MIME body.
     pub const CLEAR_MIME: i64 = 32;
 }
 
-/// Address-key flags (bitmask).
+/// What an address key may be used for, as bits of its `Flags`.
 pub mod key_flag {
-    /// Key is not compromised (may verify signatures).
-    pub const NOT_COMPROMISED: u32 = 1; // may verify signatures
-    /// Key is not obsolete (may encrypt).
-    pub const NOT_OBSOLETE: u32 = 2; // may encrypt
-    /// Email encryption is disabled for this address.
+    /// Proton has not marked the key compromised, so its signatures count.
+    pub const NOT_COMPROMISED: u32 = 1;
+    /// The key is not obsolete, so it may encrypt.
+    pub const NOT_OBSOLETE: u32 = 2;
+    /// Mail may not be encrypted to the key, as when its address forwards
+    /// mail to another provider.
     pub const EMAIL_NO_ENCRYPT: u32 = 4;
-    /// Email signing is disabled for this address.
+    /// Mail may not be signed with the key.
     pub const EMAIL_NO_SIGN: u32 = 8;
 
     /// True if the key is not obsolete, so it may encrypt. Whether mail to
@@ -132,32 +138,33 @@ pub mod key_flag {
     }
 }
 
-/// Message flags (bitmask; `u64` because high bits overflow 32-bit).
+/// What Proton records about a message, as bits of its `Flags`. Some lie
+/// above the 32nd, so they are `u64`.
 pub mod message_flag {
-    /// Message was received.
+    /// It reached the account.
     pub const RECEIVED: u64 = 1 << 0;
-    /// Message was sent.
+    /// The account sent it.
     pub const SENT: u64 = 1 << 1;
-    /// Message is internal (Proton-to-Proton).
+    /// It went from one Proton address to another.
     pub const INTERNAL: u64 = 1 << 2;
-    /// Message is end-to-end encrypted.
+    /// It was end-to-end encrypted.
     pub const E2E: u64 = 1 << 3;
-    /// Message has been replied to.
+    /// It has been answered.
     pub const REPLIED: u64 = 1 << 5;
-    /// Message has been replied to all.
+    /// It has been answered to everyone it reached.
     pub const REPLIED_ALL: u64 = 1 << 6;
-    /// Message has been forwarded.
+    /// It has been forwarded.
     pub const FORWARDED: u64 = 1 << 7;
-    /// Message carries a public key.
+    /// It carries its sender's public key.
     pub const PUBLIC_KEY: u64 = 1 << 17;
-    /// Message is signed.
+    /// It is signed.
     pub const SIGN: u64 = 1 << 18;
-    /// Message is a scheduled send.
+    /// It waits to be sent at a later time.
     pub const SCHEDULED_SEND: u64 = 1 << 20;
-    /// Message was produced by auto-forwarding.
+    /// It reached the account through automatic forwarding.
     pub const AUTO_FORWARDEE: u64 = 1 << 35;
 
-    /// True if `flags` has `flag` set.
+    /// Whether `flags` has any bit of `flag` set.
     pub fn has(flags: u64, flag: u64) -> bool {
         flags & flag != 0
     }
@@ -192,23 +199,23 @@ pub mod password_mode {
     pub const TWO_PASSWORDS: u8 = 2;
 }
 
-/// Recipient type from the public-key lookup.
+/// Whose address a key lookup was for, as its `RecipientType` says.
 pub mod recipient_type {
-    /// Internal Proton recipient.
+    /// A Proton address.
     pub const INTERNAL: u8 = 1;
-    /// External recipient.
+    /// Another provider's address.
     pub const EXTERNAL: u8 = 2;
 }
 
-/// Label types for `/core/v4/labels`.
+/// The kinds of label `/core/v4/labels` keeps, by its `Type`.
 pub mod label_type {
-    /// Message label.
+    /// A label for messages.
     pub const MESSAGE_LABEL: i64 = 1;
-    /// Contact group.
+    /// A group of contacts.
     pub const CONTACT_GROUP: i64 = 2;
-    /// Message folder (user-created).
+    /// A folder the account made.
     pub const MESSAGE_FOLDER: i64 = 3;
-    /// System folder.
+    /// A folder every mailbox has.
     pub const SYSTEM_FOLDER: i64 = 4;
 }
 
@@ -248,19 +255,19 @@ pub(crate) mod response_code {
     pub(crate) const HUMAN_VERIFICATION: i64 = 9001;
 }
 
-/// MIME body types used by mail.
+/// The kinds of body a message has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MimeType {
-    /// `text/plain`.
+    /// Plain text, `text/plain`.
     PlainText,
-    /// `text/html`.
+    /// HTML, `text/html`.
     Html,
-    /// `multipart/mixed`.
+    /// Several parts in one MIME body, `multipart/mixed`.
     MultipartMixed,
 }
 
 impl MimeType {
-    /// The MIME type's wire string (e.g. `text/plain`).
+    /// The MIME type as Proton writes it, such as `text/plain`.
     pub fn as_str(self) -> &'static str {
         match self {
             MimeType::PlainText => "text/plain",
@@ -275,14 +282,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn folder_resolution() {
-        assert_eq!(resolve_folder("inbox"), "0");
-        assert_eq!(resolve_folder("INBOX"), "0");
-        assert_eq!(resolve_folder("trash"), "3");
-        assert_eq!(resolve_folder("sent"), "7");
-        assert_eq!(resolve_folder("starred"), "10");
-        assert_eq!(resolve_folder("all"), "5");
-        assert_eq!(resolve_folder("almost-all"), "15");
+    fn each_folder_name_resolves_to_the_id_proton_gives_it() {
+        // The IDs are written out, so a constant that changed would show.
+        let ids = [
+            ("inbox", "0"),
+            ("all-drafts", "1"),
+            ("all-sent", "2"),
+            ("trash", "3"),
+            ("spam", "4"),
+            ("all-mail", "5"),
+            ("archive", "6"),
+            ("sent", "7"),
+            ("drafts", "8"),
+            ("outbox", "9"),
+            ("starred", "10"),
+            ("scheduled", "12"),
+            ("almost-all", "15"),
+            ("snoozed", "16"),
+            ("all", "5"),
+        ];
+        for (name, id) in ids {
+            assert_eq!(resolve_folder(name), id, "{name}");
+            assert_eq!(resolve_folder(&name.to_ascii_uppercase()), id, "{name}");
+        }
+        // Anything else is taken for an ID of the account's own.
         assert_eq!(resolve_folder("xyz123"), "xyz123");
     }
 
@@ -329,26 +352,43 @@ mod tests {
     }
 
     #[test]
-    fn flag_values() {
-        assert_eq!(key_flag::NOT_OBSOLETE, 2);
-        assert!(key_flag::can_encrypt(
-            key_flag::NOT_OBSOLETE | key_flag::NOT_COMPROMISED
-        ));
-        assert!(!key_flag::can_encrypt(key_flag::NOT_COMPROMISED));
-        let usable = key_flag::NOT_OBSOLETE | key_flag::NOT_COMPROMISED;
-        assert!(key_flag::can_encrypt_mail(usable | key_flag::EMAIL_NO_SIGN));
-        assert!(!key_flag::can_encrypt_mail(
-            usable | key_flag::EMAIL_NO_ENCRYPT
-        ));
-        assert!(!key_flag::can_encrypt_mail(key_flag::NOT_COMPROMISED));
+    fn key_and_message_flags_read_as_proton_sets_them() {
+        // The values are written out, so a constant that changed would show.
+        let key_bits = [
+            key_flag::NOT_COMPROMISED,
+            key_flag::NOT_OBSOLETE,
+            key_flag::EMAIL_NO_ENCRYPT,
+            key_flag::EMAIL_NO_SIGN,
+        ];
+        assert_eq!(key_bits, [1, 2, 4, 8]);
+        let package_types = [
+            package_type::PM,
+            package_type::EO,
+            package_type::CLEAR,
+            package_type::PGP_INLINE,
+            package_type::PGP_MIME,
+            package_type::CLEAR_MIME,
+        ];
+        assert_eq!(package_types, [1, 2, 4, 8, 16, 32]);
+
+        let sound = key_flag::NOT_COMPROMISED | key_flag::NOT_OBSOLETE;
+        assert!(key_flag::can_verify(sound) && key_flag::can_encrypt_mail(sound));
+        // An obsolete key still vouches for its signatures, but encrypts
+        // nothing; a compromised one vouches for nothing.
         assert!(key_flag::can_verify(key_flag::NOT_COMPROMISED));
+        assert!(!key_flag::can_encrypt(key_flag::NOT_COMPROMISED));
+        assert!(!key_flag::can_encrypt_mail(key_flag::NOT_COMPROMISED));
         assert!(!key_flag::can_verify(key_flag::NOT_OBSOLETE));
-        assert_eq!(package_type::PM, 1);
-        assert_eq!(package_type::CLEAR, 4);
+        // An address that forwards elsewhere takes no encrypted mail, though
+        // its key could encrypt it.
+        let forwarding = sound | key_flag::EMAIL_NO_ENCRYPT;
+        assert!(key_flag::can_encrypt(forwarding) && !key_flag::can_encrypt_mail(forwarding));
+        assert!(key_flag::can_encrypt_mail(sound | key_flag::EMAIL_NO_SIGN));
+
+        // Some message flags lie above the 32nd bit.
+        let forwarded = message_flag::AUTO_FORWARDEE | message_flag::RECEIVED;
         assert_eq!(message_flag::AUTO_FORWARDEE, 1 << 35);
-        assert!(message_flag::has(
-            message_flag::AUTO_FORWARDEE,
-            message_flag::AUTO_FORWARDEE
-        ));
+        assert!(message_flag::has(forwarded, message_flag::AUTO_FORWARDEE));
+        assert!(!message_flag::has(forwarded, message_flag::SENT));
     }
 }

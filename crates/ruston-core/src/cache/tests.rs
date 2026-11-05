@@ -722,25 +722,32 @@ fn failed_batch_rolls_back_prior_changes_and_cursor() {
 }
 
 #[test]
-fn upsert_list_delete_roundtrip() {
-    let c = Cache::open(Path::new(":memory:")).unwrap();
+fn messages_written_are_listed_counted_and_removed() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    let inbox = |unread_only: bool| -> Vec<String> {
+        let page = cache.list("0", unread_only, 10, 0).unwrap();
+        page.into_iter().map(|m| m.id).collect()
+    };
 
-    assert_eq!(c.last_event_id().unwrap(), None);
-    c.set_last_event_id("evt-1").unwrap();
-    assert_eq!(c.last_event_id().unwrap().as_deref(), Some("evt-1"));
+    // A new cache has no cursor until one is stored.
+    assert_eq!(cache.last_event_id().unwrap(), None);
+    cache.set_last_event_id("evt-1").unwrap();
+    assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("evt-1"));
 
-    c.upsert_message(&meta("a", "0", 1, 100)).unwrap();
-    c.upsert_message(&meta("b", "0", 0, 200)).unwrap();
-    let inbox = c.list("0", false, 10, 0).unwrap();
-    assert_eq!(inbox.len(), 2);
-    assert_eq!(inbox[0].id, "b"); // newest first
-    assert_eq!(c.list("0", true, 10, 0).unwrap().len(), 1); // only unread
-    assert_eq!(c.count("0").unwrap(), (2, 1));
+    cache
+        .upsert_message(&meta("older-unread", "0", 1, 100))
+        .unwrap();
+    cache
+        .upsert_message(&meta("newer-read", "0", 0, 200))
+        .unwrap();
+    assert_eq!(inbox(false), ["newer-read", "older-unread"]);
+    assert_eq!(inbox(true), ["older-unread"]);
+    assert_eq!(cache.count("0").unwrap(), (2, 1));
 
-    c.delete_message("a").unwrap();
-    assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 1);
-    c.clear().unwrap();
-    assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 0);
+    cache.delete_message("older-unread").unwrap();
+    assert_eq!(inbox(false), ["newer-read"]);
+    cache.clear().unwrap();
+    assert!(inbox(false).is_empty());
 }
 
 #[test]
@@ -955,7 +962,7 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
     cache
         .stage_rebuild_page(&[meta("rebuilt", "0", 0, 50)])
         .unwrap();
-    cache.finish_rebuild("old", "new", 1).unwrap();
+    cache.finish_rebuild("old", "new", Some(1)).unwrap();
     assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "rebuilt");
     let time: i64 = cache
         .conn
@@ -969,6 +976,107 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
 }
 
 #[test]
+fn a_resync_stores_the_rows_and_labels_a_cached_write_stores() {
+    // A label listed twice, and a message written again with other labels,
+    // as when a resync finds it on a later page too.
+    let mut first = meta("m1", "0", 1, 10);
+    first.label_ids = vec!["0".into(), "5".into(), "0".into()];
+    let mut again = meta("m1", "3", 0, 11);
+    again.label_ids.push("10".into());
+    let writes = [first, meta("m2", "5", 0, 20), again];
+
+    let cached = Cache::open(Path::new(":memory:")).unwrap();
+    for m in &writes {
+        upsert_metadata(&cached.conn, m).unwrap();
+    }
+    let rebuilt = Cache::open(Path::new(":memory:")).unwrap();
+    rebuilt.set_last_event_id("old").unwrap();
+    rebuilt.begin_rebuild().unwrap();
+    for m in &writes {
+        rebuilt.stage_rebuild_page(std::slice::from_ref(m)).unwrap();
+    }
+    rebuilt.finish_rebuild("old", "new", None).unwrap();
+
+    /// Each row `sql` selects, as the one text it makes of it.
+    fn rows(cache: &Cache, sql: &str) -> Vec<String> {
+        cache
+            .conn
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    }
+    let messages = "SELECT id || ' ' || time || ' ' || unread || ' ' || json FROM messages
+                    ORDER BY id";
+    let labels = "SELECT message_id || ' ' || label_id || ' ' || time FROM message_labels
+                  ORDER BY message_id, label_id";
+    assert_eq!(rows(&rebuilt, messages), rows(&cached, messages));
+    assert_eq!(rows(&rebuilt, labels), rows(&cached, labels));
+
+    // Each message as its last write left it.
+    assert_eq!(rows(&cached, labels), ["m1 10 11", "m1 3 11", "m2 5 20"]);
+    let times = "SELECT id || ' ' || time || ' ' || unread FROM messages ORDER BY id";
+    assert_eq!(rows(&cached, times), ["m1 11 0", "m2 20 0"]);
+    let json = rows(&cached, "SELECT json FROM messages WHERE id='m1'");
+    let m1: MessageMetadata = serde_json::from_str(&json[0]).unwrap();
+    assert_eq!(m1.label_ids, ["3", "10"]);
+}
+
+#[test]
+fn bodies_an_older_version_indexed_are_read_again_and_searchable_meanwhile() {
+    let dir = temp_cache_dir();
+    let path = dir.join("cache.db");
+    {
+        // A body as an older version indexed it: its HTML, with no mark.
+        let cache = Cache::open(&path).unwrap();
+        cache
+            .index_message(
+                &meta("old", "0", 0, 1),
+                r#"<a href="https://x.test/t">oldhtml</a>"#,
+            )
+            .unwrap();
+        cache
+            .conn
+            .execute_batch("ALTER TABLE msg_fts_rows DROP COLUMN as_text")
+            .unwrap();
+        // Opening it to read leaves it as it is, still searchable.
+        assert!(!needs_migration(&cache.conn).unwrap());
+        assert!(needs_migration_to_write(&cache.conn).unwrap());
+    }
+
+    let cache = Cache::open(&path).unwrap();
+    let version: i64 = cache
+        .conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION, "older versions keep opening it");
+    assert!(
+        !cache.has_indexed_body("old").unwrap(),
+        "index reads it again"
+    );
+    assert_eq!(cache.search("oldhtml", 10).unwrap()[0].id, "old");
+    // A row an older version writes now has no mark either.
+    cache
+        .conn
+        .execute(
+            "INSERT INTO msg_fts(id, subject, body, participants) VALUES('older', '', 'b', '')",
+            [],
+        )
+        .unwrap();
+    assert!(!cache.has_indexed_body("older").unwrap());
+
+    cache
+        .index_message(&meta("old", "0", 0, 1), "oldtext")
+        .unwrap();
+    assert!(cache.has_indexed_body("old").unwrap());
+    assert!(cache.search("oldhtml", 10).unwrap().is_empty());
+    drop(cache);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn incomplete_rebuild_cannot_replace_cache_or_cursor() {
     let c = Cache::open(Path::new(":memory:")).unwrap();
     c.set_last_event_id("old").unwrap();
@@ -977,7 +1085,7 @@ fn incomplete_rebuild_cannot_replace_cache_or_cursor() {
     c.begin_rebuild().unwrap();
     c.stage_rebuild_page(&[meta("new", "0", 0, 2)]).unwrap();
 
-    assert!(c.finish_rebuild("old", "fresh", 2).is_err());
+    assert!(c.finish_rebuild("old", "fresh", Some(2)).is_err());
     assert_eq!(c.last_event_id().unwrap().as_deref(), Some("old"));
     assert_eq!(c.list("0", false, 10, 0).unwrap()[0].id, "keep");
     assert_eq!(c.search("privatebody", 10).unwrap()[0].id, "keep");
@@ -1009,7 +1117,7 @@ fn a_resync_leaves_no_indexed_body_in_the_file_and_search_working() {
     let path = dir.join("cache.db");
     let cache = staged_resync(&path, 50, 0);
 
-    assert_eq!(cache.finish_rebuild("old", "fresh", 50).unwrap(), 50);
+    assert_eq!(cache.finish_rebuild("old", "fresh", Some(50)).unwrap(), 50);
     assert!(cache.search("ibexcanary", 10).unwrap().is_empty());
     assert_eq!(cache.list("0", false, 100, 0).unwrap().len(), 50);
     // Bodies indexed again are found, and stay wiped once deleted.
@@ -1047,7 +1155,9 @@ fn measure_resync_index_reset() {
         // About the words of a short email each.
         let cache = staged_resync(&dir.join("cache.db"), count, 300);
         let start = std::time::Instant::now();
-        cache.finish_rebuild("old", "fresh", count as u32).unwrap();
+        cache
+            .finish_rebuild("old", "fresh", Some(count as u32))
+            .unwrap();
         eprintln!(
             "Cache::finish_rebuild: {count} indexed messages in {:?}",
             start.elapsed()
@@ -1440,18 +1550,52 @@ fn measure_fts_index_scaling() {
 }
 
 #[test]
-fn fts_index_and_search() {
-    let c = Cache::open(Path::new(":memory:")).unwrap();
-    c.index_message(&meta("m1", "5", 0, 10), "hello from ruston-cli rust client")
+fn search_finds_the_messages_that_hold_every_word_as_typed() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    for (id, body) in [
+        ("tool", "notes on ruston-cli, a rust client"),
+        ("other", "completely unrelated content"),
+    ] {
+        cache.index_message(&meta(id, "5", 0, 10), body).unwrap();
+    }
+    let found = |query: &str| -> Vec<String> {
+        let hits = cache.search(query, 10).unwrap();
+        hits.into_iter().map(|m| m.id).collect()
+    };
+
+    assert_eq!(found("ruston-cli"), ["tool"]);
+    assert_eq!(found("rust notes"), ["tool"]);
+    assert!(found("rust content").is_empty());
+    assert!(found("nonexistentword").is_empty());
+    // FTS5's operators and quotes are words like any other.
+    assert!(found("rust OR content").is_empty());
+    assert_eq!(found(r#""rust" cli"#), ["tool"]);
+    // Nothing typed finds nothing.
+    assert!(found("").is_empty());
+    assert!(found(" \t ").is_empty());
+}
+
+#[test]
+fn metadata_that_no_longer_reads_is_left_out_of_lists_and_searches() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    for id in ["readable", "unreadable"] {
+        cache
+            .index_message(&meta(id, "0", 0, 10), "quarterly figures")
+            .unwrap();
+    }
+    cache
+        .conn
+        .execute(
+            "UPDATE messages SET json='{not json' WHERE id='unreadable'",
+            [],
+        )
         .unwrap();
-    c.index_message(&meta("m2", "5", 0, 20), "completely unrelated content here")
-        .unwrap();
-    let hits = c.search("ruston-cli", 10).unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].id, "m1");
-    assert!(c.search("nonexistentword", 10).unwrap().is_empty());
-    // multi-token AND
-    assert_eq!(c.search("hello rust", 10).unwrap().len(), 1);
+    let ids = |messages: Vec<MessageMetadata>| -> Vec<String> {
+        messages.into_iter().map(|m| m.id).collect()
+    };
+
+    assert_eq!(ids(cache.list("0", false, 10, 0).unwrap()), ["readable"]);
+    assert_eq!(ids(cache.search("quarterly", 10).unwrap()), ["readable"]);
 }
 
 #[cfg(unix)]

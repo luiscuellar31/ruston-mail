@@ -3,9 +3,16 @@
 //! asks for. Doing what it asks is the state's business, in `app`.
 
 use super::compose::AnswerKind;
+use ruston_core::SearchOpts;
+use ruston_core::mail::read::search_window;
+
+/// The filters `:search` and `:local` take beside their words, as `messages
+/// search` takes options: who sent it, who got it, its first and last day,
+/// and the folder or label it is in.
+const FILTERS: [&str; 5] = ["from:", "to:", "after:", "before:", "in:"];
 
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 25] = [
+const COMMANDS: [&str; 26] = [
     "archive",
     "attachments",
     "compose",
@@ -28,6 +35,7 @@ const COMMANDS: [&str; 25] = [
     "spam",
     "star",
     "trash",
+    "undo",
     "unlabel",
     "unread",
     "unstar",
@@ -47,7 +55,8 @@ pub(crate) enum Command {
     Move(String),
     /// Search all mail for these words.
     Search(String),
-    /// Search the local index for these words, without a connection.
+    /// Search the local index for these words, without a connection; the
+    /// filters among them narrow what it finds.
     Local(String),
     Star(bool),
     Read(bool),
@@ -61,6 +70,8 @@ pub(crate) enum Command {
     Spam,
     /// Move them out of Spam, to the Inbox.
     NotSpam,
+    /// Take the last move back.
+    Undo,
     /// Delete them forever, from Trash or Spam, once asked.
     Delete,
     /// Delete everything in Trash or Spam forever, once asked.
@@ -100,6 +111,7 @@ impl Command {
             "unlabel" => Self::Unlabel(needs("the name of a label")?),
             "spam" => Self::Spam,
             "notspam" => Self::NotSpam,
+            "undo" => Self::Undo,
             "star" => Self::Star(true),
             "unstar" => Self::Star(false),
             "read" => Self::Read(true),
@@ -128,6 +140,57 @@ impl Command {
         }
         Ok(Some(command))
     }
+}
+
+/// What a search asks for in `typed`, after the command `command`, `search`
+/// or `local`: its words, and each filter typed beside them, whatever its
+/// case, with what follows it up to a space, or between double quotes to
+/// hold spaces; the folder as it is named. The days are checked as core
+/// checks them, so a range that ends before it starts is refused, as
+/// `messages search` refuses it.
+pub(crate) fn search_options(command: &str, typed: &str) -> Result<SearchOpts, String> {
+    let mut opts = SearchOpts::default();
+    let mut words = Vec::new();
+    let mut rest = typed.trim_start();
+    while !rest.is_empty() {
+        let filter = FILTERS.into_iter().find(|filter| {
+            rest.get(..filter.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(filter))
+        });
+        let Some(filter) = filter else {
+            let (word, after) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            words.push(word);
+            rest = after.trim_start();
+            continue;
+        };
+        let after = &rest[filter.len()..];
+        let (value, after) = match after.strip_prefix('"') {
+            Some(quoted) => quoted.split_once('"').unwrap_or((quoted, "")),
+            None => after.split_once(char::is_whitespace).unwrap_or((after, "")),
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(format!(":{command} needs something after {filter}"));
+        }
+        let field = match filter {
+            "from:" => &mut opts.from,
+            "to:" => &mut opts.to,
+            "after:" => &mut opts.after,
+            "before:" => &mut opts.before,
+            // in:
+            _ => &mut opts.folder,
+        };
+        if field.replace(value.to_owned()).is_some() {
+            return Err(format!(":{command} takes {filter} once"));
+        }
+        rest = after.trim_start();
+    }
+    if !words.is_empty() {
+        opts.keyword = Some(words.join(" "));
+    }
+    search_window(opts.after.as_deref(), opts.before.as_deref())
+        .map_err(|error| format!("Cannot search: {error}"))?;
+    Ok(opts)
 }
 
 /// The line `:` opens: what is typed, which earlier line Up and Down show,
@@ -192,10 +255,11 @@ impl CommandLine {
         self.completing = None;
     }
 
-    /// Completes the word being typed: a command's name, or what follows
-    /// it, from the words `after` gives for that command, matched whatever
-    /// their case. Tab again shows the next word that fits, and `backwards`
-    /// the one before.
+    /// Completes the word being typed: a command's name, what follows it,
+    /// or in a search, the folder after `in:`, from the words `after` gives
+    /// for that command or for `in:`, matched whatever their case; a folder
+    /// with spaces goes between double quotes. Tab again shows the next word
+    /// that fits, and `backwards` the one before.
     pub(crate) fn complete(&mut self, after: impl Fn(&str) -> Vec<String>, backwards: bool) {
         if let Some(completing) = &mut self.completing {
             let count = completing.words.len();
@@ -210,12 +274,24 @@ impl CommandLine {
         }
         let (start, words) = match self.text.split_once(' ') {
             None => (0, COMMANDS.map(String::from).to_vec()),
+            Some(("search" | "local", _)) => {
+                let Some(start) = folder_typed(&self.text) else {
+                    return;
+                };
+                let folders = after("in:").iter().map(|name| quoted(name)).collect();
+                (start, folders)
+            }
             Some((name, rest)) => (self.text.len() - rest.trim_start().len(), after(name)),
         };
-        let typed = self.text[start..].to_lowercase();
+        // A folder after `in:` may start with the quote that holds its spaces.
+        let typed = self.text[start..].trim_start_matches('"').to_lowercase();
         let words: Vec<String> = words
             .into_iter()
-            .filter(|word| word.to_lowercase().starts_with(&typed))
+            .filter(|word| {
+                word.trim_start_matches('"')
+                    .to_lowercase()
+                    .starts_with(&typed)
+            })
             .collect();
         if words.is_empty() {
             return;
@@ -228,6 +304,33 @@ impl CommandLine {
             words,
             shown,
         });
+    }
+}
+
+/// Where the folder after the last `in:` of a search line starts, while it
+/// is still being typed: up to the end of the line, with no space in it,
+/// or with an opening double quote and no closing one.
+fn folder_typed(line: &str) -> Option<usize> {
+    // ASCII lowercase keeps every character where it was.
+    let lowered = line.to_ascii_lowercase();
+    let (at, _) = lowered
+        .rmatch_indices("in:")
+        .find(|(at, _)| lowered[..*at].ends_with(char::is_whitespace))?;
+    let start = at + "in:".len();
+    let typed = &line[start..];
+    let open = match typed.strip_prefix('"') {
+        Some(quoted) => !quoted.contains('"'),
+        None => !typed.contains(char::is_whitespace),
+    };
+    open.then_some(start)
+}
+
+/// `name` as a filter takes it: between double quotes when it has spaces.
+fn quoted(name: &str) -> String {
+    if name.contains(char::is_whitespace) {
+        format!("\"{name}\"")
+    } else {
+        name.to_owned()
     }
 }
 
@@ -271,6 +374,7 @@ mod tests {
             Err(":unlabel needs the name of a label".into())
         );
         assert_eq!(Command::parse("notspam"), Ok(Some(Command::NotSpam)));
+        assert_eq!(Command::parse("undo"), Ok(Some(Command::Undo)));
         assert_eq!(Command::parse("delete"), Ok(Some(Command::Delete)));
         assert_eq!(Command::parse("compose"), Ok(Some(Command::Compose)));
         assert_eq!(
@@ -292,6 +396,41 @@ mod tests {
         assert_eq!(
             Command::parse("frobnicate"),
             Err("Not a command: :frobnicate".into())
+        );
+    }
+
+    #[test]
+    fn a_search_takes_filters_beside_its_words_as_messages_search_takes_options() {
+        assert_eq!(
+            search_options(
+                "search",
+                "budget From:alex after:2026-01-01  report before:2026-01-31 \
+                 to:sam@example.test in:\"Bank statements\" re:"
+            ),
+            Ok(SearchOpts {
+                keyword: Some("budget report re:".into()),
+                from: Some("alex".into()),
+                to: Some("sam@example.test".into()),
+                after: Some("2026-01-01".into()),
+                before: Some("2026-01-31".into()),
+                folder: Some("Bank statements".into()),
+                ..SearchOpts::default()
+            })
+        );
+        // Filters alone are a search too, and one day can be all of it.
+        assert_eq!(
+            search_options("search", "in:Work after:2026-01-01 before:2026-01-01")
+                .map(|opts| opts.keyword),
+            Ok(None)
+        );
+        assert_eq!(
+            search_options("search", "plans before:2026-01-31 after:2026-02-01"),
+            Err("Cannot search: invalid date range: 2026-02-01 is after 2026-01-31".into())
+        );
+        // What is wrong names the command it was typed after.
+        assert_eq!(
+            search_options("local", "in:\"\" plans"),
+            Err(":local needs something after in:".into())
         );
     }
 
@@ -329,9 +468,44 @@ mod tests {
         line.clear();
         line.type_char('u');
         line.complete(places, false);
-        assert_eq!(line.text, "unlabel");
+        assert_eq!(line.text, "undo");
         line.complete(places, false);
-        assert_eq!(line.text, "unread");
+        assert_eq!(line.text, "unlabel");
+    }
+
+    #[test]
+    fn tab_completes_the_folder_after_in_in_a_search() {
+        let places = |after: &str| match after {
+            "in:" => ["Inbox", "Bank statements", "Work"]
+                .map(String::from)
+                .to_vec(),
+            _ => Vec::new(),
+        };
+        let completed = |typed: &str| {
+            let mut line = CommandLine::with(typed);
+            line.complete(places, false);
+            line.text
+        };
+        assert_eq!(completed("search plans in:w"), "search plans in:Work");
+        // Between quotes, typed with the first or not, to hold its spaces.
+        for typed in ["local plans IN:ba", "local plans IN:\"ba"] {
+            assert_eq!(completed(typed), "local plans IN:\"Bank statements\"");
+        }
+        // Again, the next that fits.
+        let mut line = CommandLine::with("search in:");
+        line.complete(places, false);
+        assert_eq!(line.text, "search in:Inbox");
+        line.complete(places, false);
+        assert_eq!(line.text, "search in:\"Bank statements\"");
+        // The words, and a folder typed whole, stay as they are.
+        for typed in [
+            "search pla",
+            "search in:Work pla",
+            "search in:\"Bank statements\"",
+            "search login:w",
+        ] {
+            assert_eq!(completed(typed), typed);
+        }
     }
 
     #[test]

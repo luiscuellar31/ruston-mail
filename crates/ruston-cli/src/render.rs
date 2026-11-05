@@ -1,4 +1,4 @@
-//! Output rendering: human-readable text by default, JSON with `--json`.
+//! What commands print: text for people, or JSON for scripts with `--json`.
 
 mod html;
 
@@ -14,7 +14,7 @@ use ruston_core::{
 };
 use serde_json::json;
 
-/// Render per-label counts.
+/// Show each folder's and label's total and unread count.
 pub fn counts(json_mode: bool, counts: &[LabelCount]) {
     if json_mode {
         json_out(&json!({ "counts": counts }));
@@ -34,7 +34,8 @@ fn label_name(id: &str) -> &str {
     label_ids::name(id).unwrap_or(id)
 }
 
-/// Render a contacts list.
+/// Show a page of contacts, each with its addresses, and how many there are
+/// in all.
 pub fn contacts_list(json_mode: bool, total: u32, contacts: &[Contact]) {
     if json_mode {
         json_out(&json!({ "total": total, "contacts": contacts }));
@@ -47,7 +48,7 @@ pub fn contacts_list(json_mode: bool, total: u32, contacts: &[Contact]) {
     }
 }
 
-/// Render contact email entries.
+/// Show the email addresses contacts hold, each with its contact's name.
 pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
     if json_mode {
         json_out(&json!({ "emails": emails }));
@@ -59,7 +60,7 @@ pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
     }
 }
 
-/// Render the account's sending addresses.
+/// Show each address the account sends from, with its ID.
 pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
     if json_mode {
         json_out(&json!({ "addresses": addrs }));
@@ -71,7 +72,7 @@ pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
     }
 }
 
-/// Render a filter list.
+/// Show the Sieve filters, each with whether it is enabled.
 pub fn filters_list(json_mode: bool, filters: &[Filter]) {
     if json_mode {
         let filters: Vec<_> = filters.iter().map(filter_json).collect();
@@ -89,7 +90,7 @@ pub fn filters_list(json_mode: bool, filters: &[Filter]) {
     }
 }
 
-/// Render a newly created filter.
+/// Report the filter just created, by its name and ID.
 pub fn filter_created(json_mode: bool, f: &Filter) {
     if json_mode {
         json_out(&filter_json(f));
@@ -139,39 +140,88 @@ pub(crate) fn fmt_addr(r: &Recipient) -> String {
     }
 }
 
+/// The recipients on one line, separated by commas, or `-` for none.
 pub(crate) fn fmt_addrs(list: &[Recipient]) -> String {
-    if list.is_empty() {
-        "-".to_string()
-    } else {
-        list.iter().map(fmt_addr).collect::<Vec<_>>().join(", ")
+    match list {
+        [] => "-".to_owned(),
+        recipients => recipients
+            .iter()
+            .map(fmt_addr)
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
-/// Format a Unix timestamp as `YYYY-MM-DD HH:MM:SS UTC` (no external deps).
+/// Seconds in a day.
+const SECONDS_PER_DAY: i64 = 86_400;
+/// Days in 400 years of the Gregorian calendar, after which it repeats.
+const DAYS_PER_400_YEARS: i64 = 146_097;
+
+/// A Unix time as `YYYY-MM-DD HH:MM:SS UTC`, or `-` for a time not set.
 pub fn fmt_time(ts: i64) -> String {
     if ts <= 0 {
         return "-".to_string();
     }
-    let days = ts.div_euclid(86_400);
-    let secs = ts.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    let (hh, mm, ss) = (secs / 3600, (secs % 3600) / 60, secs % 60);
-    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02} UTC")
+    let date = Date::after_epoch(ts / SECONDS_PER_DAY);
+    let second = ts % SECONDS_PER_DAY;
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        date.year,
+        date.month,
+        date.day,
+        second / 3600,
+        second / 60 % 60,
+        second % 60
+    )
 }
 
-// Howard Hinnant's days-from-civil inverse (proleptic Gregorian).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
+/// A day of the proleptic Gregorian calendar.
+#[derive(Debug, PartialEq, Eq)]
+struct Date {
+    year: i64,
+    month: u32,
+    day: u32,
+}
+
+impl Date {
+    /// The day `days` days after 1970-01-01, or before it when negative.
+    fn after_epoch(days: i64) -> Self {
+        // Whole 400-year cycles first, since the calendar repeats after each;
+        // the rest is walked a year, and then a month, at a time.
+        let mut year = 1970 + days.div_euclid(DAYS_PER_400_YEARS) * 400;
+        let mut day = days.rem_euclid(DAYS_PER_400_YEARS);
+        while day >= days_in_year(year) {
+            day -= days_in_year(year);
+            year += 1;
+        }
+        let mut month = 1;
+        while day >= days_in_month(year, month) {
+            day -= days_in_month(year, month);
+            month += 1;
+        }
+        Date {
+            year,
+            month,
+            day: day as u32 + 1,
+        }
+    }
+}
+
+fn is_leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn days_in_year(year: i64) -> i64 {
+    if is_leap_year(year) { 366 } else { 365 }
+}
+
+fn days_in_month(year: i64, month: u32) -> i64 {
+    match month {
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
 }
 
 pub(crate) fn subject_or_empty(s: &str) -> &str {
@@ -451,7 +501,7 @@ pub fn downloaded(json: bool, files: &[String]) {
 }
 
 /// Report what a command did to the items `ids` names; `action` is the
-/// command's own name, as typed (`move`, `undelete`, `enable`...).
+/// command's own name, as typed (`move`, `delete`, `enable`...).
 pub fn action_result(json: bool, action: &str, ids: &[String]) {
     if json {
         json_out(&json!({ "status": "ok", "action": action, "count": ids.len(), "ids": ids }));
@@ -565,16 +615,19 @@ mod tests {
     }
 
     #[test]
-    fn fmt_time_handles_epoch_and_known_values() {
-        // Non-positive timestamps render as a placeholder.
-        assert_eq!(fmt_time(0), "-");
-        assert_eq!(fmt_time(-5), "-");
-        // 1 second past the Unix epoch.
-        assert_eq!(fmt_time(1), "1970-01-01 00:00:01 UTC");
-        // A well-known timestamp: 1_700_000_000 = 2023-11-14 22:13:20 UTC.
-        assert_eq!(fmt_time(1_700_000_000), "2023-11-14 22:13:20 UTC");
-        // And the first second of 2021.
-        assert_eq!(fmt_time(1_609_459_200), "2021-01-01 00:00:00 UTC");
+    fn a_time_shows_in_utc_to_the_second_or_as_a_dash_when_not_set() {
+        // Zero is a time not set; earlier ones show the same way.
+        for unset in [0, -86_400] {
+            assert_eq!(fmt_time(unset), "-", "{unset}");
+        }
+        for (time, shown) in [
+            (59, "1970-01-01 00:00:59 UTC"),
+            (86_399, "1970-01-01 23:59:59 UTC"),
+            (951_782_400, "2000-02-29 00:00:00 UTC"),
+            (1_234_567_890, "2009-02-13 23:31:30 UTC"),
+        ] {
+            assert_eq!(fmt_time(time), shown, "{time}");
+        }
     }
 
     #[test]
@@ -586,23 +639,42 @@ mod tests {
     }
 
     #[test]
-    fn civil_from_days_handles_leap_day() {
-        // 2024-02-29 00:00:00 UTC = day 19782 since the epoch; the hand-rolled
-        // proleptic-Gregorian inverse must land on the leap day exactly.
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+    fn dates_follow_the_gregorian_calendar() {
+        let date = |year, month, day| Date { year, month, day };
+        for (days, expected) in [
+            (0, date(1970, 1, 1)),
+            (-1, date(1969, 12, 31)),
+            // A leap day every fourth year...
+            (19_782, date(2024, 2, 29)),
+            // ...but of the century years only every fourth.
+            (11_016, date(2000, 2, 29)),
+            (-25_509, date(1900, 2, 28)),
+            (-25_508, date(1900, 3, 1)),
+            (2_932_896, date(9999, 12, 31)),
+        ] {
+            assert_eq!(Date::after_epoch(days), expected, "{days}");
+        }
+        // The latest time a timestamp can hold is still shown, and exactly.
+        assert_eq!(fmt_time(i64::MAX), "292277026596-12-04 15:30:07 UTC");
     }
 
     #[test]
-    fn label_name_maps_system_ids_and_passes_through() {
-        assert_eq!(label_name("0"), "inbox");
-        assert_eq!(label_name("3"), "trash");
-        assert_eq!(label_name("10"), "starred");
-        assert_eq!(label_name("9"), "outbox");
-        assert_eq!(label_name("12"), "scheduled");
-        assert_eq!(label_name("15"), "almost-all");
-        assert_eq!(label_name("16"), "snoozed");
-        // Unknown / custom label ids pass through unchanged.
+    fn system_labels_show_by_the_name_their_options_take() {
+        use ruston_core::model::enums::resolve_folder;
+
+        for (id, name) in [
+            ("0", "inbox"),
+            ("3", "trash"),
+            ("9", "outbox"),
+            ("10", "starred"),
+            ("12", "scheduled"),
+            ("15", "almost-all"),
+            ("16", "snoozed"),
+        ] {
+            assert_eq!(label_name(id), name);
+            assert_eq!(resolve_folder(name), id, "{name}");
+        }
+        // A label of the account's own is shown by its ID.
         assert_eq!(label_name("custom-xyz"), "custom-xyz");
     }
 

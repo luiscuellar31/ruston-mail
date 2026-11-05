@@ -1,4 +1,4 @@
-//! HTML sanitization for message bodies, and plain text from them.
+//! The HTML of message bodies: made safe to show, and read as plain text.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -106,7 +106,22 @@ const MAX_TEXT_DEPTH: usize = 8;
 /// quotes are kept. A link is written as its text followed by `<url>`. Hidden
 /// content and images are dropped, and nothing is cut short.
 pub(crate) fn to_text(html: &str) -> String {
-    let tokenizer = Tokenizer::new(TextSink::default(), TokenizerOpts::default());
+    text_of(html, Links::WithAddress)
+}
+
+/// An HTML body's words as the local search index keeps them: its text as
+/// [`to_text`] writes it, without the addresses its links lead to, which can
+/// sign someone in or unsubscribe them.
+pub(crate) fn searchable_text(html: &str) -> String {
+    text_of(html, Links::TextOnly)
+}
+
+fn text_of(html: &str, links: Links) -> String {
+    let builder = TextBuilder {
+        links,
+        ..TextBuilder::default()
+    };
+    let tokenizer = Tokenizer::new(TextSink(RefCell::new(builder)), TokenizerOpts::default());
     let input = BufferQueue::default();
     input.push_back(StrTendril::from_slice(html));
     let _ = tokenizer.feed(&input);
@@ -114,7 +129,16 @@ pub(crate) fn to_text(html: &str) -> String {
     tokenizer.sink.0.take().finish()
 }
 
-#[derive(Default)]
+/// What a link becomes in text.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Links {
+    /// Its text, followed by the address it leads to.
+    #[default]
+    WithAddress,
+    /// Its text alone.
+    TextOnly,
+}
+
 struct TextSink(RefCell<TextBuilder>);
 
 impl TokenSink for TextSink {
@@ -154,6 +178,8 @@ struct TextBuilder {
     pre_depth: usize,
     /// The open link's address, and where its text starts in `block`.
     link: Option<(String, usize)>,
+    /// What links become.
+    links: Links,
 }
 
 impl TextBuilder {
@@ -216,7 +242,7 @@ impl TextBuilder {
                 self.flush();
                 self.pre_depth += 1;
             }
-            "a" => {
+            "a" if self.links == Links::WithAddress => {
                 self.link = link_target(tag).map(|url| {
                     self.separate();
                     (url, self.block.len())
@@ -494,20 +520,54 @@ mod tests {
     }
 
     #[test]
-    fn strips_active_content_keeps_formatting() {
-        let dirty = r#"<b>hi</b><script>alert(1)</script><a href="javascript:evil()">x</a><img src="x" onerror="evil()"><p onclick="bad()">t</p>"#;
-        let clean = sanitize(dirty);
-        assert!(clean.contains("<b>hi</b>"));
-        assert!(!clean.contains("<script"));
-        assert!(!clean.to_lowercase().contains("javascript:"));
-        assert!(!clean.to_lowercase().contains("onerror"));
-        assert!(!clean.to_lowercase().contains("onclick"));
+    fn searchable_text_keeps_what_links_say_and_not_where_they_go() {
+        assert_eq!(
+            searchable_text(concat!(
+                r#"<p><a href="https://example.test/reset?token=s3cret">Reset your password</a>, "#,
+                r#"<a href="https://example.test/u?id=42"></a>or write to "#,
+                r#"<a href="mailto:ana@example.org">ana@example.org</a>.</p>"#,
+                r#"<img src="https://track.example/p.gif?u=42">"#
+            )),
+            "Reset your password, or write to ana@example.org."
+        );
     }
 
     #[test]
-    fn keeps_safe_links() {
-        let clean = sanitize(r#"<a href="https://proton.me">link</a>"#);
-        assert!(clean.contains("https://proton.me"));
+    fn scripts_handlers_and_script_links_go_while_formatting_stays() {
+        let clean = sanitize(concat!(
+            "<p>Dear <b>Ana</b>,<SCRIPT>steal(document.cookie)</SCRIPT></p>",
+            r#"<a href="JavaScript:steal()">open</a>"#,
+            r#"<img src="https://img.example/logo.png" onerror="steal()" onload="steal()">"#,
+            r#"<div onclick="steal()" onmouseover="steal()"><em>Totals</em></div>"#,
+        ));
+        for kept in ["<b>Ana</b>", "open</a>", "<img", "<em>Totals</em>"] {
+            assert!(clean.contains(kept), "{kept} was lost: {clean}");
+        }
+        let lower = clean.to_lowercase();
+        for gone in [
+            "<script",
+            "steal",
+            "javascript:",
+            "onerror",
+            "onload",
+            "onclick",
+            "onmouseover",
+        ] {
+            assert!(!lower.contains(gone), "{gone} survived: {clean}");
+        }
+    }
+
+    #[test]
+    fn a_web_link_keeps_its_address_and_shares_nothing_with_it() {
+        let clean = sanitize(r#"<a href="https://example.org/report?q=1">the report</a>"#);
+        assert!(
+            clean.contains(r#"href="https://example.org/report?q=1""#),
+            "{clean}"
+        );
+        // The page it opens gets no hold on this one, nor learns where it
+        // was opened from.
+        assert!(clean.contains(r#"rel="noopener noreferrer""#), "{clean}");
+        assert!(clean.contains(">the report</a>"), "{clean}");
     }
 
     #[test]

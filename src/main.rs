@@ -7,6 +7,7 @@ mod diagnostics;
 mod downloads;
 mod file_manager;
 mod launch;
+mod licenses;
 mod mail;
 mod mailto;
 mod runtime;

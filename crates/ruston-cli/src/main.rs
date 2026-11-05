@@ -1,4 +1,6 @@
-//! ruston-cli — a clap v4 command-line front-end over `ruston-core`.
+//! `ruston-cli`: the Ruston Mail account from a terminal, a command at a time
+//! or in the terminal interface, with `ruston-core` doing the work as it does
+//! for the desktop app.
 
 mod cli;
 mod commands;
@@ -44,9 +46,9 @@ async fn main() {
         std::process::exit(USAGE_ERROR);
     }
     if !opens_interface {
-        // Logs go to stderr so stdout stays clean for text/JSON output.
-        // -v debug, -vv trace(core), -vvv trace(all); RUST_LOG overrides.
-        // The interface draws over the terminal, so it logs nothing.
+        // Standard error takes the log, so standard output carries only what
+        // the command prints, as text or JSON. The interface draws over the
+        // terminal, so it logs nothing.
         terminal::init_tracing(cli.verbose);
         // The interface reads Ctrl+C as a key; the demo has no session.
         let ctx = Ctx::from(&cli);
@@ -78,6 +80,8 @@ fn with_causes(error: &ruston_core::Error) -> String {
     text
 }
 
+/// Hands the parsed command to the offline demo, or to the handlers that work
+/// with the account.
 async fn dispatch(cli: Cli) -> Result<()> {
     let ctx: Ctx = (&cli).into();
     // `main` has made sure a terminal is there to open the interface in.
@@ -85,36 +89,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
         .command
         .unwrap_or_else(|| Command::Tui(TuiArgs::default()));
     if ctx.demo {
-        return demo::dispatch(&ctx, command).await;
-    }
-    match command {
-        Command::Login(args) => commands::auth::login(&ctx, args).await,
-        Command::Logout => commands::auth::logout(&ctx).await,
-        Command::Whoami => commands::auth::whoami(&ctx).await,
-        Command::Tui(args) => tui::run(&ctx, &args).await,
-        Command::Messages { cmd } => commands::messages::run(&ctx, cmd).await,
-        Command::Conversations { cmd } => commands::conversations::run(&ctx, cmd).await,
-        Command::Attachments { cmd } => commands::attachments::run(&ctx, cmd).await,
-        Command::Drafts { cmd } => commands::drafts::run(&ctx, cmd).await,
-        Command::Filters { cmd } => commands::filters::run(&ctx, cmd).await,
-        Command::Contacts { cmd } => commands::contacts::run(&ctx, cmd).await,
-        Command::Addresses { cmd } => commands::contacts::addresses(&ctx, cmd).await,
-        Command::Settings { cmd } => commands::contacts::settings(&ctx, cmd).await,
-        Command::Counts { conversations } => commands::contacts::counts(&ctx, conversations).await,
-        Command::Export { folder, out, max } => commands::export::run(&ctx, folder, out, max).await,
-        Command::Watch { interval, folder } => commands::watch::run(&ctx, interval, folder).await,
-        Command::Index {
-            folder,
-            max_pages,
-            page_size,
-        } => commands::search::index(&ctx, folder, max_pages, page_size).await,
-        Command::Search { query, limit } => commands::search::search(&ctx, query, limit).await,
-        Command::Sync {
-            backfill,
-            max_pages,
-            page_size,
-        } => commands::sync::run(&ctx, backfill, max_pages, page_size).await,
-        Command::Labels { cmd } => commands::labels::run(&ctx, cmd).await,
+        demo::dispatch(&ctx, command).await
+    } else {
+        commands::run(&ctx, command).await
     }
 }
 
@@ -123,8 +100,11 @@ mod tests {
     use super::cli::Cli;
     use clap::Parser;
 
-    fn parse(args: &[&str]) -> Cli {
-        Cli::try_parse_from(args).expect("args should parse")
+    /// Runs `args`, the command line after `ruston-cli --demo`, as `main`
+    /// would.
+    async fn run_demo(args: &[&str]) -> ruston_core::Result<()> {
+        let line = ["ruston-cli", "--demo"].iter().chain(args);
+        super::dispatch(Cli::try_parse_from(line).expect("a valid command line")).await
     }
 
     #[tokio::test]
@@ -162,22 +142,17 @@ mod tests {
 
     #[tokio::test]
     async fn demo_dispatch_whoami() {
-        let cli = parse(&["ruston-cli", "--demo", "whoami"]);
-        assert!(super::dispatch(cli).await.is_ok());
+        assert!(run_demo(&["whoami"]).await.is_ok());
     }
 
     #[tokio::test]
     async fn demo_dispatch_messages_list_and_read() {
-        let cli = parse(&["ruston-cli", "--demo", "messages", "list"]);
-        assert!(super::dispatch(cli).await.is_ok());
-
-        let cli = parse(&["ruston-cli", "--demo", "messages", "read", "msg-demo-01"]);
-        assert!(super::dispatch(cli).await.is_ok());
+        assert!(run_demo(&["messages", "list"]).await.is_ok());
+        assert!(run_demo(&["messages", "read", "msg-demo-01"]).await.is_ok());
     }
 
     #[tokio::test]
     async fn demo_dispatch_json_mode() {
-        let cli = parse(&["ruston-cli", "--demo", "--json", "counts"]);
-        assert!(super::dispatch(cli).await.is_ok());
+        assert!(run_demo(&["--json", "counts"]).await.is_ok());
     }
 }

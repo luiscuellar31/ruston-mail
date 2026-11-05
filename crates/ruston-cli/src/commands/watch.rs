@@ -1,7 +1,7 @@
-//! Watch command: continuously sync the cache from the event stream.
+//! `watch`, which keeps the local cache in step with Proton until it is
+//! stopped.
 
 use crate::cli::Ctx;
-use crate::commands::resume;
 use crate::terminal;
 use ruston_core::{Client, Error, Result, SyncReport};
 use std::time::Duration;
@@ -14,10 +14,6 @@ const PAGE_SIZE: u32 = 50;
 /// The longest wait between attempts while errors keep coming.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(10 * 60);
 
-/// Flag and label changes leave indexed bodies current, so only new or
-/// rewritten mail, or a rebuilt cache, is worth indexing again. A `forced`
-/// tick indexes anyway: the first, and any after an error, which may have
-/// come after its sync took in changes it did not index.
 /// A round of the watch, which decides what it refreshes besides the sync.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Round {
@@ -29,6 +25,11 @@ enum Round {
     Steady,
 }
 
+/// Whether a round indexes the folder. Flag and label changes leave indexed
+/// bodies current, so only new or rewritten mail, or a rebuilt cache, is
+/// worth indexing again. A round that is not steady indexes anyway: the
+/// first, and one after errors, whose earlier sync may have taken in changes
+/// it never indexed.
 fn needs_index(report: &SyncReport, round: Round) -> bool {
     round != Round::Steady
         || report.created > 0
@@ -40,11 +41,7 @@ fn needs_index(report: &SyncReport, round: Round) -> bool {
 /// Proton being busy or down, or the cache changing during a sync. Anything
 /// else, a refused session first, stops it.
 fn is_transient(error: &Error) -> bool {
-    match error {
-        Error::Http(_) | Error::CacheChanged(_) => true,
-        Error::Api(api) => api.may_pass(),
-        _ => false,
-    }
+    error.may_pass() || matches!(error, Error::CacheChanged(_))
 }
 
 /// How long to wait after `failures` errors in a row: the interval, doubled
@@ -56,7 +53,7 @@ fn retry_delay(interval: Duration, failures: u32) -> Duration {
 }
 
 pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     let folder = match folder {
         Some(folder) => Some(client.folder_id(&folder).await?),
         None => None,

@@ -76,6 +76,7 @@ pub(super) fn show(
                         draft,
                         messages,
                         state.notification_status,
+                        app.third_party_notices(),
                     )
                 });
             None
@@ -235,6 +236,7 @@ fn show_compact(
                     draft,
                     messages,
                     state.notification_status,
+                    app.third_party_notices(),
                 );
             } else {
                 match state.compact_view {

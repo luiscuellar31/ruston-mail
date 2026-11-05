@@ -156,7 +156,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   reapplies the saved zoom every pass. It retains
   selector targets, validates authentication/modal availability, and restores
   owned menu and responder changes on drop; it does not replace winit's
-  application or window delegates.
+  application or window delegates. Its `SecureInput` keeps the system's
+  secure keyboard entry on while a password field, as egui reports it to the
+  system, has the keys in the focused main window. The `logic` pass turns it
+  off once the window loses focus, since eframe skips drawing a covered
+  window; each turn on is paired with a turn off, the last when the shell is
+  dropped.
 - [`ui/mod.rs`](../src/ui/mod.rs) handles root close requests in `logic`,
   including minimized windows. An in-flight send or native file dialog blocks
   closing. Unapplied preferences use the existing Settings exit decisions
@@ -310,10 +315,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   screen, but not while a folder first loads, a search's answer is on its way
   or Load more asks Proton by position (`Mailbox::takes_actions`). Proton may
   have read a folder's first page before applying the actions still on their
-  way or those confirmed since the page was asked for, so the page shows them
-  again in order: a move out keeps its row out, a move that keeps its row here
-  keeps it listed as it was, and a flag stays changed. Actions asked for in
-  another folder change nothing there.
+  way or those confirmed since the page was asked for, an automatic read among
+  them, so the page shows them again in order: a move out keeps its row out, a move that keeps its row here
+  keeps it listed as it was, and a flag stays changed. A page of search
+  results shows them again the same way, those confirmed since the search was
+  asked for included, so a row moved out of the view stays out of them.
+  Actions asked for in another folder change nothing there.
   The mailbox state machine also orders read mutations by row. An explicit
   read/unread action accepted during an automatic read waits at the head of
   that line until the read succeeds. A failed or timed-out predecessor fails it
@@ -476,15 +483,24 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Choices most people can leave alone, recipient encryption lookups and
   international domain names, share an Advanced card before Keyboard.
   Settings ends with an About card containing the existing logo, package version,
-  technology and author credits, license, and a Source code button. The button
-  dispatches `OpenSourceCode` through `App`, which opens the package repository
-  using the existing background browser effect. That effect, like the CLI's
+  technology and author credits, license, a Source code button and a
+  Third-party notices button. Source code dispatches `OpenSourceCode` through
+  `App`, which opens the package repository using the existing background
+  browser effect. Third-party notices dispatches `OpenThirdPartyNotices`, and
+  `App` hands the same effect the `THIRD_PARTY_LICENSES.txt` that
+  [`licenses.rs`](../src/licenses.rs) found at boot from the running
+  executable: beside it, in `../Resources` or in `../share/doc/ruston-mail`,
+  the places every package puts it (see
+  [Local state and tests](#local-state-and-tests)). Every system tries all
+  three, so each layout is tested on any of them. The file opens in the
+  system's default app for its type; a build run from Cargo has none, and the
+  card leaves that button out. That effect, like the CLI's
   human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
-  the address to the system's opener without a shell, which both take from
-  core's [`browser::opener`](../crates/ruston-core/src/browser.rs): `open`,
-  `xdg-open`, or on Windows `rundll32 url.dll,FileProtocolHandler` from
-  System32, never a `rundll32` that Windows would first look for beside the
-  executable. The
+  the address or file to the system's opener without a shell, which both
+  take from core's [`browser::opener`](../crates/ruston-core/src/browser.rs):
+  `open`, `xdg-open`, or on Windows `rundll32 url.dll,FileProtocolHandler`
+  from System32, never a `rundll32` that Windows would first look for beside
+  the executable. The
   desktop waits for the opener on a blocking worker with
   [`runtime::run_to_exit`](../src/runtime.rs), so on macOS and Linux it does
   not stay behind as a zombie process. Both
@@ -591,9 +607,11 @@ of its own. Windows reports no notification setting for the app until its
 first toast shows, so only a reported setting denies one. COM and file
 operations stay on a blocking worker. macOS uses UserNotifications authorization
 only with the matching `.app` bundle; it rereads authorization for each arrival
-and submits local notifications through completion blocks. Native errors update
-status without interrupting mail operations. Already delivered OS notifications
-are outside pending-work cancellation. Demo mode never requests OS authorization
+and submits local notifications through completion blocks, under one
+identifier, so a new one replaces the last, and when notifications stop for an
+account it removes what it delivered from Notification Center. Native errors
+update status without interrupting mail operations. Already delivered OS
+notifications are outside pending-work cancellation. Demo mode never requests OS authorization
 or delivers notifications.
 
 Sending follows the same return path: [`ui/compose.rs`](../src/ui/compose.rs)
@@ -620,13 +638,18 @@ drops it, the sign-in screen says whose sign-in brings it back, and closing
 the window asks before discarding it. Nothing of it is written to disk.
 
 The composer's protection notice takes the same path. When a recipient field
-loses focus, [`app/compose.rs`](../src/app/compose.rs) asks the backend about
-addresses it has not looked up for this draft;
+loses focus, or a reply opens with the recipients of a conversation Proton
+already holds, [`app/compose.rs`](../src/app/compose.rs) asks the backend
+about addresses it has not looked up for this draft; a `mailto:` draft's,
+which come from outside, wait for a field to lose focus;
 [`mail/proton.rs`](../src/mail/proton.rs) calls core's `recipient_protection`,
 which classifies the key lookup the way sending picks a package. It looks up
 four addresses at a time, in their order, and the whole batch shares one
 request deadline; an address still waiting when it runs out reads as a failed
-lookup. Answers carry
+lookup. Only the first `PROTECTION_LOOKUP_LIMIT` addresses (100, from core's
+`mail/send.rs`) are asked about, and the notice counts the rest in one line
+as not checked; the terminal interface's question before sending applies the
+same limit. Answers carry
 the session epoch and draft ID, and an address removed meanwhile is ignored.
 The `check_recipient_protection` preference in
 [`settings.rs`](../src/settings.rs) turns the lookup off; turning it off also
@@ -703,7 +726,8 @@ instead of an unknown outcome.
 
 - [`cli.rs`](../crates/ruston-cli/src/cli.rs) defines commands and global
   options; what only a sign-in uses is `LoginArgs`, the options of `login`, so
-  `Ctx` carries just the profile, JSON output and demo mode. [`main.rs`](../crates/ruston-cli/src/main.rs) dispatches them to
+  `Ctx` carries just the profile, JSON output and demo mode. [`main.rs`](../crates/ruston-cli/src/main.rs) hands each command to
+  the demo or to `commands::run`, which routes it to its handler in
   [`commands/`](../crates/ruston-cli/src/commands/). A command that takes a
   folder or label hands it to core's `Client::folder_id` first, which takes a
   system folder or an ID as it is and otherwise asks Proton for the account's
@@ -728,10 +752,12 @@ instead of an unknown outcome.
   and `conversations read`, through a `DemoSession` that keeps the changes
   the interface makes until it closes and works out its counts from its
   conversations. It owns
-  the terminal: raw mode and the alternate screen, put back however the
-  interface ends, a panic of its loop included, or while Ctrl+Z suspends it
-  where the shell has job control, and an async loop over crossterm's event
-  stream and the answers of the tasks it runs. A task that panics answers
+  the terminal: raw mode, the alternate screen and the mouse's reporting,
+  put back however the interface ends, a panic of its loop included, or
+  while Ctrl+Z suspends it where the shell has job control, and an async
+  loop over crossterm's event stream, less the mouse moving, which asks for
+  nothing and would cost a draw for every cell it crosses, and the answers
+  of the tasks it runs. A task that panics answers
   with a message the status bar shows, and its panic is not reported, so the
   interface keeps its screen. Quitting waits up to three seconds for the
   changes still on their way and then, through `Client::settle`, for a token
@@ -752,12 +778,25 @@ instead of an unknown outcome.
   open-source web client lists them, wherever Proton has one for the action,
   the desktop's Ctrl+R, Ctrl+F and Delete, and keys Proton leaves free for
   what only a terminal needs; after `g`, the next key names a folder to go to.
+  A click or a turn of the wheel finds what it points at where the view last
+  drew the panes: a click gives a pane the keys and selects a row of its
+  list, or opens it when it was selected there already, and the wheel moves
+  the list under it a row, as Up and Down do, or scrolls the reader, or the
+  list of keys over the panes. While a message is being written, a question
+  waits or the command line is open, the mouse asks for nothing.
   [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
   an opened conversation into the reader's lines, each message's headers,
   verdict and body as `conversations read` shows it, inside the task that
   loads it, since a large HTML body takes a while. It also notes where each
   body quotes another message, in lines that start with `>`, which the view
-  folds into a line each, as the desktop does, until `z` shows them, and
+  folds into a line each, as the desktop does, until `z` shows them; where
+  each message's lines are, with a line that stands for it folded, saying
+  when it came, its sender and verdict, and its first words: the view folds,
+  until `e` shows them, those the desktop's rule folds, which opens only the
+  newest and those not read yet, a run of them without the separators
+  between, and Enter folds or opens the one at the reader's top; which
+  message a conversation opens at, as the desktop's reader lands on its
+  first not read yet, else its newest; and
   gathers the web addresses the bodies link to, each read by `url` so it is
   listed as it would open, a host in another script in ASCII. `b` lists them
   over the panes; one opens only after a yes to a question that takes every
@@ -777,10 +816,17 @@ instead of an unknown outcome.
   conversations marked with Space or `x`, from the list, or else on its selection or
   the conversation the reader shows, through `Mailbox::change`, one request
   for all, and then load the list and the counts again, which Proton owns, as
-  the desktop does. When a change took the conversation the reader shows out
+  the desktop does. The reader names the labels the conversation bears from
+  its row in that list, so they follow each change, and Tab after `:unlabel`
+  offers only those. When a change took the conversation the reader shows out
   of the place listed, the reader puts it away; the answer names the
   conversations changed, since a list loaded again holds only its first
-  page and cannot tell. Deleting forever, with Ctrl+Backspace or `:delete`, and
+  page and cannot tell, and the place they were listed in. A move out of
+  that place, while it is listed still and is a folder mail lives in, is
+  what `Z` and `:undo` take back, as the desktop's Undo does, with a move
+  to it; another change, or another place listed, lets it go. Under a label,
+  Starred, All mail or a search, a conversation's folder is not known, so
+  none is offered. Deleting forever, with Ctrl+Backspace or `:delete`, and
   `:empty` work only in Trash and Spam, as `messages empty` does, and `Mailbox`
   refuses them anywhere else; each first asks a question over the panes,
   naming what it deletes, which takes every key until one answers it: `y`
@@ -830,19 +876,44 @@ instead of an unknown outcome.
   the command as the keys would, with `:move` reaching any folder. `/` and
   `:search` list what `Mailbox::search` finds in all mail, a page at a time
   as a folder's list, under the same request numbers; Esc lists again the
-  place shown before, and a refresh or a change searches again. The demo
-  finds conversations by their subjects, as its `conversations search`
-  does. `:local` asks `Mailbox::search_local` instead, which searches the
+  place shown before, and a refresh or a change searches again. The filters
+  typed beside the words go into core's `SearchOpts`, as `messages search`'s
+  options do; their days are checked first with core's `search_window`, which
+  refuses a range that ends before it starts, and the folder after `in:` is
+  found among the places, which carry their paths, by core's
+  `folder_id_among`, as `messages search --folder` finds it, so a name that
+  several share, or none has, is refused before anything is asked; it is asked
+  for by label ID, and Tab completes it from the places' names.
+  The demo shares one rule with its `conversations search`: the words in
+  a conversation's subject, the people among its senders and recipients,
+  its time and its places. `:local` asks `Mailbox::search_local` instead,
+  which searches the
   local index that `ruston-cli index` builds, as `search` does, on Tokio's
   blocking pool, and makes list rows of the conversations the messages it
   finds belong to; it needs no connection, though opening a result does.
+  Its line is read as `:search`'s is, by the same function, its folder found
+  the same way; core's index finds by words alone, so `search_local` narrows
+  all it finds, rather than only the best matches a list holds, by each
+  message's sender, recipients, time and labels, matching people and days
+  as the demo's searches do, and a line of filters alone is refused, saying
+  so.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with
-  one accent, and none under `NO_COLOR`. The reader wraps its lines to the
+  one accent, Ruston Mail's violet: exact where `COLORTERM` says the terminal
+  shows any color, and on Windows; the 256-color palette's nearest where
+  `TERM` says it has those, since a color a terminal cannot show may come out
+  as another; its magenta otherwise; and none under `NO_COLOR`. The reader wraps its lines to the
   pane; ratatui's unstable `Paragraph::line_count` gives the wrapped rows, and
   the view records how far the state may scroll, as only it knows the pane's
-  size. Every piece of text from the mail
+  size. It does the same for the list of keys, which takes two columns where
+  the terminal is wide enough for them and scrolls where it is too short.
+  For the same reason the view records which message is at the reader's top,
+  and scrolls the reader to the message the state asks for, where a
+  conversation opens or one just folded or opened, as the desktop lands on
+  one: unless it starts in the upper third already. It also records where it
+  drew each pane and the first row of each list it showed, for the mouse.
+  Every piece of text from the mail
   passes through `terminal.rs`'s `screen_line` or `screen_text`, which drop
   what output filtering drops and turn tabs, and on one line line breaks, into
   spaces, since a cell holding one would move the cursor.
@@ -889,7 +960,8 @@ instead of an unknown outcome.
   missing, expired or refused session has its own, 6. Arguments that can only fail or would
   be ignored are refused while parsing, before a session is resumed:
   `attachments download` with neither an ID nor `--all`, or with both; `spam`,
-  `ham`, `undelete` and `label` without a message; a snooze with both
+  `ham` and `label` without a message; `labels update` and `addresses update`
+  with nothing to change; a snooze with both
   `--until` and `--in`, neither, a time already gone or a duration that is not
   positive; a `--page-size` outside 1 to 100, the most Ruston asks Proton for
   at once, since paging takes a short page for the last one; and an
@@ -968,9 +1040,10 @@ instead of an unknown outcome.
   `save_under_free_name` saves into a folder under the first free name,
   `report.pdf`, then `report (1).pdf` and so on, and `write_new_file` writes to
   a path the user chose. Both create the file exclusively, then mark it with
-  `mark_downloaded`: on Windows a `Zone.Identifier` stream naming the Internet
-  zone, best effort, so SmartScreen and Office's Protected View apply; nothing
-  elsewhere. Core can pass decrypted
+  `mark_downloaded`, best effort: on Windows a `Zone.Identifier` stream naming
+  the Internet zone, so SmartScreen and Office's Protected View apply, and on
+  macOS the quarantine properties of an email attachment, set through
+  CoreFoundation, so Gatekeeper applies; nothing on Linux. Core can pass decrypted
   attachments to a caller one at a time; the CLI uses this path for `--all`,
   fetching message metadata once and saving each file before the next download.
   The convenience API that returns all attachment bytes has a total size limit.
@@ -1013,7 +1086,11 @@ instead of an unknown outcome.
   links rename it once the name is checked free. A message whose file already
   exists counts as exported, so a rerun resumes. `export_folder_report` lists
   the messages it skipped because they, or their attachments, could not be
-  opened; a failed request or write stops the export. The CLI
+  opened; a failed request or write stops the export. It goes through each
+  message once while the folder changes: one that mail arriving meanwhile
+  pushes onto the next page is passed over there, and a total that shrinks
+  lists the pages already gone through again, where deleted or moved mail
+  moved later messages. The CLI
   [export handler](../crates/ruston-cli/src/commands/export.rs) chooses the
   destination and reports the result, exiting with an error when a message was
   skipped; demo mode writes fictional sample mail.
@@ -1029,7 +1106,14 @@ instead of an unknown outcome.
   caller then decodes once; bodies a caller does not need are skipped, and an
   API error keeps the first 4 KiB of its body. Ordinary requests have 60 seconds;
   attachment transfers have 180 seconds. Opening a connection has its own
-  10-second limit within that deadline. Responses are requested
+  10-second limit within that deadline. A request Proton answers busy is sent
+  again up to three times, as many as go-proton-api: after a 429, which refuses
+  a request before Proton handles it, and after a 503 only when it is a read
+  (a `GET`), since a gateway may answer 503 once Proton has acted, and a send
+  must never go twice. Each retry waits what `Retry-After` asks, up to 30
+  seconds, or 5 seconds when it asks nothing, between attempts and outside
+  their deadlines; a request asked to wait longer fails at once with Proton's
+  answer, as Proton's web client does from 10 seconds. Responses are requested
   gzip-compressed. TLS prefers the X25519MLKEM768 post-quantum hybrid key
   exchange: core declares reqwest's rustls only to turn on its
   `prefer-post-quantum` feature. Requests stay at the API's origin: a redirect
@@ -1058,6 +1142,9 @@ instead of an unknown outcome.
   moves raw buffers into a prepared reqwest request and shares its allocation
   between attempts, including authentication, rate-limit, and verification
   retries; it does not clone the byte vector or rebuild JSON on each attempt.
+  A JSON body leaves the `Request` as it is written out, so its value, which
+  can hold session keys, is dropped before the first attempt rather than kept
+  through the retries.
   The public `Request` and `Body` types retain their existing constructors and
   representations. Requests sharing auth state coordinate refresh
   after a 401 and reuse successfully rotated tokens.
@@ -1183,9 +1270,10 @@ the desktop still discards its in-memory mailbox and draft.
 The desktop keeps mailbox data in memory. The core also offers a SQLite cache
 used by CLI sync and local search. Login and resume ask for the user and its
 addresses at once, and login asks for the key salts alongside them. Each user
-key opens with the passphrase its own salt derives, one listed without a salt
-with the password itself, as Proton's clients do; a key whose passphrase cannot
-be worked out is left out like one that does not open. They retain
+key opens with the passphrase its own salt derives, one without a salt with the
+primary key's, and with the password itself when the primary has none either,
+as Proton's web client does; a key whose passphrase cannot be worked out is
+left out like one that does not open. They retain
 the authenticated `User.ID` alongside the API base URL in `Client`; session UIDs and email addresses
 are not cache identities. All client cache operations go through `open_cache`
 in [`mail/sync.rs`](../crates/ruston-core/src/mail/sync.rs). The ones that make
@@ -1222,7 +1310,14 @@ run CLI sync/backfill and `index` to recreate them for the current account.
 Signing out clears credentials, but retains the account's disk cache.
 Indexing a folder stores decrypted message bodies in that local database;
 it is not encrypted at rest
-by this code. It keeps no signature verdicts, so it decrypts without looking up
+by this code. An HTML body goes in as `html::searchable_text` writes it, its
+visible text without the addresses its links lead to, and the searchable
+participants are the names and addresses of the sender and every recipient.
+`msg_fts_rows.as_text` marks a body indexed that way; rows from before it,
+which held the HTML, and rows an older version still writes read 0, so
+`index` reads those bodies again. Only opening to write adds the column,
+keeping the schema version, so an older version still opens the cache and
+reading one without it needs no migration. It keeps no signature verdicts, so it decrypts without looking up
 sender keys. Up to three bodies download at once and are saved in listing
 order, so a stop leaves exactly the messages before it indexed. Mail sent or
 received keeps its body, so a message already in the index is not downloaded
@@ -1281,7 +1376,15 @@ Initial cursor creation is also conditional. When Proton
 requests a full refresh, sync pages through all message metadata into temporary
 SQLite tables, then replaces the cache and event cursor in one transaction. A
 failed rebuild leaves the cached offline data and cursor intact. Sync catches up
-on events from the new cursor after the replacement. The full refresh clears
+on events from the new cursor, taken before the first page, after the
+replacement, so mail that comes, goes or changes while the pages are listed
+does not stop the rebuild; a total that shrinks lists the pages already
+listed again, where deleted mail moved later messages, and only a listing
+that kept its total is checked against what was staged. A page that fails in
+a way that may pass (`Error::may_pass`: the connection, or Proton busy or
+down) is asked for again after half a second and after two; the staging
+stays in temporary tables, private to the connection, so a rebuild that
+stops still starts over. The full refresh clears
 the local body index by dropping and recreating its FTS5 table in that
 transaction: `secure_delete` overwrites the freed pages at once, where deleting
 the rows one by one under FTS5's `secure-delete` took seconds per thousand
@@ -1332,6 +1435,19 @@ for MSVC targets, so neither executable needs the Visual C++ redistributable.
 Committed Linux PNGs
 and the Windows ICO are derived from the existing logo by
 [`packaging/generate-desktop-icons.py`](../packaging/generate-desktop-icons.py).
+The committed `THIRD_PARTY_LICENSES.txt` comes from
+[`packaging/third-party-licenses.py`](../packaging/third-party-licenses.py):
+the notice of every crate the binaries use on the six release targets,
+procedural macros aside, under the least demanding license it offers (none
+for one that offers a license asking nothing of a binary, such as 0BSD,
+Unlicense or Zlib; its MIT or ISC text alone when it offers either; every
+license file it publishes otherwise), and the notices of the Bootstrap icons
+and egui's fonts; it ends by acknowledging protonmail-rs, which Ruston Mail
+was originally based on. A CI job fails when it no longer matches
+the dependencies, and every package carries it beside `LICENSE`: in the
+macOS app's `Resources`, the AppImage's `usr/share/doc/ruston-mail` and the
+Windows ZIP and installation folder, where Settings' About card looks for it
+through [`licenses.rs`](../src/licenses.rs).
 A Windows-only identity test reads back the process AppUserModelID with the
 native API without opening a window.
 Native Windows Credential Manager, file dialogs, and window behavior need an

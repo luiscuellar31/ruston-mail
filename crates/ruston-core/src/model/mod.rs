@@ -1,4 +1,4 @@
-//! Data models + enums.
+//! What Proton sends about mail, and the values its API uses.
 
 pub mod conversation;
 pub mod enums;

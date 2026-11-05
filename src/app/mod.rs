@@ -10,7 +10,7 @@ mod notifications;
 mod reader;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use futures::future::{AbortHandle, Abortable};
@@ -166,6 +166,9 @@ pub enum Message {
     ShowSettings(bool),
     /// Opens the project's own repository from the About card.
     OpenSourceCode,
+    /// Opens the notices of the third-party software the package shipped,
+    /// from the About card.
+    OpenThirdPartyNotices,
     /// Marks opened mail as read, or leaves it unread.
     SetMarkReadOnOpen(bool),
     /// Asks where a link goes before opening it, or opens it straight away.
@@ -316,6 +319,9 @@ pub struct App {
     settings_on_disk: Arc<Mutex<u64>>,
     /// Whether Settings replaces the conversation list and reader.
     showing_settings: bool,
+    /// The notices of third-party software that came with the app, which
+    /// the About card opens. A build run from Cargo has none.
+    third_party_notices: Option<PathBuf>,
     /// The message being written, if there is one.
     compose: Option<Compose>,
     /// The message being written when Proton ended the session, kept in
@@ -342,6 +348,7 @@ impl App {
     pub fn boot(demo: bool, settings: Settings) -> (Self, Effects) {
         let mut app = Self::new(settings);
         app.demo_process = demo;
+        app.third_party_notices = crate::licenses::third_party_notices();
         let task = if demo {
             app.open_mailbox(MailBackend::demo(), None, None)
         } else {
@@ -384,6 +391,7 @@ impl App {
             settings_writing: false,
             settings_on_disk: Arc::new(Mutex::new(0)),
             showing_settings: false,
+            third_party_notices: None,
             compose: None,
             parked_draft: None,
             read_once_shown: None,
@@ -576,6 +584,11 @@ impl App {
         self.showing_settings
     }
 
+    /// The notices of third-party software that came with the app, if any.
+    pub fn third_party_notices(&self) -> Option<&Path> {
+        self.third_party_notices.as_deref()
+    }
+
     /// Keeps a changed setting. The change applies at once; putting it in the
     /// file is [`Self::save_settings`]'s job.
     fn remember(&mut self, change: impl FnOnce(&mut Settings)) {
@@ -680,6 +693,11 @@ impl App {
             Message::OpenSignupPage => return open_in_browser(PROTON_SIGNUP_URL.to_owned()),
             Message::OpenSourceCode => {
                 return open_in_browser(env!("CARGO_PKG_REPOSITORY").to_owned());
+            }
+            Message::OpenThirdPartyNotices => {
+                if let Some(notices) = &self.third_party_notices {
+                    return open_in_default_app(notices.clone());
+                }
             }
             Message::CopyVerificationLink => {
                 if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
@@ -2036,14 +2054,22 @@ fn run_action(
 
 fn open_in_browser(url: String) -> Effects {
     Effects::background(async move {
-        let _ = open_url(&url).await;
+        let _ = open_with_system(&url).await;
     })
 }
 
-/// Opens `url` in the default browser without going through a shell.
-async fn open_url(url: &str) -> std::io::Result<()> {
+fn open_in_default_app(file: PathBuf) -> Effects {
+    Effects::background(async move {
+        let _ = open_with_system(&file).await;
+    })
+}
+
+/// Opens a web address in the default browser, or a file in the default app
+/// for its type, without going through a shell: the system's opener does
+/// both.
+async fn open_with_system(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
     let mut opener = ruston_core::browser::opener()?;
-    opener.arg(url);
+    opener.arg(target);
     crate::runtime::run_to_exit(opener).await.map(drop)
 }
 

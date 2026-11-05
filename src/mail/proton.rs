@@ -1329,6 +1329,7 @@ fn hex_color(text: &str) -> Option<[u8; 3]> {
 fn map_mailbox_error(error: Error) -> MailboxError {
     match error {
         Error::Unauthorized => MailboxError::SessionExpired,
+        // Not `refuses_session`: a 403 here can refuse one action alone.
         Error::Api(error) if error.is_unauthorized() => MailboxError::SessionExpired,
         Error::Http(_) => MailboxError::Connection,
         Error::AttachmentVerificationFailed => MailboxError::AttachmentVerificationFailed,
@@ -1357,9 +1358,7 @@ async fn resume_within(
         Err(Error::Unauthorized | Error::Crypto(_) | Error::UserKeysLocked | Error::Srp(_)) => {
             ResumeOutcome::SignedOut
         }
-        Err(Error::Api(error)) if matches!(error.http_status, 401 | 403) => {
-            ResumeOutcome::SignedOut
-        }
+        Err(Error::Api(error)) if error.refuses_session() => ResumeOutcome::SignedOut,
         Err(error) => ResumeOutcome::Failed(map_auth_error(error)),
     }
 }
@@ -1387,9 +1386,7 @@ fn map_sign_in_error(error: Error, supplied: Supplied) -> SignInOutcome {
         Error::Api(error) if supplied.totp && mentions_totp(&error.message) => {
             SignInOutcome::Failed(AuthError::InvalidTotp)
         }
-        Error::Api(error)
-            if matches!(error.http_status, 401 | 403) || mentions_credentials(&error.message) =>
-        {
+        Error::Api(error) if error.refuses_session() || mentions_credentials(&error.message) => {
             SignInOutcome::Failed(AuthError::InvalidCredentials)
         }
         Error::UserKeysLocked if supplied.mailbox_password => {

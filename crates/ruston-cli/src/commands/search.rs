@@ -1,14 +1,14 @@
-//! Local full-text search commands: build index, query it.
+//! `index` and `search`: the local full-text index, built from the account
+//! and searched offline.
 
 use crate::cli::Ctx;
-use crate::commands::resume;
 use crate::render;
 use crate::terminal;
-use ruston_core::{LocalCache, Result};
+use ruston_core::{Client, LocalCache, Result};
 use serde_json::json;
 
 pub async fn index(ctx: &Ctx, folder: String, max_pages: u32, page_size: u32) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     let folder = client.folder_id(&folder).await?;
     let n = client.index_folder(&folder, max_pages, page_size).await?;
     if ctx.json {

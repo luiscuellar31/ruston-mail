@@ -129,9 +129,20 @@ impl Notifications {
             });
     }
 
-    /// macOS keeps what it delivered after signing out, and tests on Windows
-    /// leave the machine's toasts alone.
-    #[cfg(not(any(target_os = "linux", all(target_os = "windows", not(test)))))]
+    /// Takes the notifications already delivered away with the account:
+    /// macOS keeps them in Notification Center.
+    #[cfg(target_os = "macos")]
+    fn withdraw(&self) {
+        macos::clear();
+    }
+
+    /// Tests on Windows leave the machine's toasts alone, and other systems
+    /// have none to take away.
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        all(target_os = "windows", not(test))
+    )))]
     fn withdraw(&self) {}
 
     pub(super) fn show(

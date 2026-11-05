@@ -1,4 +1,5 @@
-//! Incremental sync (event stream) + local-cache reads.
+//! The local cache: kept current from Proton's events, filled a folder at a
+//! time, indexed for full-text search, and read without Proton.
 
 use super::{Client, read::FullMessage};
 use crate::api;
@@ -10,29 +11,35 @@ use crate::model::message::MessageMetadata;
 use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
 use crate::transport::Doer;
 use futures::{FutureExt, StreamExt, stream};
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
 const RESYNC_PAGE_SIZE: u32 = 100;
+/// How long a resync waits before asking again for a page that failed in a
+/// way that may pass, once for each try: so one bad answer among hundreds of
+/// pages does not start it over.
+const RESYNC_PAGE_RETRIES: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
 /// How many bodies `index` downloads at once, as conversation reads do.
 const INDEX_BODY_FETCH_CONCURRENCY: usize = 3;
 
-/// Outcome of a sync run.
+/// What one sync changed in the cache.
 #[derive(Debug, Clone)]
 pub struct SyncReport {
-    /// Number of messages created.
+    /// How many messages it added.
     pub created: usize,
-    /// Number of messages updated, flag and label changes included.
+    /// How many messages it changed, flag and label changes included.
     pub updated: usize,
     /// Of `updated`, messages whose flags or labels alone changed, so their
     /// indexed bodies are still current.
     pub flags_updated: usize,
-    /// Number of messages deleted.
+    /// How many messages it removed.
     pub deleted: usize,
-    /// The event cursor after applying this sync.
+    /// The last event the cache now reflects, where the next sync starts.
     pub event_id: String,
-    /// First sync — the cursor was initialized (no deltas applied).
+    /// Whether this was the cache's first sync, which only noted where
+    /// Proton's events stand and changed no mail.
     pub initialized: bool,
     /// Number of messages rebuilt after a server-requested full resync.
     pub rebuilt: Option<usize>,
@@ -72,6 +79,12 @@ struct Rebuilt<C> {
 
 /// Relists every message into `cache`. Like the other cache operations, it
 /// takes the cache by value, so no reference to it lives across a request.
+///
+/// Mail that comes, goes or changes meanwhile does not stop it: the cursor
+/// is taken first, so the next sync applies those changes as events. Only
+/// what was there all along must be listed, and mail deleted meanwhile
+/// moves later messages up into pages already listed, shrinking the total,
+/// so a smaller total lists those pages again.
 async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
     http: &D,
     cache: C,
@@ -80,7 +93,8 @@ async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
 ) -> Result<Rebuilt<C>> {
     let cursor = api::events::get_latest_event_id(http).await?;
     cache.borrow().begin_rebuild()?;
-    let mut expected_total = None;
+    let mut last_total = None;
+    let mut changed = false;
     let mut page = 0;
     let total = loop {
         let query = ListQuery {
@@ -88,11 +102,7 @@ async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
             page_size: Some(page_size),
             ..Default::default()
         };
-        let (total, messages) = api::messages::list_messages(http, &query).await?;
-        if expected_total.is_some_and(|expected| expected != total) {
-            return Err(Error::cache_changed("mailbox changed during resync"));
-        }
-        expected_total = Some(total);
+        let (total, messages) = resync_page(http, &query).await?;
         let listed_before = u64::from(page) * u64::from(page_size);
         if messages.is_empty() && listed_before < u64::from(total) {
             return Err(Error::cache_changed(
@@ -100,19 +110,44 @@ async fn rebuild_cache<D: Doer, C: Borrow<Cache>>(
             ));
         }
         cache.borrow().stage_rebuild_page(&messages)?;
+        let shrunk = last_total.map_or(0, |before: u32| before.saturating_sub(total));
+        changed |= last_total.is_some_and(|before| before != total);
+        last_total = Some(total);
+        if shrunk > 0 {
+            page = page.saturating_sub(shrunk.div_ceil(page_size));
+            continue;
+        }
         if listed_before + u64::from(page_size) >= u64::from(total) {
             break total;
         }
         page += 1;
     };
+    // A total that changed cannot be checked against what was staged.
+    let expected = (!changed).then_some(total);
     let count = cache
         .borrow()
-        .finish_rebuild(previous_cursor, &cursor, total)?;
+        .finish_rebuild(previous_cursor, &cursor, expected)?;
     Ok(Rebuilt {
         cache,
         cursor,
         count,
     })
+}
+
+/// One page of a resync's listing, asked for again after each of
+/// [`RESYNC_PAGE_RETRIES`] while it fails in a way that may pass, Proton
+/// busy or down or the connection; any other failure, or the last, ends it.
+async fn resync_page<D: Doer>(http: &D, query: &ListQuery) -> Result<(u32, Vec<MessageMetadata>)> {
+    let mut waits = RESYNC_PAGE_RETRIES.iter();
+    loop {
+        match api::messages::list_messages(http, query).await {
+            Err(error) if error.may_pass() => match waits.next() {
+                Some(wait) => tokio::time::sleep(*wait).await,
+                None => return Err(error),
+            },
+            listed => return listed,
+        }
+    }
 }
 
 /// Applies Proton's events since the cached cursor. The cache comes by value
@@ -122,7 +157,8 @@ async fn sync_cache<D: Doer, C: Borrow<Cache>>(http: &D, mut cache: C) -> Result
     let mut cursor = match saved {
         Some(cursor) => cursor,
         None => {
-            // Bootstrap: record the current cursor; deltas flow from here.
+            // A first sync only notes where the events stand; the next one
+            // applies whatever happens after.
             let latest = api::events::get_latest_event_id(http).await?;
             if cache.borrow().initialize_cursor(&latest)? {
                 tracing::info!(target: "ruston_core::sync", event_id = %latest, "sync initialized cursor");
@@ -213,6 +249,16 @@ async fn backfill_cache<D: Doer>(
     Ok(n)
 }
 
+/// What the local index keeps of a message's body: an HTML body's text,
+/// without the addresses its links lead to, or a plain one as it is.
+fn searchable_body(full: &FullMessage) -> Cow<'_, str> {
+    if crate::html::is_html_mime(&full.mime_type) {
+        Cow::Owned(crate::html::searchable_text(&full.body))
+    } else {
+        Cow::Borrowed(&full.body)
+    }
+}
+
 async fn index_cache<D, F, Fut>(
     http: &D,
     cache: impl Borrow<Cache>,
@@ -265,7 +311,7 @@ where
                     cache.borrow().store_index_result(
                         Some(&cursor),
                         &full.meta,
-                        Some(&full.body),
+                        Some(&searchable_body(&full)),
                     )?;
                     n += 1;
                 }
@@ -419,12 +465,14 @@ impl Client {
         Cache::open_for_account(&path, &self.cache_identity)
     }
 
-    /// Apply incremental events from the cached cursor into the local cache.
+    /// Brings the local cache up to date from Proton's events since its last
+    /// sync, and reports what changed.
     pub async fn sync(&self) -> Result<SyncReport> {
         sync_cache(self.http(), self.open_cache()?).await
     }
 
-    /// Backfill a folder into the cache by paging the API (bounded by `max_pages`).
+    /// Lists a folder into the cache, `page_size` messages at a time and at
+    /// most `max_pages` pages, and gives how many it stored.
     /// Returns a retry error if sync changes the cursor before a page is saved;
     /// previously committed pages remain cached.
     pub async fn cache_folder(
@@ -437,7 +485,8 @@ impl Client {
         backfill_cache(self.http(), cache, folder, max_pages, page_size).await
     }
 
-    /// Read messages for a folder from the local cache (offline).
+    /// Up to `limit` of a folder's messages as the cache holds them, newest
+    /// first, without asking Proton: unread ones only when `unread` is set.
     pub fn cached_messages(
         &self,
         folder: &str,
@@ -448,15 +497,17 @@ impl Client {
             .list(&resolve_folder(folder), unread, limit, 0)
     }
 
-    /// Cached (total, unread) counts for a folder.
+    /// How many of a folder's messages the cache holds, and how many of those
+    /// are unread.
     pub fn cached_count(&self, folder: &str) -> Result<(i64, i64)> {
         self.open_cache()?.count(&resolve_folder(folder))
     }
 
-    /// Build the local full-text search index: page a folder, decrypt each
-    /// message body, and index it (bounded by `max_pages`). A body indexed
-    /// before is kept rather than downloaded again, unless it is a draft's,
-    /// which may have changed; the count includes the bodies kept.
+    /// Builds the full-text index of a folder: lists it, `page_size` messages
+    /// at a time and at most `max_pages` pages, and indexes each message with
+    /// its decrypted body. A body indexed before is kept rather than
+    /// downloaded again, unless it is a draft's, which may have changed; the
+    /// count includes the bodies kept.
     /// A message that is gone, or whose body cannot be decrypted, loses any
     /// body indexed before. Any other failed read, such as a lost connection
     /// or rate limiting, stops indexing with its error and leaves that
@@ -493,7 +544,9 @@ impl Client {
         .await
     }
 
-    /// Full-text search the local index (decrypted bodies; private + offline).
+    /// Searches the full-text index on this device, which holds the decrypted
+    /// bodies, so the query never reaches Proton: up to `limit` messages
+    /// holding every word of `query`, best match first.
     pub fn search_local(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
         self.open_cache()?.search(query, limit)
     }
@@ -1033,6 +1086,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn indexing_keeps_what_mail_says_and_not_where_its_links_go() {
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+        let person = |name: &str, address: &str| crate::model::message::Recipient {
+            name: name.into(),
+            address: address.into(),
+            ..Default::default()
+        };
+        let meta = MessageMetadata {
+            sender: person("Ana Diaz", "ana@example.test"),
+            cc_list: vec![person("Bea Ortiz", "bea@example.test")],
+            ..cached_message("m1")
+        };
+        let http = ListingDoer {
+            pages: vec![vec![meta.clone()]],
+            gate: Semaphore::new(1),
+        };
+
+        index_cache(&http, &cache, "inbox", 1, 10, |_| {
+            let meta = meta.clone();
+            async move {
+                Ok(FullMessage {
+                    body: concat!(
+                        r#"<p><a href="https://example.test/reset?token=s3cret">Reset</a> "#,
+                        r#"your password</p><img src="https://track.example/p.gif">"#
+                    )
+                    .into(),
+                    mime_type: "text/html".into(),
+                    ..full_message(meta)
+                })
+            }
+        })
+        .await
+        .unwrap();
+
+        let found = |words: &str| !cache.search(words, 10).unwrap().is_empty();
+        assert!(found("reset your password"));
+        for address_or_markup in ["s3cret", "token", "track", "href", "img"] {
+            assert!(!found(address_or_markup), "{address_or_markup}");
+        }
+        // Who sent it and who had a copy, by name as well.
+        assert!(found("Diaz") && found("Ortiz") && found("bea"));
+    }
+
+    #[tokio::test]
     async fn backfill_rejects_stale_page_without_inserting_any_rows() {
         for event_action in [action::DELETE, action::UPDATE, action::UPDATE_FLAGS] {
             let cache = Cache::open(Path::new(":memory:")).unwrap();
@@ -1222,7 +1320,9 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/mail/v4/messages/m1"))
             .respond_with(
-                ResponseTemplate::new(503).set_body_json(serde_json::json!({"Code": 503})),
+                ResponseTemplate::new(503)
+                    .insert_header("Retry-After", "0")
+                    .set_body_json(serde_json::json!({"Code": 503})),
             )
             .mount(&server)
             .await;
@@ -1476,12 +1576,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_rebuild_refuses_a_listing_that_changes_or_runs_short() {
+    async fn a_rebuild_takes_a_listing_that_changes_and_refuses_one_that_runs_short() {
+        // Mail that came meanwhile is left to the events after the cursor.
         let changed = rebuild_with_second_page([3, 4], vec![message("m3")]).await;
-        assert!(matches!(
-            changed,
-            Err(Error::CacheChanged(ref reason)) if reason.starts_with("mailbox changed during resync")
-        ));
+        assert_eq!(changed.unwrap(), 3);
         // An empty page before the total is reached ends the rebuild there.
         let short = rebuild_with_second_page([5, 5], Vec::new()).await;
         assert!(matches!(
@@ -1489,6 +1587,64 @@ mod tests {
             Err(Error::CacheChanged(ref reason))
                 if reason.starts_with("incomplete mailbox listing during resync")
         ));
+    }
+
+    #[tokio::test]
+    async fn mail_deleted_during_a_rebuild_moves_none_past_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "fresh"
+            })))
+            .mount(&server)
+            .await;
+        // m1 goes once the first page is listed, so m3 moves up into it.
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 4, "Messages": [message("m1"), message("m2")]
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3, "Messages": [message("m2"), message("m3")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3, "Messages": [message("m4")]
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+
+        let Rebuilt { count, .. } =
+            rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2)
+                .await
+                .unwrap();
+
+        // m1 stays until its deletion comes as an event.
+        assert_eq!(count, 4);
+        let listed: Vec<_> = cache
+            .list("0", false, 10, 0)
+            .unwrap()
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        assert!(listed.contains(&"m3".to_owned()), "{listed:?}");
     }
 
     #[tokio::test]
@@ -1536,6 +1692,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_page_proton_failed_once_is_asked_for_again_and_the_rebuild_goes_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/core/v4/events/latest"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "EventID": "fresh"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3, "Messages": [message("m1"), message("m2")]
+            })))
+            .mount(&server)
+            .await;
+        // A failure the transport does not retry itself, as it does a 503.
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "Code": 500, "Error": "internal error"
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mail/v4/messages"))
+            .and(query_param("Page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000, "Total": 3, "Messages": [message("m3")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = Cache::open(Path::new(":memory:")).unwrap();
+        cache.set_last_event_id("old").unwrap();
+
+        let Rebuilt { count, cursor, .. } =
+            rebuild_cache(&HttpClient::new(server.uri(), "Other"), &cache, "old", 2)
+                .await
+                .unwrap();
+
+        assert_eq!((count, cursor.as_str()), (3, "fresh"));
+    }
+
+    #[tokio::test]
     async fn interrupted_rebuild_preserves_offline_cache_and_cursor() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1560,10 +1765,12 @@ mod tests {
             .and(path("/mail/v4/messages"))
             .and(query_param("Page", "1"))
             .and(query_param("PageSize", "2"))
-            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
-                "Code": 503, "Error": "unavailable"
+            // A failure the transport does not retry itself, as it does a 503.
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "Code": 500, "Error": "internal error"
             })))
-            .expect(1)
+            // Asked again after each wait, then given up on.
+            .expect(1 + RESYNC_PAGE_RETRIES.len() as u64)
             .mount(&server)
             .await;
 

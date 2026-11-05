@@ -1,14 +1,14 @@
-//! Export command: dump a folder to `.eml` files.
+//! `export`, which saves a folder's messages, with their attachments, as
+//! `.eml` files.
 
 use crate::cli::Ctx;
-use crate::commands::resume;
 use crate::render;
 use crate::terminal;
-use ruston_core::{Error, Result};
+use ruston_core::{Client, Error, Result};
 use std::path::PathBuf;
 
 pub async fn run(ctx: &Ctx, folder: String, out: PathBuf, max: u32) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     let folder = client.folder_id(&folder).await?;
     let report = client.export_folder_report(&folder, &out, max).await?;
     if ctx.json {

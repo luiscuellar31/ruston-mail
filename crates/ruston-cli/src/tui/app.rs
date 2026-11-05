@@ -6,11 +6,20 @@ use super::command::{Command, CommandLine};
 use super::compose::{AnswerKind, Asked, Checked, Compose, Sending};
 use super::reading::{Reading, size_label};
 use crate::mailbox::{Change, Outgoing, Place, PlaceKind, SendFailure, deletes_forever};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
+use ruston_core::mail::organize::folder_id_among;
+use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
-use ruston_core::{Conversation, RecipientProtection};
+use ruston_core::{Conversation, Error, Label, RecipientProtection, SearchOpts};
 use std::cell::Cell;
 use std::path::PathBuf;
+
+/// How many rows a notch of the mouse wheel scrolls the reader or the list
+/// of keys, as most programs scroll text.
+const WHEEL_ROWS: isize = 3;
 
 /// The three panes, in the order Tab visits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +57,34 @@ impl Pane {
     }
 }
 
+/// Where the view last drew each pane, for the mouse to find what it
+/// points at: in the order of [`Pane::ALL`], the area inside its borders,
+/// empty for a pane not drawn, and the first row of its list it showed.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Drawn([(Rect, usize); 3]);
+
+impl Drawn {
+    /// Notes that `pane` was drawn within `inner`, its list from its row
+    /// `first`.
+    pub(crate) fn note(&mut self, pane: Pane, inner: Rect, first: usize) {
+        if let Some(at) = Pane::ALL.iter().position(|each| *each == pane) {
+            self.0[at] = (inner, first);
+        }
+    }
+
+    /// The pane drawn at `column` and `row`, if any, with the row of its
+    /// list there; the reader has none.
+    fn at(&self, column: u16, row: u16) -> Option<(Pane, Option<usize>)> {
+        let position = Position::new(column, row);
+        let (pane, (inner, first)) = Pane::ALL
+            .into_iter()
+            .zip(self.0)
+            .find(|(_, (inner, _))| inner.contains(position))?;
+        let listed = pane != Pane::Reader;
+        Some((pane, listed.then(|| first + usize::from(row - inner.y))))
+    }
+}
+
 /// The open conversation's links listed over the panes: which one is
 /// selected, and whether opening it waits for a yes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,14 +93,32 @@ pub(crate) struct LinkPick {
     pub(crate) confirming: bool,
 }
 
-/// A search whose results the list shows: its words, whether it looked in
-/// the local index rather than asking Proton, and the label ID and name of
-/// the place listed before it, which Esc lists again.
+/// A search whose results the list shows: what was typed after its
+/// command, which names the list, what it asks and of whom, and the label
+/// ID and name of the place listed before it, which Esc lists again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Search {
     pub(crate) words: String,
-    pub(crate) local: bool,
+    pub(crate) query: Query,
     pub(crate) back: (String, String),
+}
+
+/// What a search asks, and of whom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Query {
+    /// Proton's search, for the words and the filters typed beside them.
+    Proton(SearchOpts),
+    /// The local index, which looks for the words alone, and what it finds
+    /// narrowed by the filters typed beside them.
+    Local(SearchOpts),
+}
+
+/// The last move made out of the folder listed, which `Z` takes back, as
+/// the desktop's Undo does: the conversations it moved, and the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Undo {
+    ids: Vec<String>,
+    from: String,
 }
 
 /// The folders `g` goes to, each with the key after it that names it, its
@@ -116,6 +171,12 @@ pub(crate) struct App {
     pub(crate) focus: Pane,
     /// Whether the list of keys is open over the panes.
     pub(crate) help: bool,
+    /// How many rows down the list of keys is scrolled.
+    pub(crate) help_scroll: u16,
+    /// The furthest the list of keys could scroll when last drawn, and how
+    /// many of its rows fit, which the view sets as it does the reader's.
+    pub(crate) help_bottom: Cell<u16>,
+    pub(crate) help_rows: Cell<u16>,
     /// Set once the person asks to quit; the loop then ends.
     pub(crate) quit: bool,
     /// The folders and labels, once they have loaded.
@@ -138,10 +199,25 @@ pub(crate) struct App {
     pub(crate) selected_conversation: usize,
     /// The conversation the reader shows, once it has loaded.
     pub(crate) reading: Option<Reading>,
-    /// How many rows down the reader is scrolled.
-    pub(crate) scroll: u16,
+    /// How many rows down the reader is scrolled; the view scrolls it to
+    /// the message `landing` names.
+    pub(crate) scroll: Cell<u16>,
+    /// The message of the open conversation the reader brings to its top
+    /// when next drawn, unless it starts in the upper third already: where
+    /// the conversation opens, or one just folded or shown. The view takes
+    /// it, as only it knows where each message lands.
+    pub(crate) landing: Cell<Option<usize>>,
+    /// The message at the reader's top when last drawn, which Enter folds
+    /// or shows; the view sets it.
+    pub(crate) in_view: Cell<Option<usize>>,
     /// Whether the reader shows quoted passages instead of folding them.
     pub(crate) show_quotes: bool,
+    /// Whether the reader shows the messages already read instead of
+    /// folding them.
+    pub(crate) show_read: bool,
+    /// The open conversation's messages, by their place in it, that Enter
+    /// folded or showed the other way from what `show_read` says.
+    pub(crate) toggled: Vec<usize>,
     /// Whether an unread conversation is marked read once the reader shows
     /// it, as the desktop marks it; `tui --keep-unread` turns it off.
     pub(crate) marks_read: bool,
@@ -172,12 +248,18 @@ pub(crate) struct App {
     /// The conversations marked with Space, by ID, which an action from the
     /// list acts on all of.
     pub(crate) marked: Vec<String>,
+    /// The move `Z` can take back, until another change is made or another
+    /// place listed.
+    pub(crate) undo: Option<Undo>,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
     pub(crate) reader_bottom: Cell<u16>,
     /// How many rows of the reader fit when last drawn, for a page.
     pub(crate) reader_rows: Cell<u16>,
+    /// Where each pane was last drawn, which the view sets, for a click or
+    /// the wheel to find what it points at.
+    pub(crate) drawn: Cell<Drawn>,
     /// What is loading, or what went wrong, for the status bar.
     pub(crate) notice: Option<String>,
     /// The last list asked for; an answer to any other comes too late.
@@ -208,12 +290,25 @@ pub(crate) enum Message {
     Top,
     Bottom,
     Open,
+    /// A click on `pane`, on the row of its list at `row`, if any.
+    Click {
+        pane: Pane,
+        row: Option<usize>,
+    },
+    /// The mouse wheel turned a notch `by`, down for 1 and up for -1, over
+    /// the pane `over`, if any.
+    Wheel {
+        over: Option<Pane>,
+        by: isize,
+    },
     /// Waits for the key that names a folder to go to.
     Go,
     /// Goes to the folder at this place in [`GO_TO`], or nowhere when the
     /// key after `g` names none.
     GoTo(Option<usize>),
     ToggleQuotes,
+    /// Shows the messages already read, or folds them again.
+    ToggleReadMessages,
     /// Lists the open conversation's links, to open one.
     ShowLinks,
     /// Lists the open conversation's attachments, to save one.
@@ -246,8 +341,13 @@ pub(crate) enum Message {
     Inbox,
     /// Opens the command line at `:label`.
     Label,
+    /// Opens the command line at `:unlabel`, when there is a label to take
+    /// off.
+    Unlabel,
     /// Opens the command line at `:move`.
     Move,
+    /// Takes the last move back.
+    Undo,
     /// Asks whether to delete the conversation acted on forever.
     DeleteForever,
     /// Opens a new message to write.
@@ -287,6 +387,8 @@ pub(crate) enum Message {
         change: Change,
         /// The conversations it was made to.
         ids: Vec<String>,
+        /// The label ID of the place they were listed in.
+        place: String,
         result: Result<(), String>,
     },
     /// Whether the place named `name` was emptied.
@@ -327,16 +429,18 @@ pub(crate) enum Effect {
         place: String,
         page: u32,
     },
-    /// Page `page` of what `words` find in all mail, numbered as a list.
+    /// Page `page` of what Proton's search finds for `opts`, numbered as a
+    /// list.
     Search {
         request: u64,
-        words: String,
+        opts: SearchOpts,
         page: u32,
     },
-    /// What `words` find in the local index, all of it at once.
+    /// What the words of `opts` find in the local index, narrowed by its
+    /// filters, all of it at once.
     LocalSearch {
         request: u64,
-        words: String,
+        opts: SearchOpts,
     },
     Conversation {
         request: u64,
@@ -390,6 +494,9 @@ impl App {
             account,
             focus: Pane::Folders,
             help: false,
+            help_scroll: 0,
+            help_bottom: Cell::new(0),
+            help_rows: Cell::new(1),
             quit: false,
             places: Vec::new(),
             selected_place: 0,
@@ -401,8 +508,12 @@ impl App {
             total: 0,
             selected_conversation: 0,
             reading: None,
-            scroll: 0,
+            scroll: Cell::new(0),
+            landing: Cell::new(None),
+            in_view: Cell::new(None),
             show_quotes: false,
+            show_read: false,
+            toggled: Vec::new(),
             marks_read: true,
             picking_link: None,
             picking_attachment: None,
@@ -416,8 +527,10 @@ impl App {
             history: Vec::new(),
             search: None,
             marked: Vec::new(),
+            undo: None,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
+            drawn: Cell::new(Drawn::default()),
             notice: Some("Loading…".to_owned()),
             list_request: 0,
             reloading: false,
@@ -438,10 +551,11 @@ impl App {
     pub(crate) fn update(&mut self, message: Message) -> Vec<Effect> {
         match message {
             Message::Quit => self.quit = true,
-            Message::ToggleHelp => self.help = !self.help,
-            Message::Back if self.help => self.help = false,
-            // The open list of keys covers the panes, so they keep still.
-            _ if self.help && is_key(&message) => {}
+            Message::ToggleHelp | Message::Back if self.help => self.help = false,
+            Message::ToggleHelp => self.open_help(),
+            // The open list of keys covers the panes, so they keep still,
+            // and scrolls where it does not fit.
+            _ if self.help && is_key(&message) => self.scroll_help(&message),
             // So does the list of links, which takes the keys meanwhile.
             _ if self.picking_link.is_some() && is_key(&message) => {
                 return self.pick_link(&message);
@@ -477,12 +591,20 @@ impl App {
                 self.focus = self.focus.previous();
             }
             Message::Left => {}
-            Message::Up => self.step(-1),
-            Message::Down => return self.down(),
-            Message::PageUp => self.step(-self.page()),
-            Message::PageDown => self.step(self.page()),
-            Message::Top => self.step(isize::MIN),
-            Message::Bottom => self.step(isize::MAX),
+            Message::Up => self.step(self.focus, -1),
+            Message::Down => return self.down(self.focus),
+            Message::PageUp => self.step(self.focus, -self.page()),
+            Message::PageDown => self.step(self.focus, self.page()),
+            Message::Top => self.step(self.focus, isize::MIN),
+            Message::Bottom => self.step(self.focus, isize::MAX),
+            Message::Click { pane, row } => return self.click(pane, row),
+            Message::Wheel {
+                over: Some(pane),
+                by,
+            } => return self.wheel(pane, by),
+            Message::Wheel { over: None, .. } => {}
+            // As Proton Mail's Enter opens the message chosen in a conversation.
+            Message::Open if self.focus == Pane::Reader => self.toggle_message(),
             Message::Open | Message::Right => return self.open(),
             Message::Go => self.going = true,
             Message::GoTo(to) => {
@@ -491,7 +613,8 @@ impl App {
                     return self.go_to(id, name);
                 }
             }
-            Message::ToggleQuotes => self.show_quotes = !self.show_quotes,
+            Message::ToggleQuotes => self.toggle_quotes(),
+            Message::ToggleReadMessages => self.toggle_read_messages(),
             Message::ShowLinks => self.show_links(),
             Message::ShowAttachments => self.show_attachments(),
             // Nothing on screen waits for a yes.
@@ -514,7 +637,9 @@ impl App {
             Message::Spam => return self.change(|_| Change::Move(label_ids::SPAM.into())),
             Message::Inbox => return self.change(|_| Change::Move(label_ids::INBOX.into())),
             Message::Label => self.command_line = Some(CommandLine::with("label ")),
+            Message::Unlabel => self.start_unlabel(),
             Message::Move => self.command_line = Some(CommandLine::with("move ")),
+            Message::Undo => return self.take_back(),
             Message::DeleteForever => self.ask_to_delete(),
             Message::Compose => self.compose = Some(Compose::new(self.sender.clone())),
             Message::Answer(how) => self.open_answer(how),
@@ -591,8 +716,10 @@ impl App {
                     // What was listed for the conversation before is not its.
                     self.picking_link = None;
                     self.picking_attachment = None;
+                    self.scroll.set(0);
+                    self.landing.set(reading.landing());
+                    self.toggled.clear();
                     self.reading = Some(reading);
-                    self.scroll = 0;
                     self.notice = None;
                     return self.mark_read(id);
                 }
@@ -623,20 +750,26 @@ impl App {
             Message::Changed {
                 change,
                 ids,
+                place,
                 result: Ok(()),
             } => {
                 self.close_left(&change, &ids);
+                self.undo = self.undoable(&change, ids, place);
                 return self.reload();
             }
             Message::Changed {
                 change,
                 ids,
                 result: Err(error),
+                ..
             } => {
                 let (_, failed) = wording(&change, ids.len());
                 self.notice = Some(format!("{failed}: {error}"));
             }
-            Message::Emptied { result: Ok(()), .. } => return self.reload(),
+            Message::Emptied { result: Ok(()), .. } => {
+                self.undo = None;
+                return self.reload();
+            }
             Message::Emptied {
                 name,
                 result: Err(error),
@@ -668,7 +801,8 @@ impl App {
 
     /// What a terminal event asks for: while the command line is open, the
     /// key typed in it, while a question waits, a yes or a no, after `g`,
-    /// the folder to go to, or else what [`Message::from_event`] makes of it.
+    /// the folder to go to, from the mouse, what [`App::pointed`] makes of
+    /// it, or else what [`Message::from_event`] makes of it.
     pub(crate) fn message_for(&self, event: &Event) -> Option<Message> {
         match event {
             // Pasted text goes where keys type, and never answers a question.
@@ -690,7 +824,33 @@ impl App {
             Event::Key(key) if self.going => {
                 (key.kind != KeyEventKind::Release).then(|| Message::GoTo(going_to(key)))
             }
+            Event::Mouse(mouse) => self.pointed(mouse),
             _ => Message::from_event(event),
+        }
+    }
+
+    /// What the mouse asks for: a click with its left button on a pane, or
+    /// the wheel turned over one, as the view last drew them; nothing while
+    /// the keys go to a message being written, a question, the command line
+    /// or the folder after `g`.
+    fn pointed(&self, mouse: &MouseEvent) -> Option<Message> {
+        if self.compose.is_some()
+            || self.question.is_some()
+            || self.picking_link.is_some_and(|pick| pick.confirming)
+            || self.command_line.is_some()
+            || self.going
+        {
+            return None;
+        }
+        let at = self.drawn.get().at(mouse.column, mouse.row);
+        let over = at.map(|(pane, _)| pane);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                at.map(|(pane, row)| Message::Click { pane, row })
+            }
+            MouseEventKind::ScrollDown => Some(Message::Wheel { over, by: 1 }),
+            MouseEventKind::ScrollUp => Some(Message::Wheel { over, by: -1 }),
+            _ => None,
         }
     }
 
@@ -719,7 +879,7 @@ impl App {
                 }
             };
         }
-        let (places, folders, labels) = self.completions();
+        let (places, folders, labels, their_labels) = self.completions();
         let Some(line) = self.command_line.as_mut() else {
             return Vec::new();
         };
@@ -737,9 +897,10 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab => {
                 let backwards = key.code == KeyCode::BackTab;
                 let after = |command: &str| match command {
-                    "folder" => places.clone(),
+                    "folder" | "in:" => places.clone(),
                     "move" => folders.clone(),
-                    "label" | "unlabel" => labels.clone(),
+                    "label" => labels.clone(),
+                    "unlabel" => their_labels.clone(),
                     _ => Vec::new(),
                 };
                 line.complete(after, backwards);
@@ -750,10 +911,11 @@ impl App {
         Vec::new()
     }
 
-    /// The names Tab offers after `:folder`, every place's, after `:move`,
-    /// those of the folders a conversation can move to, and after `:label`
-    /// and `:unlabel`, those of the labels.
-    fn completions(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
+    /// The names Tab offers after `:folder` and a search's `in:`, every
+    /// place's, after `:move`, those of the folders a conversation can move
+    /// to, after `:label`, those of the labels, and after `:unlabel`, those
+    /// of the labels the conversations acted on bear.
+    fn completions(&self) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
         let names = |takes: fn(&Place) -> bool| -> Vec<String> {
             self.places
                 .iter()
@@ -765,26 +927,77 @@ impl App {
             names(|_| true),
             names(takes_moves),
             names(|place| place.kind == PlaceKind::Label),
+            self.label_names(&self.targets()),
         )
+    }
+
+    /// The names of the labels any of `conversations` bears, in the order
+    /// the folder list shows them.
+    pub(crate) fn label_names(&self, conversations: &[&Conversation]) -> Vec<String> {
+        self.places
+            .iter()
+            .filter(|place| place.kind == PlaceKind::Label)
+            .filter(|place| {
+                conversations.iter().any(|conversation| {
+                    conversation.labels.iter().any(|label| label.id == place.id)
+                })
+            })
+            .map(|place| place.name.clone())
+            .collect()
+    }
+
+    /// The names of the labels `conversation` bears, as its row in the list
+    /// names them: all but the one listed, which every row there bears.
+    pub(crate) fn row_labels(&self, conversation: &Conversation) -> Vec<String> {
+        self.places
+            .iter()
+            .filter(|place| place.kind == PlaceKind::Label && place.id != self.listed_id)
+            .filter(|place| conversation.labels.iter().any(|label| label.id == place.id))
+            .map(|place| place.name.clone())
+            .collect()
+    }
+
+    /// Opens the command line at `:unlabel` for the conversations acted on,
+    /// or says why not, as when they bear no label.
+    fn start_unlabel(&mut self) {
+        if let Some(why) = self.cannot_act() {
+            self.notice = Some(why.to_owned());
+        } else if self.label_names(&self.targets()).is_empty() {
+            self.notice = Some("There is no label to take off.".to_owned());
+        } else {
+            self.command_line = Some(CommandLine::with("unlabel "));
+        }
     }
 
     /// Does what a command line asks for.
     fn run(&mut self, command: Command) -> Vec<Effect> {
         match command {
             Command::Quit => self.quit = true,
-            Command::Help => self.help = true,
+            Command::Help => self.open_help(),
             Command::Attachments => self.show_attachments(),
             Command::Refresh => return self.update(Message::Refresh),
-            Command::Search(words) => {
-                self.focus = Pane::Conversations;
-                self.selected_conversation = 0;
-                return vec![self.search_for(words, false)];
-            }
-            Command::Local(words) => {
-                self.focus = Pane::Conversations;
-                self.selected_conversation = 0;
-                return vec![self.search_for(words, true)];
-            }
+            Command::Search(words) => match self.search_options("search", &words) {
+                Ok(opts) => {
+                    self.focus = Pane::Conversations;
+                    self.selected_conversation = 0;
+                    return vec![self.search_for(words, Query::Proton(opts))];
+                }
+                Err(error) => self.notice = Some(error),
+            },
+            Command::Local(words) => match self.search_options("local", &words) {
+                // The index finds by words; the filters narrow what it finds.
+                Ok(SearchOpts { keyword: None, .. }) => {
+                    self.notice = Some(
+                        "The local index cannot search by filters alone: type words too".into(),
+                    );
+                }
+                Ok(opts) => {
+                    self.focus = Pane::Conversations;
+                    self.selected_conversation = 0;
+                    return vec![self.search_for(words, Query::Local(opts))];
+                }
+                Err(error) => self.notice = Some(error),
+            },
             Command::Folder(name) => match self.named(&name) {
                 Ok(index) => {
                     self.selected_place = index;
@@ -810,11 +1023,21 @@ impl App {
             Command::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
             Command::Spam => return self.change(|_| Change::Move(label_ids::SPAM.into())),
             Command::NotSpam => return self.change(|_| Change::Move(label_ids::INBOX.into())),
+            Command::Undo => return self.take_back(),
             Command::Label(name) => match self.label_named(&name) {
                 Ok(id) => return self.change(|_| Change::Label(id)),
                 Err(error) => self.notice = Some(error),
             },
             Command::Unlabel(name) => match self.label_named(&name) {
+                // Proton would take nothing off, and the status bar say it did.
+                Ok(id)
+                    if self.cannot_act().is_none()
+                        && !self.targets().iter().any(|conversation| {
+                            conversation.labels.iter().any(|label| label.id == id)
+                        }) =>
+                {
+                    self.notice = Some(format!("No conversation chosen has the label {name}."));
+                }
                 Ok(id) => return self.change(|_| Change::Unlabel(id)),
                 Err(error) => self.notice = Some(error),
             },
@@ -824,6 +1047,49 @@ impl App {
             Command::Answer(how) => self.open_answer(how),
         }
         Vec::new()
+    }
+
+    /// What `words`, typed after the command `command`, `search` or `local`,
+    /// ask a search for, with the folder named after `in:` by its label ID.
+    fn search_options(&self, command: &str, words: &str) -> Result<SearchOpts, String> {
+        let mut opts = super::command::search_options(command, words)?;
+        if let Some(folder) = opts.folder.take() {
+            opts.folder = Some(self.folder_id(&folder)?);
+        }
+        Ok(opts)
+    }
+
+    /// The label ID `folder`, typed after `in:`, names among the places, by
+    /// core's rule for `messages search --folder`: a system folder by its
+    /// name, `all` for All mail, a label by its ID, or else a folder or label
+    /// by its path, such as `Taxes/2024`, or its name, whatever the case. A
+    /// name several share, or none has, is refused before anything is asked.
+    fn folder_id(&self, folder: &str) -> Result<String, String> {
+        // Core knows the system folders among them by name before it looks.
+        let places: Vec<Label> = self
+            .places
+            .iter()
+            .map(|place| Label {
+                id: place.id.clone(),
+                name: place.name.clone(),
+                path: place.path.clone(),
+                ..Label::default()
+            })
+            .collect();
+        folder_id_among(&places, folder).map_err(|error| match error {
+            Error::Ambiguous(_) => {
+                let wanted = folder.to_lowercase();
+                let paths: Vec<&str> = self
+                    .places
+                    .iter()
+                    .filter(|place| place.name.to_lowercase() == wanted)
+                    .map(|place| place.path.as_str())
+                    .collect();
+                let paths = paths.join(", ");
+                format!("Several folders or labels are named {folder}: {paths}")
+            }
+            _ => format!("No folder or label is named {folder}"),
+        })
     }
 
     /// The ID of the label named `name`, whatever its case, or what to say
@@ -872,7 +1138,7 @@ impl App {
             }
             None => self.marked.push(id),
         }
-        self.step(1);
+        self.step(Pane::Conversations, 1);
     }
 
     /// Marks every conversation listed, for an action on all of them, or
@@ -957,6 +1223,41 @@ impl App {
             .iter()
             .map(|conversation| conversation.id.clone())
             .collect();
+        let (doing, _) = wording(&change, ids.len());
+        self.notice = Some(doing);
+        vec![Effect::Change {
+            ids,
+            place: self.listed_id.clone(),
+            change,
+        }]
+    }
+
+    /// What `Z` can take back once `change`, made to the conversations `ids`
+    /// listed in `place`, is done: a move out of that place, while it is
+    /// listed still, when it is a folder mail lives in. Under a label,
+    /// Starred, All mail or a search, as on the desktop, the folder each
+    /// conversation came from is not known. Any other change leaves nothing.
+    fn undoable(&self, change: &Change, ids: Vec<String>, place: String) -> Option<Undo> {
+        let folder = self
+            .places
+            .iter()
+            .any(|listed| listed.id == place && takes_moves(listed));
+        match change {
+            Change::Move(to) if *to != place && place == self.listed_id && folder => {
+                Some(Undo { ids, from: place })
+            }
+            _ => None,
+        }
+    }
+
+    /// Moves the conversations of the last move back to the folder they
+    /// left, or says there is no move to take back.
+    fn take_back(&mut self) -> Vec<Effect> {
+        let Some(Undo { ids, from }) = self.undo.take() else {
+            self.notice = Some("There is no move to take back.".to_owned());
+            return Vec::new();
+        };
+        let change = Change::Move(from);
         let (doing, _) = wording(&change, ids.len());
         self.notice = Some(doing);
         vec![Effect::Change {
@@ -1098,7 +1399,12 @@ impl App {
             }
             Ok(outgoing) => {
                 self.send_request += 1;
-                let addresses = outgoing.recipients();
+                // One request each; the question counts the rest.
+                let addresses: Vec<String> = outgoing
+                    .recipients()
+                    .into_iter()
+                    .take(PROTECTION_LOOKUP_LIMIT)
+                    .collect();
                 let checks = addresses
                     .iter()
                     .map(|address| (address.clone(), Checked::Checking))
@@ -1216,6 +1522,62 @@ impl App {
         }
     }
 
+    /// Shows the open conversation's folded quoted passages, or folds them
+    /// again, or says why there is nothing to show.
+    fn toggle_quotes(&mut self) {
+        match &self.reading {
+            Some(reading) if !reading.quotes.is_empty() => self.show_quotes = !self.show_quotes,
+            Some(_) => {
+                self.notice = Some("This conversation has no quoted text to fold.".to_owned());
+            }
+            None => self.notice = Some("Open a conversation to show its quoted text.".to_owned()),
+        }
+    }
+
+    /// Shows the open conversation's messages already read, which the reader
+    /// folds, or folds them again, those Enter turned included, keeping the
+    /// message at the reader's top there; or says why there is nothing to
+    /// show.
+    fn toggle_read_messages(&mut self) {
+        match &self.reading {
+            Some(reading) if (0..reading.messages.len()).any(|index| reading.folds(index)) => {
+                self.show_read = !self.show_read;
+                self.toggled.clear();
+                self.landing.set(self.in_view.get());
+            }
+            Some(_) => {
+                self.notice = Some("This conversation has no messages read to fold.".to_owned());
+            }
+            None => self.notice = Some("Open a conversation to show its messages.".to_owned()),
+        }
+    }
+
+    /// Folds the message at the reader's top into one line, or shows it,
+    /// keeping it there.
+    fn toggle_message(&mut self) {
+        let Some(index) = self.in_view.get().filter(|_| self.reading.is_some()) else {
+            return;
+        };
+        match self.toggled.iter().position(|toggled| *toggled == index) {
+            Some(at) => {
+                self.toggled.remove(at);
+            }
+            None => self.toggled.push(index),
+        }
+        self.landing.set(Some(index));
+    }
+
+    /// Whether the reader folds the open conversation's message at `index`
+    /// into one line: one the desktop's reader folds, unless `e` shows them,
+    /// the other way when Enter turned it.
+    pub(crate) fn folds(&self, index: usize) -> bool {
+        let read = self
+            .reading
+            .as_ref()
+            .is_some_and(|reading| reading.folds(index));
+        (read && !self.show_read) != self.toggled.contains(&index)
+    }
+
     /// Lists the open conversation's attachments, to save one, or says why
     /// not.
     fn show_attachments(&mut self) {
@@ -1309,55 +1671,112 @@ impl App {
         self.next_page > 0 && self.conversations.is_empty()
     }
 
-    /// Moves down a row, and at the last row of a list with more to it,
-    /// asks for its next page, which lands below. While a list's first page
-    /// is on its way, the rows shown are from before it, so none follow.
-    fn down(&mut self) -> Vec<Effect> {
+    /// Moves `pane` down a row, and at the last row of a list with more to
+    /// it, asks for its next page, which lands below. While a list's first
+    /// page is on its way, the rows shown are from before it, so none follow.
+    fn down(&mut self, pane: Pane) -> Vec<Effect> {
         let at_end = self.selected_conversation + 1 >= self.conversations.len();
         // The local index gives all it finds at once.
         let more = self.conversations.len() < usize::try_from(self.total).unwrap_or(usize::MAX)
-            && !self.search.as_ref().is_some_and(|search| search.local);
-        if self.focus == Pane::Conversations
-            && at_end
-            && more
-            && self.next_page > 0
-            && !self.loading_more
+            && !self
+                .search
+                .as_ref()
+                .is_some_and(|search| matches!(search.query, Query::Local(_)));
+        if pane == Pane::Conversations && at_end && more && self.next_page > 0 && !self.loading_more
         {
             self.loading_more = true;
             self.notice = Some(format!("Loading more of {}…", self.listed));
             let (request, page) = (self.list_request, self.next_page);
             return vec![match &self.search {
-                Some(search) => Effect::Search {
+                Some(Search {
+                    query: Query::Proton(opts),
+                    ..
+                }) => Effect::Search {
                     request,
-                    words: search.words.clone(),
+                    opts: opts.clone(),
                     page,
                 },
-                None => Effect::Conversations {
+                _ => Effect::Conversations {
                     request,
                     place: self.listed_id.clone(),
                     page,
                 },
             }];
         }
-        self.step(1);
+        self.step(pane, 1);
+        Vec::new()
+    }
+
+    /// What a click on `pane` does, on the row `row` of its list if any:
+    /// the pane gets the keys and the row is selected, or opened when it
+    /// was selected already in the pane that had them.
+    fn click(&mut self, pane: Pane, row: Option<usize>) -> Vec<Effect> {
+        let had_keys = self.focus == pane;
+        self.focus = pane;
+        let (selected, len) = match pane {
+            Pane::Folders => (&mut self.selected_place, self.places.len()),
+            Pane::Conversations => (&mut self.selected_conversation, self.conversations.len()),
+            Pane::Reader => return Vec::new(),
+        };
+        let Some(row) = row.filter(|row| *row < len) else {
+            return Vec::new();
+        };
+        if had_keys && *selected == row {
+            return self.open();
+        }
+        *selected = row;
+        Vec::new()
+    }
+
+    /// Scrolls `pane` as the wheel over it turns a notch `by`, leaving the
+    /// keys where they are: a list a row, as Up and Down move it, the
+    /// reader a few.
+    fn wheel(&mut self, pane: Pane, by: isize) -> Vec<Effect> {
+        match pane {
+            Pane::Reader => self.step(pane, by * WHEEL_ROWS),
+            _ if by > 0 => return self.down(pane),
+            _ => self.step(pane, by),
+        }
         Vec::new()
     }
 
     /// How many rows a page of the reader moves: as many as fit.
     fn page(&self) -> isize {
-        isize::try_from(self.reader_rows.get()).map_or(1, |rows| rows.max(1))
+        page_of(&self.reader_rows)
     }
 
-    /// Moves the focused list's selection, or the reader, `by` rows, as far
-    /// as there is to go.
-    fn step(&mut self, by: isize) {
-        let (selected, len) = match self.focus {
+    /// Opens the list of keys at its top.
+    fn open_help(&mut self) {
+        self.help = true;
+        self.help_scroll = 0;
+    }
+
+    /// Scrolls the open list of keys as the key `message` asks, a row, a
+    /// page or to an end, or the wheel, as far as there is to go; another
+    /// key does nothing.
+    fn scroll_help(&mut self, message: &Message) {
+        let by = match message {
+            Message::Up => -1,
+            Message::Down => 1,
+            Message::PageUp => -page_of(&self.help_rows),
+            Message::PageDown => page_of(&self.help_rows),
+            Message::Top => isize::MIN,
+            Message::Bottom => isize::MAX,
+            Message::Wheel { by, .. } => by * WHEEL_ROWS,
+            _ => return,
+        };
+        self.help_scroll = scrolled(self.help_scroll, by, self.help_bottom.get());
+    }
+
+    /// Moves the selection of `pane`'s list, or the reader, `by` rows, as
+    /// far as there is to go.
+    fn step(&mut self, pane: Pane, by: isize) {
+        let (selected, len) = match pane {
             Pane::Folders => (&mut self.selected_place, self.places.len()),
             Pane::Conversations => (&mut self.selected_conversation, self.conversations.len()),
             Pane::Reader => {
-                let scroll = usize::from(self.scroll).saturating_add_signed(by);
-                let bottom = usize::from(self.reader_bottom.get());
-                self.scroll = u16::try_from(scroll.min(bottom)).unwrap_or(u16::MAX);
+                let bottom = self.reader_bottom.get();
+                self.scroll.set(scrolled(self.scroll.get(), by, bottom));
                 return;
             }
         };
@@ -1411,42 +1830,40 @@ impl App {
         }
     }
 
-    /// Asks for the first page of what `words` find in all mail, or, when
-    /// `local`, in the local index, as `list` does for a place, keeping the
-    /// place listed before the first search to go back to.
-    fn search_for(&mut self, words: String, local: bool) -> Effect {
+    /// Asks for the first page of what `query` finds for `words`, typed
+    /// after its command, as `list` does for a place, keeping the place
+    /// listed before the first search to go back to.
+    fn search_for(&mut self, words: String, query: Query) -> Effect {
         let back = match self.search.take() {
             Some(search) => search.back,
             None => (self.listed_id.clone(), self.listed.clone()),
         };
-        let (name, notice) = if local {
-            (
+        let (name, notice) = match query {
+            Query::Local(_) => (
                 format!("Local: {words}"),
                 format!("Searching the local index for {words}…"),
-            )
-        } else {
-            (
+            ),
+            Query::Proton(_) => (
                 format!("Search: {words}"),
                 format!("Searching for {words}…"),
-            )
+            ),
         };
         // All mail holds the results, so marking one unread does it there.
         let id = label_ids::ALL_MAIL.to_owned();
         let request = self.relist(id, name, notice);
-        self.search = Some(Search {
-            words: words.clone(),
-            local,
-            back,
-        });
-        if local {
-            Effect::LocalSearch { request, words }
-        } else {
-            Effect::Search {
+        let effect = match &query {
+            Query::Local(opts) => Effect::LocalSearch {
                 request,
-                words,
+                opts: opts.clone(),
+            },
+            Query::Proton(opts) => Effect::Search {
+                request,
+                opts: opts.clone(),
                 page: 0,
-            }
-        }
+            },
+        };
+        self.search = Some(Search { words, query, back });
+        effect
     }
 
     /// Makes the list the place `name`, listed from the label ID `id`, its
@@ -1456,6 +1873,10 @@ impl App {
         self.marked.clear();
         self.list_request += 1;
         self.reloading = id == self.listed_id && name == self.listed;
+        // A move is taken back to the place it was made in, listed.
+        if !self.reloading {
+            self.undo = None;
+        }
         self.next_page = 0;
         self.loading_more = false;
         self.notice = Some(notice);
@@ -1468,8 +1889,8 @@ impl App {
     fn reload(&mut self) -> Vec<Effect> {
         let list = match &self.search {
             Some(search) => {
-                let (words, local) = (search.words.clone(), search.local);
-                self.search_for(words, local)
+                let (words, query) = (search.words.clone(), search.query.clone());
+                self.search_for(words, query)
             }
             None => {
                 let (id, name) = (self.listed_id.clone(), self.listed.clone());
@@ -1503,7 +1924,7 @@ impl App {
                 .is_some_and(|reading| ids.contains(&reading.id))
         {
             self.reading = None;
-            self.scroll = 0;
+            self.scroll.set(0);
             self.picking_link = None;
             self.picking_attachment = None;
             if self.focus == Pane::Reader {
@@ -1565,6 +1986,18 @@ fn takes_moves(place: &Place) -> bool {
         ]
         .contains(&place.id.as_str()),
     }
+}
+
+/// How many rows a page moves where `rows` fit: as many, and at least one.
+fn page_of(rows: &Cell<u16>) -> isize {
+    isize::try_from(rows.get()).map_or(1, |rows| rows.max(1))
+}
+
+/// Where a view scrolled down `scroll` rows goes `by` rows on, between its
+/// top and `bottom`, the furthest it can go.
+fn scrolled(scroll: u16, by: isize, bottom: u16) -> u16 {
+    let scroll = usize::from(scroll).saturating_add_signed(by);
+    u16::try_from(scroll.min(usize::from(bottom))).unwrap_or(u16::MAX)
 }
 
 /// Whether `conversation` is starred.
@@ -1720,6 +2153,7 @@ impl Message {
             KeyCode::Char('F') => Some(Self::Answer(AnswerKind::Forward)),
             KeyCode::Char('n') => Some(Self::Compose),
             KeyCode::Char('z') => Some(Self::ToggleQuotes),
+            KeyCode::Char('e') => Some(Self::ToggleReadMessages),
             KeyCode::Char('b') => Some(Self::ShowLinks),
             KeyCode::Char('v') => Some(Self::ShowAttachments),
             KeyCode::Char('y') => Some(Self::Yes),
@@ -1731,7 +2165,9 @@ impl Message {
             KeyCode::Char('i') => Some(Self::Inbox),
             KeyCode::Char('t') | KeyCode::Delete => Some(Self::Trash),
             KeyCode::Char('l') => Some(Self::Label),
+            KeyCode::Char('L') => Some(Self::Unlabel),
             KeyCode::Char('m') => Some(Self::Move),
+            KeyCode::Char('Z') => Some(Self::Undo),
             KeyCode::Char(' ' | 'x') => Some(Self::Mark),
             KeyCode::Char(':') => Some(Self::Command),
             KeyCode::Char('/') => Some(Self::Search),
@@ -1742,6 +2178,7 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
+    use super::super::reading::ReadingMessage;
     use super::*;
     use crate::mailbox::OutgoingKind;
     use ruston_core::model::ConversationLabel;
@@ -1775,6 +2212,7 @@ mod tests {
         Place {
             id: id.into(),
             name: name.into(),
+            path: name.into(),
             depth: 0,
             kind: PlaceKind::System,
             unread: 0,
@@ -1897,8 +2335,25 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            messages: Vec::new(),
             answer: None,
         }
+    }
+
+    /// A reading of a message for each of `unread`, a line each, whether
+    /// it is not read yet.
+    fn with_messages(unread: &[bool]) -> Reading {
+        let mut reading = reading(4 * unread.len() - 3);
+        reading.messages = unread
+            .iter()
+            .enumerate()
+            .map(|(index, &unread)| ReadingMessage {
+                lines: 4 * index..4 * index + 1,
+                line: format!("▸ message {index}"),
+                unread,
+            })
+            .collect();
+        reading
     }
 
     #[test]
@@ -1947,28 +2402,129 @@ mod tests {
         app.reader_bottom.set(70);
         app.reader_rows.set(30);
         press(&mut app, KeyCode::Char('j'));
-        assert_eq!(app.scroll, 1);
+        assert_eq!(app.scroll.get(), 1);
         press(&mut app, KeyCode::PageDown);
-        assert_eq!(app.scroll, 31);
+        assert_eq!(app.scroll.get(), 31);
         ctrl(&mut app, KeyCode::Down);
-        assert_eq!(app.scroll, 70);
+        assert_eq!(app.scroll.get(), 70);
         press(&mut app, KeyCode::Down);
-        assert_eq!(app.scroll, 70);
+        assert_eq!(app.scroll.get(), 70);
         press(&mut app, KeyCode::PageUp);
-        assert_eq!(app.scroll, 40);
+        assert_eq!(app.scroll.get(), 40);
         ctrl(&mut app, KeyCode::Up);
-        assert_eq!(app.scroll, 0);
+        assert_eq!(app.scroll.get(), 0);
         press(&mut app, KeyCode::Up);
-        assert_eq!(app.scroll, 0);
+        assert_eq!(app.scroll.get(), 0);
     }
 
     #[test]
-    fn z_shows_quoted_text_and_hides_it_again() {
+    fn z_shows_quoted_text_and_hides_it_again_or_says_there_is_none() {
         let mut app = loaded();
+        press(&mut app, KeyCode::Char('z'));
+        assert!(!app.show_quotes);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Open a conversation to show its quoted text.")
+        );
+        app.reading = Some(reading(3));
+        press(&mut app, KeyCode::Char('z'));
+        assert!(!app.show_quotes);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("This conversation has no quoted text to fold.")
+        );
+        app.reading.as_mut().unwrap().quotes = vec![0..1, 2..3];
         press(&mut app, KeyCode::Char('z'));
         assert!(app.show_quotes);
         press(&mut app, KeyCode::Char('z'));
         assert!(!app.show_quotes);
+    }
+
+    #[test]
+    fn e_shows_the_messages_read_and_folds_them_again_or_says_there_are_none() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('e'));
+        assert!(!app.show_read);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Open a conversation to show its messages.")
+        );
+        app.reading = Some(reading(3));
+        press(&mut app, KeyCode::Char('e'));
+        assert!(!app.show_read);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("This conversation has no messages read to fold.")
+        );
+        // Neither a single message, nor the newest, nor one not read yet folds.
+        for unread in [&[false][..], &[true, false]] {
+            app.reading = Some(with_messages(unread));
+            press(&mut app, KeyCode::Char('e'));
+            assert!(!app.show_read);
+        }
+        app.reading = Some(with_messages(&[false, true, false]));
+        // Those turned with Enter go as e says, the message at the reader's
+        // top kept there.
+        app.toggled = vec![1];
+        app.in_view.set(Some(1));
+        press(&mut app, KeyCode::Char('e'));
+        assert!(app.show_read);
+        assert!(app.toggled.is_empty());
+        assert_eq!(app.landing.get(), Some(1));
+        press(&mut app, KeyCode::Char('e'));
+        assert!(!app.show_read);
+    }
+
+    #[test]
+    fn enter_in_the_reader_folds_or_shows_the_message_at_its_top_and_keeps_it_there() {
+        let mut app = loaded();
+        app.focus = Pane::Reader;
+        app.in_view.set(Some(0));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.toggled.is_empty());
+        app.reading = Some(with_messages(&[false, true, false]));
+        assert_eq!(
+            [app.folds(0), app.folds(1), app.folds(2)],
+            [true, false, false]
+        );
+        // As the view leaves it with the newest at the reader's top.
+        app.in_view.set(Some(2));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.folds(2));
+        assert_eq!(app.landing.get(), Some(2));
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.folds(2));
+        app.in_view.set(Some(0));
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.folds(0));
+        // With every message read shown, Enter folds one of them.
+        app.show_read = true;
+        app.toggled.clear();
+        press(&mut app, KeyCode::Enter);
+        assert!(app.folds(0));
+        // Right opens nothing there.
+        app.landing.set(None);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            (app.toggled.as_slice(), app.landing.get()),
+            (&[0][..], None)
+        );
+
+        // A conversation opens at its top, nothing turned, and lands on its
+        // first message not read yet.
+        app.scroll.set(9);
+        app.focus = Pane::Conversations;
+        let effects = press(&mut app, KeyCode::Enter);
+        let [Effect::Conversation { request, .. }] = effects[..] else {
+            panic!("{effects:?}");
+        };
+        app.update(Message::ConversationLoaded {
+            request,
+            result: Ok(with_messages(&[false, false, true, true])),
+        });
+        assert_eq!(app.scroll.get(), 0);
+        assert!(app.toggled.is_empty());
+        assert_eq!(app.landing.get(), Some(2));
     }
 
     /// An unread conversation, in the Inbox and in `label`.
@@ -2243,6 +2799,62 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_past_the_last_row_loads_the_next_page_and_moves_no_keys() {
+        let mut app = loaded();
+        app.total = 5;
+        let mut drawn = Drawn::default();
+        drawn.note(Pane::Conversations, Rect::new(25, 1, 46, 27), 0);
+        app.drawn.set(drawn);
+        let wheel = |row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 30,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let over = |app: &mut App, row| {
+            app.message_for(&wheel(row))
+                .map_or_else(Vec::new, |message| app.update(message))
+        };
+        assert!(over(&mut app, 3).is_empty());
+        assert_eq!(app.selected_conversation, 1);
+        assert_eq!(
+            over(&mut app, 3),
+            [Effect::Conversations {
+                request: 1,
+                place: label_ids::INBOX.into(),
+                page: 1
+            }]
+        );
+        assert_eq!(app.focus, Pane::Folders);
+        // Over no pane, it does nothing.
+        assert!(app.message_for(&wheel(40)).is_some());
+        assert!(over(&mut app, 40).is_empty());
+        assert_eq!(app.selected_conversation, 1);
+
+        // A message being written, or a question, takes no clicks.
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 30,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(matches!(
+            app.message_for(&click),
+            Some(Message::Click {
+                pane: Pane::Conversations,
+                row: Some(0)
+            })
+        ));
+        app.compose = Some(Compose::new(String::new()));
+        assert!(app.message_for(&click).is_none());
+        app.compose = None;
+        app.question = Some(Question::Discard);
+        assert!(app.message_for(&click).is_none());
+    }
+
+    #[test]
     fn a_list_with_nothing_more_to_it_just_stays_at_its_end() {
         let mut app = loaded();
         app.focus = Pane::Conversations;
@@ -2379,6 +2991,35 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         press(&mut app, KeyCode::Char('?'));
         assert!(!app.help);
+    }
+
+    #[test]
+    fn the_open_keys_scroll_where_they_do_not_fit_and_open_again_at_their_top() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('?'));
+        // As the view leaves them after drawing 30 rows 10 at a time.
+        app.help_bottom.set(20);
+        app.help_rows.set(10);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.help_scroll, 1);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.help_scroll, 11);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.help_scroll, 20);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.help_scroll, 20);
+        press(&mut app, KeyCode::PageUp);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.help_scroll, 9);
+        // The panes keep still meanwhile.
+        assert_eq!((app.focus, app.selected_place), (Pane::Folders, 0));
+        press(&mut app, KeyCode::Char('?'));
+        command(&mut app, "help");
+        assert_eq!((app.help, app.help_scroll), (true, 0));
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.help_scroll, 0);
     }
 
     #[test]
@@ -2563,6 +3204,7 @@ mod tests {
         let effects = app.update(Message::Changed {
             change: trash.clone(),
             ids: vec!["b".into()],
+            place: label_ids::INBOX.into(),
             result: Ok(()),
         });
         assert_eq!(
@@ -2587,6 +3229,7 @@ mod tests {
         app.update(Message::Changed {
             change: trash,
             ids: vec!["b".into()],
+            place: label_ids::INBOX.into(),
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -2648,6 +3291,7 @@ mod tests {
         app.update(Message::Changed {
             change: Change::Star(true),
             ids: vec!["b".into(), "c".into()],
+            place: label_ids::INBOX.into(),
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -2672,6 +3316,7 @@ mod tests {
         app.update(Message::Changed {
             change: Change::Star(true),
             ids: vec!["b".into()],
+            place: label_ids::INBOX.into(),
             result: Ok(()),
         });
         assert!(app.marked.is_empty());
@@ -2705,6 +3350,16 @@ mod tests {
             change(Change::Label("label-1".into()))
         );
         assert_eq!(app.notice.as_deref(), Some("Labelling the conversation…"));
+        // Only a label it bears comes off, as Proton reports once it has.
+        assert!(command(&mut app, "unlabel Family").is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("No conversation chosen has the label Family.")
+        );
+        app.conversations[0].labels = vec![ConversationLabel {
+            id: "label-1".into(),
+            ..ConversationLabel::default()
+        }];
         assert_eq!(
             command(&mut app, "unlabel Family"),
             change(Change::Unlabel("label-1".into()))
@@ -2756,6 +3411,158 @@ mod tests {
             app.notice.as_deref(),
             Some("Moving the conversation to the Inbox…")
         );
+    }
+
+    #[test]
+    fn a_row_names_the_labels_of_its_conversation_but_the_one_listed() {
+        let mut app = loaded();
+        let label = |id: &str, name: &str| Place {
+            kind: PlaceKind::Label,
+            ..place(id, name)
+        };
+        app.places = vec![
+            place(label_ids::INBOX, "Inbox"),
+            label("label-1", "Family"),
+            label("label-2", "Travel"),
+        ];
+        app.conversations[0].labels = [label_ids::INBOX, "label-2", "label-1"]
+            .map(|id| ConversationLabel {
+                id: id.into(),
+                ..ConversationLabel::default()
+            })
+            .to_vec();
+        assert_eq!(app.row_labels(&app.conversations[0]), ["Family", "Travel"]);
+        // Every row under Family bears it.
+        command(&mut app, "folder Family");
+        assert_eq!(app.row_labels(&app.conversations[0]), ["Travel"]);
+    }
+
+    #[test]
+    fn shift_l_takes_off_one_of_the_labels_the_conversation_bears() {
+        let mut app = loaded();
+        let label = |id: &str, name: &str| Place {
+            kind: PlaceKind::Label,
+            ..place(id, name)
+        };
+        app.places = vec![
+            place(label_ids::INBOX, "Inbox"),
+            label("label-1", "Family"),
+            label("label-2", "Travel"),
+            label("label-3", "Work"),
+        ];
+        press(&mut app, KeyCode::Char('L'));
+        assert!(app.command_line.is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Choose a conversation in the list first.")
+        );
+        app.focus = Pane::Conversations;
+        press(&mut app, KeyCode::Char('L'));
+        assert!(app.command_line.is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("There is no label to take off.")
+        );
+        // Tab offers only the labels it bears, in the folder list's order.
+        app.conversations[0].labels = ["label-3", label_ids::INBOX, "label-2"]
+            .map(|id| ConversationLabel {
+                id: id.into(),
+                ..ConversationLabel::default()
+            })
+            .to_vec();
+        press(&mut app, KeyCode::Char('L'));
+        assert_eq!(app.command_line.as_ref().unwrap().text, "unlabel ");
+        let mut offered = Vec::new();
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Tab);
+            offered.push(app.command_line.as_ref().unwrap().text.clone());
+        }
+        assert_eq!(
+            offered,
+            ["unlabel Travel", "unlabel Work", "unlabel Travel"]
+        );
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            [Effect::Change {
+                ids: vec!["a".into()],
+                place: label_ids::INBOX.into(),
+                change: Change::Unlabel("label-2".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn shift_z_takes_the_last_move_out_of_a_folder_back_until_something_else_happens() {
+        let mut app = loaded();
+        app.places = vec![
+            place(label_ids::INBOX, "Inbox"),
+            place(label_ids::ARCHIVE, "Archive"),
+            Place {
+                kind: PlaceKind::Folder,
+                ..place("folder-1", "Work")
+            },
+            Place {
+                kind: PlaceKind::Label,
+                ..place("label-1", "Family")
+            },
+        ];
+        app.focus = Pane::Conversations;
+        let done = |app: &mut App, change: Change, place: &str| {
+            app.update(Message::Changed {
+                change,
+                ids: vec!["a".into(), "b".into()],
+                place: place.into(),
+                result: Ok(()),
+            });
+        };
+        let archived = |app: &mut App| {
+            let listed = app.listed_id.clone();
+            done(app, Change::Move(label_ids::ARCHIVE.into()), &listed);
+        };
+        assert!(press(&mut app, KeyCode::Char('Z')).is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("There is no move to take back.")
+        );
+        // Moved out of the Inbox, back they go, once, the list loaded again
+        // meanwhile.
+        archived(&mut app);
+        let back = [Effect::Change {
+            ids: vec!["a".into(), "b".into()],
+            place: label_ids::INBOX.into(),
+            change: Change::Move(label_ids::INBOX.into()),
+        }];
+        assert_eq!(press(&mut app, KeyCode::Char('Z')), back);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Moving 2 conversations to the Inbox…")
+        );
+        assert!(press(&mut app, KeyCode::Char('Z')).is_empty());
+        archived(&mut app);
+        assert_eq!(command(&mut app, "undo"), back);
+        // Another change since, or another place listed, leaves none.
+        archived(&mut app);
+        done(&mut app, Change::Star(true), label_ids::INBOX);
+        assert_eq!(app.undo, None);
+        archived(&mut app);
+        ctrl(&mut app, KeyCode::Char('r'));
+        assert!(app.undo.is_some());
+        command(&mut app, "folder Work");
+        assert_eq!(app.undo, None);
+        // A move from another place than the one listed is not taken back.
+        done(
+            &mut app,
+            Change::Move(label_ids::ARCHIVE.into()),
+            label_ids::INBOX,
+        );
+        assert_eq!(app.undo, None);
+        // From a folder of the account's own it is.
+        archived(&mut app);
+        assert!(app.undo.is_some());
+        // Under a label, a conversation's folder is not known.
+        command(&mut app, "folder Family");
+        archived(&mut app);
+        assert_eq!(app.undo, None);
     }
 
     #[test]
@@ -2845,6 +3652,7 @@ mod tests {
         app.update(Message::Changed {
             change: Change::Delete,
             ids: vec!["x".into(), "y".into()],
+            place: label_ids::TRASH.into(),
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -2854,6 +3662,7 @@ mod tests {
         let effects = app.update(Message::Changed {
             change: Change::Delete,
             ids: vec!["x".into(), "y".into()],
+            place: label_ids::TRASH.into(),
             result: Ok(()),
         });
         assert_eq!(effects[0], Effect::Places);
@@ -2934,6 +3743,33 @@ mod tests {
         assert!(app.compose.is_none() && app.question.is_none());
         command(&mut app, "compose");
         assert!(app.compose.is_some());
+    }
+
+    #[test]
+    fn only_the_first_hundred_recipients_are_looked_up_before_sending() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('n'));
+        let addresses: Vec<String> = (0..101).map(|n| format!("p{n}@proton.me")).collect();
+        write(&mut app, &addresses.join(", "));
+        let effects = ctrl(&mut app, KeyCode::Enter);
+        let [
+            Effect::Protection {
+                addresses: asked, ..
+            },
+        ] = effects.as_slice()
+        else {
+            panic!("{effects:?}");
+        };
+        assert_eq!(asked.as_slice(), &addresses[..PROTECTION_LOOKUP_LIMIT]);
+        let Some(Question::Send {
+            outgoing, checks, ..
+        }) = &app.question
+        else {
+            panic!("{:?}", app.question);
+        };
+        assert_eq!(checks.len(), PROTECTION_LOOKUP_LIMIT);
+        // The message still goes to every one of them.
+        assert_eq!(outgoing.recipients().len(), 101);
     }
 
     #[test]
@@ -3216,9 +4052,11 @@ mod tests {
     #[test]
     fn the_reader_puts_away_a_conversation_a_change_took_out_of_the_list() {
         let changed = |app: &mut App, change: Change, id: &str| {
+            let place = app.listed_id.clone();
             app.update(Message::Changed {
                 change,
                 ids: vec![id.into()],
+                place,
                 result: Ok(()),
             });
         };
@@ -3426,7 +4264,7 @@ mod tests {
             effects,
             [Effect::Search {
                 request: 2,
-                words: "plans".into(),
+                opts: looking_for("plans"),
                 page: 0
             }]
         );
@@ -3444,7 +4282,7 @@ mod tests {
             press(&mut app, KeyCode::Down),
             [Effect::Search {
                 request: 2,
-                words: "plans".into(),
+                opts: looking_for("plans"),
                 page: 1
             }]
         );
@@ -3456,7 +4294,7 @@ mod tests {
                 Effect::Places,
                 Effect::Search {
                     request: 3,
-                    words: "plans".into(),
+                    opts: looking_for("plans"),
                     page: 0
                 }
             ]
@@ -3476,6 +4314,111 @@ mod tests {
         assert_eq!(app.listed, "Inbox");
     }
 
+    /// What Proton's search is asked for `words` alone.
+    fn looking_for(words: &str) -> SearchOpts {
+        SearchOpts {
+            keyword: Some(words.into()),
+            ..SearchOpts::default()
+        }
+    }
+
+    #[test]
+    fn a_search_narrows_by_the_filters_beside_its_words_its_folder_named_by_id() {
+        let mut app = loaded();
+        let words = "plans from:alex in:WORK after:2026-01-01 before:2026-01-31";
+        assert_eq!(
+            command(&mut app, &format!("search {words}")),
+            [Effect::Search {
+                request: 2,
+                opts: SearchOpts {
+                    from: Some("alex".into()),
+                    after: Some("2026-01-01".into()),
+                    before: Some("2026-01-31".into()),
+                    folder: Some("folder-1".into()),
+                    ..looking_for("plans")
+                },
+                page: 0
+            }]
+        );
+        assert_eq!(app.listed, format!("Search: {words}"));
+    }
+
+    #[test]
+    fn in_names_a_folder_by_its_path_or_id_or_all_mail_as_messages_search_does() {
+        let mut app = loaded();
+        let folder = |id: &str, path: &str| Place {
+            kind: PlaceKind::Folder,
+            path: path.into(),
+            ..place(id, path.rsplit('/').next().unwrap())
+        };
+        app.places.extend([
+            folder("taxes", "Taxes"),
+            folder("taxes-2024", "Taxes/2024"),
+            folder("travel-2024", "Travel/2024"),
+        ]);
+        let searched_in = |app: &mut App, folder: &str| {
+            let effects = command(app, &format!("search plans in:{folder}"));
+            match &effects[..] {
+                [Effect::Search { opts, .. }] => opts.folder.clone().unwrap(),
+                effects => panic!("in:{folder} {effects:?}"),
+            }
+        };
+        let id = "qBIcv1_Wv5X4hLpEo0Tz9A==";
+        for (folder, searched) in [
+            ("taxes/2024", "taxes-2024"),
+            ("TRAVEL/2024", "travel-2024"),
+            ("Taxes", "taxes"),
+            ("work", "folder-1"),
+            ("inbox", label_ids::INBOX),
+            ("all", label_ids::ALL_MAIL),
+            (id, id),
+        ] {
+            assert_eq!(searched_in(&mut app, folder), searched);
+        }
+        // A name two folders share is refused, naming their paths.
+        press(&mut app, KeyCode::Esc);
+        assert!(command(&mut app, "search plans in:2024").is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Several folders or labels are named 2024: Taxes/2024, Travel/2024")
+        );
+        assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
+        // Tab offers the places' names after it.
+        press(&mut app, KeyCode::Char('/'));
+        for c in "plans in:ta".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Tab);
+        let line = app.command_line.as_ref().unwrap();
+        assert_eq!(line.text, "search plans in:Taxes");
+    }
+
+    #[test]
+    fn a_search_whose_filters_cannot_be_met_is_refused_before_it_starts() {
+        let mut app = loaded();
+        for (line, said) in [
+            (
+                "search plans after:2024-05-01 before:2024-04-30",
+                "Cannot search: invalid date range: 2024-05-01 is after 2024-04-30",
+            ),
+            (
+                "search plans before:30/04/2024",
+                "Cannot search: invalid date '30/04/2024': expected YYYY-MM-DD",
+            ),
+            (
+                "search plans in:Nowhere",
+                "No folder or label is named Nowhere",
+            ),
+            ("search plans from:", ":search needs something after from:"),
+            ("search to:sam to:alex", ":search takes to: once"),
+        ] {
+            assert!(command(&mut app, line).is_empty(), "{line}");
+            assert_eq!(app.notice.as_deref(), Some(said), "{line}");
+            // The list stays the place it was.
+            assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
+        }
+    }
+
     #[test]
     fn a_local_search_lists_all_it_finds_at_once_and_searches_the_index_again() {
         let mut app = loaded();
@@ -3483,7 +4426,7 @@ mod tests {
             command(&mut app, "local budget"),
             [Effect::LocalSearch {
                 request: 2,
-                words: "budget".into()
+                opts: looking_for("budget")
             }]
         );
         assert_eq!(app.listed, "Local: budget");
@@ -3506,12 +4449,48 @@ mod tests {
                 Effect::Places,
                 Effect::LocalSearch {
                     request: 3,
-                    words: "budget".into()
+                    opts: looking_for("budget")
                 }
             ]
         );
         press(&mut app, KeyCode::Esc);
         assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
+    }
+
+    #[test]
+    fn a_local_search_takes_the_filters_of_a_search_beside_words() {
+        let mut app = loaded();
+        for (line, said) in [
+            (
+                "local from:alex in:work",
+                "The local index cannot search by filters alone: type words too",
+            ),
+            (
+                "local budget in:Nowhere",
+                "No folder or label is named Nowhere",
+            ),
+            ("local budget to:", ":local needs something after to:"),
+        ] {
+            assert!(command(&mut app, line).is_empty(), "{line}");
+            assert_eq!(app.notice.as_deref(), Some(said), "{line}");
+            assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
+        }
+        let words = "budget from:alex to:sam in:WORK after:2026-01-01 before:2026-01-31";
+        assert_eq!(
+            command(&mut app, &format!("local {words}")),
+            [Effect::LocalSearch {
+                request: 2,
+                opts: SearchOpts {
+                    from: Some("alex".into()),
+                    to: Some("sam".into()),
+                    after: Some("2026-01-01".into()),
+                    before: Some("2026-01-31".into()),
+                    folder: Some("folder-1".into()),
+                    ..looking_for("budget")
+                }
+            }]
+        );
+        assert_eq!(app.listed, format!("Local: {words}"));
     }
 
     #[test]
@@ -3534,6 +4513,7 @@ mod tests {
         let effects = app.update(Message::Changed {
             change: Change::Star(true),
             ids: vec!["p1".into()],
+            place: label_ids::ALL_MAIL.into(),
             result: Ok(()),
         });
         assert_eq!(
@@ -3542,7 +4522,7 @@ mod tests {
                 Effect::Places,
                 Effect::Search {
                     request: 3,
-                    words: "plans".into(),
+                    opts: looking_for("plans"),
                     page: 0
                 }
             ]

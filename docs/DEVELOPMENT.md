@@ -88,7 +88,9 @@ version, which its `RUSTUP_TOOLCHAIN` sets in place of `rust-toolchain.toml`'s;
 the two must change together. Pull requests check dependency bans, licenses and
 sources with `cargo-deny`; its advisories run in the dependency audit
 workflow, when dependencies or `deny.toml` change and weekly, so an advisory
-published meanwhile does not fail an unrelated pull request.
+published meanwhile does not fail an unrelated pull request. After changing a
+dependency, run `python3 packaging/third-party-licenses.py` to bring
+`THIRD_PARTY_LICENSES.txt` up to date: a CI job fails while it lags behind.
 
 Linux also validates the desktop entry with `desktop-file-validate` and its
 AppStream metadata with `appstreamcli validate`. Windows builds `ruston.exe`
@@ -209,6 +211,10 @@ try {
   send must stay within the fictional mailbox.
 - Open the Source code button in Settings and confirm the default browser
   receives the repository URL.
+- In the installed app, whose folder name has a space, choose Third-party
+  notices in Settings and confirm `THIRD_PARTY_LICENSES.txt` opens in the
+  default app for text files. A `target` build has no notices beside it, so
+  it shows no such button.
 
 ### Credential Manager and attachment downloads
 

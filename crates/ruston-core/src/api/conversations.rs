@@ -1,11 +1,13 @@
-//! Conversations API.
+//! Conversations: listing them, opening one, and acting on several at a time.
 
+use super::events::LabelCount;
 use super::messages::ListQuery;
 use crate::error::Result;
 use crate::model::conversation::Conversation;
 use crate::model::message::Message;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
+use serde_json::json;
 
 #[derive(Deserialize)]
 struct ListResp {
@@ -23,91 +25,67 @@ struct GetResp {
     messages: Vec<Message>,
 }
 
-/// List/search conversations, returning the total count and the matches.
+/// One page of the conversations `q` asks for, and how many match in all.
 pub async fn list_conversations<D: Doer>(d: &D, q: &ListQuery) -> Result<(u32, Vec<Conversation>)> {
-    let req = q.apply(Request::get("/mail/v4/conversations"), true);
-    let r: ListResp = d.decode(req).await?;
-    Ok((r.total, r.conversations))
+    d.decode(q.apply(Request::get("/mail/v4/conversations")))
+        .await
+        .map(|page: ListResp| (page.total, page.conversations))
 }
 
-/// Fetch a conversation and its messages by ID.
+/// The conversation `id` and its messages.
 pub async fn get_conversation<D: Doer>(d: &D, id: &str) -> Result<(Conversation, Vec<Message>)> {
-    let r: GetResp = d
-        .decode(Request::get(format!("/mail/v4/conversations/{id}")))
-        .await?;
-    Ok((r.conversation, r.messages))
+    d.decode(Request::get(format!("/mail/v4/conversations/{id}")))
+        .await
+        .map(|opened: GetResp| (opened.conversation, opened.messages))
 }
 
-async fn label_op<D: Doer>(d: &D, op: &str, label_id: &str, ids: &[String]) -> Result<()> {
-    let body = serde_json::json!({ "LabelID": label_id, "IDs": ids });
-    let each: super::EachResponse = d
-        .decode(Request::put(format!("/mail/v4/conversations/{op}")).json(body))
-        .await?;
-    each.into_result()
+/// Applies `action` to the conversations whose `IDs` are in `body`, and
+/// fails naming those Proton refused.
+async fn act_on_each<D: Doer>(d: &D, action: &str, body: serde_json::Value) -> Result<()> {
+    let request = Request::put(format!("/mail/v4/conversations/{action}")).json(body);
+    d.decode::<super::EachResponse>(request)
+        .await?
+        .into_result()
 }
 
-/// Add a label (or move to a folder) for the given conversations.
+/// Adds the label `label_id` to the conversations `ids`; a folder's ID moves
+/// them into that folder.
 pub async fn label<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<()> {
-    label_op(d, "label", label_id, ids).await
+    act_on_each(d, "label", json!({ "LabelID": label_id, "IDs": ids })).await
 }
-/// Remove a label from the given conversations.
+/// Takes the label `label_id` off the conversations `ids`.
 pub async fn unlabel<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<()> {
-    label_op(d, "unlabel", label_id, ids).await
+    act_on_each(d, "unlabel", json!({ "LabelID": label_id, "IDs": ids })).await
 }
 
-/// Mark conversations read/unread. Unread also takes a `LabelID`.
+/// Marks the conversations `ids` read, or unread. Marking unread names the
+/// folder `label_id` it is done in; marking read takes no folder.
 pub async fn mark<D: Doer>(d: &D, read: bool, ids: &[String], label_id: &str) -> Result<()> {
-    let (op, body) = if read {
-        ("read", serde_json::json!({ "IDs": ids }))
+    if read {
+        act_on_each(d, "read", json!({ "IDs": ids })).await
     } else {
-        (
-            "unread",
-            serde_json::json!({ "IDs": ids, "LabelID": label_id }),
-        )
-    };
-    let each: super::EachResponse = d
-        .decode(Request::put(format!("/mail/v4/conversations/{op}")).json(body))
-        .await?;
-    each.into_result()
+        act_on_each(d, "unread", json!({ "IDs": ids, "LabelID": label_id })).await
+    }
 }
 
-/// Permanently delete the given conversations from a folder.
+/// Deletes for good what the conversations `ids` hold in the folder
+/// `label_id`.
 pub async fn delete<D: Doer>(d: &D, ids: &[String], label_id: &str) -> Result<()> {
-    let body = serde_json::json!({ "IDs": ids, "LabelID": label_id });
-    let each: super::EachResponse = d
-        .decode(Request::put("/mail/v4/conversations/delete").json(body))
-        .await?;
-    each.into_result()
+    act_on_each(d, "delete", json!({ "IDs": ids, "LabelID": label_id })).await
 }
 
-/// Snooze conversations until a Unix timestamp.
+/// Puts the conversations `ids` away until `snooze_time`, in Unix seconds.
 pub async fn snooze<D: Doer>(d: &D, ids: &[String], snooze_time: i64) -> Result<()> {
-    let body = serde_json::json!({ "IDs": ids, "SnoozeTime": snooze_time });
-    let each: super::EachResponse = d
-        .decode(Request::put("/mail/v4/conversations/snooze").json(body))
-        .await?;
-    each.into_result()
+    let until = json!({ "IDs": ids, "SnoozeTime": snooze_time });
+    act_on_each(d, "snooze", until).await
 }
 
-/// Unsnooze the given conversations.
+/// Brings the snoozed conversations `ids` back now.
 pub async fn unsnooze<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    let body = serde_json::json!({ "IDs": ids });
-    let each: super::EachResponse = d
-        .decode(Request::put("/mail/v4/conversations/unsnooze").json(body))
-        .await?;
-    each.into_result()
+    act_on_each(d, "unsnooze", json!({ "IDs": ids })).await
 }
 
-#[derive(serde::Deserialize)]
-struct CountsResp {
-    #[serde(rename = "Counts", default)]
-    counts: Vec<super::events::LabelCount>,
-}
-
-/// Per-label conversation counts.
-pub async fn counts<D: Doer>(d: &D) -> Result<Vec<super::events::LabelCount>> {
-    let r: CountsResp = d
-        .decode(Request::get("/mail/v4/conversations/count"))
-        .await?;
-    Ok(r.counts)
+/// How many conversations each label holds, and how many of them are unread.
+pub async fn counts<D: Doer>(d: &D) -> Result<Vec<LabelCount>> {
+    super::messages::label_counts(d, "/mail/v4/conversations/count").await
 }
