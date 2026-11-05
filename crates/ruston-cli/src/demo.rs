@@ -1130,9 +1130,9 @@ fn quoted(original: &DemoMessage) -> String {
 
 /// The first of `messages` that `reference` names, as a message reference
 /// names one in the demo: its ID, part of it, or words of its subject.
-fn message_named(messages: Vec<DemoMessage>, reference: &str) -> Result<DemoMessage> {
+fn message_named<'a>(messages: &'a [DemoMessage], reference: &str) -> Result<&'a DemoMessage> {
     messages
-        .into_iter()
+        .iter()
         .find(|m| {
             m.meta.id == reference
                 || m.meta.id.contains(reference)
@@ -1142,6 +1142,16 @@ fn message_named(messages: Vec<DemoMessage>, reference: &str) -> Result<DemoMess
                     .contains(&reference.to_lowercase())
         })
         .ok_or_else(|| Error::Other(format!("demo message not found for ref '{reference}'")))
+}
+
+/// The IDs of the messages `references` name, in their order, each found as
+/// [`message_named`] finds it: what an action on them reports, as the real
+/// commands report the IDs they resolve.
+fn ids_named(messages: &[DemoMessage], references: &[String]) -> Result<Vec<String>> {
+    references
+        .iter()
+        .map(|reference| Ok(message_named(messages, reference)?.meta.id.clone()))
+        .collect()
 }
 
 /// Up to `limit` of the demo's messages whose subject or body has `query`,
@@ -1383,7 +1393,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 body_only,
                 output,
             } => {
-                let msg = message_named(fixtures_messages, &reference)?;
+                let msg = message_named(&fixtures_messages, &reference)?;
 
                 let full = msg.to_full();
                 if let Some(path) = output {
@@ -1429,29 +1439,34 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::CancelSend { reference } => {
-                let msg = message_named(fixtures_messages, &reference)?;
-                render::action_result(ctx.json, "cancel-send", &[msg.meta.id]);
+                let ids = ids_named(&fixtures_messages, &[reference])?;
+                render::action_result(ctx.json, "cancel-send", &ids);
                 Ok(())
             }
             MessagesCmd::Trash { references } => {
-                render::action_result(ctx.json, "trash", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "trash", &ids);
                 Ok(())
             }
             // The fictional mailbox loses nothing, so there is nothing to confirm.
             MessagesCmd::Delete { references, .. } => {
-                render::action_result(ctx.json, "delete", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "delete", &ids);
                 Ok(())
             }
             MessagesCmd::Spam { references } => {
-                render::action_result(ctx.json, "spam", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "spam", &ids);
                 Ok(())
             }
             MessagesCmd::Ham { references } => {
-                render::action_result(ctx.json, "ham", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "ham", &ids);
                 Ok(())
             }
             MessagesCmd::Unsubscribe { reference } => {
-                render::action_result(ctx.json, "unsubscribe", &[reference]);
+                let ids = ids_named(&fixtures_messages, &[reference])?;
+                render::action_result(ctx.json, "unsubscribe", &ids);
                 Ok(())
             }
             MessagesCmd::Empty { folder, .. } => {
@@ -1464,35 +1479,41 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 references,
             } => {
                 folder_id_among(&demo_labels(), &label_id)?;
+                let ids = ids_named(&fixtures_messages, &references)?;
                 let action = match action {
                     LabelAction::Add => "label",
                     LabelAction::Rm => "unlabel",
                 };
-                render::action_result(ctx.json, action, &references);
+                render::action_result(ctx.json, action, &ids);
                 Ok(())
             }
             MessagesCmd::Receipt { reference } => {
-                render::action_result(ctx.json, "receipt", &[reference]);
+                let ids = ids_named(&fixtures_messages, &[reference])?;
+                render::action_result(ctx.json, "receipt", &ids);
                 Ok(())
             }
             MessagesCmd::Move { references, dest } => {
                 folder_id_among(&demo_labels(), &dest)?;
-                render::action_result(ctx.json, "move", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "move", &ids);
                 Ok(())
             }
             MessagesCmd::Mark {
                 state: _,
                 references,
             } => {
-                render::action_result(ctx.json, "mark", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "mark", &ids);
                 Ok(())
             }
             MessagesCmd::Star { references } => {
-                render::action_result(ctx.json, "star", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "star", &ids);
                 Ok(())
             }
             MessagesCmd::Unstar { references } => {
-                render::action_result(ctx.json, "unstar", &references);
+                let ids = ids_named(&fixtures_messages, &references)?;
+                render::action_result(ctx.json, "unstar", &ids);
                 Ok(())
             }
         },

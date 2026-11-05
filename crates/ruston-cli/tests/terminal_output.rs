@@ -119,6 +119,55 @@ fn calling_off_a_send_in_the_demo_reports_the_message_it_found() {
 }
 
 #[test]
+fn acting_on_messages_in_the_demo_reports_the_messages_it_found() {
+    // As in the real commands, a reference can be search text, and each is
+    // reported as the ID it found, in order.
+    let both = ["garden fence", "keyboard"];
+    for (command, references, action) in [
+        (&["trash"][..], &both[..], "trash"),
+        (&["delete", "--yes"], &both, "delete"),
+        (&["spam"], &both, "spam"),
+        (&["ham"], &both, "ham"),
+        (&["move", "--dest", "archive"], &both, "move"),
+        (&["mark", "read"], &both, "mark"),
+        (&["star"], &both, "star"),
+        (&["unstar"], &both, "unstar"),
+        (&["label", "add", "Work"], &both, "label"),
+        (&["label", "rm", "Work"], &both, "unlabel"),
+        (&["unsubscribe"], &both[..1], "unsubscribe"),
+        (&["receipt"], &both[..1], "receipt"),
+    ] {
+        let args = [&["--demo", "messages"][..], command, references].concat();
+        let ids = &["msg-demo-07", "msg-demo-05"][..references.len()];
+        let json = run_ok(&[&["--json"][..], &args].concat());
+        let reported: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+        assert_eq!(
+            reported,
+            serde_json::json!({
+                "status": "ok", "action": action, "count": ids.len(), "ids": ids, "demo": true
+            }),
+            "{args:?}"
+        );
+        // The text report gives only how many.
+        let text = run_ok(&args);
+        assert_eq!(
+            String::from_utf8(text.stdout).unwrap(),
+            format!("{action}: {} item(s)\n", ids.len()),
+            "{args:?}"
+        );
+
+        // A reference that finds nothing is an error, as in the real commands.
+        let unknown = run(&[&args[..args.len() - 1], &["nothing like it"]].concat());
+        assert!(!unknown.status.success(), "{args:?}");
+        let error = String::from_utf8(unknown.stderr).unwrap();
+        assert!(
+            error.contains("demo message not found"),
+            "{args:?}: {error}"
+        );
+    }
+}
+
+#[test]
 fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
     let json = |args: &[&str]| -> serde_json::Value {
         let output = run_ok(&[&["--demo", "--json"][..], args].concat());
