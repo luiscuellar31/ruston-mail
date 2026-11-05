@@ -431,13 +431,13 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
         },
         Effect::Search {
             request,
-            words,
+            opts,
             page,
         } => Message::ConversationsLoaded {
             request,
             page,
             result: mailbox
-                .search(&words, page)
+                .search(&opts, page)
                 .await
                 .map_err(|error| error.to_string()),
         },

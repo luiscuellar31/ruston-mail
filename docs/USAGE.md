@@ -585,7 +585,14 @@ question that names it; any other key keeps the mail.
 name, Up and Down bring back the lines run before, Enter runs it and Esc
 closes it. `/` or Ctrl+F starts one at `:search`, which looks for words in all
 of your mail and lists what it finds; Esc in that list goes back to the folder
-listed before. `:local` looks instead in the local index that
+listed before. Filters beside the words narrow it, as the options of
+`messages search` do: `from:` and `to:` to mail from or to an address,
+`after:` and `before:` to the days from and up to one written YYYY-MM-DD, in
+UTC, and `in:` to a folder or label, named as `:folder` names it. A value
+with spaces goes between double quotes, and a range that ends before it
+starts is refused, as in `messages search`; for example, `:search budget
+from:alex after:2026-01-01 in:"Bank statements"`. `?` names the filters
+under the keys. `:local` looks instead in the local index that
 `ruston-cli index` builds, without a connection; opening what it finds still
 needs one.
 
@@ -673,7 +680,7 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | `:reply`, `:replyall`, `:forward` | Reply to the open conversation, reply to all, or forward it |
 | `:delete` | Delete it forever, in Trash or Spam, once you answer `y` |
 | `:empty` | Delete everything in Trash or Spam forever, once you answer `y` |
-| `:search WORDS` | Search all mail for the words |
+| `:search WORDS` | Search all mail for the words, narrowed by `from:`, `to:`, `after:`, `before:` or `in:` beside them |
 | `:local WORDS` | Search the local index for the words, offline |
 | `:refresh` | Refresh the folders and the list, or the search |
 | `:attachments` | List the conversation's attachments, to save one |

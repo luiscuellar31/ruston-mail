@@ -9,7 +9,7 @@ use crate::mailbox::{Change, Outgoing, Place, PlaceKind, SendFailure, deletes_fo
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
-use ruston_core::{Conversation, RecipientProtection};
+use ruston_core::{Conversation, RecipientProtection, SearchOpts};
 use std::cell::Cell;
 use std::path::PathBuf;
 
@@ -57,14 +57,23 @@ pub(crate) struct LinkPick {
     pub(crate) confirming: bool,
 }
 
-/// A search whose results the list shows: its words, whether it looked in
-/// the local index rather than asking Proton, and the label ID and name of
-/// the place listed before it, which Esc lists again.
+/// A search whose results the list shows: what was typed after its
+/// command, which names the list, what it asks and of whom, and the label
+/// ID and name of the place listed before it, which Esc lists again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Search {
     pub(crate) words: String,
-    pub(crate) local: bool,
+    pub(crate) query: Query,
     pub(crate) back: (String, String),
+}
+
+/// What a search asks, and of whom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Query {
+    /// Proton's search, for the words and the filters typed beside them.
+    Proton(SearchOpts),
+    /// The local index, which looks for the words alone.
+    Local,
 }
 
 /// The folders `g` goes to, each with the key after it that names it, its
@@ -331,10 +340,11 @@ pub(crate) enum Effect {
         place: String,
         page: u32,
     },
-    /// Page `page` of what `words` find in all mail, numbered as a list.
+    /// Page `page` of what Proton's search finds for `opts`, numbered as a
+    /// list.
     Search {
         request: u64,
-        words: String,
+        opts: SearchOpts,
         page: u32,
     },
     /// What `words` find in the local index, all of it at once.
@@ -821,15 +831,18 @@ impl App {
             Command::Help => self.help = true,
             Command::Attachments => self.show_attachments(),
             Command::Refresh => return self.update(Message::Refresh),
-            Command::Search(words) => {
-                self.focus = Pane::Conversations;
-                self.selected_conversation = 0;
-                return vec![self.search_for(words, false)];
-            }
+            Command::Search(words) => match self.proton_search(&words) {
+                Ok(opts) => {
+                    self.focus = Pane::Conversations;
+                    self.selected_conversation = 0;
+                    return vec![self.search_for(words, Query::Proton(opts))];
+                }
+                Err(error) => self.notice = Some(error),
+            },
             Command::Local(words) => {
                 self.focus = Pane::Conversations;
                 self.selected_conversation = 0;
-                return vec![self.search_for(words, true)];
+                return vec![self.search_for(words, Query::Local)];
             }
             Command::Folder(name) => match self.named(&name) {
                 Ok(index) => {
@@ -879,6 +892,16 @@ impl App {
             Command::Answer(how) => self.open_answer(how),
         }
         Vec::new()
+    }
+
+    /// What `words`, typed after `:search`, ask Proton's search for, with the
+    /// folder named after `in:` found among the places as `:folder` finds it.
+    fn proton_search(&self, words: &str) -> Result<SearchOpts, String> {
+        let mut opts = super::command::search_options(words)?;
+        if let Some(name) = opts.folder.take() {
+            opts.folder = Some(self.places[self.named(&name)?].id.clone());
+        }
+        Ok(opts)
     }
 
     /// The ID of the label named `name`, whatever its case, or what to say
@@ -1388,7 +1411,10 @@ impl App {
         let at_end = self.selected_conversation + 1 >= self.conversations.len();
         // The local index gives all it finds at once.
         let more = self.conversations.len() < usize::try_from(self.total).unwrap_or(usize::MAX)
-            && !self.search.as_ref().is_some_and(|search| search.local);
+            && !self
+                .search
+                .as_ref()
+                .is_some_and(|search| search.query == Query::Local);
         if self.focus == Pane::Conversations
             && at_end
             && more
@@ -1399,12 +1425,15 @@ impl App {
             self.notice = Some(format!("Loading more of {}…", self.listed));
             let (request, page) = (self.list_request, self.next_page);
             return vec![match &self.search {
-                Some(search) => Effect::Search {
+                Some(Search {
+                    query: Query::Proton(opts),
+                    ..
+                }) => Effect::Search {
                     request,
-                    words: search.words.clone(),
+                    opts: opts.clone(),
                     page,
                 },
-                None => Effect::Conversations {
+                _ => Effect::Conversations {
                     request,
                     place: self.listed_id.clone(),
                     page,
@@ -1483,42 +1512,40 @@ impl App {
         }
     }
 
-    /// Asks for the first page of what `words` find in all mail, or, when
-    /// `local`, in the local index, as `list` does for a place, keeping the
-    /// place listed before the first search to go back to.
-    fn search_for(&mut self, words: String, local: bool) -> Effect {
+    /// Asks for the first page of what `query` finds for `words`, typed
+    /// after its command, as `list` does for a place, keeping the place
+    /// listed before the first search to go back to.
+    fn search_for(&mut self, words: String, query: Query) -> Effect {
         let back = match self.search.take() {
             Some(search) => search.back,
             None => (self.listed_id.clone(), self.listed.clone()),
         };
-        let (name, notice) = if local {
-            (
+        let (name, notice) = match query {
+            Query::Local => (
                 format!("Local: {words}"),
                 format!("Searching the local index for {words}…"),
-            )
-        } else {
-            (
+            ),
+            Query::Proton(_) => (
                 format!("Search: {words}"),
                 format!("Searching for {words}…"),
-            )
+            ),
         };
         // All mail holds the results, so marking one unread does it there.
         let id = label_ids::ALL_MAIL.to_owned();
         let request = self.relist(id, name, notice);
-        self.search = Some(Search {
-            words: words.clone(),
-            local,
-            back,
-        });
-        if local {
-            Effect::LocalSearch { request, words }
-        } else {
-            Effect::Search {
+        let effect = match &query {
+            Query::Local => Effect::LocalSearch {
                 request,
-                words,
+                words: words.clone(),
+            },
+            Query::Proton(opts) => Effect::Search {
+                request,
+                opts: opts.clone(),
                 page: 0,
-            }
-        }
+            },
+        };
+        self.search = Some(Search { words, query, back });
+        effect
     }
 
     /// Makes the list the place `name`, listed from the label ID `id`, its
@@ -1540,8 +1567,8 @@ impl App {
     fn reload(&mut self) -> Vec<Effect> {
         let list = match &self.search {
             Some(search) => {
-                let (words, local) = (search.words.clone(), search.local);
-                self.search_for(words, local)
+                let (words, query) = (search.words.clone(), search.query.clone());
+                self.search_for(words, query)
             }
             None => {
                 let (id, name) = (self.listed_id.clone(), self.listed.clone());
@@ -3628,7 +3655,7 @@ mod tests {
             effects,
             [Effect::Search {
                 request: 2,
-                words: "plans".into(),
+                opts: looking_for("plans"),
                 page: 0
             }]
         );
@@ -3646,7 +3673,7 @@ mod tests {
             press(&mut app, KeyCode::Down),
             [Effect::Search {
                 request: 2,
-                words: "plans".into(),
+                opts: looking_for("plans"),
                 page: 1
             }]
         );
@@ -3658,7 +3685,7 @@ mod tests {
                 Effect::Places,
                 Effect::Search {
                     request: 3,
-                    words: "plans".into(),
+                    opts: looking_for("plans"),
                     page: 0
                 }
             ]
@@ -3676,6 +3703,61 @@ mod tests {
         );
         assert_eq!((app.search.clone(), app.focus), (None, Pane::Conversations));
         assert_eq!(app.listed, "Inbox");
+    }
+
+    /// What Proton's search is asked for `words` alone.
+    fn looking_for(words: &str) -> SearchOpts {
+        SearchOpts {
+            keyword: Some(words.into()),
+            ..SearchOpts::default()
+        }
+    }
+
+    #[test]
+    fn a_search_narrows_by_the_filters_beside_its_words_its_folder_named_by_id() {
+        let mut app = loaded();
+        let words = "plans from:alex in:WORK after:2026-01-01 before:2026-01-31";
+        assert_eq!(
+            command(&mut app, &format!("search {words}")),
+            [Effect::Search {
+                request: 2,
+                opts: SearchOpts {
+                    from: Some("alex".into()),
+                    after: Some("2026-01-01".into()),
+                    before: Some("2026-01-31".into()),
+                    folder: Some("folder-1".into()),
+                    ..looking_for("plans")
+                },
+                page: 0
+            }]
+        );
+        assert_eq!(app.listed, format!("Search: {words}"));
+    }
+
+    #[test]
+    fn a_search_whose_filters_cannot_be_met_is_refused_before_it_starts() {
+        let mut app = loaded();
+        for (line, said) in [
+            (
+                "search plans after:2024-05-01 before:2024-04-30",
+                "Cannot search: invalid date range: 2024-05-01 is after 2024-04-30",
+            ),
+            (
+                "search plans before:30/04/2024",
+                "Cannot search: invalid date '30/04/2024': expected YYYY-MM-DD",
+            ),
+            (
+                "search plans in:Nowhere",
+                "No folder or label is named Nowhere",
+            ),
+            ("search plans from:", ":search needs something after from:"),
+            ("search to:sam to:alex", ":search takes to: once"),
+        ] {
+            assert!(command(&mut app, line).is_empty(), "{line}");
+            assert_eq!(app.notice.as_deref(), Some(said), "{line}");
+            // The list stays the place it was.
+            assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
+        }
     }
 
     #[test]
@@ -3744,7 +3826,7 @@ mod tests {
                 Effect::Places,
                 Effect::Search {
                     request: 3,
-                    words: "plans".into(),
+                    opts: looking_for("plans"),
                     page: 0
                 }
             ]

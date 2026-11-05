@@ -4,7 +4,7 @@
 //! Every piece of text that comes with the mail goes through
 //! `terminal::screen_line` first.
 
-use super::app::{App, GO_TO, LinkPick, Pane, Question};
+use super::app::{App, GO_TO, LinkPick, Pane, Query, Question};
 use super::compose::{Checked, Compose, Field};
 use super::reading::{is_quoted, size_label};
 use crate::mailbox::OutgoingKind;
@@ -74,6 +74,9 @@ const KEYS: [(&str, &str); 21] = [
     ("Esc", "close these keys, clear the marks, or go back"),
     ("q, Ctrl+C", "quit"),
 ];
+
+/// What `:search` takes beside its words, under the list of keys.
+const SEARCH_FILTERS: &str = " :search words from:who to:who after:day before:day in:folder ";
 
 /// Ctrl+Z, where the shell has job control to suspend the interface with.
 const SUSPEND_KEYS: &[(&str, &str)] = if cfg!(unix) {
@@ -717,7 +720,7 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
         // Without this, the keys would seem to do nothing in an empty list.
         Pane::Conversations if app.listed_nothing() => {
             let hint = match &app.search {
-                Some(search) if search.local => vec![
+                Some(search) if search.query == Query::Local => vec![
                     Line::raw(format!(
                         "Nothing in the local index matches {}.",
                         screen_line(&search.words)
@@ -1049,11 +1052,15 @@ fn draw_keys(frame: &mut Frame, theme: &Theme) {
         u16::try_from(width).unwrap_or(u16::MAX),
         u16::try_from(height).unwrap_or(u16::MAX),
     );
+    let block = Block::bordered()
+        .title(" Keys ")
+        .title_bottom(Line::styled(
+            SEARCH_FILTERS,
+            Style::new().add_modifier(Modifier::DIM),
+        ))
+        .border_style(theme.accent);
     frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" Keys ").border_style(theme.accent)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// A `width` by `height` area in the middle of `area`, no larger than it.
@@ -1977,6 +1984,8 @@ mod tests {
             assert!(screen.contains(keys), "{keys} missing:\n{screen}");
             assert!(screen.contains(action), "{action} missing:\n{screen}");
         }
+        // With what `:search` takes beside its words.
+        assert!(screen.contains(SEARCH_FILTERS.trim()), "{screen}");
     }
 
     #[test]

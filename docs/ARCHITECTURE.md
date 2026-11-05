@@ -856,9 +856,15 @@ instead of an unknown outcome.
   the command as the keys would, with `:move` reaching any folder. `/` and
   `:search` list what `Mailbox::search` finds in all mail, a page at a time
   as a folder's list, under the same request numbers; Esc lists again the
-  place shown before, and a refresh or a change searches again. The demo
-  finds conversations by their subjects, as its `conversations search`
-  does. `:local` asks `Mailbox::search_local` instead, which searches the
+  place shown before, and a refresh or a change searches again. The filters
+  typed beside the words go into core's `SearchOpts`, as `messages search`'s
+  options do; their days are checked first with core's `search_window`, which
+  refuses a range that ends before it starts, and the folder after `in:` is
+  found among the places, as `:folder` finds it, and asked for by label ID.
+  The demo shares one rule with its `conversations search`: the words in
+  a conversation's subject, the people among its senders and recipients,
+  its time and its places. `:local` asks `Mailbox::search_local` instead,
+  which searches the
   local index that `ruston-cli index` builds, as `search` does, on Tokio's
   blocking pool, and makes list rows of the conversations the messages it
   finds belong to; it needs no connection, though opening a result does.

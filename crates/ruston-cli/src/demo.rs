@@ -18,7 +18,7 @@ use ruston_core::model::enums::{filter, label_ids, label_type, message_flag};
 use ruston_core::{
     AddressInfo, Attachment, Contact, ContactEmail, Conversation, ConversationMessage, Error,
     Filter, FullMessage, Label, LabelCount, MessageMetadata, Quote, Recipient, RecipientProtection,
-    Result, Verdict,
+    Result, SearchOpts, Verdict,
 };
 use serde_json::json;
 
@@ -998,22 +998,28 @@ impl DemoSession {
         list_page(self.snapshot(), label, is_all, false, page, page_size)
     }
 
-    /// Page `page` of the conversations whose subject has `words`, in any
-    /// place, newest first, with how many there are in all.
+    /// Page `page` of the conversations a search for `opts` finds, as
+    /// `conversations search` finds them, its folder named by label ID,
+    /// newest first, with how many there are in all.
     pub(crate) fn search(
         &self,
-        words: &str,
+        opts: &SearchOpts,
         page: u32,
         page_size: u32,
-    ) -> (u32, Vec<Conversation>) {
+    ) -> Result<(u32, Vec<Conversation>)> {
+        let window = search_window(opts.after.as_deref(), opts.before.as_deref())?;
+        let label = opts
+            .folder
+            .as_deref()
+            .filter(|label| *label != label_ids::ALL_MAIL);
         let mut found: Vec<Conversation> = self
             .snapshot()
             .into_iter()
-            .filter(|conversation| subject_has(conversation, words))
+            .filter(|conversation| finds(conversation, opts, window, label))
             .collect();
         found.sort_by_key(|conversation| std::cmp::Reverse(conversation.time));
         let total = found.len() as u32;
-        (total, page_of(found, page, page_size))
+        Ok((total, page_of(found, page, page_size)))
     }
 
     /// How many conversations each place holds, and how many are unread.
@@ -1192,6 +1198,34 @@ fn subject_has(conversation: &Conversation, words: &str) -> bool {
         .subject
         .to_lowercase()
         .contains(&words.to_lowercase())
+}
+
+/// Whether a demo search for `opts` finds `conversation`, in
+/// `conversations search` and the terminal interface alike: its subject
+/// has the words and the subject asked for, one of its senders and one of
+/// its recipients match those asked for, it is unread when asked, its last
+/// message falls within `window`, and it is in the place `label`, if any.
+fn finds(
+    conversation: &Conversation,
+    opts: &SearchOpts,
+    window: (Option<i64>, Option<i64>),
+    label: Option<&str>,
+) -> bool {
+    [&opts.keyword, &opts.subject]
+        .into_iter()
+        .flatten()
+        .all(|words| subject_has(conversation, words))
+        && opts
+            .from
+            .as_ref()
+            .is_none_or(|from| someone_matches(&conversation.senders, from))
+        && opts
+            .to
+            .as_ref()
+            .is_none_or(|to| someone_matches(&conversation.recipients, to))
+        && (!opts.unread || conversation.num_unread != 0)
+        && within(window, conversation.time)
+        && label.is_none_or(|label| conversation.labels.iter().any(|on| on.id == label))
 }
 
 /// How many of `conversations` each place holds and how many of those are
@@ -1492,41 +1526,14 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
             ConversationsCmd::Search(args) => {
                 let window = search_window(args.after.as_deref(), args.before.as_deref())?;
                 let label = search_label(args.folder.as_deref())?;
+                let opts = SearchOpts::from(args);
                 let mut results: Vec<Conversation> = fixtures_convs
                     .into_iter()
-                    .filter(|c| {
-                        if let Some(kw) = &args.keyword
-                            && !subject_has(c, kw)
-                        {
-                            return false;
-                        }
-                        if let Some(subject) = &args.subject
-                            && !subject_has(c, subject)
-                        {
-                            return false;
-                        }
-                        if let Some(from) = &args.from
-                            && !someone_matches(&c.senders, from)
-                        {
-                            return false;
-                        }
-                        if let Some(to) = &args.to
-                            && !someone_matches(&c.recipients, to)
-                        {
-                            return false;
-                        }
-                        if args.unread && c.num_unread == 0 {
-                            return false;
-                        }
-                        within(window, c.time)
-                            && label
-                                .as_ref()
-                                .is_none_or(|label| c.labels.iter().any(|on| &on.id == label))
-                    })
+                    .filter(|c| finds(c, &opts, window, label.as_deref()))
                     .collect();
 
                 results.sort_by_key(|a| std::cmp::Reverse(a.time));
-                if let Some(limit) = args.limit {
+                if let Some(limit) = opts.limit {
                     results.truncate(limit as usize);
                 }
                 render::conversations_list(ctx.json, results.len() as u32, &results);
@@ -2116,8 +2123,15 @@ mod tests {
     #[test]
     fn a_session_finds_conversations_by_their_subject_wherever_they_are() {
         let session = DemoSession::new();
+        let search = |words: &str| {
+            let opts = SearchOpts {
+                keyword: Some(words.into()),
+                ..SearchOpts::default()
+            };
+            session.search(&opts, 0, 50).unwrap()
+        };
         let found = |words: &str| {
-            let (total, page) = session.search(words, 0, 50);
+            let (total, page) = search(words);
             (total, page.into_iter().map(|c| c.id).collect::<Vec<_>>())
         };
         assert_eq!(found("OFFSITE"), (1, vec!["conv-demo-03".to_owned()]));
@@ -2134,8 +2148,48 @@ mod tests {
             label_ids::INBOX,
             &Change::Move(label_ids::TRASH.into()),
         );
-        let (_, page) = session.search("offsite", 0, 50);
+        let (_, page) = search("offsite");
         assert!(page[0].labels.iter().any(|l| l.id == label_ids::TRASH));
+    }
+
+    #[test]
+    fn a_session_search_narrows_by_people_days_and_place() {
+        let session = DemoSession::new();
+        let found = |opts: SearchOpts| -> Vec<String> {
+            let (_, page) = session.search(&opts, 0, 50).unwrap();
+            page.into_iter().map(|c| c.id).collect()
+        };
+        let from = SearchOpts {
+            from: Some("RILEY".into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(found(from), ["conv-demo-02"]);
+        // The Archive's of 2024-04-22 is left out.
+        let inbox_days = SearchOpts {
+            after: Some("2024-04-21".into()),
+            before: Some("2024-04-23".into()),
+            folder: Some(label_ids::INBOX.into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(found(inbox_days), ["conv-demo-03", "conv-demo-05"]);
+        // A label by its ID; All mail holds every conversation.
+        let work = SearchOpts {
+            folder: Some("label-demo-work".into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(found(work), ["conv-demo-01", "conv-demo-02"]);
+        let to = SearchOpts {
+            to: Some(DEMO_EMAIL.into()),
+            folder: Some(label_ids::ALL_MAIL.into()),
+            ..SearchOpts::default()
+        };
+        assert_eq!(found(to).len(), 6);
+        let backwards = SearchOpts {
+            after: Some("2024-04-23".into()),
+            before: Some("2024-04-21".into()),
+            ..SearchOpts::default()
+        };
+        assert!(session.search(&backwards, 0, 50).is_err());
     }
 
     #[test]

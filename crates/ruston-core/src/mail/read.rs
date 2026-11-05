@@ -60,7 +60,7 @@ pub struct UnreadableMessage {
 
 /// What a search on Proton's side looks for. Each field that is set narrows
 /// it.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SearchOpts {
     /// Text for Proton's search to find.
     pub keyword: Option<String>,
