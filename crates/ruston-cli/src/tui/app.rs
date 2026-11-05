@@ -791,6 +791,17 @@ impl App {
             .collect()
     }
 
+    /// The names of the labels `conversation` bears, as its row in the list
+    /// names them: all but the one listed, which every row there bears.
+    pub(crate) fn row_labels(&self, conversation: &Conversation) -> Vec<String> {
+        self.places
+            .iter()
+            .filter(|place| place.kind == PlaceKind::Label && place.id != self.listed_id)
+            .filter(|place| conversation.labels.iter().any(|label| label.id == place.id))
+            .map(|place| place.name.clone())
+            .collect()
+    }
+
     /// Opens the command line at `:unlabel` for the conversations acted on,
     /// or says why not, as when they bear no label.
     fn start_unlabel(&mut self) {
@@ -2842,6 +2853,30 @@ mod tests {
             app.notice.as_deref(),
             Some("Moving the conversation to the Inbox…")
         );
+    }
+
+    #[test]
+    fn a_row_names_the_labels_of_its_conversation_but_the_one_listed() {
+        let mut app = loaded();
+        let label = |id: &str, name: &str| Place {
+            kind: PlaceKind::Label,
+            ..place(id, name)
+        };
+        app.places = vec![
+            place(label_ids::INBOX, "Inbox"),
+            label("label-1", "Family"),
+            label("label-2", "Travel"),
+        ];
+        app.conversations[0].labels = [label_ids::INBOX, "label-2", "label-1"]
+            .map(|id| ConversationLabel {
+                id: id.into(),
+                ..ConversationLabel::default()
+            })
+            .to_vec();
+        assert_eq!(app.row_labels(&app.conversations[0]), ["Family", "Travel"]);
+        // Every row under Family bears it.
+        command(&mut app, "folder Family");
+        assert_eq!(app.row_labels(&app.conversations[0]), ["Travel"]);
     }
 
     #[test]

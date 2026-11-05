@@ -535,8 +535,8 @@ it signs in first, as `ruston-cli login` does, and `--demo` opens the
 fictional mailbox, which keeps the changes you make until the interface
 closes. Away from a terminal, as in a script, `ruston-cli` with no command
 still prints the help and ends with status 2. It keeps your terminal's colors
-and draws its accent, on the pane in use, its questions and the keys it names,
-in Ruston Mail's violet: exactly in terminals that say they show any color
+and draws its accent, on the pane in use, its questions, the keys it names and
+the labels in the list, in Ruston Mail's violet: exactly in terminals that say they show any color
 (`COLORTERM=truecolor`) and on Windows, the nearest violet of the 256-color
 palette in others, and the terminal's magenta where it has only the basic
 colors. `NO_COLOR` turns colors off.
@@ -546,7 +546,10 @@ unread, a folder's conversations, newest first, each marked unread (•),
 starred (★) or with attachments (+), and the conversation you open, with the
 labels it bears under its subject, then each message's headers, its
 signature's verdict and its body as
-`conversations read` shows it. The list's bottom edge names those marks. The
+`conversations read` shows it. The list's bottom edge names those marks. A
+row also names, in brackets after its subject, the labels its conversation
+bears, but the label listed: when the row lacks room for both, the subject
+gives up to a third of its room to them, and +2 says two more did not fit. The
 selected row shows inverted in the pane that has the keys and underlined in
 the others, since bold marks an unread conversation. The list holds 50
 conversations at first and loads 50 more each time you move down past its last. `g` followed by a letter

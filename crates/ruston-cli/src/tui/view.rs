@@ -18,6 +18,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Quote, RecipientProtection};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Below this width the panes take turns on the screen, as the desktop's
 /// compact view does.
@@ -87,6 +89,9 @@ const ACCENT: Color = Color::Rgb(109, 92, 245);
 /// at all when `NO_COLOR` is set, as <https://no-color.org> asks.
 pub(crate) struct Theme {
     accent: Style,
+    /// The labels a row of the list names: in the accent's color, or in the
+    /// terminal's own without colors, since bold says a row is unread.
+    label: Style,
 }
 
 impl Theme {
@@ -94,18 +99,25 @@ impl Theme {
         if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
             return Self::new(true);
         }
+        let accent = Style::new().fg(accent_color());
         Self {
-            accent: Style::new().fg(accent_color()),
+            accent,
+            label: accent,
         }
     }
 
     fn new(no_color: bool) -> Self {
-        let accent = if no_color {
-            Style::new().add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(ACCENT)
-        };
-        Self { accent }
+        if no_color {
+            return Self {
+                accent: Style::new().add_modifier(Modifier::BOLD),
+                label: Style::new(),
+            };
+        }
+        let accent = Style::new().fg(ACCENT);
+        Self {
+            accent,
+            label: accent,
+        }
     }
 }
 
@@ -728,8 +740,11 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
             frame.render_widget(hint.block(block), area);
         }
         Pane::Conversations => {
+            let width = usize::from(block.inner(area).width);
             let items = app.conversations.iter().map(|conversation| {
-                conversation_row(conversation, app.marked.contains(&conversation.id))
+                let marked = app.marked.contains(&conversation.id);
+                let labels = app.row_labels(conversation);
+                conversation_row(conversation, marked, &labels, width, theme)
             });
             // What the marks at the start of a row say, where they show.
             let legend = Line::styled(ROW_MARKS, Style::new().add_modifier(Modifier::DIM));
@@ -835,10 +850,19 @@ fn raw(lines: &[String]) -> impl Iterator<Item = Line<'_>> {
     })
 }
 
-/// One row of the list: whether it is marked (✓), unread (•), starred (★)
-/// or has attachments (+), its day, who wrote it and its subject. Unread
-/// conversations are bold.
-fn conversation_row(conversation: &Conversation, marked: bool) -> ListItem<'static> {
+/// One row of the list, `width` columns wide: whether it is marked (✓),
+/// unread (•), starred (★) or has attachments (+), its day, who wrote it,
+/// its subject and the `labels` it bears. The labels get what the subject
+/// leaves of the row, and at least a third of what follows the sender, the
+/// subject cut short for them; those that still do not fit are counted.
+/// Unread conversations are bold.
+fn conversation_row(
+    conversation: &Conversation,
+    marked: bool,
+    labels: &[String],
+    width: usize,
+    theme: &Theme,
+) -> ListItem<'static> {
     let unread = conversation.num_unread > 0;
     let starred = conversation
         .labels
@@ -869,17 +893,70 @@ fn conversation_row(conversation: &Conversation, marked: bool) -> ListItem<'stat
     } else {
         Style::new()
     };
-    ListItem::new(Line::from(vec![
+    let mut spans = vec![
         Span::raw(format!("{flags} {day}  ")),
         Span::styled(
             format!("{:<SENDER_WIDTH$.SENDER_WIDTH$}  ", screen_line(sender)),
             style,
         ),
-        Span::styled(
-            screen_line(render::subject_or_empty(&conversation.subject)),
-            style,
-        ),
-    ]))
+    ];
+    let subject = screen_line(render::subject_or_empty(&conversation.subject));
+    let room = width.saturating_sub(spans.iter().map(Span::width).sum());
+    let left = room.saturating_sub(subject.width() + 1);
+    let tags = tags(labels, left.max(room / 3));
+    if tags.is_empty() {
+        spans.push(Span::styled(subject, style));
+    } else {
+        let subject = cut(&subject, room.saturating_sub(tags.width() + 1));
+        spans.extend([
+            Span::styled(subject, style),
+            Span::raw(" "),
+            Span::styled(tags, theme.label),
+        ]);
+    }
+    ListItem::new(Line::from(spans))
+}
+
+/// The labels `names` as a row of the list shows them, in at most `room`
+/// columns: each in brackets, as many as fit with the count of the rest, or
+/// none when not even the first does.
+fn tags(names: &[String], room: usize) -> String {
+    (1..=names.len())
+        .rev()
+        .map(|shown| {
+            let mut tags: Vec<String> = names[..shown]
+                .iter()
+                .map(|name| format!("[{}]", screen_line(name)))
+                .collect();
+            if shown < names.len() {
+                tags.push(format!("+{}", names.len() - shown));
+            }
+            tags.join(" ")
+        })
+        .find(|tags| tags.width() <= room)
+        .unwrap_or_default()
+}
+
+/// `text` in at most `columns` columns: cut short with … between whole
+/// characters, as the terminal draws them, when it is longer.
+fn cut(text: &str, columns: usize) -> String {
+    if text.width() <= columns {
+        return text.to_owned();
+    }
+    let mut kept = String::new();
+    let mut used = 0;
+    for character in text.graphemes(true) {
+        used += character.width();
+        // One column is for the …
+        if used >= columns {
+            break;
+        }
+        kept.push_str(character);
+    }
+    if columns > 0 {
+        kept.push('…');
+    }
+    kept
 }
 
 fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
@@ -1105,6 +1182,84 @@ mod tests {
             screen.contains(" ★+ 2024-04-24  alex@example.test"),
             "{screen}"
         );
+    }
+
+    /// One of the account's labels.
+    fn label(id: &str, name: &str) -> Place {
+        Place {
+            id: id.into(),
+            name: name.into(),
+            depth: 0,
+            kind: PlaceKind::Label,
+            unread: 0,
+        }
+    }
+
+    /// Bears the folders and labels `ids`.
+    fn bearing(ids: &[&str]) -> Vec<ConversationLabel> {
+        ids.iter()
+            .map(|id| ConversationLabel {
+                id: (*id).into(),
+                ..ConversationLabel::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_row_names_its_labels_after_its_subject_which_gives_way_first() {
+        let mut app = with_mail("alex@example.test", "Plans");
+        app.places
+            .extend([label("l-1", "Family"), label("l-2", "Travel")]);
+        app.conversations[0].labels = bearing(&["0", "l-2", "l-1"]);
+        app.focus = Pane::Conversations;
+        // The list alone: 78 columns inside its border, 41 of them after
+        // the sender. The labels come in the folder list's order, and the
+        // Inbox is no label of the account's.
+        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
+        assert!(
+            screen.contains(" •   2024-04-24  alex@example.test   Plans [Family] [Travel] "),
+            "{screen}"
+        );
+        // A long subject gives way to a third of that room, and a label that
+        // does not fit there is counted.
+        app.conversations[0].subject = "Quarterly report for the board meeting in May".into();
+        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
+        assert!(
+            screen.contains(
+                " •   2024-04-24  alex@example.test   Quarterly report for the boa… [Family] +1│"
+            ),
+            "{screen}"
+        );
+        // Where the subject has only a few columns, they stay its own.
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(
+            screen.contains(" •   2024-04-24  alex@example.test   Quarterly│"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn labels_take_the_accent_and_without_colors_read_by_their_brackets() {
+        let mut app = with_mail("alex@example.test", "Plans");
+        app.places.push(label("l-1", "Family"));
+        app.conversations[0].labels = bearing(&["l-1"]);
+        app.focus = Pane::Conversations;
+        let label_cell = |theme: &Theme| {
+            let buffer = drawn(80, 24, &app, theme);
+            let screen = text(&buffer);
+            let (row, line) = screen
+                .lines()
+                .enumerate()
+                .find(|(_, line)| line.contains("[Family]"))
+                .unwrap_or_else(|| panic!("no label:\n{screen}"));
+            let column = line[..line.find("[Family]").unwrap()].chars().count();
+            buffer[(u16::try_from(column).unwrap(), u16::try_from(row).unwrap())].clone()
+        };
+        assert_eq!(label_cell(&Theme::new(false)).fg, ACCENT);
+        // Bold would say the conversation is unread.
+        let plain = label_cell(&Theme::new(true));
+        assert_eq!(plain.fg, Color::Reset);
+        assert!(!plain.modifier.contains(Modifier::BOLD));
     }
 
     #[test]
