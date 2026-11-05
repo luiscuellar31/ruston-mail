@@ -781,11 +781,14 @@ instead of an unknown outcome.
   verdict and body as `conversations read` shows it, inside the task that
   loads it, since a large HTML body takes a while. It also notes where each
   body quotes another message, in lines that start with `>`, which the view
-  folds into a line each, as the desktop does, until `z` shows them; which
-  messages the view folds, until `e` shows them, by the desktop's rule that
-  opens only the newest and those not read yet, each into a line that says
-  when it came, its sender and verdict, and its first words, a run of them
-  without the separators between; and
+  folds into a line each, as the desktop does, until `z` shows them; where
+  each message's lines are, with a line that stands for it folded, saying
+  when it came, its sender and verdict, and its first words: the view folds,
+  until `e` shows them, those the desktop's rule folds, which opens only the
+  newest and those not read yet, a run of them without the separators
+  between, and Enter folds or opens the one at the reader's top; which
+  message a conversation opens at, as the desktop's reader lands on its
+  first not read yet, else its newest; and
   gathers the web addresses the bodies link to, each read by `url` so it is
   listed as it would open, a host in another script in ASCII. `b` lists them
   over the panes; one opens only after a yes to a question that takes every
@@ -897,6 +900,10 @@ instead of an unknown outcome.
   the view records how far the state may scroll, as only it knows the pane's
   size. It does the same for the list of keys, which takes two columns where
   the terminal is wide enough for them and scrolls where it is too short.
+  For the same reason the view records which message is at the reader's top,
+  and scrolls the reader to the message the state asks for, where a
+  conversation opens or one just folded or opened, as the desktop lands on
+  one: unless it starts in the upper third already.
   Every piece of text from the mail
   passes through `terminal.rs`'s `screen_line` or `screen_text`, which drop
   what output filtering drops and turn tabs, and on one line line breaks, into

@@ -164,13 +164,25 @@ pub(crate) struct App {
     pub(crate) selected_conversation: usize,
     /// The conversation the reader shows, once it has loaded.
     pub(crate) reading: Option<Reading>,
-    /// How many rows down the reader is scrolled.
-    pub(crate) scroll: u16,
+    /// How many rows down the reader is scrolled; the view scrolls it to
+    /// the message `landing` names.
+    pub(crate) scroll: Cell<u16>,
+    /// The message of the open conversation the reader brings to its top
+    /// when next drawn, unless it starts in the upper third already: where
+    /// the conversation opens, or one just folded or shown. The view takes
+    /// it, as only it knows where each message lands.
+    pub(crate) landing: Cell<Option<usize>>,
+    /// The message at the reader's top when last drawn, which Enter folds
+    /// or shows; the view sets it.
+    pub(crate) in_view: Cell<Option<usize>>,
     /// Whether the reader shows quoted passages instead of folding them.
     pub(crate) show_quotes: bool,
     /// Whether the reader shows the messages already read instead of
     /// folding them.
     pub(crate) show_read: bool,
+    /// The open conversation's messages, by their place in it, that Enter
+    /// folded or showed the other way from what `show_read` says.
+    pub(crate) toggled: Vec<usize>,
     /// Whether an unread conversation is marked read once the reader shows
     /// it, as the desktop marks it; `tui --keep-unread` turns it off.
     pub(crate) marks_read: bool,
@@ -447,9 +459,12 @@ impl App {
             total: 0,
             selected_conversation: 0,
             reading: None,
-            scroll: 0,
+            scroll: Cell::new(0),
+            landing: Cell::new(None),
+            in_view: Cell::new(None),
             show_quotes: false,
             show_read: false,
+            toggled: Vec::new(),
             marks_read: true,
             picking_link: None,
             picking_attachment: None,
@@ -532,6 +547,8 @@ impl App {
             Message::PageDown => self.step(self.page()),
             Message::Top => self.step(isize::MIN),
             Message::Bottom => self.step(isize::MAX),
+            // As Proton Mail's Enter opens the message chosen in a conversation.
+            Message::Open if self.focus == Pane::Reader => self.toggle_message(),
             Message::Open | Message::Right => return self.open(),
             Message::Go => self.going = true,
             Message::GoTo(to) => {
@@ -643,8 +660,10 @@ impl App {
                     // What was listed for the conversation before is not its.
                     self.picking_link = None;
                     self.picking_attachment = None;
+                    self.scroll.set(0);
+                    self.landing.set(reading.landing());
+                    self.toggled.clear();
                     self.reading = Some(reading);
-                    self.scroll = 0;
                     self.notice = None;
                     return self.mark_read(id);
                 }
@@ -1433,15 +1452,47 @@ impl App {
     }
 
     /// Shows the open conversation's messages already read, which the reader
-    /// folds, or folds them again, or says why there is nothing to show.
+    /// folds, or folds them again, those Enter turned included, keeping the
+    /// message at the reader's top there; or says why there is nothing to
+    /// show.
     fn toggle_read_messages(&mut self) {
         match &self.reading {
-            Some(reading) if !reading.folded.is_empty() => self.show_read = !self.show_read,
+            Some(reading) if (0..reading.messages.len()).any(|index| reading.folds(index)) => {
+                self.show_read = !self.show_read;
+                self.toggled.clear();
+                self.landing.set(self.in_view.get());
+            }
             Some(_) => {
                 self.notice = Some("This conversation has no messages read to fold.".to_owned());
             }
             None => self.notice = Some("Open a conversation to show its messages.".to_owned()),
         }
+    }
+
+    /// Folds the message at the reader's top into one line, or shows it,
+    /// keeping it there.
+    fn toggle_message(&mut self) {
+        let Some(index) = self.in_view.get().filter(|_| self.reading.is_some()) else {
+            return;
+        };
+        match self.toggled.iter().position(|toggled| *toggled == index) {
+            Some(at) => {
+                self.toggled.remove(at);
+            }
+            None => self.toggled.push(index),
+        }
+        self.landing.set(Some(index));
+    }
+
+    /// Whether the reader folds the open conversation's message at `index`
+    /// into one line: one the desktop's reader folds, unless `e` shows them,
+    /// the other way when Enter turned it.
+    pub(crate) fn folds(&self, index: usize) -> bool {
+        let read = self
+            .reading
+            .as_ref()
+            .is_some_and(|reading| reading.folds(index));
+        (read && !self.show_read) != self.toggled.contains(&index)
     }
 
     /// Lists the open conversation's attachments, to save one, or says why
@@ -1610,7 +1661,8 @@ impl App {
             Pane::Folders => (&mut self.selected_place, self.places.len()),
             Pane::Conversations => (&mut self.selected_conversation, self.conversations.len()),
             Pane::Reader => {
-                self.scroll = scrolled(self.scroll, by, self.reader_bottom.get());
+                let bottom = self.reader_bottom.get();
+                self.scroll.set(scrolled(self.scroll.get(), by, bottom));
                 return;
             }
         };
@@ -1758,7 +1810,7 @@ impl App {
                 .is_some_and(|reading| ids.contains(&reading.id))
         {
             self.reading = None;
-            self.scroll = 0;
+            self.scroll.set(0);
             self.picking_link = None;
             self.picking_attachment = None;
             if self.focus == Pane::Reader {
@@ -2012,6 +2064,7 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
+    use super::super::reading::ReadingMessage;
     use super::*;
     use crate::mailbox::OutgoingKind;
     use ruston_core::model::ConversationLabel;
@@ -2168,9 +2221,25 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
-            folded: Vec::new(),
+            messages: Vec::new(),
             answer: None,
         }
+    }
+
+    /// A reading of a message for each of `unread`, a line each, whether
+    /// it is not read yet.
+    fn with_messages(unread: &[bool]) -> Reading {
+        let mut reading = reading(4 * unread.len() - 3);
+        reading.messages = unread
+            .iter()
+            .enumerate()
+            .map(|(index, &unread)| ReadingMessage {
+                lines: 4 * index..4 * index + 1,
+                line: format!("▸ message {index}"),
+                unread,
+            })
+            .collect();
+        reading
     }
 
     #[test]
@@ -2219,19 +2288,19 @@ mod tests {
         app.reader_bottom.set(70);
         app.reader_rows.set(30);
         press(&mut app, KeyCode::Char('j'));
-        assert_eq!(app.scroll, 1);
+        assert_eq!(app.scroll.get(), 1);
         press(&mut app, KeyCode::PageDown);
-        assert_eq!(app.scroll, 31);
+        assert_eq!(app.scroll.get(), 31);
         ctrl(&mut app, KeyCode::Down);
-        assert_eq!(app.scroll, 70);
+        assert_eq!(app.scroll.get(), 70);
         press(&mut app, KeyCode::Down);
-        assert_eq!(app.scroll, 70);
+        assert_eq!(app.scroll.get(), 70);
         press(&mut app, KeyCode::PageUp);
-        assert_eq!(app.scroll, 40);
+        assert_eq!(app.scroll.get(), 40);
         ctrl(&mut app, KeyCode::Up);
-        assert_eq!(app.scroll, 0);
+        assert_eq!(app.scroll.get(), 0);
         press(&mut app, KeyCode::Up);
-        assert_eq!(app.scroll, 0);
+        assert_eq!(app.scroll.get(), 0);
     }
 
     #[test]
@@ -2273,14 +2342,75 @@ mod tests {
             app.notice.as_deref(),
             Some("This conversation has no messages read to fold.")
         );
-        app.reading.as_mut().unwrap().folded = vec![super::super::reading::Folded {
-            lines: 0..1,
-            line: "▸ 2024-04-24 23:06 · alex@example.test · verified · Hi".into(),
-        }];
+        // Neither a single message, nor the newest, nor one not read yet folds.
+        for unread in [&[false][..], &[true, false]] {
+            app.reading = Some(with_messages(unread));
+            press(&mut app, KeyCode::Char('e'));
+            assert!(!app.show_read);
+        }
+        app.reading = Some(with_messages(&[false, true, false]));
+        // Those turned with Enter go as e says, the message at the reader's
+        // top kept there.
+        app.toggled = vec![1];
+        app.in_view.set(Some(1));
         press(&mut app, KeyCode::Char('e'));
         assert!(app.show_read);
+        assert!(app.toggled.is_empty());
+        assert_eq!(app.landing.get(), Some(1));
         press(&mut app, KeyCode::Char('e'));
         assert!(!app.show_read);
+    }
+
+    #[test]
+    fn enter_in_the_reader_folds_or_shows_the_message_at_its_top_and_keeps_it_there() {
+        let mut app = loaded();
+        app.focus = Pane::Reader;
+        app.in_view.set(Some(0));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.toggled.is_empty());
+        app.reading = Some(with_messages(&[false, true, false]));
+        assert_eq!(
+            [app.folds(0), app.folds(1), app.folds(2)],
+            [true, false, false]
+        );
+        // As the view leaves it with the newest at the reader's top.
+        app.in_view.set(Some(2));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.folds(2));
+        assert_eq!(app.landing.get(), Some(2));
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.folds(2));
+        app.in_view.set(Some(0));
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.folds(0));
+        // With every message read shown, Enter folds one of them.
+        app.show_read = true;
+        app.toggled.clear();
+        press(&mut app, KeyCode::Enter);
+        assert!(app.folds(0));
+        // Right opens nothing there.
+        app.landing.set(None);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            (app.toggled.as_slice(), app.landing.get()),
+            (&[0][..], None)
+        );
+
+        // A conversation opens at its top, nothing turned, and lands on its
+        // first message not read yet.
+        app.scroll.set(9);
+        app.focus = Pane::Conversations;
+        let effects = press(&mut app, KeyCode::Enter);
+        let [Effect::Conversation { request, .. }] = effects[..] else {
+            panic!("{effects:?}");
+        };
+        app.update(Message::ConversationLoaded {
+            request,
+            result: Ok(with_messages(&[false, false, true, true])),
+        });
+        assert_eq!(app.scroll.get(), 0);
+        assert!(app.toggled.is_empty());
+        assert_eq!(app.landing.get(), Some(2));
     }
 
     /// An unread conversation, in the Inbox and in `label`.

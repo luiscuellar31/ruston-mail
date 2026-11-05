@@ -567,7 +567,10 @@ the open conversation has none to fold. As on the desktop, a message you have
 read folds into one line, unless it is the newest: when it came, who sent it,
 with the address beside the name, its signature's verdict and its first
 words. The newest message and those not read yet stay open, and `e` shows
-them all, or folds them again. Quoted lines show dimmed, so one too
+them all, or folds them again. Enter, in the reader, folds the message at its
+top, or opens it; both keys keep that message at the top. A conversation opens at its first
+message not read yet, or else at its newest, as on the desktop, unless that
+message starts in the top third of the reader already. Quoted lines show dimmed, so one too
 long for the pane stays apart from new text on every row it wraps to. Links
 show as text with the address they open; `b` lists those of the open conversation, and
 one opens in your browser only once you answer `y` to the address it shows.
@@ -651,6 +654,7 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | Tab, Shift+Tab | Next or previous pane |
 | `j`, `k`, Up, Down | Move, or scroll the reader |
 | Enter, Right | Open the folder or conversation |
+| Enter, in the reader | Fold the message at its top, or open it |
 | Left | Go back a pane |
 | PageUp, PageDown | Scroll the reader a page |
 | Home, End, Ctrl+Up, Ctrl+Down | Go to the top or the bottom |
