@@ -104,8 +104,9 @@ pub struct KeySalt {
     /// The ID of the key it is for.
     #[serde(rename = "ID")]
     pub id: String,
-    /// The salt, in base64. `None` or empty for a key from before key
-    /// passwords were salted, which opens with the mailbox password itself.
+    /// The salt, in base64. `None` or empty for a key without one, which
+    /// opens with the primary key's salt instead, or with the mailbox
+    /// password itself when that has none either.
     pub key_salt: Option<String>,
 }
 
@@ -194,15 +195,24 @@ pub fn unlock<P: PGPProviderSync>(
     password: &SecretString,
     salts: &[KeySalt],
 ) -> Result<(KeyStore, SecretString)> {
+    let salt_of = |key_id: &str| {
+        salts
+            .iter()
+            .find(|salt| salt.id == key_id)
+            .and_then(|salt| salt.key_salt.as_deref())
+            .filter(|salt| !salt.is_empty())
+    };
+    // Proton's web client derives the key password from the primary key's
+    // salt, so a key without a salt of its own borrows that one. When the
+    // primary has none either, as before key passwords were salted, the
+    // password itself opens the key, as it does there.
+    let primary_salt = user
+        .keys
+        .iter()
+        .find(|key| key.is_primary())
+        .and_then(|primary| salt_of(&primary.id));
     unlock_with(provider, user, addresses, |key| {
-        // A key without an entry of its own borrows the first salt. One
-        // without a salt, from before key passwords were salted, opens with
-        // the password itself, as in Proton's own clients.
-        let salt = match salts.iter().find(|s| s.id == key.id) {
-            Some(own) => own.key_salt.as_deref(),
-            None => salts.first().and_then(|s| s.key_salt.as_deref()),
-        };
-        match salt.filter(|salt| !salt.is_empty()) {
+        match salt_of(&key.id).or(primary_salt) {
             Some(salt_b64) => kdf::derive_key_passphrase(password, salt_b64),
             None => Ok(password.clone()),
         }
@@ -881,17 +891,48 @@ mod tests {
     }
 
     #[test]
-    fn a_user_key_without_an_entry_of_its_own_borrows_the_first_salt() {
-        let user_password = derived(&salt(3));
-        let (user, addresses) = account_locked_with(&user_password);
+    fn a_user_key_without_a_salt_of_its_own_borrows_the_primary_keys() {
+        // Proton locks every user key with the key password the primary
+        // key's salt derives.
+        let key_password = derived(&salt(3));
+        let (primary, _) = listed_key("primary", "user@proton.me", &key_password, 1, None);
+        let (secondary, _) = listed_key("secondary", "user@proton.me", &key_password, 0, None);
+        // Only the secondary key opens this address key's token.
+        let (mut by_secondary, _) = listed_key("by-secondary", "me@proton.me", "token", 1, None);
+        let secondary_side = (&secondary, key_password.as_str());
+        let (sealed, signature) = token("token", secondary_side, secondary_side);
+        (by_secondary.token, by_secondary.signature) = (Some(sealed), Some(signature));
+        let user = User {
+            id: "user".into(),
+            keys: vec![primary, secondary],
+        };
+        let addresses = [Address {
+            id: "address".into(),
+            email: "me@proton.me".into(),
+            order: 1,
+            keys: vec![by_secondary.clone()],
+        }];
         let provider = crate::crypto::provider();
         let password = SecretString::from(MAILBOX_PASSWORD);
 
-        let salts = [key_salt("first", Some(salt(3)))];
-        let Ok((_, key_password)) = unlock(&provider, &user, &addresses, &password, &salts) else {
-            panic!("the first salt opens the user key");
-        };
-        assert_eq!(key_password.expose_secret(), user_password);
+        // Another key's salt comes first, and the secondary key has no entry,
+        // or one without a salt.
+        for salts in [
+            vec![
+                key_salt("other", Some(salt(9))),
+                key_salt("primary", Some(salt(3))),
+            ],
+            vec![
+                key_salt("other", Some(salt(9))),
+                key_salt("primary", Some(salt(3))),
+                key_salt("secondary", None),
+            ],
+        ] {
+            let Ok((store, _)) = unlock(&provider, &user, &addresses, &password, &salts) else {
+                panic!("the primary key's salt opens the secondary key, with salts {salts:?}");
+            };
+            assert_eq!(store.addresses[0].keys[0].armored, by_secondary.private_key);
+        }
     }
 
     #[test]
@@ -905,6 +946,9 @@ mod tests {
         for salts in [
             vec![key_salt("first", Some(salt(3))), key_salt("user-key", None)],
             vec![key_salt("user-key", Some(String::new()))],
+            // This key, the primary, has no entry: no other key's salt is
+            // borrowed.
+            vec![key_salt("other", Some(salt(3)))],
             Vec::new(),
         ] {
             let Ok((_, key_password)) = unlock(&provider, &user, &addresses, &password, &salts)
