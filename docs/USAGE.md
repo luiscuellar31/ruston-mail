@@ -599,10 +599,13 @@ of your mail and lists what it finds; Esc in that list goes back to the folder
 listed before. Filters beside the words narrow it, as the options of
 `messages search` do: `from:` and `to:` to mail from or to an address,
 `after:` and `before:` to the days from and up to one written YYYY-MM-DD, in
-UTC, and `in:` to a folder or label, named as `:folder` names it. A value
-with spaces goes between double quotes, and a range that ends before it
-starts is refused, as in `messages search`; for example, `:search budget
-from:alex after:2026-01-01 in:"Bank statements"`. `?` names the filters
+UTC, and `in:` to a folder or label, named as `messages search --folder`
+names it: by its name or its path, such as `Taxes/2024`, by its ID, or `all`
+for all mail. Tab completes its name, and a name several folders or labels
+share is refused, naming their paths. A value with spaces goes between
+double quotes, and a range that ends before it starts is refused, as in
+`messages search`; for example, `:search budget from:alex after:2026-01-01
+in:"Bank statements"`. `?` names the filters
 under the keys. `:local` looks instead in the local index that
 `ruston-cli index` builds, without a connection; opening what it finds still
 needs one.

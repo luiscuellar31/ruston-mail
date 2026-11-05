@@ -1181,6 +1181,7 @@ mod tests {
             Place {
                 id: "0".into(),
                 name: "Inbox".into(),
+                path: "Inbox".into(),
                 depth: 0,
                 kind: PlaceKind::System,
                 unread: 3,
@@ -1188,6 +1189,7 @@ mod tests {
             Place {
                 id: "f-2024".into(),
                 name: "2024".into(),
+                path: "Taxes/2024".into(),
                 depth: 1,
                 kind: PlaceKind::Folder,
                 unread: 0,
@@ -1262,6 +1264,7 @@ mod tests {
         Place {
             id: id.into(),
             name: name.into(),
+            path: name.into(),
             depth: 0,
             kind: PlaceKind::Label,
             unread: 0,
@@ -1397,6 +1400,7 @@ mod tests {
         let label = |id: &str, name: &str| Place {
             id: id.into(),
             name: name.into(),
+            path: name.into(),
             depth: 0,
             kind: PlaceKind::Label,
             unread: 0,

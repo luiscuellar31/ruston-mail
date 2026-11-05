@@ -138,6 +138,9 @@ pub(crate) struct Place {
     /// The label ID that lists it.
     pub(crate) id: String,
     pub(crate) name: String,
+    /// The names of the folders it sits in, then its own, joined by `/`, as
+    /// Proton gives them; a system folder's is its name.
+    pub(crate) path: String,
     /// How many folders of the account's own it sits under.
     pub(crate) depth: usize,
     pub(crate) kind: PlaceKind,
@@ -447,6 +450,7 @@ fn places(mut folders: Vec<Label>, labels: Vec<Label>, counts: &[LabelCount]) ->
     let system = SYSTEM_FOLDERS.iter().map(|(id, name)| Place {
         id: (*id).to_owned(),
         name: (*name).to_owned(),
+        path: (*name).to_owned(),
         depth: 0,
         kind: PlaceKind::System,
         unread: unread(id),
@@ -456,6 +460,7 @@ fn places(mut folders: Vec<Label>, labels: Vec<Label>, counts: &[LabelCount]) ->
         depth: folder.path.matches('/').count(),
         id: folder.id,
         name: folder.name,
+        path: folder.path,
         kind: PlaceKind::Folder,
     });
     let labels = labels.into_iter().map(|label| Place {
@@ -463,6 +468,7 @@ fn places(mut folders: Vec<Label>, labels: Vec<Label>, counts: &[LabelCount]) ->
         depth: 0,
         id: label.id,
         name: label.name,
+        path: label.path,
         kind: PlaceKind::Label,
     });
     system.chain(folders).chain(labels).collect()
@@ -526,6 +532,13 @@ mod tests {
         );
         assert_eq!(places[7].kind, PlaceKind::Folder);
         assert_eq!(places[10].kind, PlaceKind::Label);
+        // What `in:` finds a folder by.
+        let paths: Vec<&str> = places.iter().map(|place| place.path.as_str()).collect();
+        assert_eq!(paths[..2], ["Inbox", "Drafts"]);
+        assert_eq!(
+            paths[7..],
+            ["Taxes", "Taxes/2024", "Work", "Later", "Family"]
+        );
     }
 
     #[tokio::test]

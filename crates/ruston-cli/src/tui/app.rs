@@ -7,9 +7,10 @@ use super::compose::{AnswerKind, Asked, Checked, Compose, Sending};
 use super::reading::{Reading, size_label};
 use crate::mailbox::{Change, Outgoing, Place, PlaceKind, SendFailure, deletes_forever};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ruston_core::mail::organize::folder_id_among;
 use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
-use ruston_core::{Conversation, RecipientProtection, SearchOpts};
+use ruston_core::{Conversation, Error, Label, RecipientProtection, SearchOpts};
 use std::cell::Cell;
 use std::path::PathBuf;
 
@@ -792,7 +793,7 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab => {
                 let backwards = key.code == KeyCode::BackTab;
                 let after = |command: &str| match command {
-                    "folder" => places.clone(),
+                    "folder" | "in:" => places.clone(),
                     "move" => folders.clone(),
                     "label" => labels.clone(),
                     "unlabel" => their_labels.clone(),
@@ -806,10 +807,10 @@ impl App {
         Vec::new()
     }
 
-    /// The names Tab offers after `:folder`, every place's, after `:move`,
-    /// those of the folders a conversation can move to, after `:label`,
-    /// those of the labels, and after `:unlabel`, those of the labels the
-    /// conversations acted on bear.
+    /// The names Tab offers after `:folder` and a search's `in:`, every
+    /// place's, after `:move`, those of the folders a conversation can move
+    /// to, after `:label`, those of the labels, and after `:unlabel`, those
+    /// of the labels the conversations acted on bear.
     fn completions(&self) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
         let names = |takes: fn(&Place) -> bool| -> Vec<String> {
             self.places
@@ -936,13 +937,46 @@ impl App {
     }
 
     /// What `words`, typed after `:search`, ask Proton's search for, with the
-    /// folder named after `in:` found among the places as `:folder` finds it.
+    /// folder named after `in:` by its label ID.
     fn proton_search(&self, words: &str) -> Result<SearchOpts, String> {
         let mut opts = super::command::search_options(words)?;
-        if let Some(name) = opts.folder.take() {
-            opts.folder = Some(self.places[self.named(&name)?].id.clone());
+        if let Some(folder) = opts.folder.take() {
+            opts.folder = Some(self.folder_id(&folder)?);
         }
         Ok(opts)
+    }
+
+    /// The label ID `folder`, typed after `in:`, names among the places, by
+    /// core's rule for `messages search --folder`: a system folder by its
+    /// name, `all` for All mail, a label by its ID, or else a folder or label
+    /// by its path, such as `Taxes/2024`, or its name, whatever the case. A
+    /// name several share, or none has, is refused before anything is asked.
+    fn folder_id(&self, folder: &str) -> Result<String, String> {
+        // Core knows the system folders among them by name before it looks.
+        let places: Vec<Label> = self
+            .places
+            .iter()
+            .map(|place| Label {
+                id: place.id.clone(),
+                name: place.name.clone(),
+                path: place.path.clone(),
+                ..Label::default()
+            })
+            .collect();
+        folder_id_among(&places, folder).map_err(|error| match error {
+            Error::Ambiguous(_) => {
+                let wanted = folder.to_lowercase();
+                let paths: Vec<&str> = self
+                    .places
+                    .iter()
+                    .filter(|place| place.name.to_lowercase() == wanted)
+                    .map(|place| place.path.as_str())
+                    .collect();
+                let paths = paths.join(", ");
+                format!("Several folders or labels are named {folder}: {paths}")
+            }
+            _ => format!("No folder or label is named {folder}"),
+        })
     }
 
     /// The ID of the label named `name`, whatever its case, or what to say
@@ -2000,6 +2034,7 @@ mod tests {
         Place {
             id: id.into(),
             name: name.into(),
+            path: name.into(),
             depth: 0,
             kind: PlaceKind::System,
             unread: 0,
@@ -3995,6 +4030,56 @@ mod tests {
             }]
         );
         assert_eq!(app.listed, format!("Search: {words}"));
+    }
+
+    #[test]
+    fn in_names_a_folder_by_its_path_or_id_or_all_mail_as_messages_search_does() {
+        let mut app = loaded();
+        let folder = |id: &str, path: &str| Place {
+            kind: PlaceKind::Folder,
+            path: path.into(),
+            ..place(id, path.rsplit('/').next().unwrap())
+        };
+        app.places.extend([
+            folder("taxes", "Taxes"),
+            folder("taxes-2024", "Taxes/2024"),
+            folder("travel-2024", "Travel/2024"),
+        ]);
+        let searched_in = |app: &mut App, folder: &str| {
+            let effects = command(app, &format!("search plans in:{folder}"));
+            match &effects[..] {
+                [Effect::Search { opts, .. }] => opts.folder.clone().unwrap(),
+                effects => panic!("in:{folder} {effects:?}"),
+            }
+        };
+        let id = "qBIcv1_Wv5X4hLpEo0Tz9A==";
+        for (folder, searched) in [
+            ("taxes/2024", "taxes-2024"),
+            ("TRAVEL/2024", "travel-2024"),
+            ("Taxes", "taxes"),
+            ("work", "folder-1"),
+            ("inbox", label_ids::INBOX),
+            ("all", label_ids::ALL_MAIL),
+            (id, id),
+        ] {
+            assert_eq!(searched_in(&mut app, folder), searched);
+        }
+        // A name two folders share is refused, naming their paths.
+        press(&mut app, KeyCode::Esc);
+        assert!(command(&mut app, "search plans in:2024").is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Several folders or labels are named 2024: Taxes/2024, Travel/2024")
+        );
+        assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
+        // Tab offers the places' names after it.
+        press(&mut app, KeyCode::Char('/'));
+        for c in "plans in:ta".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Tab);
+        let line = app.command_line.as_ref().unwrap();
+        assert_eq!(line.text, "search plans in:Taxes");
     }
 
     #[test]

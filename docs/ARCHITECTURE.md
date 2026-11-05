@@ -869,7 +869,10 @@ instead of an unknown outcome.
   typed beside the words go into core's `SearchOpts`, as `messages search`'s
   options do; their days are checked first with core's `search_window`, which
   refuses a range that ends before it starts, and the folder after `in:` is
-  found among the places, as `:folder` finds it, and asked for by label ID.
+  found among the places, which carry their paths, by core's
+  `folder_id_among`, as `messages search --folder` finds it, so a name that
+  several share, or none has, is refused before anything is asked; it is asked
+  for by label ID, and Tab completes it from the places' names.
   The demo shares one rule with its `conversations search`: the words in
   a conversation's subject, the people among its senders and recipients,
   its time and its places. `:local` asks `Mailbox::search_local` instead,
