@@ -574,7 +574,12 @@ reader shows, `u` marks it unread and `r`, in the list, read, `a` archives it,
 list and the counts load again, and a conversation the reader shows that left
 the folder listed is put away. `l` starts `:label`, which puts one of your
 labels on it, `L` (Shift+L) starts `:unlabel`, which takes one off, with Tab
-offering only its labels, and `m` starts `:move`. Space or `x` marks the selected
+offering only its labels, and `m` starts `:move`. After a move out of the
+folder listed, `Z` (Shift+Z) or `:undo` takes the conversations moved back
+to it, as the desktop's Undo does, while the status bar offers `Z`: until
+another change is made, or another folder or a search is listed. Under a
+label, Starred, All mail or a search's results, where the folder each
+conversation came from is not known, no move is taken back. Space or `x` marks the selected
 conversation and moves down, and Ctrl+A marks them all: with some marked, an
 action from the list acts on all of them, and Esc takes the marks away. In
 Trash or Spam, Ctrl+Backspace or `:delete` deletes the conversation forever,
@@ -643,6 +648,7 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | `a` | Archive it |
 | `s`, `i` | Move it to Spam, or to the Inbox |
 | `t`, Delete | Move it to Trash |
+| `Z` | Take the last move back, while the status bar offers it |
 | Ctrl+Backspace | Delete it forever, in Trash or Spam, once you answer `y` |
 | `l`, `L`, `m` | Label it, remove a label, or move it to a folder |
 | `n`, Ctrl+N | Write a new message |
@@ -675,6 +681,7 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | `:read`, `:unread` | Mark it read or unread |
 | `:archive`, `:trash` | Archive it, or move it to Trash |
 | `:spam`, `:notspam` | Move it to Spam, or out of Spam to the Inbox |
+| `:undo` | Take the last move back |
 | `:label LABEL`, `:unlabel LABEL` | Put one of your labels on it, or take it off |
 | `:compose` | Write a new message |
 | `:reply`, `:replyall`, `:forward` | Reply to the open conversation, reply to all, or forward it |

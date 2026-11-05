@@ -76,6 +76,14 @@ pub(crate) enum Query {
     Local,
 }
 
+/// The last move made out of the folder listed, which `Z` takes back, as
+/// the desktop's Undo does: the conversations it moved, and the folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Undo {
+    ids: Vec<String>,
+    from: String,
+}
+
 /// The folders `g` goes to, each with the key after it that names it, its
 /// label ID and its name: Proton Mail's own, All mail included.
 pub(crate) const GO_TO: [(char, &str, &str); 8] = [
@@ -182,6 +190,9 @@ pub(crate) struct App {
     /// The conversations marked with Space, by ID, which an action from the
     /// list acts on all of.
     pub(crate) marked: Vec<String>,
+    /// The move `Z` can take back, until another change is made or another
+    /// place listed.
+    pub(crate) undo: Option<Undo>,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
@@ -261,6 +272,8 @@ pub(crate) enum Message {
     Unlabel,
     /// Opens the command line at `:move`.
     Move,
+    /// Takes the last move back.
+    Undo,
     /// Asks whether to delete the conversation acted on forever.
     DeleteForever,
     /// Opens a new message to write.
@@ -300,6 +313,8 @@ pub(crate) enum Message {
         change: Change,
         /// The conversations it was made to.
         ids: Vec<String>,
+        /// The label ID of the place they were listed in.
+        place: String,
         result: Result<(), String>,
     },
     /// Whether the place named `name` was emptied.
@@ -430,6 +445,7 @@ impl App {
             history: Vec::new(),
             search: None,
             marked: Vec::new(),
+            undo: None,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
             notice: Some("Loading…".to_owned()),
@@ -530,6 +546,7 @@ impl App {
             Message::Label => self.command_line = Some(CommandLine::with("label ")),
             Message::Unlabel => self.start_unlabel(),
             Message::Move => self.command_line = Some(CommandLine::with("move ")),
+            Message::Undo => return self.take_back(),
             Message::DeleteForever => self.ask_to_delete(),
             Message::Compose => self.compose = Some(Compose::new(self.sender.clone())),
             Message::Answer(how) => self.open_answer(how),
@@ -638,20 +655,26 @@ impl App {
             Message::Changed {
                 change,
                 ids,
+                place,
                 result: Ok(()),
             } => {
                 self.close_left(&change, &ids);
+                self.undo = self.undoable(&change, ids, place);
                 return self.reload();
             }
             Message::Changed {
                 change,
                 ids,
                 result: Err(error),
+                ..
             } => {
                 let (_, failed) = wording(&change, ids.len());
                 self.notice = Some(format!("{failed}: {error}"));
             }
-            Message::Emptied { result: Ok(()), .. } => return self.reload(),
+            Message::Emptied { result: Ok(()), .. } => {
+                self.undo = None;
+                return self.reload();
+            }
             Message::Emptied {
                 name,
                 result: Err(error),
@@ -869,6 +892,7 @@ impl App {
             Command::Trash => return self.change(|_| Change::Move(label_ids::TRASH.into())),
             Command::Spam => return self.change(|_| Change::Move(label_ids::SPAM.into())),
             Command::NotSpam => return self.change(|_| Change::Move(label_ids::INBOX.into())),
+            Command::Undo => return self.take_back(),
             Command::Label(name) => match self.label_named(&name) {
                 Ok(id) => return self.change(|_| Change::Label(id)),
                 Err(error) => self.notice = Some(error),
@@ -1035,6 +1059,41 @@ impl App {
             .iter()
             .map(|conversation| conversation.id.clone())
             .collect();
+        let (doing, _) = wording(&change, ids.len());
+        self.notice = Some(doing);
+        vec![Effect::Change {
+            ids,
+            place: self.listed_id.clone(),
+            change,
+        }]
+    }
+
+    /// What `Z` can take back once `change`, made to the conversations `ids`
+    /// listed in `place`, is done: a move out of that place, while it is
+    /// listed still, when it is a folder mail lives in. Under a label,
+    /// Starred, All mail or a search, as on the desktop, the folder each
+    /// conversation came from is not known. Any other change leaves nothing.
+    fn undoable(&self, change: &Change, ids: Vec<String>, place: String) -> Option<Undo> {
+        let folder = self
+            .places
+            .iter()
+            .any(|listed| listed.id == place && takes_moves(listed));
+        match change {
+            Change::Move(to) if *to != place && place == self.listed_id && folder => {
+                Some(Undo { ids, from: place })
+            }
+            _ => None,
+        }
+    }
+
+    /// Moves the conversations of the last move back to the folder they
+    /// left, or says there is no move to take back.
+    fn take_back(&mut self) -> Vec<Effect> {
+        let Some(Undo { ids, from }) = self.undo.take() else {
+            self.notice = Some("There is no move to take back.".to_owned());
+            return Vec::new();
+        };
+        let change = Change::Move(from);
         let (doing, _) = wording(&change, ids.len());
         self.notice = Some(doing);
         vec![Effect::Change {
@@ -1555,6 +1614,10 @@ impl App {
         self.marked.clear();
         self.list_request += 1;
         self.reloading = id == self.listed_id && name == self.listed;
+        // A move is taken back to the place it was made in, listed.
+        if !self.reloading {
+            self.undo = None;
+        }
         self.next_page = 0;
         self.loading_more = false;
         self.notice = Some(notice);
@@ -1832,6 +1895,7 @@ impl Message {
             KeyCode::Char('l') => Some(Self::Label),
             KeyCode::Char('L') => Some(Self::Unlabel),
             KeyCode::Char('m') => Some(Self::Move),
+            KeyCode::Char('Z') => Some(Self::Undo),
             KeyCode::Char(' ' | 'x') => Some(Self::Mark),
             KeyCode::Char(':') => Some(Self::Command),
             KeyCode::Char('/') => Some(Self::Search),
@@ -2677,6 +2741,7 @@ mod tests {
         let effects = app.update(Message::Changed {
             change: trash.clone(),
             ids: vec!["b".into()],
+            place: label_ids::INBOX.into(),
             result: Ok(()),
         });
         assert_eq!(
@@ -2701,6 +2766,7 @@ mod tests {
         app.update(Message::Changed {
             change: trash,
             ids: vec!["b".into()],
+            place: label_ids::INBOX.into(),
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -2762,6 +2828,7 @@ mod tests {
         app.update(Message::Changed {
             change: Change::Star(true),
             ids: vec!["b".into(), "c".into()],
+            place: label_ids::INBOX.into(),
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -2786,6 +2853,7 @@ mod tests {
         app.update(Message::Changed {
             change: Change::Star(true),
             ids: vec!["b".into()],
+            place: label_ids::INBOX.into(),
             result: Ok(()),
         });
         assert!(app.marked.is_empty());
@@ -2961,6 +3029,80 @@ mod tests {
     }
 
     #[test]
+    fn shift_z_takes_the_last_move_out_of_a_folder_back_until_something_else_happens() {
+        let mut app = loaded();
+        app.places = vec![
+            place(label_ids::INBOX, "Inbox"),
+            place(label_ids::ARCHIVE, "Archive"),
+            Place {
+                kind: PlaceKind::Folder,
+                ..place("folder-1", "Work")
+            },
+            Place {
+                kind: PlaceKind::Label,
+                ..place("label-1", "Family")
+            },
+        ];
+        app.focus = Pane::Conversations;
+        let done = |app: &mut App, change: Change, place: &str| {
+            app.update(Message::Changed {
+                change,
+                ids: vec!["a".into(), "b".into()],
+                place: place.into(),
+                result: Ok(()),
+            });
+        };
+        let archived = |app: &mut App| {
+            let listed = app.listed_id.clone();
+            done(app, Change::Move(label_ids::ARCHIVE.into()), &listed);
+        };
+        assert!(press(&mut app, KeyCode::Char('Z')).is_empty());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("There is no move to take back.")
+        );
+        // Moved out of the Inbox, back they go, once, the list loaded again
+        // meanwhile.
+        archived(&mut app);
+        let back = [Effect::Change {
+            ids: vec!["a".into(), "b".into()],
+            place: label_ids::INBOX.into(),
+            change: Change::Move(label_ids::INBOX.into()),
+        }];
+        assert_eq!(press(&mut app, KeyCode::Char('Z')), back);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Moving 2 conversations to the Inbox…")
+        );
+        assert!(press(&mut app, KeyCode::Char('Z')).is_empty());
+        archived(&mut app);
+        assert_eq!(command(&mut app, "undo"), back);
+        // Another change since, or another place listed, leaves none.
+        archived(&mut app);
+        done(&mut app, Change::Star(true), label_ids::INBOX);
+        assert_eq!(app.undo, None);
+        archived(&mut app);
+        ctrl(&mut app, KeyCode::Char('r'));
+        assert!(app.undo.is_some());
+        command(&mut app, "folder Work");
+        assert_eq!(app.undo, None);
+        // A move from another place than the one listed is not taken back.
+        done(
+            &mut app,
+            Change::Move(label_ids::ARCHIVE.into()),
+            label_ids::INBOX,
+        );
+        assert_eq!(app.undo, None);
+        // From a folder of the account's own it is.
+        archived(&mut app);
+        assert!(app.undo.is_some());
+        // Under a label, a conversation's folder is not known.
+        command(&mut app, "folder Family");
+        archived(&mut app);
+        assert_eq!(app.undo, None);
+    }
+
+    #[test]
     fn deleting_forever_asks_first_and_only_a_yes_deletes() {
         let mut app = loaded();
         app.places.push(place(label_ids::TRASH, "Trash"));
@@ -3047,6 +3189,7 @@ mod tests {
         app.update(Message::Changed {
             change: Change::Delete,
             ids: vec!["x".into(), "y".into()],
+            place: label_ids::TRASH.into(),
             result: Err("offline".into()),
         });
         assert_eq!(
@@ -3056,6 +3199,7 @@ mod tests {
         let effects = app.update(Message::Changed {
             change: Change::Delete,
             ids: vec!["x".into(), "y".into()],
+            place: label_ids::TRASH.into(),
             result: Ok(()),
         });
         assert_eq!(effects[0], Effect::Places);
@@ -3445,9 +3589,11 @@ mod tests {
     #[test]
     fn the_reader_puts_away_a_conversation_a_change_took_out_of_the_list() {
         let changed = |app: &mut App, change: Change, id: &str| {
+            let place = app.listed_id.clone();
             app.update(Message::Changed {
                 change,
                 ids: vec![id.into()],
+                place,
                 result: Ok(()),
             });
         };
@@ -3818,6 +3964,7 @@ mod tests {
         let effects = app.update(Message::Changed {
             change: Change::Star(true),
             ids: vec!["p1".into()],
+            place: label_ids::ALL_MAIL.into(),
             result: Ok(()),
         });
         assert_eq!(

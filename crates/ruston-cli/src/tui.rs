@@ -463,6 +463,7 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
             Message::Changed {
                 change,
                 ids,
+                place,
                 result: result.map_err(|error| error.to_string()),
             }
         }
@@ -718,6 +719,48 @@ mod tests {
         }
         done.sort();
         assert_eq!(done, ["Star(false)", "Star(true)", "a", "b"]);
+    }
+
+    /// Does `effects`, as the loop would, and what their answers ask for,
+    /// until nothing is left to do.
+    async fn run_all(app: &mut App, mut effects: Vec<Effect>, mailbox: &Mailbox) {
+        while let Some(effect) = effects.pop() {
+            let answered = answer(effect, mailbox).await;
+            effects.extend(app.update(answered));
+        }
+    }
+
+    /// The IDs of the conversations `mailbox` lists in the place `id`.
+    async fn listed(mailbox: &Mailbox, id: &str) -> Vec<String> {
+        let (_, page) = mailbox.conversations(id, 0).await.unwrap();
+        page.into_iter()
+            .map(|conversation| conversation.id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn shift_z_takes_the_last_move_back_in_the_demo() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ruston_core::model::enums::label_ids;
+        let mailbox = Mailbox::demo();
+        let mut app = App::new(mailbox.account());
+        let start = app.start();
+        run_all(&mut app, start, &mailbox).await;
+        app.update(Message::NextPane);
+        let moved = app.conversations[0].id.clone();
+        let archived = app.update(Message::Archive);
+        run_all(&mut app, archived, &mailbox).await;
+        assert!(!listed(&mailbox, label_ids::INBOX).await.contains(&moved));
+
+        let shift_z = Event::Key(KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT));
+        let undone = app
+            .message_for(&shift_z)
+            .map_or_else(Vec::new, |message| app.update(message));
+        run_all(&mut app, undone, &mailbox).await;
+        assert!(listed(&mailbox, label_ids::INBOX).await.contains(&moved));
+        assert!(!listed(&mailbox, label_ids::ARCHIVE).await.contains(&moved));
+        // Listed again where it was.
+        assert!(app.conversations.iter().any(|c| c.id == moved));
     }
 
     #[cfg(unix)]

@@ -806,7 +806,12 @@ instead of an unknown outcome.
   offers only those. When a change took the conversation the reader shows out
   of the place listed, the reader puts it away; the answer names the
   conversations changed, since a list loaded again holds only its first
-  page and cannot tell. Deleting forever, with Ctrl+Backspace or `:delete`, and
+  page and cannot tell, and the place they were listed in. A move out of
+  that place, while it is listed still and is a folder mail lives in, is
+  what `Z` and `:undo` take back, as the desktop's Undo does, with a move
+  to it; another change, or another place listed, lets it go. Under a label,
+  Starred, All mail or a search, a conversation's folder is not known, so
+  none is offered. Deleting forever, with Ctrl+Backspace or `:delete`, and
   `:empty` work only in Trash and Spam, as `messages empty` does, and `Mailbox`
   refuses them anywhere else; each first asks a question over the panes,
   naming what it deletes, which takes every key until one answers it: `y`

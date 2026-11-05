@@ -57,8 +57,11 @@ const KEYS: [(&str, &str); 21] = [
     ("n, Ctrl+N", "write a new message"),
     ("r, R, F", "in the reader: reply, reply to all, forward"),
     ("*, r, u", "star or unstar it, mark it read or unread"),
-    ("a, s, i", "archive it, or move it to Spam or the Inbox"),
-    ("t, Delete", "move it to Trash"),
+    (
+        "a, s, i, t, Delete",
+        "archive it, or move it to Spam, the Inbox or Trash",
+    ),
+    ("Z", "take the last move back"),
     ("Ctrl+Backspace", "delete it forever, in Trash or Spam"),
     (
         "l, L, m",
@@ -971,7 +974,12 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         draw_going(frame, theme, area);
         return;
     }
-    let hints = Line::from(vec![
+    let mut hints = Vec::new();
+    // Only while there is a move to take back.
+    if app.undo.is_some() {
+        hints.extend([Span::styled("Z", theme.accent), Span::raw(" undo  ")]);
+    }
+    hints.extend([
         Span::styled("Tab", theme.accent),
         Span::raw(" panes  "),
         Span::styled("?", theme.accent),
@@ -979,6 +987,7 @@ fn draw_status(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         Span::styled("q", theme.accent),
         Span::raw(" quit "),
     ]);
+    let hints = Line::from(hints);
     let [state, hints_area] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(u16::try_from(hints.width()).unwrap_or(u16::MAX)),
@@ -1888,6 +1897,27 @@ mod tests {
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
         assert!(screen.contains("No conversations in Personal."), "{screen}");
         assert!(screen.contains("Esc goes back to the folders."), "{screen}");
+    }
+
+    #[test]
+    fn the_status_bar_offers_z_while_a_move_can_be_taken_back() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let status = |app: &App| {
+            let screen = text(&drawn(80, 24, app, &Theme::new(false)));
+            screen.lines().last().unwrap().to_owned()
+        };
+        assert!(!status(&app).contains("undo"), "{}", status(&app));
+        app.update(Message::Changed {
+            change: crate::mailbox::Change::Move(label_ids::ARCHIVE.into()),
+            ids: vec!["a".into()],
+            place: label_ids::INBOX.into(),
+            result: Ok(()),
+        });
+        assert!(
+            status(&app).ends_with("Z undo  Tab panes  ? keys  q quit "),
+            "{}",
+            status(&app)
+        );
     }
 
     #[test]

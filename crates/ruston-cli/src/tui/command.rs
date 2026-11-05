@@ -12,7 +12,7 @@ use ruston_core::mail::read::search_window;
 const FILTERS: [&str; 5] = ["from:", "to:", "after:", "before:", "in:"];
 
 /// The commands, in the order Tab offers them.
-const COMMANDS: [&str; 25] = [
+const COMMANDS: [&str; 26] = [
     "archive",
     "attachments",
     "compose",
@@ -35,6 +35,7 @@ const COMMANDS: [&str; 25] = [
     "spam",
     "star",
     "trash",
+    "undo",
     "unlabel",
     "unread",
     "unstar",
@@ -68,6 +69,8 @@ pub(crate) enum Command {
     Spam,
     /// Move them out of Spam, to the Inbox.
     NotSpam,
+    /// Take the last move back.
+    Undo,
     /// Delete them forever, from Trash or Spam, once asked.
     Delete,
     /// Delete everything in Trash or Spam forever, once asked.
@@ -107,6 +110,7 @@ impl Command {
             "unlabel" => Self::Unlabel(needs("the name of a label")?),
             "spam" => Self::Spam,
             "notspam" => Self::NotSpam,
+            "undo" => Self::Undo,
             "star" => Self::Star(true),
             "unstar" => Self::Star(false),
             "read" => Self::Read(true),
@@ -328,6 +332,7 @@ mod tests {
             Err(":unlabel needs the name of a label".into())
         );
         assert_eq!(Command::parse("notspam"), Ok(Some(Command::NotSpam)));
+        assert_eq!(Command::parse("undo"), Ok(Some(Command::Undo)));
         assert_eq!(Command::parse("delete"), Ok(Some(Command::Delete)));
         assert_eq!(Command::parse("compose"), Ok(Some(Command::Compose)));
         assert_eq!(
@@ -418,9 +423,9 @@ mod tests {
         line.clear();
         line.type_char('u');
         line.complete(places, false);
-        assert_eq!(line.text, "unlabel");
+        assert_eq!(line.text, "undo");
         line.complete(places, false);
-        assert_eq!(line.text, "unread");
+        assert_eq!(line.text, "unlabel");
     }
 
     #[test]
