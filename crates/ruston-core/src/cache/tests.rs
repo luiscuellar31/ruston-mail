@@ -976,6 +976,55 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
 }
 
 #[test]
+fn a_resync_stores_the_rows_and_labels_a_cached_write_stores() {
+    // A label listed twice, and a message written again with other labels,
+    // as when a resync finds it on a later page too.
+    let mut first = meta("m1", "0", 1, 10);
+    first.label_ids = vec!["0".into(), "5".into(), "0".into()];
+    let mut again = meta("m1", "3", 0, 11);
+    again.label_ids.push("10".into());
+    let writes = [first, meta("m2", "5", 0, 20), again];
+
+    let cached = Cache::open(Path::new(":memory:")).unwrap();
+    for m in &writes {
+        upsert_metadata(&cached.conn, m).unwrap();
+    }
+    let rebuilt = Cache::open(Path::new(":memory:")).unwrap();
+    rebuilt.set_last_event_id("old").unwrap();
+    rebuilt.begin_rebuild().unwrap();
+    for m in &writes {
+        rebuilt.stage_rebuild_page(std::slice::from_ref(m)).unwrap();
+    }
+    rebuilt.finish_rebuild("old", "new", None).unwrap();
+
+    /// Each row `sql` selects, as the one text it makes of it.
+    fn rows(cache: &Cache, sql: &str) -> Vec<String> {
+        cache
+            .conn
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    }
+    let messages = "SELECT id || ' ' || time || ' ' || unread || ' ' || json FROM messages
+                    ORDER BY id";
+    let labels = "SELECT message_id || ' ' || label_id || ' ' || time FROM message_labels
+                  ORDER BY message_id, label_id";
+    assert_eq!(rows(&rebuilt, messages), rows(&cached, messages));
+    assert_eq!(rows(&rebuilt, labels), rows(&cached, labels));
+
+    // Each message as its last write left it.
+    assert_eq!(rows(&cached, labels), ["m1 10 11", "m1 3 11", "m2 5 20"]);
+    let times = "SELECT id || ' ' || time || ' ' || unread FROM messages ORDER BY id";
+    assert_eq!(rows(&cached, times), ["m1 11 0", "m2 20 0"]);
+    let json = rows(&cached, "SELECT json FROM messages WHERE id='m1'");
+    let m1: MessageMetadata = serde_json::from_str(&json[0]).unwrap();
+    assert_eq!(m1.label_ids, ["3", "10"]);
+}
+
+#[test]
 fn bodies_an_older_version_indexed_are_read_again_and_searchable_meanwhile() {
     let dir = temp_cache_dir();
     let path = dir.join("cache.db");

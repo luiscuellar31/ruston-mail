@@ -114,25 +114,54 @@ const UPDATE_INDEX_SQL: &str = "UPDATE msg_fts SET subject=?2, participants=?3 W
     SELECT fts_rowid FROM msg_fts_rows WHERE message_id=?1)
     AND (subject IS NOT ?2 OR participants IS NOT ?3)";
 
-fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
-    let json = serde_json::to_string(m)?;
-    conn.execute(
-        "INSERT INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
+/// The SQL that writes a message's metadata to one pair of tables, its row
+/// and its labels.
+struct MetadataSql {
+    /// Inserts the message's row, or replaces what an earlier one held.
+    upsert_message: &'static str,
+    /// Takes off every label the message had.
+    clear_labels: &'static str,
+    /// Puts one label on the message.
+    insert_label: &'static str,
+}
+
+/// The cache's own tables.
+const CACHED_SQL: MetadataSql = MetadataSql {
+    upsert_message: "INSERT INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
          ON CONFLICT(id) DO UPDATE SET
          time=excluded.time, unread=excluded.unread, json=excluded.json",
+    clear_labels: "DELETE FROM message_labels WHERE message_id=?1",
+    insert_label: "INSERT OR IGNORE INTO message_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
+};
+
+/// The tables a resync stages its listing in, which replace the cache's
+/// once it is complete.
+const STAGED_SQL: MetadataSql = MetadataSql {
+    upsert_message: "INSERT INTO resync_messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET
+         time=excluded.time, unread=excluded.unread, json=excluded.json",
+    clear_labels: "DELETE FROM resync_labels WHERE message_id=?1",
+    insert_label: "INSERT OR IGNORE INTO resync_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
+};
+
+/// Writes `m`'s row and labels with `sql`, replacing the labels it had.
+fn write_metadata(conn: &Connection, sql: &MetadataSql, m: &MessageMetadata) -> Result<()> {
+    let json = serde_json::to_string(m)?;
+    conn.execute(
+        sql.upsert_message,
         rusqlite::params![m.id, m.time, m.unread, json],
     )
     .map_err(map)?;
-    conn.execute("DELETE FROM message_labels WHERE message_id=?1", [&m.id])
-        .map_err(map)?;
+    conn.execute(sql.clear_labels, [&m.id]).map_err(map)?;
     for label in &m.label_ids {
-        conn.execute(
-            "INSERT OR IGNORE INTO message_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
-            rusqlite::params![m.id, label, m.time],
-        )
-        .map_err(map)?;
+        conn.execute(sql.insert_label, rusqlite::params![m.id, label, m.time])
+            .map_err(map)?;
     }
     Ok(())
+}
+
+fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
+    write_metadata(conn, &CACHED_SQL, m)
 }
 
 fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
@@ -905,23 +934,7 @@ impl Cache {
     pub(crate) fn stage_rebuild_page(&self, messages: &[MessageMetadata]) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
         for m in messages {
-            let json = serde_json::to_string(m)?;
-            tx.execute(
-                "INSERT INTO resync_messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)
-                 ON CONFLICT(id) DO UPDATE SET
-                 time=excluded.time, unread=excluded.unread, json=excluded.json",
-                rusqlite::params![m.id, m.time, m.unread, json],
-            )
-            .map_err(map)?;
-            tx.execute("DELETE FROM resync_labels WHERE message_id=?1", [&m.id])
-                .map_err(map)?;
-            for label in &m.label_ids {
-                tx.execute(
-                    "INSERT OR IGNORE INTO resync_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
-                    rusqlite::params![m.id, label, m.time],
-                )
-                .map_err(map)?;
-            }
+            write_metadata(&tx, &STAGED_SQL, m)?;
         }
         tx.commit().map_err(map)
     }
