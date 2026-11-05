@@ -230,7 +230,9 @@ impl Client {
     }
 
     /// Renames, recolors or moves a label or folder. What is `None` stays as
-    /// it is.
+    /// it is. Proton's own apps send a label's name and color with every
+    /// change, so whichever of the two is not given is read from the account
+    /// first.
     pub async fn update_label(
         &self,
         id: &str,
@@ -238,12 +240,28 @@ impl Client {
         color: Option<&str>,
         parent: Option<&str>,
     ) -> Result<()> {
-        let changes: serde_json::Map<String, serde_json::Value> =
-            [("Name", name), ("Color", color), ("ParentID", parent)]
-                .into_iter()
-                .filter_map(|(field, value)| Some((field.to_owned(), value?.into())))
-                .collect();
-        api::labels::update(self.http(), id, changes.into()).await
+        let (name, color) = match (name, color) {
+            (Some(name), Some(color)) => (name.to_owned(), color.to_owned()),
+            _ => {
+                let mut own = self.list_folders().await?;
+                own.extend(self.list_labels().await?);
+                let current = own
+                    .into_iter()
+                    .find(|label| label.id == id)
+                    .ok_or_else(|| Error::NotFound {
+                        kind: "label or folder".into(),
+                    })?;
+                (
+                    name.map_or(current.name, str::to_owned),
+                    color.map_or(current.color, str::to_owned),
+                )
+            }
+        };
+        let mut changes = serde_json::json!({ "Name": name, "Color": color });
+        if let Some(parent) = parent {
+            changes["ParentID"] = parent.into();
+        }
+        api::labels::update(self.http(), id, changes).await
     }
 
     /// Deletes labels or folders by ID.
@@ -392,12 +410,39 @@ mod tests {
         client.star_conversations(&ids, false).await.unwrap();
     }
 
+    /// Has `server` list `labels` as the account's labels and `folders` as
+    /// its folders.
+    async fn own_labels(
+        server: &MockServer,
+        labels: serde_json::Value,
+        folders: serde_json::Value,
+    ) {
+        for (kind, listed) in [("1", labels), ("3", folders)] {
+            Mock::given(method("GET"))
+                .and(path("/core/v4/labels"))
+                .and(query_param("Type", kind))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"Code": 1000, "Labels": listed})),
+                )
+                .mount(server)
+                .await;
+        }
+    }
+
     #[tokio::test]
-    async fn a_label_update_sends_only_what_changes() {
+    async fn a_label_update_keeps_the_name_and_color_it_does_not_change() {
         let server = MockServer::start().await;
-        let renamed = serde_json::json!({"Name": "Taxes", "ParentID": "folder-0"});
+        own_labels(
+            &server,
+            serde_json::json!([{"ID": "label-2", "Name": "Receipts", "Color": "#00AA00", "Type": 1}]),
+            serde_json::json!([{"ID": "label-1", "Name": "Tax", "Color": "#8080FF", "Type": 3}]),
+        )
+        .await;
+        let renamed =
+            serde_json::json!({"Name": "Taxes", "Color": "#8080FF", "ParentID": "folder-0"});
         expect_put(&server, "/core/v4/labels/label-1", renamed).await;
-        let recolored = serde_json::json!({"Color": "#FF0000"});
+        let recolored = serde_json::json!({"Name": "Receipts", "Color": "#FF0000"});
         expect_put(&server, "/core/v4/labels/label-2", recolored).await;
         let client = test_support::client(&server, Vec::new());
 
@@ -409,6 +454,34 @@ mod tests {
             .update_label("label-2", None, Some("#FF0000"), None)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_label_update_with_both_name_and_color_asks_for_nothing_else() {
+        let server = MockServer::start().await;
+        let both = serde_json::json!({"Name": "Taxes", "Color": "#FF0000"});
+        expect_put(&server, "/core/v4/labels/label-1", both).await;
+        let client = test_support::client(&server, Vec::new());
+
+        client
+            .update_label("label-1", Some("Taxes"), Some("#FF0000"), None)
+            .await
+            .unwrap();
+        let asked = server.received_requests().await.unwrap();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+    }
+
+    #[tokio::test]
+    async fn updating_a_label_the_account_lacks_is_refused() {
+        let server = MockServer::start().await;
+        own_labels(&server, serde_json::json!([]), serde_json::json!([])).await;
+        let client = test_support::client(&server, Vec::new());
+
+        let missing = client.update_label("gone", Some("Taxes"), None, None).await;
+        assert!(
+            matches!(missing, Err(Error::NotFound { .. })),
+            "{missing:?}"
+        );
     }
 
     fn label(id: &str, name: &str, path: &str) -> Label {
