@@ -27,7 +27,7 @@ struct GetResp {
 
 /// One page of the conversations `q` asks for, and how many match in all.
 pub async fn list_conversations<D: Doer>(d: &D, q: &ListQuery) -> Result<(u32, Vec<Conversation>)> {
-    d.decode(q.apply(Request::get("/mail/v4/conversations"), true))
+    d.decode(q.apply(Request::get("/mail/v4/conversations")))
         .await
         .map(|page: ListResp| (page.total, page.conversations))
 }

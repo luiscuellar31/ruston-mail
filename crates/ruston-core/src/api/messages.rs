@@ -50,11 +50,10 @@ impl ListQuery {
         }
     }
 
-    /// `req` with this query's parameters added, newest items first. The
-    /// conversations endpoint calls the recipient filter `Recipients`
-    /// instead of `To`, which `recipients` chooses.
-    pub fn apply(&self, req: Request, recipients: bool) -> Request {
-        let to = if recipients { "Recipients" } else { "To" };
+    /// `req` with this query's parameters added, newest items first. Both
+    /// the messages and the conversations endpoint take the recipient filter
+    /// as `Recipients`, as Proton's web app sends it.
+    pub fn apply(&self, req: Request) -> Request {
         let filters = [
             ("LabelID", self.label_id.clone()),
             ("Page", self.page.map(|page| page.to_string())),
@@ -62,7 +61,7 @@ impl ListQuery {
             ("Unread", self.unread.then(|| "1".to_owned())),
             ("Keyword", self.keyword.clone()),
             ("From", self.from.clone()),
-            (to, self.to.clone()),
+            ("Recipients", self.to.clone()),
             ("Subject", self.subject.clone()),
             ("Begin", self.begin.map(|time| time.to_string())),
             ("End", self.end.map(|time| time.to_string())),
@@ -107,7 +106,7 @@ pub(crate) fn is_last_page(listed: usize, page_size: u32) -> bool {
 
 /// One page of the messages `q` asks for, and how many match in all.
 pub async fn list_messages<D: Doer>(d: &D, q: &ListQuery) -> Result<(u32, Vec<MessageMetadata>)> {
-    d.decode(q.apply(Request::get("/mail/v4/messages"), false))
+    d.decode(q.apply(Request::get("/mail/v4/messages")))
         .await
         .map(|page: ListResp| (page.total, page.messages))
 }
@@ -244,8 +243,8 @@ mod tests {
     use super::*;
 
     /// The query parameters `q` adds, as `name=value` before encoding.
-    fn sent(q: &ListQuery, recipients: bool) -> Vec<String> {
-        q.apply(Request::get("/x"), recipients)
+    fn sent(q: &ListQuery) -> Vec<String> {
+        q.apply(Request::get("/x"))
             .query
             .into_iter()
             .map(|(name, value)| format!("{name}={value}"))
@@ -254,7 +253,7 @@ mod tests {
 
     #[test]
     fn a_query_sends_what_is_set_in_a_fixed_order_after_the_sort() {
-        assert_eq!(sent(&ListQuery::default(), false), ["Sort=Time", "Desc=1"]);
+        assert_eq!(sent(&ListQuery::default()), ["Sort=Time", "Desc=1"]);
         let every = ListQuery {
             label_id: Some("0".into()),
             page: Some(2),
@@ -268,9 +267,8 @@ mod tests {
             end: Some(1_800_000_000),
             address_id: Some("address".into()),
         };
-        let messages = sent(&every, false);
         assert_eq!(
-            messages,
+            sent(&every),
             [
                 "Sort=Time",
                 "Desc=1",
@@ -280,17 +278,12 @@ mod tests {
                 "Unread=1",
                 "Keyword=invoice",
                 "From=a@example.com",
-                "To=b@example.com",
+                "Recipients=b@example.com",
                 "Subject=Hello",
                 "Begin=1700000000",
                 "End=1800000000",
                 "AddressID=address",
             ]
         );
-        // Conversations call the recipient filter differently, in its place.
-        let conversations = sent(&every, true);
-        assert_eq!(conversations[8], "Recipients=b@example.com");
-        assert_eq!(conversations[..8], messages[..8]);
-        assert_eq!(conversations[9..], messages[9..]);
     }
 }
