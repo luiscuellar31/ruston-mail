@@ -14,10 +14,6 @@ const PAGE_SIZE: u32 = 50;
 /// The longest wait between attempts while errors keep coming.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(10 * 60);
 
-/// Flag and label changes leave indexed bodies current, so only new or
-/// rewritten mail, or a rebuilt cache, is worth indexing again. A `forced`
-/// tick indexes anyway: the first, and any after an error, which may have
-/// come after its sync took in changes it did not index.
 /// A round of the watch, which decides what it refreshes besides the sync.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Round {
@@ -29,6 +25,11 @@ enum Round {
     Steady,
 }
 
+/// Whether a round indexes the folder. Flag and label changes leave indexed
+/// bodies current, so only new or rewritten mail, or a rebuilt cache, is
+/// worth indexing again. A round that is not steady indexes anyway: the
+/// first, and one after errors, whose earlier sync may have taken in changes
+/// it never indexed.
 fn needs_index(report: &SyncReport, round: Round) -> bool {
     round != Round::Steady
         || report.created > 0
