@@ -1,10 +1,12 @@
-//! Sending: recipient keys → draft → upload → package → send, plus reply /
-//! forward.
+//! Sending mail. A new message, a reply or a forward has its recipients'
+//! keys looked up, is saved as a draft with its files, and then goes out in
+//! packages, one for each way its copies are protected.
 
 use super::Client;
 use super::drafts::draft_message_json;
 use crate::api;
-use crate::crypto::{self, SessionKeyMaterial, keys::AddressKeys};
+use crate::crypto::keys::{AddressKeys, KeyStore};
+use crate::crypto::{self, SessionKeyMaterial};
 use crate::error::{Error, Result};
 use crate::model::enums::{message_action, message_flag, package_type};
 use crate::model::message::{Message, MessageMetadata, Recipient};
@@ -323,31 +325,31 @@ pub enum Quote {
     Omitted,
 }
 
-/// Options for composing a message.
+/// A message as it is written: to send, or to keep as a draft.
 #[derive(Debug, Default, Clone)]
 pub struct SendOptions {
-    /// Primary (To) recipient addresses.
+    /// The To addresses.
     pub to: Vec<String>,
-    /// Carbon-copy (Cc) recipient addresses.
+    /// The Cc addresses.
     pub cc: Vec<String>,
-    /// Blind carbon-copy (Bcc) recipient addresses.
+    /// The Bcc addresses.
     pub bcc: Vec<String>,
     /// Sender address to send from. Defaults to the primary address, or for a
     /// reply or forward to the address the original message reached.
     pub from: Option<String>,
-    /// Message subject.
+    /// The subject.
     pub subject: String,
-    /// Message body content.
+    /// The text, as plain text or as HTML, which `html` tells apart.
     pub body: String,
-    /// Whether the body is HTML (otherwise plain text). PGP/Inline
+    /// Whether `body` is HTML rather than plain text. PGP/Inline
     /// recipients, who can only receive text, get a plain-text version.
     pub html: bool,
     /// Regular readable file paths to attach, limited to 32 MiB each and
     /// 128 MiB combined. Files are checked again when read.
     pub attachments: Vec<PathBuf>,
-    /// Unix delivery time for scheduled send.
+    /// When to send it, in Unix seconds, for a message scheduled for later.
     pub send_at: Option<i64>,
-    /// Self-destruct lifetime in seconds.
+    /// How many seconds it lasts once sent, before it deletes itself.
     pub expires_in: Option<i64>,
     /// For a reply or a forward, whether the original goes under the text; a
     /// new message answers nothing.
@@ -364,18 +366,16 @@ impl SendOptions {
     }
 }
 
+/// Every address in `lists`, in order, each once: one that differs from an
+/// earlier one only in the case of its ASCII letters is left out.
 fn dedupe(lists: &[&[String]]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for list in lists {
-        for e in *list {
-            let key = e.to_ascii_lowercase();
-            if seen.insert(key) {
-                out.push(e.clone());
-            }
-        }
-    }
-    out
+    lists
+        .iter()
+        .flat_map(|list| list.iter())
+        .filter(|address| seen.insert(address.to_ascii_lowercase()))
+        .cloned()
+        .collect()
 }
 
 /// Each recipient's keys, in the recipients' order, asked for a few at a
@@ -403,24 +403,28 @@ pub(crate) fn recipient_list(addrs: &[String]) -> Value {
     )
 }
 
+/// The MIME type an attached file is uploaded with, by its extension. A file
+/// with any other extension, or none, goes as plain bytes.
+const ATTACHMENT_TYPES: [(&str, &str); 9] = [
+    ("pdf", "application/pdf"),
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("gif", "image/gif"),
+    ("txt", "text/plain"),
+    ("html", "text/html"),
+    ("zip", "application/zip"),
+    ("json", "application/json"),
+];
+
+/// The MIME type of the file at `path`, by its extension in any case.
 fn guess_mime(path: &Path) -> String {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("pdf") => "application/pdf",
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("txt") => "text/plain",
-        Some("html") => "text/html",
-        Some("zip") => "application/zip",
-        Some("json") => "application/json",
-        _ => "application/octet-stream",
-    }
-    .to_string()
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    ATTACHMENT_TYPES
+        .iter()
+        .find(|(known, _)| extension.eq_ignore_ascii_case(known))
+        .map_or("application/octet-stream", |(_, mime)| *mime)
+        .to_owned()
 }
 
 /// An attachment of the draft and the session key that opens it, whether it
@@ -478,16 +482,17 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
     deliveries: Vec<(&str, Delivery<'_>)>,
 ) -> Result<Vec<Value>> {
     let mime_type = opts.body_mime_type();
-    let mut internal_addrs = Map::new();
-    let mut pgp_addrs = Map::new();
-    let mut eo_addrs = Map::new();
-    let mut external_addrs = Map::new();
+    // Each package's recipients, by address, with what opens their copy.
+    let mut end_to_end = Map::new();
+    let mut pgp_inline = Map::new();
+    let mut by_password = Map::new();
+    let mut in_clear = Map::new();
     // PGP/Inline carries plain text only, so an HTML body reaches those
     // recipients as text, under a session key of its own.
     let mut plain_text_body: Option<EncryptedBody> = None;
 
-    // Build a per-recipient encrypted entry (Type 1 or Type 8) wrapping
-    // `body_key` and the attachments' session keys to `pubkey`.
+    // A recipient's entry in an encrypted package (Type 1 or 8): `body_key`
+    // and each attachment's session key, sealed to `pubkey`.
     let entry_for = |pubkey: &str, pkg_type: i64, body_key: &SessionKeyMaterial| -> Result<Value> {
         let bkp = crypto::wrap_session_key(provider, pubkey, body_key)?;
         let mut entry = json!({
@@ -515,7 +520,7 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
     for (email, delivery) in deliveries {
         match delivery {
             Delivery::EndToEnd(key) => {
-                internal_addrs.insert(
+                end_to_end.insert(
                     email.to_owned(),
                     entry_for(key, package_type::PM, &body.session_key)?,
                 );
@@ -526,16 +531,16 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
                     plain_text_body = Some(EncryptedBody::encrypt(provider, addr, &text)?);
                 }
                 let text_body = plain_text_body.as_ref().unwrap_or(body);
-                pgp_addrs.insert(
+                pgp_inline.insert(
                     email.to_owned(),
                     entry_for(key, package_type::PGP_INLINE, &text_body.session_key)?,
                 );
             }
             Delivery::Password(entry) => {
-                eo_addrs.insert(email.to_owned(), entry);
+                by_password.insert(email.to_owned(), entry);
             }
             Delivery::Clear => {
-                external_addrs.insert(
+                in_clear.insert(
                     email.to_owned(),
                     json!({ "Type": package_type::CLEAR, "Signature": 0 }),
                 );
@@ -544,40 +549,40 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
     }
 
     let mut packages: Vec<Value> = Vec::new();
-    if !internal_addrs.is_empty() {
+    if !end_to_end.is_empty() {
         let body_kp = crypto::wrap_session_key_to_self(provider, addr, &body.session_key)?;
         packages.push(json!({
-            "Addresses": Value::Object(internal_addrs),
+            "Addresses": Value::Object(end_to_end),
             "MIMEType": mime_type,
             "Type": package_type::PM,
             "Body": STANDARD.encode(&body.data_packet),
             "BodyKeyPacket": STANDARD.encode(&body_kp),
         }));
     }
-    if !pgp_addrs.is_empty() {
+    if !pgp_inline.is_empty() {
         // PGP-inline is plain text: the text version of an HTML body, or
         // the plain body itself.
         let text_body = plain_text_body.as_ref().unwrap_or(body);
         let body_kp = crypto::wrap_session_key_to_self(provider, addr, &text_body.session_key)?;
         packages.push(json!({
-            "Addresses": Value::Object(pgp_addrs),
+            "Addresses": Value::Object(pgp_inline),
             "MIMEType": "text/plain",
             "Type": package_type::PGP_INLINE,
             "Body": STANDARD.encode(&text_body.data_packet),
             "BodyKeyPacket": STANDARD.encode(&body_kp),
         }));
     }
-    if !eo_addrs.is_empty() {
+    if !by_password.is_empty() {
         packages.push(json!({
-            "Addresses": Value::Object(eo_addrs),
+            "Addresses": Value::Object(by_password),
             "MIMEType": mime_type,
             "Type": package_type::EO,
             "Body": STANDARD.encode(&body.data_packet),
         }));
     }
-    if !external_addrs.is_empty() {
+    if !in_clear.is_empty() {
         let mut pkg = json!({
-            "Addresses": Value::Object(external_addrs),
+            "Addresses": Value::Object(in_clear),
             "MIMEType": mime_type,
             "Type": package_type::CLEAR,
             "Body": STANDARD.encode(&body.data_packet),
@@ -615,23 +620,23 @@ fn password_entry(
     attachments: &[AttachmentKey],
 ) -> Result<Value> {
     let provider = crypto::provider();
-    let verifier = SRPAuth::generate_verifier_with_pgp(password, None, modulus)
-        .map_err(|e| Error::Srp(format!("EO verifier: {e}")))?;
-    let v: SRPVerifierB64 = verifier.into();
+    let verifier: SRPVerifierB64 = SRPAuth::generate_verifier_with_pgp(password, None, modulus)
+        .map_err(|e| Error::Srp(format!("EO verifier: {e}")))?
+        .into();
     let (_fresh, token) = crypto::new_session_key(&provider)?;
     let enc_token = crypto::encrypt_text_with_password(&provider, password, &token)?;
-    let body_kp = crypto::wrap_session_key_with_password(&provider, password, body_key)?;
+    let body_key_packet = crypto::wrap_session_key_with_password(&provider, password, body_key)?;
     let mut entry = json!({
         "Type": package_type::EO,
         "Signature": 0,
         "Token": token,
         "EncToken": enc_token,
-        "BodyKeyPacket": STANDARD.encode(&body_kp),
+        "BodyKeyPacket": STANDARD.encode(&body_key_packet),
         "Auth": {
-            "Version": u8::from(v.version),
+            "Version": u8::from(verifier.version),
             "ModulusID": modulus_id,
-            "Salt": v.salt,
-            "Verifier": v.verifier,
+            "Salt": verifier.salt,
+            "Verifier": verifier.verifier,
         },
     });
     if !hint.is_empty() {
@@ -686,6 +691,48 @@ async fn cleanup_failed_draft<D: Doer>(http: &D, message_id: &str, error: &Error
     }
 }
 
+/// The message a reply or a forward answers, which its draft names.
+struct Answering<'a> {
+    /// The original's ID.
+    parent_id: &'a str,
+    /// Which [`message_action`] the answer is, so that Proton marks the
+    /// original replied to or forwarded once it goes.
+    action: u8,
+    /// For a forward, the original's attachments it carries.
+    carried: Option<Carried>,
+}
+
+/// Attachments a forward carries from the original: each one's ID and key
+/// packets, which the keys of the address the original reached open.
+struct Carried {
+    address_id: String,
+    key_packets: Vec<(String, String)>,
+}
+
+impl Carried {
+    /// The attachments' session keys sealed again to the sender's `addr`, by
+    /// attachment ID, as a draft lists them. They are opened with the keys
+    /// of the address the original reached, or with `addr`'s when the
+    /// account no longer has that address.
+    fn rekeyed<P: proton_crypto::crypto::PGPProviderSync>(
+        &self,
+        provider: &P,
+        keys: &KeyStore,
+        addr: &AddressKeys,
+    ) -> Result<Value> {
+        let reached = keys.address(&self.address_id).unwrap_or(addr);
+        self.key_packets
+            .iter()
+            .map(|(id, packets)| {
+                let sealed =
+                    crypto::rewrap_attachment_session_key(provider, reached, addr, packets)?;
+                Ok((id.clone(), Value::from(STANDARD.encode(sealed))))
+            })
+            .collect::<Result<Map<String, Value>>>()
+            .map(Value::Object)
+    }
+}
+
 impl Client {
     /// Look up how a message to `email` would be protected. This is the key
     /// request sending makes for each recipient; it creates no draft.
@@ -694,23 +741,23 @@ impl Client {
         Ok(RecipientProtection::of(&keys))
     }
 
-    /// Send a freshly-composed message.
+    /// Sends a new message, which answers none, and returns its ID.
     pub async fn send(&self, opts: &SendOptions) -> Result<String> {
-        self.send_with_parent(opts, None, None, &(String::new(), Vec::new()), None)
-            .await
+        self.send_with_parent(opts, None, None).await
     }
 
-    /// Send with encrypted-outside (password-protected) for keyless external
-    /// recipients. Internal/PGP recipients still get E2E.
+    /// Sends a new message as [`Client::send`] does, except that the copies
+    /// for recipients without a key open with `password`, and `hint` helps
+    /// them recall it. Recipients with a key still get copies encrypted to
+    /// it.
     pub async fn send_eo(
         &self,
         opts: &SendOptions,
         password: &str,
         hint: Option<&str>,
     ) -> Result<String> {
-        let eo = (password.to_string(), hint.unwrap_or("").to_string());
-        self.send_with_parent(opts, None, None, &(String::new(), Vec::new()), Some(&eo))
-            .await
+        let protection = (password.to_owned(), hint.unwrap_or_default().to_owned());
+        self.send_with_parent(opts, None, Some(&protection)).await
     }
 
     /// Reply to a message. It goes to the recipients `opts` names, when it
@@ -733,19 +780,16 @@ impl Client {
             }
         }
         answer.subject = reply_subject(&parent.meta.subject);
-        let action = if all {
-            message_action::REPLY_ALL
-        } else {
-            message_action::REPLY
+        let answering = Answering {
+            parent_id: &parent_id,
+            action: if all {
+                message_action::REPLY_ALL
+            } else {
+                message_action::REPLY
+            },
+            carried: None,
         };
-        self.send_with_parent(
-            &answer,
-            Some(&parent_id),
-            Some(action),
-            &(String::new(), Vec::new()),
-            None,
-        )
-        .await
+        self.send_with_parent(&answer, Some(answering), None).await
     }
 
     /// Forward a message, with the original's attachments except those
@@ -754,21 +798,21 @@ impl Client {
         let (parent_id, parent) = self.fetch_parent(reference).await?;
         let mut answer = self.answer_options(&parent, opts).await;
         answer.subject = forward_subject(&parent.meta.subject);
-        let inherited: Vec<(String, String)> = parent
-            .attachments
-            .iter()
-            .filter(|a| !opts.leave_out.contains(&a.id))
-            .filter_map(|a| a.key_packets.clone().map(|kp| (a.id.clone(), kp)))
-            .collect();
-        let src_addr_id = parent.meta.address_id.clone();
-        self.send_with_parent(
-            &answer,
-            Some(&parent_id),
-            Some(message_action::FORWARD),
-            &(src_addr_id, inherited),
-            None,
-        )
-        .await
+        let carried = Carried {
+            address_id: parent.meta.address_id.clone(),
+            key_packets: parent
+                .attachments
+                .iter()
+                .filter(|a| !opts.leave_out.contains(&a.id))
+                .filter_map(|a| Some((a.id.clone(), a.key_packets.clone()?)))
+                .collect(),
+        };
+        let answering = Answering {
+            parent_id: &parent_id,
+            action: message_action::FORWARD,
+            carried: Some(carried),
+        };
+        self.send_with_parent(&answer, Some(answering), None).await
     }
 
     /// The message `reference` names, and its ID, to answer it.
@@ -813,18 +857,20 @@ impl Client {
             .map(|address| address.email.clone())
     }
 
-    /// Cancel a scheduled send.
+    /// Stops the message `reference` names from going at the time it was
+    /// scheduled for.
     pub async fn cancel_send(&self, reference: &str) -> Result<()> {
         let id = self.resolve_ref(reference).await?;
         api::messages::cancel_send(self.http(), &id).await
     }
 
+    /// Sends `opts` as an answer to what `answering` names, or as a new
+    /// message without it; `eo` is the message password and its hint, for
+    /// recipients without a key.
     async fn send_with_parent(
         &self,
         opts: &SendOptions,
-        parent_id: Option<&str>,
-        action: Option<u8>,
-        forwarded: &(String, Vec<(String, String)>),
+        answering: Option<Answering<'_>>,
         eo: Option<&(String, String)>,
     ) -> Result<String> {
         validate_attachments(&opts.attachments).await?;
@@ -841,23 +887,14 @@ impl Client {
         // 2. create draft (self-encrypted body).
         tracing::debug!(target: "ruston_core::send", "send step 2: creating encrypted draft (POST /mail/v4/messages)");
         let mut draft = draft_message_json(addr, opts)?;
-        if let Some(p) = parent_id {
-            draft["ParentID"] = json!(p);
-        }
-        if let Some(a) = action {
-            draft["Action"] = json!(a);
-        }
-        // Forwarded attachments: re-key parent attachment session keys to us.
-        if !forwarded.1.is_empty() {
-            let (src_addr_id, atts) = forwarded;
-            let src = self.keys().address(src_addr_id).unwrap_or(addr);
-            let mut akp = Map::new();
-            for (att_id, kp_b64) in atts {
-                let rewrapped =
-                    crypto::rewrap_attachment_session_key(&provider, src, addr, kp_b64)?;
-                akp.insert(att_id.clone(), json!(STANDARD.encode(rewrapped)));
+        if let Some(answering) = &answering {
+            draft["ParentID"] = json!(answering.parent_id);
+            draft["Action"] = json!(answering.action);
+            if let Some(carried) = &answering.carried
+                && !carried.key_packets.is_empty()
+            {
+                draft["AttachmentKeyPackets"] = carried.rekeyed(&provider, self.keys(), addr)?;
             }
-            draft["AttachmentKeyPackets"] = Value::Object(akp);
         }
 
         let created = api::messages::create_draft(self.http(), draft).await?;
@@ -1032,13 +1069,11 @@ fn with_prefix(subject: &str, prefix: &str, marks: &[&str]) -> String {
 }
 
 fn quote_block(parent: &Message, body: &str, original_mime: &str, html: bool) -> String {
-    let who = if parent.meta.sender.name.is_empty() {
-        parent.meta.sender.address.clone()
+    let sender = &parent.meta.sender;
+    let who = if sender.name.is_empty() {
+        sender.address.clone()
     } else {
-        format!(
-            "{} <{}>",
-            parent.meta.sender.name, parent.meta.sender.address
-        )
+        format!("{} <{}>", sender.name, sender.address)
     };
     if html {
         let who = crate::html::escape_text(&who);

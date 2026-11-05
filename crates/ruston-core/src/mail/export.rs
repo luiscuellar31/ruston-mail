@@ -65,8 +65,8 @@ enum Exported {
 }
 
 impl Client {
-    /// Export up to `max` messages from a folder as reconstructed MIME `.eml`
-    /// files, including decrypted attachments, as
+    /// Writes up to `max` of a folder's messages into `out_dir`, each rebuilt
+    /// as a MIME `.eml` file with its attachments decrypted, as
     /// [`export_folder_report`](Self::export_folder_report) does. Returns the
     /// number written, or the error of the first message that could not be
     /// exported, once the others are written.
@@ -78,13 +78,13 @@ impl Client {
         }
     }
 
-    /// Export up to `max` messages from a folder as reconstructed MIME `.eml`
-    /// files, including decrypted attachments, and report what happened to
-    /// each. Existing files are never replaced: a message whose file is
-    /// already there counts as exported, so running again into the same
-    /// folder resumes. A message that cannot be opened, or whose attachments
-    /// cannot be, is skipped and the others are still exported. A failed
-    /// request stops the export.
+    /// Writes up to `max` of a folder's messages into `out_dir`, each rebuilt
+    /// as a MIME `.eml` file with its attachments decrypted, and reports what
+    /// happened to each. Existing files are never replaced: a message whose
+    /// file is already there counts as exported, so running again into the
+    /// same folder resumes. A message that cannot be opened, or whose
+    /// attachments cannot be, is skipped and the others are still exported.
+    /// A failed request stops the export.
     pub async fn export_folder_report(
         &self,
         folder: &str,

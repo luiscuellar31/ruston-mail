@@ -1,58 +1,59 @@
-//! Conversation models.
+//! Conversations: the threads Proton groups messages in, and the ones a
+//! search of the local index makes of what it finds.
 
 use super::message::{MessageMetadata, Recipient};
 use serde::{Deserialize, Serialize};
 
-/// A label applied to a conversation, with per-label context counts.
+/// One of a conversation's labels, with how many of its messages carry it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ConversationLabel {
-    /// Label ID.
+    /// The label's ID.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Number of messages in the conversation under this label.
+    /// How many of the conversation's messages carry the label.
     #[serde(default)]
     pub context_num_messages: Option<i64>,
-    /// Number of unread messages in the conversation under this label.
+    /// How many of those are unread.
     #[serde(default)]
     pub context_num_unread: Option<i64>,
-    /// Unix timestamp of the latest message under this label.
+    /// When the newest of them came, in Unix seconds.
     #[serde(default)]
     pub context_time: Option<i64>,
 }
 
-/// A conversation (message thread) with its summary metadata.
+/// A conversation, summed up from its messages.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Conversation {
-    /// Conversation ID.
+    /// The conversation's ID.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Subject line.
+    /// Its subject.
     #[serde(default)]
     pub subject: String,
-    /// Unix timestamp of the most recent message.
+    /// When its newest message came, in Unix seconds.
     #[serde(default)]
     pub time: i64,
-    /// Total number of messages in the conversation.
+    /// How many messages it has.
     #[serde(default)]
     pub num_messages: i64,
-    /// Number of unread messages.
+    /// How many of them are unread.
     #[serde(default)]
     pub num_unread: i64,
-    /// Total number of attachments across the conversation.
+    /// How many attachments its messages have between them.
     #[serde(default)]
     pub num_attachments: i64,
-    /// Distinct senders in the conversation.
+    /// Everyone who wrote in it, each once.
     #[serde(default)]
     pub senders: Vec<Recipient>,
-    /// Distinct recipients in the conversation.
+    /// Everyone it went to, each once.
     #[serde(default)]
     pub recipients: Vec<Recipient>,
-    /// Labels applied to the conversation, with per-label counts.
+    /// Its labels, each with how many of its messages carry it.
     #[serde(default)]
     pub labels: Vec<ConversationLabel>,
-    /// Unix timestamp at which the conversation expires, if set.
+    /// When it expires, in Unix seconds, if it does.
     #[serde(default)]
     pub expiration_time: Option<i64>,
 }
@@ -113,17 +114,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deserialize_conversation() {
-        let json = serde_json::json!({
-            "ID": "c1", "Subject": "thread", "NumMessages": 3, "NumUnread": 1,
-            "Senders": [{"Name":"A","Address":"a@proton.me"}],
-            "Labels": [{"ID":"0"}]
-        });
-        let c: Conversation = serde_json::from_value(json).unwrap();
-        assert_eq!(c.id, "c1");
-        assert_eq!(c.num_messages, 3);
-        assert_eq!(c.senders.len(), 1);
-        assert_eq!(c.labels[0].id, "0");
+    fn a_conversation_reads_its_counts_and_those_of_each_label() {
+        let conversation: Conversation = serde_json::from_value(serde_json::json!({
+            "ID": "conv-3",
+            "Subject": "Trip plans",
+            "NumMessages": 3,
+            "NumUnread": 1,
+            "Senders": [{"Name": "Ana", "Address": "ana@proton.me"}],
+            "Labels": [
+                {"ID": "0", "ContextNumMessages": 2, "ContextNumUnread": 1},
+                {"ID": "10"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(conversation.id, "conv-3");
+        assert_eq!((conversation.num_messages, conversation.num_unread), (3, 1));
+        let [sender] = conversation.senders.as_slice() else {
+            panic!("one sender, got {:?}", conversation.senders);
+        };
+        assert_eq!(sender.address, "ana@proton.me");
+        let labels: Vec<_> = conversation
+            .labels
+            .iter()
+            .map(|label| (label.id.as_str(), label.context_num_messages))
+            .collect();
+        assert_eq!(labels, [("0", Some(2)), ("10", None)]);
+        // What Proton leaves out reads as nothing.
+        assert!(conversation.recipients.is_empty());
+        assert_eq!(conversation.expiration_time, None);
     }
 
     fn message(id: &str, conversation: &str, sender: &str, unread: i64) -> MessageMetadata {

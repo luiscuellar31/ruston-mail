@@ -1815,11 +1815,15 @@ async fn uncertain_send_does_not_delete_the_draft() {
 }
 
 #[test]
-fn dedupe_case_insensitive() {
-    let a = vec!["A@x.com".to_string(), "b@x.com".to_string()];
-    let b = vec!["a@x.com".to_string(), "c@x.com".to_string()];
-    let out = dedupe(&[&a, &b]);
-    assert_eq!(out, vec!["A@x.com", "b@x.com", "c@x.com"]);
+fn each_recipient_is_sent_to_once_whatever_the_case_of_its_address() {
+    let to = vec!["Ana@Proton.me".to_string(), "bo@pm.me".to_string()];
+    let cc = vec!["ana@proton.me".to_string(), "cy@pm.me".to_string()];
+    let bcc = vec!["BO@PM.ME".to_string()];
+    // Each address keeps its first spelling and its first place.
+    assert_eq!(
+        dedupe(&[&to, &cc, &bcc]),
+        ["Ana@Proton.me", "bo@pm.me", "cy@pm.me"]
+    );
 }
 
 #[test]

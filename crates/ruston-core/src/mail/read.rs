@@ -1,4 +1,5 @@
-//! Reading: list / search / read messages and conversations (with decryption).
+//! Listing, searching and reading mail: messages and conversations, each
+//! body decrypted and its signature checked.
 
 use super::Client;
 use crate::api::{self, messages::ListQuery};
@@ -14,19 +15,22 @@ use futures::{Stream, StreamExt, TryStreamExt, stream};
 const CONVERSATION_BODY_FETCH_CONCURRENCY: usize = 3;
 /// How many sender key lookups run at once when a conversation opens.
 const SENDER_KEY_CONCURRENCY: usize = 3;
+/// How many messages a search finds when its options give no limit.
+const DEFAULT_SEARCH_LIMIT: u32 = 25;
 
-/// A decrypted message ready for display.
+/// A message opened to be read: its body decrypted, its signature checked.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FullMessage {
-    /// Message metadata (headers, flags, labels).
+    /// What a listing tells about it.
     pub meta: MessageMetadata,
-    /// Decrypted body content.
+    /// The body as it is shown: the part of a MIME body meant for reading,
+    /// and sanitized when it is HTML.
     pub body: String,
-    /// MIME type of the body (`text/html` or `text/plain`).
+    /// The MIME type of `body`, such as `text/html` or `text/plain`.
     pub mime_type: String,
-    /// Signature-verification verdict for the body.
+    /// What checking the body's signature found.
     pub verdict: Verdict,
-    /// The message's attachments.
+    /// Its attachments, those inside a PGP/MIME body included.
     pub attachments: Vec<Attachment>,
     /// The Reply-To addresses the message asks replies to go to, if any.
     pub reply_tos: Vec<Recipient>,
@@ -46,7 +50,7 @@ pub enum ConversationMessage {
 /// example because no key the account holds decrypts it.
 #[derive(Debug)]
 pub struct UnreadableMessage {
-    /// Message metadata (headers, flags, labels).
+    /// What a listing tells about it.
     pub meta: MessageMetadata,
     /// The Reply-To addresses the message asks replies to go to, if any.
     pub reply_tos: Vec<Recipient>,
@@ -54,29 +58,30 @@ pub struct UnreadableMessage {
     pub error: Error,
 }
 
-/// Search options.
+/// What a search on Proton's side looks for. Each field that is set narrows
+/// it.
 #[derive(Debug, Default, Clone)]
 pub struct SearchOpts {
-    /// Free-text keyword to match.
+    /// Text for Proton's search to find.
     pub keyword: Option<String>,
-    /// Filter by sender address.
+    /// Only messages from this address.
     pub from: Option<String>,
-    /// Filter by recipient address.
+    /// Only messages to this address.
     pub to: Option<String>,
-    /// Filter by subject text.
+    /// Only messages whose subject holds this text.
     pub subject: Option<String>,
-    /// Only messages on or after this date (`YYYY-MM-DD`, a day in UTC).
-    /// Any other form fails the search before a request.
+    /// Only messages from this day on, written `YYYY-MM-DD`, in UTC. Any
+    /// other form fails the search before a request.
     pub after: Option<String>,
-    /// Only messages on or before this date (`YYYY-MM-DD`, a day in UTC),
-    /// all of that day included. Any other form fails the search before a
+    /// Only messages up to this day, written `YYYY-MM-DD`, in UTC, all of
+    /// that day included. Any other form fails the search before a
     /// request.
     pub before: Option<String>,
-    /// Restrict to this folder (defaults to all mail).
+    /// Only this folder or label, by name or ID; all mail when `None`.
     pub folder: Option<String>,
-    /// Only unread messages.
+    /// Only unread messages, when set.
     pub unread: bool,
-    /// Maximum number of results to return.
+    /// How many messages it finds at most; 25 when `None`.
     pub limit: Option<u32>,
 }
 
@@ -113,7 +118,7 @@ fn looks_like_id(reference: &str) -> bool {
     reference.len() >= 60 && reference.ends_with("==") && !reference.contains(' ')
 }
 
-/// Extract the display part from a decrypted MIME body: every part of its HTML
+/// What is read of a decrypted MIME body, and its type: every part of its HTML
 /// version, in order, or of its text version when it has no HTML one. A body
 /// of several parts, such as text, an image and more text, is all of them.
 /// It is parsed from its bytes, so each part is decoded in its own charset.
@@ -189,7 +194,8 @@ fn mime_attachment_name(part: &mail_parser::MessagePart, position: usize) -> Str
 }
 
 impl Client {
-    /// List a folder's messages (newest first), returning the total count and the page.
+    /// One page of a folder's messages, newest first, with how many it holds:
+    /// unread ones only when `unread` is set.
     pub async fn list_messages(
         &self,
         folder: &str,
@@ -201,7 +207,8 @@ impl Client {
         api::messages::list_messages(self.http(), &q).await
     }
 
-    /// List a folder's conversations (newest first), returning the total count and the page.
+    /// One page of a folder's conversations, newest first, with how many it
+    /// holds: unread ones only when `unread` is set.
     pub async fn list_conversations(
         &self,
         folder: &str,
@@ -214,9 +221,10 @@ impl Client {
     }
 
     fn search_query(&self, opts: &SearchOpts) -> Result<ListQuery> {
+        let folder = opts.folder.as_deref().unwrap_or("all");
         Ok(ListQuery {
-            label_id: Some(resolve_folder(opts.folder.as_deref().unwrap_or("all"))),
-            page_size: Some(opts.limit.unwrap_or(25)),
+            label_id: Some(resolve_folder(folder)),
+            page_size: Some(opts.limit.unwrap_or(DEFAULT_SEARCH_LIMIT)),
             unread: opts.unread,
             keyword: opts.keyword.clone(),
             from: opts.from.clone(),
@@ -238,13 +246,13 @@ impl Client {
         })
     }
 
-    /// Search messages server-side using the given criteria.
+    /// The messages Proton's search finds for `opts`.
     pub async fn search_messages(&self, opts: &SearchOpts) -> Result<Vec<MessageMetadata>> {
         let q = self.search_query(opts)?;
         Ok(api::messages::list_messages(self.http(), &q).await?.1)
     }
 
-    /// Search conversations server-side using the given criteria.
+    /// The conversations Proton's search finds for `opts`.
     pub async fn search_conversations(&self, opts: &SearchOpts) -> Result<Vec<Conversation>> {
         let q = self.search_query(opts)?;
         Ok(api::conversations::list_conversations(self.http(), &q)
@@ -265,7 +273,9 @@ impl Client {
         api::conversations::list_conversations(self.http(), &q).await
     }
 
-    /// Resolve a free-text reference to a message ID (exact ID, or unique search hit).
+    /// The ID of the message `reference` names: the reference itself when it
+    /// reads as an ID, or else that of the one message a search of all mail
+    /// for it finds. Finding none, or several, is an error.
     pub async fn resolve_ref(&self, reference: &str) -> Result<String> {
         if looks_like_id(reference) {
             return Ok(reference.to_string());
@@ -394,7 +404,8 @@ impl Client {
         Ok(api::messages::get_message(self.http(), id).await?.meta)
     }
 
-    /// Fetch and decrypt a single message for display.
+    /// Downloads one message and opens it to be read, checking its signature
+    /// against its sender's keys.
     pub async fn read_message(&self, id: &str) -> Result<FullMessage> {
         tracing::debug!(target: "ruston_core::mail", message_id = %id, "read_message: fetching + decrypting");
         let msg = api::messages::get_message(self.http(), id).await?;
@@ -418,7 +429,7 @@ impl Client {
         self.open_message_with(msg, Vec::new()).await
     }
 
-    /// Fetch a conversation and decrypt all of its messages (oldest first).
+    /// Downloads a conversation and opens each of its messages, oldest first.
     /// Fails if any message cannot be opened; see
     /// [`read_conversation_each`](Self::read_conversation_each) to keep the others.
     pub async fn read_conversation(&self, id: &str) -> Result<(Conversation, Vec<FullMessage>)> {
@@ -486,7 +497,8 @@ fn open_body(
         };
         (crypto::message::utf8_text(body), mime_type)
     };
-    // Sanitize HTML bodies (strip scripts / active content) for safe rendering.
+    // Both frontends show what comes back, so an HTML body is made safe here,
+    // once for either.
     let body = if crate::html::is_html_mime(&mime_type) {
         crate::html::sanitize(&body)
     } else {
@@ -1149,10 +1161,20 @@ mod tests {
     }
 
     #[test]
-    fn id_detection() {
-        assert!(looks_like_id(&format!("{}==", "a".repeat(70))));
-        assert!(!looks_like_id("hello world"));
-        assert!(!looks_like_id("short"));
+    fn only_a_long_unspaced_reference_ending_in_padding_reads_as_an_id() {
+        // A message ID is long base64 ending in "==".
+        let id = format!("{}==", "Bp4".repeat(29));
+        assert!(looks_like_id(&id));
+        let unpadded = "Bp4".repeat(30);
+        let spaced = format!("{} ==", "Bp4".repeat(29));
+        for reference in [
+            "quarterly report",
+            "abc==",
+            unpadded.as_str(),
+            spaced.as_str(),
+        ] {
+            assert!(!looks_like_id(reference), "{reference}");
+        }
     }
 
     #[test]

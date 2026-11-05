@@ -1,4 +1,5 @@
-//! Incremental sync (event stream) + local-cache reads.
+//! The local cache: kept current from Proton's events, filled a folder at a
+//! time, indexed for full-text search, and read without Proton.
 
 use super::{Client, read::FullMessage};
 use crate::api;
@@ -18,21 +19,22 @@ const RESYNC_PAGE_SIZE: u32 = 100;
 /// How many bodies `index` downloads at once, as conversation reads do.
 const INDEX_BODY_FETCH_CONCURRENCY: usize = 3;
 
-/// Outcome of a sync run.
+/// What one sync changed in the cache.
 #[derive(Debug, Clone)]
 pub struct SyncReport {
-    /// Number of messages created.
+    /// How many messages it added.
     pub created: usize,
-    /// Number of messages updated, flag and label changes included.
+    /// How many messages it changed, flag and label changes included.
     pub updated: usize,
     /// Of `updated`, messages whose flags or labels alone changed, so their
     /// indexed bodies are still current.
     pub flags_updated: usize,
-    /// Number of messages deleted.
+    /// How many messages it removed.
     pub deleted: usize,
-    /// The event cursor after applying this sync.
+    /// The last event the cache now reflects, where the next sync starts.
     pub event_id: String,
-    /// First sync — the cursor was initialized (no deltas applied).
+    /// Whether this was the cache's first sync, which only noted where
+    /// Proton's events stand and changed no mail.
     pub initialized: bool,
     /// Number of messages rebuilt after a server-requested full resync.
     pub rebuilt: Option<usize>,
@@ -122,7 +124,8 @@ async fn sync_cache<D: Doer, C: Borrow<Cache>>(http: &D, mut cache: C) -> Result
     let mut cursor = match saved {
         Some(cursor) => cursor,
         None => {
-            // Bootstrap: record the current cursor; deltas flow from here.
+            // A first sync only notes where the events stand; the next one
+            // applies whatever happens after.
             let latest = api::events::get_latest_event_id(http).await?;
             if cache.borrow().initialize_cursor(&latest)? {
                 tracing::info!(target: "ruston_core::sync", event_id = %latest, "sync initialized cursor");
@@ -419,12 +422,14 @@ impl Client {
         Cache::open_for_account(&path, &self.cache_identity)
     }
 
-    /// Apply incremental events from the cached cursor into the local cache.
+    /// Brings the local cache up to date from Proton's events since its last
+    /// sync, and reports what changed.
     pub async fn sync(&self) -> Result<SyncReport> {
         sync_cache(self.http(), self.open_cache()?).await
     }
 
-    /// Backfill a folder into the cache by paging the API (bounded by `max_pages`).
+    /// Lists a folder into the cache, `page_size` messages at a time and at
+    /// most `max_pages` pages, and gives how many it stored.
     /// Returns a retry error if sync changes the cursor before a page is saved;
     /// previously committed pages remain cached.
     pub async fn cache_folder(
@@ -437,7 +442,8 @@ impl Client {
         backfill_cache(self.http(), cache, folder, max_pages, page_size).await
     }
 
-    /// Read messages for a folder from the local cache (offline).
+    /// Up to `limit` of a folder's messages as the cache holds them, newest
+    /// first, without asking Proton: unread ones only when `unread` is set.
     pub fn cached_messages(
         &self,
         folder: &str,
@@ -448,15 +454,17 @@ impl Client {
             .list(&resolve_folder(folder), unread, limit, 0)
     }
 
-    /// Cached (total, unread) counts for a folder.
+    /// How many of a folder's messages the cache holds, and how many of those
+    /// are unread.
     pub fn cached_count(&self, folder: &str) -> Result<(i64, i64)> {
         self.open_cache()?.count(&resolve_folder(folder))
     }
 
-    /// Build the local full-text search index: page a folder, decrypt each
-    /// message body, and index it (bounded by `max_pages`). A body indexed
-    /// before is kept rather than downloaded again, unless it is a draft's,
-    /// which may have changed; the count includes the bodies kept.
+    /// Builds the full-text index of a folder: lists it, `page_size` messages
+    /// at a time and at most `max_pages` pages, and indexes each message with
+    /// its decrypted body. A body indexed before is kept rather than
+    /// downloaded again, unless it is a draft's, which may have changed; the
+    /// count includes the bodies kept.
     /// A message that is gone, or whose body cannot be decrypted, loses any
     /// body indexed before. Any other failed read, such as a lost connection
     /// or rate limiting, stops indexing with its error and leaves that
@@ -493,7 +501,9 @@ impl Client {
         .await
     }
 
-    /// Full-text search the local index (decrypted bodies; private + offline).
+    /// Searches the full-text index on this device, which holds the decrypted
+    /// bodies, so the query never reaches Proton: up to `limit` messages
+    /// holding every word of `query`, best match first.
     pub fn search_local(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
         self.open_cache()?.search(query, limit)
     }

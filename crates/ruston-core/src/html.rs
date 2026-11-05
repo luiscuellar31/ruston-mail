@@ -1,4 +1,4 @@
-//! HTML sanitization for message bodies, and plain text from them.
+//! The HTML of message bodies: made safe to show, and read as plain text.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -494,20 +494,41 @@ mod tests {
     }
 
     #[test]
-    fn strips_active_content_keeps_formatting() {
-        let dirty = r#"<b>hi</b><script>alert(1)</script><a href="javascript:evil()">x</a><img src="x" onerror="evil()"><p onclick="bad()">t</p>"#;
-        let clean = sanitize(dirty);
-        assert!(clean.contains("<b>hi</b>"));
-        assert!(!clean.contains("<script"));
-        assert!(!clean.to_lowercase().contains("javascript:"));
-        assert!(!clean.to_lowercase().contains("onerror"));
-        assert!(!clean.to_lowercase().contains("onclick"));
+    fn scripts_handlers_and_script_links_go_while_formatting_stays() {
+        let clean = sanitize(concat!(
+            "<p>Dear <b>Ana</b>,<SCRIPT>steal(document.cookie)</SCRIPT></p>",
+            r#"<a href="JavaScript:steal()">open</a>"#,
+            r#"<img src="https://img.example/logo.png" onerror="steal()" onload="steal()">"#,
+            r#"<div onclick="steal()" onmouseover="steal()"><em>Totals</em></div>"#,
+        ));
+        for kept in ["<b>Ana</b>", "open</a>", "<img", "<em>Totals</em>"] {
+            assert!(clean.contains(kept), "{kept} was lost: {clean}");
+        }
+        let lower = clean.to_lowercase();
+        for gone in [
+            "<script",
+            "steal",
+            "javascript:",
+            "onerror",
+            "onload",
+            "onclick",
+            "onmouseover",
+        ] {
+            assert!(!lower.contains(gone), "{gone} survived: {clean}");
+        }
     }
 
     #[test]
-    fn keeps_safe_links() {
-        let clean = sanitize(r#"<a href="https://proton.me">link</a>"#);
-        assert!(clean.contains("https://proton.me"));
+    fn a_web_link_keeps_its_address_and_shares_nothing_with_it() {
+        let clean = sanitize(r#"<a href="https://example.org/report?q=1">the report</a>"#);
+        assert!(
+            clean.contains(r#"href="https://example.org/report?q=1""#),
+            "{clean}"
+        );
+        // The page it opens gets no hold on this one, nor learns where it
+        // was opened from.
+        assert!(clean.contains(r#"rel="noopener noreferrer""#), "{clean}");
+        assert!(clean.contains(">the report</a>"), "{clean}");
     }
 
     #[test]

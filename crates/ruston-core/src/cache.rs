@@ -1,4 +1,5 @@
-//! Local SQLite cache of message metadata, indexed bodies, and the sync cursor.
+//! The local SQLite cache: message metadata, the full-text index of
+//! decrypted bodies, and the cursor sync goes on from.
 
 use crate::api::events::{EventBatch, MessageEvent, action};
 use crate::error::{Error, Result};
@@ -494,6 +495,39 @@ fn list_sql(unread_only: bool) -> String {
     )
 }
 
+/// The messages whose index entry matches an FTS5 query, best first, as
+/// `Cache::search` reads them.
+const SEARCH_SQL: &str = "SELECT m.json FROM msg_fts JOIN messages m ON m.id=msg_fts.id \
+     WHERE msg_fts MATCH ?1 ORDER BY rank LIMIT ?2";
+
+/// The FTS5 query for the words of `query`: each one a quoted phrase, with
+/// its double quotes taken out, so that every word must be there and none
+/// is read as FTS5's own syntax. `None` when there is no word.
+fn match_expression(query: &str) -> Option<String> {
+    let phrases: Vec<String> = query
+        .split_whitespace()
+        .map(|word| format!("\"{}\"", word.replace('"', "")))
+        .collect();
+    (!phrases.is_empty()).then(|| phrases.join(" "))
+}
+
+/// The messages a query of their metadata JSON returns, in its order. A row
+/// whose JSON no longer reads as metadata is left out rather than failing
+/// the rest.
+fn read_metadata(
+    statement: &mut rusqlite::Statement<'_>,
+    params: impl rusqlite::Params,
+) -> Result<Vec<MessageMetadata>> {
+    let rows: Vec<String> = statement
+        .query_map(params, |row| row.get(0))
+        .and_then(|rows| rows.collect())
+        .map_err(map)?;
+    Ok(rows
+        .iter()
+        .filter_map(|json| serde_json::from_str(json).ok())
+        .collect())
+}
+
 /// The folder that holds the caches, created on first use.
 fn cache_root() -> Result<PathBuf> {
     let dir = cache_root_path()?;
@@ -651,7 +685,8 @@ impl Cache {
         Ok(cache)
     }
 
-    /// Open (creating if needed) the cache database at `path`, ensuring its schema.
+    /// Opens the cache database at `path`, creating it when it is not there
+    /// and bringing its schema up to date.
     /// This low-level API does not verify ownership; Client operations do so
     /// before returning a cache for use.
     /// On Unix, the parent must be a private directory; existing database files
@@ -686,7 +721,7 @@ impl Cache {
         Ok(Cache { conn })
     }
 
-    /// The stored sync cursor, or `None` if not yet initialized.
+    /// The cursor sync goes on from, or `None` before a sync has stored one.
     pub fn last_event_id(&self) -> Result<Option<String>> {
         read_cursor(&self.conn)
     }
@@ -782,7 +817,8 @@ impl Cache {
         Ok(counts)
     }
 
-    /// Cached messages in a label, newest first.
+    /// A page of the messages cached in a label, newest first: only the
+    /// unread ones when `unread_only`.
     pub fn list(
         &self,
         label_id: &str,
@@ -790,23 +826,12 @@ impl Cache {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<MessageMetadata>> {
-        let mut stmt = self.conn.prepare(&list_sql(unread_only)).map_err(map)?;
-        let rows = stmt
-            .query_map(rusqlite::params![label_id, limit, offset], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(map)?;
-        let mut out = Vec::new();
-        for r in rows {
-            let json = r.map_err(map)?;
-            if let Ok(m) = serde_json::from_str::<MessageMetadata>(&json) {
-                out.push(m);
-            }
-        }
-        Ok(out)
+        let mut statement = self.conn.prepare(&list_sql(unread_only)).map_err(map)?;
+        read_metadata(&mut statement, rusqlite::params![label_id, limit, offset])
     }
 
-    /// (total, unread) cached for a label.
+    /// How many messages are cached in a label, and how many of those are
+    /// unread.
     pub fn count(&self, label_id: &str) -> Result<(i64, i64)> {
         self.conn
             .query_row(COUNT_SQL, [label_id], |row| {
@@ -894,35 +919,15 @@ impl Cache {
         Ok(expected_total as usize)
     }
 
-    /// Full-text search the local index. Tokens are AND-ed; punctuation-safe.
+    /// The messages whose indexed subject, body or people hold every word
+    /// of `query`, best match first, at most `limit` of them. Nothing typed
+    /// finds nothing.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
-        let expr = query
-            .split_whitespace()
-            .map(|t| format!("\"{}\"", t.replace('"', "")))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if expr.is_empty() {
+        let Some(expression) = match_expression(query) else {
             return Ok(Vec::new());
-        }
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT m.json FROM msg_fts JOIN messages m ON m.id=msg_fts.id \
-                 WHERE msg_fts MATCH ?1 ORDER BY rank LIMIT ?2",
-            )
-            .map_err(map)?;
-        let rows = stmt
-            .query_map(rusqlite::params![expr, limit], |row| {
-                row.get::<_, String>(0)
-            })
-            .map_err(map)?;
-        let mut out = Vec::new();
-        for r in rows {
-            if let Ok(m) = serde_json::from_str::<MessageMetadata>(&r.map_err(map)?) {
-                out.push(m);
-            }
-        }
-        Ok(out)
+        };
+        let mut statement = self.conn.prepare(SEARCH_SQL).map_err(map)?;
+        read_metadata(&mut statement, rusqlite::params![expression, limit])
     }
 }
 
@@ -932,7 +937,7 @@ impl Cache {
 /// another sync has moved since.
 #[cfg(test)]
 impl Cache {
-    /// Store the sync cursor.
+    /// Sets the cursor sync goes on from.
     pub(crate) fn set_last_event_id(&self, id: &str) -> Result<()> {
         write_cursor(&self.conn, id)
     }
@@ -982,7 +987,7 @@ impl Cache {
         Ok(())
     }
 
-    /// Index a message's decrypted body for local full-text search.
+    /// Adds a message's decrypted body to the local search index.
     pub(crate) fn index_message(&self, m: &MessageMetadata, body: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(map)?;
         replace_index(&tx, m, Some(body))?;

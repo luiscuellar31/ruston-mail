@@ -1,4 +1,6 @@
-//! High-level mail client assembling transport + crypto + API.
+//! The mail client: it signs in or resumes a saved session, keeps the
+//! account's unlocked keys, and offers the mail operations its submodules
+//! define.
 
 pub mod attachments;
 pub mod contacts;
@@ -76,25 +78,28 @@ impl SenderKeyCache {
     }
 }
 
-/// Options for an interactive login.
+/// What signing in to an account takes.
 pub struct LoginOptions {
-    /// Account username (email address).
+    /// The account's email address.
     pub username: String,
-    /// Account password.
+    /// The account's password.
     pub password: SecretString,
-    /// Optional TOTP code for two-factor authentication.
+    /// The current code from the account's authenticator app, when it has
+    /// one and it is known up front.
     pub totp: Option<SecretString>,
-    /// Separate mailbox password for two-password (PasswordMode 2) accounts.
+    /// The mailbox password of an account that keeps a separate one
+    /// (`PasswordMode` 2).
     pub mailbox_password: Option<SecretString>,
-    /// Local profile name used to store the session.
+    /// The local profile the session is saved under.
     pub profile: String,
-    /// Optional API base URL override.
+    /// Another API address than Proton's own.
     pub base_url: Option<String>,
-    /// Optional app-version string to present to the API.
+    /// The app version to present to the API, in place of the default.
     pub app_version: Option<String>,
-    /// Optional `User-Agent` to present as a real client.
+    /// The `User-Agent` to present, so requests look like a given client's.
     pub user_agent: Option<String>,
-    /// Optional human-verification (CAPTCHA) resolver, invoked on API code 9001.
+    /// What solves a human-verification challenge (a CAPTCHA) when Proton
+    /// answers with code 9001.
     pub hv: Option<crate::transport::HvResolver>,
 }
 
@@ -134,7 +139,8 @@ async fn mailbox_password<'a>(
     Ok(asked.insert(prompt().await?))
 }
 
-/// The Proton Mail client.
+/// A signed-in Proton Mail account, with its unlocked keys, through which
+/// every mail operation goes.
 pub struct Client {
     http: HttpClient,
     keys: KeyStore,
@@ -176,7 +182,8 @@ impl Client {
         }));
     }
 
-    /// Interactive login: SRP + 2FA, unlock keys, persist session.
+    /// Signs in with what `opts` carries, second factor included, unlocks
+    /// the account's keys, and saves the session under `opts.profile`.
     pub async fn login(opts: LoginOptions) -> Result<Client> {
         Self::login_inner(opts, LoginPrompts::default()).await
     }
@@ -208,17 +215,16 @@ impl Client {
         validate_profile_name(&opts.profile)?;
         let base_url = opts
             .base_url
-            .clone()
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+            .as_deref()
+            .unwrap_or(DEFAULT_BASE_URL)
+            .to_owned();
         let app_version = opts
             .app_version
-            .clone()
-            .unwrap_or_else(|| DEFAULT_APP_VERSION.to_string());
+            .as_deref()
+            .unwrap_or(DEFAULT_APP_VERSION)
+            .to_owned();
         let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(opts.profile.clone()));
-        let mut http = HttpClient::try_new(base_url.clone(), app_version.clone())?;
-        if let Some(ua) = &opts.user_agent {
-            http.set_user_agent(ua.clone()).await;
-        }
+        let mut http = api_client(&base_url, &app_version, opts.user_agent.as_deref()).await?;
         if let Some(resolver) = &opts.hv {
             http.set_hv_resolver(resolver.clone());
         }
@@ -308,7 +314,8 @@ impl Client {
         Ok((keys, paths, cache_identity))
     }
 
-    /// Resume a saved session and unlock keys using the stored `skp`.
+    /// Opens the session saved under `profile`, unlocking the account's keys
+    /// with the key passphrase saved beside it.
     pub async fn resume(profile: &str) -> Result<Client> {
         validate_profile_name(profile)?;
         let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(profile.to_string()));
@@ -331,13 +338,12 @@ impl Client {
         .ok_or(Error::Unauthorized)?;
         tracing::debug!(target: "ruston_core::mail", uid = %loaded.session.uid, "resume: session found; fetching user + addresses, unlocking keys");
 
-        let mut http = HttpClient::try_new(
-            loaded.session.base_url.clone(),
-            loaded.session.app_version.clone(),
-        )?;
-        if let Some(ua) = &loaded.session.user_agent {
-            http.set_user_agent(ua.clone()).await;
-        }
+        let mut http = api_client(
+            &loaded.session.base_url,
+            &loaded.session.app_version,
+            loaded.session.user_agent.as_deref(),
+        )
+        .await?;
         let Tokens {
             uid,
             access,
@@ -444,7 +450,8 @@ impl Client {
             .map_err(|error| Error::Session(format!("session wait task failed: {error}")))?
     }
 
-    /// The primary sending address email.
+    /// The email of the account's primary address, which new mail is sent
+    /// from unless another is chosen.
     pub fn primary_email(&self) -> Option<&str> {
         self.keys.primary_address().map(|a| a.email.as_str())
     }
@@ -456,8 +463,8 @@ impl Client {
         self.cache_identity.user_id()
     }
 
-    /// Fetch (and cache for a while) a sender's armored public keys for
-    /// verification, leaving out keys Proton marks as compromised.
+    /// The armored public keys that check `email`'s signatures, kept for a
+    /// while once fetched. Keys Proton marks as compromised are left out.
     pub(crate) async fn sender_pubkeys(&self, email: &str) -> Result<Vec<String>> {
         let key = email.to_ascii_lowercase();
         if let Some(keys) = self.sender_cache.lock().await.get(&key, Instant::now()) {
@@ -497,6 +504,21 @@ pub(crate) async fn off_thread<T: Send + 'static>(
 /// the other, and every command that resumes a session waits for both.
 async fn account<D: Doer>(http: &D) -> Result<(crypto::keys::User, Vec<crypto::keys::Address>)> {
     tokio::try_join!(api::keys::get_user(http), api::keys::get_addresses(http))
+}
+
+/// A client for the API at `base_url` that presents itself as `app_version`
+/// and, when there is one, `user_agent`: what signing in sets up, and what a
+/// resumed session sets up again from what it saved.
+async fn api_client(
+    base_url: &str,
+    app_version: &str,
+    user_agent: Option<&str>,
+) -> Result<HttpClient> {
+    let http = HttpClient::try_new(base_url, app_version)?;
+    if let Some(agent) = user_agent {
+        http.set_user_agent(agent.to_owned()).await;
+    }
+    Ok(http)
 }
 
 #[cfg(test)]

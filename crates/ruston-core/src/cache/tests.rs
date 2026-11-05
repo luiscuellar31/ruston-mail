@@ -722,25 +722,32 @@ fn failed_batch_rolls_back_prior_changes_and_cursor() {
 }
 
 #[test]
-fn upsert_list_delete_roundtrip() {
-    let c = Cache::open(Path::new(":memory:")).unwrap();
+fn messages_written_are_listed_counted_and_removed() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    let inbox = |unread_only: bool| -> Vec<String> {
+        let page = cache.list("0", unread_only, 10, 0).unwrap();
+        page.into_iter().map(|m| m.id).collect()
+    };
 
-    assert_eq!(c.last_event_id().unwrap(), None);
-    c.set_last_event_id("evt-1").unwrap();
-    assert_eq!(c.last_event_id().unwrap().as_deref(), Some("evt-1"));
+    // A new cache has no cursor until one is stored.
+    assert_eq!(cache.last_event_id().unwrap(), None);
+    cache.set_last_event_id("evt-1").unwrap();
+    assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("evt-1"));
 
-    c.upsert_message(&meta("a", "0", 1, 100)).unwrap();
-    c.upsert_message(&meta("b", "0", 0, 200)).unwrap();
-    let inbox = c.list("0", false, 10, 0).unwrap();
-    assert_eq!(inbox.len(), 2);
-    assert_eq!(inbox[0].id, "b"); // newest first
-    assert_eq!(c.list("0", true, 10, 0).unwrap().len(), 1); // only unread
-    assert_eq!(c.count("0").unwrap(), (2, 1));
+    cache
+        .upsert_message(&meta("older-unread", "0", 1, 100))
+        .unwrap();
+    cache
+        .upsert_message(&meta("newer-read", "0", 0, 200))
+        .unwrap();
+    assert_eq!(inbox(false), ["newer-read", "older-unread"]);
+    assert_eq!(inbox(true), ["older-unread"]);
+    assert_eq!(cache.count("0").unwrap(), (2, 1));
 
-    c.delete_message("a").unwrap();
-    assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 1);
-    c.clear().unwrap();
-    assert_eq!(c.list("0", false, 10, 0).unwrap().len(), 0);
+    cache.delete_message("older-unread").unwrap();
+    assert_eq!(inbox(false), ["newer-read"]);
+    cache.clear().unwrap();
+    assert!(inbox(false).is_empty());
 }
 
 #[test]
@@ -1440,18 +1447,52 @@ fn measure_fts_index_scaling() {
 }
 
 #[test]
-fn fts_index_and_search() {
-    let c = Cache::open(Path::new(":memory:")).unwrap();
-    c.index_message(&meta("m1", "5", 0, 10), "hello from ruston-cli rust client")
+fn search_finds_the_messages_that_hold_every_word_as_typed() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    for (id, body) in [
+        ("tool", "notes on ruston-cli, a rust client"),
+        ("other", "completely unrelated content"),
+    ] {
+        cache.index_message(&meta(id, "5", 0, 10), body).unwrap();
+    }
+    let found = |query: &str| -> Vec<String> {
+        let hits = cache.search(query, 10).unwrap();
+        hits.into_iter().map(|m| m.id).collect()
+    };
+
+    assert_eq!(found("ruston-cli"), ["tool"]);
+    assert_eq!(found("rust notes"), ["tool"]);
+    assert!(found("rust content").is_empty());
+    assert!(found("nonexistentword").is_empty());
+    // FTS5's operators and quotes are words like any other.
+    assert!(found("rust OR content").is_empty());
+    assert_eq!(found(r#""rust" cli"#), ["tool"]);
+    // Nothing typed finds nothing.
+    assert!(found("").is_empty());
+    assert!(found(" \t ").is_empty());
+}
+
+#[test]
+fn metadata_that_no_longer_reads_is_left_out_of_lists_and_searches() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    for id in ["readable", "unreadable"] {
+        cache
+            .index_message(&meta(id, "0", 0, 10), "quarterly figures")
+            .unwrap();
+    }
+    cache
+        .conn
+        .execute(
+            "UPDATE messages SET json='{not json' WHERE id='unreadable'",
+            [],
+        )
         .unwrap();
-    c.index_message(&meta("m2", "5", 0, 20), "completely unrelated content here")
-        .unwrap();
-    let hits = c.search("ruston-cli", 10).unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].id, "m1");
-    assert!(c.search("nonexistentword", 10).unwrap().is_empty());
-    // multi-token AND
-    assert_eq!(c.search("hello rust", 10).unwrap().len(), 1);
+    let ids = |messages: Vec<MessageMetadata>| -> Vec<String> {
+        messages.into_iter().map(|m| m.id).collect()
+    };
+
+    assert_eq!(ids(cache.list("0", false, 10, 0).unwrap()), ["readable"]);
+    assert_eq!(ids(cache.search("quarterly", 10).unwrap()), ["readable"]);
 }
 
 #[cfg(unix)]

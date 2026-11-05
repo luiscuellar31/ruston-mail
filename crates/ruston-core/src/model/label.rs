@@ -1,33 +1,34 @@
-//! Label / folder model.
+//! Labels and folders, as Proton lists them.
 
 use serde::{Deserialize, Serialize};
 
-/// A label or folder (distinguished by `label_type`).
+/// A label, a folder or a contact group, which `label_type` tells apart.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Label {
-    /// Label/folder ID.
+    /// The label's ID.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Display name.
+    /// The name it is shown by.
     #[serde(default)]
     pub name: String,
-    /// Display color (hex).
+    /// Its color, in hex, such as `#8080ff`.
     #[serde(default)]
     pub color: String,
-    /// Full path (parent folders joined), for nested folders.
+    /// The names of the folders it is in, then its own, joined by `/`.
     #[serde(default)]
     pub path: String,
-    /// Label kind (1 = label, 2 = contact group, 3 = folder, 4 = system folder).
+    /// Which kind it is, one of
+    /// [`label_type`](crate::model::enums::label_type).
     #[serde(rename = "Type", default)]
     pub label_type: i64,
-    /// ID of the parent folder, for nested folders.
+    /// The folder it sits in, for a folder inside another.
     #[serde(rename = "ParentID", default)]
     pub parent_id: Option<String>,
-    /// Sort order.
+    /// Where it comes among the others when they are listed.
     #[serde(default)]
     pub order: i64,
-    /// `1` if the folder triggers notifications.
+    /// `1` for a folder whose new mail Proton notifies.
     #[serde(default)]
     pub notify: Option<i64>,
 }

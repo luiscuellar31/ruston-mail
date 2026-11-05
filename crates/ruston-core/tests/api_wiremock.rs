@@ -1,45 +1,58 @@
-//! Wire-level tests for the API layer against a mock Proton server.
+//! The API functions, run against a mock of Proton's server: what each call
+//! sends, and how it reads what comes back.
 
 use ruston_core::api;
 use ruston_core::api::messages::ListQuery;
-use ruston_core::model::enums::resolve_folder;
+use ruston_core::model::enums::{label_ids, label_type, recipient_type, resolve_folder};
 use ruston_core::transport::HttpClient;
 use wiremock::matchers::{body_json, method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockBuilder, MockServer, ResponseTemplate};
 
 fn client(uri: &str) -> HttpClient {
     HttpClient::new(uri, "Other")
 }
 
+/// Matches a `verb` request to `endpoint` that carries each name and value
+/// of `query`.
+fn request(verb: &str, endpoint: &str, query: &[(&str, &str)]) -> MockBuilder {
+    query.iter().fold(
+        Mock::given(method(verb)).and(path(endpoint)),
+        |mock, (name, value)| mock.and(query_param(*name, *value)),
+    )
+}
+
+/// Proton's answer to a request that succeeded: code 1000 and `fields`.
+fn success(mut fields: serde_json::Value) -> ResponseTemplate {
+    fields["Code"] = 1000.into();
+    ResponseTemplate::new(200).set_body_json(fields)
+}
+
 #[tokio::test]
-async fn list_messages_builds_query_and_decodes() {
+async fn a_folder_page_is_asked_for_newest_first_and_read_with_its_total() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/mail/v4/messages"))
-        .and(query_param("Sort", "Time"))
-        .and(query_param("Desc", "1"))
-        .and(query_param("LabelID", "0"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "Code": 1000,
+    let newest_first = [("Sort", "Time"), ("Desc", "1"), ("LabelID", "0")];
+    request("GET", "/mail/v4/messages", &newest_first)
+        .respond_with(success(serde_json::json!({
             "Total": 2,
             "Messages": [
-                {"ID": "m1", "Subject": "hi", "Sender": {"Address": "a@proton.me"}},
-                {"ID": "m2", "Subject": "yo", "Sender": {"Address": "b@x.com"}}
+                {"ID": "msg-new", "Subject": "Invoice", "Sender": {"Address": "billing@example.org"}},
+                {"ID": "msg-old", "Subject": "Welcome", "Sender": {"Address": "team@proton.me"}}
             ]
         })))
+        .expect(1)
         .mount(&server)
         .await;
 
-    let q = ListQuery {
-        label_id: Some("0".into()),
-        ..Default::default()
+    let inbox = ListQuery {
+        label_id: Some(label_ids::INBOX.into()),
+        ..ListQuery::default()
     };
-    let (total, msgs) = api::messages::list_messages(&client(&server.uri()), &q)
+    let (total, messages) = api::messages::list_messages(&client(&server.uri()), &inbox)
         .await
         .unwrap();
     assert_eq!(total, 2);
-    assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[0].id, "m1");
+    let ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["msg-new", "msg-old"]);
 }
 
 #[tokio::test]
@@ -125,18 +138,18 @@ async fn a_bulk_action_names_the_ids_proton_refused() {
 }
 
 #[tokio::test]
-async fn trash_posts_label_3() {
+async fn trashing_puts_the_trash_label_on_the_messages() {
     let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .and(path("/mail/v4/messages/label"))
+    request("PUT", "/mail/v4/messages/label", &[])
         .and(body_json(
-            serde_json::json!({ "LabelID": "3", "IDs": ["x"] }),
+            serde_json::json!({ "LabelID": "3", "IDs": ["msg-1"] }),
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})))
+        .respond_with(success(serde_json::json!({})))
         .expect(1)
         .mount(&server)
         .await;
-    api::messages::label(&client(&server.uri()), "3", &["x".to_string()])
+    let ids = ["msg-1".to_string()];
+    api::messages::label(&client(&server.uri()), label_ids::TRASH, &ids)
         .await
         .unwrap();
 }
@@ -166,41 +179,47 @@ async fn a_conversation_is_labelled_and_unlabelled_as_a_whole() {
 }
 
 #[tokio::test]
-async fn labels_list_builds_type_param() {
+async fn folders_are_listed_by_their_label_type() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/core/v4/labels"))
-        .and(query_param("Type", "3"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "Code": 1000,
-            "Labels": [{"ID": "f1", "Name": "Work", "Type": 3, "Color": "#fff", "Path": "Work"}]
+    request("GET", "/core/v4/labels", &[("Type", "3")])
+        .respond_with(success(serde_json::json!({
+            "Labels": [
+                {"ID": "folder-1", "Name": "Receipts", "Type": 3, "Color": "#8080FF", "Path": "Receipts"}
+            ]
         })))
+        .expect(1)
         .mount(&server)
         .await;
-    let folders = api::labels::list(&client(&server.uri()), 3).await.unwrap();
-    assert_eq!(folders.len(), 1);
-    assert_eq!(folders[0].name, "Work");
+    let folders = api::labels::list(&client(&server.uri()), label_type::MESSAGE_FOLDER)
+        .await
+        .unwrap();
+    let [folder] = folders.as_slice() else {
+        panic!("one folder, got {folders:?}");
+    };
+    assert_eq!(folder.name, "Receipts");
 }
 
 #[tokio::test]
-async fn recipient_keys_lookup() {
+async fn a_recipient_s_keys_are_looked_up_by_address() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/core/v4/keys/all"))
-        .and(query_param("Email", "bob@proton.me"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "Code": 1000,
+    request("GET", "/core/v4/keys/all", &[("Email", "bo@proton.me")])
+        .respond_with(success(serde_json::json!({
             "RecipientType": 1,
-            "Address": { "Keys": [{"PublicKey": "ARMORED", "Flags": 3, "Primary": 1}] }
+            "Address": {
+                "Keys": [{"PublicKey": "-----BEGIN PGP PUBLIC KEY BLOCK-----", "Flags": 3, "Primary": 1}]
+            }
         })))
+        .expect(1)
         .mount(&server)
         .await;
-    let rk = api::keys::get_all_public_keys(&client(&server.uri()), "bob@proton.me")
+    let found = api::keys::get_all_public_keys(&client(&server.uri()), "bo@proton.me")
         .await
         .unwrap();
-    assert_eq!(rk.recipient_type, 1);
-    assert_eq!(rk.keys.len(), 1);
-    assert_eq!(rk.keys[0].flags, 3);
+    assert_eq!(found.recipient_type, recipient_type::INTERNAL);
+    let [key] = found.keys.as_slice() else {
+        panic!("one key, got {:?}", found.keys);
+    };
+    assert_eq!(key.flags, 3);
 }
 
 #[tokio::test]

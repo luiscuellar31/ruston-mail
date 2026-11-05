@@ -1,4 +1,4 @@
-//! Contacts (read) + address listing.
+//! The account's contacts, read only, and its own addresses.
 
 use super::Client;
 use crate::api;
@@ -9,17 +9,17 @@ use std::collections::HashSet;
 /// Contact email entries asked for at a time.
 const CONTACT_EMAILS_PAGE_SIZE: u32 = 100;
 
-/// A sending address.
+/// One of the account's addresses that mail can go out from.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AddressInfo {
-    /// The address identifier.
+    /// The address's ID.
     pub id: String,
-    /// The address email.
+    /// The email address.
     pub email: String,
 }
 
 impl Client {
-    /// List contacts (paged), returning the total count and the page.
+    /// One page of the account's contacts, with how many it has.
     pub async fn list_contacts(&self, page: u32, page_size: u32) -> Result<(u32, Vec<Contact>)> {
         api::contacts::list(self.http(), page, page_size).await
     }
@@ -49,7 +49,8 @@ impl Client {
         Ok(emails)
     }
 
-    /// The account's sending addresses (from the unlocked key store).
+    /// The addresses mail can go out from, those whose keys opened, in
+    /// Proton's `Order`.
     pub fn addresses(&self) -> Vec<AddressInfo> {
         self.keys()
             .addresses

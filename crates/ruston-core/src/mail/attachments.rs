@@ -1,4 +1,5 @@
-//! Attachment listing + download (decrypt).
+//! Attachments: listing a message's, opening them once their signatures
+//! check out, and saving them to files.
 
 use super::Client;
 use crate::api;
@@ -225,8 +226,8 @@ fn mime_attachment_position(id: &str) -> Option<usize> {
 }
 
 impl Client {
-    /// List a message's attachments (inline filtered unless `include_inline`),
-    /// those inside a PGP/MIME body included.
+    /// A message's attachments, those inside a PGP/MIME body included. Inline
+    /// ones, such as images within the body, come only with `include_inline`.
     pub async fn list_attachments(
         &self,
         message_id: &str,
@@ -251,7 +252,8 @@ impl Client {
         Ok((msg.meta, msg.attachments))
     }
 
-    /// Download + decrypt one attachment. Returns (filename, bytes).
+    /// Downloads one attachment of a message and opens it, giving its file
+    /// name and bytes.
     /// A nonempty detached signature must verify before plaintext is returned;
     /// unavailable sender keys or an invalid signature fail the download. One
     /// inside a PGP/MIME body, named `mime-` and its position, follows its
@@ -265,13 +267,11 @@ impl Client {
             return self.download_mime_attachment(message_id, position).await;
         }
         let msg = api::messages::get_message(self.http(), message_id).await?;
-        let att = msg
-            .attachments
-            .iter()
-            .find(|a| a.id == attachment_id)
-            .ok_or_else(|| Error::NotFound {
+        let Some(att) = msg.attachments.iter().find(|a| a.id == attachment_id) else {
+            return Err(Error::NotFound {
                 kind: "attachment".into(),
-            })?;
+            });
+        };
         self.download_listed_attachment(&msg.meta, att).await
     }
 
@@ -397,7 +397,8 @@ impl Client {
         .await
     }
 
-    /// Download all (non-inline) attachments of a message, up to 128 MiB total.
+    /// Every attachment of a message, opened, inline ones only with
+    /// `include_inline`, when they come to 128 MiB at most in all.
     /// Use `for_each_attachment` to process larger collections one at a time.
     pub async fn download_all_attachments(
         &self,
