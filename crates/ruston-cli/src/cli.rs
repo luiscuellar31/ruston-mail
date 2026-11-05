@@ -892,11 +892,12 @@ pub enum AddressesCmd {
     /// List addresses.
     List,
     /// Change the display name or signature of one of your addresses.
+    #[command(group = clap::ArgGroup::new("change").required(true).multiple(true))]
     Update {
         id: String,
-        #[arg(long = "display-name")]
+        #[arg(long = "display-name", group = "change")]
         display_name: Option<String>,
-        #[arg(long)]
+        #[arg(long, group = "change")]
         signature: Option<String>,
     },
 }
@@ -971,13 +972,14 @@ pub enum LabelsCmd {
         ids: Vec<String>,
     },
     /// Change the name, color or parent of a label or folder.
+    #[command(group = clap::ArgGroup::new("change").required(true).multiple(true))]
     Update {
         id: String,
-        #[arg(long)]
+        #[arg(long, group = "change")]
         name: Option<String>,
-        #[arg(long)]
+        #[arg(long, group = "change")]
         color: Option<String>,
-        #[arg(long)]
+        #[arg(long, group = "change")]
         parent: Option<String>,
     },
 }
@@ -1528,6 +1530,51 @@ mod tests {
             &["ruston-cli", "messages", "spam", "m1"][..],
             &["ruston-cli", "messages", "ham", "m1"],
             &["ruston-cli", "messages", "label", "add", "label-1", "m1"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");
+        }
+    }
+
+    #[test]
+    fn an_update_must_change_something() {
+        for args in [
+            &["ruston-cli", "labels", "update", "label-1"][..],
+            &["ruston-cli", "addresses", "update", "address-1"],
+        ] {
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{args:?}"
+            );
+        }
+        for args in [
+            &[
+                "ruston-cli",
+                "labels",
+                "update",
+                "label-1",
+                "--color",
+                "#FF0000",
+            ][..],
+            &[
+                "ruston-cli",
+                "labels",
+                "update",
+                "label-1",
+                "--name",
+                "Taxes",
+                "--parent",
+                "f",
+            ],
+            &[
+                "ruston-cli",
+                "addresses",
+                "update",
+                "address-1",
+                "--signature",
+                "Ana",
+            ],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");
         }
