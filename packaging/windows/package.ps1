@@ -62,6 +62,7 @@ if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -F
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item -LiteralPath (Join-Path $binaries 'ruston.exe'), (Join-Path $binaries 'ruston-cli.exe') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $repository 'LICENSE') -Destination (Join-Path $stage 'LICENSE.txt')
+# Settings finds the notices beside ruston.exe (src/licenses.rs); keep the two in step.
 Copy-Item -LiteralPath (Join-Path $repository 'THIRD_PARTY_LICENSES.txt') -Destination $stage
 foreach ($file in 'README.txt', 'register-mailto.ps1', 'unregister-mailto.ps1') {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $stage

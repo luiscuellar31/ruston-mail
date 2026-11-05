@@ -2928,6 +2928,24 @@ fn about_source_code_uses_the_background_browser_effect() {
 }
 
 #[test]
+fn third_party_notices_open_in_the_background_only_when_shipped() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ShowSettings(true));
+    app.third_party_notices = None;
+    assert_eq!(app.update(Message::OpenThirdPartyNotices).units(), 0);
+
+    app.third_party_notices = Some(PathBuf::from("THIRD_PARTY_LICENSES.txt"));
+    let effects = app.update(Message::OpenThirdPartyNotices);
+
+    assert_eq!(effects.units(), 1);
+    assert!(matches!(
+        effects.into_iter().next(),
+        Some(Effect::Background(_))
+    ));
+    assert!(app.showing_settings());
+}
+
+#[test]
 fn an_offline_start_keeps_the_saved_session_to_try_again() {
     let mut app = App::new(Settings::default());
 

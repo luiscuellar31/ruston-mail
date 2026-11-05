@@ -394,7 +394,10 @@ editing. The same confirmation appears before writing a new message or signing
 out from Settings.
 
 The **About** section at the bottom shows the app version, credits, and license.
-Choose **Source code** to open the project's repository in your browser.
+Choose **Source code** to open the project's repository in your browser, or
+**Third-party notices** to read the licenses of the software Ruston Mail
+includes, which open in your system's app for text files. Only a packaged app
+has that button: a build from source has no notices beside it.
 **Advanced**, above the keyboard shortcuts, holds choices most people can leave
 alone.
 

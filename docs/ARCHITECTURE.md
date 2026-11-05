@@ -483,15 +483,24 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Choices most people can leave alone, recipient encryption lookups and
   international domain names, share an Advanced card before Keyboard.
   Settings ends with an About card containing the existing logo, package version,
-  technology and author credits, license, and a Source code button. The button
-  dispatches `OpenSourceCode` through `App`, which opens the package repository
-  using the existing background browser effect. That effect, like the CLI's
+  technology and author credits, license, a Source code button and a
+  Third-party notices button. Source code dispatches `OpenSourceCode` through
+  `App`, which opens the package repository using the existing background
+  browser effect. Third-party notices dispatches `OpenThirdPartyNotices`, and
+  `App` hands the same effect the `THIRD_PARTY_LICENSES.txt` that
+  [`licenses.rs`](../src/licenses.rs) found at boot from the running
+  executable: beside it, in `../Resources` or in `../share/doc/ruston-mail`,
+  the places every package puts it (see
+  [Local state and tests](#local-state-and-tests)). Every system tries all
+  three, so each layout is tested on any of them. The file opens in the
+  system's default app for its type; a build run from Cargo has none, and the
+  card leaves that button out. That effect, like the CLI's
   human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
-  the address to the system's opener without a shell, which both take from
-  core's [`browser::opener`](../crates/ruston-core/src/browser.rs): `open`,
-  `xdg-open`, or on Windows `rundll32 url.dll,FileProtocolHandler` from
-  System32, never a `rundll32` that Windows would first look for beside the
-  executable. The
+  the address or file to the system's opener without a shell, which both
+  take from core's [`browser::opener`](../crates/ruston-core/src/browser.rs):
+  `open`, `xdg-open`, or on Windows `rundll32 url.dll,FileProtocolHandler`
+  from System32, never a `rundll32` that Windows would first look for beside
+  the executable. The
   desktop waits for the opener on a blocking worker with
   [`runtime::run_to_exit`](../src/runtime.rs), so on macOS and Linux it does
   not stay behind as a zombie process. Both
@@ -1394,7 +1403,8 @@ and egui's fonts; it ends by acknowledging protonmail-rs, which Ruston Mail
 was originally based on. A CI job fails when it no longer matches
 the dependencies, and every package carries it beside `LICENSE`: in the
 macOS app's `Resources`, the AppImage's `usr/share/doc/ruston-mail` and the
-Windows ZIP and installation folder.
+Windows ZIP and installation folder, where Settings' About card looks for it
+through [`licenses.rs`](../src/licenses.rs).
 A Windows-only identity test reads back the process AppUserModelID with the
 native API without opening a window.
 Native Windows Credential Manager, file dialogs, and window behavior need an

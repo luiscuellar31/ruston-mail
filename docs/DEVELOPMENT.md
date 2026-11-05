@@ -211,6 +211,10 @@ try {
   send must stay within the fictional mailbox.
 - Open the Source code button in Settings and confirm the default browser
   receives the repository URL.
+- In the installed app, whose folder name has a space, choose Third-party
+  notices in Settings and confirm `THIRD_PARTY_LICENSES.txt` opens in the
+  default app for text files. A `target` build has no notices beside it, so
+  it shows no such button.
 
 ### Credential Manager and attachment downloads
 
