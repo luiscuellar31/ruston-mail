@@ -43,7 +43,7 @@ pub(crate) fn has_terminal() -> bool {
 /// session is saved, happens first, as text. The terminal is put back as it
 /// was however the interface ends: a panic of its loop restores it through
 /// the hook `ratatui::try_init` installs, before the panic is reported, and
-/// stops marking pastes, as a normal end does.
+/// stops marking pastes and reporting the mouse, as a normal end does.
 pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let mailbox = if ctx.demo {
         Mailbox::demo()
@@ -57,7 +57,9 @@ pub(crate) async fn run(ctx: &Ctx, args: &TuiArgs) -> Result<()> {
     let mut terminal = ratatui::try_init()?;
     report_panics_of(std::thread::current().id());
     mark_pastes(true);
+    capture_mouse(true);
     let result = run_loop(&mut terminal, &mut app, &theme, &mailbox).await;
+    capture_mouse(false);
     mark_pastes(false);
     ratatui::restore();
     // Back to the default hook, which reports any panic as usual.
@@ -73,10 +75,23 @@ fn report_panics_of(loop_thread: ThreadId) {
     let report = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if std::thread::current().id() == loop_thread {
+            capture_mouse(false);
             mark_pastes(false);
             report(info);
         }
     }));
+}
+
+/// Asks the terminal to report the mouse's clicks and wheel, or to stop.
+/// While it reports them, most terminals select text only with a key held
+/// as it is dragged, such as Shift.
+fn capture_mouse(on: bool) {
+    use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+    let _ = if on {
+        crossterm::execute!(io::stdout(), EnableMouseCapture)
+    } else {
+        crossterm::execute!(io::stdout(), DisableMouseCapture)
+    };
 }
 
 /// Asks the terminal to mark what is pasted, or to stop, so a paste comes
@@ -122,7 +137,9 @@ fn login_options() -> Result<LoginArgs> {
 
 /// Draws, then waits for a key or for an answer to work handed out, until
 /// the person quits or the terminal stops sending events. A resize needs no
-/// message: the next draw fits the new size.
+/// message: the next draw fits the new size. The mouse moving asks for
+/// nothing, so it never reaches the loop, which would draw again for every
+/// cell it crosses.
 async fn run_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
@@ -130,7 +147,7 @@ async fn run_loop(
     mailbox: &Mailbox,
 ) -> Result<()> {
     let (sender, mut answers) = mpsc::unbounded_channel();
-    let mut events = EventStream::new();
+    let mut events = EventStream::new().filter(|event| std::future::ready(!moves(event)));
     let mut tasks = Tasks::default();
     for effect in app.start() {
         tasks.run(effect, mailbox, &sender);
@@ -164,6 +181,13 @@ async fn run_loop(
     }
     tasks.finish(mailbox, QUIT_WAIT).await;
     Ok(())
+}
+
+/// Whether `event` is the mouse moving, with a button held or none.
+fn moves(event: &io::Result<crossterm::event::Event>) -> bool {
+    use crossterm::event::{Event, MouseEventKind};
+    matches!(event, Ok(Event::Mouse(mouse))
+        if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)))
 }
 
 /// Where an attachment is saved: the Downloads folder the system names, as
@@ -311,12 +335,14 @@ fn suspends(event: &crossterm::event::Event) -> bool {
 fn suspend(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     use crossterm::terminal::{Clear, ClearType, EnterAlternateScreen};
     terminal.show_cursor()?;
+    capture_mouse(false);
     mark_pastes(false);
     ratatui::try_restore()?;
     signal_hook::low_level::raise(signal_hook::consts::SIGTSTP)?;
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(io::stdout(), EnterAlternateScreen, Clear(ClearType::All))?;
     mark_pastes(true);
+    capture_mouse(true);
     *terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
     Ok(())
 }
@@ -761,6 +787,24 @@ mod tests {
         assert!(!listed(&mailbox, label_ids::ARCHIVE).await.contains(&moved));
         // Listed again where it was.
         assert!(app.conversations.iter().any(|c| c.id == moved));
+    }
+
+    #[test]
+    fn the_mouse_moving_never_reaches_the_loop() {
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mouse = |kind| {
+            Ok(Event::Mouse(MouseEvent {
+                kind,
+                column: 3,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }))
+        };
+        assert!(moves(&mouse(MouseEventKind::Moved)));
+        assert!(moves(&mouse(MouseEventKind::Drag(MouseButton::Left))));
+        assert!(!moves(&mouse(MouseEventKind::Down(MouseButton::Left))));
+        assert!(!moves(&mouse(MouseEventKind::ScrollDown)));
+        assert!(!moves(&Ok(Event::Resize(80, 24))));
     }
 
     #[cfg(unix)]

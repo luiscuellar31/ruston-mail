@@ -4,7 +4,7 @@
 //! Every piece of text that comes with the mail goes through
 //! `terminal::screen_line` first.
 
-use super::app::{App, GO_TO, LinkPick, Pane, Query, Question};
+use super::app::{App, Drawn, GO_TO, LinkPick, Pane, Query, Question};
 use super::compose::{Checked, Compose, Field};
 use super::reading::{Reading, is_quoted, size_label};
 use crate::mailbox::OutgoingKind;
@@ -48,13 +48,17 @@ const LABEL_WIDTH: u16 = 9;
 
 /// Each key and what it does, as the list of keys shows them: Proton Mail's
 /// where it has one, and keys it leaves free for what only a terminal needs.
-const KEYS: [(&str, &str); 22] = [
+const KEYS: [(&str, &str); 23] = [
     ("Tab, Shift+Tab", "next or previous pane"),
     ("j, k, Up, Down", "move, or scroll the reader"),
     ("Enter, Right, Left", "open it, or go back a pane"),
     (
         "Enter, in the reader",
         "fold or open the message at its top",
+    ),
+    (
+        "Click, wheel",
+        "select it, open it once selected, or scroll",
     ),
     ("PageUp, PageDown", "scroll the reader a page"),
     ("Home, End, Ctrl+Up/Down", "go to the top or the bottom"),
@@ -168,6 +172,8 @@ fn accent_among(colorterm: &str, term: &str) -> Color {
 }
 
 pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
+    // Each pane drawn below notes where it is.
+    app.drawn.set(Drawn::default());
     // The message being written takes the whole screen.
     if let Some(compose) = &app.compose {
         draw_compose(frame, compose, theme, app.question.is_none());
@@ -715,7 +721,9 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
     if focused {
         block = block.border_style(theme.accent);
     }
-    match pane {
+    let inner = block.inner(area);
+    // The first row of its list it shows.
+    let first = match pane {
         Pane::Folders => {
             let items = app.places.iter().map(|place| {
                 let mut spans = vec![Span::raw(format!(
@@ -728,7 +736,7 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 }
                 ListItem::new(Line::from(spans))
             });
-            draw_list(frame, items, app.selected_place, focused, block, area);
+            draw_list(frame, items, app.selected_place, focused, block, area)
         }
         // Without this, the keys would seem to do nothing in an empty list.
         Pane::Conversations if app.listed_nothing() => {
@@ -754,6 +762,7 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 .style(Style::new().add_modifier(Modifier::DIM))
                 .wrap(Wrap { trim: true });
             frame.render_widget(hint.block(block), area);
+            0
         }
         Pane::Conversations => {
             let width = usize::from(block.inner(area).width);
@@ -771,15 +780,22 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 focused,
                 block.title_bottom(legend),
                 area,
-            );
+            )
         }
-        Pane::Reader => draw_reader(frame, app, block, area),
-    }
+        Pane::Reader => {
+            draw_reader(frame, app, block, area);
+            0
+        }
+    };
+    // For the mouse to find what it points at.
+    let mut drawn = app.drawn.get();
+    drawn.note(pane, inner, first);
+    app.drawn.set(drawn);
 }
 
 /// A list with its selection on `selected`, shown inverted in the focused
 /// pane, which reads without colors too, and underlined elsewhere: bold
-/// says a conversation is unread.
+/// says a conversation is unread. Returns the first row it shows.
 fn draw_list<'a>(
     frame: &mut Frame,
     items: impl Iterator<Item = ListItem<'a>>,
@@ -787,7 +803,7 @@ fn draw_list<'a>(
     focused: bool,
     block: Block,
     area: Rect,
-) {
+) -> usize {
     let highlight = if focused {
         Style::new().add_modifier(Modifier::REVERSED)
     } else {
@@ -796,6 +812,7 @@ fn draw_list<'a>(
     let list = List::new(items).block(block).highlight_style(highlight);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, area, &mut state);
+    state.offset()
 }
 
 /// The open conversation, the labels it bears under its subject, the
@@ -1198,12 +1215,14 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::super::app::Message;
+    use super::super::app::{Effect, Message};
     use super::super::compose::AnswerKind;
     use super::super::reading::Reading;
     use super::*;
     use crate::mailbox::{Outgoing, Place, PlaceKind};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::Terminal;
     use ratatui::backend::Backend;
     use ratatui::backend::TestBackend;
@@ -1725,6 +1744,133 @@ mod tests {
         );
         assert!(screen.contains("unread line 0"), "{screen}");
         assert!(!screen.contains('▸'), "{screen}");
+    }
+
+    /// Does what the mouse's `kind` at `column` and `row` asks, as the loop
+    /// would.
+    fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) -> Vec<Effect> {
+        let event = crossterm::event::Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.message_for(&event)
+            .map_or_else(Vec::new, |message| app.update(message))
+    }
+
+    const CLICK: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
+
+    #[test]
+    fn a_click_selects_a_row_and_on_the_row_selected_opens_it() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.conversations.push(Conversation {
+            id: "plans".into(),
+            subject: "Plans".into(),
+            ..Conversation::default()
+        });
+        // At 120 columns, the folders' rows start at (1, 1), the
+        // conversations' at (25, 1) and the reader's at (73, 1).
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        assert!(mouse(&mut app, CLICK, 5, 2).is_empty());
+        assert_eq!((app.focus, app.selected_place), (Pane::Folders, 1));
+        let listed = mouse(&mut app, CLICK, 5, 2);
+        assert!(
+            matches!(&listed[..], [Effect::Conversations { place, .. }] if place == "f-2024"),
+            "{listed:?}"
+        );
+        assert_eq!(app.focus, Pane::Conversations);
+
+        // In a pane without the keys, the row selected already only gets
+        // them; a row past the list's last, or the reader, too.
+        app.focus = Pane::Reader;
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        assert!(mouse(&mut app, CLICK, 30, 1).is_empty());
+        assert_eq!(
+            (app.focus, app.selected_conversation),
+            (Pane::Conversations, 0)
+        );
+        assert!(mouse(&mut app, CLICK, 30, 9).is_empty());
+        assert_eq!(app.selected_conversation, 0);
+        assert!(mouse(&mut app, CLICK, 90, 5).is_empty());
+        assert_eq!(app.focus, Pane::Reader);
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        assert!(mouse(&mut app, CLICK, 30, 2).is_empty());
+        assert_eq!(app.selected_conversation, 1);
+        let opened = mouse(&mut app, CLICK, 30, 2);
+        assert!(
+            matches!(&opened[..], [Effect::Conversation { id, .. }] if id == "plans"),
+            "{opened:?}"
+        );
+        assert_eq!(app.focus, Pane::Reader);
+
+        // Nothing but a press of the left button clicks.
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        for kind in [
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Moved,
+        ] {
+            assert!(mouse(&mut app, kind, 5, 1).is_empty());
+            assert_eq!((app.focus, app.selected_place), (Pane::Reader, 1));
+        }
+
+        // A list scrolled to its selection: its nine rows show the
+        // conversations from the eighth on.
+        app.conversations = vec![Conversation::default(); 20];
+        app.focus = Pane::Conversations;
+        app.selected_conversation = 15;
+        let _ = drawn(120, 12, &app, &Theme::new(false));
+        mouse(&mut app, CLICK, 30, 1);
+        assert_eq!(app.selected_conversation, 7);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_what_it_is_over_and_the_keys_over_the_panes() {
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        app.conversations.push(Conversation::default());
+        app.reading = Some(Reading {
+            id: "plans".into(),
+            subject: "Plans for May".into(),
+            lines: (0..100).map(|n| format!("line {n}")).collect(),
+            quotes: Vec::new(),
+            links: Vec::new(),
+            attachments: Vec::new(),
+            messages: Vec::new(),
+            answer: None,
+        });
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        // The reader a few rows a notch, the list a row, the keys staying
+        // with the folders.
+        mouse(&mut app, MouseEventKind::ScrollDown, 90, 10);
+        mouse(&mut app, MouseEventKind::ScrollDown, 90, 10);
+        mouse(&mut app, MouseEventKind::ScrollUp, 90, 10);
+        assert_eq!(app.scroll.get(), 3);
+        mouse(&mut app, MouseEventKind::ScrollDown, 30, 10);
+        assert_eq!(app.selected_conversation, 1);
+        mouse(&mut app, MouseEventKind::ScrollUp, 30, 10);
+        assert_eq!(app.selected_conversation, 0);
+        assert_eq!(app.focus, Pane::Folders);
+
+        // Over the keys, it scrolls them, and a click does nothing.
+        app.update(Message::ToggleHelp);
+        let _ = drawn(80, 12, &app, &Theme::new(false));
+        assert!(app.help_bottom.get() > 3);
+        mouse(&mut app, MouseEventKind::ScrollDown, 40, 6);
+        assert_eq!(app.help_scroll, 3);
+        mouse(&mut app, CLICK, 5, 2);
+        assert!(app.help);
+        assert_eq!(app.selected_place, 0);
+
+        // The command line, like a question or a message being written,
+        // keeps the keys, and the mouse does nothing meanwhile.
+        app.update(Message::ToggleHelp);
+        app.update(Message::Command);
+        let _ = drawn(120, 30, &app, &Theme::new(false));
+        mouse(&mut app, CLICK, 30, 2);
+        mouse(&mut app, MouseEventKind::ScrollDown, 90, 10);
+        assert_eq!((app.focus, app.scroll.get()), (Pane::Folders, 3));
+        assert!(app.command_line.is_some());
     }
 
     #[test]

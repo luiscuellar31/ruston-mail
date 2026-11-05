@@ -752,10 +752,12 @@ instead of an unknown outcome.
   and `conversations read`, through a `DemoSession` that keeps the changes
   the interface makes until it closes and works out its counts from its
   conversations. It owns
-  the terminal: raw mode and the alternate screen, put back however the
-  interface ends, a panic of its loop included, or while Ctrl+Z suspends it
-  where the shell has job control, and an async loop over crossterm's event
-  stream and the answers of the tasks it runs. A task that panics answers
+  the terminal: raw mode, the alternate screen and the mouse's reporting,
+  put back however the interface ends, a panic of its loop included, or
+  while Ctrl+Z suspends it where the shell has job control, and an async
+  loop over crossterm's event stream, less the mouse moving, which asks for
+  nothing and would cost a draw for every cell it crosses, and the answers
+  of the tasks it runs. A task that panics answers
   with a message the status bar shows, and its panic is not reported, so the
   interface keeps its screen. Quitting waits up to three seconds for the
   changes still on their way and then, through `Client::settle`, for a token
@@ -776,6 +778,12 @@ instead of an unknown outcome.
   open-source web client lists them, wherever Proton has one for the action,
   the desktop's Ctrl+R, Ctrl+F and Delete, and keys Proton leaves free for
   what only a terminal needs; after `g`, the next key names a folder to go to.
+  A click or a turn of the wheel finds what it points at where the view last
+  drew the panes: a click gives a pane the keys and selects a row of its
+  list, or opens it when it was selected there already, and the wheel moves
+  the list under it a row, as Up and Down do, or scrolls the reader, or the
+  list of keys over the panes. While a message is being written, a question
+  waits or the command line is open, the mouse asks for nothing.
   [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
   an opened conversation into the reader's lines, each message's headers,
   verdict and body as `conversations read` shows it, inside the task that
@@ -903,7 +911,8 @@ instead of an unknown outcome.
   For the same reason the view records which message is at the reader's top,
   and scrolls the reader to the message the state asks for, where a
   conversation opens or one just folded or opened, as the desktop lands on
-  one: unless it starts in the upper third already.
+  one: unless it starts in the upper third already. It also records where it
+  drew each pane and the first row of each list it showed, for the mouse.
   Every piece of text from the mail
   passes through `terminal.rs`'s `screen_line` or `screen_text`, which drop
   what output filtering drops and turn tabs, and on one line line breaks, into

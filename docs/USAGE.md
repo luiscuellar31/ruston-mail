@@ -581,6 +581,16 @@ current folder when there is none, never over a file already there. Opening an
 unread conversation marks it read once it shows, as the desktop does, unless
 you start it with `ruston-cli tui --keep-unread`.
 
+The mouse works too. A click on a folder or a conversation selects it, and a
+click on the one selected in the pane that has the keys opens it; a click
+anywhere in a pane gives it the keys. The wheel scrolls the list or the reader
+under it, leaving the keys where they are, or the keys while `?` shows them.
+The mouse does nothing while you write a message, while a question waits for
+an answer or while the command line is open. As the interface takes the
+mouse, your terminal selects text only with a key held as you drag: Shift in
+most terminals, Windows Terminal included, Option in iTerm2, and Fn in
+macOS's Terminal.
+
 `*` stars or unstars the conversation selected in the list, or the one the
 reader shows, `u` marks it unread and `r`, in the list, read, `a` archives it,
 `s` moves it to Spam, `i` to the Inbox, and `t` or Delete to Trash; then the
@@ -656,6 +666,8 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | Enter, Right | Open the folder or conversation |
 | Enter, in the reader | Fold the message at its top, or open it |
 | Left | Go back a pane |
+| Click | Select a folder or conversation, or open the one selected |
+| Mouse wheel | Scroll the list or the reader under it, or the keys |
 | PageUp, PageDown | Scroll the reader a page |
 | Home, End, Ctrl+Up, Ctrl+Down | Go to the top or the bottom |
 | `g`, then `i`, `a`, `e`, `*`, `d`, `t`, `s` or `m` | Go to the Inbox, Archive, Sent, Starred, Drafts, Trash, Spam or All mail |

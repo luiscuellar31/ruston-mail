@@ -6,13 +6,20 @@ use super::command::{Command, CommandLine};
 use super::compose::{AnswerKind, Asked, Checked, Compose, Sending};
 use super::reading::{Reading, size_label};
 use crate::mailbox::{Change, Outgoing, Place, PlaceKind, SendFailure, deletes_forever};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
 use ruston_core::mail::organize::folder_id_among;
 use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Error, Label, RecipientProtection, SearchOpts};
 use std::cell::Cell;
 use std::path::PathBuf;
+
+/// How many rows a notch of the mouse wheel scrolls the reader or the list
+/// of keys, as most programs scroll text.
+const WHEEL_ROWS: isize = 3;
 
 /// The three panes, in the order Tab visits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +54,34 @@ impl Pane {
             Self::Conversations => Self::Folders,
             Self::Reader => Self::Conversations,
         }
+    }
+}
+
+/// Where the view last drew each pane, for the mouse to find what it
+/// points at: in the order of [`Pane::ALL`], the area inside its borders,
+/// empty for a pane not drawn, and the first row of its list it showed.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Drawn([(Rect, usize); 3]);
+
+impl Drawn {
+    /// Notes that `pane` was drawn within `inner`, its list from its row
+    /// `first`.
+    pub(crate) fn note(&mut self, pane: Pane, inner: Rect, first: usize) {
+        if let Some(at) = Pane::ALL.iter().position(|each| *each == pane) {
+            self.0[at] = (inner, first);
+        }
+    }
+
+    /// The pane drawn at `column` and `row`, if any, with the row of its
+    /// list there; the reader has none.
+    fn at(&self, column: u16, row: u16) -> Option<(Pane, Option<usize>)> {
+        let position = Position::new(column, row);
+        let (pane, (inner, first)) = Pane::ALL
+            .into_iter()
+            .zip(self.0)
+            .find(|(_, (inner, _))| inner.contains(position))?;
+        let listed = pane != Pane::Reader;
+        Some((pane, listed.then(|| first + usize::from(row - inner.y))))
     }
 }
 
@@ -222,6 +257,9 @@ pub(crate) struct App {
     pub(crate) reader_bottom: Cell<u16>,
     /// How many rows of the reader fit when last drawn, for a page.
     pub(crate) reader_rows: Cell<u16>,
+    /// Where each pane was last drawn, which the view sets, for a click or
+    /// the wheel to find what it points at.
+    pub(crate) drawn: Cell<Drawn>,
     /// What is loading, or what went wrong, for the status bar.
     pub(crate) notice: Option<String>,
     /// The last list asked for; an answer to any other comes too late.
@@ -252,6 +290,17 @@ pub(crate) enum Message {
     Top,
     Bottom,
     Open,
+    /// A click on `pane`, on the row of its list at `row`, if any.
+    Click {
+        pane: Pane,
+        row: Option<usize>,
+    },
+    /// The mouse wheel turned a notch `by`, down for 1 and up for -1, over
+    /// the pane `over`, if any.
+    Wheel {
+        over: Option<Pane>,
+        by: isize,
+    },
     /// Waits for the key that names a folder to go to.
     Go,
     /// Goes to the folder at this place in [`GO_TO`], or nowhere when the
@@ -481,6 +530,7 @@ impl App {
             undo: None,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
+            drawn: Cell::new(Drawn::default()),
             notice: Some("Loading…".to_owned()),
             list_request: 0,
             reloading: false,
@@ -541,12 +591,18 @@ impl App {
                 self.focus = self.focus.previous();
             }
             Message::Left => {}
-            Message::Up => self.step(-1),
-            Message::Down => return self.down(),
-            Message::PageUp => self.step(-self.page()),
-            Message::PageDown => self.step(self.page()),
-            Message::Top => self.step(isize::MIN),
-            Message::Bottom => self.step(isize::MAX),
+            Message::Up => self.step(self.focus, -1),
+            Message::Down => return self.down(self.focus),
+            Message::PageUp => self.step(self.focus, -self.page()),
+            Message::PageDown => self.step(self.focus, self.page()),
+            Message::Top => self.step(self.focus, isize::MIN),
+            Message::Bottom => self.step(self.focus, isize::MAX),
+            Message::Click { pane, row } => return self.click(pane, row),
+            Message::Wheel {
+                over: Some(pane),
+                by,
+            } => return self.wheel(pane, by),
+            Message::Wheel { over: None, .. } => {}
             // As Proton Mail's Enter opens the message chosen in a conversation.
             Message::Open if self.focus == Pane::Reader => self.toggle_message(),
             Message::Open | Message::Right => return self.open(),
@@ -745,7 +801,8 @@ impl App {
 
     /// What a terminal event asks for: while the command line is open, the
     /// key typed in it, while a question waits, a yes or a no, after `g`,
-    /// the folder to go to, or else what [`Message::from_event`] makes of it.
+    /// the folder to go to, from the mouse, what [`App::pointed`] makes of
+    /// it, or else what [`Message::from_event`] makes of it.
     pub(crate) fn message_for(&self, event: &Event) -> Option<Message> {
         match event {
             // Pasted text goes where keys type, and never answers a question.
@@ -767,7 +824,33 @@ impl App {
             Event::Key(key) if self.going => {
                 (key.kind != KeyEventKind::Release).then(|| Message::GoTo(going_to(key)))
             }
+            Event::Mouse(mouse) => self.pointed(mouse),
             _ => Message::from_event(event),
+        }
+    }
+
+    /// What the mouse asks for: a click with its left button on a pane, or
+    /// the wheel turned over one, as the view last drew them; nothing while
+    /// the keys go to a message being written, a question, the command line
+    /// or the folder after `g`.
+    fn pointed(&self, mouse: &MouseEvent) -> Option<Message> {
+        if self.compose.is_some()
+            || self.question.is_some()
+            || self.picking_link.is_some_and(|pick| pick.confirming)
+            || self.command_line.is_some()
+            || self.going
+        {
+            return None;
+        }
+        let at = self.drawn.get().at(mouse.column, mouse.row);
+        let over = at.map(|(pane, _)| pane);
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                at.map(|(pane, row)| Message::Click { pane, row })
+            }
+            MouseEventKind::ScrollDown => Some(Message::Wheel { over, by: 1 }),
+            MouseEventKind::ScrollUp => Some(Message::Wheel { over, by: -1 }),
+            _ => None,
         }
     }
 
@@ -1055,7 +1138,7 @@ impl App {
             }
             None => self.marked.push(id),
         }
-        self.step(1);
+        self.step(Pane::Conversations, 1);
     }
 
     /// Marks every conversation listed, for an action on all of them, or
@@ -1588,10 +1671,10 @@ impl App {
         self.next_page > 0 && self.conversations.is_empty()
     }
 
-    /// Moves down a row, and at the last row of a list with more to it,
-    /// asks for its next page, which lands below. While a list's first page
-    /// is on its way, the rows shown are from before it, so none follow.
-    fn down(&mut self) -> Vec<Effect> {
+    /// Moves `pane` down a row, and at the last row of a list with more to
+    /// it, asks for its next page, which lands below. While a list's first
+    /// page is on its way, the rows shown are from before it, so none follow.
+    fn down(&mut self, pane: Pane) -> Vec<Effect> {
         let at_end = self.selected_conversation + 1 >= self.conversations.len();
         // The local index gives all it finds at once.
         let more = self.conversations.len() < usize::try_from(self.total).unwrap_or(usize::MAX)
@@ -1599,11 +1682,7 @@ impl App {
                 .search
                 .as_ref()
                 .is_some_and(|search| matches!(search.query, Query::Local(_)));
-        if self.focus == Pane::Conversations
-            && at_end
-            && more
-            && self.next_page > 0
-            && !self.loading_more
+        if pane == Pane::Conversations && at_end && more && self.next_page > 0 && !self.loading_more
         {
             self.loading_more = true;
             self.notice = Some(format!("Loading more of {}…", self.listed));
@@ -1624,7 +1703,40 @@ impl App {
                 },
             }];
         }
-        self.step(1);
+        self.step(pane, 1);
+        Vec::new()
+    }
+
+    /// What a click on `pane` does, on the row `row` of its list if any:
+    /// the pane gets the keys and the row is selected, or opened when it
+    /// was selected already in the pane that had them.
+    fn click(&mut self, pane: Pane, row: Option<usize>) -> Vec<Effect> {
+        let had_keys = self.focus == pane;
+        self.focus = pane;
+        let (selected, len) = match pane {
+            Pane::Folders => (&mut self.selected_place, self.places.len()),
+            Pane::Conversations => (&mut self.selected_conversation, self.conversations.len()),
+            Pane::Reader => return Vec::new(),
+        };
+        let Some(row) = row.filter(|row| *row < len) else {
+            return Vec::new();
+        };
+        if had_keys && *selected == row {
+            return self.open();
+        }
+        *selected = row;
+        Vec::new()
+    }
+
+    /// Scrolls `pane` as the wheel over it turns a notch `by`, leaving the
+    /// keys where they are: a list a row, as Up and Down move it, the
+    /// reader a few.
+    fn wheel(&mut self, pane: Pane, by: isize) -> Vec<Effect> {
+        match pane {
+            Pane::Reader => self.step(pane, by * WHEEL_ROWS),
+            _ if by > 0 => return self.down(pane),
+            _ => self.step(pane, by),
+        }
         Vec::new()
     }
 
@@ -1640,7 +1752,8 @@ impl App {
     }
 
     /// Scrolls the open list of keys as the key `message` asks, a row, a
-    /// page or to an end, as far as there is to go; another key does nothing.
+    /// page or to an end, or the wheel, as far as there is to go; another
+    /// key does nothing.
     fn scroll_help(&mut self, message: &Message) {
         let by = match message {
             Message::Up => -1,
@@ -1649,15 +1762,16 @@ impl App {
             Message::PageDown => page_of(&self.help_rows),
             Message::Top => isize::MIN,
             Message::Bottom => isize::MAX,
+            Message::Wheel { by, .. } => by * WHEEL_ROWS,
             _ => return,
         };
         self.help_scroll = scrolled(self.help_scroll, by, self.help_bottom.get());
     }
 
-    /// Moves the focused list's selection, or the reader, `by` rows, as far
-    /// as there is to go.
-    fn step(&mut self, by: isize) {
-        let (selected, len) = match self.focus {
+    /// Moves the selection of `pane`'s list, or the reader, `by` rows, as
+    /// far as there is to go.
+    fn step(&mut self, pane: Pane, by: isize) {
+        let (selected, len) = match pane {
             Pane::Folders => (&mut self.selected_place, self.places.len()),
             Pane::Conversations => (&mut self.selected_conversation, self.conversations.len()),
             Pane::Reader => {
@@ -2682,6 +2796,62 @@ mod tests {
                 page: 2
             }]
         );
+    }
+
+    #[test]
+    fn the_wheel_past_the_last_row_loads_the_next_page_and_moves_no_keys() {
+        let mut app = loaded();
+        app.total = 5;
+        let mut drawn = Drawn::default();
+        drawn.note(Pane::Conversations, Rect::new(25, 1, 46, 27), 0);
+        app.drawn.set(drawn);
+        let wheel = |row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 30,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let over = |app: &mut App, row| {
+            app.message_for(&wheel(row))
+                .map_or_else(Vec::new, |message| app.update(message))
+        };
+        assert!(over(&mut app, 3).is_empty());
+        assert_eq!(app.selected_conversation, 1);
+        assert_eq!(
+            over(&mut app, 3),
+            [Effect::Conversations {
+                request: 1,
+                place: label_ids::INBOX.into(),
+                page: 1
+            }]
+        );
+        assert_eq!(app.focus, Pane::Folders);
+        // Over no pane, it does nothing.
+        assert!(app.message_for(&wheel(40)).is_some());
+        assert!(over(&mut app, 40).is_empty());
+        assert_eq!(app.selected_conversation, 1);
+
+        // A message being written, or a question, takes no clicks.
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 30,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(matches!(
+            app.message_for(&click),
+            Some(Message::Click {
+                pane: Pane::Conversations,
+                row: Some(0)
+            })
+        ));
+        app.compose = Some(Compose::new(String::new()));
+        assert!(app.message_for(&click).is_none());
+        app.compose = None;
+        app.question = Some(Question::Discard);
+        assert!(app.message_for(&click).is_none());
     }
 
     #[test]
