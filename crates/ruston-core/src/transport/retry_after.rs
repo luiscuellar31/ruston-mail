@@ -4,7 +4,9 @@
 /// this, and the request is still sent again once.
 pub const MAX_RATE_LIMIT_WAIT: u64 = 30;
 
-/// Parse a `Retry-After` header value (integer seconds only), capped.
+/// The wait a `Retry-After` value asks for, in seconds, cut to
+/// [`MAX_RATE_LIMIT_WAIT`]. Only a whole number of seconds is read; a date
+/// is not.
 pub fn parse(value: &str) -> Option<u64> {
     let secs: u64 = value.trim().parse().ok()?;
     Some(secs.min(MAX_RATE_LIMIT_WAIT))

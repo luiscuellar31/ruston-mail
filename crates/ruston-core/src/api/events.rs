@@ -1,19 +1,20 @@
-//! Event-stream API (`/core/v4/events`) for incremental sync.
+//! The event stream (`/core/v4/events`): what changed since a cursor, so a
+//! local copy of the mailbox can follow along.
 
 use crate::error::Result;
 use crate::model::message::MessageMetadata;
 use crate::transport::{Doer, Request};
 use serde::Deserialize;
 
-/// Event action codes.
+/// What happened to the item an event names, as its `Action` gives it.
 pub mod action {
-    /// The item was deleted.
+    /// It was deleted.
     pub const DELETE: u8 = 0;
-    /// The item was created.
+    /// It was created.
     pub const CREATE: u8 = 1;
-    /// The item was updated (full object).
+    /// It changed, and the event carries it whole.
     pub const UPDATE: u8 = 2;
-    /// Only the item's flags/labels changed.
+    /// Only its flags or labels changed.
     pub const UPDATE_FLAGS: u8 = 3;
 }
 
@@ -23,30 +24,30 @@ struct LatestResp {
     event_id: String,
 }
 
-/// A single message change in an event batch.
+/// A change to one message.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageEvent {
-    /// Message ID this change applies to.
+    /// The message's ID.
     #[serde(rename = "ID")]
     pub id: String,
-    /// Action code (see the `action` module).
+    /// What happened to it, one of the [`action`] codes.
     #[serde(rename = "Action")]
     pub action: u8,
-    /// Updated message metadata, when the action carries it.
+    /// Its metadata, when the action brings it.
     #[serde(rename = "Message", default)]
     pub message: Option<MessageMetadata>,
 }
 
-/// A per-label count update.
+/// How many items a label holds, and how many of them are unread.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct LabelCount {
-    /// Label/folder ID.
+    /// The label's or folder's ID.
     #[serde(rename = "LabelID")]
     pub label_id: String,
-    /// Total number of messages with this label.
+    /// How many items it holds.
     #[serde(rename = "Total", default)]
     pub total: i64,
-    /// Number of unread messages with this label.
+    /// How many of them are unread.
     #[serde(rename = "Unread", default)]
     pub unread: i64,
 }
@@ -62,42 +63,41 @@ struct EventResp {
     #[serde(rename = "Messages", default)]
     messages: Vec<MessageEvent>,
     #[serde(rename = "MessageCounts", default)]
-    message_counts: Vec<LabelCount>,
+    counts: Vec<LabelCount>,
 }
 
-/// A decoded event batch.
+/// The events after a cursor, read.
 #[derive(Debug, Clone)]
 pub struct EventBatch {
-    /// Cursor to pass to the next `get_events` call.
+    /// The cursor to ask from next.
     pub event_id: String,
-    /// More events are immediately available (loop until false).
+    /// Whether more events wait to be fetched right away.
     pub more: bool,
-    /// The server asked for a full resync of the local cache.
+    /// Whether Proton wants the local cache listed again from scratch.
     pub refresh: bool,
-    /// Message changes in this batch.
+    /// The messages that changed.
     pub messages: Vec<MessageEvent>,
-    /// Per-label count updates in this batch.
+    /// The labels whose counts changed, with their counts now.
     pub counts: Vec<LabelCount>,
 }
 
-/// The current latest event ID (the sync cursor start).
+/// The newest event's ID, where following the stream starts.
 pub async fn get_latest_event_id<D: Doer>(d: &D) -> Result<String> {
-    let r: LatestResp = d.decode(Request::get("/core/v4/events/latest")).await?;
-    Ok(r.event_id)
+    let LatestResp { event_id } = d.decode(Request::get("/core/v4/events/latest")).await?;
+    Ok(event_id)
 }
 
-/// Fetch the batch of events since `event_id`.
+/// The events after the cursor `event_id`.
 pub async fn get_events<D: Doer>(d: &D, event_id: &str) -> Result<EventBatch> {
-    let r: EventResp = d
-        .decode(Request::get(format!("/core/v4/events/{event_id}")))
-        .await?;
+    let since = Request::get(format!("/core/v4/events/{event_id}"));
+    let events: EventResp = d.decode(since).await?;
     Ok(EventBatch {
-        event_id: r.event_id,
+        event_id: events.event_id,
         // `More` is 0 or 1, while `Refresh` holds flags: its lowest bit, the
         // mail's, asks for the resync.
-        more: r.more == 1,
-        refresh: r.refresh & 1 != 0,
-        messages: r.messages,
-        counts: r.message_counts,
+        more: events.more == 1,
+        refresh: events.refresh & 1 != 0,
+        messages: events.messages,
+        counts: events.counts,
     })
 }

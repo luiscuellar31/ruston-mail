@@ -1,5 +1,6 @@
-//! HTTP transport: typed request/response, Proton envelope handling, and
-//! automatic 401-refresh / 429-rate-limit / 9001-human-verification retries.
+//! The HTTP transport: requests to Proton's API, each answer judged by its
+//! envelope, and a request sent again after a 401 renews the tokens, after a
+//! 429's wait, or once a human-verification challenge (9001) is solved.
 
 mod headers;
 mod retry_after;
@@ -35,14 +36,14 @@ const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 /// last try.
 const REFRESH_ATTEMPTS: u8 = 2;
 
-/// Request body.
+/// What a request sends after its headers.
 #[derive(Clone)]
 pub enum Body {
-    /// No request body.
+    /// Nothing.
     Empty,
-    /// JSON request body.
+    /// A JSON value, sent as its text.
     Json(serde_json::Value),
-    /// Raw bytes with an explicit content-type (set via `Request::raw`).
+    /// Bytes sent as they are, under the content type [`Request::raw`] gives.
     Bytes(Vec<u8>),
 }
 
@@ -58,27 +59,29 @@ impl std::fmt::Debug for Body {
     }
 }
 
-/// A transport-level request.
+/// One API call: where it goes, what it sends, and how the transport is to
+/// treat it.
 #[derive(Clone)]
 pub struct Request {
-    /// HTTP method.
+    /// The HTTP method.
     pub method: Method,
-    /// Request path appended to the client's base URL.
+    /// Where under the client's base URL it goes, such as `/core/v4/users`.
     pub path: String,
-    /// Query-string parameters.
+    /// Query parameters by name, sent in this order.
     pub query: Vec<(String, String)>,
-    /// Request body.
+    /// What it sends.
     pub body: Body,
-    /// Explicit `Content-Type`, if set (e.g. for a raw body).
+    /// The `Content-Type` to declare instead of JSON's, as a raw body needs.
     pub content_type: Option<String>,
-    /// Human-verification token and its type, if attached.
+    /// A solved human-verification token and its type, sent as headers.
     pub hv: Option<(String, String)>,
-    /// Skip the 401→refresh retry (auth-flow endpoints). Set by
-    /// [`Request::no_refresh`].
+    /// Whether a 401 comes back as it is instead of renewing the tokens, as
+    /// sign-in needs; [`Request::no_refresh`] sets it.
     pub skip_refresh: bool,
-    /// Do not attach `Authorization` (refresh endpoint).
+    /// Whether `Authorization` is left out, as the token refresh needs.
     pub omit_auth: bool,
-    /// Send `x-enforce-unauthsession: true` (session creation).
+    /// Whether `x-enforce-unauthsession: true` is sent, as creating a session
+    /// needs.
     pub enforce_unauth: bool,
     /// Maximum response body size, including responses from retries.
     pub max_response_bytes: usize,
@@ -106,7 +109,8 @@ impl std::fmt::Debug for Request {
 }
 
 impl Request {
-    /// Build an empty request with the given method and path.
+    /// A request of `method` to `path` that sends nothing yet, with the
+    /// ordinary response limit and deadline.
     pub fn new(method: Method, path: impl Into<String>) -> Self {
         Request {
             method,
@@ -122,132 +126,165 @@ impl Request {
             timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
-    /// A `GET` request to `path`.
+    /// A `GET` of `path`.
     pub fn get(path: impl Into<String>) -> Self {
         Self::new(Method::GET, path)
     }
-    /// A `POST` request to `path`.
+    /// A `POST` to `path`.
     pub fn post(path: impl Into<String>) -> Self {
         Self::new(Method::POST, path)
     }
-    /// A `PUT` request to `path`.
+    /// A `PUT` to `path`.
     pub fn put(path: impl Into<String>) -> Self {
         Self::new(Method::PUT, path)
     }
-    /// A `DELETE` request to `path`.
+    /// A `DELETE` of `path`.
     pub fn delete(path: impl Into<String>) -> Self {
         Self::new(Method::DELETE, path)
     }
-    /// Set a JSON request body.
-    pub fn json(mut self, v: serde_json::Value) -> Self {
-        self.body = Body::Json(v);
-        self
+    /// This request, sending `body` as JSON.
+    pub fn json(self, body: serde_json::Value) -> Self {
+        Self {
+            body: Body::Json(body),
+            ..self
+        }
     }
-    /// Set a raw byte body with an explicit content-type.
-    pub fn raw(mut self, bytes: Vec<u8>, content_type: impl Into<String>) -> Self {
-        self.body = Body::Bytes(bytes);
-        self.content_type = Some(content_type.into());
-        self
+    /// This request, sending `bytes` as they are, declared as `content_type`.
+    pub fn raw(self, bytes: Vec<u8>, content_type: impl Into<String>) -> Self {
+        Self {
+            body: Body::Bytes(bytes),
+            content_type: Some(content_type.into()),
+            ..self
+        }
     }
-    /// Append a query-string parameter.
+    /// This request, with the query parameter `k` set to `v` after those
+    /// already set.
     pub fn query<K: Into<String>, V: Into<String>>(mut self, k: K, v: V) -> Self {
         self.query.push((k.into(), v.into()));
         self
     }
-    /// Attach a human-verification token and its type.
-    pub fn with_hv(mut self, token: impl Into<String>, ttype: impl Into<String>) -> Self {
-        self.hv = Some((token.into(), ttype.into()));
-        self
+    /// This request, carrying the solved human-verification `token` of the
+    /// type `ttype`.
+    pub fn with_hv(self, token: impl Into<String>, ttype: impl Into<String>) -> Self {
+        Self {
+            hv: Some((token.into(), ttype.into())),
+            ..self
+        }
     }
-    /// Skip the automatic 401→refresh retry (for auth-flow endpoints), by
-    /// setting [`Request::skip_refresh`].
-    pub fn no_refresh(mut self) -> Self {
-        self.skip_refresh = true;
-        self
+    /// This request, returning a 401 as it is instead of renewing the tokens;
+    /// see [`Request::skip_refresh`].
+    pub fn no_refresh(self) -> Self {
+        Self {
+            skip_refresh: true,
+            ..self
+        }
     }
-    /// Do not send the `Authorization` header (for the refresh endpoint).
-    pub fn omit_auth(mut self) -> Self {
-        self.omit_auth = true;
-        self
+    /// This request, without the `Authorization` header.
+    pub fn omit_auth(self) -> Self {
+        Self {
+            omit_auth: true,
+            ..self
+        }
     }
-    /// Send the `x-enforce-unauthsession` header (for session creation).
-    pub fn enforce_unauth(mut self) -> Self {
-        self.enforce_unauth = true;
-        self
+    /// This request, sending `x-enforce-unauthsession: true`.
+    pub fn enforce_unauth(self) -> Self {
+        Self {
+            enforce_unauth: true,
+            ..self
+        }
     }
-    /// Set the maximum number of response body bytes accepted for this request.
-    pub fn max_response_bytes(mut self, limit: usize) -> Self {
-        self.max_response_bytes = limit;
-        self
+    /// This request, accepting at most `limit` bytes of response body.
+    pub fn max_response_bytes(self, limit: usize) -> Self {
+        Self {
+            max_response_bytes: limit,
+            ..self
+        }
     }
-    /// Override the total deadline for this request's HTTP attempt.
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
+    /// This request, with `timeout` as the whole deadline of each HTTP attempt.
+    pub fn timeout(self, timeout: Duration) -> Self {
+        Self { timeout, ..self }
+    }
+
+    /// Where this request goes on the API at `base_url`: its path, then each
+    /// query parameter in order, its name and value percent-encoded.
+    fn url(&self, base_url: &str) -> String {
+        let mut url = format!("{base_url}{}", self.path);
+        for (i, (name, value)) in self.query.iter().enumerate() {
+            url.push(if i == 0 { '?' } else { '&' });
+            url.push_str(&urlencoding::encode(name));
+            url.push('=');
+            url.push_str(&urlencoding::encode(value));
+        }
+        url
     }
 }
 
-/// A transport-level response.
+/// What the API answered.
 #[derive(Debug, Clone)]
 pub struct Response {
-    /// HTTP status code.
+    /// The HTTP status.
     pub status: u16,
-    /// Raw response body bytes.
+    /// The body, as it came.
     pub body: Vec<u8>,
-    /// `Retry-After` delay in seconds, if the server sent one, cut to the
-    /// longest wait the transport honors.
+    /// How many seconds its `Retry-After` header asks to wait, when it has
+    /// one, cut to the longest wait the transport honors.
     pub retry_after: Option<u64>,
 }
 
-/// Mutable auth state shared with the client (so refresh can update it).
+/// The session that requests are made under. Clients made with
+/// [`HttpClient::with_state`] share one, so tokens a refresh renews reach
+/// every one of them.
 #[derive(Debug, Clone)]
 pub struct AuthState {
-    /// Session UID, once authenticated.
+    /// The session's ID, sent as `x-pm-uid` once signed in.
     pub uid: Option<String>,
-    /// Current access token, once authenticated.
+    /// The token each request presents once signed in.
     pub access: Option<SecretString>,
-    /// Current refresh token, once authenticated.
+    /// The token that renews `access` when Proton refuses it.
     pub refresh: Option<SecretString>,
-    /// App-version string sent on every request.
+    /// The client name and version every request gives in `x-pm-appversion`.
     pub app_version: String,
-    /// Optional `User-Agent` (to present as a real client).
+    /// The `User-Agent` every request sends, if one is set.
     pub user_agent: Option<String>,
 }
 
 impl AuthState {
-    /// An empty (logged-out) auth state for the given app version.
+    /// The state before sign-in: no session, only the client's version.
     pub fn unauthenticated(app_version: impl Into<String>) -> Self {
-        AuthState {
+        let app_version = app_version.into();
+        Self {
             uid: None,
             access: None,
             refresh: None,
-            app_version: app_version.into(),
+            app_version,
             user_agent: None,
         }
     }
 }
 
-/// Callback invoked after a successful token refresh with the rotated tokens,
-/// which it borrows, so saving them needs no copy in the clear — use
+/// What is handed the new pair of tokens each time a refresh succeeds. It
+/// borrows them, so saving them needs no copy in the clear — use
 /// [`FallibleRefreshPersist`] when storage can fail.
 pub type RefreshPersist = Arc<dyn Fn(&Tokens) + Send + Sync>;
 /// A token-refresh callback whose persistence failure is returned to the request.
 pub type FallibleRefreshPersist = Arc<dyn Fn(&Tokens) -> Result<()> + Send + Sync>;
 type RefreshLoad = Arc<dyn Fn() -> Result<(File, Option<Tokens>)> + Send + Sync>;
-/// Resolver for human-verification challenges (returns token, token-type).
+/// Solves a human-verification challenge, giving the token to send the
+/// request again with, and its type.
 pub type HvResolver =
     Arc<dyn Fn(HvChallenge) -> BoxFuture<'static, Result<(String, String)>> + Send + Sync>;
 
-/// The async transport interface consumed by the API layer.
+/// What the API layer sends its requests through.
 #[async_trait]
 pub trait Doer: Send + Sync {
-    /// Execute a request and return the raw response (after envelope/retry handling).
+    /// Sends `req` and returns the answer as it came, once any retries are
+    /// done and its envelope reads as a success.
     async fn do_raw(&self, req: Request) -> Result<Response>;
-    /// Execute a request and deserialize the response body into `T`.
+    /// Sends `req` and reads the answer's body as a `T`.
     async fn decode<T: DeserializeOwned>(&self, req: Request) -> Result<T>;
 }
 
-/// Default HTTP client over `reqwest`.
+/// The [`Doer`] that sends requests to the API with `reqwest`.
 pub struct HttpClient {
     client: reqwest::Client,
     base_url: String,
@@ -259,7 +296,8 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-    /// Create a client with a fresh unauthenticated state for `base_url`.
+    /// A client for the API at `base_url`, not signed in, that names itself
+    /// `app_version`.
     ///
     /// # Panics
     ///
@@ -278,7 +316,8 @@ impl HttpClient {
         )
     }
 
-    /// Create a client sharing the given auth state (so refresh updates propagate).
+    /// A client for the API at `base_url` under the session `auth`, shared
+    /// with the clients made with it, so tokens one of them renews reach all.
     ///
     /// # Panics
     ///
@@ -318,7 +357,8 @@ impl HttpClient {
         })
     }
 
-    /// The shared auth-state handle (clone to observe token rotation).
+    /// The session this client sends requests under, shared, so the holder
+    /// sees the tokens a refresh renews.
     pub fn auth_state(&self) -> Arc<RwLock<AuthState>> {
         self.auth.clone()
     }
@@ -348,7 +388,7 @@ impl HttpClient {
             hv: None,
         }
     }
-    /// Register a callback invoked with rotated tokens after each refresh.
+    /// Has each refresh hand its new pair of tokens to `cb`, to be saved.
     pub fn set_refresh_persist(&mut self, cb: RefreshPersist) {
         self.on_refresh = Some(Arc::new(move |tokens| {
             cb(tokens);
@@ -364,36 +404,25 @@ impl HttpClient {
     pub(crate) fn set_refresh_load(&mut self, cb: RefreshLoad) {
         self.refresh_load = Some(cb);
     }
-    /// Register a resolver to satisfy human-verification (9001) challenges.
+    /// Sets what solves a human-verification challenge (code 9001), so the
+    /// request is sent again with the answer. Without one, the challenge
+    /// is the request's error.
     pub fn set_hv_resolver(&mut self, cb: HvResolver) {
         self.hv = Some(cb);
     }
 
-    /// Set the active session's UID and access/refresh tokens.
+    /// Has the requests that follow use the session `uid` and its pair of
+    /// tokens.
     pub async fn set_tokens(&self, uid: String, access: SecretString, refresh: SecretString) {
-        let mut a = self.auth.write().await;
-        a.uid = Some(uid);
-        a.access = Some(access);
-        a.refresh = Some(refresh);
+        let mut auth = self.auth.write().await;
+        auth.uid = Some(uid);
+        auth.access = Some(access);
+        auth.refresh = Some(refresh);
     }
 
-    /// Present a custom `User-Agent` on every request.
+    /// Sends `ua` as the `User-Agent` of every request.
     pub async fn set_user_agent(&self, ua: String) {
         self.auth.write().await.user_agent = Some(ua);
-    }
-
-    fn url(&self, req: &Request) -> String {
-        let mut u = format!("{}{}", self.base_url, req.path);
-        if !req.query.is_empty() {
-            let qs: Vec<String> = req
-                .query
-                .iter()
-                .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
-                .collect();
-            u.push('?');
-            u.push_str(&qs.join("&"));
-        }
-        u
     }
 
     /// Move byte buffers into reqwest once. Its buffered requests share their
@@ -401,7 +430,7 @@ impl HttpClient {
     fn prepare_request(&self, req: &mut Request) -> Result<reqwest::Request> {
         let builder = self
             .client
-            .request(req.method.clone(), self.url(req))
+            .request(req.method.clone(), req.url(&self.base_url))
             .timeout(req.timeout);
         let builder = match &mut req.body {
             Body::Empty => builder,
@@ -417,10 +446,7 @@ impl HttpClient {
         prepared: &reqwest::Request,
         auth: &AuthState,
     ) -> Result<Response> {
-        let mut hdrs = headers::build_headers(auth, req);
-        if req.omit_auth {
-            hdrs.remove(reqwest::header::AUTHORIZATION);
-        }
+        let hdrs = headers::build_headers(auth, req);
         let body_kind = match &req.body {
             Body::Empty => "empty",
             Body::Json(_) => "json",
@@ -439,19 +465,12 @@ impl HttpClient {
         let sent = std::time::SystemTime::now();
         let resp = client.execute(attempt).await?;
         // Every response comes from the API, whose clock OpenPGP keeps to.
-        if let Some(date) = resp
-            .headers()
-            .get(reqwest::header::DATE)
-            .and_then(|v| v.to_str().ok())
-        {
+        if let Some(date) = header_text(&resp, reqwest::header::DATE) {
             crate::crypto::clock::note_proton_date(date, sent, std::time::SystemTime::now());
         }
         let status = resp.status().as_u16();
-        let retry_after = resp
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(retry_after::parse);
+        let retry_after =
+            header_text(&resp, reqwest::header::RETRY_AFTER).and_then(retry_after::parse);
         let body = read_bounded_body(resp, req.max_response_bytes).await?;
         tracing::debug!(target: "ruston_core::http", status, bytes = body.len(), ms = started.elapsed().as_millis() as u64, "← response");
         Ok(Response {
@@ -461,7 +480,7 @@ impl HttpClient {
         })
     }
 
-    /// Refresh the access/refresh tokens via `POST /auth/v4/refresh`, unless
+    /// Renews the session's tokens with `POST /auth/v4/refresh`, unless
     /// another request or process already replaced the ones `sent_auth` holds.
     async fn refresh_tokens(&self, sent_auth: &AuthState) -> Result<Refresh> {
         // Keep the check, refresh request, and token replacement under the
@@ -500,15 +519,12 @@ impl HttpClient {
         } else {
             None
         };
-        let (uid, refresh) = {
-            match (&a.uid, &a.refresh) {
-                (Some(u), Some(r)) => (u.clone(), r.expose_secret().to_string()),
-                _ => return Err(Error::Unauthorized),
-            }
+        let (Some(uid), Some(refresh)) = (a.uid.clone(), a.refresh.as_ref()) else {
+            return Err(Error::Unauthorized);
         };
         let body = serde_json::json!({
             "UID": uid,
-            "RefreshToken": refresh,
+            "RefreshToken": refresh.expose_secret(),
             "ResponseType": "token",
             "GrantType": "refresh_token",
             "RedirectURI": "https://protonmail.ch",
@@ -602,6 +618,11 @@ impl Rotation {
     }
 }
 
+/// The value of `response`'s header `name`, when it has one in visible ASCII.
+fn header_text(response: &reqwest::Response, name: reqwest::header::HeaderName) -> Option<&str> {
+    response.headers().get(name)?.to_str().ok()
+}
+
 async fn read_bounded_body(mut resp: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
     let stated = resp.content_length();
     if stated.is_some_and(|len| len > limit as u64) {
@@ -620,7 +641,7 @@ async fn read_bounded_body(mut resp: reqwest::Response, limit: usize) -> Result<
     Ok(body)
 }
 
-/// Outcome of inspecting a response for the Proton error envelope.
+/// What a response's envelope says about it.
 enum Detected {
     Ok,
     Api(ApiError),
@@ -649,7 +670,7 @@ fn detect(status: u16, body: &[u8]) -> Detected {
         .and_then(|envelope| envelope.code.as_ref())
         .and_then(serde_json::Value::as_i64);
 
-    // Human verification (may arrive on HTTP 200 in the auth flow, or 422).
+    // A challenge comes with a 422, or with a 200 while signing in.
     if code == Some(response_code::HUMAN_VERIFICATION)
         && let Some(details) = envelope.and_then(|envelope| envelope.details.as_ref())
     {
@@ -814,7 +835,7 @@ mod tests {
             .and(path("/protected"))
             .respond_with(
                 ResponseTemplate::new(401)
-                    .set_body_json(serde_json::json!({"Code":401,"Error":"expired"})),
+                    .set_body_json(serde_json::json!({"Code":401,"Error":"Invalid access token"})),
             )
             .mount(&server)
             .await;
@@ -1203,20 +1224,56 @@ mod tests {
         assert_eq!(value.value, 7);
     }
 
-    #[tokio::test]
-    async fn decodes_success_envelope() {
+    /// Proton's success envelope around `{"Value": value}`.
+    fn success(value: i64) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000, "Value": value}))
+    }
+
+    /// A server giving every `GET /x` the answer `respond` makes.
+    async fn answering(respond: impl wiremock::Respond + 'static) -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/x"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"Code":1000,"Value":42})),
-            )
+            .respond_with(respond)
             .mount(&server)
             .await;
-        let c = client(&server.uri());
-        let v: ValueResp = c.decode(Request::get("/x")).await.unwrap();
-        assert_eq!(v.value, 42);
+        server
+    }
+
+    /// Gives each request the next of `answers`, and those after the last
+    /// the last again.
+    fn in_turn<const N: usize>(answers: [ResponseTemplate; N]) -> impl wiremock::Respond {
+        let served = std::sync::atomic::AtomicUsize::new(0);
+        move |_: &wiremock::Request| {
+            let turn = served.fetch_add(1, Ordering::SeqCst);
+            answers[turn.min(N - 1)].clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_success_envelope_is_decoded_with_the_rest_of_the_body() {
+        let server = answering(success(42)).await;
+        let decoded: ValueResp = client(&server.uri())
+            .decode(Request::get("/x"))
+            .await
+            .unwrap();
+        assert_eq!(decoded.value, 42);
+    }
+
+    #[test]
+    fn query_parameters_are_percent_encoded_in_the_order_they_were_set() {
+        let search = Request::get("/mail/v4/messages")
+            .query("Keyword", "a b&c=d")
+            .query("LabelID", "x/y+z")
+            .query("Page", "0");
+        assert_eq!(
+            search.url("https://mail.proton.me/api"),
+            "https://mail.proton.me/api/mail/v4/messages?Keyword=a%20b%26c%3Dd&LabelID=x%2Fy%2Bz&Page=0"
+        );
+        assert_eq!(
+            Request::get("/core/v4/users").url("http://127.0.0.1"),
+            "http://127.0.0.1/core/v4/users"
+        );
     }
 
     #[tokio::test]
@@ -1320,25 +1377,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn maps_error_code() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/x"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"Code":2501,"Error":"nope"})),
-            )
-            .mount(&server)
+    async fn an_error_code_is_returned_with_proton_s_message() {
+        let refusal = ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!({"Code": 2501, "Error": "nope"}));
+        let server = answering(refusal).await;
+        let result = client(&server.uri())
+            .decode::<ValueResp>(Request::get("/x"))
             .await;
-        let c = client(&server.uri());
-        let err = c.decode::<ValueResp>(Request::get("/x")).await.unwrap_err();
-        match err {
-            Error::Api(e) => {
-                assert_eq!(e.code, 2501);
-                assert_eq!(e.message, "nope");
-            }
-            other => panic!("expected Api, got {other:?}"),
-        }
+        let Err(Error::Api(error)) = &result else {
+            panic!("expected an API error, got {result:?}");
+        };
+        assert_eq!(
+            (error.http_status, error.code, error.message.as_str()),
+            (200, 2501, "nope")
+        );
     }
 
     #[tokio::test]
@@ -1365,70 +1417,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retries_once_on_429() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/x"))
-            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/x"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"Code":1000,"Value":7})),
-            )
-            .mount(&server)
-            .await;
-        let c = client(&server.uri());
-        let v: ValueResp = c.decode(Request::get("/x")).await.unwrap();
-        assert_eq!(v.value, 7);
+    async fn a_rate_limited_request_is_sent_once_more() {
+        let limited = ResponseTemplate::new(429).insert_header("Retry-After", "0");
+        let server = answering(in_turn([limited, success(7)])).await;
+        let decoded: ValueResp = client(&server.uri())
+            .decode(Request::get("/x"))
+            .await
+            .unwrap();
+        assert_eq!(decoded.value, 7);
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
-    async fn refreshes_then_retries_on_401() {
+    async fn an_expired_access_token_is_renewed_and_the_request_sent_again() {
+        use wiremock::matchers::body_partial_json;
         let server = MockServer::start().await;
-        // First protected call → 401.
-        Mock::given(method("GET"))
-            .and(path("/protected"))
-            .respond_with(
-                ResponseTemplate::new(401)
-                    .set_body_json(serde_json::json!({"Code":401,"Error":"expired"})),
-            )
-            .up_to_n_times(1)
-            .mount(&server)
-            .await;
-        // Refresh endpoint → new tokens.
+        refuse(&server, "old-acc", 1, Duration::ZERO).await;
         Mock::given(method("POST"))
             .and(path("/auth/v4/refresh"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({"Code":1000,"AccessToken":"new-acc","RefreshToken":"new-ref"}),
+            .and(body_partial_json(
+                serde_json::json!({"UID": "uid", "RefreshToken": "old-ref"}),
             ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Code": 1000,
+                "AccessToken": "new-acc",
+                "RefreshToken": "new-ref",
+            })))
+            .expect(1)
             .mount(&server)
             .await;
-        // Retried protected call → success.
         Mock::given(method("GET"))
             .and(path("/protected"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"Code":1000,"Value":99})),
-            )
+            .and(header("authorization", "Bearer new-acc"))
+            .respond_with(success(99))
+            .expect(1)
             .mount(&server)
             .await;
-
-        let c = client(&server.uri());
-        c.set_tokens(
+        let http = client(&server.uri());
+        http.set_tokens(
             "uid".into(),
             SecretString::from("old-acc"),
             SecretString::from("old-ref"),
         )
         .await;
-        let v: ValueResp = c.decode(Request::get("/protected")).await.unwrap();
-        assert_eq!(v.value, 99);
-        // Tokens were rotated.
-        let a = c.auth.read().await;
-        assert_eq!(a.access.as_ref().unwrap().expose_secret(), "new-acc");
+
+        let decoded: ValueResp = http.decode(Request::get("/protected")).await.unwrap();
+
+        assert_eq!(decoded.value, 99);
+        server.verify().await;
+        let auth = http.auth.read().await;
+        let held = |token: &Option<SecretString>| {
+            token.as_ref().map(|token| token.expose_secret().to_owned())
+        };
+        assert_eq!(
+            (held(&auth.access), held(&auth.refresh)),
+            (Some("new-acc".to_owned()), Some("new-ref".to_owned()))
+        );
     }
 
     #[tokio::test]
@@ -1787,7 +1831,7 @@ mod tests {
             .and(header("authorization", "Bearer old-acc"))
             .respond_with(
                 ResponseTemplate::new(401)
-                    .set_body_json(serde_json::json!({"Code":401,"Error":"expired"}))
+                    .set_body_json(serde_json::json!({"Code":401,"Error":"Invalid access token"}))
                     .set_delay(std::time::Duration::from_millis(200)),
             )
             .expect(2)
@@ -2126,32 +2170,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unauthorized_when_refresh_fails() {
+    async fn a_refused_refresh_token_ends_the_session() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/protected"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({"Code":401})))
-            .mount(&server)
-            .await;
+        refuse(&server, "a", 1, Duration::ZERO).await;
         Mock::given(method("POST"))
             .and(path("/auth/v4/refresh"))
             .respond_with(
-                ResponseTemplate::new(422).set_body_json(serde_json::json!({"Code":10013})),
+                ResponseTemplate::new(422).set_body_json(serde_json::json!({"Code": 10013})),
             )
+            .expect(1)
             .mount(&server)
             .await;
-        let c = client(&server.uri());
-        c.set_tokens(
+        let http = client(&server.uri());
+        http.set_tokens(
             "uid".into(),
             SecretString::from("a"),
             SecretString::from("r"),
         )
         .await;
-        let err = c
-            .decode::<ValueResp>(Request::get("/protected"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::Unauthorized));
+
+        let result = http.decode::<ValueResp>(Request::get("/protected")).await;
+
+        assert!(matches!(result, Err(Error::Unauthorized)), "{result:?}");
+        server.verify().await;
     }
 
     #[tokio::test]
@@ -2206,60 +2247,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolves_human_verification_then_retries_with_headers() {
+    async fn a_solved_challenge_goes_with_the_request_sent_again() {
         let server = MockServer::start().await;
-        // Retry that carries the HV headers → success (higher priority).
+        // Only the request that carries the answer gets through.
         Mock::given(method("GET"))
             .and(path("/x"))
-            .and(wiremock::matchers::header(
-                "x-pm-human-verification-token",
-                "chal:resp",
-            ))
-            .and(wiremock::matchers::header(
-                "x-pm-human-verification-token-type",
-                "captcha",
-            ))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"Code":1000,"Value":77})),
-            )
+            .and(header("x-pm-human-verification-token", "hv-1:resp"))
+            .and(header("x-pm-human-verification-token-type", "captcha"))
+            .respond_with(success(77))
             .with_priority(1)
             .mount(&server)
             .await;
-        // First (no HV header) → 9001 challenge.
         Mock::given(method("GET"))
             .and(path("/x"))
             .respond_with(human_verification_required())
             .mount(&server)
             .await;
-
-        let mut c = client(&server.uri());
-        let seen: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
-        let seen2 = seen.clone();
-        c.set_hv_resolver(Arc::new(move |chal: HvChallenge| {
-            let seen2 = seen2.clone();
-            Box::pin(async move {
-                seen2.write().await.push(chal.token.clone());
-                // value format = "<challenge>:<captcha-response>"
-                Ok((format!("{}:resp", chal.token), "captcha".to_string()))
-            })
+        let challenged = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = challenged.clone();
+        let mut http = client(&server.uri());
+        http.set_hv_resolver(Arc::new(move |challenge: HvChallenge| {
+            seen.lock().unwrap().push(challenge.token.clone());
+            // A captcha is answered with its token and the solver's response.
+            let answer = format!("{}:resp", challenge.token);
+            Box::pin(async move { Ok((answer, "captcha".to_owned())) })
         }));
 
-        let v: ValueResp = c.decode(Request::get("/x")).await.unwrap();
-        assert_eq!(v.value, 77);
-        // resolver was invoked with the challenge token from Details.
-        assert_eq!(seen.read().await.as_slice(), &["chal".to_string()]);
+        let decoded: ValueResp = http.decode(Request::get("/x")).await.unwrap();
+
+        assert_eq!(decoded.value, 77);
+        // The resolver was given the token the challenge's details name.
+        assert_eq!(*challenged.lock().unwrap(), ["hv-1"]);
     }
 
-    /// Proton's 9001 answer, asking to solve the challenge `chal`.
+    /// Proton's 9001 answer, asking to solve the challenge `hv-1`.
     fn human_verification_required() -> ResponseTemplate {
         ResponseTemplate::new(422).set_body_json(serde_json::json!({
             "Code": 9001,
             "Error": "human verification required",
             "Details": {
-                "HumanVerificationToken": "chal",
+                "HumanVerificationToken": "hv-1",
                 "HumanVerificationMethods": ["captcha"],
-                "WebUrl": "https://verify.proton.me/?methods=captcha&token=chal"
+                "WebUrl": "https://verify.proton.me/?methods=captcha&token=hv-1"
             }
         }))
     }
@@ -2274,7 +2303,7 @@ mod tests {
             .await;
 
         let result = client(&server.uri()).do_raw(Request::get("/x")).await;
-        assert!(matches!(result, Err(Error::HumanVerification(ref chal)) if chal.token == "chal"));
+        assert!(matches!(result, Err(Error::HumanVerification(ref chal)) if chal.token == "hv-1"));
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 

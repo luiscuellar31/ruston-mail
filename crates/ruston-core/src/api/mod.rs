@@ -1,4 +1,6 @@
-//! Typed API wrappers over the transport `Doer`.
+//! Proton's endpoints, a function for each, that send their requests
+//! through any [`Doer`](crate::transport::Doer) and read the answers into
+//! types.
 
 pub mod attachments;
 pub mod contacts;
