@@ -1,8 +1,7 @@
-//! Authentication commands: login, logout, whoami.
+//! Signing in and out: `login`, `logout` and `whoami`.
 
 use crate::cli::{ClientPreset, Ctx, LoginArgs};
 use crate::commands::prompt::prompt_line;
-use crate::commands::resume;
 use crate::render;
 use crate::terminal;
 use ruston_core::{
@@ -13,24 +12,27 @@ use serde_json::json;
 use std::io::IsTerminal;
 use std::sync::Arc;
 
-fn env_nonempty(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|v| !v.is_empty())
+/// The value of the environment variable `name` when it is set and not
+/// empty; otherwise what `ask` gets from the person at the terminal.
+fn from_env_or_ask(
+    name: &str,
+    ask: impl FnOnce() -> std::io::Result<String>,
+) -> std::io::Result<String> {
+    match std::env::var(name) {
+        Ok(value) if !value.is_empty() => Ok(value),
+        _ => ask(),
+    }
 }
 
 pub async fn login(ctx: &Ctx, args: LoginArgs) -> Result<()> {
-    let username = match env_nonempty("PROTON_USER") {
-        Some(u) => u,
-        None => prompt_line("Proton username/email: ")?,
-    };
-    let password = match env_nonempty("PROTON_PASSWORD") {
-        Some(p) => p,
-        None => rpassword::prompt_password("Proton password: ")?,
-    };
+    let username = from_env_or_ask("PROTON_USER", || prompt_line("Proton username/email: "))?;
+    let password = from_env_or_ask("PROTON_PASSWORD", || {
+        rpassword::prompt_password("Proton password: ")
+    })?;
 
-    // Explicit flags win; otherwise fall back to a --client preset.
-    let app_version = args
-        .app_version
-        .or_else(|| args.client.map(|c| c.app_version().to_string()));
+    // An option given wins over what the --client preset would send.
+    let preset_version = args.client.map(|preset| preset.app_version().to_owned());
+    let app_version = args.app_version.or(preset_version);
     let user_agent = resolve_user_agent(args.user_agent, args.client);
 
     let opts = LoginOptions {
@@ -139,7 +141,7 @@ where
 }
 
 pub async fn logout(ctx: &Ctx) -> Result<()> {
-    let revocation = log_out(resume(&ctx.profile).await, || {
+    let revocation = log_out(Client::resume(&ctx.profile).await, || {
         Client::forget_session(&ctx.profile)
     })
     .await?;
@@ -167,7 +169,7 @@ pub async fn logout(ctx: &Ctx) -> Result<()> {
 }
 
 pub async fn whoami(ctx: &Ctx) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     let email = client.primary_email().unwrap_or("(unknown)");
     if ctx.json {
         render::json_out(&json!({ "email": email }));

@@ -703,7 +703,8 @@ instead of an unknown outcome.
 
 - [`cli.rs`](../crates/ruston-cli/src/cli.rs) defines commands and global
   options; what only a sign-in uses is `LoginArgs`, the options of `login`, so
-  `Ctx` carries just the profile, JSON output and demo mode. [`main.rs`](../crates/ruston-cli/src/main.rs) dispatches them to
+  `Ctx` carries just the profile, JSON output and demo mode. [`main.rs`](../crates/ruston-cli/src/main.rs) hands each command to
+  the demo or to `commands::run`, which routes it to its handler in
   [`commands/`](../crates/ruston-cli/src/commands/). A command that takes a
   folder or label hands it to core's `Client::folder_id` first, which takes a
   system folder or an ID as it is and otherwise asks Proton for the account's

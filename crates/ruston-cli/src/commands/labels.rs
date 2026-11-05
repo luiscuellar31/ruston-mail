@@ -1,14 +1,17 @@
-//! Label / folder commands.
+//! The `labels` commands, which handle labels and folders alike.
 
 use crate::cli::Ctx;
 use crate::cli::LabelsCmd;
-use crate::commands::resume;
 use crate::render;
-use ruston_core::Result;
+use ruston_core::{Client, Result};
 
+/// Lists the account's labels or folders, creates one, or deletes or
+/// changes some.
 pub async fn run(ctx: &Ctx, cmd: LabelsCmd) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
-    match cmd {
+    let client = Client::resume(&ctx.profile).await?;
+    // Listing and creating show what they find; a change is reported the
+    // same way for every command that makes one.
+    let (action, ids) = match cmd {
         LabelsCmd::List { folders } => {
             let kind = render::LabelKind::chosen(folders);
             let labels = match kind {
@@ -16,6 +19,7 @@ pub async fn run(ctx: &Ctx, cmd: LabelsCmd) -> Result<()> {
                 render::LabelKind::Folders => client.list_folders().await?,
             };
             render::labels_list(ctx.json, &labels, kind);
+            return Ok(());
         }
         LabelsCmd::Create {
             name,
@@ -23,14 +27,17 @@ pub async fn run(ctx: &Ctx, cmd: LabelsCmd) -> Result<()> {
             folder,
             parent,
         } => {
-            let label = client
-                .create_label(&name, &color, folder, parent.as_deref())
-                .await?;
-            render::label_created(ctx.json, &label);
+            render::label_created(
+                ctx.json,
+                &client
+                    .create_label(&name, &color, folder, parent.as_deref())
+                    .await?,
+            );
+            return Ok(());
         }
         LabelsCmd::Delete { ids } => {
             client.delete_labels(&ids).await?;
-            render::action_result(ctx.json, "delete", &ids);
+            ("delete", ids)
         }
         LabelsCmd::Update {
             id,
@@ -41,8 +48,9 @@ pub async fn run(ctx: &Ctx, cmd: LabelsCmd) -> Result<()> {
             client
                 .update_label(&id, name.as_deref(), color.as_deref(), parent.as_deref())
                 .await?;
-            render::action_result(ctx.json, "update", std::slice::from_ref(&id));
+            ("update", vec![id])
         }
-    }
+    };
+    render::action_result(ctx.json, action, &ids);
     Ok(())
 }

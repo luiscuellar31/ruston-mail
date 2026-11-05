@@ -6,7 +6,8 @@ use crate::terminal;
 use ruston_core::{Error, Result};
 use std::io::{self, BufRead, IsTerminal, Write};
 
-/// Prompt on stderr (keeping stdout clean) and read a trimmed line.
+/// Asks `prompt` on standard error, which keeps it out of the output, and
+/// returns the line typed, trimmed.
 pub fn prompt_line(prompt: &str) -> std::io::Result<String> {
     terminal::eprint!("{prompt}");
     std::io::stderr().flush()?;

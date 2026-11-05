@@ -1,4 +1,5 @@
-//! Command-line interface definition (clap v4 derive).
+//! The commands and options `ruston-cli` takes. Clap parses them, and their
+//! doc comments are the text `--help` shows.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ruston_core::{SearchOpts, SendOptions};
@@ -37,12 +38,13 @@ pub struct Cli {
     #[arg(long, global = true, default_value = ruston_core::DEFAULT_SESSION_PROFILE, value_parser = parse_profile)]
     pub profile: String,
 
-    /// Emit machine-readable JSON instead of human-readable text.
+    /// Write the output as JSON, for scripts, rather than as text.
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Verbose logging to stderr (-v debug, -vv trace core, -vvv trace all).
-    /// `RUST_LOG` overrides. Logs steps of login, crypto, and every HTTP call.
+    /// Log to standard error what the CLI does: sign-in steps, cryptography
+    /// and every HTTP request. `-v` logs at debug level, `-vv` traces core too,
+    /// and `-vvv` traces everything; `RUST_LOG`, when set, decides instead.
     #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
@@ -76,7 +78,7 @@ pub struct LoginArgs {
     #[arg(long, value_parser = parse_api_url)]
     pub api_url: Option<String>,
 
-    /// Override the app-version header.
+    /// The `x-pm-appversion` header to sign in with, instead of the client's.
     #[arg(long)]
     pub app_version: Option<String>,
 
@@ -85,16 +87,20 @@ pub struct LoginArgs {
     #[arg(long, env = "PROTON_TOTP", hide_env_values = true)]
     pub totp: Option<String>,
 
-    /// Separate mailbox password (two-password accounts). On a terminal it is
-    /// asked for, hidden, when the account has one and it is not given.
+    /// The mailbox password of an account that has a second password. On a
+    /// terminal it is asked for, hidden, when the account needs one and it is
+    /// not given.
     #[arg(long, env = "PROTON_MAILBOX_PASSWORD", hide_env_values = true)]
     pub mailbox_password: Option<String>,
 
-    /// Pre-solved human-verification (CAPTCHA) token, skips the interactive flow.
+    /// A CAPTCHA token solved beforehand, sent as it is instead of opening a
+    /// browser to solve one.
     #[arg(long, env = "PROTON_HV_TOKEN", hide_env_values = true)]
     pub captcha_token: Option<String>,
 
-    /// Present as an official client (sets app-version + User-Agent unless overridden).
+    /// Identify as this official Proton app, with the app-version header and
+    /// User-Agent it sends, unless `--app-version` or `--user-agent` gives
+    /// another.
     #[arg(long, value_enum)]
     pub client: Option<ClientPreset>,
 
@@ -147,17 +153,21 @@ fn parse_api_url(value: &str) -> std::result::Result<String, String> {
     }
 }
 
+/// The time now, in Unix seconds, as `--until` takes a time.
+pub(crate) fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
 /// A Unix time in seconds that has not passed yet.
 fn parse_future_time(value: &str) -> std::result::Result<i64, String> {
     let time: i64 = value
         .parse()
         .map_err(|_| "expected a Unix time in seconds".to_owned())?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        });
-    if time <= now {
+    if time <= unix_now() {
         return Err("that time has already passed".to_owned());
     }
     Ok(time)
@@ -188,7 +198,7 @@ pub(crate) fn parse_duration_secs(value: &str) -> std::result::Result<i64, Strin
         .ok_or_else(|| format!("duration too long: {value}"))
 }
 
-/// Official-client presets for `--client`.
+/// The official apps `--client` can identify the sign-in as.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum ClientPreset {
     Web,
@@ -196,28 +206,47 @@ pub enum ClientPreset {
     Android,
 }
 
+/// How an official client names itself to Proton, in the two headers that
+/// say which app and release is asking.
+struct ClientIdentity {
+    app_version: &'static str,
+    user_agent: &'static str,
+}
+
 impl ClientPreset {
-    /// A representative `x-pm-appversion` value (override with `--app-version`).
-    pub fn app_version(self) -> &'static str {
+    /// What a release of this client sends.
+    fn identity(self) -> ClientIdentity {
         match self {
-            ClientPreset::Web => "web-mail@5.0.99.0",
-            ClientPreset::Ios => "ios-mail@5.4.0",
-            ClientPreset::Android => "android-mail@4.5.0",
+            ClientPreset::Web => ClientIdentity {
+                app_version: "web-mail@5.0.99.0",
+                user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            },
+            ClientPreset::Ios => ClientIdentity {
+                app_version: "ios-mail@5.4.0",
+                user_agent: "ProtonMail/5.4.0 (iOS/17.4; iPhone)",
+            },
+            ClientPreset::Android => ClientIdentity {
+                app_version: "android-mail@4.5.0",
+                user_agent: "ProtonMail/4.5.0 (Android/14; OnePlus)",
+            },
         }
     }
-    /// A representative `User-Agent` (override with `--user-agent`).
+
+    /// The `x-pm-appversion` header this client sends, unless
+    /// `--app-version` gives another.
+    pub fn app_version(self) -> &'static str {
+        self.identity().app_version
+    }
+
+    /// The `User-Agent` this client sends, unless `--user-agent` gives
+    /// another.
     pub fn user_agent(self) -> &'static str {
-        match self {
-            ClientPreset::Web => {
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            }
-            ClientPreset::Ios => "ProtonMail/5.4.0 (iOS/17.4; iPhone)",
-            ClientPreset::Android => "ProtonMail/4.5.0 (Android/14; OnePlus)",
-        }
+        self.identity().user_agent
     }
 }
 
-/// Global options threaded through to command handlers.
+/// What command handlers read of the global options. `demo` is also on when
+/// `RUSTON_DEMO` asks for it.
 pub struct Ctx {
     pub profile: String,
     pub json: bool,
@@ -242,10 +271,10 @@ pub enum Command {
     /// Log in to Proton Mail. The username and password come from
     /// `PROTON_USER` and `PROTON_PASSWORD`, or are asked for.
     Login(LoginArgs),
-    /// Revoke the server session and clear local state. A session that can no
-    /// longer be resumed is still cleared from this device.
+    /// End the session at Proton and forget it on this device. A session that
+    /// can no longer be resumed is forgotten all the same.
     Logout,
-    /// Print the primary email address of the active session.
+    /// Print the primary address of the account signed in.
     Whoami,
     /// Open the terminal interface: folders, conversations and a reader in
     /// one screen. `ruston-cli` with no command opens it too.
@@ -255,22 +284,22 @@ pub enum Command {
         #[command(subcommand)]
         cmd: MessagesCmd,
     },
-    /// Conversation (thread) operations.
+    /// Read and organize conversations (threads).
     Conversations {
         #[command(subcommand)]
         cmd: ConversationsCmd,
     },
-    /// Attachment operations.
+    /// List or save the attachments of a message.
     Attachments {
         #[command(subcommand)]
         cmd: AttachmentsCmd,
     },
-    /// Draft operations (create/edit/delete without sending).
+    /// List, save, edit or delete drafts, without sending anything.
     Drafts {
         #[command(subcommand)]
         cmd: DraftsCmd,
     },
-    /// Server-side Sieve filter operations.
+    /// Manage the Sieve filters Proton runs on its servers.
     Filters {
         #[command(subcommand)]
         cmd: FiltersCmd,
@@ -285,14 +314,15 @@ pub enum Command {
         #[command(subcommand)]
         cmd: AddressesCmd,
     },
-    /// Mail settings (read + a few toggles).
+    /// Show the mail settings, or turn one of a few on or off.
     Settings {
         #[command(subcommand)]
         cmd: SettingsCmd,
     },
-    /// Per-folder message (or conversation) counts.
+    /// Count the messages, or conversations, in each folder and label, and how
+    /// many are unread.
     Counts {
-        /// Count conversations instead of messages.
+        /// Count each conversation once, not each of its messages.
         #[arg(long)]
         conversations: bool,
     },
@@ -312,7 +342,7 @@ pub enum Command {
         #[arg(long, default_value_t = 100)]
         max: u32,
     },
-    /// Continuously sync the cache (event stream) until interrupted. Network
+    /// Keep the cache in step with Proton's event stream until stopped. Network
     /// errors, Proton being busy or down, and the cache changing during a sync
     /// are tried again after a wait that doubles, up to 10 minutes; a refused
     /// session, or any other error, stops it.
@@ -335,16 +365,19 @@ pub enum Command {
         #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
-    /// Full-text search the local index (message bodies; private + offline).
+    /// Search the local index that `index` builds, offline, sending nothing to
+    /// Proton.
     Search {
-        /// Query words (AND-ed together).
+        /// The words to find; a message must have every one.
         query: String,
         #[arg(long, default_value_t = 25)]
         limit: u32,
     },
-    /// Sync the local cache from the event stream (optionally backfill a folder).
+    /// Bring the local cache up to date with Proton's events, and with
+    /// `--backfill` cache a folder too.
     Sync {
-        /// Also backfill this folder into the cache (e.g. `inbox`).
+        /// A folder to cache as well, such as `inbox`, up to `--max-pages`
+        /// pages of it.
         #[arg(long)]
         backfill: Option<String>,
         #[arg(long = "max-pages", default_value_t = 4)]
@@ -352,42 +385,42 @@ pub enum Command {
         #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
-    /// Label and folder operations.
+    /// List, create, change or delete labels and folders.
     Labels {
         #[command(subcommand)]
         cmd: LabelsCmd,
     },
 }
 
-/// Shared search options (messages + conversations).
+/// What `messages search` and `conversations search` look for.
 #[derive(Debug, Args)]
 pub struct SearchArgs {
     /// Free-text keyword.
     #[arg(long)]
     pub keyword: Option<String>,
-    /// Match the sender address.
+    /// Only mail whose sender's address matches this.
     #[arg(long)]
     pub from: Option<String>,
-    /// Match a recipient address.
+    /// Only mail with a recipient whose address matches this.
     #[arg(long)]
     pub to: Option<String>,
     /// Match the subject.
     #[arg(long)]
     pub subject: Option<String>,
-    /// Only results on/after this date (YYYY-MM-DD, a day in UTC).
+    /// Only results from this day on (YYYY-MM-DD, a day in UTC).
     #[arg(long, value_parser = parse_search_date)]
     pub after: Option<String>,
-    /// Only results on/before this date (YYYY-MM-DD, a day in UTC), including it.
+    /// Only results up to this day, including it (YYYY-MM-DD, a day in UTC).
     #[arg(long, value_parser = parse_search_date)]
     pub before: Option<String>,
     /// Restrict to a folder or label: a system folder, or one of yours by
     /// its name, path or ID.
     #[arg(long)]
     pub folder: Option<String>,
-    /// Only unread results.
+    /// Find unread mail only.
     #[arg(long)]
     pub unread: bool,
-    /// Maximum number of results.
+    /// Show at most this many results.
     #[arg(long)]
     pub limit: Option<u32>,
 }
@@ -411,13 +444,14 @@ impl From<SearchArgs> for SearchOpts {
 /// What a message holds: everything a saved draft keeps.
 #[derive(Debug, Args)]
 pub struct DraftArgs {
-    /// Primary recipient(s) (repeatable).
+    /// An address for the To field; repeat the option for more.
     #[arg(long = "to", required = true)]
     pub to: Vec<String>,
-    /// Carbon-copy recipient(s) (repeatable).
+    /// An address for the Cc field; repeat the option for more.
     #[arg(long = "cc")]
     pub cc: Vec<String>,
-    /// Blind carbon-copy recipient(s) (repeatable).
+    /// An address for the Bcc field, which no other recipient sees; repeat the
+    /// option for more.
     #[arg(long = "bcc")]
     pub bcc: Vec<String>,
     /// Sender address. `messages send` asks for one on a terminal when the
@@ -428,14 +462,14 @@ pub struct DraftArgs {
     /// Message subject.
     #[arg(long)]
     pub subject: String,
-    /// Message body, or `-` to read from stdin.
+    /// The message's text; `-` reads it from standard input.
     #[arg(long)]
     pub body: String,
     /// Treat the body as HTML. `messages send` may ask on a terminal when the
     /// body looks like HTML.
     #[arg(long)]
     pub html: bool,
-    /// Attach a file (repeatable).
+    /// A file to attach; repeat the option for more.
     #[arg(long = "attach")]
     pub attach: Vec<PathBuf>,
 }
@@ -463,17 +497,19 @@ impl DraftArgs {
 pub struct SendArgs {
     #[command(flatten)]
     pub message: DraftArgs,
-    /// Schedule delivery at this Unix timestamp.
+    /// Have Proton send it later, at this Unix time in seconds.
     #[arg(long = "send-at")]
     pub send_at: Option<i64>,
-    /// Self-destruct after this many seconds.
+    /// Have the message delete itself this many seconds after it is sent.
     #[arg(long = "expires")]
     pub expires: Option<i64>,
-    /// Encrypted-outside: password-protect the message for keyless external recipients.
-    /// Without a value, the password is asked for twice, hidden, on the terminal.
+    /// A password that opens the message for recipients without an encryption
+    /// key. Without a value, the password is asked for twice, hidden, on the
+    /// terminal.
     #[arg(long = "eo-password", num_args = 0..=1, default_missing_value = "")]
     pub eo_password: Option<String>,
-    /// Password hint shown to encrypted-outside recipients.
+    /// A hint for recalling the `--eo-password`, shown to the recipients who
+    /// need it.
     #[arg(long = "eo-hint")]
     pub eo_hint: Option<String>,
 }
@@ -500,7 +536,7 @@ impl ReadState {
     }
 }
 
-/// Apply or remove a label.
+/// Whether `messages label` puts the label on or takes it off.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum LabelAction {
     Add,
@@ -535,7 +571,7 @@ impl EmptyFolder {
 
 #[derive(Debug, Subcommand)]
 pub enum MessagesCmd {
-    /// List messages in a folder.
+    /// List a folder's messages, a page at a time.
     List {
         /// A system folder (inbox, sent, archive…), or one of your folders or
         /// labels by its name, path or ID; with --cached, a system folder or
@@ -548,37 +584,37 @@ pub enum MessagesCmd {
         page_size: u32,
         #[arg(long)]
         unread: bool,
-        /// Read from the local cache instead of the API (offline).
+        /// List what the local cache holds, offline, instead of asking Proton.
         #[arg(long)]
         cached: bool,
     },
     /// Search messages.
     Search(SearchArgs),
-    /// Read a single message.
+    /// Show a message: its headers, attachments and body.
     Read {
-        /// Message reference (ID or free-text).
+        /// The message: its ID, or words that find it and no other.
         reference: String,
         #[arg(long, value_enum, default_value_t = ReadFormat::Text)]
         format: ReadFormat,
-        /// Print only the body.
+        /// Show the body alone, without the headers.
         #[arg(long = "body-only")]
         body_only: bool,
-        /// Write the body to a file instead of stdout.
+        /// Save the body in this file instead of showing it.
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Compose and send a message.
+    /// Send a new message.
     Send(SendArgs),
     /// Reply to a message.
     Reply {
         reference: String,
-        /// Reply to all recipients.
+        /// Reply to everyone the message went to, not only its sender.
         #[arg(long)]
         all: bool,
         /// Sender address (defaults to the address the original message reached).
         #[arg(long)]
         from: Option<String>,
-        /// Body text, or `-` for stdin.
+        /// The reply's text; `-` reads it from standard input.
         #[arg(long)]
         body: String,
         #[arg(long = "attach")]
@@ -608,19 +644,20 @@ pub enum MessagesCmd {
         #[arg(long = "leave-out", value_name = "ATTACHMENT_ID")]
         leave_out: Vec<String>,
     },
-    /// Cancel a scheduled send.
+    /// Call off a message scheduled to be sent later.
     CancelSend { reference: String },
-    /// Report messages as spam (move to Spam).
+    /// Tell Proton messages are spam, which moves them to Spam.
     Spam {
         #[arg(required = true)]
         references: Vec<String>,
     },
-    /// Report messages as not-spam (move to Inbox).
+    /// Tell Proton messages are not spam, which moves them to the Inbox.
     Ham {
         #[arg(required = true)]
         references: Vec<String>,
     },
-    /// One-click unsubscribe from a mailing list.
+    /// Leave the mailing list a message came from, by the list's one-click
+    /// unsubscribe.
     Unsubscribe { reference: String },
     /// Permanently delete every message in Trash or Spam. Asks first; outside
     /// a terminal `--yes` is required.
@@ -631,7 +668,7 @@ pub enum MessagesCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Apply or remove a label on messages.
+    /// Put a label on messages, or take it off.
     Label {
         #[arg(value_enum)]
         action: LabelAction,
@@ -641,14 +678,14 @@ pub enum MessagesCmd {
         #[arg(required = true)]
         references: Vec<String>,
     },
-    /// Restore permanently-deleted messages (by ID).
+    /// Bring back messages deleted for good, given by their IDs.
     Undelete {
         #[arg(required = true)]
         ids: Vec<String>,
     },
-    /// Send a read receipt for a message.
+    /// Send the read receipt a message asks for.
     Receipt { reference: String },
-    /// Move messages to a folder.
+    /// Move messages to the folder `--dest` names.
     Move {
         #[arg(required = true)]
         references: Vec<String>,
@@ -690,7 +727,7 @@ pub enum MessagesCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum ConversationsCmd {
-    /// List conversations in a folder.
+    /// List a folder's conversations, a page at a time.
     List {
         /// A system folder (inbox, sent, archive…), or one of your folders or
         /// labels by its name, path or ID.
@@ -705,12 +742,12 @@ pub enum ConversationsCmd {
     },
     /// Search conversations.
     Search(SearchArgs),
-    /// Read a conversation (all messages).
+    /// Show a conversation with every message in it.
     Read {
         /// Conversation ID.
         id: String,
     },
-    /// Move conversations to a folder.
+    /// Move conversations to the folder `--dest` names.
     Move {
         #[arg(required = true)]
         ids: Vec<String>,
@@ -726,7 +763,7 @@ pub enum ConversationsCmd {
     /// Mark conversations read or unread.
     Mark {
         state: ReadState,
-        /// Label context for the mark operation.
+        /// Where to mark them: a folder or label, or `all` for all mail.
         #[arg(long, default_value = "all")]
         folder: String,
         #[arg(required = true)]
@@ -742,7 +779,8 @@ pub enum ConversationsCmd {
         #[arg(required = true)]
         ids: Vec<String>,
     },
-    /// Snooze conversations until a Unix timestamp (--until) or a duration (--in 1h/2d).
+    /// Snooze conversations until a time: a Unix time with `--until`, or a
+    /// duration from now with `--in`, such as `1h` or `2d`.
     Snooze {
         #[arg(required = true)]
         ids: Vec<String>,
@@ -759,7 +797,7 @@ pub enum ConversationsCmd {
         #[arg(long = "in", value_parser = parse_duration_secs)]
         relative: Option<i64>,
     },
-    /// Unsnooze conversations.
+    /// Bring snoozed conversations back before their time.
     Unsnooze {
         #[arg(required = true)]
         ids: Vec<String>,
@@ -768,23 +806,23 @@ pub enum ConversationsCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum AttachmentsCmd {
-    /// List a message's attachments.
+    /// List the attachments of a message, with their IDs.
     List {
-        /// Message reference (ID or free-text).
+        /// The message: its ID, or words that find it and no other.
         message: String,
         #[arg(long = "include-inline")]
         include_inline: bool,
     },
-    /// Download attachment(s) from a message.
+    /// Save one attachment of a message, or all of them with `--all`.
     Download {
-        /// Message reference (ID or free-text).
+        /// The message: its ID, or words that find it and no other.
         message: String,
-        /// Specific attachment ID (omit with --all).
+        /// The attachment to save, by its ID; leave it out with `--all`.
         #[arg(required_unless_present = "all", conflicts_with = "all")]
         attachment: Option<String>,
         #[arg(long = "output-dir")]
         output_dir: Option<PathBuf>,
-        /// Download all attachments.
+        /// Save every attachment, inline images too with `--include-inline`.
         #[arg(long)]
         all: bool,
         #[arg(long = "include-inline")]
@@ -840,14 +878,14 @@ impl OnOff {
 
 #[derive(Debug, Subcommand)]
 pub enum SettingsCmd {
-    /// Show mail settings (raw JSON).
+    /// Print the mail settings as Proton sends them, in JSON.
     Get,
-    /// Toggle signing outgoing mail.
+    /// Turn the signing of outgoing mail on or off.
     Sign {
         #[arg(value_enum)]
         value: OnOff,
     },
-    /// Toggle attaching your public key to outgoing mail.
+    /// Turn on or off whether outgoing mail carries your public key.
     AttachPublicKey {
         #[arg(value_enum)]
         value: OnOff,
@@ -858,7 +896,7 @@ pub enum SettingsCmd {
 pub enum AddressesCmd {
     /// List addresses.
     List,
-    /// Update an address (display name / signature).
+    /// Change the display name or signature of one of your addresses.
     Update {
         id: String,
         #[arg(long = "display-name")]
@@ -877,7 +915,8 @@ pub enum ContactsCmd {
         #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
-    /// List contact email addresses (optionally filter by an email).
+    /// List the email addresses your contacts hold, or only those matching
+    /// `--email`.
     Emails {
         #[arg(long)]
         email: Option<String>,
@@ -888,17 +927,18 @@ pub enum ContactsCmd {
 pub enum FiltersCmd {
     /// List filters.
     List,
-    /// Create a filter from a Sieve script (`--sieve -` reads stdin).
+    /// Create a filter named `--name` from a Sieve script; `--sieve -` reads
+    /// the script from standard input.
     Create {
         #[arg(long)]
         name: String,
-        /// Sieve script text, or `-` for stdin.
+        /// The Sieve script itself, or `-` to read it from standard input.
         #[arg(long)]
         sieve: String,
     },
-    /// Validate a Sieve script without creating a filter.
+    /// Check that Proton accepts a Sieve script, creating nothing.
     Check {
-        /// Sieve script text, or `-` for stdin.
+        /// The Sieve script itself, or `-` to read it from standard input.
         #[arg(long)]
         sieve: String,
     },
@@ -912,30 +952,30 @@ pub enum FiltersCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum LabelsCmd {
-    /// List labels (or folders with --folders).
+    /// List your labels, or your folders with `--folders`.
     List {
-        /// List folders instead of labels.
+        /// Show your folders instead.
         #[arg(long)]
         folders: bool,
     },
-    /// Create a label or folder.
+    /// Make a new label, or a folder with `--folder`.
     Create {
         #[arg(long)]
         name: String,
         #[arg(long, default_value = "#8080FF")]
         color: String,
-        /// Create a folder instead of a label.
+        /// Make it a folder, not a label.
         #[arg(long)]
         folder: bool,
         #[arg(long)]
         parent: Option<String>,
     },
-    /// Delete labels/folders by ID.
+    /// Delete labels or folders, given by their IDs.
     Delete {
         #[arg(required = true)]
         ids: Vec<String>,
     },
-    /// Rename / recolor / reparent a label or folder.
+    /// Change the name, color or parent of a label or folder.
     Update {
         id: String,
         #[arg(long)]
@@ -959,13 +999,15 @@ mod tests {
         }
     }
 
+    /// `args` parsed; tests give only command lines that are valid.
     fn parse(args: &[&str]) -> Cli {
-        Cli::try_parse_from(args).expect("args should parse")
+        Cli::try_parse_from(args).unwrap_or_else(|error| panic!("{args:?}: {error}"))
     }
 
     #[test]
-    fn verify_clap_command() {
-        // Guards against derive macro misconfiguration.
+    fn every_command_is_defined_as_clap_expects() {
+        // Clap checks a command's definition when parsing reaches it; this
+        // checks every one at once.
         Cli::command().debug_assert();
     }
 
@@ -1100,62 +1142,76 @@ mod tests {
     }
 
     #[test]
-    fn send_with_stdin_body() {
-        let cli = parse(&[
+    fn a_message_takes_each_recipient_and_file_given() {
+        let Command::Messages {
+            cmd: MessagesCmd::Send(send),
+        } = parse(&[
             "ruston-cli",
             "messages",
             "send",
             "--to",
-            "a@b.com",
+            "ana@example.test",
+            "--cc",
+            "cy@example.test",
+            "--to",
+            "bo@example.test",
+            "--bcc",
+            "di@example.test",
             "--subject",
-            "x",
+            "Plans",
             "--body",
-            "-",
-        ]);
-        let Command::Messages {
-            cmd: MessagesCmd::Send(a),
-        } = cli.cmd()
+            "See the files.",
+            "--attach",
+            "plan.pdf",
+            "--attach",
+            "map.png",
+        ])
+        .cmd()
         else {
-            panic!("wrong command");
+            panic!("not a send");
         };
-        assert_eq!(a.message.to, vec!["a@b.com"]);
-        assert_eq!(a.message.subject, "x");
-        assert_eq!(a.message.body, "-");
-        assert!(!a.message.html);
+        // A repeated option keeps its values in order, other options between
+        // them or not.
+        let message = send.message;
+        assert_eq!(message.to, ["ana@example.test", "bo@example.test"]);
+        assert_eq!(message.cc, ["cy@example.test"]);
+        assert_eq!(message.bcc, ["di@example.test"]);
+        assert_eq!(
+            message.attach,
+            [PathBuf::from("plan.pdf"), PathBuf::from("map.png")]
+        );
     }
 
     #[test]
-    fn send_multiple_recipients_and_attachments() {
-        let cli = parse(&[
-            "ruston-cli",
-            "messages",
-            "send",
-            "--to",
-            "a@b.com",
-            "--to",
-            "c@d.com",
-            "--cc",
-            "e@f.com",
-            "--subject",
-            "hi",
-            "--body",
-            "hello",
-            "--html",
-            "--attach",
-            "/tmp/x.pdf",
-            "--attach",
-            "/tmp/y.png",
-        ]);
-        let Command::Messages {
-            cmd: MessagesCmd::Send(a),
-        } = cli.cmd()
-        else {
-            panic!("wrong command");
+    fn the_body_option_may_only_say_where_the_text_is() {
+        let send = |extra: &[&str]| {
+            let start = [
+                "ruston-cli",
+                "messages",
+                "send",
+                "--to",
+                "ana@example.test",
+                "--subject",
+                "Hi",
+            ];
+            let Command::Messages {
+                cmd: MessagesCmd::Send(args),
+            } = parse(&[&start[..], extra].concat()).cmd()
+            else {
+                panic!("not a send");
+            };
+            args.message
         };
-        assert_eq!(a.message.to.len(), 2);
-        assert_eq!(a.message.cc, vec!["e@f.com"]);
-        assert!(a.message.html);
-        assert_eq!(a.message.attach.len(), 2);
+        // `-` stays as typed: the handler reads standard input for it, and
+        // the message then carries the text read.
+        let piped = send(&["--body", "-"]);
+        assert_eq!(piped.body, "-");
+        assert!(!piped.html, "plain text unless --html");
+        let message = piped.into_send_options("Read from standard input".into());
+        assert_eq!(message.body, "Read from standard input");
+        assert_eq!(message.to, ["ana@example.test"]);
+        assert_eq!(message.subject, "Hi");
+        assert!(send(&["--body", "<p>Hi</p>", "--html"]).html);
     }
 
     #[test]
@@ -1249,50 +1305,80 @@ mod tests {
     }
 
     #[test]
-    fn read_with_html_format() {
-        let cli = parse(&["ruston-cli", "messages", "read", "REF", "--format", "html"]);
-        let Command::Messages {
-            cmd:
-                MessagesCmd::Read {
-                    reference,
-                    format,
-                    body_only,
-                    ..
-                },
-        } = cli.cmd()
-        else {
-            panic!("wrong command");
-        };
-        assert_eq!(reference, "REF");
-        assert!(matches!(format, ReadFormat::Html));
-        assert!(!body_only);
+    fn a_message_shows_as_text_unless_another_format_is_named() {
+        for (named, expected) in [
+            (&[][..], "text"),
+            (&["--format", "html"][..], "html"),
+            (&["--format", "raw"][..], "raw"),
+        ] {
+            let args = [&["ruston-cli", "messages", "read", "msg1"][..], named].concat();
+            let Command::Messages {
+                cmd: MessagesCmd::Read { format, .. },
+            } = parse(&args).cmd()
+            else {
+                panic!("not a read");
+            };
+            let name = format.to_possible_value().expect("every format has a name");
+            assert_eq!(name.get_name(), expected, "{args:?}");
+        }
+        let unknown = ["ruston-cli", "messages", "read", "msg1", "--format", "pdf"];
+        assert!(Cli::try_parse_from(unknown).is_err());
     }
 
     #[test]
-    fn read_defaults_to_text() {
-        let cli = parse(&["ruston-cli", "messages", "read", "abc"]);
-        let Command::Messages {
-            cmd: MessagesCmd::Read { format, .. },
-        } = cli.cmd()
-        else {
-            panic!("wrong command");
+    fn reading_can_show_the_body_alone_or_save_it_to_a_file() {
+        let read = |extra: &[&str]| {
+            let start = ["ruston-cli", "messages", "read", "invoice march"];
+            let Command::Messages {
+                cmd:
+                    MessagesCmd::Read {
+                        reference,
+                        body_only,
+                        output,
+                        ..
+                    },
+            } = parse(&[&start[..], extra].concat()).cmd()
+            else {
+                panic!("not a read");
+            };
+            // Words that find the message are one reference.
+            assert_eq!(reference, "invoice march");
+            (body_only, output)
         };
-        assert!(matches!(format, ReadFormat::Text));
+        assert_eq!(read(&[]), (false, None));
+        assert_eq!(
+            read(&["--body-only", "--output", "body.txt"]),
+            (true, Some(PathBuf::from("body.txt")))
+        );
     }
 
     #[test]
-    fn move_requires_dest() {
-        let cli = parse(&["ruston-cli", "messages", "move", "REF", "--dest", "archive"]);
+    fn a_move_names_the_folder_it_goes_to() {
+        for group in ["messages", "conversations"] {
+            let error = Cli::try_parse_from(["ruston-cli", group, "move", "id1"]).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{group}"
+            );
+        }
         let Command::Messages {
             cmd: MessagesCmd::Move { references, dest },
-        } = cli.cmd()
+        } = parse(&[
+            "ruston-cli",
+            "messages",
+            "move",
+            "id1",
+            "id2",
+            "--dest",
+            "Taxes/2024",
+        ])
+        .cmd()
         else {
-            panic!("wrong command");
+            panic!("not a move");
         };
-        assert_eq!(references, vec!["REF"]);
-        assert_eq!(dest, "archive");
-        // Missing --dest is a parse error.
-        assert!(Cli::try_parse_from(["ruston-cli", "messages", "move", "REF"]).is_err());
+        assert_eq!(references, ["id1", "id2"]);
+        assert_eq!(dest, "Taxes/2024");
     }
 
     #[test]
@@ -1332,26 +1418,25 @@ mod tests {
     }
 
     #[test]
-    fn mark_state_then_refs() {
-        let cli = parse(&["ruston-cli", "messages", "mark", "read", "id1", "id2"]);
-        let Command::Messages {
-            cmd: MessagesCmd::Mark { state, references },
-        } = cli.cmd()
-        else {
-            panic!("wrong command");
-        };
-        assert!(matches!(state, ReadState::Read));
-        assert!(state.as_bool());
-        assert_eq!(references, vec!["id1", "id2"]);
+    fn marking_names_the_state_before_the_messages() {
+        for (typed, read) in [("read", true), ("unread", false)] {
+            let Command::Messages {
+                cmd: MessagesCmd::Mark { state, references },
+            } = parse(&["ruston-cli", "messages", "mark", typed, "id1", "id2"]).cmd()
+            else {
+                panic!("not a mark");
+            };
+            assert_eq!(state.as_bool(), read, "{typed}");
+            assert_eq!(references, ["id1", "id2"]);
+        }
+        // An ID where the state goes is refused, not taken for a message.
+        assert!(Cli::try_parse_from(["ruston-cli", "messages", "mark", "id1", "read"]).is_err());
     }
 
     #[test]
-    fn global_flags_parse() {
-        let cli = parse(&[
-            "ruston-cli",
-            "--json",
-            "--profile",
-            "work",
+    fn global_options_go_before_or_after_the_command() {
+        let global = ["--json", "--profile", "work"];
+        let listing = [
             "messages",
             "list",
             "--folder",
@@ -1359,38 +1444,47 @@ mod tests {
             "--page-size",
             "10",
             "--unread",
-        ]);
-        assert!(cli.json);
-        assert_eq!(cli.profile, "work");
-        let Command::Messages {
-            cmd:
-                MessagesCmd::List {
-                    folder,
-                    page_size,
-                    unread,
-                    ..
-                },
-        } = cli.cmd()
-        else {
-            panic!("wrong command");
-        };
-        assert_eq!(folder, "archive");
-        assert_eq!(page_size, 10);
-        assert!(unread);
+        ];
+        for args in [
+            [&["ruston-cli"][..], &global, &listing].concat(),
+            [&["ruston-cli"][..], &listing, &global].concat(),
+        ] {
+            let cli = parse(&args);
+            assert!(cli.json, "{args:?}");
+            assert_eq!(cli.profile, "work", "{args:?}");
+            let Command::Messages {
+                cmd:
+                    MessagesCmd::List {
+                        folder,
+                        page_size,
+                        unread,
+                        ..
+                    },
+            } = cli.cmd()
+            else {
+                panic!("not a listing");
+            };
+            assert_eq!(folder, "archive");
+            assert_eq!(page_size, 10);
+            assert!(unread);
+        }
     }
 
     #[test]
-    fn conversations_mark_default_folder() {
-        let cli = parse(&["ruston-cli", "conversations", "mark", "unread", "conv1"]);
-        let Command::Conversations {
-            cmd: ConversationsCmd::Mark { state, folder, ids },
-        } = cli.cmd()
-        else {
-            panic!("wrong command");
-        };
-        assert!(matches!(state, ReadState::Unread));
-        assert_eq!(folder, "all");
-        assert_eq!(ids, vec!["conv1"]);
+    fn conversations_are_marked_in_all_mail_unless_a_folder_is_named() {
+        for (named, expected) in [(&[][..], "all"), (&["--folder", "inbox"][..], "inbox")] {
+            let mark = ["ruston-cli", "conversations", "mark", "unread"];
+            let args = [&mark[..], named, &["conv1"]].concat();
+            let Command::Conversations {
+                cmd: ConversationsCmd::Mark { state, folder, ids },
+            } = parse(&args).cmd()
+            else {
+                panic!("not a mark");
+            };
+            assert!(!state.as_bool());
+            assert_eq!(folder, expected, "{args:?}");
+            assert_eq!(ids, ["conv1"]);
+        }
     }
 
     #[test]
@@ -1559,8 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn labels_create_defaults() {
-        let cli = parse(&["ruston-cli", "labels", "create", "--name", "Work"]);
+    fn a_new_label_has_a_default_color_and_no_parent() {
         let Command::Labels {
             cmd:
                 LabelsCmd::Create {
@@ -1569,14 +1662,42 @@ mod tests {
                     folder,
                     parent,
                 },
-        } = cli.cmd()
+        } = parse(&["ruston-cli", "labels", "create", "--name", "Receipts"]).cmd()
         else {
-            panic!("wrong command");
+            panic!("not a create");
         };
-        assert_eq!(name, "Work");
+        assert_eq!(name, "Receipts");
         assert_eq!(color, "#8080FF");
-        assert!(!folder);
-        assert!(parent.is_none());
+        assert!(!folder, "a label unless --folder");
+        assert_eq!(parent, None);
+
+        let Command::Labels {
+            cmd:
+                LabelsCmd::Create {
+                    color,
+                    folder,
+                    parent,
+                    ..
+                },
+        } = parse(&[
+            "ruston-cli",
+            "labels",
+            "create",
+            "--name",
+            "2024",
+            "--folder",
+            "--parent",
+            "folder-taxes",
+            "--color",
+            "#3CBB3A",
+        ])
+        .cmd()
+        else {
+            panic!("not a create");
+        };
+        assert_eq!(color, "#3CBB3A");
+        assert!(folder);
+        assert_eq!(parent.as_deref(), Some("folder-taxes"));
     }
 
     #[test]

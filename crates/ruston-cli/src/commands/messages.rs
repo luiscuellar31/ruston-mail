@@ -1,9 +1,11 @@
 //! Message commands.
 
 use crate::cli::Ctx;
-use crate::cli::{DraftArgs, EmptyFolder, LabelAction, MessagesCmd, ReadFormat, SendArgs};
+use crate::cli::{
+    DraftArgs, EmptyFolder, LabelAction, MessagesCmd, ReadFormat, ReadState, SendArgs,
+};
 use crate::commands::prompt::{can_prompt, confirm, confirm_deletion, require_consent};
-use crate::commands::{read_body, resolve_all, resume, search_options};
+use crate::commands::{read_body, resolve_all, search_options};
 use crate::render;
 use crate::terminal;
 use html5ever::tendril::StrTendril;
@@ -150,6 +152,8 @@ fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
     ))
 }
 
+/// Lists, searches, reads, sends or answers messages, or changes the ones
+/// named.
 pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
     match cmd {
         MessagesCmd::List {
@@ -164,7 +168,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
                     .await?
                     .messages_page(&folder, unread, page, page_size)?
             } else {
-                let client = resume(&ctx.profile).await?;
+                let client = Client::resume(&ctx.profile).await?;
                 let folder = client.folder_id(&folder).await?;
                 client
                     .list_messages(&folder, page, page_size, unread)
@@ -174,7 +178,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             Ok(())
         }
         MessagesCmd::Search(args) => {
-            let client = resume(&ctx.profile).await?;
+            let client = Client::resume(&ctx.profile).await?;
             let opts = search_options(&client, args.into()).await?;
             let msgs = client.search_messages(&opts).await?;
             render::messages_list(ctx.json, msgs.len() as u32, &msgs);
@@ -195,18 +199,13 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             attach,
             no_quote,
         } => {
-            let client = resume(&ctx.profile).await?;
-            let body = read_body(&body)?;
             let opts = SendOptions {
                 from,
-                body,
                 attachments: attach,
                 quote: quote(no_quote),
-                ..Default::default()
+                ..SendOptions::default()
             };
-            let id = client.reply(&reference, all, &opts).await?;
-            render::sent(ctx.json, &id);
-            Ok(())
+            answer(ctx, &reference, Answer::Reply { all }, &body, opts).await
         }
         MessagesCmd::Forward {
             reference,
@@ -217,110 +216,179 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             no_quote,
             leave_out,
         } => {
-            let client = resume(&ctx.profile).await?;
-            let body = read_body(&body)?;
             let opts = SendOptions {
                 to,
                 from,
-                body,
                 attachments: attach,
                 quote: quote(no_quote),
                 leave_out,
-                ..Default::default()
+                ..SendOptions::default()
             };
-            let id = client.forward(&reference, &opts).await?;
-            render::sent(ctx.json, &id);
-            Ok(())
+            answer(ctx, &reference, Answer::Forward, &body, opts).await
         }
         MessagesCmd::CancelSend { reference } => {
-            let client = resume(&ctx.profile).await?;
+            let client = Client::resume(&ctx.profile).await?;
             client.cancel_send(&reference).await?;
-            render::action_result(ctx.json, "cancel-send", std::slice::from_ref(&reference));
+            render::action_result(ctx.json, "cancel-send", &[reference]);
             Ok(())
         }
         MessagesCmd::Move { references, dest } => {
-            organize(ctx, &references, "move", move |c, ids| async move {
-                let dest = c.folder_id(&dest).await?;
-                c.move_messages(&ids, &dest).await
-            })
-            .await
+            change_messages(ctx, &references, Change::Move { dest }).await
         }
-        MessagesCmd::Trash { references } => {
-            organize(ctx, &references, "trash", |c, ids| async move {
-                c.trash_messages(&ids).await
-            })
-            .await
-        }
-        MessagesCmd::Delete { references, yes } => delete(ctx, &references, yes).await,
+        MessagesCmd::Trash { references } => change_messages(ctx, &references, Change::Trash).await,
         MessagesCmd::Mark { state, references } => {
-            let read = state.as_bool();
-            organize(ctx, &references, "mark", move |c, ids| async move {
-                c.mark_messages_read(&ids, read).await
-            })
-            .await
+            change_messages(ctx, &references, Change::Mark(state)).await
         }
-        MessagesCmd::Star { references } => {
-            organize(ctx, &references, "star", |c, ids| async move {
-                c.star_messages(&ids, true).await
-            })
-            .await
-        }
+        MessagesCmd::Star { references } => change_messages(ctx, &references, Change::Star).await,
         MessagesCmd::Unstar { references } => {
-            organize(ctx, &references, "unstar", |c, ids| async move {
-                c.star_messages(&ids, false).await
-            })
-            .await
+            change_messages(ctx, &references, Change::Unstar).await
         }
-        MessagesCmd::Spam { references } => {
-            organize(ctx, &references, "spam", |c, ids| async move {
-                c.report_spam(&ids).await
-            })
-            .await
-        }
-        MessagesCmd::Ham { references } => {
-            organize(ctx, &references, "ham", |c, ids| async move {
-                c.report_ham(&ids).await
-            })
-            .await
-        }
-        MessagesCmd::Unsubscribe { reference } => {
-            let client = resume(&ctx.profile).await?;
-            let id = client.resolve_ref(&reference).await?;
-            client.unsubscribe(&id).await?;
-            render::action_result(ctx.json, "unsubscribe", std::slice::from_ref(&id));
-            Ok(())
-        }
-        MessagesCmd::Empty { folder, yes } => empty(ctx, folder, yes).await,
+        MessagesCmd::Spam { references } => change_messages(ctx, &references, Change::Spam).await,
+        MessagesCmd::Ham { references } => change_messages(ctx, &references, Change::Ham).await,
         MessagesCmd::Label {
             action,
             label_id,
             references,
         } => {
-            let name = match action {
-                LabelAction::Add => "label",
-                LabelAction::Rm => "unlabel",
+            let change = Change::Label {
+                action,
+                label: label_id,
             };
-            organize(ctx, &references, name, move |c, ids| async move {
-                let label_id = c.folder_id(&label_id).await?;
-                match action {
-                    LabelAction::Add => c.apply_label(&ids, &label_id).await,
-                    LabelAction::Rm => c.remove_label(&ids, &label_id).await,
-                }
-            })
-            .await
+            change_messages(ctx, &references, change).await
         }
+        MessagesCmd::Unsubscribe { reference } => {
+            change_messages(ctx, &[reference], Change::Unsubscribe).await
+        }
+        MessagesCmd::Receipt { reference } => {
+            change_messages(ctx, &[reference], Change::Receipt).await
+        }
+        MessagesCmd::Delete { references, yes } => delete(ctx, &references, yes).await,
+        MessagesCmd::Empty { folder, yes } => empty(ctx, folder, yes).await,
         MessagesCmd::Undelete { ids } => {
-            let client = resume(&ctx.profile).await?;
+            // `undelete` takes message IDs only, as its help says, so
+            // nothing is looked up.
+            let client = Client::resume(&ctx.profile).await?;
             client.undelete_messages(&ids).await?;
             render::action_result(ctx.json, "undelete", &ids);
             Ok(())
         }
-        MessagesCmd::Receipt { reference } => {
-            let client = resume(&ctx.profile).await?;
-            let id = client.resolve_ref(&reference).await?;
-            client.send_read_receipt(&id).await?;
-            render::action_result(ctx.json, "receipt", std::slice::from_ref(&id));
-            Ok(())
+    }
+}
+
+/// How a message is answered.
+enum Answer {
+    /// A reply to its sender, or with `all` to everyone it went to.
+    Reply { all: bool },
+    /// A forward to recipients of the writer's choosing, with its
+    /// attachments.
+    Forward,
+}
+
+/// Sends `opts` as an answer to the message `reference` names, with the
+/// text `body` stands for.
+async fn answer(
+    ctx: &Ctx,
+    reference: &str,
+    how: Answer,
+    body: &str,
+    opts: SendOptions,
+) -> Result<()> {
+    let client = Client::resume(&ctx.profile).await?;
+    let opts = SendOptions {
+        body: read_body(body)?,
+        ..opts
+    };
+    let id = match how {
+        Answer::Reply { all } => client.reply(reference, all, &opts).await?,
+        Answer::Forward => client.forward(reference, &opts).await?,
+    };
+    render::sent(ctx.json, &id);
+    Ok(())
+}
+
+/// What a command changes about the messages its references name.
+enum Change {
+    /// Moves them to a folder, named as the folder options take it.
+    Move {
+        dest: String,
+    },
+    Trash,
+    Mark(ReadState),
+    Star,
+    Unstar,
+    /// Reports them as spam, which moves them to Spam.
+    Spam,
+    /// Reports them as not spam, which moves them to the Inbox.
+    Ham,
+    /// Puts a label on them or takes it off, named as above.
+    Label {
+        action: LabelAction,
+        label: String,
+    },
+    /// Leaves the mailing list a message came from.
+    Unsubscribe,
+    /// Sends the read receipt a message asks for.
+    Receipt,
+}
+
+impl Change {
+    /// The command's own name, which the report gives.
+    fn action(&self) -> &'static str {
+        match self {
+            Change::Move { .. } => "move",
+            Change::Trash => "trash",
+            Change::Mark(_) => "mark",
+            Change::Star => "star",
+            Change::Unstar => "unstar",
+            Change::Spam => "spam",
+            Change::Ham => "ham",
+            Change::Label {
+                action: LabelAction::Add,
+                ..
+            } => "label",
+            Change::Label {
+                action: LabelAction::Rm,
+                ..
+            } => "unlabel",
+            Change::Unsubscribe => "unsubscribe",
+            Change::Receipt => "receipt",
+        }
+    }
+
+    /// Asks Proton to make the change to the messages `ids`, finding a
+    /// folder or label it names first.
+    async fn apply(&self, client: &Client, ids: &[String]) -> Result<()> {
+        match self {
+            Change::Move { dest } => {
+                let dest = client.folder_id(dest).await?;
+                client.move_messages(ids, &dest).await
+            }
+            Change::Trash => client.trash_messages(ids).await,
+            Change::Mark(state) => client.mark_messages_read(ids, state.as_bool()).await,
+            Change::Star => client.star_messages(ids, true).await,
+            Change::Unstar => client.star_messages(ids, false).await,
+            Change::Spam => client.report_spam(ids).await,
+            Change::Ham => client.report_ham(ids).await,
+            Change::Label { action, label } => {
+                let label = client.folder_id(label).await?;
+                match action {
+                    LabelAction::Add => client.apply_label(ids, &label).await,
+                    LabelAction::Rm => client.remove_label(ids, &label).await,
+                }
+            }
+            // These commands name one message each.
+            Change::Unsubscribe => {
+                for id in ids {
+                    client.unsubscribe(id).await?;
+                }
+                Ok(())
+            }
+            Change::Receipt => {
+                for id in ids {
+                    client.send_read_receipt(id).await?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -343,7 +411,7 @@ async fn read(
     body_only: bool,
     output: Option<&Path>,
 ) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     let id = client.resolve_ref(reference).await?;
     let msg = client.read_message(&id).await?;
     if let Some(path) = output {
@@ -364,7 +432,7 @@ async fn read(
 /// address to send from, whether a body that looks like HTML is HTML, and a
 /// message password asked for without a value.
 async fn send(ctx: &Ctx, mut args: SendArgs) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     choose_sender(ctx, &client, &mut args.message)?;
     let message = &mut args.message;
     let body = read_body(&message.body)?;
@@ -410,7 +478,7 @@ fn choose_sender(ctx: &Ctx, client: &Client, message: &mut DraftArgs) -> Result<
 /// lists what the references matched and asks.
 async fn delete(ctx: &Ctx, references: &[String], yes: bool) -> Result<()> {
     require_consent(ctx, yes)?;
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     let ids = if yes {
         resolve_all(&client, references).await?
     } else {
@@ -446,33 +514,60 @@ async fn empty(ctx: &Ctx, folder: EmptyFolder, yes: bool) -> Result<()> {
     if !yes && !confirm_deletion(&[], &format!("every message in {}", folder.name()))? {
         return Ok(());
     }
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     client.empty_folder(folder.as_str()).await?;
     render::folder_emptied(ctx.json, folder);
     Ok(())
 }
 
-/// Resolve references, run a bulk action over the resulting IDs, and report.
-async fn organize<F, Fut>(ctx: &Ctx, refs: &[String], action: &str, op: F) -> Result<()>
-where
-    F: FnOnce(Client, Vec<String>) -> Fut,
-    Fut: std::future::Future<Output = Result<()>>,
-{
-    let client = resume(&ctx.profile).await?;
-    let ids = resolve_all(&client, refs).await?;
-    op(client, ids.clone()).await?;
-    render::action_result(ctx.json, action, &ids);
+/// Makes `change` to the messages `references` name, each looked up first,
+/// and reports it with the IDs they named.
+async fn change_messages(ctx: &Ctx, references: &[String], change: Change) -> Result<()> {
+    let client = Client::resume(&ctx.profile).await?;
+    let ids = resolve_all(&client, references).await?;
+    change.apply(&client, &ids).await?;
+    render::action_result(ctx.json, change.action(), &ids);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ask_message_password, confirm_html, looks_like_html, message_password, prompt_sender,
-        write_private,
+        Change, ask_message_password, confirm_html, looks_like_html, message_password,
+        prompt_sender, write_private,
     };
+    use crate::cli::{LabelAction, ReadState};
     use ruston_core::AddressInfo;
     use std::io::{self, Cursor};
+
+    #[test]
+    fn each_change_is_reported_under_its_commands_name() {
+        use clap::CommandFactory;
+
+        let cli = crate::cli::Cli::command();
+        let messages = cli.find_subcommand("messages").unwrap();
+        let label = |action| Change::Label {
+            action,
+            label: "Work".into(),
+        };
+        for (change, name) in [
+            (Change::Move { dest: "x".into() }, "move"),
+            (Change::Trash, "trash"),
+            (Change::Mark(ReadState::Unread), "mark"),
+            (Change::Star, "star"),
+            (Change::Unstar, "unstar"),
+            (Change::Spam, "spam"),
+            (Change::Ham, "ham"),
+            (label(LabelAction::Add), "label"),
+            (Change::Unsubscribe, "unsubscribe"),
+            (Change::Receipt, "receipt"),
+        ] {
+            assert_eq!(change.action(), name);
+            assert!(messages.find_subcommand(name).is_some(), "{name}");
+        }
+        // Taking a label off, `messages label rm`, is reported as `unlabel`.
+        assert_eq!(label(LabelAction::Rm).action(), "unlabel");
+    }
 
     #[test]
     fn sender_prompt_does_not_emit_terminal_controls() {

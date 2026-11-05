@@ -1,7 +1,7 @@
-//! Watch command: continuously sync the cache from the event stream.
+//! `watch`, which keeps the local cache in step with Proton until it is
+//! stopped.
 
 use crate::cli::Ctx;
-use crate::commands::resume;
 use crate::terminal;
 use ruston_core::{Client, Error, Result, SyncReport};
 use std::time::Duration;
@@ -56,7 +56,7 @@ fn retry_delay(interval: Duration, failures: u32) -> Duration {
 }
 
 pub async fn run(ctx: &Ctx, interval: u64, folder: Option<String>) -> Result<()> {
-    let client = resume(&ctx.profile).await?;
+    let client = Client::resume(&ctx.profile).await?;
     let folder = match folder {
         Some(folder) => Some(client.folder_id(&folder).await?),
         None => None,
