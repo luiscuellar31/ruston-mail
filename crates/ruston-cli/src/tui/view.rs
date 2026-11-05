@@ -32,8 +32,13 @@ const FOLDERS_WIDTH: u16 = 24;
 /// What the marks at the start of a conversation's row say, under the list.
 const ROW_MARKS: &str = " ✓ marked · • unread · ★ starred · + files ";
 
-/// How many columns a conversation's sender takes in its row.
+/// How many columns a conversation's sender takes in its row, at most: a
+/// narrower row gives it a quarter of its width.
 const SENDER_WIDTH: usize = 18;
+
+/// The narrowest row whose day shows its year; a narrower one, as beside the
+/// other panes below 155 columns, leaves it to the reader.
+const YEAR_WIDTH: usize = 60;
 
 /// How many conversations a question names before it counts the rest.
 const NAMED: usize = 5;
@@ -890,7 +895,9 @@ fn raw(lines: &[String]) -> impl Iterator<Item = Line<'_>> {
 
 /// One row of the list, `width` columns wide: whether it is marked (✓),
 /// unread (•), starred (★) or has attachments (+), its day, who wrote it,
-/// its subject and the `labels` it bears. The labels get what the subject
+/// its subject and the `labels` it bears. A narrow row, as beside the other
+/// panes, leaves out the day's year and cuts the sender short, so the
+/// subject keeps the largest share of it. The labels get what the subject
 /// leaves of the row, and at least a third of what follows the sender, the
 /// subject cut short for them; those that still do not fit are counted.
 /// Unread conversations are bold.
@@ -918,7 +925,9 @@ fn conversation_row(
         },
     );
     let time = render::fmt_time(conversation.time);
-    let day = time.get(..10).unwrap_or(&time);
+    // YYYY-MM-DD, or in a narrow row MM-DD.
+    let day = if width >= YEAR_WIDTH { 0..10 } else { 5..10 };
+    let day = time.get(day).unwrap_or(&time);
     let sender = conversation.senders.first().map_or("-", |sender| {
         if sender.name.is_empty() {
             &sender.address
@@ -926,6 +935,9 @@ fn conversation_row(
             &sender.name
         }
     });
+    let sender_width = (width / 4).min(SENDER_WIDTH);
+    let sender = cut(&screen_line(sender), sender_width);
+    let padding = " ".repeat(sender_width.saturating_sub(sender.width()));
     let style = if unread {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
@@ -933,10 +945,7 @@ fn conversation_row(
     };
     let mut spans = vec![
         Span::raw(format!("{flags} {day}  ")),
-        Span::styled(
-            format!("{:<SENDER_WIDTH$.SENDER_WIDTH$}  ", screen_line(sender)),
-            style,
-        ),
+        Span::styled(format!("{sender}{padding}  "), style),
     ];
     let subject = screen_line(render::subject_or_empty(&conversation.subject));
     let room = width.saturating_sub(spans.iter().map(Span::width).sum());
@@ -1216,9 +1225,10 @@ mod tests {
         }
         assert!(screen.contains("Inbox 3"), "{screen}");
         assert!(screen.contains("  2024"), "{screen}");
-        // The pane is 48 columns wide: the subject is cut where it ends.
+        // The pane is 48 columns wide: the day leaves out its year and the
+        // sender is cut short, so the subject fits.
         assert!(
-            screen.contains(" •   2024-04-24  alex@example.test   Quarterly│"),
+            screen.contains(" •   04-24  alex@examp…  Quarterly report     │"),
             "{screen}"
         );
         let status = screen.lines().last().unwrap();
@@ -1234,10 +1244,7 @@ mod tests {
         let mut app = with_mail("alex@example.test", "Quarterly report");
         app.marked = vec![app.conversations[0].id.clone()];
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
-        assert!(
-            screen.contains("✓•   2024-04-24  alex@example.test"),
-            "{screen}"
-        );
+        assert!(screen.contains("✓•   04-24  alex@examp…"), "{screen}");
         let status = screen.lines().last().unwrap();
         assert!(status.contains("Inbox · 1 marked · "), "{status}");
     }
@@ -1253,10 +1260,7 @@ mod tests {
             ..Default::default()
         }];
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
-        assert!(
-            screen.contains(" ★+ 2024-04-24  alex@example.test"),
-            "{screen}"
-        );
+        assert!(screen.contains(" ★+ 04-24  alex@examp…"), "{screen}");
     }
 
     /// One of the account's labels.
@@ -1307,11 +1311,36 @@ mod tests {
             "{screen}"
         );
         // Where the subject has only a few columns, they stay its own.
-        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        let screen = text(&drawn(100, 30, &app, &Theme::new(false)));
         assert!(
-            screen.contains(" •   2024-04-24  alex@example.test   Quarterly│"),
+            screen.contains(" •   04-24  alex@exa…  Quarterly repor│"),
             "{screen}"
         );
+    }
+
+    #[test]
+    fn the_subject_keeps_a_share_of_a_row_beside_the_other_panes() {
+        let mut app = with_mail("alex@example.test", "Quarterly report for the board");
+        app.places.push(label("l-1", "Work"));
+        app.conversations[0].labels = bearing(&["l-1"]);
+        app.focus = Pane::Conversations;
+        let whole =
+            " •   2024-04-24  alex@example.test   Quarterly report for the board [Work]    │";
+        for (width, row) in [
+            // Beside the other panes, the day leaves out its year and the
+            // sender takes a quarter of the row, cut short, so the subject
+            // keeps the largest share, and from 115 columns a label fits too.
+            (100, " •   04-24  alex@exa…  Quarterly repor│"),
+            (115, " •   04-24  alex@examp…  Quarterly r… [Work]│"),
+            (130, " •   04-24  alex@exampl…  Quarterly report… [Work]│"),
+            // The list alone in a narrow terminal, and beside the other
+            // panes in a wide one, keeps the whole row.
+            (80, whole),
+            (200, whole),
+        ] {
+            let screen = text(&drawn(width, 24, &app, &Theme::new(false)));
+            assert!(screen.contains(row), "{width} columns:\n{screen}");
+        }
     }
 
     #[test]
@@ -2115,9 +2144,9 @@ mod tests {
             buffer[(u16::try_from(column).unwrap(), u16::try_from(row).unwrap())].modifier
         };
         // Bold is for unread mail; the selection elsewhere is underlined.
-        let selected = style_of("sam@example.test");
+        let selected = style_of("sam@exa");
         assert!(selected.contains(Modifier::UNDERLINED) && !selected.contains(Modifier::BOLD));
-        let unread = style_of("alex@example.test");
+        let unread = style_of("alex@exa");
         assert!(unread.contains(Modifier::BOLD) && !unread.contains(Modifier::UNDERLINED));
         // And under the list, what its marks say.
         assert!(

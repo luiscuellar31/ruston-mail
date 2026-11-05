@@ -551,7 +551,11 @@ signature's verdict and its body as
 `conversations read` shows it. The list's bottom edge names those marks. A
 row also names, in brackets after its subject, the labels its conversation
 bears, but the label listed: when the row lacks room for both, the subject
-gives up to a third of its room to them, and +2 says two more did not fit. The
+gives up to a third of its room to them, and +2 says two more did not fit.
+Where the list is narrow, as beside the other panes in a terminal under 155
+columns wide, a row's day leaves out its year, which the reader shows, and
+its sender takes a quarter of the row, cut short with …, so the subject
+keeps room. The
 selected row shows inverted in the pane that has the keys and underlined in
 the others, since bold marks an unread conversation. The list holds 50
 conversations at first and loads 50 more each time you move down past its last. `g` followed by a letter
