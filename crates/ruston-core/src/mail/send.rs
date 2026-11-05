@@ -191,6 +191,7 @@ pub(super) async fn upload_attachments<D: Doer>(
         uploaded.push(AttachmentKey {
             id,
             session_key: prepared.material,
+            signed: true,
         });
     }
     Ok(uploaded)
@@ -434,6 +435,15 @@ fn guess_mime(path: &Path) -> String {
 pub(super) struct AttachmentKey {
     id: String,
     session_key: SessionKeyMaterial,
+    /// Whether a detached signature of its bytes went up with it.
+    signed: bool,
+}
+
+/// The `Signature` value of an encrypted package: 1 when every attachment
+/// the message carries is signed, which has the recipient's app check those
+/// signatures, and 0 otherwise. Proton's own apps set it the same way.
+fn attachment_signatures(attachments: &[AttachmentKey]) -> u8 {
+    u8::from(attachments.iter().all(|attachment| attachment.signed))
 }
 
 /// A body encrypted for transport: the data packet a package carries, and
@@ -498,7 +508,7 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
         let mut entry = json!({
             "Type": pkg_type,
             "BodyKeyPacket": STANDARD.encode(&bkp),
-            "Signature": 0,
+            "Signature": attachment_signatures(attachments),
         });
         if !attachments.is_empty() {
             let mut akp = Map::new();
@@ -628,7 +638,7 @@ fn password_entry(
     let body_key_packet = crypto::wrap_session_key_with_password(&provider, password, body_key)?;
     let mut entry = json!({
         "Type": package_type::EO,
-        "Signature": 0,
+        "Signature": attachment_signatures(attachments),
         "Token": token,
         "EncToken": enc_token,
         "BodyKeyPacket": STANDARD.encode(&body_key_packet),
@@ -945,6 +955,10 @@ impl Client {
             attachment_keys.push(AttachmentKey {
                 id: attachment.id.clone(),
                 session_key: crypto::decrypt_session_key(provider, addr, key_packets)?,
+                signed: attachment
+                    .signature
+                    .as_deref()
+                    .is_some_and(|s| !s.is_empty()),
             });
         }
         let uploaded = upload_attachments(self.http(), addr, message_id, &opts.attachments).await?;

@@ -569,6 +569,8 @@ async fn forwarded_attachments_are_keyed_for_every_recipient() {
     let opened =
         crypto::decrypt_attachment(&provider, &friend, wrapped, &original.data_packet).unwrap();
     assert_eq!(opened, b"forwarded payload");
+    // The original's attachment carries no signature, so none is announced.
+    assert_eq!(internal["Signature"], 0);
 
     let clear = &package(package_type::CLEAR)["AttachmentKeys"]["draft-att"];
     assert_eq!(
@@ -687,6 +689,7 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
                     "ID": "draft-att",
                     "Name": "notes.txt",
                     "KeyPackets": STANDARD.encode(&attachment.key_packet),
+                    "Signature": STANDARD.encode(&attachment.signature),
                 }]
             }
         })))
@@ -820,6 +823,11 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
             open(internal, recipient),
             (html.to_owned(), b"attached".to_vec())
         );
+        // The attachment went up signed, so their apps are told to check it.
+        assert_eq!(
+            internal["Addresses"][recipient.email.as_str()]["Signature"],
+            1
+        );
     }
     // The package's own key packet is the sender's.
     let body_key =
@@ -835,6 +843,7 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
         open(pgp, &outsider),
         ("The plan".to_owned(), b"attached".to_vec())
     );
+    assert_eq!(pgp["Addresses"]["pgp@example.org"]["Signature"], 1);
 
     // Without a key, Proton is handed the keys of the same body.
     let clear = package(package_type::CLEAR);
@@ -844,6 +853,7 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
         clear["Addresses"]["plain@example.com"]["Type"],
         package_type::CLEAR
     );
+    assert_eq!(clear["Addresses"]["plain@example.com"]["Signature"], 0);
     assert_eq!(clear["Body"], internal["Body"]);
     assert_eq!(
         clear["BodyKey"]["Key"],
@@ -853,6 +863,18 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
         clear["AttachmentKeys"]["draft-att"]["Key"],
         STANDARD.encode(attachment.material.key.as_slice())
     );
+}
+
+#[test]
+fn packages_announce_signatures_only_when_every_attachment_has_one() {
+    let key = |signed| AttachmentKey {
+        id: "a".into(),
+        session_key: crypto::new_session_key(&crypto::provider()).unwrap().0,
+        signed,
+    };
+    assert_eq!(attachment_signatures(&[]), 1);
+    assert_eq!(attachment_signatures(&[key(true), key(true)]), 1);
+    assert_eq!(attachment_signatures(&[key(true), key(false)]), 0);
 }
 
 #[test]
@@ -1094,6 +1116,7 @@ async fn password_protected_recipients_get_keys_that_open_with_the_password() {
     };
     let entry = &package["Addresses"]["ana@example.com"];
     assert_eq!(entry["Type"], package_type::EO);
+    assert_eq!(entry["Signature"], 0);
     assert_eq!(entry["PasswordHint"], "our film");
     assert_eq!(entry["Auth"]["ModulusID"], "modulus-1");
     let token = provider
