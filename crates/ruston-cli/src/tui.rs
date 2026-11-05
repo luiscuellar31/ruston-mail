@@ -807,6 +807,25 @@ mod tests {
         assert!(!moves(&Ok(Event::Resize(80, 24))));
     }
 
+    #[tokio::test]
+    async fn a_conversation_read_in_the_demo_opens_again_with_its_messages_read() {
+        let mailbox = Mailbox::demo();
+        let mut app = App::new(mailbox.account());
+        let start = app.start();
+        run_all(&mut app, start, &mailbox).await;
+        app.update(Message::NextPane);
+        // Its first message is not read yet, so it stays open, and opening
+        // the conversation marks it read.
+        let opened = app.update(Message::Open);
+        run_all(&mut app, opened, &mailbox).await;
+        let reading = app.reading.as_ref().unwrap();
+        assert!(reading.messages.len() > 1 && !reading.folds(0));
+        app.update(Message::Left);
+        let opened = app.update(Message::Open);
+        run_all(&mut app, opened, &mailbox).await;
+        assert!(app.reading.as_ref().unwrap().folds(0));
+    }
+
     #[cfg(unix)]
     #[test]
     fn ctrl_z_suspends_the_interface_and_asks_nothing_of_it() {

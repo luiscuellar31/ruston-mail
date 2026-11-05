@@ -1024,8 +1024,9 @@ impl DemoSession {
     }
 
     /// Makes `change` to the conversation `id`, listed in `place`, much as
-    /// Proton would: a star labels it Starred, reading marks it read
-    /// wherever it is and unread only where it is listed, a move takes it
+    /// Proton would: a star labels it Starred, reading marks it and all its
+    /// messages read wherever it is, and unread only where it is listed,
+    /// with its newest message there when none was unread, a move takes it
     /// out of the folders it was in, keeping its labels, Sent and Drafts,
     /// and deleting it forever takes it away whole, as a move brings all of
     /// it to Trash or Spam.
@@ -1060,8 +1061,28 @@ impl DemoSession {
                 for label in &mut conversation.labels {
                     label.context_num_unread = Some(0);
                 }
+                let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
+                for message in messages.iter_mut().filter(|m| m.meta.conversation_id == id) {
+                    message.meta.unread = 0;
+                }
             }
             Change::Read(false) => {
+                // Proton marks its newest message in the place unread. The
+                // demo's messages keep the places they started in and none
+                // is in All mail, so where none is, its newest is.
+                if conversation.num_unread == 0 {
+                    let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
+                    let newest = |in_place: bool| {
+                        let held = messages.iter().enumerate().filter(|(_, m)| {
+                            m.meta.conversation_id == id
+                                && (!in_place || m.meta.label_ids.iter().any(|l| l == place))
+                        });
+                        held.max_by_key(|(_, m)| m.meta.order).map(|(at, _)| at)
+                    };
+                    if let Some(at) = newest(true).or_else(|| newest(false)) {
+                        messages[at].meta.unread = 1;
+                    }
+                }
                 conversation.num_unread = conversation.num_unread.max(1);
                 if let Some(label) = conversation.labels.iter_mut().find(|l| l.id == place) {
                     label.context_num_unread = Some(label.context_num_unread.unwrap_or(0).max(1));
@@ -2046,6 +2067,36 @@ mod tests {
                 .map(|count| count.unread),
             Some(2)
         );
+    }
+
+    #[test]
+    fn a_session_marks_a_conversations_messages_read_or_unread_as_proton_would() {
+        let session = DemoSession::new();
+        let id = "conv-demo-01";
+        let unread = || -> Vec<i64> {
+            let (_, messages) = session.conversation(id).unwrap();
+            messages
+                .iter()
+                .map(|message| match message {
+                    ConversationMessage::Opened(full) => full.meta.unread,
+                    ConversationMessage::Unreadable(unreadable) => unreadable.meta.unread,
+                })
+                .collect()
+        };
+        // Alex's review, not read yet, then the reply sent to it.
+        assert_eq!(unread(), [1, 0]);
+        session.change(id, label_ids::INBOX, &Change::Read(true));
+        assert_eq!(unread(), [0, 0]);
+        // Unread again, its newest in the Inbox is, not the reply in Sent.
+        session.change(id, label_ids::INBOX, &Change::Read(false));
+        assert_eq!(unread(), [1, 0]);
+        // Unread already, it stays as it is.
+        session.change(id, label_ids::SENT, &Change::Read(false));
+        assert_eq!(unread(), [1, 0]);
+        // Where none of its messages is, as in All mail here, its newest is.
+        session.change(id, label_ids::INBOX, &Change::Read(true));
+        session.change(id, label_ids::ALL_MAIL, &Change::Read(false));
+        assert_eq!(unread(), [0, 1]);
     }
 
     #[test]
