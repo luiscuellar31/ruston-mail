@@ -111,25 +111,66 @@ impl BoundedText {
     }
 }
 
+/// A list item's marker, `-` or its number, written once, at the start of the
+/// item's first paragraph.
+enum ItemMarker {
+    /// Not written yet: the item's next paragraph starts with it.
+    Pending(String),
+    /// Written with an earlier paragraph of the item.
+    Written,
+}
+
+/// One message's conversion: the text written so far, and what the elements
+/// still open say about the text to come.
 #[derive(Default)]
 struct Builder {
+    /// The text converted so far, within `MAX_CONTENT_BYTES`.
     output: BoundedText,
+    /// Whether the last block written began a list item: the next item's
+    /// first paragraph then follows it on the next line, not after a blank one.
     prior_list_item: bool,
+    /// Whether something was left out to stay within a byte budget. The rest
+    /// of the message is then ignored, and the output ends with
+    /// `TRUNCATION_NOTICE`.
     truncated: bool,
+    /// The text of the block being read, in runs of one style each, until the
+    /// block ends and is written to `output`.
     spans: Vec<Span>,
+    /// The bytes `spans` take, their text and their storage, which `output`
+    /// must still have room for.
     pending_bytes: usize,
+    /// Whether a space is due before the next word: whitespace came after the
+    /// last one, or a table cell began.
     pending_space: bool,
+    /// The hidden element, such as `head` or `script`, whose content is
+    /// skipped until it ends.
     hidden: Option<String>,
+    /// The level of the heading being read, from 1 to 6.
     heading: Option<usize>,
+    /// How many quotes are open; each, up to `MAX_RENDER_DEPTH`, puts a `> `
+    /// before the lines.
     quote_depth: usize,
+    /// The lists shown, innermost last: the number of an ordered list's next
+    /// item, or `None` for a bulleted list.
     lists: Vec<Option<u32>>,
+    /// How many lists are open beyond the `MAX_RENDER_DEPTH` shown, so that
+    /// their ends close them before any of `lists`.
     omitted_list_depth: usize,
-    item_marker: Option<String>,
+    /// The marker of the list item being read; the end of an item or of a
+    /// list clears it.
+    item_marker: Option<ItemMarker>,
+    /// How many `pre` elements are open.
     pre_depth: usize,
+    /// The text of the open `pre` elements, kept as it is until the outermost
+    /// one ends.
     pre_text: BoundedText,
-    bold: usize,
-    italic: usize,
-    code: usize,
+    /// How many bold elements, `b` or `strong`, are open.
+    bold_depth: usize,
+    /// How many italic elements, `i` or `em`, are open.
+    italic_depth: usize,
+    /// How many code elements, `code`, `kbd` or `samp`, are open.
+    code_depth: usize,
+    /// The target of the link being read, when it has one the output shows.
     link: Option<Rc<str>>,
 }
 
@@ -179,7 +220,7 @@ impl Builder {
             }
             "li" => {
                 self.flush();
-                self.item_marker = Some(
+                self.item_marker = Some(ItemMarker::Pending(
                     match self
                         .lists
                         .last_mut()
@@ -192,7 +233,7 @@ impl Builder {
                         }
                         _ => "-".to_owned(),
                     },
-                );
+                ));
             }
             "blockquote" => {
                 self.flush();
@@ -202,9 +243,9 @@ impl Builder {
                 self.flush();
                 self.pre_depth = self.pre_depth.saturating_add(1);
             }
-            "b" | "strong" => self.bold = self.bold.saturating_add(1),
-            "i" | "em" => self.italic = self.italic.saturating_add(1),
-            "code" | "kbd" | "samp" => self.code = self.code.saturating_add(1),
+            "b" | "strong" => self.bold_depth = self.bold_depth.saturating_add(1),
+            "i" | "em" => self.italic_depth = self.italic_depth.saturating_add(1),
+            "code" | "kbd" | "samp" => self.code_depth = self.code_depth.saturating_add(1),
             "a" => {
                 self.consume_pending_space();
                 self.link = link_target(tag);
@@ -245,9 +286,9 @@ impl Builder {
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             "pre" => self.end_pre(),
-            "b" | "strong" => self.bold = self.bold.saturating_sub(1),
-            "i" | "em" => self.italic = self.italic.saturating_sub(1),
-            "code" | "kbd" | "samp" => self.code = self.code.saturating_sub(1),
+            "b" | "strong" => self.bold_depth = self.bold_depth.saturating_sub(1),
+            "i" | "em" => self.italic_depth = self.italic_depth.saturating_sub(1),
+            "code" | "kbd" | "samp" => self.code_depth = self.code_depth.saturating_sub(1),
             "a" => self.link = None,
             "br" => self.line_break(),
             _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
@@ -273,9 +314,9 @@ impl Builder {
             return;
         }
         let style = Style {
-            bold: self.bold > 0,
-            italic: self.italic > 0,
-            code: self.code > 0,
+            bold: self.bold_depth > 0,
+            italic: self.italic_depth > 0,
+            code: self.code_depth > 0,
             link: self.link.clone(),
         };
         for run in text.split_inclusive(|c: char| c.is_whitespace() || c.is_control()) {
@@ -384,10 +425,11 @@ impl Builder {
             (format!("{} {text}", "#".repeat(level)), false)
         } else if let Some(marker) = self.item_marker.as_mut() {
             let depth = self.lists.len().saturating_sub(1).min(MAX_RENDER_DEPTH - 1);
-            let text = format!("{}{} {text}", "  ".repeat(depth), marker);
-            let list_item = !marker.is_empty();
-            marker.clear();
-            (text, list_item)
+            let indent = "  ".repeat(depth);
+            match std::mem::replace(marker, ItemMarker::Written) {
+                ItemMarker::Pending(marker) => (format!("{indent}{marker} {text}"), true),
+                ItemMarker::Written => (format!("{indent} {text}"), false),
+            }
         } else {
             (text, false)
         };
@@ -728,7 +770,7 @@ mod tests {
     fn temporary_buffers_and_list_stack_stop_growing_at_their_limits() {
         let mut builder = Builder::default();
         for index in 0..MAX_OUTPUT_BYTES {
-            builder.bold = index % 2;
+            builder.bold_depth = index % 2;
             builder.text("x");
             if builder.truncated {
                 break;
@@ -824,6 +866,31 @@ mod tests {
         assert_eq!(
             to_markdown("<ul><li>First</li><li>Second<br>line</li></ul>"),
             "- First\n- Second\nline"
+        );
+    }
+
+    #[test]
+    fn only_the_first_paragraph_of_a_list_item_carries_its_marker() {
+        assert_eq!(
+            to_markdown("<ul><li><p>One</p><p>more</p></li><li>Two</li></ul>"),
+            "- One\n\n more\n\n- Two"
+        );
+        assert_eq!(
+            to_markdown(
+                "<ol><li><p>One</p><p>more</p><ul><li><p>a</p><p>b</p></li></ul>after</li>\
+                 <li>Two</li></ol>"
+            ),
+            "1. One\n\n more\n\n  - a\n\n   b\n\nafter\n\n2. Two"
+        );
+    }
+
+    #[test]
+    fn inline_styles_last_until_their_outermost_element_closes() {
+        let html = "<p><b>one <strong>two</strong> three</b> four <i>five <em>six</em> seven</i> \
+                    <code>x <kbd>y</kbd> z</code> <samp>w</samp></p>";
+        assert_eq!(
+            to_markdown(html),
+            "**one** **two** **three** four *five* *six* *seven* `x` `y` `z` `w`"
         );
     }
 }
