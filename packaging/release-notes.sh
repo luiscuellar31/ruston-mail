@@ -35,6 +35,8 @@ RANGE=""
 OUTPUT=""
 # The tag before TAG, when the range is the commits since it.
 PREV_TAG=""
+# 1 when the range is every commit up to TAG, since no tag comes before it.
+FIRST_RELEASE=0
 
 # The areas, in the order of the notes, each with its scopes between spaces,
 # and the scopes of work users do not see. Other, the last area, takes the
@@ -181,6 +183,7 @@ resolve_release() {
       RANGE="${PREV_TAG}..${TAG}"
     else
       RANGE="${TAG}"
+      FIRST_RELEASE=1
     fi
   fi
 }
@@ -588,13 +591,16 @@ The command-line client, \`ruston-cli.exe\`, sits beside \`ruston.exe\` in the i
 EOF
 }
 
+# Says which commits the notes cover: a link comparing the previous tag with
+# this one when there is a repository to link to, every commit of a first
+# release, or else the range itself, given or since the previous tag.
 print_comparison() {
   if [[ -n "$PREV_TAG" && -n "$REPO" ]]; then
     echo "**Full comparison:** [\`${PREV_TAG}...${TAG}\`](https://github.com/${REPO}/compare/${PREV_TAG}...${TAG})"
-  elif [[ -n "$PREV_TAG" ]]; then
-    echo "**Commit range:** \`${PREV_TAG}..${TAG}\`"
-  else
+  elif ((FIRST_RELEASE)); then
     echo "**Commit range:** \`${TAG}\` (first release: every commit up to this tag)"
+  else
+    echo "**Commit range:** \`${RANGE}\`"
   fi
 }
 
