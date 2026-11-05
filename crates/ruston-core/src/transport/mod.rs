@@ -1,6 +1,7 @@
 //! The HTTP transport: requests to Proton's API, each answer judged by its
-//! envelope, and a request sent again after a 401 renews the tokens, after a
-//! 429's wait, or once a human-verification challenge (9001) is solved.
+//! envelope, and a request sent again after a 401 renews the tokens, after
+//! the wait Proton asks for when busy (429, or 503 to a read), or once a
+//! human-verification challenge (9001) is solved.
 
 mod headers;
 mod retry_after;
@@ -35,6 +36,12 @@ const MAX_ERROR_BODY_BYTES: usize = 4 * 1024;
 /// reusing them leaves one more refresh; a pair Proton has just issued is the
 /// last try.
 const REFRESH_ATTEMPTS: u8 = 2;
+/// How many times a request Proton answers busy is sent again, each after
+/// the wait [`retry_after::wait`] gives: as go-proton-api, which retries 429
+/// and 503 answers three times; Proton's web client tries five times in all,
+/// on 429 alone. A 429 refuses a request before Proton handles it, so any
+/// request is sent again after one; see [`busy_and_repeatable`] for a 503.
+const BUSY_RETRIES: u8 = 3;
 
 /// What a request sends after its headers.
 #[derive(Clone)]
@@ -227,7 +234,7 @@ pub struct Response {
     /// The body, as it came.
     pub body: Vec<u8>,
     /// How many seconds its `Retry-After` header asks to wait, when it has
-    /// one, cut to the longest wait the transport honors.
+    /// one.
     pub retry_after: Option<u64>,
 }
 
@@ -708,6 +715,14 @@ fn is_success(status: u16, code: Option<i64>) -> bool {
         )
 }
 
+/// Whether Proton's `error` says it was busy with `request`, which may then
+/// be sent again: a 429, or a 503 to a read. A gateway may answer 503 once
+/// Proton has acted on a request, so anything that is not a read, a send
+/// above all, is never sent twice after one.
+fn busy_and_repeatable(request: &Request, error: &ApiError) -> bool {
+    error.is_rate_limited() || (error.http_status == 503 && request.method.is_safe())
+}
+
 /// The challenge a 9001 response's `Details` describe. A field they lack
 /// reads as empty.
 fn hv_challenge(details: &serde_json::Value) -> HvChallenge {
@@ -738,11 +753,11 @@ fn hv_challenge(details: &serde_json::Value) -> HvChallenge {
 impl Doer for HttpClient {
     async fn do_raw(&self, mut request: Request) -> Result<Response> {
         // The request is sent again after renewing the tokens on a 401, up to
-        // REFRESH_ATTEMPTS times; after one wait on a 429; and after one
-        // solved human verification.
+        // REFRESH_ATTEMPTS times; after a busy answer, up to BUSY_RETRIES
+        // times; and after one solved human verification.
         let prepared = self.prepare_request(&mut request)?;
         let mut refreshes_left = REFRESH_ATTEMPTS;
-        let mut rate_limited = false;
+        let mut busy_retries_left = BUSY_RETRIES;
         let mut hv_tried = false;
 
         loop {
@@ -760,13 +775,15 @@ impl Doer for HttpClient {
                     };
                 }
                 Detected::Api(e) if e.is_unauthorized() => return Err(Error::Unauthorized),
-                Detected::Api(e) if e.is_rate_limited() && !rate_limited => {
-                    let wait = resp.retry_after.unwrap_or(0);
-                    tracing::debug!(target: "ruston_core::http", wait_s = wait, "429 rate-limited — backing off then retrying");
-                    if wait > 0 {
-                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                Detected::Api(e) if busy_retries_left > 0 && busy_and_repeatable(&request, &e) => {
+                    let Some(wait) = retry_after::wait(resp.retry_after) else {
+                        return Err(Error::Api(e));
+                    };
+                    tracing::debug!(target: "ruston_core::http", status = e.http_status, wait_s = wait.as_secs(), "busy — backing off then retrying");
+                    if !wait.is_zero() {
+                        tokio::time::sleep(wait).await;
                     }
-                    rate_limited = true;
+                    busy_retries_left -= 1;
                 }
                 Detected::Hv(chal) => {
                     let Some(resolver) = self.hv.as_ref().filter(|_| !hv_tried) else {
@@ -1149,7 +1166,9 @@ mod tests {
             .respond_with(move |request: &wiremock::Request| {
                 assert_eq!(request.body, expected);
                 if observed.fetch_add(1, Ordering::SeqCst) == 0 {
-                    ResponseTemplate::new(429).set_body_json(serde_json::json!({"Code": 429}))
+                    ResponseTemplate::new(429)
+                        .insert_header("Retry-After", "0")
+                        .set_body_json(serde_json::json!({"Code": 429}))
                 } else {
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000}))
                 }
@@ -1436,16 +1455,84 @@ mod tests {
         assert_eq!(v.value, 1);
     }
 
+    /// Proton's answer that it is busy, with `status`, asking to be tried
+    /// again in `retry_after` seconds.
+    fn busy(status: u16, retry_after: u64) -> ResponseTemplate {
+        ResponseTemplate::new(status)
+            .insert_header("Retry-After", retry_after.to_string())
+            .set_body_json(serde_json::json!({"Code": status, "Error": "busy"}))
+    }
+
     #[tokio::test]
-    async fn a_rate_limited_request_is_sent_once_more() {
-        let limited = ResponseTemplate::new(429).insert_header("Retry-After", "0");
-        let server = answering(in_turn([limited, success(7)])).await;
+    async fn a_request_rate_limited_several_times_is_sent_until_it_gets_through() {
+        let limited = busy(429, 0);
+        let server = answering(in_turn([
+            limited.clone(),
+            limited.clone(),
+            limited,
+            success(7),
+        ]))
+        .await;
+        let decoded: ValueResp = client(&server.uri())
+            .decode(Request::get("/x"))
+            .await
+            .unwrap();
+        assert_eq!(decoded.value, 7);
+        assert_eq!(server.received_requests().await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_read_proton_could_not_serve_is_asked_for_again() {
+        let server = answering(in_turn([busy(503, 0), success(7)])).await;
         let decoded: ValueResp = client(&server.uri())
             .decode(Request::get("/x"))
             .await
             .unwrap();
         assert_eq!(decoded.value, 7);
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_request_still_busy_after_the_last_retry_fails_with_proton_s_error() {
+        for status in [429, 503] {
+            let server = answering(busy(status, 0)).await;
+            let result = client(&server.uri()).do_raw(Request::get("/x")).await;
+            assert!(
+                matches!(&result, Err(Error::Api(api)) if api.http_status == status),
+                "{result:?}"
+            );
+            assert_eq!(
+                server.received_requests().await.unwrap().len(),
+                1 + usize::from(BUSY_RETRIES)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_asked_to_wait_longer_than_the_cap_fails_at_once() {
+        let server = answering(busy(429, retry_after::MAX_WAIT + 1)).await;
+        let result = client(&server.uri()).do_raw(Request::get("/x")).await;
+        assert!(
+            matches!(&result, Err(Error::Api(api)) if api.http_status == 429),
+            "{result:?}"
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_503_to_anything_but_a_read_is_not_sent_again() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/x"))
+            .respond_with(busy(503, 0))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let result = client(&server.uri()).do_raw(Request::post("/x")).await;
+        assert!(
+            matches!(&result, Err(Error::Api(api)) if api.http_status == 503),
+            "{result:?}"
+        );
     }
 
     #[tokio::test]

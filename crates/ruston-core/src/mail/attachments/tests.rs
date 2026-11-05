@@ -327,7 +327,11 @@ async fn a_pgp_mime_attachment_is_refused_only_with_an_invalid_body_signature() 
     // No keys to check it with: let through, as reading shows such a body.
     let server = MockServer::start().await;
     let (client, _) = attachment_client(&server).await;
-    answer_key_lookup(&server, ResponseTemplate::new(503)).await;
+    answer_key_lookup(
+        &server,
+        ResponseTemplate::new(503).insert_header("Retry-After", "0"),
+    )
+    .await;
     message = pgp_mime_message(&client);
     serve_message(&server, &message).await;
     let (name, _) = client
@@ -431,7 +435,7 @@ async fn a_failed_sender_key_lookup_is_reported_as_itself() {
     let (client, attachment) = attachment_client(&server).await;
     Mock::given(method("GET"))
         .and(path("/core/v4/keys/all"))
-        .respond_with(ResponseTemplate::new(503))
+        .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", "0"))
         .with_priority(1)
         .mount(&server)
         .await;

@@ -917,6 +917,7 @@ mod tests {
                 .and(path("/mail/v4/messages/m1"))
                 .respond_with(
                     ResponseTemplate::new(status)
+                        .insert_header("Retry-After", "0")
                         .set_body_json(serde_json::json!({"Code": status})),
                 )
                 .with_priority(1)

@@ -1817,6 +1817,31 @@ async fn explicit_send_rejection_remains_a_regular_api_error() {
 }
 
 #[tokio::test]
+async fn a_send_proton_answers_unavailable_is_not_sent_again() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages/draft-1"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .insert_header("Retry-After", "0")
+                .set_body_json(json!({"Code": 503, "Error": "unavailable"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let http = HttpClient::new(server.uri(), "Other");
+    let error = submit_send(&http, "draft-1", json!({"Packages": []}))
+        .await
+        .unwrap_err();
+    // Proton may have sent it before the gateway answered.
+    assert!(matches!(
+        error,
+        Error::SendUnconfirmed { message_id, .. } if message_id == "draft-1"
+    ));
+}
+
+#[tokio::test]
 async fn uncertain_send_does_not_delete_the_draft() {
     let server = MockServer::start().await;
     Mock::given(method("PUT"))

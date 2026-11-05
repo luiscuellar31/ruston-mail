@@ -1055,7 +1055,14 @@ instead of an unknown outcome.
   caller then decodes once; bodies a caller does not need are skipped, and an
   API error keeps the first 4 KiB of its body. Ordinary requests have 60 seconds;
   attachment transfers have 180 seconds. Opening a connection has its own
-  10-second limit within that deadline. Responses are requested
+  10-second limit within that deadline. A request Proton answers busy is sent
+  again up to three times, as many as go-proton-api: after a 429, which refuses
+  a request before Proton handles it, and after a 503 only when it is a read
+  (a `GET`), since a gateway may answer 503 once Proton has acted, and a send
+  must never go twice. Each retry waits what `Retry-After` asks, up to 30
+  seconds, or 5 seconds when it asks nothing, between attempts and outside
+  their deadlines; a request asked to wait longer fails at once with Proton's
+  answer, as Proton's web client does from 10 seconds. Responses are requested
   gzip-compressed. TLS prefers the X25519MLKEM768 post-quantum hybrid key
   exchange: core declares reqwest's rustls only to turn on its
   `prefer-post-quantum` feature. Requests stay at the API's origin: a redirect

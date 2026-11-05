@@ -725,7 +725,9 @@ object too, the list under its name (`{"labels": […]}`, `{"counts": […]}`), 
 the demo's JSON adds `"demo": true`.
 
 Each CLI HTTP attempt has a 60-second deadline; attachment transfers have 180
-seconds. Commands with multiple requests or a rate-limit retry can take longer.
+seconds. Commands with multiple requests can take longer, and so can a request
+Proton answers busy: it is tried again up to three times, each after the wait
+Proton asks for, up to 30 seconds.
 A timed-out final send is reported as unconfirmed with its draft ID. Check Sent
 before retrying, since Proton may have accepted the message.
 

@@ -1320,7 +1320,9 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/mail/v4/messages/m1"))
             .respond_with(
-                ResponseTemplate::new(503).set_body_json(serde_json::json!({"Code": 503})),
+                ResponseTemplate::new(503)
+                    .insert_header("Retry-After", "0")
+                    .set_body_json(serde_json::json!({"Code": 503})),
             )
             .mount(&server)
             .await;
@@ -1707,11 +1709,12 @@ mod tests {
             })))
             .mount(&server)
             .await;
+        // A failure the transport does not retry itself, as it does a 503.
         Mock::given(method("GET"))
             .and(path("/mail/v4/messages"))
             .and(query_param("Page", "1"))
-            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
-                "Code": 503, "Error": "unavailable"
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "Code": 500, "Error": "internal error"
             })))
             .up_to_n_times(1)
             .expect(1)
@@ -1762,8 +1765,9 @@ mod tests {
             .and(path("/mail/v4/messages"))
             .and(query_param("Page", "1"))
             .and(query_param("PageSize", "2"))
-            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
-                "Code": 503, "Error": "unavailable"
+            // A failure the transport does not retry itself, as it does a 503.
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "Code": 500, "Error": "internal error"
             })))
             // Asked again after each wait, then given up on.
             .expect(1 + RESYNC_PAGE_RETRIES.len() as u64)
