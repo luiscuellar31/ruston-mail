@@ -134,6 +134,12 @@ pub(crate) struct App {
     pub(crate) focus: Pane,
     /// Whether the list of keys is open over the panes.
     pub(crate) help: bool,
+    /// How many rows down the list of keys is scrolled.
+    pub(crate) help_scroll: u16,
+    /// The furthest the list of keys could scroll when last drawn, and how
+    /// many of its rows fit, which the view sets as it does the reader's.
+    pub(crate) help_bottom: Cell<u16>,
+    pub(crate) help_rows: Cell<u16>,
     /// Set once the person asks to quit; the loop then ends.
     pub(crate) quit: bool,
     /// The folders and labels, once they have loaded.
@@ -424,6 +430,9 @@ impl App {
             account,
             focus: Pane::Folders,
             help: false,
+            help_scroll: 0,
+            help_bottom: Cell::new(0),
+            help_rows: Cell::new(1),
             quit: false,
             places: Vec::new(),
             selected_place: 0,
@@ -474,10 +483,11 @@ impl App {
     pub(crate) fn update(&mut self, message: Message) -> Vec<Effect> {
         match message {
             Message::Quit => self.quit = true,
-            Message::ToggleHelp => self.help = !self.help,
-            Message::Back if self.help => self.help = false,
-            // The open list of keys covers the panes, so they keep still.
-            _ if self.help && is_key(&message) => {}
+            Message::ToggleHelp | Message::Back if self.help => self.help = false,
+            Message::ToggleHelp => self.open_help(),
+            // The open list of keys covers the panes, so they keep still,
+            // and scrolls where it does not fit.
+            _ if self.help && is_key(&message) => self.scroll_help(&message),
             // So does the list of links, which takes the keys meanwhile.
             _ if self.picking_link.is_some() && is_key(&message) => {
                 return self.pick_link(&message);
@@ -858,7 +868,7 @@ impl App {
     fn run(&mut self, command: Command) -> Vec<Effect> {
         match command {
             Command::Quit => self.quit = true,
-            Command::Help => self.help = true,
+            Command::Help => self.open_help(),
             Command::Attachments => self.show_attachments(),
             Command::Refresh => return self.update(Message::Refresh),
             Command::Search(words) => match self.proton_search(&words) {
@@ -1524,7 +1534,28 @@ impl App {
 
     /// How many rows a page of the reader moves: as many as fit.
     fn page(&self) -> isize {
-        isize::try_from(self.reader_rows.get()).map_or(1, |rows| rows.max(1))
+        page_of(&self.reader_rows)
+    }
+
+    /// Opens the list of keys at its top.
+    fn open_help(&mut self) {
+        self.help = true;
+        self.help_scroll = 0;
+    }
+
+    /// Scrolls the open list of keys as the key `message` asks, a row, a
+    /// page or to an end, as far as there is to go; another key does nothing.
+    fn scroll_help(&mut self, message: &Message) {
+        let by = match message {
+            Message::Up => -1,
+            Message::Down => 1,
+            Message::PageUp => -page_of(&self.help_rows),
+            Message::PageDown => page_of(&self.help_rows),
+            Message::Top => isize::MIN,
+            Message::Bottom => isize::MAX,
+            _ => return,
+        };
+        self.help_scroll = scrolled(self.help_scroll, by, self.help_bottom.get());
     }
 
     /// Moves the focused list's selection, or the reader, `by` rows, as far
@@ -1534,9 +1565,7 @@ impl App {
             Pane::Folders => (&mut self.selected_place, self.places.len()),
             Pane::Conversations => (&mut self.selected_conversation, self.conversations.len()),
             Pane::Reader => {
-                let scroll = usize::from(self.scroll).saturating_add_signed(by);
-                let bottom = usize::from(self.reader_bottom.get());
-                self.scroll = u16::try_from(scroll.min(bottom)).unwrap_or(u16::MAX);
+                self.scroll = scrolled(self.scroll, by, self.reader_bottom.get());
                 return;
             }
         };
@@ -1746,6 +1775,18 @@ fn takes_moves(place: &Place) -> bool {
         ]
         .contains(&place.id.as_str()),
     }
+}
+
+/// How many rows a page moves where `rows` fit: as many, and at least one.
+fn page_of(rows: &Cell<u16>) -> isize {
+    isize::try_from(rows.get()).map_or(1, |rows| rows.max(1))
+}
+
+/// Where a view scrolled down `scroll` rows goes `by` rows on, between its
+/// top and `bottom`, the furthest it can go.
+fn scrolled(scroll: u16, by: isize, bottom: u16) -> u16 {
+    let scroll = usize::from(scroll).saturating_add_signed(by);
+    u16::try_from(scroll.min(usize::from(bottom))).unwrap_or(u16::MAX)
 }
 
 /// Whether `conversation` is starred.
@@ -2604,6 +2645,35 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         press(&mut app, KeyCode::Char('?'));
         assert!(!app.help);
+    }
+
+    #[test]
+    fn the_open_keys_scroll_where_they_do_not_fit_and_open_again_at_their_top() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('?'));
+        // As the view leaves them after drawing 30 rows 10 at a time.
+        app.help_bottom.set(20);
+        app.help_rows.set(10);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.help_scroll, 1);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.help_scroll, 11);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.help_scroll, 20);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.help_scroll, 20);
+        press(&mut app, KeyCode::PageUp);
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.help_scroll, 9);
+        // The panes keep still meanwhile.
+        assert_eq!((app.focus, app.selected_place), (Pane::Folders, 0));
+        press(&mut app, KeyCode::Char('?'));
+        command(&mut app, "help");
+        assert_eq!((app.help, app.help_scroll), (true, 0));
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.help_scroll, 0);
     }
 
     #[test]

@@ -530,7 +530,9 @@ once.
 
 `ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
 terminal interface with folders, conversations and a reader, whose keys are
-Proton Mail's wherever Proton has one; `?` lists them. With no session saved,
+Proton Mail's wherever Proton has one; `?` lists them, in two columns where
+the terminal is wide enough, and `j` and `k` scroll the list where it does not
+all fit. With no session saved,
 it signs in first, as `ruston-cli login` does, and `--demo` opens the
 fictional mailbox, which keeps the changes you make until the interface
 closes. Away from a terminal, as in a script, `ruston-cli` with no command

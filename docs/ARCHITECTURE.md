@@ -886,7 +886,9 @@ instead of an unknown outcome.
   as another; its magenta otherwise; and none under `NO_COLOR`. The reader wraps its lines to the
   pane; ratatui's unstable `Paragraph::line_count` gives the wrapped rows, and
   the view records how far the state may scroll, as only it knows the pane's
-  size. Every piece of text from the mail
+  size. It does the same for the list of keys, which takes two columns where
+  the terminal is wide enough for them and scrolls where it is too short.
+  Every piece of text from the mail
   passes through `terminal.rs`'s `screen_line` or `screen_text`, which drop
   what output filtering drops and turn tabs, and on one line line breaks, into
   spaces, since a cell holding one would move the cursor.

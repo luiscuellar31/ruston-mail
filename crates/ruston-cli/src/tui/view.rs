@@ -193,7 +193,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         draw_question(frame, question, theme);
     }
     if app.help {
-        draw_keys(frame, theme);
+        draw_keys(frame, app, theme);
     }
 }
 
@@ -1070,7 +1070,11 @@ fn draw_going(frame: &mut Frame, theme: &Theme, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn draw_keys(frame: &mut Frame, theme: &Theme) {
+/// The keys over the panes: in two columns side by side where the terminal
+/// is wide enough, the first half of them in the first, and scrolled as far
+/// as the state asks where they do not all fit, which the view tells the
+/// state as it does for the reader.
+fn draw_keys(frame: &mut Frame, app: &App, theme: &Theme) {
     let keys: Vec<&(&str, &str)> = KEYS.iter().chain(SUSPEND_KEYS).collect();
     let column = keys
         .iter()
@@ -1086,22 +1090,43 @@ fn draw_keys(frame: &mut Frame, theme: &Theme) {
             ])
         })
         .collect();
-    let width = lines.iter().map(Line::width).max().unwrap_or(0) + 3;
-    let height = lines.len() + 2;
+    // A column is as wide as its widest line and a space; the border takes
+    // two more.
+    let width = lines.iter().map(Line::width).max().unwrap_or(0) + 1;
+    let columns = if 2 * width + 2 <= usize::from(frame.area().width) {
+        2
+    } else {
+        1
+    };
+    let rows = lines.len().div_ceil(columns);
     let area = centered(
         frame.area(),
-        u16::try_from(width).unwrap_or(u16::MAX),
-        u16::try_from(height).unwrap_or(u16::MAX),
+        u16::try_from(columns * width + 2).unwrap_or(u16::MAX),
+        u16::try_from(rows + 2).unwrap_or(u16::MAX),
     );
-    let block = Block::bordered()
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let mut block = Block::bordered()
         .title(" Keys ")
-        .title_bottom(Line::styled(
-            SEARCH_FILTERS,
-            Style::new().add_modifier(Modifier::DIM),
-        ))
+        .title_bottom(Line::styled(SEARCH_FILTERS, dim))
         .border_style(theme.accent);
+    let shown = block.inner(area).height;
+    let bottom = u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .saturating_sub(shown);
+    app.help_bottom.set(bottom);
+    app.help_rows.set(shown.max(1));
+    if bottom > 0 {
+        block = block.title_bottom(Line::styled(" j, k scroll ", dim).right_aligned());
+    }
+    let inner = block.inner(area);
     frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.render_widget(block, area);
+    let each = Constraint::Length(u16::try_from(width).unwrap_or(u16::MAX));
+    let halves = Layout::horizontal(vec![each; columns]).split(inner);
+    for (half, place) in lines.chunks(rows).zip(halves.iter()) {
+        let half = Paragraph::new(half.to_vec()).scroll((app.help_scroll.min(bottom), 0));
+        frame.render_widget(half, *place);
+    }
 }
 
 /// A `width` by `height` area in the middle of `area`, no larger than it.
@@ -2098,16 +2123,53 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_fit_a_terminal_of_24_rows() {
-        let mut app = App::new("demo".into());
-        app.help = true;
-        let screen = text(&drawn(80, 24, &app, &Theme::new(false)));
-        for (keys, action) in KEYS.iter().chain(SUSPEND_KEYS) {
-            assert!(screen.contains(keys), "{keys} missing:\n{screen}");
-            assert!(screen.contains(action), "{action} missing:\n{screen}");
+    fn every_key_can_be_reached_at_80_by_24_and_where_they_do_not_fit() {
+        let all = KEYS.len() + SUSPEND_KEYS.len();
+        for (width, height) in [(80, 24), (80, 12)] {
+            let mut app = App::new("demo".into());
+            app.update(Message::ToggleHelp);
+            // Each screen down to the last row, and one more.
+            let mut seen = String::new();
+            for _ in 0..=all {
+                seen.push_str(&text(&drawn(width, height, &app, &Theme::new(false))));
+                app.update(Message::Down);
+            }
+            for (keys, action) in KEYS.iter().chain(SUSPEND_KEYS) {
+                assert!(seen.contains(keys), "{keys} missing at {height} rows");
+                assert!(seen.contains(action), "{action} missing at {height} rows");
+            }
+            // With what `:search` takes beside its words.
+            assert!(seen.contains(SEARCH_FILTERS.trim()), "{seen}");
         }
-        // With what `:search` takes beside its words.
-        assert!(screen.contains(SEARCH_FILTERS.trim()), "{screen}");
+        // Too few rows for all of them, the first screen says how to see the rest.
+        let mut app = App::new("demo".into());
+        app.update(Message::ToggleHelp);
+        let screen = text(&drawn(80, 12, &app, &Theme::new(false)));
+        let (last, _) = SUSPEND_KEYS.last().unwrap_or(&KEYS[KEYS.len() - 1]);
+        assert!(!screen.contains(last), "{screen}");
+        assert!(screen.contains("j, k scroll"), "{screen}");
+    }
+
+    #[test]
+    fn the_keys_take_two_columns_where_the_terminal_is_wide_enough() {
+        let mut app = App::new("demo".into());
+        app.update(Message::ToggleHelp);
+        let half = (KEYS.len() + SUSPEND_KEYS.len()).div_ceil(2);
+        let row_of = |screen: &str, keys: &str| {
+            screen
+                .lines()
+                .position(|line| line.contains(keys))
+                .unwrap_or_else(|| panic!("{keys} missing:\n{screen}"))
+        };
+        let screen = text(&drawn(200, 30, &app, &Theme::new(false)));
+        assert_eq!(
+            row_of(&screen, KEYS[0].0),
+            row_of(&screen, KEYS[half].0),
+            "{screen}"
+        );
+        // One column where two would not fit.
+        let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+        assert!(row_of(&screen, KEYS[0].0) < row_of(&screen, KEYS[half].0));
     }
 
     #[test]
