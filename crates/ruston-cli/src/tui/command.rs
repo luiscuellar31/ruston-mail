@@ -6,9 +6,9 @@ use super::compose::AnswerKind;
 use ruston_core::SearchOpts;
 use ruston_core::mail::read::search_window;
 
-/// The filters `:search` takes beside its words, as `messages search` takes
-/// options: who sent it, who got it, its first and last day, and the folder
-/// or label it is in.
+/// The filters `:search` and `:local` take beside their words, as `messages
+/// search` takes options: who sent it, who got it, its first and last day,
+/// and the folder or label it is in.
 const FILTERS: [&str; 5] = ["from:", "to:", "after:", "before:", "in:"];
 
 /// The commands, in the order Tab offers them.
@@ -55,7 +55,8 @@ pub(crate) enum Command {
     Move(String),
     /// Search all mail for these words.
     Search(String),
-    /// Search the local index for these words, without a connection.
+    /// Search the local index for these words, without a connection; the
+    /// filters among them narrow what it finds.
     Local(String),
     Star(bool),
     Read(bool),
@@ -141,12 +142,13 @@ impl Command {
     }
 }
 
-/// What `:search` asks Proton for in `typed`: its words, and each filter
-/// typed beside them, whatever its case, with what follows it up to a space,
-/// or between double quotes to hold spaces; the folder as it is named. The
-/// days are checked as core checks them, so a range that ends before it
-/// starts is refused, as `messages search` refuses it.
-pub(crate) fn search_options(typed: &str) -> Result<SearchOpts, String> {
+/// What a search asks for in `typed`, after the command `command`, `search`
+/// or `local`: its words, and each filter typed beside them, whatever its
+/// case, with what follows it up to a space, or between double quotes to
+/// hold spaces; the folder as it is named. The days are checked as core
+/// checks them, so a range that ends before it starts is refused, as
+/// `messages search` refuses it.
+pub(crate) fn search_options(command: &str, typed: &str) -> Result<SearchOpts, String> {
     let mut opts = SearchOpts::default();
     let mut words = Vec::new();
     let mut rest = typed.trim_start();
@@ -168,7 +170,7 @@ pub(crate) fn search_options(typed: &str) -> Result<SearchOpts, String> {
         };
         let value = value.trim();
         if value.is_empty() {
-            return Err(format!(":search needs something after {filter}"));
+            return Err(format!(":{command} needs something after {filter}"));
         }
         let field = match filter {
             "from:" => &mut opts.from,
@@ -179,7 +181,7 @@ pub(crate) fn search_options(typed: &str) -> Result<SearchOpts, String> {
             _ => &mut opts.folder,
         };
         if field.replace(value.to_owned()).is_some() {
-            return Err(format!(":search takes {filter} once"));
+            return Err(format!(":{command} takes {filter} once"));
         }
         rest = after.trim_start();
     }
@@ -401,6 +403,7 @@ mod tests {
     fn a_search_takes_filters_beside_its_words_as_messages_search_takes_options() {
         assert_eq!(
             search_options(
+                "search",
                 "budget From:alex after:2026-01-01  report before:2026-01-31 \
                  to:sam@example.test in:\"Bank statements\" re:"
             ),
@@ -416,16 +419,18 @@ mod tests {
         );
         // Filters alone are a search too, and one day can be all of it.
         assert_eq!(
-            search_options("in:Work after:2026-01-01 before:2026-01-01").map(|opts| opts.keyword),
+            search_options("search", "in:Work after:2026-01-01 before:2026-01-01")
+                .map(|opts| opts.keyword),
             Ok(None)
         );
         assert_eq!(
-            search_options("plans before:2026-01-31 after:2026-02-01"),
+            search_options("search", "plans before:2026-01-31 after:2026-02-01"),
             Err("Cannot search: invalid date range: 2026-02-01 is after 2026-01-31".into())
         );
+        // What is wrong names the command it was typed after.
         assert_eq!(
-            search_options("in:\"\" plans"),
-            Err(":search needs something after in:".into())
+            search_options("local", "in:\"\" plans"),
+            Err(":local needs something after in:".into())
         );
     }
 

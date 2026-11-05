@@ -73,8 +73,9 @@ pub(crate) struct Search {
 pub(crate) enum Query {
     /// Proton's search, for the words and the filters typed beside them.
     Proton(SearchOpts),
-    /// The local index, which looks for the words alone.
-    Local,
+    /// The local index, which looks for the words alone, and what it finds
+    /// narrowed by the filters typed beside them.
+    Local(SearchOpts),
 }
 
 /// The last move made out of the folder listed, which `Z` takes back, as
@@ -374,10 +375,11 @@ pub(crate) enum Effect {
         opts: SearchOpts,
         page: u32,
     },
-    /// What `words` find in the local index, all of it at once.
+    /// What the words of `opts` find in the local index, narrowed by its
+    /// filters, all of it at once.
     LocalSearch {
         request: u64,
-        words: String,
+        opts: SearchOpts,
     },
     Conversation {
         request: u64,
@@ -872,7 +874,7 @@ impl App {
             Command::Help => self.open_help(),
             Command::Attachments => self.show_attachments(),
             Command::Refresh => return self.update(Message::Refresh),
-            Command::Search(words) => match self.proton_search(&words) {
+            Command::Search(words) => match self.search_options("search", &words) {
                 Ok(opts) => {
                     self.focus = Pane::Conversations;
                     self.selected_conversation = 0;
@@ -880,11 +882,20 @@ impl App {
                 }
                 Err(error) => self.notice = Some(error),
             },
-            Command::Local(words) => {
-                self.focus = Pane::Conversations;
-                self.selected_conversation = 0;
-                return vec![self.search_for(words, Query::Local)];
-            }
+            Command::Local(words) => match self.search_options("local", &words) {
+                // The index finds by words; the filters narrow what it finds.
+                Ok(SearchOpts { keyword: None, .. }) => {
+                    self.notice = Some(
+                        "The local index cannot search by filters alone: type words too".into(),
+                    );
+                }
+                Ok(opts) => {
+                    self.focus = Pane::Conversations;
+                    self.selected_conversation = 0;
+                    return vec![self.search_for(words, Query::Local(opts))];
+                }
+                Err(error) => self.notice = Some(error),
+            },
             Command::Folder(name) => match self.named(&name) {
                 Ok(index) => {
                     self.selected_place = index;
@@ -936,10 +947,10 @@ impl App {
         Vec::new()
     }
 
-    /// What `words`, typed after `:search`, ask Proton's search for, with the
-    /// folder named after `in:` by its label ID.
-    fn proton_search(&self, words: &str) -> Result<SearchOpts, String> {
-        let mut opts = super::command::search_options(words)?;
+    /// What `words`, typed after the command `command`, `search` or `local`,
+    /// ask a search for, with the folder named after `in:` by its label ID.
+    fn search_options(&self, command: &str, words: &str) -> Result<SearchOpts, String> {
+        let mut opts = super::command::search_options(command, words)?;
         if let Some(folder) = opts.folder.take() {
             opts.folder = Some(self.folder_id(&folder)?);
         }
@@ -1536,7 +1547,7 @@ impl App {
             && !self
                 .search
                 .as_ref()
-                .is_some_and(|search| search.query == Query::Local);
+                .is_some_and(|search| matches!(search.query, Query::Local(_)));
         if self.focus == Pane::Conversations
             && at_end
             && more
@@ -1662,7 +1673,7 @@ impl App {
             None => (self.listed_id.clone(), self.listed.clone()),
         };
         let (name, notice) = match query {
-            Query::Local => (
+            Query::Local(_) => (
                 format!("Local: {words}"),
                 format!("Searching the local index for {words}…"),
             ),
@@ -1675,9 +1686,9 @@ impl App {
         let id = label_ids::ALL_MAIL.to_owned();
         let request = self.relist(id, name, notice);
         let effect = match &query {
-            Query::Local => Effect::LocalSearch {
+            Query::Local(opts) => Effect::LocalSearch {
                 request,
-                words: words.clone(),
+                opts: opts.clone(),
             },
             Query::Proton(opts) => Effect::Search {
                 request,
@@ -4115,7 +4126,7 @@ mod tests {
             command(&mut app, "local budget"),
             [Effect::LocalSearch {
                 request: 2,
-                words: "budget".into()
+                opts: looking_for("budget")
             }]
         );
         assert_eq!(app.listed, "Local: budget");
@@ -4138,12 +4149,48 @@ mod tests {
                 Effect::Places,
                 Effect::LocalSearch {
                     request: 3,
-                    words: "budget".into()
+                    opts: looking_for("budget")
                 }
             ]
         );
         press(&mut app, KeyCode::Esc);
         assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
+    }
+
+    #[test]
+    fn a_local_search_takes_the_filters_of_a_search_beside_words() {
+        let mut app = loaded();
+        for (line, said) in [
+            (
+                "local from:alex in:work",
+                "The local index cannot search by filters alone: type words too",
+            ),
+            (
+                "local budget in:Nowhere",
+                "No folder or label is named Nowhere",
+            ),
+            ("local budget to:", ":local needs something after to:"),
+        ] {
+            assert!(command(&mut app, line).is_empty(), "{line}");
+            assert_eq!(app.notice.as_deref(), Some(said), "{line}");
+            assert_eq!((app.search.clone(), app.listed.as_str()), (None, "Inbox"));
+        }
+        let words = "budget from:alex to:sam in:WORK after:2026-01-01 before:2026-01-31";
+        assert_eq!(
+            command(&mut app, &format!("local {words}")),
+            [Effect::LocalSearch {
+                request: 2,
+                opts: SearchOpts {
+                    from: Some("alex".into()),
+                    to: Some("sam".into()),
+                    after: Some("2026-01-01".into()),
+                    before: Some("2026-01-31".into()),
+                    folder: Some("folder-1".into()),
+                    ..looking_for("budget")
+                }
+            }]
+        );
+        assert_eq!(app.listed, format!("Local: {words}"));
     }
 
     #[test]

@@ -608,7 +608,9 @@ double quotes, and a range that ends before it starts is refused, as in
 in:"Bank statements"`. `?` names the filters
 under the keys. `:local` looks instead in the local index that
 `ruston-cli index` builds, without a connection; opening what it finds still
-needs one.
+needs one. It takes the same filters, which narrow all the index finds for
+the words by each message's sender, recipients, day, and folders and labels;
+the index finds mail by its words, so filters alone are refused.
 
 `n` or Ctrl+N, as in Proton Mail, or `:compose` writes a new message, which
 takes the whole screen. In the reader, `r` replies to the conversation's last
@@ -698,7 +700,7 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | `:delete` | Delete it forever, in Trash or Spam, once you answer `y` |
 | `:empty` | Delete everything in Trash or Spam forever, once you answer `y` |
 | `:search WORDS` | Search all mail for the words, narrowed by `from:`, `to:`, `after:`, `before:` or `in:` beside them |
-| `:local WORDS` | Search the local index for the words, offline |
+| `:local WORDS` | Search the local index for the words, offline, narrowed by the same filters |
 | `:refresh` | Refresh the folders and the list, or the search |
 | `:attachments` | List the conversation's attachments, to save one |
 | `:help` | Show the keys |

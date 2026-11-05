@@ -724,7 +724,7 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
         // Without this, the keys would seem to do nothing in an empty list.
         Pane::Conversations if app.listed_nothing() => {
             let hint = match &app.search {
-                Some(search) if search.query == Query::Local => vec![
+                Some(search) if matches!(search.query, Query::Local(_)) => vec![
                     Line::raw(format!(
                         "Nothing in the local index matches {}.",
                         screen_line(&search.words)

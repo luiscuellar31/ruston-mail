@@ -441,11 +441,11 @@ async fn answer(effect: Effect, mailbox: &Mailbox) -> Message {
                 .await
                 .map_err(|error| error.to_string()),
         },
-        Effect::LocalSearch { request, words } => Message::ConversationsLoaded {
+        Effect::LocalSearch { request, opts } => Message::ConversationsLoaded {
             request,
             page: 0,
             result: mailbox
-                .search_local(&words)
+                .search_local(&opts)
                 .await
                 .map_err(|error| error.to_string()),
         },

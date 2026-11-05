@@ -27,7 +27,7 @@ use crate::cli::{
     FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd, unix_now,
 };
 use crate::commands::contacts;
-use crate::mailbox::{Change, Outgoing, OutgoingKind};
+use crate::mailbox::{Change, Outgoing, OutgoingKind, someone_matches, within};
 use crate::render;
 
 /// Said on standard error before every demo command, so a fictional send,
@@ -1171,19 +1171,6 @@ pub(crate) fn search_local(query: &str, limit: u32) -> Vec<MessageMetadata> {
     found
 }
 
-/// Whether `conversation`'s subject has `words`, whatever their case: how
-/// the demo finds conversations, in `conversations search` and the terminal
-/// interface alike.
-/// Whether any of `people` has `words` in their address or name, whatever
-/// the case, as a demo search matches a sender or a recipient.
-fn someone_matches<'a>(people: impl IntoIterator<Item = &'a Recipient>, words: &str) -> bool {
-    let words = words.to_lowercase();
-    people.into_iter().any(|person| {
-        person.address.to_lowercase().contains(&words)
-            || person.name.to_lowercase().contains(&words)
-    })
-}
-
 /// The place a demo search looks in, as the real search resolves it: none
 /// for All mail, which holds every message.
 fn search_label(folder: Option<&str>) -> Result<Option<String>> {
@@ -1193,12 +1180,9 @@ fn search_label(folder: Option<&str>) -> Result<Option<String>> {
     Ok(label.filter(|label| label != label_ids::ALL_MAIL))
 }
 
-/// Whether `time` falls on the days a search covers, as `search_window`
-/// gives them.
-fn within((begin, end): (Option<i64>, Option<i64>), time: i64) -> bool {
-    begin.is_none_or(|begin| time >= begin) && end.is_none_or(|end| time <= end)
-}
-
+/// Whether `conversation`'s subject has `words`, whatever their case: how
+/// the demo finds conversations, in `conversations search` and the terminal
+/// interface alike.
 fn subject_has(conversation: &Conversation, words: &str) -> bool {
     conversation
         .subject
