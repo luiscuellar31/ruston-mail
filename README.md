@@ -134,6 +134,4 @@ Windows builds, packaging, and releases.
 
 ## License
 
-Ruston Mail is available under the [MIT License](LICENSE). `ruston-core` and
-`ruston-cli` are adapted from Filippo Finke's
-[`protonmail-rs`](https://github.com/filippofinke/protonmail-rs).
+Ruston Mail is available under the [MIT License](LICENSE).
