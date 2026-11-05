@@ -228,8 +228,9 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::CancelSend { reference } => {
             let client = Client::resume(&ctx.profile).await?;
-            client.cancel_send(&reference).await?;
-            render::action_result(ctx.json, "cancel-send", &[reference]);
+            let id = client.resolve_ref(&reference).await?;
+            client.cancel_send(&id).await?;
+            render::action_result(ctx.json, "cancel-send", &[id]);
             Ok(())
         }
         MessagesCmd::Move { references, dest } => {

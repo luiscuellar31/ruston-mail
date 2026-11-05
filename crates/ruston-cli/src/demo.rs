@@ -1126,6 +1126,22 @@ fn quoted(original: &DemoMessage) -> String {
     format!("------- Original Message -------\nOn {who} wrote:\n{lines}")
 }
 
+/// The first of `messages` that `reference` names, as a message reference
+/// names one in the demo: its ID, part of it, or words of its subject.
+fn message_named(messages: Vec<DemoMessage>, reference: &str) -> Result<DemoMessage> {
+    messages
+        .into_iter()
+        .find(|m| {
+            m.meta.id == reference
+                || m.meta.id.contains(reference)
+                || m.meta
+                    .subject
+                    .to_lowercase()
+                    .contains(&reference.to_lowercase())
+        })
+        .ok_or_else(|| Error::Other(format!("demo message not found for ref '{reference}'")))
+}
+
 /// Up to `limit` of the demo's messages whose subject or body has `query`,
 /// whatever its case: the demo's local index, for `search` and the terminal
 /// interface's `:local` alike.
@@ -1337,19 +1353,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 body_only,
                 output,
             } => {
-                let msg = fixtures_messages
-                    .into_iter()
-                    .find(|m| {
-                        m.meta.id == reference
-                            || m.meta.id.contains(&reference)
-                            || m.meta
-                                .subject
-                                .to_lowercase()
-                                .contains(&reference.to_lowercase())
-                    })
-                    .ok_or_else(|| {
-                        Error::Other(format!("demo message not found for ref '{reference}'"))
-                    })?;
+                let msg = message_named(fixtures_messages, &reference)?;
 
                 let full = msg.to_full();
                 if let Some(path) = output {
@@ -1395,7 +1399,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::CancelSend { reference } => {
-                render::action_result(ctx.json, "cancel-send", &[reference]);
+                let msg = message_named(fixtures_messages, &reference)?;
+                render::action_result(ctx.json, "cancel-send", &[msg.meta.id]);
                 Ok(())
             }
             MessagesCmd::Trash { references } => {

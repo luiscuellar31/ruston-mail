@@ -95,6 +95,30 @@ fn editing_a_draft_in_the_demo_says_what_the_real_command_says() {
 }
 
 #[test]
+fn calling_off_a_send_in_the_demo_reports_the_message_it_found() {
+    // A reference can be search text; what is reported is the ID it found.
+    let output = run_ok(&[
+        "--demo",
+        "--json",
+        "messages",
+        "cancel-send",
+        "garden fence",
+    ]);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "status": "ok", "action": "cancel-send", "count": 1, "ids": ["msg-demo-07"],
+            "demo": true
+        })
+    );
+    let unknown = run(&["--demo", "messages", "cancel-send", "nothing like it"]);
+    assert!(!unknown.status.success());
+    let error = String::from_utf8(unknown.stderr).unwrap();
+    assert!(error.contains("demo message not found"), "{error}");
+}
+
+#[test]
 fn settings_emptying_and_a_body_written_to_a_file_say_what_happened() {
     let json = |args: &[&str]| -> serde_json::Value {
         let output = run_ok(&[&["--demo", "--json"][..], args].concat());
