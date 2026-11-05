@@ -27,8 +27,8 @@ pub struct ApiKey {
     /// The key, armored and locked with its passphrase.
     pub private_key: String,
     /// An address key's passphrase, encrypted to the user keys. A legacy
-    /// key, without it or without its signature, opens with the key password
-    /// instead.
+    /// key, without it or without its signature, or with either empty, opens
+    /// with the key password instead.
     #[serde(default)]
     pub token: Option<String>,
     /// A user key's detached signature over the token; a token whose
@@ -366,7 +366,13 @@ fn address_key_passphrase<P: PGPProviderSync>(
     address: &Address,
     key: &ApiKey,
 ) -> Option<SecretString> {
-    let (Some(token), Some(signature)) = (&key.token, &key.signature) else {
+    // An empty field counts as none, as go-proton-api reads it.
+    let token = key.token.as_deref().filter(|token| !token.is_empty());
+    let signature = key
+        .signature
+        .as_deref()
+        .filter(|signature| !signature.is_empty());
+    let (Some(token), Some(signature)) = (token, signature) else {
         tracing::trace!(target: "ruston_core::crypto", address = %address.email, key_id = %key.id, "address key: legacy skp passphrase");
         return Some(user_keys.key_password.clone());
     };
@@ -792,6 +798,32 @@ mod tests {
             [
                 (signed.private_key.as_str(), "token passphrase"),
                 (unsigned.private_key.as_str(), user_password.as_str()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_key_with_an_empty_token_or_signature_opens_as_a_legacy_one() {
+        let (mut empty_token, _) = listed_key("empty-token", "me@proton.me", "skp", 1, None);
+        (empty_token.token, empty_token.signature) = (Some(String::new()), Some("sig".into()));
+        let (mut empty_signature, _) =
+            listed_key("empty-signature", "me@proton.me", "skp", 0, None);
+        (empty_signature.token, empty_signature.signature) =
+            (Some("token".into()), Some(String::new()));
+
+        let store = unlock_address(vec![empty_token.clone(), empty_signature.clone()]);
+
+        // Both open with the key password, as keys without a token do.
+        let opened: Vec<(&str, &str)> = store.addresses[0]
+            .keys
+            .iter()
+            .map(|key| (key.armored.as_str(), key.passphrase.expose_secret()))
+            .collect();
+        assert_eq!(
+            opened,
+            [
+                (empty_token.private_key.as_str(), "skp"),
+                (empty_signature.private_key.as_str(), "skp"),
             ]
         );
     }
