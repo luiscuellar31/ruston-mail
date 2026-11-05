@@ -1375,6 +1375,18 @@ for MSVC targets, so neither executable needs the Visual C++ redistributable.
 Committed Linux PNGs
 and the Windows ICO are derived from the existing logo by
 [`packaging/generate-desktop-icons.py`](../packaging/generate-desktop-icons.py).
+The committed `THIRD_PARTY_LICENSES.txt` comes from
+[`packaging/third-party-licenses.py`](../packaging/third-party-licenses.py):
+the notice of every crate the binaries use on the six release targets,
+procedural macros aside, under the least demanding license it offers (none
+for one that offers a license asking nothing of a binary, such as 0BSD,
+Unlicense or Zlib; its MIT or ISC text alone when it offers either; every
+license file it publishes otherwise), and the notices of the Bootstrap icons
+and egui's fonts; it ends by acknowledging protonmail-rs, which Ruston Mail
+was originally based on. A CI job fails when it no longer matches
+the dependencies, and every package carries it beside `LICENSE`: in the
+macOS app's `Resources`, the AppImage's `usr/share/doc/ruston-mail` and the
+Windows ZIP and installation folder.
 A Windows-only identity test reads back the process AppUserModelID with the
 native API without opening a window.
 Native Windows Credential Manager, file dialogs, and window behavior need an

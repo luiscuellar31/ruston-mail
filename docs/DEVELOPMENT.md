@@ -88,7 +88,9 @@ version, which its `RUSTUP_TOOLCHAIN` sets in place of `rust-toolchain.toml`'s;
 the two must change together. Pull requests check dependency bans, licenses and
 sources with `cargo-deny`; its advisories run in the dependency audit
 workflow, when dependencies or `deny.toml` change and weekly, so an advisory
-published meanwhile does not fail an unrelated pull request.
+published meanwhile does not fail an unrelated pull request. After changing a
+dependency, run `python3 packaging/third-party-licenses.py` to bring
+`THIRD_PARTY_LICENSES.txt` up to date: a CI job fails while it lags behind.
 
 Linux also validates the desktop entry with `desktop-file-validate` and its
 AppStream metadata with `appstreamcli validate`. Windows builds `ruston.exe`

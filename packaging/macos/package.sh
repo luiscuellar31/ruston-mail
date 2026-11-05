@@ -162,6 +162,9 @@ chmod 755 "$APP_DIR/Contents/MacOS/$EXECUTABLE" "$APP_DIR/Contents/MacOS/$CLI_EX
 # Copy icon
 cp "$ICNS_PATH" "$APP_DIR/Contents/Resources/ruston-mail.icns"
 
+# The licenses: Ruston Mail's and those of what it ships with it
+cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_LICENSES.txt" "$APP_DIR/Contents/Resources/"
+
 # Configure Info.plist
 PLIST_TEMPLATE="$ASSETS_DIR/Info.plist"
 [[ -f "$PLIST_TEMPLATE" ]] || die "Info.plist template missing at: $PLIST_TEMPLATE"

@@ -130,6 +130,8 @@ done
 install -Dm644 "$REPO_ROOT/packaging/linux/$APP_ID.appdata.xml" \
     "$APPDIR/usr/share/metainfo/$APP_ID.appdata.xml"
 install -Dm644 "$REPO_ROOT/LICENSE" "$APPDIR/usr/share/doc/ruston-mail/LICENSE"
+install -Dm644 "$REPO_ROOT/THIRD_PARTY_LICENSES.txt" \
+    "$APPDIR/usr/share/doc/ruston-mail/THIRD_PARTY_LICENSES.txt"
 # The AppImage's thumbnail. appimagetool would only add it while packing,
 # after the checks below, and from the smaller icon linuxdeploy put at the root.
 ln -sf "usr/share/icons/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/.DirIcon"
