@@ -678,11 +678,6 @@ pub enum MessagesCmd {
         #[arg(required = true)]
         references: Vec<String>,
     },
-    /// Bring back messages deleted for good, given by their IDs.
-    Undelete {
-        #[arg(required = true)]
-        ids: Vec<String>,
-    },
     /// Send the read receipt a message asks for.
     Receipt { reference: String },
     /// Move messages to the folder `--dest` names.
@@ -1520,7 +1515,6 @@ mod tests {
         for args in [
             &["ruston-cli", "messages", "spam"][..],
             &["ruston-cli", "messages", "ham"],
-            &["ruston-cli", "messages", "undelete"],
             &["ruston-cli", "messages", "label", "add", "label-1"],
         ] {
             let error = Cli::try_parse_from(args).unwrap_err();
@@ -1533,7 +1527,6 @@ mod tests {
         for args in [
             &["ruston-cli", "messages", "spam", "m1"][..],
             &["ruston-cli", "messages", "ham", "m1"],
-            &["ruston-cli", "messages", "undelete", "m1"],
             &["ruston-cli", "messages", "label", "add", "label-1", "m1"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?} was refused");

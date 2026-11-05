@@ -909,7 +909,7 @@ instead of an unknown outcome.
   missing, expired or refused session has its own, 6. Arguments that can only fail or would
   be ignored are refused while parsing, before a session is resumed:
   `attachments download` with neither an ID nor `--all`, or with both; `spam`,
-  `ham`, `undelete` and `label` without a message; a snooze with both
+  `ham` and `label` without a message; a snooze with both
   `--until` and `--in`, neither, a time already gone or a duration that is not
   positive; a `--page-size` outside 1 to 100, the most Ruston asks Proton for
   at once, since paging takes a short page for the last one; and an

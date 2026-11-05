@@ -101,11 +101,6 @@ impl Client {
         api::messages::delete(self.http(), ids).await
     }
 
-    /// Brings back messages that were deleted permanently.
-    pub async fn undelete_messages(&self, ids: &[String]) -> Result<()> {
-        api::messages::undelete(self.http(), ids).await
-    }
-
     /// Deletes every message in `folder` permanently, as emptying Trash or
     /// Spam does.
     pub async fn empty_folder(&self, folder: &str) -> Result<()> {

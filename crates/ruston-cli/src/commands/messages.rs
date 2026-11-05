@@ -264,14 +264,6 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
         }
         MessagesCmd::Delete { references, yes } => delete(ctx, &references, yes).await,
         MessagesCmd::Empty { folder, yes } => empty(ctx, folder, yes).await,
-        MessagesCmd::Undelete { ids } => {
-            // `undelete` takes message IDs only, as its help says, so
-            // nothing is looked up.
-            let client = Client::resume(&ctx.profile).await?;
-            client.undelete_messages(&ids).await?;
-            render::action_result(ctx.json, "undelete", &ids);
-            Ok(())
-        }
     }
 }
 

@@ -1436,10 +1436,6 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 render::action_result(ctx.json, action, &references);
                 Ok(())
             }
-            MessagesCmd::Undelete { ids } => {
-                render::action_result(ctx.json, "undelete", &ids);
-                Ok(())
-            }
             MessagesCmd::Receipt { reference } => {
                 render::action_result(ctx.json, "receipt", &[reference]);
                 Ok(())

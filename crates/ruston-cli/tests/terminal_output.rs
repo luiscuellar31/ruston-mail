@@ -153,7 +153,6 @@ fn each_action_is_named_after_its_command() {
             &["messages", "label", "rm", "Work", "msg-demo-01"],
             "unlabel",
         ),
-        (&["messages", "undelete", "msg-demo-01"], "undelete"),
         (&["messages", "unsubscribe", "msg-demo-01"], "unsubscribe"),
         (&["messages", "receipt", "msg-demo-01"], "receipt"),
         (

@@ -501,7 +501,7 @@ pub fn downloaded(json: bool, files: &[String]) {
 }
 
 /// Report what a command did to the items `ids` names; `action` is the
-/// command's own name, as typed (`move`, `undelete`, `enable`...).
+/// command's own name, as typed (`move`, `delete`, `enable`...).
 pub fn action_result(json: bool, action: &str, ids: &[String]) {
     if json {
         json_out(&json!({ "status": "ok", "action": action, "count": ids.len(), "ids": ids }));

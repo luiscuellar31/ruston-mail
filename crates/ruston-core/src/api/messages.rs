@@ -191,11 +191,6 @@ pub async fn counts<D: Doer>(d: &D) -> Result<Vec<LabelCount>> {
     label_counts(d, "/mail/v4/messages/count").await
 }
 
-/// Restores the deleted messages `ids`.
-pub async fn undelete<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    act_on_each(d, "undelete", json!({ "IDs": ids })).await
-}
-
 /// Tells the sender of the message `id`, who asked to know, that it was read.
 pub async fn send_receipt<D: Doer>(d: &D, id: &str) -> Result<()> {
     act_on(d, Method::POST, id, "receipt").await
