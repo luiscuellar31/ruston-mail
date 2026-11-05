@@ -24,7 +24,7 @@ use serde_json::json;
 
 use crate::cli::{
     AddressesCmd, AttachmentsCmd, Command, ContactsCmd, ConversationsCmd, Ctx, DraftsCmd,
-    FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd,
+    FiltersCmd, LabelAction, LabelsCmd, MessagesCmd, SettingsCmd, unix_now,
 };
 use crate::commands::contacts;
 use crate::mailbox::{Change, Outgoing, OutgoingKind};
@@ -814,11 +814,7 @@ impl DemoSession {
     /// names and sizes, and a forward the original's but those left out.
     /// Sent lists either.
     pub(crate) fn send(&self, outgoing: &Outgoing) {
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| {
-                i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-            });
+        let time = unix_now();
         let people = |addresses: &[String]| -> Vec<Recipient> {
             addresses.iter().map(Recipient::new).collect()
         };

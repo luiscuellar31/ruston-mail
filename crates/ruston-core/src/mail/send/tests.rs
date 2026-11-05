@@ -1033,13 +1033,12 @@ async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
 
 #[tokio::test]
 async fn password_protected_recipients_get_keys_that_open_with_the_password() {
+    use crate::auth::test_support::MODULUS;
     use proton_crypto::crypto::{
         DataEncoding, Decryptor, DecryptorSync, PGPProviderSync, VerifiedData,
     };
     use wiremock::matchers::query_param;
 
-    // A modulus signed with Proton's key, from proton-srp's own tests.
-    const MODULUS: &str = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\nW2z5HBi8RvsfYzZTS7qBaUxxPhsfHJFZpu3Kd6s1JafNrCCH9rfvPLrfuqocxWPgWDH2R8neK7PkNvjxto9TStuY5z7jAzWRvFWN9cQhAKkdWgy0JY6ywVn22+HFpF4cYesHrqFIKUPDMSSIlWjBVmEJZ/MusD44ZT29xcPrOqeZvwtCffKtGAIjLYPZIEbZKnDM1Dm3q2K/xS5h+xdhjnndhsrkwm9U9oyA2wxzSXFL+pdfj2fOdRwuR5nW0J2NFrq3kJjkRmpO/Genq1UW+TEknIWAb6VzJJJA244K/H8cnSx2+nSNZO3bbo6Ys228ruV9A8m6DhxmS+bihN3ttQ==\n-----BEGIN PGP SIGNATURE-----\nVersion: ProtonMail\nComment: https://protonmail.com\n\nwl4EARYIABAFAlwB1j0JEDUFhcTpUY8mAAD8CgEAnsFnF4cF0uSHKkXa1GIa\nGO86yMV4zDZEZcDSJo0fgr8A/AlupGN9EdHlsrZLmTA1vhIx+rOgxdEff28N\nkvNM7qIK\n=q6vu\n-----END PGP SIGNATURE-----";
     let server = MockServer::start().await;
     let (me, _) = test_address("me@proton.me", "address-1");
     let provider = crypto::provider();
