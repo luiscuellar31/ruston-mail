@@ -18,6 +18,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Quote, RecipientProtection};
+use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -52,7 +53,7 @@ const KEYS: [(&str, &str); 21] = [
         "g, then i, a, e, *…",
         "go to the Inbox, Archive, Sent, Starred…",
     ),
-    ("z", "show or hide quoted text"),
+    ("z, e", "show or hide quoted text, or messages already read"),
     ("b, v", "list its links, or its attachments"),
     ("n, Ctrl+N", "write a new message"),
     ("r, R, F", "in the reader: reply, reply to all, forward"),
@@ -788,11 +789,13 @@ fn draw_list<'a>(
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// The open conversation, the labels it bears under its subject and its
-/// quoted passages folded into a line each unless the state shows them, wrapped to the pane and scrolled as far as
+/// The open conversation, the labels it bears under its subject, its
+/// messages already read but the newest folded into a row each, and its
+/// other quoted passages into a line each, unless the state shows them,
+/// wrapped to the pane and scrolled as far as
 /// the state asks, within what there is. Since only the drawing knows how many
 /// rows the text wraps to, it tells the state how far it can scroll.
-fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
+fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) {
     let inner = block.inner(area);
     let Some(reading) = &app.reading else {
         app.reader_bottom.set(0);
@@ -819,25 +822,54 @@ fn draw_reader(frame: &mut Frame, app: &App, block: Block, area: Rect) {
         lines.push(Line::raw(screen_line(&named)));
     }
     lines.push(Line::default());
-    if app.show_quotes {
-        lines.extend(raw(&reading.lines));
-    } else {
-        let mut rest = 0;
-        for quote in &reading.quotes {
-            lines.extend(raw(&reading.lines[rest..quote.start]));
-            lines.push(Line::styled(
-                format!("… {} quoted lines (z shows them)", quote.len()),
-                Style::new().add_modifier(Modifier::DIM),
-            ));
-            rest = quote.end;
-        }
-        lines.extend(raw(&reading.lines[rest..]));
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    // What folds, each with the line that stands for it: the messages read,
+    // a row each, then the quoted passages of the rest.
+    let mut folds: Vec<(Range<usize>, Line)> = Vec::new();
+    if !app.show_read {
+        let width = usize::from(inner.width);
+        folds.extend(reading.folded.iter().map(|message| {
+            let line = Line::styled(cut(&message.line, width), dim);
+            (message.lines.clone(), line)
+        }));
     }
+    if !app.show_quotes {
+        let quotes: Vec<(Range<usize>, Line)> = reading
+            .quotes
+            .iter()
+            .filter(|quote| {
+                !folds
+                    .iter()
+                    .any(|(message, _)| message.contains(&quote.start))
+            })
+            .map(|quote| {
+                let said = format!("… {} quoted lines (z shows them)", quote.len());
+                (quote.clone(), Line::styled(said, dim))
+            })
+            .collect();
+        folds.extend(quotes);
+    }
+    folds.sort_by_key(|(lines, _)| lines.start);
+    let mut rest = 0;
+    for (folded, line) in folds {
+        lines.extend(raw(&reading.lines[rest..folded.start]));
+        lines.push(line);
+        rest = folded.end;
+    }
+    lines.extend(raw(&reading.lines[rest..]));
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     let rows = paragraph.line_count(inner.width);
     let bottom = u16::try_from(rows.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
     app.reader_bottom.set(bottom);
     app.reader_rows.set(inner.height.max(1));
+    if !reading.folded.is_empty() {
+        let hint = if app.show_read {
+            " e folds the messages read "
+        } else {
+            " e opens the messages read "
+        };
+        block = block.title_bottom(Line::styled(hint, dim));
+    }
     frame.render_widget(
         paragraph.scroll((app.scroll.min(bottom), 0)).block(block),
         area,
@@ -1314,6 +1346,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            folded: Vec::new(),
             answer: None,
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
@@ -1353,6 +1386,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            folded: Vec::new(),
             answer: None,
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
@@ -1381,6 +1415,7 @@ mod tests {
             quotes: vec![2..6, 8..11],
             links: Vec::new(),
             attachments: Vec::new(),
+            folded: Vec::new(),
             answer: None,
         });
         let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
@@ -1404,6 +1439,59 @@ mod tests {
     }
 
     #[test]
+    fn the_reader_folds_the_messages_read_but_the_newest_until_e_shows_them() {
+        use ruston_core::{ConversationMessage, FullMessage, MessageMetadata, Verdict};
+        let message = |sender: &str, hours: i64, unread: i64, body: &str| {
+            ConversationMessage::Opened(FullMessage {
+                meta: MessageMetadata {
+                    sender: Recipient::new(sender),
+                    time: 1_714_000_000 + hours * 3_600,
+                    unread,
+                    ..MessageMetadata::default()
+                },
+                body: body.into(),
+                mime_type: "text/plain".into(),
+                verdict: Verdict::Verified,
+                attachments: Vec::new(),
+                reply_tos: Vec::new(),
+            })
+        };
+        let messages = [
+            message("alex@example.test", 0, 0, "First thoughts\n> on the plan"),
+            message("sam@example.test", 1, 0, "Second thoughts"),
+            message("alex@example.test", 2, 1, "A reply not read yet"),
+            message("sam@example.test", 3, 0, "The newest words"),
+        ];
+        let mut app = with_mail("alex@example.test", "Quarterly report");
+        let conversation = Conversation {
+            subject: "Plans".into(),
+            ..Conversation::default()
+        };
+        app.reading = Some(Reading::new(&conversation, &messages, &[]));
+        let screen = text(&drawn(200, 40, &app, &Theme::new(false)));
+        // One line each, with when, from whom and how sure, then its words.
+        for folded in [
+            "▸ 2024-04-24 23:06 · alex@example.test · verified · First thoughts > on the plan",
+            "▸ 2024-04-25 00:06 · sam@example.test · verified · Second thoughts",
+            "A reply not read yet",
+            "The newest words",
+            "e opens the messages read",
+        ] {
+            assert!(screen.contains(folded), "{folded:?} missing:\n{screen}");
+        }
+        assert!(!screen.contains("Date:    2024-04-24 23:06"), "{screen}");
+
+        let e = crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        if let Some(message) = app.message_for(&e) {
+            app.update(message);
+        }
+        let screen = text(&drawn(200, 40, &app, &Theme::new(false)));
+        assert!(screen.contains("Date:    2024-04-24 23:06"), "{screen}");
+        assert!(screen.contains("Second thoughts"), "{screen}");
+        assert!(!screen.contains('▸'), "{screen}");
+    }
+
+    #[test]
     fn long_reader_lines_wrap_to_the_pane() {
         let mut app = with_mail("alex@example.test", "Quarterly report");
         app.reading = Some(Reading {
@@ -1413,6 +1501,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            folded: Vec::new(),
             answer: None,
         });
         let _ = drawn(120, 30, &app, &Theme::new(false));
@@ -1432,6 +1521,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            folded: Vec::new(),
             answer: None,
         });
         let buffer = drawn(120, 30, &app, &Theme::new(false));
@@ -1494,6 +1584,7 @@ mod tests {
                 "https://xn--bcher-kva.example/\u{1b}[2J".into(),
             ],
             attachments: Vec::new(),
+            folded: Vec::new(),
             answer: None,
         });
         app.picking_link = Some(LinkPick {
@@ -1872,6 +1963,7 @@ mod tests {
                 name: "plan.pdf".into(),
                 size: 24_576,
             }],
+            folded: Vec::new(),
             answer: None,
         });
         app.picking_attachment = Some(0);

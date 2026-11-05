@@ -781,7 +781,11 @@ instead of an unknown outcome.
   verdict and body as `conversations read` shows it, inside the task that
   loads it, since a large HTML body takes a while. It also notes where each
   body quotes another message, in lines that start with `>`, which the view
-  folds into a line each, as the desktop does, until `z` shows them, and
+  folds into a line each, as the desktop does, until `z` shows them; which
+  messages the view folds, until `e` shows them, by the desktop's rule that
+  opens only the newest and those not read yet, each into a line that says
+  when it came, its sender and verdict, and its first words, a run of them
+  without the separators between; and
   gathers the web addresses the bodies link to, each read by `url` so it is
   listed as it would open, a host in another script in ASCII. `b` lists them
   over the panes; one opens only after a yes to a question that takes every

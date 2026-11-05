@@ -557,7 +557,11 @@ goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
 Starred, `d` Drafts, `t` Trash, `s` Spam and `m` All mail. A quoted passage of
 three lines or more, such as the message a reply answers, folds into one line
 unless the whole message is quoted; `z` shows or hides them, and says so when
-the open conversation has none to fold. Quoted lines show dimmed, so one too
+the open conversation has none to fold. As on the desktop, a message you have
+read folds into one line, unless it is the newest: when it came, who sent it,
+with the address beside the name, its signature's verdict and its first
+words. The newest message and those not read yet stay open, and `e` shows
+them all, or folds them again. Quoted lines show dimmed, so one too
 long for the pane stays apart from new text on every row it wraps to. Links
 show as text with the address they open; `b` lists those of the open conversation, and
 one opens in your browser only once you answer `y` to the address it shows.
@@ -641,6 +645,7 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | Home, End, Ctrl+Up, Ctrl+Down | Go to the top or the bottom |
 | `g`, then `i`, `a`, `e`, `*`, `d`, `t`, `s` or `m` | Go to the Inbox, Archive, Sent, Starred, Drafts, Trash, Spam or All mail |
 | `z` | Show or hide quoted text |
+| `e` | Show the messages already read, or fold them again |
 | `b` | List the open conversation's links, to open one |
 | `v` | List the open conversation's attachments, to save one |
 | `*` | Star or unstar the conversation |

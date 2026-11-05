@@ -23,6 +23,22 @@ const FOLDED_MIN_LINES: usize = 3;
 /// How many links of a conversation the reader lists at most.
 const MAX_LINKS: usize = 100;
 
+/// How many of its first words a folded message's line keeps, as the
+/// desktop's folded header previews.
+const PREVIEW_WORDS: usize = 40;
+
+/// A message the reader folds into one line until asked to show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Folded {
+    /// The range of the reading's lines it takes, with the separator before
+    /// it when the message before it folds too, so their lines follow one
+    /// another.
+    pub(crate) lines: Range<usize>,
+    /// The line that stands for it, safe to draw: when it came, who sent it,
+    /// its signature's verdict and its first words.
+    pub(crate) line: String,
+}
+
 /// An attachment of the conversation, which `v` lists to save.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReadingAttachment {
@@ -66,6 +82,9 @@ pub(crate) struct Reading {
     /// The ranges of `lines` that quote another message, in order, which
     /// the reader folds into a line each until asked to show them.
     pub(crate) quotes: Vec<Range<usize>>,
+    /// Its messages already read but the newest, in order, which the reader
+    /// folds as the desktop's does, until asked to show them.
+    pub(crate) folded: Vec<Folded>,
     /// The web addresses its bodies link to, each once, in order: what `b`
     /// lists to open one.
     pub(crate) links: Vec<String>,
@@ -86,13 +105,16 @@ impl Reading {
     ) -> Self {
         let mut lines = Vec::new();
         let mut quotes = Vec::new();
+        let mut folded: Vec<Folded> = Vec::new();
         let mut links: Vec<String> = Vec::new();
         let mut attachments = Vec::new();
         for (index, message) in messages.iter().enumerate() {
+            let separator = lines.len();
             if index > 0 {
                 lines.extend([String::new(), SEPARATOR.to_owned(), String::new()]);
             }
-            match message {
+            let start = lines.len();
+            let (meta, verdict, words) = match message {
                 ConversationMessage::Opened(message) => {
                     headers(
                         &mut lines,
@@ -126,6 +148,12 @@ impl Reading {
                             links.push(link);
                         }
                     }
+                    let words: Vec<&str> = body.split_whitespace().take(PREVIEW_WORDS).collect();
+                    (
+                        &message.meta,
+                        render::verdict_name(message.verdict),
+                        words.join(" "),
+                    )
                 }
                 ConversationMessage::Unreadable(message) => {
                     headers(&mut lines, &message.meta, "not decrypted");
@@ -134,7 +162,19 @@ impl Reading {
                         "(This message could not be decrypted: {})",
                         message.error
                     )));
+                    (&message.meta, "not decrypted", String::new())
                 }
+            };
+            // As the desktop's reader opens the newest message and those not
+            // read yet.
+            if index + 1 < messages.len() && meta.unread == 0 {
+                let follows = folded
+                    .last()
+                    .is_some_and(|before| before.lines.end == separator);
+                folded.push(Folded {
+                    lines: if follows { separator } else { start }..lines.len(),
+                    line: folded_line(meta, verdict, &words),
+                });
             }
         }
         Self {
@@ -142,6 +182,7 @@ impl Reading {
             subject: screen_line(render::subject_or_empty(&conversation.subject)),
             lines,
             quotes,
+            folded,
             links,
             attachments,
             answer: answerable(messages, own).map(Box::new),
@@ -327,6 +368,20 @@ fn quoted_passages(body: &[String]) -> Vec<Range<usize>> {
     passages
 }
 
+/// The line that stands for a folded message of `meta`, whose signature's
+/// verdict is `verdict`: when it came, to the minute, who sent it, the
+/// address beside the name as on the desktop, since a signature vouches for
+/// the address alone, the verdict, and its first `words`.
+fn folded_line(meta: &MessageMetadata, verdict: &str, words: &str) -> String {
+    let time = render::fmt_time(meta.time);
+    let when = time.get(..16).unwrap_or(&time);
+    let mut line = format!("▸ {when} · {} · {verdict}", render::fmt_addr(&meta.sender));
+    if !words.is_empty() {
+        line = format!("{line} · {words}");
+    }
+    screen_line(&line)
+}
+
 /// The headers of a message, as `conversations read` names them.
 fn headers(lines: &mut Vec<String>, meta: &MessageMetadata, verdict: &str) {
     lines.push(screen_line(&format!(
@@ -491,6 +546,52 @@ mod tests {
         assert_eq!(reading.quotes, [first..first + 4, second..second + 3]);
         assert_eq!(reading.lines[first + 3], "> Tuesday works.");
         assert_eq!(reading.lines[first + 4], "");
+    }
+
+    #[test]
+    fn messages_read_but_the_newest_fold_and_those_in_a_row_join() {
+        let unread = |sender: &str, body: &str| {
+            let mut message = opened(sender, body);
+            if let ConversationMessage::Opened(full) = &mut message {
+                full.meta.unread = 1;
+            }
+            message
+        };
+        let unreadable = ConversationMessage::Unreadable(UnreadableMessage {
+            meta: meta("Sam <sam@example.test>"),
+            reply_tos: Vec::new(),
+            error: Error::Other("no key opens it".into()),
+        });
+        let messages = [
+            opened("alex@example.test", "One\n\ttwo\x1b[2J  three"),
+            unreadable,
+            unread("alex@example.test", "Not read yet"),
+            opened("sam@example.test", "Read, but between"),
+            opened("alex@example.test", "The newest, read"),
+        ];
+        let reading = Reading::new(&Conversation::default(), &messages, &[]);
+        let at = |text: &str| reading.lines.iter().position(|line| line == text).unwrap();
+        let [first, second, between] = &reading.folded[..] else {
+            panic!("{:?}", reading.folded);
+        };
+        assert_eq!(
+            first.line,
+            "▸ 2024-04-24 23:06 · alex@example.test · verified · One two[2J three"
+        );
+        assert_eq!(
+            second.line,
+            "▸ 2024-04-24 23:06 · Sam <sam@example.test> · not decrypted"
+        );
+        // The first two join, the separator between them with the second;
+        // the one between open ones keeps its separators.
+        assert_eq!(first.lines.start, 0);
+        assert_eq!(second.lines.start, first.lines.end);
+        assert_eq!(reading.lines[second.lines.start + 1], SEPARATOR);
+        let read_between = at("Read, but between");
+        assert_eq!(reading.lines[between.lines.start - 2], SEPARATOR);
+        assert!(between.lines.contains(&read_between));
+        assert_eq!(between.lines.end, read_between + 1);
+        assert!(!between.lines.contains(&at("Not read yet")));
     }
 
     #[test]

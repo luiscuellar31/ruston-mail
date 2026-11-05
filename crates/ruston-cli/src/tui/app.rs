@@ -160,6 +160,9 @@ pub(crate) struct App {
     pub(crate) scroll: u16,
     /// Whether the reader shows quoted passages instead of folding them.
     pub(crate) show_quotes: bool,
+    /// Whether the reader shows the messages already read instead of
+    /// folding them.
+    pub(crate) show_read: bool,
     /// Whether an unread conversation is marked read once the reader shows
     /// it, as the desktop marks it; `tui --keep-unread` turns it off.
     pub(crate) marks_read: bool,
@@ -235,6 +238,8 @@ pub(crate) enum Message {
     /// key after `g` names none.
     GoTo(Option<usize>),
     ToggleQuotes,
+    /// Shows the messages already read, or folds them again.
+    ToggleReadMessages,
     /// Lists the open conversation's links, to open one.
     ShowLinks,
     /// Lists the open conversation's attachments, to save one.
@@ -432,6 +437,7 @@ impl App {
             reading: None,
             scroll: 0,
             show_quotes: false,
+            show_read: false,
             marks_read: true,
             picking_link: None,
             picking_attachment: None,
@@ -522,6 +528,7 @@ impl App {
                 }
             }
             Message::ToggleQuotes => self.toggle_quotes(),
+            Message::ToggleReadMessages => self.toggle_read_messages(),
             Message::ShowLinks => self.show_links(),
             Message::ShowAttachments => self.show_attachments(),
             // Nothing on screen waits for a yes.
@@ -1370,6 +1377,18 @@ impl App {
         }
     }
 
+    /// Shows the open conversation's messages already read, which the reader
+    /// folds, or folds them again, or says why there is nothing to show.
+    fn toggle_read_messages(&mut self) {
+        match &self.reading {
+            Some(reading) if !reading.folded.is_empty() => self.show_read = !self.show_read,
+            Some(_) => {
+                self.notice = Some("This conversation has no messages read to fold.".to_owned());
+            }
+            None => self.notice = Some("Open a conversation to show its messages.".to_owned()),
+        }
+    }
+
     /// Lists the open conversation's attachments, to save one, or says why
     /// not.
     fn show_attachments(&mut self) {
@@ -1882,6 +1901,7 @@ impl Message {
             KeyCode::Char('F') => Some(Self::Answer(AnswerKind::Forward)),
             KeyCode::Char('n') => Some(Self::Compose),
             KeyCode::Char('z') => Some(Self::ToggleQuotes),
+            KeyCode::Char('e') => Some(Self::ToggleReadMessages),
             KeyCode::Char('b') => Some(Self::ShowLinks),
             KeyCode::Char('v') => Some(Self::ShowAttachments),
             KeyCode::Char('y') => Some(Self::Yes),
@@ -2061,6 +2081,7 @@ mod tests {
             quotes: Vec::new(),
             links: Vec::new(),
             attachments: Vec::new(),
+            folded: Vec::new(),
             answer: None,
         }
     }
@@ -2147,6 +2168,32 @@ mod tests {
         assert!(app.show_quotes);
         press(&mut app, KeyCode::Char('z'));
         assert!(!app.show_quotes);
+    }
+
+    #[test]
+    fn e_shows_the_messages_read_and_folds_them_again_or_says_there_are_none() {
+        let mut app = loaded();
+        press(&mut app, KeyCode::Char('e'));
+        assert!(!app.show_read);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("Open a conversation to show its messages.")
+        );
+        app.reading = Some(reading(3));
+        press(&mut app, KeyCode::Char('e'));
+        assert!(!app.show_read);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("This conversation has no messages read to fold.")
+        );
+        app.reading.as_mut().unwrap().folded = vec![super::super::reading::Folded {
+            lines: 0..1,
+            line: "▸ 2024-04-24 23:06 · alex@example.test · verified · Hi".into(),
+        }];
+        press(&mut app, KeyCode::Char('e'));
+        assert!(app.show_read);
+        press(&mut app, KeyCode::Char('e'));
+        assert!(!app.show_read);
     }
 
     /// An unread conversation, in the Inbox and in `label`.
