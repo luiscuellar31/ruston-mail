@@ -53,17 +53,19 @@ address at the foot of the sidebar opens the accounts: choose another to switch
 to it, or **Add account** to sign in to one more. The others keep their
 sessions saved, as a restart does, and check no mail and send no notifications
 until you open them. Switching opens the other account's saved session; if it
-has ended, you sign in to that account again, with its address filled in. That
-sign-in screen, and the one for adding an account, offer **Back to** the
-account you left. As when signing out, switching or adding asks before
+has ended, you sign in to that account again, with its address filled in. The
+sign-in screen lists your other accounts, so you can open one instead, when
+adding an account or when one's session has ended, even as Ruston starts. As
+when signing out, switching or adding asks before
 discarding a message you are writing, waits for changes still on their way to
 Proton, and is unavailable while a message is being sent. Signing out of an
 account removes it from the list and opens the next one, or the sign-in screen
 once none is left.
 
-The command line reaches the same sessions: the first account is its default
-profile, and the others are `--profile ruston-2` to `--profile ruston-5`, in
-the order they were added.
+The command line reaches the same sessions. Each account keeps its session in
+a profile, `ruston` or `ruston-2` to `ruston-5`, which the account menu shows
+when you point at an account: `ruston`, the command line's default, needs no
+`--profile`, and the others take `--profile ruston-2` and so on.
 
 ## Finding mail
 

@@ -383,9 +383,8 @@ impl App {
         if !self.demo_process {
             let (profile, address) = (self.session_profile(), email.clone());
             self.remember(|settings| settings.accounts.signed_in(&profile, address.as_deref()));
-            // Another account is open now: nothing to go back to.
+            // The account added is open now.
             self.adding_account = None;
-            self.returning_to = None;
         }
         self.auth_state = AuthState::Authenticated { email };
         let draft = self.restore_parked_draft();

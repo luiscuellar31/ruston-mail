@@ -1,7 +1,7 @@
-//! Several accounts: switching to another, adding one, and going back from
-//! the sign-in screen. One is open at a time; the others keep their sessions
-//! saved, each under a profile of its own, and nothing of one reaches the
-//! next, as when signing out.
+//! Several accounts: switching to another, from the mailbox or the sign-in
+//! screen, and adding one. One is open at a time; the others keep their
+//! sessions saved, each under a profile of its own, and nothing of one
+//! reaches the next, as when signing out.
 
 use super::{App, AuthState, Effects, Message};
 use crate::accounts::{Account, Accounts};
@@ -37,13 +37,17 @@ impl App {
                 .is_some_and(|draft| draft.in_flight() || !draft.is_untouched())
     }
 
-    /// The account the sign-in screen offers to go back to, if any.
-    pub fn returning_to(&self) -> Option<&Account> {
-        let profile = self.returning_to.as_deref()?;
-        if self.auth_state != AuthState::SignedOut {
-            return None;
-        }
-        self.settings.accounts.get(profile)
+    /// The accounts the sign-in screen offers to open instead of signing in:
+    /// all but the one signing in, so one whose session ended, even at
+    /// startup, holds none of the others back. None while a sign-in runs.
+    pub fn other_accounts(&self) -> impl Iterator<Item = &Account> {
+        let signing_in = self.session_profile();
+        let idle = !self.demo_process && self.auth_state == AuthState::SignedOut;
+        self.settings
+            .accounts
+            .all()
+            .iter()
+            .filter(move |account| idle && account.profile != signing_in)
     }
 
     /// The address the account being opened last signed in as; none for an
@@ -56,18 +60,24 @@ impl App {
         accounts.get(accounts.active_profile())?.address.clone()
     }
 
-    /// Opens the account whose session is saved under `profile`, leaving the
-    /// open one's saved too.
+    /// Opens the account whose session is saved under `profile`: from the
+    /// mailbox, leaving the open one's saved too, or from the sign-in screen,
+    /// instead of the account signing in there.
     pub(super) fn switch_account(&mut self, profile: String) -> Effects {
-        if !self.can_change_account()
-            || profile == self.settings.accounts.active_profile()
-            || self.settings.accounts.get(&profile).is_none()
+        if self
+            .other_accounts()
+            .any(|account| account.profile == profile)
         {
+            self.adding_account = None;
+            self.login_form.clear_all();
+        } else if self.can_change_account()
+            && profile != self.settings.accounts.active_profile()
+            && self.settings.accounts.get(&profile).is_some()
+        {
+            self.close_mailbox(None);
+        } else {
             return Effects::none();
         }
-        let previous = self.settings.accounts.active_profile().to_owned();
-        self.close_mailbox(None);
-        self.returning_to = Some(previous);
         self.remember(|settings| {
             settings.accounts.open(&profile);
         });
@@ -83,27 +93,9 @@ impl App {
         let Some(profile) = self.settings.accounts.free_profile() else {
             return Effects::none();
         };
-        let previous = self.settings.accounts.active_profile().to_owned();
         self.close_mailbox(None);
-        self.returning_to = Some(previous);
         self.adding_account = Some(profile);
         Effects::none()
-    }
-
-    /// From the sign-in screen, opens again the account open before it.
-    pub(super) fn return_to_account(&mut self) -> Effects {
-        if self.returning_to().is_none() {
-            return Effects::none();
-        }
-        let Some(profile) = self.returning_to.take() else {
-            return Effects::none();
-        };
-        self.adding_account = None;
-        self.login_form.clear_all();
-        self.remember(|settings| {
-            settings.accounts.open(&profile);
-        });
-        self.open_saved_session()
     }
 
     /// The accounts at `addresses` signed in to in turn, each added after the

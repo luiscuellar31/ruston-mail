@@ -19,6 +19,13 @@ fn signed_in_as(app: &mut App, address: &str, user: &str) {
     );
 }
 
+/// The addresses of the accounts the sign-in screen offers instead.
+fn others(app: &App) -> Vec<Option<&str>> {
+    app.other_accounts()
+        .map(|account| account.address.as_deref())
+        .collect()
+}
+
 #[test]
 fn an_added_account_signs_in_under_the_next_profile_and_each_keeps_its_session() {
     let mut app = App::signed_in_as("user-1", "alex@proton.me");
@@ -29,15 +36,11 @@ fn an_added_account_signs_in_under_the_next_profile_and_each_keeps_its_session()
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert!(app.mailbox.is_none());
     assert_eq!(app.session_profile(), "ruston-2");
-    assert_eq!(
-        app.returning_to()
-            .and_then(|account| account.address.as_deref()),
-        Some("alex@proton.me")
-    );
+    assert_eq!(others(&app), [Some("alex@proton.me")]);
     signed_in_as(&mut app, "sam@proton.me", "user-2");
     assert_eq!(app.accounts().active_profile(), "ruston-2");
     assert_eq!(address_of(&app, "ruston-2"), Some("sam@proton.me"));
-    assert!(app.returning_to().is_none());
+    assert!(others(&app).is_empty());
 
     // Switching opens the other account's saved session, as at startup.
     assert_eq!(
@@ -53,34 +56,67 @@ fn an_added_account_signs_in_under_the_next_profile_and_each_keeps_its_session()
         ResumeOutcome::SignedOut,
     ));
     assert_eq!(app.auth_state, AuthState::CheckingSession);
-    // Its session is gone: it signs in again, as the address it had, with a
-    // way back to the account it left.
+    // Its session is gone: it signs in again, as the address it had, or
+    // another account opens instead.
     let _ = app.update(Message::SessionChecked(
         PROFILE.into(),
         ResumeOutcome::SignedOut,
     ));
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert_eq!(app.username_mut().as_str(), "alex@proton.me");
+    assert_eq!(others(&app), [Some("sam@proton.me")]);
     assert_eq!(
-        app.returning_to()
-            .and_then(|account| account.address.as_deref()),
-        Some("sam@proton.me")
+        app.update(Message::SwitchAccount("ruston-2".into()))
+            .units(),
+        1
     );
-    assert_eq!(app.update(Message::ReturnToAccount).units(), 1);
     assert_eq!(app.accounts().active_profile(), "ruston-2");
     assert_eq!(app.auth_state, AuthState::CheckingSession);
     assert!(app.username_mut().is_empty());
 }
 
 #[test]
-fn going_back_from_adding_an_account_reopens_the_one_left() {
+fn opening_another_account_instead_of_adding_one_adds_nothing() {
     let mut app = App::signed_in_as("user-1", "alex@proton.me");
     let _ = app.update(Message::AddAccount);
-    assert_eq!(app.update(Message::ReturnToAccount).units(), 1);
+    assert_eq!(
+        app.update(Message::SwitchAccount(PROFILE.into())).units(),
+        1
+    );
     assert_eq!(app.session_profile(), PROFILE);
     assert_eq!(app.auth_state, AuthState::CheckingSession);
-    // Nothing was added.
     assert_eq!(app.accounts().all().len(), 1);
+}
+
+#[test]
+fn an_account_whose_session_ended_holds_none_of_the_others_back_at_startup() {
+    let settings = App::signed_in_to(&["alex@proton.me", "sam@proton.me"])
+        .settings()
+        .clone();
+    let (mut app, _) = App::boot(false, settings);
+    let _ = app.update(Message::SessionChecked(
+        "ruston-2".into(),
+        ResumeOutcome::SignedOut,
+    ));
+    assert_eq!(app.username_mut().as_str(), "sam@proton.me");
+    assert_eq!(others(&app), [Some("alex@proton.me")]);
+    assert_eq!(
+        app.update(Message::SwitchAccount(PROFILE.into())).units(),
+        1
+    );
+    assert_eq!(app.accounts().active_profile(), PROFILE);
+    // While a sign-in runs, none is offered.
+    let _ = app.update(Message::SessionChecked(
+        PROFILE.into(),
+        ResumeOutcome::SignedOut,
+    ));
+    app.auth_state = AuthState::SigningIn(SignInStep::Credentials);
+    assert!(others(&app).is_empty());
+    assert_eq!(
+        app.update(Message::SwitchAccount("ruston-2".into()))
+            .units(),
+        0
+    );
 }
 
 #[test]

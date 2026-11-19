@@ -270,7 +270,7 @@ fn changing_account_asks_before_dropping_a_written_message() {
     desktop.resolve_discard(Message::DiscardCompose, &context);
     assert!(desktop.app.compose().is_none());
     assert_eq!(desktop.app.auth_state(), &AuthState::SignedOut);
-    assert!(desktop.app.returning_to().is_some());
+    assert_eq!(desktop.app.other_accounts().count(), 1);
 }
 
 #[test]

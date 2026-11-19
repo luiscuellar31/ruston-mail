@@ -1236,8 +1236,9 @@ but revokes nothing: the session stays saved, and the other account's opens
 as at startup, its answer applied only while that account is still the one
 being opened. Adding one closes the mailbox the same way and signs in under
 the first free profile, which joins the list only once the sign-in succeeds.
-Until another account opens, the sign-in screen offers a way back to the
-account left. The root window asks before a change of account discards a
+The sign-in screen offers the other accounts, to open one instead of signing
+in, so an account whose session ended, even at startup, holds none of the
+others back. The root window asks before a change of account discards a
 written message and holds it while changes are on their way to Proton, as it
 does for signing out. Signing out of an account, once this device has
 forgotten its session, removes it from the list and opens the next one; a

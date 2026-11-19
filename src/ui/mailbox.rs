@@ -453,7 +453,10 @@ fn accounts_menu(
             for account in accounts.all() {
                 let open = account.profile == accounts.active_profile();
                 let name = account.address.as_deref().unwrap_or("Proton Mail account");
-                let item = ui.add_enabled(open || !sending, egui::Button::selectable(open, name));
+                // Where the command line finds the same session.
+                let item = ui
+                    .add_enabled(open || !sending, egui::Button::selectable(open, name))
+                    .on_hover_text(format!("ruston-cli --profile {}", account.profile));
                 if item.clicked() && !open {
                     messages.push(Message::SwitchAccount(account.profile.clone()));
                     ui.close();

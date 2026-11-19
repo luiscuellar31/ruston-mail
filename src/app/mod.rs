@@ -78,8 +78,6 @@ pub enum Message {
     SwitchAccount(String),
     /// Leaves the open account for the sign-in screen, to add another.
     AddAccount,
-    /// Goes back from the sign-in screen to the account open before it.
-    ReturnToAccount,
     SignInFinished(AuthAttempt, SignInOutcome),
     SignInPrompt(AuthAttempt, SignInPrompt),
     OpenVerificationPage,
@@ -279,9 +277,6 @@ pub struct App {
     resume_may_retry: bool,
     /// The profile a new account signs in under, while one is being added.
     adding_account: Option<String>,
-    /// The profile of the account open before switching or adding, which
-    /// the sign-in screen offers to go back to until another opens.
-    returning_to: Option<String>,
     /// Changes for every authentication attempt so queued results from an
     /// aborted task cannot affect its replacement.
     auth_attempt: AuthAttempt,
@@ -384,7 +379,6 @@ impl App {
             auth_error: None,
             resume_may_retry: false,
             adding_account: None,
-            returning_to: None,
             auth_attempt: 0,
             pending_prompt: None,
             pending_link: None,
@@ -709,7 +703,6 @@ impl App {
             Message::RetrySavedSession => return self.retry_saved_session(),
             Message::SwitchAccount(profile) => return self.switch_account(profile),
             Message::AddAccount => return self.add_account(),
-            Message::ReturnToAccount => return self.return_to_account(),
             Message::SignInFinished(attempt, outcome) => {
                 return self.finish_sign_in(attempt, outcome);
             }

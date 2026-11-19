@@ -305,14 +305,18 @@ fn sign_in(
         ui.add_space(16.0);
         signup_prompt(ui, messages);
     }
-    // Switching or adding left another account open, its session kept.
-    if !busy
-        && step == SignInStep::Credentials
-        && let Some(account) = app.returning_to()
-    {
-        let name = account.address.as_deref().unwrap_or("the other account");
-        if ui.button(format!("Back to {name}")).clicked() {
-            messages.push(Message::ReturnToAccount);
+    // The other accounts keep their sessions: one opens instead.
+    if !busy && step == SignInStep::Credentials {
+        let others: Vec<_> = app.other_accounts().collect();
+        if !others.is_empty() {
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("Or open another account").color(theme::colors(ui).muted));
+            for account in others {
+                let name = account.address.as_deref().unwrap_or("Proton Mail account");
+                if ui.button(name).clicked() {
+                    messages.push(Message::SwitchAccount(account.profile.clone()));
+                }
+            }
         }
     }
     let cancelled = if busy {
