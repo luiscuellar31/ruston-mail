@@ -258,10 +258,11 @@ impl ProtonMailService {
 
     /// Reads metadata without downloading message bodies or resolving sender keys.
     pub async fn recent_inbox(&self, limit: u32) -> Result<Vec<IncomingMail>, MailboxError> {
+        let unread_only = false;
         let (_, messages) =
             timed(
                 self.client
-                    .list_messages(label_id(&Folder::INBOX), 0, limit, false),
+                    .list_messages(label_id(&Folder::INBOX), 0, limit, unread_only),
             )
             .await?;
         Ok(messages
@@ -287,10 +288,11 @@ impl ProtonMailService {
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
+        let unread_only = false;
         let (total, conversations) =
             timed(
                 self.client
-                    .list_conversations(label_id(folder), page, page_size, false),
+                    .list_conversations(label_id(folder), page, page_size, unread_only),
             )
             .await?;
 
@@ -587,16 +589,16 @@ impl ProtonMailService {
                     client.star_messages(&ids, starred).await
                 }
                 // Proton puts a conversation's label on every message in it.
-                (SummaryKind::Conversation, ActionCall::Label(label, true)) => {
+                (SummaryKind::Conversation, ActionCall::AddLabel(label)) => {
                     client.label_conversations(&ids, label).await
                 }
-                (SummaryKind::Conversation, ActionCall::Label(label, false)) => {
+                (SummaryKind::Conversation, ActionCall::RemoveLabel(label)) => {
                     client.unlabel_conversations(&ids, label).await
                 }
-                (SummaryKind::Message, ActionCall::Label(label, true)) => {
+                (SummaryKind::Message, ActionCall::AddLabel(label)) => {
                     client.apply_label(&ids, label).await
                 }
-                (SummaryKind::Message, ActionCall::Label(label, false)) => {
+                (SummaryKind::Message, ActionCall::RemoveLabel(label)) => {
                     client.remove_label(&ids, label).await
                 }
             }
@@ -937,8 +939,10 @@ enum ActionCall<'a> {
     Move(&'a str),
     MarkRead(bool),
     Star(bool),
-    /// Add or remove a label the account made, leaving the folder alone.
-    Label(&'a str, bool),
+    /// Put on a label the account made, leaving the folder alone.
+    AddLabel(&'a str),
+    /// Take a label the account made off, likewise.
+    RemoveLabel(&'a str),
 }
 
 fn action_call(action: &MailAction) -> ActionCall<'_> {
@@ -946,7 +950,8 @@ fn action_call(action: &MailAction) -> ActionCall<'_> {
         MailAction::MoveTo(folder) => ActionCall::Move(label_id(folder)),
         MailAction::SetUnread(unread) => ActionCall::MarkRead(!unread),
         MailAction::SetStarred(starred) => ActionCall::Star(*starred),
-        MailAction::SetLabel { label, on } => ActionCall::Label(label_id(label), *on),
+        MailAction::SetLabel { label, on: true } => ActionCall::AddLabel(label_id(label)),
+        MailAction::SetLabel { label, on: false } => ActionCall::RemoveLabel(label_id(label)),
     }
 }
 

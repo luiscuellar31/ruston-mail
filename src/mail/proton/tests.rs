@@ -718,14 +718,14 @@ fn actions_map_to_relabels_and_flags_never_deletes() {
             label: receipts.clone(),
             on: true,
         }),
-        ActionCall::Label("wN2", true)
+        ActionCall::AddLabel("wN2")
     );
     assert_eq!(
         action_call(&MailAction::SetLabel {
             label: receipts,
             on: false,
         }),
-        ActionCall::Label("wN2", false)
+        ActionCall::RemoveLabel("wN2")
     );
     assert_eq!(
         action_call(&MailAction::SetUnread(true)),
