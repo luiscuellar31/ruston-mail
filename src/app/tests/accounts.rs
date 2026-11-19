@@ -189,3 +189,22 @@ fn signing_out_forgets_the_account_and_opens_the_next() {
     assert_eq!(app.accounts().active_profile(), "ruston-2");
     assert_eq!(app.auth_state, AuthState::SignedOut);
 }
+
+#[test]
+fn an_account_added_already_is_not_added_again() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    let _ = app.update(Message::AddAccount);
+    app.login_form.username = " Alex@Proton.me ".into();
+    app.login_form.password = "password".to_owned().into();
+    assert_eq!(app.update(Message::Submit).units(), 0);
+    assert_eq!(app.auth_error, Some(AuthError::AccountAlreadyAdded));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+
+    // Signing in to the account whose session ended is not adding it.
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    let _ = app.update(Message::Logout);
+    app.auth_state = AuthState::SignedOut;
+    app.login_form.username = "alex@proton.me".into();
+    app.login_form.password = "password".to_owned().into();
+    assert!(!app.adds_known_address());
+}

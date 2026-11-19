@@ -152,6 +152,11 @@ impl App {
             self.auth_error = Some(AuthError::UsernameRequired);
             return Effects::none();
         }
+        // The same account twice would keep two sessions of it.
+        if step == SignInStep::Credentials && self.adds_known_address() {
+            self.auth_error = Some(AuthError::AccountAlreadyAdded);
+            return Effects::none();
+        }
         if self.login_form.password.is_empty() {
             self.auth_error = Some(AuthError::PasswordRequired);
             return Effects::none();

@@ -8,6 +8,8 @@ use secrecy::SecretString;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthError {
     UsernameRequired,
+    /// Adding an account typed the address of one already added.
+    AccountAlreadyAdded,
     PasswordRequired,
     TotpRequired,
     MailboxPasswordRequired,
@@ -23,7 +25,10 @@ pub enum AuthError {
     SessionAddressMismatch,
     LogoutUnavailable,
     SessionExpired,
-    Service { http_status: u16, code: i64 },
+    Service {
+        http_status: u16,
+        code: i64,
+    },
     AuthenticationUnavailable,
     DemoSignInUnavailable,
 }
@@ -44,6 +49,9 @@ impl fmt::Display for AuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::UsernameRequired => "Enter your Proton username or email.",
+            Self::AccountAlreadyAdded => {
+                "This account is already added. Open it from the accounts below."
+            }
             Self::PasswordRequired => "Enter your Proton password.",
             Self::TotpRequired => "Enter your authentication code.",
             Self::MailboxPasswordRequired => "Enter your mailbox password.",

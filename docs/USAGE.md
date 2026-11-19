@@ -55,7 +55,8 @@ sessions saved, as a restart does, and check no mail and send no notifications
 until you open them. Switching opens the other account's saved session; if it
 has ended, you sign in to that account again, with its address filled in. The
 sign-in screen lists your other accounts, so you can open one instead, when
-adding an account or when one's session has ended, even as Ruston starts. As
+adding an account or when one's session has ended, even as Ruston starts;
+adding one already in the list, by its address, says so instead. As
 when signing out, switching or adding asks before
 discarding a message you are writing, waits for changes still on their way to
 Proton, and is unavailable while a message is being sent. Signing out of an
