@@ -93,8 +93,10 @@ const KEYS: [(&str, &str); 23] = [
     ("q, Ctrl+C", "quit"),
 ];
 
-/// What `:search` takes beside its words, under the list of keys.
-const SEARCH_FILTERS: &str = " :search words from:who to:who after:day before:day in:folder ";
+/// What `:search` and `:local` take beside their words, under the list of
+/// keys, which at 80 columns has room for it and no more.
+const SEARCH_FILTERS: &str =
+    " :search or :local words from:who to:who after:day before:day in:folder ";
 
 /// Ctrl+Z, where the shell has job control to suspend the interface with.
 const SUSPEND_KEYS: &[(&str, &str)] = if cfg!(unix) {
@@ -1245,8 +1247,9 @@ fn draw_keys(frame: &mut Frame, app: &App, theme: &Theme) {
         .saturating_sub(shown);
     app.help_bottom.set(bottom);
     app.help_rows.set(shown.max(1));
+    // Above, where the filters below leave it room.
     if bottom > 0 {
-        block = block.title_bottom(Line::styled(" j, k scroll ", dim).right_aligned());
+        block = block.title_top(Line::styled(" j, k scroll ", dim).right_aligned());
     }
     let inner = block.inner(area);
     frame.render_widget(Clear, area);

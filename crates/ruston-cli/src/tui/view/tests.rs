@@ -1410,7 +1410,7 @@ fn every_key_can_be_reached_at_80_by_24_and_where_they_do_not_fit() {
             assert!(seen.contains(keys), "{keys} missing at {height} rows");
             assert!(seen.contains(action), "{action} missing at {height} rows");
         }
-        // With what `:search` takes beside its words.
+        // With what `:search` and `:local` take beside their words.
         assert!(seen.contains(SEARCH_FILTERS.trim()), "{seen}");
     }
     // Too few rows for all of them, the first screen says how to see the rest.
