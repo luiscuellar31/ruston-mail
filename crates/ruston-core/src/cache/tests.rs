@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::events::MessageEvent;
+use crate::model::enums::label_ids;
 use crate::model::message::Recipient;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -119,6 +120,31 @@ fn meta(id: &str, label: &str, unread: i64, time: i64) -> MessageMetadata {
         time,
         ..Default::default()
     }
+}
+
+/// The first ten messages listed in `label`, newest first, read or not.
+fn listed(cache: &Cache, label: &str) -> Vec<MessageMetadata> {
+    cache.list(label, false, 10, 0).unwrap()
+}
+
+/// The column `index` of each row `sql` selects with `params`.
+fn column<T: rusqlite::types::FromSql>(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+    index: usize,
+) -> Vec<T> {
+    conn.prepare(sql)
+        .unwrap()
+        .query_map(params, |row| row.get(index))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
+}
+
+/// The steps of SQLite's plan for `sql` with `params`.
+fn query_plan(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Vec<String> {
+    column(conn, &format!("EXPLAIN QUERY PLAN {sql}"), params, 3)
 }
 
 fn event_batch(event_id: &str, messages: Vec<MessageEvent>) -> EventBatch {
@@ -295,7 +321,7 @@ fn account_switch_does_not_expose_previous_mail() {
             .unwrap()
             .is_empty()
     );
-    assert!(account_b.list("0", false, 10, 0).unwrap().is_empty());
+    assert!(listed(&account_b, label_ids::INBOX).is_empty());
     assert_eq!(account_b.count("0").unwrap(), (0, 0));
     assert!(account_b.last_event_id().unwrap().is_none());
 
@@ -496,7 +522,7 @@ fn downloaded_body_cannot_restore_a_deleted_message() {
         indexer.last_event_id().unwrap().as_deref(),
         Some("after-delete")
     );
-    assert!(indexer.list("0", false, 10, 0).unwrap().is_empty());
+    assert!(listed(&indexer, label_ids::INBOX).is_empty());
     assert!(indexer.search("privatebody", 10).unwrap().is_empty());
     drop(indexer);
     drop(syncer);
@@ -549,8 +575,8 @@ fn failed_download_commits_roll_back_metadata_labels_and_bodies() {
             .store_metadata_page(Some("old"), &[updated.clone(), meta("bad", "0", 0, 3)])
             .is_err()
     );
-    assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].time, 1);
-    assert!(cache.list("5", false, 10, 0).unwrap().is_empty());
+    assert_eq!(listed(&cache, label_ids::INBOX)[0].time, 1);
+    assert!(listed(&cache, label_ids::ALL_MAIL).is_empty());
 
     cache
         .conn
@@ -566,8 +592,8 @@ fn failed_download_commits_roll_back_metadata_labels_and_bodies() {
                 .is_err()
         );
         assert_eq!(cache.search("privatebody", 10).unwrap()[0].time, 1);
-        assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].unread, 0);
-        assert!(cache.list("5", false, 10, 0).unwrap().is_empty());
+        assert_eq!(listed(&cache, label_ids::INBOX)[0].unread, 0);
+        assert!(listed(&cache, label_ids::ALL_MAIL).is_empty());
         assert!(cache.search("downloadedbody", 10).unwrap().is_empty());
     }
     assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
@@ -610,7 +636,7 @@ fn stale_process_cannot_replace_a_newer_batch() {
     );
     assert!(slow.apply_event_batch("old", &stale).is_err());
     assert_eq!(slow.last_event_id().unwrap().as_deref(), Some("new"));
-    assert_eq!(slow.list("0", false, 10, 0).unwrap()[0].unread, 1);
+    assert_eq!(listed(&slow, label_ids::INBOX)[0].unread, 1);
     assert_eq!(slow.search("privatebody", 10).unwrap().len(), 1);
 
     let updated = event_batch(
@@ -667,9 +693,7 @@ fn events_change_only_what_their_action_and_message_allow() {
             ..BatchCounts::default()
         }
     );
-    let listed: Vec<(String, i64)> = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let listed: Vec<(String, i64)> = listed(&cache, label_ids::INBOX)
         .into_iter()
         .map(|m| (m.id, m.unread))
         .collect();
@@ -717,7 +741,7 @@ fn failed_batch_rolls_back_prior_changes_and_cursor() {
     );
     assert!(cache.apply_event_batch("old", &batch).is_err());
     assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
-    assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "keep");
+    assert_eq!(listed(&cache, label_ids::INBOX)[0].id, "keep");
     assert_eq!(cache.search("privatebody", 10).unwrap().len(), 1);
 }
 
@@ -778,47 +802,36 @@ fn existing_cache_backfills_label_times_and_uses_ordered_index() {
     drop(legacy);
 
     let cache = Cache::open(&path).unwrap();
-    let ids: Vec<_> = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let ids: Vec<_> = listed(&cache, label_ids::INBOX)
         .into_iter()
         .map(|m| m.id)
         .collect();
     assert_eq!(ids, ["newer", "older"]);
-    let times: Vec<i64> = cache
-        .conn
-        .prepare("SELECT time FROM message_labels WHERE label_id='0' ORDER BY time DESC")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
+    let times: Vec<i64> = column(
+        &cache.conn,
+        "SELECT time FROM message_labels WHERE label_id='0' ORDER BY time DESC",
+        [],
+        0,
+    );
     assert_eq!(times, [20, 10]);
 
     for unread_only in [false, true] {
-        let plan: Vec<String> = cache
-            .conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(unread_only)))
-            .unwrap()
-            .query_map(rusqlite::params!["0", 10, 0], |row| row.get(3))
-            .unwrap()
-            .map(|row| row.unwrap())
-            .collect();
+        let plan = query_plan(
+            &cache.conn,
+            &list_sql(unread_only),
+            rusqlite::params!["0", 10, 0],
+        );
         assert!(plan.iter().any(|step| step.contains("idx_ml_label_time")));
         assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")));
     }
 
-    let old_reader_ids: Vec<String> = cache
-        .conn
-        .prepare(
-            "SELECT m.id FROM messages m JOIN message_labels l ON m.id=l.message_id
+    let old_reader_ids: Vec<String> = column(
+        &cache.conn,
+        "SELECT m.id FROM messages m JOIN message_labels l ON m.id=l.message_id
              WHERE l.label_id='0' ORDER BY m.time DESC",
-        )
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
+        [],
+        0,
+    );
     assert_eq!(old_reader_ids, ["newer", "older"]);
     let version: i64 = cache
         .conn
@@ -835,17 +848,13 @@ fn existing_cache_backfills_label_times_and_uses_ordered_index() {
 #[test]
 fn labels_are_indexed_once_in_time_order() {
     let indexes = |cache: &Cache| -> Vec<String> {
-        cache
-            .conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='index'
-                 AND tbl_name='message_labels' AND sql IS NOT NULL ORDER BY name",
-            )
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .map(|row| row.unwrap())
-            .collect()
+        column(
+            &cache.conn,
+            "SELECT name FROM sqlite_master WHERE type='index'
+             AND tbl_name='message_labels' AND sql IS NOT NULL ORDER BY name",
+            [],
+            0,
+        )
     };
     let dir = temp_cache_dir();
     let path = dir.join("cache.db");
@@ -861,14 +870,7 @@ fn labels_are_indexed_once_in_time_order() {
 
     let reopened = Cache::open(&path).unwrap();
     assert_eq!(indexes(&reopened), ["idx_ml_label_time"]);
-    let plan: Vec<String> = reopened
-        .conn
-        .prepare(&format!("EXPLAIN QUERY PLAN {COUNT_SQL}"))
-        .unwrap()
-        .query_map(["0"], |row| row.get(3))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
+    let plan = query_plan(&reopened.conn, COUNT_SQL, ["0"]);
     assert!(
         plan.iter().any(|step| step.contains("idx_ml_label_time")),
         "{plan:?}"
@@ -896,13 +898,7 @@ fn failed_label_time_backfill_keeps_legacy_schema_and_rows() {
 
     assert!(Cache::open(&path).is_err());
     let legacy = Connection::open(&path).unwrap();
-    let columns: Vec<String> = legacy
-        .prepare("PRAGMA table_info(message_labels)")
-        .unwrap()
-        .query_map([], |row| row.get(1))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
+    let columns: Vec<String> = column(&legacy, "PRAGMA table_info(message_labels)", [], 1);
     assert!(!columns.contains(&"time".to_string()));
     let count: i64 = legacy
         .query_row("SELECT COUNT(*) FROM message_labels", [], |row| row.get(0))
@@ -963,7 +959,7 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
         .stage_rebuild_page(&[meta("rebuilt", "0", 0, 50)])
         .unwrap();
     cache.finish_rebuild("old", "new", Some(1)).unwrap();
-    assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "rebuilt");
+    assert_eq!(listed(&cache, label_ids::INBOX)[0].id, "rebuilt");
     let time: i64 = cache
         .conn
         .query_row(
@@ -999,14 +995,7 @@ fn a_resync_stores_the_rows_and_labels_a_cached_write_stores() {
 
     /// Each row `sql` selects, as the one text it makes of it.
     fn rows(cache: &Cache, sql: &str) -> Vec<String> {
-        cache
-            .conn
-            .prepare(sql)
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .map(|row| row.unwrap())
-            .collect()
+        column(&cache.conn, sql, [], 0)
     }
     let messages = "SELECT id || ' ' || time || ' ' || unread || ' ' || json FROM messages
                     ORDER BY id";
@@ -1087,7 +1076,7 @@ fn incomplete_rebuild_cannot_replace_cache_or_cursor() {
 
     assert!(c.finish_rebuild("old", "fresh", Some(2)).is_err());
     assert_eq!(c.last_event_id().unwrap().as_deref(), Some("old"));
-    assert_eq!(c.list("0", false, 10, 0).unwrap()[0].id, "keep");
+    assert_eq!(listed(&c, label_ids::INBOX)[0].id, "keep");
     assert_eq!(c.search("privatebody", 10).unwrap()[0].id, "keep");
 }
 
@@ -1594,7 +1583,7 @@ fn metadata_that_no_longer_reads_is_left_out_of_lists_and_searches() {
         messages.into_iter().map(|m| m.id).collect()
     };
 
-    assert_eq!(ids(cache.list("0", false, 10, 0).unwrap()), ["readable"]);
+    assert_eq!(ids(listed(&cache, label_ids::INBOX)), ["readable"]);
     assert_eq!(ids(cache.search("quarterly", 10).unwrap()), ["readable"]);
 }
 

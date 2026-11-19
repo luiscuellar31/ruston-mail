@@ -2,6 +2,7 @@ use super::*;
 use crate::api::events::{EventBatch, MessageEvent, action};
 use crate::crypto::Verdict;
 use crate::mail::test_support;
+use crate::model::enums::label_ids;
 use crate::transport::{HttpClient, Request, Response};
 use serde::de::DeserializeOwned;
 use std::path::Path;
@@ -260,6 +261,11 @@ fn cache_futures_remain_send() {
     };
 }
 
+/// The first ten messages listed in `label`, newest first, read or not.
+fn listed(cache: &Cache, label: &str) -> Vec<MessageMetadata> {
+    cache.list(label, false, 10, 0).unwrap()
+}
+
 fn apply_competing_event(cache: &Cache, event_action: u8) {
     let mut updated = cached_message("m1");
     updated.subject = "newsubject".into();
@@ -288,19 +294,28 @@ fn apply_competing_event(cache: &Cache, event_action: u8) {
     }
 }
 
-fn assert_competing_event_preserved(cache: &Cache, event_action: u8) {
-    assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("new"));
-    assert!(cache.list("0", false, 10, 0).unwrap().is_empty());
-    assert!(cache.search("downloadedbody", 10).unwrap().is_empty());
-    assert!(cache.search("oldbody", 10).unwrap().is_empty());
+/// Whether the cache holds what the event `event_action` left, that came
+/// during `case`, and nothing of the stale listing.
+fn assert_competing_event_preserved(cache: &Cache, event_action: u8, case: &str) {
+    assert_eq!(
+        cache.last_event_id().unwrap().as_deref(),
+        Some("new"),
+        "{case}"
+    );
+    assert!(listed(cache, label_ids::INBOX).is_empty(), "{case}");
+    assert!(
+        cache.search("downloadedbody", 10).unwrap().is_empty(),
+        "{case}"
+    );
+    assert!(cache.search("oldbody", 10).unwrap().is_empty(), "{case}");
     if event_action == action::DELETE {
-        assert!(cache.list("5", false, 10, 0).unwrap().is_empty());
+        assert!(listed(cache, label_ids::ALL_MAIL).is_empty(), "{case}");
     } else {
         let current = cache.search("newbody", 10).unwrap();
-        assert_eq!(current.len(), 1);
-        assert_eq!(current[0].subject, "newsubject");
-        assert_eq!(current[0].unread, 1);
-        assert_eq!(current[0].label_ids, ["5"]);
+        assert_eq!(current.len(), 1, "{case}");
+        assert_eq!(current[0].subject, "newsubject", "{case}");
+        assert_eq!(current[0].unread, 1, "{case}");
+        assert_eq!(current[0].label_ids, ["5"], "{case}");
     }
 }
 
@@ -309,6 +324,12 @@ async fn index_rejects_stale_listing_and_body_results() {
     for event_action in [action::DELETE, action::UPDATE, action::UPDATE_FLAGS] {
         for during_listing in [true, false] {
             for failed_read in [false, true] {
+                // Which of the twelve, for a failure to say.
+                let case = format!(
+                    "event action {event_action}, during the {}, the read {}",
+                    if during_listing { "listing" } else { "body" },
+                    if failed_read { "failing" } else { "working" },
+                );
                 let cache = Cache::open(Path::new(":memory:")).unwrap();
                 cache.set_last_event_id("old").unwrap();
                 cache
@@ -344,9 +365,10 @@ async fn index_rejects_stale_listing_and_body_results() {
                 assert!(
                     index
                         .await
-                        .is_err_and(|error| error.is_retryable_cache_error())
+                        .is_err_and(|error| error.is_retryable_cache_error()),
+                    "{case}"
                 );
-                assert_competing_event_preserved(&cache, event_action);
+                assert_competing_event_preserved(&cache, event_action, &case);
             }
         }
     }
@@ -386,7 +408,7 @@ async fn index_keeps_the_page_cursor_after_an_earlier_body_commits() {
             .await
             .is_err_and(|error| error.is_retryable_cache_error())
     );
-    let remaining = cache.list("0", false, 10, 0).unwrap();
+    let remaining = listed(&cache, label_ids::INBOX);
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, "m0");
     assert_eq!(cache.search("downloadedbody", 10).unwrap()[0].id, "m0");
@@ -501,9 +523,7 @@ async fn index_reads_again_only_drafts_and_bodies_it_does_not_hold() {
     };
     assert_eq!(found("earlierbody"), ["kept"]);
     assert_eq!(found("downloadedbody"), ["draft", "new"]);
-    let kept = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let kept = listed(&cache, label_ids::INBOX)
         .into_iter()
         .find(|meta| meta.id == "kept")
         .unwrap();
@@ -575,9 +595,14 @@ async fn backfill_rejects_stale_page_without_inserting_any_rows() {
         assert!(
             backfill
                 .await
-                .is_err_and(|error| error.is_retryable_cache_error())
+                .is_err_and(|error| error.is_retryable_cache_error()),
+            "event action {event_action}"
         );
-        assert_competing_event_preserved(&cache, event_action);
+        assert_competing_event_preserved(
+            &cache,
+            event_action,
+            &format!("event action {event_action}"),
+        );
     }
 }
 
@@ -651,9 +676,7 @@ async fn the_first_sync_applies_what_changed_after_an_earlier_listing() {
     );
     let report = sync_cache(&http, &cache).await.unwrap();
 
-    let ids: Vec<String> = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let ids: Vec<String> = listed(&cache, label_ids::INBOX)
         .into_iter()
         .map(|m| m.id)
         .collect();
@@ -718,7 +741,7 @@ async fn an_unreadable_body_atomically_refreshes_metadata_and_invalidates_it() {
         0
     );
     assert!(cache.search("oldbody", 10).unwrap().is_empty());
-    assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].unread, 1);
+    assert_eq!(listed(&cache, label_ids::INBOX)[0].unread, 1);
     assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
 }
 
@@ -791,9 +814,7 @@ async fn index_stops_at_an_outage_but_drops_a_missing_message_s_body() {
     assert_eq!(kept.len(), 1);
     assert_eq!((kept[0].id.as_str(), kept[0].unread), ("m1", 0));
     // And indexing stopped there.
-    let cached: Vec<_> = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let cached: Vec<_> = listed(&cache, label_ids::INBOX)
         .into_iter()
         .map(|message| message.id)
         .collect();
@@ -904,9 +925,7 @@ async fn server_refresh_rebuilds_all_metadata_before_advancing_cursor() {
         .await
         .unwrap();
 
-    let mut ids: Vec<String> = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let mut ids: Vec<String> = listed(&cache, label_ids::INBOX)
         .into_iter()
         .map(|m| m.id)
         .collect();
@@ -1065,9 +1084,7 @@ async fn mail_deleted_during_a_rebuild_moves_none_past_it() {
 
     // m1 stays until its deletion comes as an event.
     assert_eq!(count, 4);
-    let listed: Vec<_> = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let listed: Vec<_> = listed(&cache, label_ids::INBOX)
         .into_iter()
         .map(|message| message.id)
         .collect();
@@ -1212,6 +1229,6 @@ async fn interrupted_rebuild_preserves_offline_cache_and_cursor() {
             .is_err()
     );
     assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
-    assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "keep");
+    assert_eq!(listed(&cache, label_ids::INBOX)[0].id, "keep");
     assert_eq!(cache.search("oldprivatebody", 10).unwrap()[0].id, "keep");
 }
