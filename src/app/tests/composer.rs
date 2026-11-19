@@ -518,7 +518,10 @@ async fn sending_with_missing_attachment_fails_gracefully_in_background() {
         "alex@example.com".into(),
     ));
     let _ = app.update(Message::ComposeChanged(ComposeField::Body, "Hello".into()));
-    let non_existent = PathBuf::from("/tmp/missing_attachment_test_ruston.pdf");
+    // In a folder of its own that is never made, so no file can be there.
+    let non_existent = std::env::temp_dir()
+        .join(format!("ruston-missing-attachment-{}", std::process::id()))
+        .join("missing_attachment_test_ruston.pdf");
     let compose_id = app.compose().unwrap().id();
     let _ = app.update(Message::AddComposeAttachments(
         compose_id,
