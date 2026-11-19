@@ -17,8 +17,8 @@ use ruston_core::{Conversation, Error, Label, RecipientProtection, SearchOpts};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
-/// How many rows a notch of the mouse wheel scrolls the reader or the list
-/// of keys, as most programs scroll text.
+/// How many rows a notch of the mouse wheel scrolls the reader, a list or
+/// the list of keys, as most programs scroll text.
 const WHEEL_ROWS: isize = 3;
 
 /// The three panes, in the order Tab visits them.
@@ -73,6 +73,14 @@ impl Drawn {
         }
     }
 
+    /// How many rows `pane` showed inside its borders.
+    fn rows(&self, pane: Pane) -> usize {
+        Pane::ALL
+            .iter()
+            .position(|each| *each == pane)
+            .map_or(0, |at| usize::from(self.0[at].0.height))
+    }
+
     /// The pane drawn at `column` and `row`, if any, with the row of its
     /// list, or of the reader's text, there.
     fn at(&self, column: u16, row: u16) -> Option<(Pane, usize)> {
@@ -83,6 +91,16 @@ impl Drawn {
             .find(|(_, (inner, _))| inner.contains(position))?;
         Some((pane, first + usize::from(row - inner.y)))
     }
+}
+
+/// Where a list is scrolled: the first row it showed when last drawn, and,
+/// once the wheel scrolled it, the selection it had then, so the list stays
+/// there, showing its selection only where it falls, until the selection
+/// moves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ListScroll {
+    pub(crate) top: usize,
+    pub(crate) wheeled: Option<usize>,
 }
 
 /// The open conversation's links listed over the panes: which one is
@@ -197,6 +215,10 @@ pub(crate) struct App {
     pub(crate) total: u32,
     /// Which conversation the list's selection is on.
     pub(crate) selected_conversation: usize,
+    /// Where the folders and the list of conversations are scrolled; the
+    /// view sets them, and the wheel.
+    pub(crate) places_scroll: Cell<ListScroll>,
+    pub(crate) conversations_scroll: Cell<ListScroll>,
     /// The conversation the reader shows, once it has loaded.
     pub(crate) reading: Option<Reading>,
     /// How many rows down the reader is scrolled; the view scrolls it to
@@ -520,6 +542,8 @@ impl App {
             loading_more: false,
             total: 0,
             selected_conversation: 0,
+            places_scroll: Cell::default(),
+            conversations_scroll: Cell::default(),
             reading: None,
             scroll: Cell::new(0),
             landing: Cell::new(None),
@@ -708,6 +732,10 @@ impl App {
                     self.total = total;
                     self.conversations = conversations;
                     self.next_page = 1;
+                    if !self.reloading {
+                        // Another place's list starts at its top.
+                        self.conversations_scroll.set(ListScroll::default());
+                    }
                     // When it has left the list, the row now in its place is.
                     let in_its_place = self
                         .selected_conversation
@@ -1703,35 +1731,46 @@ impl App {
     /// page is on its way, the rows shown are from before it, so none follow.
     fn down(&mut self, pane: Pane) -> Vec<Effect> {
         let at_end = self.selected_conversation + 1 >= self.conversations.len();
+        if pane == Pane::Conversations
+            && at_end
+            && let Some(more) = self.more()
+        {
+            return vec![more];
+        }
+        self.step(pane, 1);
+        Vec::new()
+    }
+
+    /// Asks for the list's next page, unless it holds all there is, the
+    /// local index gave it, or a page is on its way.
+    fn more(&mut self) -> Option<Effect> {
         // The local index gives all it finds at once.
         let more = self.conversations.len() < usize::try_from(self.total).unwrap_or(usize::MAX)
             && !self
                 .search
                 .as_ref()
                 .is_some_and(|search| matches!(search.query, Query::Local(_)));
-        if pane == Pane::Conversations && at_end && more && self.next_page > 0 && !self.loading_more
-        {
-            self.loading_more = true;
-            self.notice = Some(format!("Loading more of {}…", self.listed));
-            let (request, page) = (self.list_request, self.next_page);
-            return vec![match &self.search {
-                Some(Search {
-                    query: Query::Proton(opts),
-                    ..
-                }) => Effect::Search {
-                    request,
-                    opts: opts.clone(),
-                    page,
-                },
-                _ => Effect::Conversations {
-                    request,
-                    place: self.listed_id.clone(),
-                    page,
-                },
-            }];
+        if !more || self.next_page == 0 || self.loading_more {
+            return None;
         }
-        self.step(pane, 1);
-        Vec::new()
+        self.loading_more = true;
+        self.notice = Some(format!("Loading more of {}…", self.listed));
+        let (request, page) = (self.list_request, self.next_page);
+        Some(match &self.search {
+            Some(Search {
+                query: Query::Proton(opts),
+                ..
+            }) => Effect::Search {
+                request,
+                opts: opts.clone(),
+                page,
+            },
+            _ => Effect::Conversations {
+                request,
+                place: self.listed_id.clone(),
+                page,
+            },
+        })
     }
 
     /// What a click on `pane` does, on the row `row` of its list or text:
@@ -1763,15 +1802,32 @@ impl App {
         Vec::new()
     }
 
-    /// Scrolls `pane` as the wheel over it turns a notch `by`, leaving the
-    /// keys where they are: a list a row, as Up and Down move it, the
-    /// reader a few.
+    /// Scrolls `pane` as the wheel over it turns a notch `by`, a few rows,
+    /// leaving the keys and a list's selection where they are; past the
+    /// list's last row, its next page loads, as moving down past it does.
     fn wheel(&mut self, pane: Pane, by: isize) -> Vec<Effect> {
-        match pane {
-            Pane::Reader => self.step(pane, by * WHEEL_ROWS),
-            _ if by > 0 => return self.down(pane),
-            _ => self.step(pane, by),
+        let (scroll, selected, len) = match pane {
+            Pane::Folders => (&self.places_scroll, self.selected_place, self.places.len()),
+            Pane::Conversations => (
+                &self.conversations_scroll,
+                self.selected_conversation,
+                self.conversations.len(),
+            ),
+            Pane::Reader => {
+                self.step(pane, by * WHEEL_ROWS);
+                return Vec::new();
+            }
+        };
+        let was = scroll.get();
+        let last = len.saturating_sub(self.drawn.get().rows(pane));
+        if pane == Pane::Conversations && by > 0 && was.top >= last {
+            return self.more().into_iter().collect();
         }
+        let top = was.top.saturating_add_signed(by * WHEEL_ROWS).min(last);
+        scroll.set(ListScroll {
+            top,
+            wheeled: Some(selected),
+        });
         Vec::new()
     }
 

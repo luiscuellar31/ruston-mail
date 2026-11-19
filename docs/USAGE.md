@@ -586,7 +586,7 @@ The mouse works too. A click on a folder or a conversation selects it, and a
 click on the one selected in the pane that has the keys opens it; a click on a
 message folded into a line opens it, and a click anywhere in a pane gives it
 the keys. The wheel scrolls the list or the reader under it, leaving the keys
-where they are, or the keys while `?` shows them.
+and the list's selection where they are, or the keys while `?` shows them.
 The mouse does nothing while you write a message, while a question waits for
 an answer or while the command line is open. As the interface takes the
 mouse, your terminal selects text only with a key held as you drag: Shift in

@@ -781,9 +781,10 @@ instead of an unknown outcome.
   A click or a turn of the wheel finds what it points at where the view last
   drew the panes: a click gives a pane the keys and selects a row of its
   list, or opens it when it was selected there already, or opens a message
-  folded into a line in the reader, and the wheel moves
-  the list under it a row, as Up and Down do, or scrolls the reader, or the
-  list of keys over the panes. While a message is being written, a question
+  folded into a line in the reader, and the wheel scrolls the list under it,
+  which stays there until its selection moves, and past its last row loads
+  the next page as Down does, or scrolls the reader, or the list of keys
+  over the panes. While a message is being written, a question
   waits or the command line is open, the mouse asks for nothing.
   [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
   an opened conversation into the reader's lines, each message's headers,

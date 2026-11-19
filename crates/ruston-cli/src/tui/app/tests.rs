@@ -637,8 +637,8 @@ fn the_wheel_past_the_last_row_loads_the_next_page_and_moves_no_keys() {
         app.message_for(&wheel(row))
             .map_or_else(Vec::new, |message| app.update(message))
     };
-    assert!(over(&mut app, 3).is_empty());
-    assert_eq!(app.selected_conversation, 1);
+    // Both rows show, so the list has nowhere to scroll: its next page
+    // loads, and the selection stays where it is.
     assert_eq!(
         over(&mut app, 3),
         [Effect::Conversations {
@@ -647,11 +647,12 @@ fn the_wheel_past_the_last_row_loads_the_next_page_and_moves_no_keys() {
             page: 1
         }]
     );
+    assert_eq!(app.selected_conversation, 0);
     assert_eq!(app.focus, Pane::Folders);
     // Over no pane, it does nothing.
     assert!(app.message_for(&wheel(40)).is_some());
     assert!(over(&mut app, 40).is_empty());
-    assert_eq!(app.selected_conversation, 1);
+    assert_eq!(app.selected_conversation, 0);
 
     // A message being written, or a question, takes no clicks.
     let click = Event::Mouse(MouseEvent {

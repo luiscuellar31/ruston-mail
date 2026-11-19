@@ -675,6 +675,50 @@ fn a_click_on_a_message_folded_into_a_line_opens_it() {
 }
 
 #[test]
+fn the_wheel_scrolls_a_list_without_moving_its_selection() {
+    let mut app = with_mail("alex@example.test", "Quarterly report");
+    app.conversations = (0..40)
+        .map(|n| Conversation {
+            id: format!("c{n}"),
+            subject: format!("Subject {n}"),
+            ..Conversation::default()
+        })
+        .collect();
+    app.focus = Pane::Conversations;
+    let _ = drawn(120, 30, &app, &Theme::new(false));
+    // Two notches down, the list shows from its seventh row, the selection
+    // on its first, out of sight.
+    mouse(&mut app, MouseEventKind::ScrollDown, 30, 10);
+    mouse(&mut app, MouseEventKind::ScrollDown, 30, 10);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert_eq!(app.selected_conversation, 0);
+    assert!(top_row(&screen).contains("Subject 6 "), "{screen}");
+    // Drawn again, it stays there; a notch up, it goes back three rows.
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(top_row(&screen).contains("Subject 6 "), "{screen}");
+    mouse(&mut app, MouseEventKind::ScrollUp, 30, 10);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(top_row(&screen).contains("Subject 3 "), "{screen}");
+
+    // A key moves the selection from where it was, and the list follows it.
+    press(&mut app, KeyCode::Down);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert_eq!(app.selected_conversation, 1);
+    assert!(top_row(&screen).contains("Subject 1 "), "{screen}");
+    // Up from there, the list only scrolls once the selection reaches its
+    // top row.
+    for _ in 0..30 {
+        press(&mut app, KeyCode::Down);
+    }
+    let _ = drawn(120, 30, &app, &Theme::new(false));
+    press(&mut app, KeyCode::Up);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert_eq!(app.selected_conversation, 30);
+    assert_eq!(app.conversations_scroll.get().top, 5);
+    assert!(top_row(&screen).contains("Subject 5 "), "{screen}");
+}
+
+#[test]
 fn the_wheel_scrolls_what_it_is_over_and_the_keys_over_the_panes() {
     let mut app = with_mail("alex@example.test", "Quarterly report");
     app.conversations.push(Conversation::default());
@@ -689,15 +733,13 @@ fn the_wheel_scrolls_what_it_is_over_and_the_keys_over_the_panes() {
         answer: None,
     });
     let _ = drawn(120, 30, &app, &Theme::new(false));
-    // The reader a few rows a notch, the list a row, the keys staying
-    // with the folders.
+    // The reader a few rows a notch, the keys staying with the folders and
+    // the list's selection where it is.
     mouse(&mut app, MouseEventKind::ScrollDown, 90, 10);
     mouse(&mut app, MouseEventKind::ScrollDown, 90, 10);
     mouse(&mut app, MouseEventKind::ScrollUp, 90, 10);
     assert_eq!(app.scroll.get(), 3);
     mouse(&mut app, MouseEventKind::ScrollDown, 30, 10);
-    assert_eq!(app.selected_conversation, 1);
-    mouse(&mut app, MouseEventKind::ScrollUp, 30, 10);
     assert_eq!(app.selected_conversation, 0);
     assert_eq!(app.focus, Pane::Folders);
 

@@ -4,7 +4,7 @@
 //! Every piece of text that comes with the mail goes through
 //! `terminal::screen_line` first.
 
-use super::app::{App, Drawn, GO_TO, LinkPick, Pane, Query, Question};
+use super::app::{App, Drawn, GO_TO, LinkPick, ListScroll, Pane, Query, Question};
 use super::compose::{Checked, Compose, Field};
 use super::reading::{Reading, is_quoted, size_label};
 use crate::mailbox::OutgoingKind;
@@ -18,6 +18,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Quote, RecipientProtection};
+use std::cell::Cell;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -736,7 +737,16 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 }
                 ListItem::new(Line::from(spans))
             });
-            draw_list(frame, items, app.selected_place, focused, block, area)
+            let scroll = &app.places_scroll;
+            draw_list(
+                frame,
+                items,
+                app.selected_place,
+                scroll,
+                focused,
+                block,
+                area,
+            )
         }
         // Without this, the keys would seem to do nothing in an empty list.
         Pane::Conversations if app.listed_nothing() => {
@@ -777,6 +787,7 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 frame,
                 items,
                 app.selected_conversation,
+                &app.conversations_scroll,
                 focused,
                 block.title_bottom(legend),
                 area,
@@ -792,11 +803,15 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
 
 /// A list with its selection on `selected`, shown inverted in the focused
 /// pane, which reads without colors too, and underlined elsewhere: bold
-/// says a conversation is unread. Returns the first row it shows.
+/// says a conversation is unread. From where `scroll` says it was, it
+/// scrolls only as far as the selection needs; scrolled by the wheel, it
+/// stays there, the selection shown only where it falls, until the
+/// selection moves. Returns the first row it shows.
 fn draw_list<'a>(
     frame: &mut Frame,
     items: impl Iterator<Item = ListItem<'a>>,
     selected: usize,
+    scroll: &Cell<ListScroll>,
     focused: bool,
     block: Block,
     area: Rect,
@@ -806,9 +821,19 @@ fn draw_list<'a>(
     } else {
         Style::new().add_modifier(Modifier::UNDERLINED)
     };
+    let rows = usize::from(block.inner(area).height);
+    let ListScroll { top, wheeled } = scroll.get();
+    let wheeled = wheeled.filter(|at| *at == selected);
+    let shown = wheeled.is_none() || (top..top + rows).contains(&selected);
     let list = List::new(items).block(block).highlight_style(highlight);
-    let mut state = ListState::default().with_selected(Some(selected));
+    let mut state = ListState::default()
+        .with_offset(top)
+        .with_selected(shown.then_some(selected));
     frame.render_stateful_widget(list, area, &mut state);
+    scroll.set(ListScroll {
+        top: state.offset(),
+        wheeled,
+    });
     state.offset()
 }
 
