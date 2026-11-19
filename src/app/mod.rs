@@ -414,9 +414,10 @@ impl App {
         self.last_compose_id
     }
 
-    /// The session profile the account signs in and resumes under.
+    /// The session profile the account signs in and resumes under: the open
+    /// account's.
     fn session_profile(&self) -> String {
-        ruston_core::DEFAULT_SESSION_PROFILE.to_owned()
+        self.settings.accounts.active_profile().to_owned()
     }
 
     fn advance_session_epoch(&mut self) {

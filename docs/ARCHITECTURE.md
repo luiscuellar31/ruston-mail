@@ -1225,6 +1225,11 @@ instead of an unknown outcome.
 Both frontends use the `ruston` session profile by default, so a login in one
 can be resumed by the other. The CLI accepts `--profile` for separate sessions;
 its former `default` session remains available with `--profile default`.
+The desktop's settings record its account
+([`src/accounts.rs`](../src/accounts.rs)): the profile it resumes and signs in
+under, `ruston`, and the address it last signed in as; a damaged or hand-edited
+list keeps only the profiles the desktop gives out, `ruston` and `ruston-2` to
+`ruston-5`, each once.
 Core validates profile names as single path components before resolving session
 and cache paths; the CLI applies the same validation while parsing `--profile`.
 Both use core session storage: non-secret metadata in a platform config

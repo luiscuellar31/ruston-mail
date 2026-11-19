@@ -271,7 +271,8 @@ Ruston Mail keeps `settings.json` in its own platform config directory; a demo
 process keeps `settings-demo.json` beside it instead, so nothing changed while
 trying the demo reaches a real account. It
 contains preferences, the last folder, the window's size and place on screen,
-whether it was maximized, and pane widths. When a
+whether it was maximized, pane widths, and the account signed in to: its
+session profile and the address it signed in as. When a
 session ends, a remembered folder or label you created is replaced by the
 Inbox, so its name never reaches the next account to sign in. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged

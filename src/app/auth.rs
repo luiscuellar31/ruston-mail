@@ -369,6 +369,10 @@ impl App {
         let page_size = backend.page_size();
         self.backend = Some(backend);
         self.account = account;
+        if !self.is_demo() {
+            let address = email.clone();
+            self.remember(|settings| settings.accounts.signed_in(address.as_deref()));
+        }
         self.auth_state = AuthState::Authenticated { email };
         let draft = self.restore_parked_draft();
 

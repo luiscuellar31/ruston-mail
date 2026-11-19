@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::accounts::Accounts;
 use crate::mail::{BodyFormat, Domains, Folder, MailFolder};
 
 const FILE: &str = "settings.json";
@@ -83,6 +84,10 @@ pub struct Settings {
     pub show_unread_badge: bool,
     /// Show desktop notification when new mail arrives in inbox.
     pub desktop_notifications: bool,
+    /// The accounts signed in to, and the one open now. Settings saved before
+    /// there could be several have the first, `ruston`.
+    #[serde(default)]
+    pub accounts: Accounts,
     /// Whether `load` read these settings, allowing them to be written back.
     #[serde(skip)]
     stored: bool,
@@ -114,6 +119,7 @@ impl Default for Settings {
             zoom: 1.0,
             show_unread_badge: true,
             desktop_notifications: true,
+            accounts: Accounts::default(),
             stored: false,
             demo: false,
         }
@@ -286,6 +292,7 @@ impl Settings {
             .window
             .position
             .filter(|position| position.iter().all(|coordinate| coordinate.is_finite()));
+        self.accounts = self.accounts.sanitized();
 
         self
     }
@@ -402,6 +409,15 @@ mod tests {
         let text = serde_json::to_string(&settings).unwrap();
 
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), settings);
+    }
+
+    #[test]
+    fn older_settings_have_the_one_account_they_signed_in_to() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("accounts");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.accounts, Accounts::default());
+        assert_eq!(restored.accounts.active_profile(), "ruston");
     }
 
     #[test]

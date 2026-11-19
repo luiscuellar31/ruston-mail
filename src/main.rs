@@ -2,6 +2,7 @@
 // would end Ruston without asking about a written message.
 #![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
 
+mod accounts;
 mod app;
 mod diagnostics;
 mod downloads;
