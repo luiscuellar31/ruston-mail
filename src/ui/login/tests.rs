@@ -39,9 +39,10 @@ fn the_sign_in_screen_says_who_gets_a_kept_draft_back() {
 #[test]
 fn the_sign_in_screen_offers_to_try_a_saved_session_again() {
     let (mut app, _) = App::boot(false, crate::settings::Settings::default());
-    let _ = app.update(Message::SessionChecked(crate::mail::ResumeOutcome::Failed(
-        crate::mail::AuthError::Connection,
-    )));
+    let _ = app.update(Message::SessionChecked(
+        ruston_core::DEFAULT_SESSION_PROFILE.into(),
+        crate::mail::ResumeOutcome::Failed(crate::mail::AuthError::Connection),
+    ));
     let context = egui::Context::default();
     theme::install(&context);
     let frame = |app: &mut App, events: Vec<egui::Event>| {

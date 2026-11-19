@@ -253,14 +253,25 @@ impl App {
         Effects::none()
     }
 
-    pub(super) fn finish_session_check(&mut self, outcome: ResumeOutcome) -> Effects {
-        // Only the check the startup screen waits for decides anything.
-        if self.auth_state != AuthState::CheckingSession {
+    pub(super) fn finish_session_check(
+        &mut self,
+        profile: &str,
+        outcome: ResumeOutcome,
+    ) -> Effects {
+        // Only the check the startup screen waits for decides anything, and
+        // only for the account being opened.
+        if self.auth_state != AuthState::CheckingSession || profile != self.session_profile() {
             return Effects::none();
         }
         match outcome {
             ResumeOutcome::Authenticated(service) => return self.set_authenticated(service),
-            ResumeOutcome::SignedOut => self.auth_state = AuthState::SignedOut,
+            ResumeOutcome::SignedOut => {
+                // Its session is gone: it signs in again, as the address it had.
+                if let Some(address) = self.open_account_address() {
+                    self.login_form.username = address;
+                }
+                self.auth_state = AuthState::SignedOut;
+            }
             ResumeOutcome::Failed(error) => {
                 self.resume_may_retry = error.may_pass();
                 self.auth_error = Some(error);
@@ -285,10 +296,10 @@ impl App {
         self.resume_may_retry = false;
         self.auth_error = None;
         self.auth_state = AuthState::CheckingSession;
-        Effects::perform(
-            ProtonMailService::resume(self.session_profile()),
-            Message::SessionChecked,
-        )
+        let profile = self.session_profile();
+        Effects::perform(ProtonMailService::resume(profile.clone()), move |outcome| {
+            Message::SessionChecked(profile, outcome)
+        })
     }
 
     pub(super) fn finish_sign_in(
@@ -369,9 +380,12 @@ impl App {
         let page_size = backend.page_size();
         self.backend = Some(backend);
         self.account = account;
-        if !self.is_demo() {
-            let address = email.clone();
-            self.remember(|settings| settings.accounts.signed_in(address.as_deref()));
+        if !self.demo_process {
+            let (profile, address) = (self.session_profile(), email.clone());
+            self.remember(|settings| settings.accounts.signed_in(&profile, address.as_deref()));
+            // Another account is open now: nothing to go back to.
+            self.adding_account = None;
+            self.returning_to = None;
         }
         self.auth_state = AuthState::Authenticated { email };
         let draft = self.restore_parked_draft();

@@ -3,6 +3,7 @@ use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
 use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
+use crate::accounts::MAX_ACCOUNTS;
 use crate::app::{
     App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message,
     Notice, compact_layout, panel_ratios, panel_widths,
@@ -391,20 +392,20 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
         _ => (None, false),
     };
     ui.vertical(|ui| {
-        let account_label = if app.is_demo() {
+        let account_label = if app.is_demo_process() {
             "demo@example.com"
         } else {
             email.unwrap_or("Proton Mail account")
         };
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(account_label)
-                    .size(12.0)
-                    .color(theme::colors(ui).muted),
-            )
-            .truncate(),
-        )
-        .on_hover_text(account_label);
+        let label = egui::RichText::new(account_label)
+            .size(12.0)
+            .color(theme::colors(ui).muted);
+        if app.is_demo_process() || signing_out {
+            ui.add(egui::Label::new(label).truncate())
+                .on_hover_text(account_label);
+        } else {
+            accounts_menu(ui, app, label, messages).on_hover_text(account_label);
+        }
         if let Some(error) = app.error_message() {
             ui.label(egui::RichText::new(error).color(theme::colors(ui).danger));
         }
@@ -431,6 +432,49 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
             messages.push(Message::Logout);
         }
     });
+}
+
+/// The open account's address, which opens the accounts to switch to and a
+/// way to add another, up to [`MAX_ACCOUNTS`].
+fn accounts_menu(
+    ui: &mut egui::Ui,
+    app: &App,
+    label: egui::RichText,
+    messages: &mut Vec<Message>,
+) -> egui::Response {
+    let button = egui::Button::new(label)
+        .frame(false)
+        .wrap_mode(egui::TextWrapMode::Truncate);
+    // Leaving would hide whether a message being sent has left.
+    let sending = app.compose().is_some_and(crate::app::Compose::in_flight);
+    let accounts = app.accounts();
+    egui::containers::menu::MenuButton::from_button(button)
+        .ui(ui, |ui| {
+            for account in accounts.all() {
+                let open = account.profile == accounts.active_profile();
+                let name = account.address.as_deref().unwrap_or("Proton Mail account");
+                let item = ui.add_enabled(open || !sending, egui::Button::selectable(open, name));
+                if item.clicked() && !open {
+                    messages.push(Message::SwitchAccount(account.profile.clone()));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            let add = ui.add_enabled(
+                app.can_add_account() && !sending,
+                egui::Button::new("Add account"),
+            );
+            let add = if app.can_add_account() {
+                add
+            } else {
+                add.on_disabled_hover_text(format!("Up to {MAX_ACCOUNTS} accounts"))
+            };
+            if add.clicked() {
+                messages.push(Message::AddAccount);
+                ui.close();
+            }
+        })
+        .0
 }
 
 /// A neutral button like the one under it; while Settings is open, the soft

@@ -46,6 +46,23 @@ Sent before sending it again.
 
 FIDO2 and WebAuthn security keys are not supported yet.
 
+### Several accounts
+
+Ruston Mail signs in to up to five Proton accounts, one open at a time. The
+address at the foot of the sidebar opens the accounts: choose another to switch
+to it, or **Add account** to sign in to one more. The others keep their
+sessions saved, as a restart does, and check no mail and send no notifications
+until you open them. Switching opens the other account's saved session; if it
+has ended, you sign in to that account again, with its address filled in. That
+sign-in screen, and the one for adding an account, offer **Back to** the
+account you left. As when signing out, switching or adding asks before
+discarding a message you are writing, waits for changes still on their way to
+Proton, and is unavailable while a message is being sent.
+
+The command line reaches the same sessions: the first account is its default
+profile, and the others are `--profile ruston-2` to `--profile ruston-5`, in
+the order they were added.
+
 ## Finding mail
 
 The sidebar contains Proton's standard folders, followed by your custom folders

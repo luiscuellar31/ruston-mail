@@ -1,6 +1,7 @@
 //! End-to-end state-machine tests through `App::update`, a module for each
 //! part of the app. The fixtures here are those several modules share.
 
+mod accounts;
 mod actions;
 mod attachments;
 mod composer;
@@ -27,6 +28,10 @@ use crate::mail::MailFolder;
 use crate::test_support::{OPENING_COUNTS, OPENING_PAGE, sys};
 
 const NOW: i64 = 1_789_000_000;
+
+/// The profile the first account signs in under, the only one unless a test
+/// adds more.
+const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
 
 /// What a refresh asks for: the open folder's page and its counts.
 const PAGE_AND_COUNTS: usize = 2;

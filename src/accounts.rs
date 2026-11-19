@@ -48,21 +48,60 @@ fn profile_at(slot: usize) -> String {
 }
 
 impl Accounts {
+    /// The accounts, in the order they were added.
+    pub fn all(&self) -> &[Account] {
+        &self.list
+    }
+
     /// The profile of the account open now.
     pub fn active_profile(&self) -> &str {
         &self.active
     }
 
-    /// Notes the address the open account signed in as; with none given,
-    /// the one it had stays.
-    pub fn signed_in(&mut self, address: Option<&str>) {
-        let open = self
+    /// The account whose session is saved under `profile`, if one is.
+    pub fn get(&self, profile: &str) -> Option<&Account> {
+        self.list.iter().find(|account| account.profile == profile)
+    }
+
+    /// The profile a new account signs in under: the first slot no account
+    /// takes, none once there are [`MAX_ACCOUNTS`].
+    pub fn free_profile(&self) -> Option<String> {
+        (0..MAX_ACCOUNTS)
+            .map(profile_at)
+            .find(|profile| self.get(profile).is_none())
+    }
+
+    /// Opens the account under `profile`; false when there is none.
+    pub fn open(&mut self, profile: &str) -> bool {
+        let known = self.get(profile).is_some();
+        if known {
+            self.active = profile.to_owned();
+        }
+        known
+    }
+
+    /// Notes that `profile` signed in, as `address` when one is given, and
+    /// opens it, adding it when it is a free slot's; with no address, the
+    /// one it had stays.
+    pub fn signed_in(&mut self, profile: &str, address: Option<&str>) {
+        if self.get(profile).is_none() {
+            if self.free_profile().as_deref() != Some(profile) {
+                return;
+            }
+            self.list.push(Account {
+                profile: profile.to_owned(),
+                address: None,
+            });
+        }
+        if let Some(account) = self
             .list
             .iter_mut()
-            .find(|account| account.profile == self.active);
-        if let (Some(account), Some(address)) = (open, address) {
+            .find(|account| account.profile == profile)
+            && let Some(address) = address
+        {
             account.address = Some(address.to_owned());
         }
+        self.active = profile.to_owned();
     }
 
     /// What a damaged or hand-edited file could break: a profile none of
@@ -115,10 +154,41 @@ mod tests {
     #[test]
     fn the_open_account_keeps_the_address_it_signed_in_as() {
         let mut accounts = Accounts::default();
-        accounts.signed_in(Some("alex@proton.me"));
+        accounts.signed_in("ruston", Some("alex@proton.me"));
         // A session that names none leaves the one known.
-        accounts.signed_in(None);
+        accounts.signed_in("ruston", None);
         assert_eq!(accounts.list, [account("ruston", Some("alex@proton.me"))]);
+    }
+
+    #[test]
+    fn new_accounts_take_the_free_slots_up_to_five_and_open() {
+        let mut accounts = Accounts::default();
+        accounts.signed_in("ruston", Some("alex@proton.me"));
+        for (slot, address) in [
+            "sam@proton.me",
+            "kim@proton.me",
+            "lee@proton.me",
+            "max@proton.me",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let profile = accounts.free_profile().unwrap();
+            assert_eq!(profile, format!("ruston-{}", slot + 2));
+            accounts.signed_in(&profile, Some(address));
+            assert_eq!(accounts.active_profile(), profile);
+        }
+        assert_eq!(accounts.all().len(), MAX_ACCOUNTS);
+        assert_eq!(accounts.free_profile(), None);
+        // A profile that no free slot gives is not added.
+        accounts.signed_in("ruston-9", Some("nine@proton.me"));
+        assert_eq!(accounts.all().len(), MAX_ACCOUNTS);
+        assert_eq!(accounts.active_profile(), "ruston-5");
+
+        assert!(accounts.open("ruston-2"));
+        assert_eq!(accounts.active_profile(), "ruston-2");
+        assert!(!accounts.open("ruston-9"));
+        assert_eq!(accounts.active_profile(), "ruston-2");
     }
 
     #[test]

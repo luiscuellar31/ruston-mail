@@ -1225,11 +1225,21 @@ instead of an unknown outcome.
 Both frontends use the `ruston` session profile by default, so a login in one
 can be resumed by the other. The CLI accepts `--profile` for separate sessions;
 its former `default` session remains available with `--profile default`.
-The desktop's settings record its account
-([`src/accounts.rs`](../src/accounts.rs)): the profile it resumes and signs in
-under, `ruston`, and the address it last signed in as; a damaged or hand-edited
-list keeps only the profiles the desktop gives out, `ruston` and `ruston-2` to
-`ruston-5`, each once.
+The desktop's settings record its accounts, at most five
+([`src/accounts.rs`](../src/accounts.rs)): each one's profile, `ruston` for the
+first and the first free of `ruston-2` to `ruston-5` for the others, the
+address it last signed in as, and which one is open; a damaged or hand-edited
+list keeps only those profiles, each once. One account is open at a time
+([`src/app/accounts.rs`](../src/app/accounts.rs)). Switching closes the open
+mailbox as signing out does, dropping every piece of that session's state,
+but revokes nothing: the session stays saved, and the other account's opens
+as at startup, its answer applied only while that account is still the one
+being opened. Adding one closes the mailbox the same way and signs in under
+the first free profile, which joins the list only once the sign-in succeeds.
+Until another account opens, the sign-in screen offers a way back to the
+account left. The root window asks before a change of account discards a
+written message and holds it while changes are on their way to Proton, as it
+does for signing out.
 Core validates profile names as single path components before resolving session
 and cache paths; the CLI applies the same validation while parsing `--profile`.
 Both use core session storage: non-secret metadata in a platform config

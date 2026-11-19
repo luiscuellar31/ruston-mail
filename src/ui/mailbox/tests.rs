@@ -237,6 +237,55 @@ fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
 }
 
 #[test]
+fn the_address_opens_the_accounts_to_switch_to_or_add() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let app = App::signed_in_to(&["alex@proton.me", "sam@proton.me"]);
+    let mut state = UiState::default();
+    let mut frame = |events: Vec<egui::Event>| {
+        mailbox_frame(
+            &context,
+            &app,
+            &mut state,
+            egui::vec2(1100.0, 700.0),
+            None,
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+        )
+    };
+    let click = |pos| {
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+    };
+
+    // The sidebar settles over a few frames, as the others' tests wait for.
+    let _ = frame(Vec::new());
+    let _ = frame(Vec::new());
+    let (_, shapes) = frame(Vec::new());
+    let open = visible_text_rect(&shapes, "sam@proton.me").expect("the open account");
+    assert!(visible_text_rect(&shapes, "alex@proton.me").is_none());
+    let _ = frame(click(open.center()));
+    let (_, shapes) = frame(Vec::new());
+    assert!(visible_text_rect(&shapes, "Add account").is_some());
+    let other = visible_text_rect(&shapes, "alex@proton.me").expect("the other account");
+    let (asked, _) = frame(click(other.center()));
+    assert!(
+        asked.iter().any(|message| matches!(
+            message,
+            Message::SwitchAccount(profile) if profile == "ruston"
+        )),
+        "choosing the other account switches to it"
+    );
+}
+
+#[test]
 fn folders_scroll_independently_while_account_actions_remain_accessible() {
     let context = egui::Context::default();
     theme::install(&context);

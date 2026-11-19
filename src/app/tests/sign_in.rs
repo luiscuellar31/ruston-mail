@@ -37,7 +37,10 @@ fn only_a_session_found_saved_at_startup_is_opened_as_the_mailbox() {
 
     app.session_saved = true;
     assert!(app.opening_saved_session());
-    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    let _ = app.update(Message::SessionChecked(
+        PROFILE.into(),
+        ResumeOutcome::SignedOut,
+    ));
     assert!(!app.opening_saved_session());
 
     let (demo, _) = App::boot(true, Settings::default());
@@ -112,7 +115,10 @@ fn a_demo_process_keeps_its_notice_while_the_form_is_edited() {
 #[test]
 fn a_normal_process_clears_its_error_when_the_form_is_edited() {
     let (mut app, _) = App::boot(false, Settings::default());
-    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    let _ = app.update(Message::SessionChecked(
+        PROFILE.into(),
+        ResumeOutcome::SignedOut,
+    ));
     let _ = app.update(Message::Submit);
     assert_eq!(app.auth_error, Some(AuthError::UsernameRequired));
 
@@ -125,7 +131,10 @@ fn a_normal_process_clears_its_error_when_the_form_is_edited() {
 #[test]
 fn a_normal_process_still_starts_a_proton_sign_in() {
     let (mut app, _) = App::boot(false, Settings::default());
-    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    let _ = app.update(Message::SessionChecked(
+        PROFILE.into(),
+        ResumeOutcome::SignedOut,
+    ));
     app.login_form.username = "username sentinel".into();
     app.login_form.password = "password sentinel".to_owned().into();
 
@@ -143,9 +152,10 @@ fn a_normal_process_still_starts_a_proton_sign_in() {
 fn an_offline_start_keeps_the_saved_session_to_try_again() {
     let mut app = App::new(Settings::default());
 
-    let _ = app.update(Message::SessionChecked(ResumeOutcome::Failed(
-        AuthError::Connection,
-    )));
+    let _ = app.update(Message::SessionChecked(
+        PROFILE.into(),
+        ResumeOutcome::Failed(AuthError::Connection),
+    ));
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert_eq!(app.auth_error, Some(AuthError::Connection));
     assert!(app.can_retry_saved_session());
@@ -189,7 +199,7 @@ fn only_a_failure_that_may_pass_offers_the_saved_session_again() {
             _ => "signed out".to_owned(),
         };
         let mut app = App::new(Settings::default());
-        let _ = app.update(Message::SessionChecked(outcome));
+        let _ = app.update(Message::SessionChecked(PROFILE.into(), outcome));
         assert_eq!(app.can_retry_saved_session(), retry, "{label}");
     }
 }
@@ -197,9 +207,10 @@ fn only_a_failure_that_may_pass_offers_the_saved_session_again() {
 #[test]
 fn signing_in_instead_leaves_nothing_to_retry_and_ignores_a_late_check() {
     let mut app = App::new(Settings::default());
-    let _ = app.update(Message::SessionChecked(ResumeOutcome::Failed(
-        AuthError::Connection,
-    )));
+    let _ = app.update(Message::SessionChecked(
+        PROFILE.into(),
+        ResumeOutcome::Failed(AuthError::Connection),
+    ));
     app.login_form.username = "username sentinel".into();
     app.login_form.password = "password sentinel".to_owned().into();
 
@@ -208,7 +219,10 @@ fn signing_in_instead_leaves_nothing_to_retry_and_ignores_a_late_check() {
     assert_eq!(app.update(Message::RetrySavedSession).units(), 0);
 
     // A check that answers once a sign-in runs changes nothing.
-    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    let _ = app.update(Message::SessionChecked(
+        PROFILE.into(),
+        ResumeOutcome::SignedOut,
+    ));
     assert_eq!(
         app.auth_state,
         AuthState::SigningIn(SignInStep::Credentials)
@@ -228,7 +242,10 @@ fn signing_in_instead_leaves_nothing_to_retry_and_ignores_a_late_check() {
 fn absent_saved_session_opens_login() {
     let mut app = App::new(Settings::default());
 
-    let _ = app.update(Message::SessionChecked(ResumeOutcome::SignedOut));
+    let _ = app.update(Message::SessionChecked(
+        PROFILE.into(),
+        ResumeOutcome::SignedOut,
+    ));
 
     assert_eq!(app.auth_state, AuthState::SignedOut);
     assert_eq!(app.auth_error, None);

@@ -141,6 +141,9 @@ struct DesktopApp {
     /// Set while the root window asks whether to discard a written message,
     /// and what discarding it makes way for.
     pending_discard: Option<close::Leaving>,
+    /// The change of account asked for while a confirmation or a wait holds
+    /// it: switching to another, or adding one.
+    pending_account: Option<Message>,
     window_close_approved: bool,
     /// Holds a close or a sign-out asked for while changes were still on
     /// their way to Proton, or while a sign-out was under way.
@@ -212,6 +215,7 @@ impl DesktopApp {
             settings_draft: None,
             pending_settings_exit: None,
             pending_discard: None,
+            pending_account: None,
             window_close_approved: false,
             deferred_leave: close::DeferredLeave::default(),
             settings_seen: 0,
@@ -283,6 +287,8 @@ impl DesktopApp {
                     | Message::SelectFolder(_)
                     | Message::OpenCompose
                     | Message::Logout
+                    | Message::SwitchAccount(_)
+                    | Message::AddAccount
             )
         {
             if self.pending_settings_exit.is_some() {
@@ -294,8 +300,13 @@ impl DesktopApp {
                 return;
             }
         }
-        if matches!(message, Message::Logout) {
-            let leaving = self.sign_out_leaving();
+        let changing_account = matches!(message, Message::SwitchAccount(_) | Message::AddAccount);
+        if matches!(message, Message::Logout) || changing_account {
+            let leaving = if changing_account {
+                close::Leaving::Account
+            } else {
+                self.sign_out_leaving()
+            };
             // Signing out discards a written message only once the user says so.
             if self
                 .app
@@ -303,14 +314,21 @@ impl DesktopApp {
                 .is_some_and(|draft| !draft.in_flight() && !draft.is_untouched())
             {
                 self.pending_discard = Some(leaving);
+                if changing_account {
+                    self.pending_account = Some(message);
+                }
                 context.request_repaint();
                 return;
             }
-            // Signing out drops what has not reached Proton yet, so it waits.
+            // Signing out, or leaving for another account, drops what has
+            // not reached Proton yet, so it waits.
             if self
                 .deferred_leave
                 .defer(leaving, self.holding(leaving).is_some())
             {
+                if changing_account {
+                    self.pending_account = Some(message);
+                }
                 context.request_repaint();
                 return;
             }
@@ -523,12 +541,20 @@ impl DesktopApp {
             close::Leaving::SignOut | close::Leaving::Demo => {
                 self.dispatch(Message::Logout, context);
             }
+            close::Leaving::Account => {
+                if let Some(message) = self.pending_account.take() {
+                    self.dispatch(message, context);
+                }
+            }
         }
     }
 
     fn resolve_discard(&mut self, decision: Message, context: &egui::Context) {
         let leaving = self.pending_discard.take();
         let discard = matches!(decision, Message::DiscardCompose);
+        if !discard {
+            self.pending_account = None;
+        }
         self.dispatch(decision, context);
         // App refuses to discard an in-flight send, so leaving checks again.
         if discard && let Some(leaving) = leaving {
@@ -1199,7 +1225,10 @@ impl eframe::App for DesktopApp {
             self.resolve_discard(decision, &context);
         }
         match wait_decision {
-            Some(close::WaitDecision::Stay) => self.deferred_leave.cancel(),
+            Some(close::WaitDecision::Stay) => {
+                self.deferred_leave.cancel();
+                self.pending_account = None;
+            }
             // Asking again while it waits goes ahead at once.
             Some(close::WaitDecision::GoNow) => {
                 if let Some(leaving) = self.deferred_leave.waiting() {

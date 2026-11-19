@@ -247,6 +247,33 @@ fn main_window_close_requires_explicit_discard_in_both_composer_placements() {
 }
 
 #[test]
+fn changing_account_asks_before_dropping_a_written_message() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    desktop.app = App::signed_in_as("user-1", "alex@proton.me");
+    desktop.dispatch(Message::OpenCompose, &context);
+    desktop.dispatch(
+        Message::ComposeChanged(crate::app::ComposeField::Body, "Keep this draft".into()),
+        &context,
+    );
+    desktop.dispatch(Message::AddAccount, &context);
+    assert_eq!(desktop.pending_discard, Some(close::Leaving::Account));
+    assert!(matches!(desktop.pending_account, Some(Message::AddAccount)));
+    assert!(signed_in(&desktop));
+    desktop.resolve_discard(Message::CancelDiscard, &context);
+    assert!(desktop.pending_account.is_none());
+    assert!(desktop.app.compose().is_some());
+    assert!(signed_in(&desktop));
+
+    // Discarded, the account is left for the sign-in screen, its session kept.
+    desktop.dispatch(Message::AddAccount, &context);
+    desktop.resolve_discard(Message::DiscardCompose, &context);
+    assert!(desktop.app.compose().is_none());
+    assert_eq!(desktop.app.auth_state(), &AuthState::SignedOut);
+    assert!(desktop.app.returning_to().is_some());
+}
+
+#[test]
 fn closing_asks_before_dropping_a_draft_kept_for_its_account() {
     let context = egui::Context::default();
     let mut desktop = DesktopApp::with_context(&context, true, Settings::default());

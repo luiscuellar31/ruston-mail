@@ -266,13 +266,17 @@ earlier CLI `default` session is still accessible with
 `--profile default`. Profile names must be a single path component; empty names
 and names with path separators are rejected.
 Signing out of the shared profile affects both frontends.
+The desktop keeps each of its accounts, up to five, in a profile of its own:
+`ruston` for the first, then `ruston-2` to `ruston-5`. Switching to another
+account leaves the one left signed in, its session saved, without revoking it;
+an account that is not open sends Proton no requests.
 
 Ruston Mail keeps `settings.json` in its own platform config directory; a demo
 process keeps `settings-demo.json` beside it instead, so nothing changed while
 trying the demo reaches a real account. It
 contains preferences, the last folder, the window's size and place on screen,
-whether it was maximized, pane widths, and the account signed in to: its
-session profile and the address it signed in as. When a
+whether it was maximized, pane widths, and the accounts signed in to, up to
+five: each one's session profile and the address it signed in as. When a
 session ends, a remembered folder or label you created is replaced by the
 Inbox, so its name never reaches the next account to sign in. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged

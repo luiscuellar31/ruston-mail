@@ -1,3 +1,4 @@
+mod accounts;
 mod auth;
 mod compose;
 mod effect;
@@ -69,9 +70,16 @@ const PROTON_SIGNUP_URL: &str = "https://account.proton.me/mail/signup";
 pub enum Message {
     Submit,
     CancelChallenge,
-    SessionChecked(ResumeOutcome),
+    /// What resuming the session saved under the profile found.
+    SessionChecked(String, ResumeOutcome),
     /// Tries the saved session again after a failure that may pass.
     RetrySavedSession,
+    /// Opens the account whose session is saved under this profile.
+    SwitchAccount(String),
+    /// Leaves the open account for the sign-in screen, to add another.
+    AddAccount,
+    /// Goes back from the sign-in screen to the account open before it.
+    ReturnToAccount,
     SignInFinished(AuthAttempt, SignInOutcome),
     SignInPrompt(AuthAttempt, SignInPrompt),
     OpenVerificationPage,
@@ -269,6 +277,11 @@ pub struct App {
     /// no network, and is still saved; the sign-in screen offers to try it
     /// again.
     resume_may_retry: bool,
+    /// The profile a new account signs in under, while one is being added.
+    adding_account: Option<String>,
+    /// The profile of the account open before switching or adding, which
+    /// the sign-in screen offers to go back to until another opens.
+    returning_to: Option<String>,
     /// Changes for every authentication attempt so queued results from an
     /// aborted task cannot affect its replacement.
     auth_attempt: AuthAttempt,
@@ -353,10 +366,10 @@ impl App {
             app.open_mailbox(MailBackend::demo(), None, None)
         } else {
             app.session_saved = ProtonMailService::has_saved_session(&app.session_profile());
-            Effects::perform(
-                ProtonMailService::resume(app.session_profile()),
-                Message::SessionChecked,
-            )
+            let profile = app.session_profile();
+            Effects::perform(ProtonMailService::resume(profile.clone()), move |outcome| {
+                Message::SessionChecked(profile, outcome)
+            })
         };
 
         (app, task)
@@ -370,6 +383,8 @@ impl App {
             login_form: LoginForm::default(),
             auth_error: None,
             resume_may_retry: false,
+            adding_account: None,
+            returning_to: None,
             auth_attempt: 0,
             pending_prompt: None,
             pending_link: None,
@@ -414,10 +429,12 @@ impl App {
         self.last_compose_id
     }
 
-    /// The session profile the account signs in and resumes under: the open
-    /// account's.
+    /// The session profile the account signs in and resumes under: a new
+    /// account's while one is being added, otherwise the open account's.
     fn session_profile(&self) -> String {
-        self.settings.accounts.active_profile().to_owned()
+        self.adding_account
+            .clone()
+            .unwrap_or_else(|| self.settings.accounts.active_profile().to_owned())
     }
 
     fn advance_session_epoch(&mut self) {
@@ -686,8 +703,13 @@ impl App {
         match message {
             Message::Submit => return self.sign_in(),
             Message::CancelChallenge => return self.cancel_sign_in(),
-            Message::SessionChecked(outcome) => return self.finish_session_check(outcome),
+            Message::SessionChecked(profile, outcome) => {
+                return self.finish_session_check(&profile, outcome);
+            }
             Message::RetrySavedSession => return self.retry_saved_session(),
+            Message::SwitchAccount(profile) => return self.switch_account(profile),
+            Message::AddAccount => return self.add_account(),
+            Message::ReturnToAccount => return self.return_to_account(),
             Message::SignInFinished(attempt, outcome) => {
                 return self.finish_sign_in(attempt, outcome);
             }

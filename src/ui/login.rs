@@ -305,6 +305,16 @@ fn sign_in(
         ui.add_space(16.0);
         signup_prompt(ui, messages);
     }
+    // Switching or adding left another account open, its session kept.
+    if !busy
+        && step == SignInStep::Credentials
+        && let Some(account) = app.returning_to()
+    {
+        let name = account.address.as_deref().unwrap_or("the other account");
+        if ui.button(format!("Back to {name}")).clicked() {
+            messages.push(Message::ReturnToAccount);
+        }
+    }
     let cancelled = if busy {
         ui.button("Cancel").clicked()
     } else {
