@@ -14,6 +14,7 @@ use crate::mail::{
     Verdict,
 };
 use crate::settings::Reading;
+use ruston_core::html::rich::TableRow;
 
 const SUBJECT_SIZE: f32 = 22.0;
 /// A sender's address beside their name.
@@ -1481,7 +1482,61 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, reading: Reading, messages: &mut 
         BlockKind::Rule => {
             ui.separator();
         }
+        BlockKind::Table(rows) => table(ui, rows, reading, messages),
     }
+}
+
+/// A table of data, its columns lined up and its row of headings in the
+/// bold ink, scrolling sideways if it is wider than the reader; or, when
+/// Settings ask for it, its rows as lines of text, as before.
+fn table(ui: &mut egui::Ui, rows: &[TableRow], reading: Reading, messages: &mut Vec<Message>) {
+    if !reading.data_tables {
+        for (index, row) in rows.iter().enumerate() {
+            if index > 0 {
+                ui.add_space(8.0);
+            }
+            let mut line = Vec::new();
+            for cell in &row.cells {
+                if !line.is_empty() {
+                    line.push(RichSpan {
+                        text: " ".to_owned(),
+                        ..RichSpan::default()
+                    });
+                }
+                line.extend(cell.iter().cloned());
+            }
+            rich_line(ui, &line, None, false, reading, messages);
+        }
+        return;
+    }
+    egui::ScrollArea::horizontal()
+        .id_salt(ui.next_auto_id())
+        .show(ui, |ui| {
+            egui::Grid::new(ui.next_auto_id())
+                .striped(true)
+                .spacing([16.0, 6.0])
+                .show(ui, |ui| {
+                    for row in rows {
+                        for cell in &row.cells {
+                            let header: Vec<RichSpan>;
+                            let spans = if row.header {
+                                header = cell
+                                    .iter()
+                                    .map(|span| RichSpan {
+                                        strong: true,
+                                        ..span.clone()
+                                    })
+                                    .collect();
+                                &header
+                            } else {
+                                cell
+                            };
+                            ui.horizontal(|ui| rich_spans(ui, spans, None, reading, messages));
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
 }
 
 /// A line of text, wrapped. One the sender's style centers is centered when

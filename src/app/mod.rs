@@ -191,6 +191,8 @@ pub enum Message {
     /// Follows the sender's style for bold, italic, struck and centered
     /// text, or only its tags.
     SetSenderTextStyles(bool),
+    /// Lays tables of data out in columns, or reads them as lines.
+    SetDataTables(bool),
     /// Scales the whole interface.
     SetZoom(f32),
     /// Chooses the desktop color scheme, which stops following the system's.
@@ -1088,6 +1090,7 @@ impl App {
             Message::SetSenderTextStyles(on) => {
                 self.remember(|settings| settings.sender_text_styles = on);
             }
+            Message::SetDataTables(on) => self.remember(|settings| settings.data_tables = on),
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {
                 self.remember(|settings| {

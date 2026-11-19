@@ -544,7 +544,15 @@ elements, as a browser lets them apply within, and records them on each run's
 `SenderStyle` and each block's `centered`, apart from what tags did. The
 reader counts them unless **Use the sender's text styles** is off
 (`Reading::sender_text_styles`), centering a line that fits on one; the CLI
-always writes them as Markdown markers. The reader
+always writes them as Markdown markers. A table is read as the paragraphs of
+its rows, as before, while its cells are kept apart; at its end, one that
+holds data replaces those paragraphs with a `BlockKind::Table`: no table within
+it, no image, list, heading or other block, no text outside a cell, cells of at
+most 120 characters, two rows and two columns or more, and rows of one width,
+counting `colspan`, unless a row of headings names the columns. The reader
+draws it as a grid that scrolls sideways, or as lines when **Show tables of
+data in columns** is off (`Reading::data_tables`); the CLI as columns between
+pipes, measured in terminal cells. The reader
 leaves it out, or draws it in grey with **Show text the sender hid**
 (`Reading::show_hidden_text`); the CLI, plain text and the search index always
 leave it out. It appends visible text in runs instead

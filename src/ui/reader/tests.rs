@@ -443,6 +443,55 @@ fn the_senders_style_counts_unless_settings_leave_it_out() {
 }
 
 #[test]
+fn a_table_of_data_lines_its_columns_up_unless_settings_read_it_as_lines() {
+    let body = ruston_core::html::rich::parse(
+        "<table><tr><th>Item</th><th>Price</th></tr>\
+         <tr><td>Coffee</td><td>$7.00</td></tr></table>",
+    );
+    let table = body.blocks[0].clone();
+    assert!(matches!(table.kind, BlockKind::Table(_)));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let drawn = |reading: Reading| {
+        let mut aligned = false;
+        // A grid settles its columns over a frame or two.
+        for _ in 0..3 {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(600.0);
+                block(ui, &table, reading, &mut Vec::new());
+            });
+            // Where a word's first letter is: a label in a wrapping line
+            // starts at the line's left and moves its text along.
+            let left = |word: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| match &clipped.shape {
+                        egui::Shape::Text(text) if text.galley.text() == word => {
+                            let row = &text.galley.rows[0];
+                            Some(text.pos.x + row.pos.x + row.row.glyphs[0].pos.x)
+                        }
+                        _ => None,
+                    })
+                    .expect("the word is drawn")
+            };
+            aligned = (left("Price") - left("$7.00")).abs() < 1.0;
+            output.drop_without_applying_deltas();
+        }
+        aligned
+    };
+
+    assert!(
+        drawn(Reading::default()),
+        "the price sits under its heading"
+    );
+    assert!(!drawn(Reading {
+        data_tables: false,
+        ..Reading::default()
+    }));
+}
+
+#[test]
 fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     let span = RichSpan {
         text: "the agenda".into(),

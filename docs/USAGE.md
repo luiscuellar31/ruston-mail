@@ -182,7 +182,11 @@ formatting, and quotes remain, but scripts and remote content do not run. Bold,
 italic, struck-through and centered text count whether the sender marked them
 with tags or set them with styles, as newsletters often do; a short centered
 line is centered, a longer one starts at the left. **Use the sender's text
-styles** in Settings leaves the styles out, keeping the tags. Images
+styles** in Settings leaves the styles out, keeping the tags. A table of data,
+such as a receipt's lines or a timetable, keeps its columns, scrolling sideways
+when it is wider than the reader; a table that only lays a newsletter out reads
+as text. **Show tables of data in columns** in Settings reads them all as text,
+a row to a line. The command line writes them as columns between pipes. Images
 are never loaded: one appears as its description when it has one, and a line at
 the top of the message says how many others are not shown, tracking pixels
 aside, so a newsletter made only of pictures does not look empty. The command
@@ -450,6 +454,7 @@ Settings control:
 - Whether all messages and quoted text start unfolded.
 - Whether text the sender hid shows, in grey.
 - Whether the sender's text styles count, or only its tags.
+- Whether tables of data keep their columns.
 - Whether links require confirmation.
 - Whether the composer opens in the reading pane or a new window.
 - Plain-text or HTML sending.

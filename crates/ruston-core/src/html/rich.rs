@@ -23,6 +23,12 @@ const INPUT_CHUNK_BYTES: usize = 8 * 1024;
 /// The most elements whose style is followed within one another; a deeper
 /// one reads as if it had none.
 const MAX_STYLE_DEPTH: usize = 64;
+/// The most tables kept open within one another; a deeper one reads as the
+/// paragraphs of its rows.
+const MAX_TABLE_DEPTH: usize = 32;
+/// The longest a cell of a table of data may be. A longer one is a page laid
+/// out in columns, which reads better as paragraphs.
+const MAX_CELL_CHARS: usize = 120;
 /// What a block takes besides its text. Text always leaves room for one, so
 /// a body cut short still ends with the block it was reading.
 const BLOCK_SIZE: usize = std::mem::size_of::<RichBlock>();
@@ -74,6 +80,16 @@ impl RichBody {
                     BlockKind::Preformatted(text) => text.clone(),
                     BlockKind::Image { description } => format!("[Image: {description}]"),
                     BlockKind::Rule => "---".to_owned(),
+                    // A row to a line, its cells apart as words are.
+                    BlockKind::Table(rows) => rows
+                        .iter()
+                        .map(|row| {
+                            let cells: Vec<String> =
+                                row.cells.iter().map(|cell| join(cell)).collect();
+                            cells.join(" ")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                 };
                 let quote = "> ".repeat(usize::from(block.quote_depth));
                 text.lines()
@@ -138,6 +154,18 @@ pub enum BlockKind {
     },
     /// A line across, between two parts of the body.
     Rule,
+    /// A table of data, as a receipt's lines or a timetable are. A table
+    /// that only lays a page out reads as the paragraphs of its rows.
+    Table(Vec<TableRow>),
+}
+
+/// A row of a table of data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableRow {
+    /// Its cells, in order, each a run of styled text.
+    pub cells: Vec<Vec<RichSpan>>,
+    /// Whether all its cells are headings.
+    pub header: bool,
 }
 
 /// What a block of a list item starts with.
@@ -298,6 +326,97 @@ impl StyleFrame {
     }
 }
 
+/// A table being read: where its blocks start, as the paragraphs its rows
+/// make, and its cells, kept in case it turns out to hold data.
+struct OpenTable {
+    start: usize,
+    rows: Vec<TableRow>,
+    row: Option<TableRow>,
+    cell: Option<Vec<RichSpan>>,
+    /// Each row's width, a cell that spans several columns counted so.
+    widths: Vec<usize>,
+    /// The width of the row being read.
+    width: usize,
+    /// Whether it may still hold data: nothing but short text in its cells,
+    /// and no table within it.
+    data: bool,
+}
+
+impl OpenTable {
+    fn new(start: usize) -> Self {
+        Self {
+            start,
+            rows: Vec::new(),
+            row: None,
+            cell: None,
+            widths: Vec::new(),
+            width: 0,
+            data: true,
+        }
+    }
+
+    fn start_row(&mut self) {
+        self.end_row();
+        self.row = Some(TableRow {
+            cells: Vec::new(),
+            header: true,
+        });
+    }
+
+    fn start_cell(&mut self, header: bool, columns: usize) {
+        self.end_cell();
+        let row = self.row.get_or_insert_with(|| TableRow {
+            cells: Vec::new(),
+            header: true,
+        });
+        row.header &= header;
+        self.width += columns;
+        self.cell = Some(Vec::new());
+    }
+
+    fn end_cell(&mut self) {
+        let Some(mut cell) = self.cell.take() else {
+            return;
+        };
+        if let Some(last) = cell.last_mut() {
+            let length = last.text.trim_end().len();
+            last.text.truncate(length);
+        }
+        cell.retain(|span| !span.text.is_empty());
+        let shown: usize = cell
+            .iter()
+            .filter(|span| !span.hidden)
+            .map(|span| span.text.chars().count())
+            .sum();
+        self.data &= shown <= MAX_CELL_CHARS;
+        if let Some(row) = &mut self.row {
+            row.cells.push(cell);
+        }
+    }
+
+    fn end_row(&mut self) {
+        self.end_cell();
+        if let Some(row) = self.row.take()
+            && !row.cells.is_empty()
+        {
+            self.rows.push(row);
+            self.widths.push(self.width);
+        }
+        self.width = 0;
+    }
+
+    /// Whether, read whole, it holds data rather than laying a page out: two
+    /// rows or more, two columns or more, and every row as wide as the
+    /// others, unless a row of headings says what the columns are.
+    fn holds_data(&self) -> bool {
+        self.data
+            && self.rows.len() >= 2
+            && self.widths.iter().copied().max().unwrap_or(0) >= 2
+            && (self.widths.windows(2).all(|pair| pair[0] == pair[1])
+                || self.rows.iter().any(|row| row.header))
+    }
+}
+
 /// A list open around the text being read: the number of an ordered one's
 /// next item, and the marker of the item it sits in, which the text after it
 /// goes back to.
@@ -341,6 +460,11 @@ struct Builder {
     /// The elements open whose style sets how text reads, innermost last, at
     /// most [`MAX_STYLE_DEPTH`].
     frames: Vec<StyleFrame>,
+    /// The tables open, innermost last, at most [`MAX_TABLE_DEPTH`].
+    tables: Vec<OpenTable>,
+    /// How many tables are open beyond those kept, so that their ends close
+    /// them before any of `tables`.
+    omitted_tables: usize,
     /// The bytes of text, and of what holds it, the body may take.
     limit: usize,
     /// The bytes taken so far, within `limit`.
@@ -374,6 +498,8 @@ impl Builder {
             sender_hidden: Skipping::default(),
             void_hidden: false,
             frames: Vec::new(),
+            tables: Vec::new(),
+            omitted_tables: 0,
             limit,
             used: 0,
             truncated: false,
@@ -436,6 +562,25 @@ impl Builder {
     }
 
     fn start_element(&mut self, name: &str, tag: &Tag) {
+        // A table with more than short text in it lays a page out.
+        if matches!(
+            name,
+            "hr" | "img"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "ul"
+                | "ol"
+                | "li"
+                | "blockquote"
+                | "pre"
+        ) && let Some(table) = self.tables.last_mut()
+        {
+            table.data = false;
+        }
         match name {
             "br" => self.line_break(),
             "hr" => {
@@ -443,6 +588,23 @@ impl Builder {
                 self.push(BlockKind::Rule);
             }
             "img" => self.image(tag),
+            "table" => {
+                self.flush();
+                if let Some(outer) = self.tables.last_mut() {
+                    outer.data = false;
+                }
+                if self.tables.len() < MAX_TABLE_DEPTH {
+                    self.tables.push(OpenTable::new(self.blocks.len()));
+                } else {
+                    self.omitted_tables = self.omitted_tables.saturating_add(1);
+                }
+            }
+            "tr" => {
+                self.flush();
+                if let Some(table) = self.open_table() {
+                    table.start_row();
+                }
+            }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 self.flush();
                 self.heading = name[1..].parse().ok();
@@ -474,10 +636,27 @@ impl Builder {
             // A target longer than the whole body may be could not be kept.
             "a" => self.link = link_target(tag).filter(|link| link.len() <= self.limit),
             // Table cells read left to right, separated like words.
-            "td" | "th" => self.separate(),
+            "td" | "th" => {
+                self.separate();
+                let columns = attribute(tag, "colspan")
+                    .and_then(|columns| columns.trim().parse::<usize>().ok())
+                    .unwrap_or(1)
+                    .clamp(1, MAX_TABLE_DEPTH);
+                if let Some(table) = self.open_table() {
+                    table.start_cell(name == "th", columns);
+                }
+            }
             _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
+    }
+
+    /// The innermost table kept open, unless one too deep to keep is.
+    fn open_table(&mut self) -> Option<&mut OpenTable> {
+        if self.omitted_tables > 0 {
+            return None;
+        }
+        self.tables.last_mut()
     }
 
     fn end(&mut self, name: &str) {
@@ -542,6 +721,31 @@ impl Builder {
             "code" | "kbd" | "samp" | "tt" => self.code = self.code.saturating_sub(1),
             "s" | "strike" | "del" => self.struck = self.struck.saturating_sub(1),
             "a" => self.link = None,
+            "td" | "th" => {
+                if let Some(table) = self.open_table() {
+                    table.end_cell();
+                }
+            }
+            "tr" => {
+                self.flush();
+                if let Some(table) = self.open_table() {
+                    table.end_row();
+                }
+            }
+            "table" => {
+                self.flush();
+                if self.omitted_tables > 0 {
+                    self.omitted_tables -= 1;
+                } else if let Some(mut table) = self.tables.pop() {
+                    table.end_row();
+                    // Read whole, a table of data takes the place of the
+                    // paragraphs its rows made.
+                    if table.holds_data() {
+                        self.blocks.truncate(table.start);
+                        self.push(BlockKind::Table(table.rows));
+                    }
+                }
+            }
             _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
@@ -576,6 +780,12 @@ impl Builder {
                 run
             };
             if !word.is_empty() {
+                // Text outside a cell, within a table, lays it out.
+                if let Some(table) = self.open_table()
+                    && table.cell.is_none()
+                {
+                    table.data = false;
+                }
                 self.space = false;
                 self.push_text(word);
             }
@@ -646,23 +856,36 @@ impl Builder {
         let Some(text) = self.take(text, overhead) else {
             return;
         };
+        let run = RichSpan {
+            text: text.to_owned(),
+            strong,
+            emphasis,
+            code,
+            struck,
+            link: self.link.clone(),
+            hidden,
+            styled,
+        };
+        // A cell keeps its own copy, in case its table holds data; a line
+        // break within it reads as a space there.
+        if let Some(cell) = self.open_table().and_then(|table| table.cell.as_mut()) {
+            let text = if text == "\n" { " " } else { text };
+            match cell.last_mut() {
+                Some(last) if same_style(last, &run) => last.text.push_str(text),
+                _ => cell.push(RichSpan {
+                    text: text.to_owned(),
+                    ..run.clone()
+                }),
+            }
+        }
         match self.spans.last_mut() {
             Some(span) if continues => {
                 span.text.push_str(text);
                 // Equal adjacent anchors may have separate allocations. Retain
                 // the current target so later runs use Arc's pointer fast path.
-                span.link = self.link.clone();
+                span.link = run.link;
             }
-            _ => self.spans.push(RichSpan {
-                text: text.to_owned(),
-                strong,
-                emphasis,
-                code,
-                struck,
-                link: self.link.clone(),
-                hidden,
-                styled,
-            }),
+            _ => self.spans.push(run),
         }
     }
 
@@ -754,6 +977,15 @@ impl Builder {
 
     /// Ends the current paragraph, if it has any text.
     fn flush(&mut self) {
+        // A block ending within a cell ends where a space would there.
+        if let Some(last) = self
+            .open_table()
+            .and_then(|table| table.cell.as_mut())
+            .and_then(|cell| cell.last_mut())
+            .filter(|last| !last.text.ends_with(char::is_whitespace))
+        {
+            last.text.push(' ');
+        }
         if let Some(last) = self.spans.last_mut() {
             let length = last.text.trim_end().len();
             last.text.truncate(length);
@@ -837,6 +1069,17 @@ impl Builder {
             undescribed_images: self.undescribed_images,
         }
     }
+}
+
+/// Whether two runs read alike, and so make one.
+fn same_style(one: &RichSpan, other: &RichSpan) -> bool {
+    one.strong == other.strong
+        && one.emphasis == other.emphasis
+        && one.code == other.code
+        && one.struck == other.struck
+        && one.link == other.link
+        && one.hidden == other.hidden
+        && one.styled == other.styled
 }
 
 /// Keeps the tokenizer from reading markup inside raw-text elements.

@@ -18,6 +18,17 @@ fn outline(html: &str) -> Vec<String> {
                 BlockKind::Preformatted(content) => format!("pre {content}"),
                 BlockKind::Image { description } => format!("img {description}"),
                 BlockKind::Rule => "hr".to_owned(),
+                BlockKind::Table(rows) => {
+                    let rows: Vec<String> = rows
+                        .iter()
+                        .map(|row| {
+                            let cells: Vec<String> =
+                                row.cells.iter().map(|cell| text(cell)).collect();
+                            cells.join("|")
+                        })
+                        .collect();
+                    format!("table {}", rows.join(" / "))
+                }
             };
             format!("{}{line}", ">".repeat(usize::from(block.quote_depth)))
         })
@@ -381,11 +392,104 @@ fn images_with_no_description_are_counted_but_pixels_and_hidden_ones_are_not() {
 }
 
 #[test]
-fn tables_read_row_by_row() {
+fn a_table_of_data_keeps_its_rows_and_columns() {
+    let html = crate::html::sanitize(
+        "<p>Order</p><table><thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead>\
+         <tbody><tr><td>Coffee</td><td>2</td><td><b>$7.00</b></td></tr>\
+         <tr><td><a href='https://shop.example/tea'>Tea</a><br>green</td><td>1</td>\
+         <td>$3.50</td></tr><tr><td colspan='2'>Total</td><td>$10.50</td></tr></tbody>\
+         </table><p>Thanks</p>",
+    );
+    assert_eq!(
+        outline(&html),
+        [
+            "p Order",
+            "table Item|Qty|Price / Coffee|2|$7.00 / Tea green|1|$3.50 / Total|$10.50",
+            "p Thanks",
+        ]
+    );
+    let body = parse(&html);
+    let BlockKind::Table(rows) = &body.blocks[1].kind else {
+        panic!("expected a table");
+    };
+    assert!(rows[0].header && !rows[1].header);
+    assert!(rows[1].cells[2][0].strong);
+    assert_eq!(
+        rows[2].cells[0][0].link.as_deref(),
+        Some("https://shop.example/tea")
+    );
+    // Plain text reads it as before, a row to a line.
+    assert_eq!(
+        body.plain_text(),
+        "Order\nItem Qty Price\nCoffee 2 $7.00\nTea green 1 $3.50\nTotal $10.50\nThanks\n"
+    );
+}
+
+#[test]
+fn a_table_that_lays_a_page_out_reads_as_its_rows() {
+    let long = "word ".repeat(40);
+    for (html, read) in [
+        // One row, as a newsletter's footer links are.
+        (
+            "<table><tr><td>Unsubscribe</td><td>Preferences</td></tr></table>".to_owned(),
+            vec!["p Unsubscribe Preferences"],
+        ),
+        // One column.
+        (
+            "<table><tr><td>a</td></tr><tr><td>b</td></tr></table>".to_owned(),
+            vec!["p a", "p b"],
+        ),
+        // Pictures beside their names, as a product grid has.
+        (
+            "<table><tr><td><img alt='Shoe'></td><td>Shoe</td></tr>\
+             <tr><td><img alt='Hat'></td><td>Hat</td></tr></table>"
+                .to_owned(),
+            vec!["img Shoe", "p Shoe", "img Hat", "p Hat"],
+        ),
+        // Paragraphs side by side.
+        (
+            format!(
+                "<table><tr><td>{long}</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>"
+            ),
+            vec![format!("p {} b", long.trim()).leak() as &str, "p c d"],
+        ),
+        // Rows of different widths, with no headings to say what they are.
+        (
+            "<table><tr><td>a</td><td>b</td><td>c</td></tr><tr><td>d</td><td>e</td></tr></table>"
+                .to_owned(),
+            vec!["p a b c", "p d e"],
+        ),
+    ] {
+        assert_eq!(outline(&html), read, "{html}");
+    }
+
+    // A table of data within one that lays the page out is read as one.
+    assert_eq!(
+        outline(
+            "<table><tr><td><table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr>\
+             </table></td><td>side</td></tr><tr><td>x</td><td>y</td></tr></table>"
+        ),
+        ["table a|b / c|d", "p side", "p x y"]
+    );
+}
+
+#[test]
+fn a_hidden_table_of_data_stays_hidden() {
+    let body = parse(&crate::html::sanitize(
+        "<div style='display:none'><table><tr><td>a</td><td>b</td></tr>\
+         <tr><td>c</td><td>d</td></tr></table></div><p>shown</p>",
+    ));
+    assert!(matches!(body.blocks[0].kind, BlockKind::Table(_)));
+    assert!(body.blocks[0].hidden);
+    assert_eq!(body.plain_text(), "shown\n");
+}
+
+#[test]
+fn a_grid_of_short_text_is_a_table_of_data() {
     let html = "<table><tr><td>Name</td><td>Value</td></tr>\
                 <tr><th>A</th><th>B</th></tr></table>";
 
-    assert_eq!(outline(html), ["p Name Value", "p A B"]);
+    assert_eq!(outline(html), ["table Name|Value / A|B"]);
 }
 
 #[test]

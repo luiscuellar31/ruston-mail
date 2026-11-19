@@ -1,7 +1,8 @@
 //! Readable terminal text from a decrypted HTML message: the blocks core
 //! reads from it, written as Markdown.
 
-use ruston_core::html::rich::{self, BlockKind, ListMarker, RichBlock, RichSpan};
+use ruston_core::html::rich::{self, BlockKind, ListMarker, RichBlock, RichSpan, TableRow};
+use unicode_width::UnicodeWidthStr;
 
 /// Quotes and lists shown within one another; deeper ones keep the last
 /// prefix and indent, so text never leaves the screen.
@@ -115,6 +116,7 @@ impl Writer {
             // The terminal shows no images, nor says what they were.
             BlockKind::Image { .. } => return,
             BlockKind::Rule => ("---".to_owned(), false),
+            BlockKind::Table(rows) => (table(rows), false),
         };
         self.push_block(&text, usize::from(block.quote_depth), list_item);
     }
@@ -175,6 +177,52 @@ impl Writer {
         }
         self.prior_list_item = list_item;
     }
+}
+
+/// A table of data in Markdown's pipes, each column as wide on screen as its
+/// widest cell, a first row of headings set off by dashes under it.
+fn table(rows: &[TableRow]) -> String {
+    let cells: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| markdown(cell).replace('|', "\\|"))
+                .collect()
+        })
+        .collect();
+    let columns = cells.iter().map(Vec::len).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..columns)
+        .map(|column| {
+            cells
+                .iter()
+                .filter_map(|row| row.get(column))
+                .map(|cell| cell.width())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let mut lines = Vec::new();
+    for (index, row) in cells.iter().enumerate() {
+        // A cell that spanned several columns leaves the last ones empty.
+        let mut line = String::from("|");
+        for (column, width) in widths.iter().enumerate() {
+            let cell = row.get(column).map_or("", String::as_str);
+            line.push(' ');
+            line.push_str(cell);
+            line.push_str(&" ".repeat(width - cell.width()));
+            line.push_str(" |");
+        }
+        lines.push(line);
+        if index == 0 && rows[0].header {
+            let rule: String = widths
+                .iter()
+                .map(|width| format!("{}|", "-".repeat(width + 2)))
+                .collect();
+            lines.push(format!("|{rule}"));
+        }
+    }
+    lines.join("\n")
 }
 
 /// `spans` as Markdown: each word within its style's markers, and each run of
@@ -526,6 +574,28 @@ mod tests {
                  <span style='font-style:italic'>maybe</span></p>"
             ),
             "**Sale** ends ~~today~~, *maybe*"
+        );
+    }
+
+    #[test]
+    fn a_table_of_data_reads_as_aligned_columns() {
+        assert_eq!(
+            to_markdown(
+                "<p>Order</p><table><tr><th>Item</th><th>Price</th></tr>\
+                 <tr><td>Coffee</td><td><b>$7</b></td></tr>\
+                 <tr><td>Tea | 猫</td><td>$3.50</td></tr><tr><td colspan='2'>Paid</td></tr></table>"
+            ),
+            "Order\n\n\
+             | Item      | Price  |\n\
+             |-----------|--------|\n\
+             | Coffee    | **$7** |\n\
+             | Tea \\| 猫 | $3.50  |\n\
+             | Paid      |        |"
+        );
+        // A table that lays the page out reads as its rows.
+        assert_eq!(
+            to_markdown("<table><tr><td>Unsubscribe</td><td>Help</td></tr></table>"),
+            "Unsubscribe Help"
         );
     }
 

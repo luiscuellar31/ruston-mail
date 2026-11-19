@@ -57,6 +57,11 @@ pub struct Settings {
     /// choice existed have it on.
     #[serde(default = "enabled")]
     pub sender_text_styles: bool,
+    /// Lay a table of data out in columns, as a receipt's lines are, rather
+    /// than as the lines of its rows. Settings saved before this choice
+    /// existed have it on.
+    #[serde(default = "enabled")]
+    pub data_tables: bool,
     /// Whether a message is written out as HTML or as plain text.
     pub compose_format: BodyFormat,
     /// Where new messages, replies and forwards open.
@@ -123,6 +128,7 @@ impl Default for Settings {
             show_quoted_text: false,
             show_hidden_text: false,
             sender_text_styles: true,
+            data_tables: true,
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
             check_recipient_protection: true,
@@ -216,6 +222,7 @@ pub struct Reading {
     pub show_quoted_text: bool,
     pub show_hidden_text: bool,
     pub sender_text_styles: bool,
+    pub data_tables: bool,
 }
 
 /// What a reader shows before anything is changed in Settings.
@@ -242,6 +249,7 @@ impl Settings {
             show_quoted_text: self.show_quoted_text,
             show_hidden_text: self.show_hidden_text,
             sender_text_styles: self.sender_text_styles,
+            data_tables: self.data_tables,
         }
     }
 

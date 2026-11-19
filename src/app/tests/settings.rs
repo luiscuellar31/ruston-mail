@@ -152,6 +152,7 @@ fn settings_changes_reach_the_app() {
     let _ = app.update(Message::SetShowQuotedText(true));
     let _ = app.update(Message::SetShowHiddenText(true));
     let _ = app.update(Message::SetSenderTextStyles(false));
+    let _ = app.update(Message::SetDataTables(false));
     let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
     let _ = app.update(Message::SetZoom(1.3));
     let _ = app.update(Message::SetAppearance(Appearance::Light));
@@ -174,6 +175,7 @@ fn settings_changes_reach_the_app() {
             show_quoted_text: true,
             show_hidden_text: true,
             sender_text_styles: false,
+            data_tables: false,
         }
     );
 }
