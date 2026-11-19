@@ -928,6 +928,7 @@ fn v_lists_the_attachments_and_enter_saves_the_one_selected() {
             id: format!("a{index}"),
             name: (*name).into(),
             size: 1_000,
+            inline: false,
         })
         .collect();
     app.reading = Some(attached);

@@ -1111,14 +1111,18 @@ fn attachments_of_messages_read_lately_are_kept_ready_to_save() {
     let (meta, attachment) = listed.find("message", "file").expect("kept");
     assert_eq!(meta.id, "message");
     assert_eq!(attachment.key_packets.as_deref(), Some("packets of file"));
-    // Inline parts are the body's own, and the reader offers none.
-    assert!(listed.find("message", "logo").is_none());
+    // The parts of the body are offered too, to be saved the same way.
+    assert!(listed.find("message", "logo").is_some());
     // An attachment is known only with its own message.
     assert!(listed.find("other", "file").is_none());
 
     // Reading the message again keeps it once.
     listed.remember(&listed_message("message", &[("file", None)]));
-    assert_eq!(listed.0.lock().unwrap().len(), 1);
+    let kept = |id: &str| {
+        let listed = listed.0.lock().unwrap();
+        listed.iter().filter(|(_, file)| file.id == id).count()
+    };
+    assert_eq!(kept("file"), 1);
     for index in 1..LISTED_ATTACHMENTS {
         listed.remember(&listed_message(
             &format!("m{index}"),
@@ -1133,6 +1137,23 @@ fn attachments_of_messages_read_lately_are_kept_ready_to_save() {
     );
     assert!(listed.find("m1", "a1").is_some());
     assert!(listed.find("newest", "last").is_some());
+}
+
+#[test]
+fn the_parts_of_the_body_are_offered_beside_the_files_attached() {
+    let message = mail_message(
+        listed_message(
+            "message",
+            &[("file", Some("attachment")), ("logo", Some("inline"))],
+        ),
+        &OwnAddresses::default(),
+    );
+    let offered: Vec<(&str, bool)> = message
+        .attachments
+        .iter()
+        .map(|file| (file.id.as_str(), file.inline))
+        .collect();
+    assert_eq!(offered, [("file", false), ("logo", true)]);
 }
 
 fn place(id: &str, name: &str, parent: Option<&str>, color: &str) -> Label {

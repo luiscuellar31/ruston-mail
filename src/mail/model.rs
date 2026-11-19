@@ -360,14 +360,16 @@ pub struct MailMessage {
     pub attachments: Vec<MailAttachment>,
 }
 
-/// A file on a message. Inline parts, which belong to the body rather than to
-/// the reader, are left out.
+/// A file on a message, or a part of its body, such as a picture some apps
+/// place within the text, which can be saved the same way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailAttachment {
     pub id: String,
     pub name: String,
     /// Size in bytes, as the server reports it.
     pub size: u64,
+    /// Whether it belongs within the body rather than beside it.
+    pub inline: bool,
 }
 
 /// A conversation with its messages, as shown in the reader.

@@ -652,8 +652,13 @@ fn draw_attachments(frame: &mut Frame, app: &App, selected: usize, theme: &Theme
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(100);
     let items = reading.attachments.iter().map(|attachment| {
+        let within = if attachment.inline {
+            " · in the message"
+        } else {
+            ""
+        };
         ListItem::new(format!(
-            " {} · {}",
+            " {} · {}{within}",
             attachment.name,
             size_label(attachment.size)
         ))

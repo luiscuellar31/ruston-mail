@@ -49,6 +49,9 @@ pub(crate) struct ReadingAttachment {
     /// Its name, safe to draw.
     pub(crate) name: String,
     pub(crate) size: u64,
+    /// Whether it belongs within the body rather than beside it, as a
+    /// picture some apps place within the text does.
+    pub(crate) inline: bool,
 }
 
 /// The message an answer to the open conversation answers, its last one
@@ -69,7 +72,8 @@ pub(crate) struct Answerable {
     pub(crate) redirected_from: Option<String>,
     /// Whether it opened: only then can an answer quote it.
     pub(crate) opened: bool,
-    /// The files a forward carries, inline ones aside, unless left out.
+    /// The files a forward carries, the parts of the body included, unless
+    /// left out.
     pub(crate) files: Vec<ReadingAttachment>,
 }
 
@@ -121,17 +125,23 @@ impl Reading {
                         &message.meta,
                         render::verdict_name(message.verdict),
                     );
-                    for attachment in message.attachments.iter().filter(|a| !a.is_inline()) {
+                    // The parts of the body come after the files attached.
+                    let (inline, attached): (Vec<_>, Vec<_>) =
+                        message.attachments.iter().partition(|a| a.is_inline());
+                    for attachment in attached.into_iter().chain(inline) {
                         let name = screen_line(&attachment.name);
-                        lines.push(format!(
-                            "Attached: {name} ({})",
-                            size_label(attachment.size)
-                        ));
+                        let kind = if attachment.is_inline() {
+                            "In the message"
+                        } else {
+                            "Attached"
+                        };
+                        lines.push(format!("{kind}: {name} ({})", size_label(attachment.size)));
                         attachments.push(ReadingAttachment {
                             message_id: message.meta.id.clone(),
                             id: attachment.id.clone(),
                             name,
                             size: attachment.size,
+                            inline: attachment.is_inline(),
                         });
                     }
                     lines.push(String::new());
@@ -223,15 +233,16 @@ fn answerable(messages: &[ConversationMessage], own: &[AddressInfo]) -> Option<A
             ConversationMessage::Opened(message) => (
                 &message.meta,
                 message.reply_tos.as_slice(),
+                // A forward carries the parts of the body too.
                 message
                     .attachments
                     .iter()
-                    .filter(|attachment| !attachment.is_inline())
                     .map(|attachment| ReadingAttachment {
                         message_id: message.meta.id.clone(),
                         id: attachment.id.clone(),
                         name: screen_line(&attachment.name),
                         size: attachment.size,
+                        inline: attachment.is_inline(),
                     })
                     .collect(),
                 true,
@@ -695,17 +706,11 @@ mod tests {
     }
 
     #[test]
-    fn attachments_are_listed_under_their_message_inline_ones_aside() {
+    fn attachments_are_listed_under_their_message_the_parts_of_the_body_last() {
         let mut message = opened("alex@example.test", "See attached.");
         if let ConversationMessage::Opened(full) = &mut message {
             full.meta.id = "m1".into();
             full.attachments = vec![
-                ruston_core::Attachment {
-                    id: "a1".into(),
-                    name: "report\u{1b}[2J.pdf".into(),
-                    size: 24_576,
-                    ..ruston_core::Attachment::default()
-                },
                 ruston_core::Attachment {
                     id: "a2".into(),
                     name: "logo.png".into(),
@@ -713,24 +718,38 @@ mod tests {
                     disposition: Some("inline".into()),
                     ..ruston_core::Attachment::default()
                 },
+                ruston_core::Attachment {
+                    id: "a1".into(),
+                    name: "report\u{1b}[2J.pdf".into(),
+                    size: 24_576,
+                    ..ruston_core::Attachment::default()
+                },
             ];
         }
         let reading = Reading::new(&Conversation::default(), &[message], &[]);
+        let file = |id: &str, name: &str, size: u64, inline: bool| ReadingAttachment {
+            message_id: "m1".into(),
+            id: id.into(),
+            name: name.into(),
+            size,
+            inline,
+        };
+        // A picture placed within the text can be saved as a file attached.
         assert_eq!(
             reading.attachments,
-            [ReadingAttachment {
-                message_id: "m1".into(),
-                id: "a1".into(),
-                name: "report[2J.pdf".into(),
-                size: 24_576,
-            }]
+            [
+                file("a1", "report[2J.pdf", 24_576, false),
+                file("a2", "logo.png", 900, true),
+            ]
         );
         let text = reading.lines.join("\n");
         assert!(
-            text.contains("Verdict: verified\nAttached: report[2J.pdf (24 KB)\n"),
+            text.contains(
+                "Verdict: verified\nAttached: report[2J.pdf (24 KB)\n\
+                 In the message: logo.png (900 bytes)\n"
+            ),
             "{text}"
         );
-        assert!(!text.contains("logo.png"), "{text}");
     }
 
     #[test]

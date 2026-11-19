@@ -2055,6 +2055,7 @@ fn a_failed_save_is_told_beside_its_own_file() {
             id: name.into(),
             name: name.into(),
             size: 1_024,
+            inline: false,
         })
         .collect();
     let reader = ConversationReader::new(ConversationDetail {
@@ -2090,6 +2091,51 @@ fn a_failed_save_is_told_beside_its_own_file() {
         "the error belongs under its file: {photo:?} then {error:?}"
     );
     assert!(report.bottom() <= photo.top(), "not under the other file");
+    output.drop_without_applying_deltas();
+}
+
+#[test]
+fn the_parts_of_the_body_are_offered_after_the_files_attached() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.attachments = [("logo.png", true), ("report.pdf", false)]
+        .into_iter()
+        .map(|(name, inline)| MailAttachment {
+            id: name.into(),
+            name: name.into(),
+            size: 1_024,
+            inline,
+        })
+        .collect();
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    let context = egui::Context::default();
+    theme::install(&context);
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        ui.set_width(680.0);
+        message_card(
+            ui,
+            &reader.detail().messages[0],
+            reader.preview_at(0),
+            &reader,
+            AttachmentSaves {
+                saving: None,
+                failed: None,
+            },
+            Reading::default(),
+            &mut Vec::new(),
+        );
+    });
+
+    let report = text_rect(&output.shapes, "Attachment: report.pdf");
+    let logo = text_rect(&output.shapes, "In the message: logo.png");
+    assert!(
+        report.bottom() <= logo.top(),
+        "the files attached come first"
+    );
     output.drop_without_applying_deltas();
 }
 

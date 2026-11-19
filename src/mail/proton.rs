@@ -140,13 +140,13 @@ pub struct ProtonMailService {
 struct ListedAttachments(Mutex<VecDeque<(MessageMetadata, Attachment)>>);
 
 impl ListedAttachments {
-    /// Keeps the attachments of a message just read, except the inline parts
-    /// of its body, which the reader does not offer.
+    /// Keeps the attachments of a message just read, the parts of its body
+    /// included, which the reader offers too.
     fn remember(&self, message: &FullMessage) {
         let Ok(mut listed) = self.0.lock() else {
             return;
         };
-        for attachment in message.attachments.iter().filter(|a| !a.is_inline()) {
+        for attachment in &message.attachments {
             listed.retain(|(_, known)| known.id != attachment.id);
             if listed.len() == LISTED_ATTACHMENTS {
                 listed.pop_front();
@@ -1102,6 +1102,7 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
 
 fn mail_attachment(attachment: Attachment) -> MailAttachment {
     MailAttachment {
+        inline: attachment.is_inline(),
         id: attachment.id,
         name: attachment.name,
         size: attachment.size,
@@ -1144,13 +1145,10 @@ fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
     };
 
     MailMessage {
-        // Inline parts are the body's own images, which Ruston Mail never
-        // loads; only real attachments belong in the reader.
-        attachments: attachments
-            .into_iter()
-            .filter(|attachment| !attachment.is_inline())
-            .map(mail_attachment)
-            .collect(),
+        // The parts of the body, such as a picture placed within its text,
+        // are offered too: Ruston Mail never shows them, and a forward
+        // carries them all the same.
+        attachments: attachments.into_iter().map(mail_attachment).collect(),
         body,
         verdict,
         ..message_without_body(meta, &reply_tos, own)

@@ -272,6 +272,10 @@ internet, like a browser's downloads: on macOS, Gatekeeper checks a program
 before it opens, and on Windows, SmartScreen checks it before it runs and
 Office opens documents in Protected View.
 
+The parts of a message's body, such as a picture some mail apps place within
+the text, are listed after its files, as **In the message**. The reader does
+not show them within the text, but they save the same way.
+
 Choose **Save as…** to select another folder or filename in the native save
 dialog. Cancelling does not download or write the attachment. Choose a new
 filename: this action also never replaces an existing file, even if the native
@@ -638,8 +642,9 @@ message starts in the top third of the reader already. Quoted lines show dimmed,
 long for the pane stays apart from new text on every row it wraps to. Links
 show as text with the address they open; `b` lists those of the open conversation, and
 one opens in your browser only once you answer `y` to the address it shows.
-Each message lists its attachments under its headers, and `v` lists those of
-the open conversation: Enter saves one, checking its signature as
+Each message lists its attachments under its headers, the parts of its body,
+such as a picture placed within its text, last, as *In the message*; `v` lists
+those of the open conversation: Enter saves one, checking its signature as
 `ruston-cli attachments download` does, into your Downloads folder, or the
 current folder when there is none, never over a file already there. Opening an
 unread conversation marks it read once it shows, as the desktop does, unless

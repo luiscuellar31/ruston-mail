@@ -974,6 +974,7 @@ fn an_answer_says_what_it_answers_and_what_goes_with_it() {
             id: "a1".into(),
             name: "plan.pdf".into(),
             size: 24_576,
+            inline: false,
         }],
     };
     app.compose = Some(Compose::answer(
@@ -1259,6 +1260,7 @@ fn the_attachments_list_over_the_panes_with_their_sizes() {
             id: "a1".into(),
             name: "plan.pdf".into(),
             size: 24_576,
+            inline: false,
         }],
         messages: Vec::new(),
         answer: None,

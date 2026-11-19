@@ -763,7 +763,10 @@ fn message_card(
             }
             header.context_menu(|ui| address_menu(ui, message, messages));
             if expanded {
-                for attachment in &message.attachments {
+                // The parts of the body come after the files attached.
+                let (inline, attached): (Vec<_>, Vec<_>) =
+                    message.attachments.iter().partition(|file| file.inline);
+                for attachment in attached.into_iter().chain(inline) {
                     attachment_row(ui, &message.id, attachment, saves, messages);
                 }
                 reply_toolbar(ui, Some(&message.id), messages);
@@ -1231,7 +1234,12 @@ fn attachment_row(
     let saving = saves.saving.is_some();
     let this_one = saves.saving == Some(attachment.id.as_str());
     ui.horizontal_wrapped(|ui| {
-        detail(ui, &format!("Attachment: {}", attachment.name));
+        let kind = if attachment.inline {
+            "In the message"
+        } else {
+            "Attachment"
+        };
+        detail(ui, &format!("{kind}: {}", attachment.name));
         detail(ui, &size_label(attachment.size));
         if ui
             .add_enabled(
