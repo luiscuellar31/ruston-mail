@@ -736,7 +736,7 @@ impl App {
                 }
             }
             Message::Logout => return self.logout(),
-            Message::LogoutFinished(epoch, result) => self.finish_logout(epoch, result),
+            Message::LogoutFinished(epoch, result) => return self.finish_logout(epoch, result),
             Message::SelectFolder(folder) => return self.select_folder(folder),
             Message::SelectConversation(id) => {
                 // A conversation chosen while writing shows, with the draft

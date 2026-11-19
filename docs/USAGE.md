@@ -57,7 +57,9 @@ has ended, you sign in to that account again, with its address filled in. That
 sign-in screen, and the one for adding an account, offer **Back to** the
 account you left. As when signing out, switching or adding asks before
 discarding a message you are writing, waits for changes still on their way to
-Proton, and is unavailable while a message is being sent.
+Proton, and is unavailable while a message is being sent. Signing out of an
+account removes it from the list and opens the next one, or the sign-in screen
+once none is left.
 
 The command line reaches the same sessions: the first account is its default
 profile, and the others are `--profile ruston-2` to `--profile ruston-5`, in

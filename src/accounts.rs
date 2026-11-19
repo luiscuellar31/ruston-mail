@@ -104,6 +104,17 @@ impl Accounts {
         self.active = profile.to_owned();
     }
 
+    /// Forgets the account under `profile`. When it was open, the first left
+    /// is; with none left, the list starts again with the first slot's.
+    pub fn remove(&mut self, profile: &str) {
+        self.list.retain(|account| account.profile != profile);
+        match self.list.first() {
+            None => *self = Self::default(),
+            Some(first) if self.active == profile => self.active = first.profile.clone(),
+            Some(_) => {}
+        }
+    }
+
     /// What a damaged or hand-edited file could break: a profile none of
     /// the slots has, one listed twice, so more accounts than allowed, or an
     /// open one that is not listed.
@@ -189,6 +200,22 @@ mod tests {
         assert_eq!(accounts.active_profile(), "ruston-2");
         assert!(!accounts.open("ruston-9"));
         assert_eq!(accounts.active_profile(), "ruston-2");
+    }
+
+    #[test]
+    fn removing_the_open_account_opens_the_first_left_or_starts_again() {
+        let mut accounts = Accounts::default();
+        accounts.signed_in("ruston", Some("alex@proton.me"));
+        accounts.signed_in("ruston-2", Some("sam@proton.me"));
+        accounts.signed_in("ruston-3", Some("kim@proton.me"));
+        accounts.remove("ruston-2");
+        assert_eq!(accounts.active_profile(), "ruston-3");
+        accounts.remove("ruston-3");
+        assert_eq!(accounts.active_profile(), "ruston");
+        // A free slot is taken again by the next account added.
+        assert_eq!(accounts.free_profile().as_deref(), Some("ruston-2"));
+        accounts.remove("ruston");
+        assert_eq!(accounts, Accounts::default());
     }
 
     #[test]

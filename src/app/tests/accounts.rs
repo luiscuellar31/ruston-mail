@@ -116,3 +116,40 @@ fn a_written_message_or_the_demo_keeps_the_account_open() {
     assert_eq!(demo.update(Message::AddAccount).units(), 0);
     assert!(demo.is_demo());
 }
+
+#[test]
+fn signing_out_forgets_the_account_and_opens_the_next() {
+    let mut app = App::signed_in_to(&["alex@proton.me", "sam@proton.me"]);
+    app.auth_state = AuthState::SigningOut;
+    let epoch = app.session_epoch;
+    assert_eq!(
+        app.update(Message::LogoutFinished(epoch, Ok(()))).units(),
+        1
+    );
+    assert_eq!(app.accounts().all().len(), 1);
+    assert_eq!(app.accounts().active_profile(), PROFILE);
+    assert_eq!(app.auth_state, AuthState::CheckingSession);
+
+    // The last one leaves the sign-in screen, for a first account again.
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    app.auth_state = AuthState::SigningOut;
+    let epoch = app.session_epoch;
+    assert_eq!(
+        app.update(Message::LogoutFinished(epoch, Ok(()))).units(),
+        0
+    );
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.accounts(), &crate::accounts::Accounts::default());
+
+    // A cleanup that failed may have left the session saved: it stays.
+    let mut app = App::signed_in_to(&["alex@proton.me", "sam@proton.me"]);
+    app.auth_state = AuthState::SigningOut;
+    let epoch = app.session_epoch;
+    let _ = app.update(Message::LogoutFinished(
+        epoch,
+        Err(AuthError::LogoutUnavailable),
+    ));
+    assert_eq!(app.accounts().all().len(), 2);
+    assert_eq!(app.accounts().active_profile(), "ruston-2");
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+}

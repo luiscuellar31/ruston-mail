@@ -127,7 +127,7 @@ impl App {
 
     /// Opens the session saved for the account being opened, as Ruston does
     /// when it starts.
-    fn open_saved_session(&mut self) -> Effects {
+    pub(super) fn open_saved_session(&mut self) -> Effects {
         self.auth_error = None;
         self.resume_may_retry = false;
         let profile = self.session_profile();

@@ -463,16 +463,31 @@ impl App {
         &mut self,
         epoch: super::SessionEpoch,
         result: Result<(), AuthError>,
-    ) {
+    ) -> Effects {
         if !self.is_current_session(epoch) {
-            return;
+            return Effects::none();
         }
         // The session may have expired while signing out.
         if self.auth_state != AuthState::SigningOut {
-            return;
+            return Effects::none();
         }
 
+        // Forgotten on this device, the account leaves the list and the next
+        // one opens. A cleanup that failed may have left its session saved,
+        // so it stays, its sign-in screen saying why.
+        let forgotten = result.is_ok() && !self.demo_process;
         self.close_mailbox(result.err());
+        if !forgotten {
+            return Effects::none();
+        }
+        let others = self.settings.accounts.all().len() > 1;
+        let profile = self.settings.accounts.active_profile().to_owned();
+        self.remember(|settings| settings.accounts.remove(&profile));
+        if others {
+            self.open_saved_session()
+        } else {
+            Effects::none()
+        }
     }
 
     /// Returns to the login screen, dropping the session's state. Only a draft

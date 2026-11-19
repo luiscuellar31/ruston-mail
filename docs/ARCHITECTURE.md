@@ -1239,7 +1239,9 @@ the first free profile, which joins the list only once the sign-in succeeds.
 Until another account opens, the sign-in screen offers a way back to the
 account left. The root window asks before a change of account discards a
 written message and holds it while changes are on their way to Proton, as it
-does for signing out.
+does for signing out. Signing out of an account, once this device has
+forgotten its session, removes it from the list and opens the next one; a
+cleanup that failed keeps it there, since its session may still be saved.
 Core validates profile names as single path components before resolving session
 and cache paths; the CLI applies the same validation while parsing `--profile`.
 Both use core session storage: non-secret metadata in a platform config
