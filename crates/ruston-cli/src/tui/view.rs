@@ -1044,8 +1044,10 @@ fn conversation_row(
         },
     );
     let time = render::fmt_time(conversation.time);
-    // YYYY-MM-DD, or in a narrow row MM-DD.
+    // YYYY-MM-DD, or in a narrow row MM-DD; without a time, its `-` takes
+    // as many columns.
     let day = if width >= YEAR_WIDTH { 0..10 } else { 5..10 };
+    let columns = day.len();
     let day = time.get(day).unwrap_or(&time);
     let sender = conversation.senders.first().map_or("-", |sender| {
         if sender.name.is_empty() {
@@ -1063,7 +1065,7 @@ fn conversation_row(
         Style::new()
     };
     let mut spans = vec![
-        Span::raw(format!("{flags} {day}  ")),
+        Span::raw(format!("{flags} {day:<columns$}  ")),
         Span::styled(format!("{sender}{padding}  "), style),
     ];
     let subject = screen_line(render::subject_or_empty(&conversation.subject));

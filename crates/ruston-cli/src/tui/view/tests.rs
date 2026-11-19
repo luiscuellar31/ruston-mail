@@ -675,6 +675,30 @@ fn a_click_on_a_message_folded_into_a_line_opens_it() {
 }
 
 #[test]
+fn a_row_without_a_date_keeps_its_columns() {
+    let mut app = with_mail("alex@example.test", "Dated");
+    app.conversations.push(Conversation {
+        subject: "Undated".into(),
+        senders: vec![Recipient::new("sam@example.test")],
+        ..Conversation::default()
+    });
+    // Beside the other panes, a row shows its day without the year; alone,
+    // with it.
+    for width in [120, 60] {
+        app.focus = Pane::Conversations;
+        let screen = text(&drawn(width, 30, &app, &Theme::new(false)));
+        // In characters, which here take a column each.
+        let column = |text: &str| {
+            let row = screen.lines().find(|line| line.contains(text))?;
+            Some(row[..row.find(text)?].chars().count())
+        };
+        assert!(screen.contains(" -  "), "{screen}");
+        assert_eq!(column("alex@"), column("sam@"), "{screen}");
+        assert_eq!(column("Dated"), column("Undated"), "{screen}");
+    }
+}
+
+#[test]
 fn the_wheel_scrolls_a_list_without_moving_its_selection() {
     let mut app = with_mail("alex@example.test", "Quarterly report");
     app.conversations = (0..40)
