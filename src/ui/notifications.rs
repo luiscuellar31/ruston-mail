@@ -28,6 +28,15 @@ pub(super) enum Status {
 }
 
 impl Status {
+    /// The status stored as `value`, by the numbers the variants carry, so
+    /// they are written once; a value none carries is Off.
+    fn from_u8(value: u8) -> Self {
+        [Self::Ready, Self::Pending, Self::Denied, Self::Unavailable]
+            .into_iter()
+            .find(|status| *status as u8 == value)
+            .unwrap_or_default()
+    }
+
     pub(super) fn description(self) -> &'static str {
         match self {
             Self::Off => "Notifications are inactive until enabled for a signed-in account.",
@@ -65,13 +74,7 @@ impl Notifications {
         if !self.enabled.load(Ordering::Acquire) {
             return Status::Off;
         }
-        match self.status.load(Ordering::Acquire) {
-            1 => Status::Ready,
-            2 => Status::Pending,
-            3 => Status::Denied,
-            4 => Status::Unavailable,
-            _ => Status::Off,
-        }
+        Status::from_u8(self.status.load(Ordering::Acquire))
     }
 
     pub(super) fn set_enabled(&mut self, enabled: bool, context: &egui::Context) {
@@ -224,6 +227,20 @@ fn display_text(text: &str, fallback: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_status_reads_back_as_it_was_stored() {
+        for status in [
+            Status::Off,
+            Status::Ready,
+            Status::Pending,
+            Status::Denied,
+            Status::Unavailable,
+        ] {
+            assert_eq!(Status::from_u8(status as u8), status);
+        }
+        assert_eq!(Status::from_u8(u8::MAX), Status::Off);
+    }
 
     #[test]
     fn disabling_revokes_queued_work_even_after_reenabling() {
