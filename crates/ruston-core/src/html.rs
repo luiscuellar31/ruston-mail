@@ -59,7 +59,7 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
 /// Remove active and hidden content while retaining safe HTML formatting.
 /// Image tags may remain; renderers decide whether to display or fetch them.
 /// Links keep only http, https and mailto URLs. What hides text the sender
-/// hid stays, for [`hides`] to tell.
+/// hid stays, for the readers to tell.
 pub fn sanitize(html: &str) -> String {
     SANITIZER.clean(html).to_string()
 }
