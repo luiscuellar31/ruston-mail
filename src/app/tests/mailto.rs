@@ -146,7 +146,7 @@ fn email_links_are_bounded_dismissible_and_do_not_cross_a_closed_session() {
 #[test]
 fn a_demo_process_refuses_an_email_link_once_its_mailbox_is_closed() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
     let _ = app.update(Message::ReceiveMailto(
         crate::mailto::Request::parse("mailto:team@example.org").unwrap(),
     ));

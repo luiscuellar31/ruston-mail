@@ -210,14 +210,19 @@ fn discarding_drops_a_kept_draft() {
 
 #[test]
 fn stale_expired_session_response_is_ignored() {
-    let mut app = authenticated_app();
+    let mut app = loaded_demo_app();
+    // The answer to a request that opening another folder left behind.
+    let _ = app.update(Message::RefreshMailbox);
+    let stale = pending_list_request(&app);
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
+    let signed_in = app.auth_state.clone();
 
     let _ = app.update(Message::ConversationsLoaded(
-        NEVER_ISSUED,
+        stale,
         Err(MailboxError::SessionExpired),
     ));
 
-    assert_eq!(app.auth_state, AuthState::Authenticated { email: None });
+    assert_eq!(app.auth_state, signed_in);
     assert!(app.mailbox.is_some());
 }
 

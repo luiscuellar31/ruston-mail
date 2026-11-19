@@ -2,13 +2,6 @@
 
 use super::*;
 
-/// The counts request the open mailbox waits for.
-fn pending_counts_request(app: &App) -> RequestId {
-    app.mailbox()
-        .and_then(Mailbox::counts_request)
-        .expect("a counts request in flight")
-}
-
 fn deliver_new_mail(app: &mut App, result: Result<Vec<IncomingMail>, MailboxError>) -> Effects {
     assert_eq!(app.fetch_new_mail_notification().units(), 1);
     let request = app.new_mail.pending.unwrap();

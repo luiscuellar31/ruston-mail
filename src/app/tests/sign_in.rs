@@ -68,7 +68,7 @@ fn demo_startup_opens_mailbox_without_session_resume() {
 #[test]
 fn exiting_demo_clears_mailbox_and_opens_login() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
 
     let _ = app.update(Message::Logout);
 
@@ -82,7 +82,7 @@ fn exiting_demo_clears_mailbox_and_opens_login() {
 #[test]
 fn a_demo_process_never_starts_a_proton_sign_in() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
     let _ = app.update(Message::Logout);
     app.login_form.username = "username sentinel".into();
     app.login_form.password = "password sentinel".to_owned().into();
@@ -100,7 +100,7 @@ fn a_demo_process_never_starts_a_proton_sign_in() {
 #[test]
 fn a_demo_process_keeps_its_notice_while_the_form_is_edited() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
     let _ = app.update(Message::Logout);
 
     app.login_form.username = "username sentinel".into();

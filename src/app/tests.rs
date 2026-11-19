@@ -24,7 +24,7 @@ use crate::settings::{ComposePlacement, Reading};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::mail::MailFolder;
-use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, sys};
+use crate::test_support::{OPENING_COUNTS, OPENING_PAGE, sys};
 
 const NOW: i64 = 1_789_000_000;
 
@@ -64,6 +64,13 @@ fn pending_list_request(app: &App) -> RequestId {
     app.mailbox()
         .and_then(|mailbox| mailbox.status().request_in_flight())
         .expect("a list request in flight")
+}
+
+/// The counts request the open mailbox waits for.
+fn pending_counts_request(app: &App) -> RequestId {
+    app.mailbox()
+        .and_then(Mailbox::counts_request)
+        .expect("a counts request in flight")
 }
 
 fn pending_reader_request(app: &App) -> ReaderRequest {
@@ -113,9 +120,10 @@ fn press_command(app: &mut App, key: Key) {
 
 fn loaded_demo_app() -> App {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
     let counts = demo_service(&app).counts();
-    let _ = app.update(Message::CountsLoaded(OPENING_COUNTS, Ok(counts)));
+    let request = pending_counts_request(&app);
+    let _ = app.update(Message::CountsLoaded(request, Ok(counts)));
     app
 }
 
