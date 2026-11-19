@@ -21,27 +21,27 @@ pub(super) fn to_markdown(html: &str) -> String {
     let tokenizer = Tokenizer::new(Sink::default(), TokenizerOpts::default());
     let input = BufferQueue::default();
     let mut remaining = html;
-    while !remaining.is_empty() && !tokenizer.sink.0.borrow().truncated {
-        let mut end = remaining.len().min(INPUT_CHUNK_BYTES);
-        while !remaining.is_char_boundary(end) {
-            end -= 1;
-        }
+    while !remaining.is_empty() && !tokenizer.sink.builder.borrow().truncated {
+        let end = remaining.floor_char_boundary(INPUT_CHUNK_BYTES);
         input.push_back(StrTendril::from_slice(&remaining[..end]));
         let _ = tokenizer.feed(&input);
         remaining = &remaining[end..];
     }
     tokenizer.end();
-    std::mem::take(&mut *tokenizer.sink.0.borrow_mut()).finish()
+    std::mem::take(&mut *tokenizer.sink.builder.borrow_mut()).finish()
 }
 
+/// Where the tokenizer hands each token: the conversion it builds.
 #[derive(Default)]
-struct Sink(RefCell<Builder>);
+struct Sink {
+    builder: RefCell<Builder>,
+}
 
 impl TokenSink for Sink {
     type Handle = ();
 
     fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
-        let mut builder = self.0.borrow_mut();
+        let mut builder = self.builder.borrow_mut();
         if builder.truncated {
             return TokenSinkResult::Continue;
         }
@@ -98,10 +98,7 @@ impl BoundedText {
         if self.truncated {
             return;
         }
-        let mut end = text.len().min(self.remaining());
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = text.floor_char_boundary(self.remaining());
         self.text.push_str(&text[..end]);
         self.truncated = end != text.len();
     }
@@ -366,10 +363,7 @@ impl Builder {
             0
         };
         let available = self.output.remaining().saturating_sub(self.pending_bytes);
-        let mut end = text.len().min(available.saturating_sub(overhead));
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = text.floor_char_boundary(available.saturating_sub(overhead));
         if end == 0 {
             self.truncated = true;
             return;
@@ -429,8 +423,7 @@ impl Builder {
         }
 
         let rendered = render_spans(std::mem::take(&mut self.spans), self.output.remaining());
-        self.truncated |= rendered.truncated;
-        let text = rendered.text;
+        let text = self.kept(rendered);
         let (text, list_item) = if let Some(level) = self.heading {
             (format!("{} {text}", "#".repeat(level)), false)
         } else if let Some(marker) = self.item_marker.as_mut() {
@@ -459,8 +452,7 @@ impl Builder {
                     break;
                 }
             }
-            self.truncated |= item.truncated;
-            (item.text, starts_item)
+            (self.kept(item), starts_item)
         } else {
             (text, false)
         };
@@ -476,11 +468,10 @@ impl Builder {
             return;
         }
         let buffered = std::mem::take(&mut self.pre_text);
-        self.truncated |= buffered.truncated;
+        let buffered = self.kept(buffered);
         let text = buffered
-            .text
             .strip_prefix('\n')
-            .unwrap_or(&buffered.text)
+            .unwrap_or(&buffered)
             .trim_end_matches('\n');
         if !text.trim().is_empty() {
             let mut indented = BoundedText::new(self.output.remaining());
@@ -494,9 +485,16 @@ impl Builder {
                     break;
                 }
             }
-            self.truncated |= indented.truncated;
-            self.push_block(indented.text, false);
+            let indented = self.kept(indented);
+            self.push_block(indented, false);
         }
+    }
+
+    /// The text of `bounded`, noting in `truncated` whether it was cut short,
+    /// as every bounded text the builder takes in must.
+    fn kept(&mut self, bounded: BoundedText) -> String {
+        self.truncated |= bounded.truncated;
+        bounded.text
     }
 
     fn push_block(&mut self, text: String, list_item: bool) {
