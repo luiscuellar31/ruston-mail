@@ -562,8 +562,9 @@ conversations at first and loads 50 more each time you move down past its last. 
 goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
 Starred, `d` Drafts, `t` Trash, `s` Spam and `m` All mail. A quoted passage of
 three lines or more, such as the message a reply answers, folds into one line
-unless the whole message is quoted; `z` shows or hides them, and says so when
-the open conversation has none to fold. As on the desktop, a message you have
+unless the whole message is quoted; `z` shows or hides them, keeping the line
+at the top of the reader where it is, and says so when the open conversation
+has none to fold. As on the desktop, a message you have
 read folds into one line, unless it is the newest: when it came, who sent it,
 with the address beside the name, its signature's verdict and its first
 words. The newest message and those not read yet stay open, and `e` shows

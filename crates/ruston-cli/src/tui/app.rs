@@ -214,6 +214,14 @@ pub(crate) struct App {
     /// conversation starts, folded into a line or not, as last drawn, for a
     /// click to find the one it is on; the view sets it.
     pub(crate) message_rows: RefCell<Vec<usize>>,
+    /// The line of the open conversation's text at the reader's top when
+    /// last drawn, if a line of it was, with how many of its rows were above
+    /// the top; the view sets it.
+    pub(crate) top_line: Cell<Option<(usize, usize)>>,
+    /// Whether the reader brings that line back to its top when next drawn,
+    /// as `z` keeps the place while quoted passages fold or show; the view
+    /// takes it.
+    pub(crate) keep_place: Cell<bool>,
     /// Whether the reader shows quoted passages instead of folding them.
     pub(crate) show_quotes: bool,
     /// Whether the reader shows the messages already read instead of
@@ -517,6 +525,8 @@ impl App {
             landing: Cell::new(None),
             in_view: Cell::new(None),
             message_rows: RefCell::new(Vec::new()),
+            top_line: Cell::new(None),
+            keep_place: Cell::new(false),
             show_quotes: false,
             show_read: false,
             toggled: Vec::new(),
@@ -724,6 +734,7 @@ impl App {
                     self.picking_attachment = None;
                     self.scroll.set(0);
                     self.landing.set(reading.landing());
+                    self.keep_place.set(false);
                     self.toggled.clear();
                     self.reading = Some(reading);
                     self.notice = None;
@@ -1529,10 +1540,14 @@ impl App {
     }
 
     /// Shows the open conversation's folded quoted passages, or folds them
-    /// again, or says why there is nothing to show.
+    /// again, keeping the line at the reader's top there, or says why there
+    /// is nothing to show.
     fn toggle_quotes(&mut self) {
         match &self.reading {
-            Some(reading) if !reading.quotes.is_empty() => self.show_quotes = !self.show_quotes,
+            Some(reading) if !reading.quotes.is_empty() => {
+                self.show_quotes = !self.show_quotes;
+                self.keep_place.set(true);
+            }
             Some(_) => {
                 self.notice = Some("This conversation has no quoted text to fold.".to_owned());
             }

@@ -342,6 +342,50 @@ fn the_reader_folds_quoted_passages_until_they_are_shown() {
     assert!(!screen.contains("quoted lines"), "{screen}");
 }
 
+#[test]
+fn z_keeps_the_line_at_the_readers_top_there() {
+    let mut app = with_mail("alex@example.test", "Quarterly report");
+    let mut lines: Vec<String> = (0..10).map(|n| format!("> quoted {n}")).collect();
+    lines.extend((0..40).map(|n| format!("reply line {n}")));
+    app.reading = Some(Reading {
+        id: "plans".into(),
+        subject: "Plans".into(),
+        lines,
+        quotes: std::iter::once(0..10).collect(),
+        links: Vec::new(),
+        attachments: Vec::new(),
+        messages: Vec::new(),
+        answer: None,
+    });
+    // Under the subject and a blank row, the folded passage takes a row.
+    app.scroll.set(8);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(top_row(&screen).contains("reply line 5"), "{screen}");
+
+    // Shown, the passage takes nine rows more, and the reader follows.
+    press(&mut app, KeyCode::Char('z'));
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(top_row(&screen).contains("reply line 5"), "{screen}");
+    assert_eq!(app.scroll.get(), 17);
+    press(&mut app, KeyCode::Char('z'));
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(top_row(&screen).contains("reply line 5"), "{screen}");
+    assert_eq!(app.scroll.get(), 8);
+
+    // From inside the passage, its fold comes to the top as it folds.
+    press(&mut app, KeyCode::Char('z'));
+    let _ = drawn(120, 30, &app, &Theme::new(false));
+    app.scroll.set(5);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(top_row(&screen).contains("> quoted 3"), "{screen}");
+    press(&mut app, KeyCode::Char('z'));
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(
+        top_row(&screen).contains("… 10 quoted lines (z shows them)"),
+        "{screen}"
+    );
+}
+
 /// A message from `sender`, `hours` after the first, saying `body`; not
 /// read yet when `unread` is 1.
 fn message(sender: &str, hours: i64, unread: i64, body: &str) -> ConversationMessage {

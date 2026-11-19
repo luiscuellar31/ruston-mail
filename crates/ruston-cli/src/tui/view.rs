@@ -818,8 +818,9 @@ fn draw_list<'a>(
 /// unless the state shows them, wrapped to the pane and scrolled as far as
 /// the state asks, within what there is. Since only the drawing knows how many
 /// rows the text wraps to, it tells the state how far it can scroll, which
-/// message is at the top and where each starts, and brings there the one the
-/// state asks for. Returns the first row it shows.
+/// message and line are at the top and where each message starts, and brings
+/// there the message the state asks for, or back the line `z` keeps. Returns
+/// the first row it shows.
 fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> usize {
     let inner = block.inner(area);
     let Some(reading) = &app.reading else {
@@ -833,9 +834,13 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         frame.render_widget(Paragraph::new(hint).block(block), area);
         return 0;
     };
-    let mut lines = vec![Line::styled(
-        reading.subject.as_str(),
-        Style::new().add_modifier(Modifier::BOLD),
+    // Each with the line of the conversation's text it shows, if any.
+    let mut lines = vec![(
+        None,
+        Line::styled(
+            reading.subject.as_str(),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
     )];
     // From the list, which loads again after each change, so they follow it.
     let labels = app
@@ -846,9 +851,9 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         .unwrap_or_default();
     if !labels.is_empty() {
         let named = format!("Labels: {}", labels.join(", "));
-        lines.push(Line::raw(screen_line(&named)));
+        lines.push((None, Line::raw(screen_line(&named))));
     }
-    lines.push(Line::default());
+    lines.push((None, Line::default()));
     let dim = Style::new().add_modifier(Modifier::DIM);
     let width = usize::from(inner.width);
     // Where each message starts in `lines`, with the separator before it
@@ -859,11 +864,12 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         let folds = app.folds(index);
         let separator = lines.len();
         if !(folds && index > 0 && app.folds(index - 1)) {
-            lines.extend(raw(&reading.lines[rest..message.lines.start]));
+            lines.extend(raw(reading, rest..message.lines.start));
         }
         starts.push((separator, lines.len()));
         if folds {
-            lines.push(Line::styled(cut(&message.line, width), dim));
+            let line = Line::styled(cut(&message.line, width), dim);
+            lines.push((Some(message.lines.start), line));
         } else {
             unfolded(&mut lines, reading, message.lines.clone(), app.show_quotes);
         }
@@ -875,20 +881,17 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         rest..reading.lines.len(),
         app.show_quotes,
     );
-    // The rows the lines wrap to before each start, counted a stretch at a
-    // time.
-    let (mut rows, mut counted) = (0, 0);
-    let mut rows_to = |line: usize| {
-        let stretch = Paragraph::new(lines[counted..line].to_vec()).wrap(Wrap { trim: false });
-        rows += stretch.line_count(inner.width);
-        counted = line;
-        rows
-    };
+    // The rows the lines wrap to before each of them, and in all at the end.
+    let mut row_of = vec![0];
+    for (_, line) in &lines {
+        let wrapped = Paragraph::new(line.clone()).wrap(Wrap { trim: false });
+        row_of.push(row_of[row_of.len() - 1] + wrapped.line_count(inner.width));
+    }
     let starts: Vec<(usize, usize)> = starts
         .into_iter()
-        .map(|(separator, own)| (rows_to(separator), rows_to(own)))
+        .map(|(separator, own)| (row_of[separator], row_of[own]))
         .collect();
-    let rows = rows_to(lines.len());
+    let rows = row_of[lines.len()];
     let height = usize::from(inner.height);
     let bottom = rows.saturating_sub(height);
     // As the desktop lands on a message: unless it starts in the upper third
@@ -900,7 +903,27 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
                 .set(u16::try_from(start.min(bottom)).unwrap_or(u16::MAX));
         }
     }
+    // As `z` keeps the place: the line at the top back there, as far into it
+    // as it was, or the folded passage it went into.
+    let kept = app.keep_place.take().then(|| app.top_line.get()).flatten();
+    if let Some((line, into)) = kept {
+        // The last line drawn from the text up to it: itself, or a fold.
+        let back = lines
+            .iter()
+            .rposition(|(shows, _)| shows.is_some_and(|shows| shows <= line));
+        if let Some(at) = back {
+            let into = if lines[at].0 == Some(line) { into } else { 0 };
+            let scroll = (row_of[at] + into).min(bottom);
+            app.scroll.set(u16::try_from(scroll).unwrap_or(u16::MAX));
+        }
+    }
     let top = usize::from(app.scroll.get()).min(bottom);
+    let line_at_top = row_of.partition_point(|&row| row <= top) - 1;
+    app.top_line.set(
+        lines
+            .get(line_at_top)
+            .and_then(|(shows, _)| shows.map(|line| (line, top - row_of[line_at_top]))),
+    );
     let at_top = starts.iter().rposition(|&(separator, _)| separator <= top);
     app.in_view
         .set(at_top.or((!starts.is_empty()).then_some(0)));
@@ -916,6 +939,7 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         };
         block = block.title_bottom(Line::styled(hint, dim));
     }
+    let lines: Vec<Line> = lines.into_iter().map(|(_, line)| line).collect();
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(
         paragraph
@@ -927,9 +951,10 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
 }
 
 /// Adds the lines `range` of `reading`, each quoted passage that starts
-/// among them folded into a line unless `show_quotes`.
+/// among them folded into a line unless `show_quotes`, each with the line of
+/// the text it shows, a passage's first for its fold.
 fn unfolded<'a>(
-    lines: &mut Vec<Line<'a>>,
+    lines: &mut Vec<(Option<usize>, Line<'a>)>,
     reading: &'a Reading,
     range: Range<usize>,
     show_quotes: bool,
@@ -937,24 +962,28 @@ fn unfolded<'a>(
     let mut rest = range.start;
     if !show_quotes {
         for quote in reading.quotes.iter().filter(|q| range.contains(&q.start)) {
-            lines.extend(raw(&reading.lines[rest..quote.start]));
+            lines.extend(raw(reading, rest..quote.start));
             let said = format!("… {} quoted lines (z shows them)", quote.len());
-            lines.push(Line::styled(said, Style::new().add_modifier(Modifier::DIM)));
+            let fold = Line::styled(said, Style::new().add_modifier(Modifier::DIM));
+            lines.push((Some(quote.start), fold));
             rest = quote.end.min(range.end);
         }
     }
-    lines.extend(raw(&reading.lines[rest..range.end]));
+    lines.extend(raw(reading, rest..range.end));
 }
 
-/// Each of `lines` as it is, a quoted one dimmed: wrapped, its later rows
-/// lose the `>` that says it quotes.
-fn raw(lines: &[String]) -> impl Iterator<Item = Line<'_>> {
-    lines.iter().map(|line| {
-        if is_quoted(line) {
+/// The lines `range` of `reading`'s text as they are, each with where it is
+/// in the text, a quoted one dimmed: wrapped, its later rows lose the `>`
+/// that says it quotes.
+fn raw(reading: &Reading, range: Range<usize>) -> impl Iterator<Item = (Option<usize>, Line<'_>)> {
+    range.map(|at| {
+        let line = &reading.lines[at];
+        let line = if is_quoted(line) {
             Line::styled(line.as_str(), Style::new().add_modifier(Modifier::DIM))
         } else {
             Line::raw(line.as_str())
-        }
+        };
+        (Some(at), line)
     })
 }
 

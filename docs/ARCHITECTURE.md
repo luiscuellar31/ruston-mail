@@ -790,7 +790,8 @@ instead of an unknown outcome.
   verdict and body as `conversations read` shows it, inside the task that
   loads it, since a large HTML body takes a while. It also notes where each
   body quotes another message, in lines that start with `>`, which the view
-  folds into a line each, as the desktop does, until `z` shows them; where
+  folds into a line each, as the desktop does, until `z` shows them, the view
+  bringing back to the reader's top the line of the text that was there; where
   each message's lines are, with a line that stands for it folded, saying
   when it came, its sender and verdict, and its first words: the view folds,
   until `e` shows them, those the desktop's rule folds, which opens only the
