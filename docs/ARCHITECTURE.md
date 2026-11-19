@@ -933,8 +933,8 @@ instead of an unknown outcome.
   [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) writes the
   rich body core reads from an HTML message as Markdown-style text, for the
   default read format and for every message `conversations read` shows: each
-  word within its style's markers, and each line of a link within its
-  brackets. It represents at most eight levels of quotes and
+  word within its style's markers, struck text included, and each line of a
+  link within its brackets. It represents at most eight levels of quotes and
   lists and caps converted output at 1 MiB, including a truncation notice.
   Output is accumulated directly in a bounded buffer, and core's
   `rich::parse_within` keeps the body's text, span storage, link targets and

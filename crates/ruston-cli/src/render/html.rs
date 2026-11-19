@@ -209,10 +209,15 @@ fn markdown(spans: &[RichSpan]) -> String {
 fn styled(spans: &[RichSpan]) -> String {
     let mut out = String::new();
     for span in spans {
-        let markers: Vec<&str> = [(span.strong, "**"), (span.emphasis, "*"), (span.code, "`")]
-            .into_iter()
-            .filter_map(|(on, marker)| on.then_some(marker))
-            .collect();
+        let markers: Vec<&str> = [
+            (span.struck, "~~"),
+            (span.strong, "**"),
+            (span.emphasis, "*"),
+            (span.code, "`"),
+        ]
+        .into_iter()
+        .filter_map(|(on, marker)| on.then_some(marker))
+        .collect();
         for piece in pieces(&span.text) {
             if piece.starts_with(char::is_whitespace) {
                 out.push_str(piece);
@@ -466,6 +471,14 @@ mod tests {
         assert_eq!(
             to_markdown("<p><cite>The Book</cite> and <tt>cargo test</tt></p>"),
             "*The* *Book* and `cargo` `test`"
+        );
+    }
+
+    #[test]
+    fn a_struck_price_reads_as_struck() {
+        assert_eq!(
+            to_markdown("<p>Was <s>$20</s>, now <del>$18</del> <strike>$16</strike> $15</p>"),
+            "Was ~~$20~~, now ~~$18~~ ~~$16~~ $15"
         );
     }
 
