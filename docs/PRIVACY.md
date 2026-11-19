@@ -274,12 +274,12 @@ an account that is not open sends Proton no requests.
 Ruston Mail keeps `settings.json` in its own platform config directory; a demo
 process keeps `settings-demo.json` beside it instead, so nothing changed while
 trying the demo reaches a real account. It
-contains preferences, the last folder, the window's size and place on screen,
-whether it was maximized, pane widths, and the accounts signed in to, up to
-five: each one's session profile and the address it signed in as, which
-signing out of that account removes. When a
-session ends, a remembered folder or label you created is replaced by the
-Inbox, so its name never reaches the next account to sign in. It does not
+contains preferences, the window's size and place on screen, whether it was
+maximized, pane widths, and the accounts signed in to, up to five: each one's
+session profile, the address it signed in as, and the folder or label last
+read in it, which signing out of that account removes. A folder or label you
+created stays with its own account: another account signing in under the same
+profile opens its own Inbox, so that name never reaches it. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged
 settings file falls back to defaults. One that is there but cannot be read is
 first renamed with `.unreadable` added, such as `settings.json.unreadable`, so

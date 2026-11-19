@@ -31,9 +31,13 @@ pub const MAX_ZOOM: f32 = 2.0;
 pub struct Settings {
     pub window: Window,
     pub panels: Panels,
-    /// The last folder that was read. Kept whatever [`Self::start`] says, so
-    /// going back to [`StartFolder::LastRead`] still knows where that was.
-    pub folder: Folder,
+    /// Where versions before each account kept its own last folder read look
+    /// for it, one for all. They still need the field: on load, the folder it
+    /// names goes to the open account when that has none, and the Inbox is
+    /// left here. Each account's own, in [`Self::accounts`], is kept whatever
+    /// [`Self::start`] says, so going back to [`StartFolder::LastRead`] still
+    /// knows where that was.
+    folder: Folder,
     /// Which folder a run opens in.
     pub start: StartFolder,
     /// Mark a conversation as read as soon as it is opened.
@@ -170,7 +174,7 @@ impl Default for Panels {
 /// Which folder opens. Only stable system folders can be pinned.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StartFolder {
-    /// Wherever the mailbox was left.
+    /// Wherever the open account's mailbox was left.
     #[default]
     LastRead,
     /// The same folder every time, whatever was read last.
@@ -202,10 +206,11 @@ pub struct Reading {
 }
 
 impl Settings {
-    /// The folder to open, which is the one pinned here or the last one read.
+    /// The folder to open, which is the one pinned here or the last one the
+    /// open account read.
     pub fn start_folder(&self) -> Folder {
         match self.start {
-            StartFolder::LastRead => self.folder.clone(),
+            StartFolder::LastRead => self.accounts.folder(),
             StartFolder::Always(folder) => Folder::System(folder),
         }
     }
@@ -255,10 +260,9 @@ impl Settings {
     /// In-memory settings that open a given folder without becoming writable.
     #[cfg(test)]
     pub fn opening(folder: Folder) -> Self {
-        Self {
-            folder,
-            ..Self::default()
-        }
+        let mut settings = Self::default();
+        settings.accounts.set_folder(folder);
+        settings
     }
 
     /// Pins a system folder while keeping `stored` private.
@@ -338,6 +342,10 @@ fn read(path: &Path) -> Settings {
     };
     let usable = found.is_some();
     let mut settings = found.unwrap_or_default().sanitized();
+    // Settings saved before each account kept its own name one folder for
+    // all, the open account's.
+    let folder = std::mem::replace(&mut settings.folder, Folder::INBOX);
+    settings.accounts.adopt_folder(folder);
     settings.stored = usable || fs::rename(path, unreadable(path)).is_ok();
 
     settings
@@ -397,14 +405,16 @@ mod tests {
 
     #[test]
     fn settings_survive_a_round_trip() {
-        let settings = Settings {
-            folder: Folder::System(crate::mail::MailFolder::Archive),
+        let mut settings = Settings {
             mark_read_on_open: false,
             check_recipient_protection: false,
             appearance: Appearance::Light,
             system_font: true,
             ..Settings::default()
         };
+        settings
+            .accounts
+            .set_folder(Folder::System(crate::mail::MailFolder::Archive));
 
         let text = serde_json::to_string(&settings).unwrap();
 
@@ -663,7 +673,7 @@ mod tests {
         let path = folder.join(FILE);
         fs::write(&path, RELEASED).unwrap();
 
-        let expected = Settings {
+        let mut expected = Settings {
             window: Window {
                 width: 1_280.0,
                 height: 800.0,
@@ -674,7 +684,6 @@ mod tests {
                 sidebar: 0.25,
                 conversations: 0.5,
             },
-            folder: Folder::custom("kZ9", "Invoices"),
             start: StartFolder::Always(MailFolder::Archive),
             mark_read_on_open: false,
             confirm_links: false,
@@ -693,8 +702,23 @@ mod tests {
             // A field added since keeps its default.
             ..Settings::default()
         };
-        assert_eq!(read(&path), expected);
+        // Its one folder is the account's it was open for, the only one.
+        let invoices = Folder::custom("kZ9", "Invoices");
+        expected.accounts.set_folder(invoices.clone());
+        let settings = read(&path);
+        assert_eq!(settings, expected);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+
+        // Written back, that release finds the Inbox, no account's folder,
+        // and reading it again moves nothing.
+        let written = serde_json::to_string_pretty(&settings).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(value["folder"], "Inbox");
+        fs::write(&path, written).unwrap();
+        let again = read(&path);
+        assert_eq!(again, settings);
+        assert_eq!(again.start_folder(), Folder::System(MailFolder::Archive));
+        assert_eq!(again.accounts.folder(), invoices);
         let _ = fs::remove_dir_all(folder);
     }
 
@@ -746,10 +770,7 @@ mod tests {
     #[test]
     fn a_pinned_folder_wins_over_the_one_last_read() {
         let last_read = Folder::custom("kZ9", "Invoices");
-        let settings = Settings {
-            folder: last_read.clone(),
-            ..Settings::default()
-        };
+        let settings = Settings::opening(last_read.clone());
 
         // Left alone, a run returns to where it was.
         assert_eq!(settings.start, StartFolder::LastRead);
@@ -762,7 +783,7 @@ mod tests {
         assert_eq!(pinned.start_folder(), Folder::System(MailFolder::Archive),);
         // The last folder read is still kept, so going back to LastRead knows
         // where that was.
-        assert_eq!(pinned.folder, last_read);
+        assert_eq!(pinned.accounts.folder(), last_read);
     }
 
     #[test]

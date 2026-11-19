@@ -1228,8 +1228,12 @@ its former `default` session remains available with `--profile default`.
 The desktop's settings record its accounts, at most five
 ([`src/accounts.rs`](../src/accounts.rs)): each one's profile, `ruston` for the
 first and the first free of `ruston-2` to `ruston-5` for the others, the
-address it last signed in as, and which one is open; a damaged or hand-edited
-list keeps only those profiles, each once. One account is open at a time
+address it last signed in as, the folder it last read, and which one is open; a
+damaged or hand-edited list keeps only those profiles, each once. Another
+address signing in under a profile is another account, which starts in its own
+Inbox. The settings' `folder`, one for all before each account kept its own, is
+still written for older versions: on load, the folder it names goes to the open
+account when that has none, and the Inbox is left there. One account is open at a time
 ([`src/app/accounts.rs`](../src/app/accounts.rs)). Switching closes the open
 mailbox as signing out does, dropping every piece of that session's state,
 but revokes nothing: the session stays saved, and the other account's opens

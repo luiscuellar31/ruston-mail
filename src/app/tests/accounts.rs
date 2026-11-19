@@ -120,6 +120,30 @@ fn an_account_whose_session_ended_holds_none_of_the_others_back_at_startup() {
 }
 
 #[test]
+fn each_account_comes_back_to_the_folder_it_was_left_in() {
+    let mut app = App::signed_in_to(&["alex@proton.me", "sam@proton.me"]);
+    // A real account's folders are remembered, the demo mailbox's are not.
+    app.backend = None;
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Archive)));
+
+    // Alex has read no folder yet: the Inbox, not where Sam was.
+    let _ = app.update(Message::SwitchAccount(PROFILE.into()));
+    assert_eq!(app.settings.start_folder(), Folder::INBOX);
+    signed_in_as(&mut app, "alex@proton.me", "user-1");
+    app.backend = None;
+    let invoices = Folder::custom("kZ9", "Invoices");
+    let _ = app.update(Message::SelectFolder(invoices.clone()));
+
+    // Each opens where it was left, a folder the account made included.
+    let _ = app.update(Message::SwitchAccount("ruston-2".into()));
+    assert_eq!(app.settings.start_folder(), sys(MailFolder::Archive));
+    signed_in_as(&mut app, "sam@proton.me", "user-2");
+    assert_eq!(app.mailbox().unwrap().folder(), &sys(MailFolder::Archive));
+    let _ = app.update(Message::SwitchAccount(PROFILE.into()));
+    assert_eq!(app.settings.start_folder(), invoices);
+}
+
+#[test]
 fn there_are_at_most_five_accounts() {
     let mut app = App::signed_in_as("user-1", "alex@proton.me");
     for n in 2..=MAX_ACCOUNTS {

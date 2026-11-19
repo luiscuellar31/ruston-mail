@@ -909,7 +909,9 @@ mod tests {
         let mut draft = current.clone();
         draft.window.width += 100.0;
         draft.panels.sidebar += 0.1;
-        draft.folder = crate::mail::Folder::System(MailFolder::Spam);
+        draft
+            .accounts
+            .set_folder(crate::mail::Folder::System(MailFolder::Spam));
         assert!(preference_changes(&current, &draft).is_empty());
 
         draft.confirm_links = false;

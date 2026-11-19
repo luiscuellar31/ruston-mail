@@ -1635,10 +1635,11 @@ impl App {
         Effects::none()
     }
 
-    /// Remembers the last real folder; demo navigation is process-local.
+    /// Remembers the last real folder, the open account's; demo navigation
+    /// is process-local.
     fn remember_folder(&mut self, folder: &Folder) {
         if !self.is_demo() {
-            self.remember(|settings| settings.folder = folder.clone());
+            self.remember(|settings| settings.accounts.set_folder(folder.clone()));
         }
     }
 

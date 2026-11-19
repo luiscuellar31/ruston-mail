@@ -4,6 +4,8 @@
 use ruston_core::DEFAULT_SESSION_PROFILE;
 use serde::{Deserialize, Serialize};
 
+use crate::mail::Folder;
+
 /// The most accounts there can be.
 pub const MAX_ACCOUNTS: usize = 5;
 
@@ -14,6 +16,9 @@ pub struct Account {
     pub profile: String,
     #[serde(default)]
     pub address: Option<String>,
+    /// The last folder read in this account; none for its Inbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<Folder>,
 }
 
 /// The accounts, in the order they were added, and the profile of the one
@@ -32,6 +37,7 @@ impl Default for Accounts {
             list: vec![Account {
                 profile: DEFAULT_SESSION_PROFILE.to_owned(),
                 address: None,
+                folder: None,
             }],
             active: DEFAULT_SESSION_PROFILE.to_owned(),
         }
@@ -63,6 +69,40 @@ impl Accounts {
         self.list.iter().find(|account| account.profile == profile)
     }
 
+    /// The account under `profile`, to change.
+    fn get_mut(&mut self, profile: &str) -> Option<&mut Account> {
+        self.list
+            .iter_mut()
+            .find(|account| account.profile == profile)
+    }
+
+    /// The last folder read in the open account, its Inbox until another is.
+    pub fn folder(&self) -> Folder {
+        self.get(&self.active)
+            .and_then(|account| account.folder.clone())
+            .unwrap_or(Folder::INBOX)
+    }
+
+    /// Notes `folder` as the last one read in the open account.
+    pub fn set_folder(&mut self, folder: Folder) {
+        let active = self.active.clone();
+        if let Some(account) = self.get_mut(&active) {
+            account.folder = (folder != Folder::INBOX).then_some(folder);
+        }
+    }
+
+    /// Gives the open account `folder` as the last one read, when it has
+    /// none of its own: one that settings saved before each account kept
+    /// its own still name for all.
+    pub(crate) fn adopt_folder(&mut self, folder: Folder) {
+        let active = self.active.clone();
+        if let Some(account) = self.get_mut(&active)
+            && account.folder.is_none()
+        {
+            account.folder = (folder != Folder::INBOX).then_some(folder);
+        }
+    }
+
     /// The profile a new account signs in under: the first slot no account
     /// takes, none once there are [`MAX_ACCOUNTS`].
     pub fn free_profile(&self) -> Option<String> {
@@ -82,7 +122,8 @@ impl Accounts {
 
     /// Notes that `profile` signed in, as `address` when one is given, and
     /// opens it, adding it when it is a free slot's; with no address, the
-    /// one it had stays.
+    /// one it had stays. Another address there is another account, which
+    /// starts in its own Inbox.
     pub fn signed_in(&mut self, profile: &str, address: Option<&str>) {
         if self.get(profile).is_none() {
             if self.free_profile().as_deref() != Some(profile) {
@@ -91,14 +132,19 @@ impl Accounts {
             self.list.push(Account {
                 profile: profile.to_owned(),
                 address: None,
+                folder: None,
             });
         }
-        if let Some(account) = self
-            .list
-            .iter_mut()
-            .find(|account| account.profile == profile)
+        if let Some(account) = self.get_mut(profile)
             && let Some(address) = address
         {
+            if account
+                .address
+                .as_deref()
+                .is_some_and(|known| !known.eq_ignore_ascii_case(address))
+            {
+                account.folder = None;
+            }
             account.address = Some(address.to_owned());
         }
         self.active = profile.to_owned();
@@ -148,6 +194,7 @@ mod tests {
         Account {
             profile: profile.to_owned(),
             address: address.map(str::to_owned),
+            folder: None,
         }
     }
 
@@ -200,6 +247,40 @@ mod tests {
         assert_eq!(accounts.active_profile(), "ruston-2");
         assert!(!accounts.open("ruston-9"));
         assert_eq!(accounts.active_profile(), "ruston-2");
+    }
+
+    #[test]
+    fn each_account_keeps_its_last_folder_until_another_signs_in_there() {
+        let archive = Folder::System(crate::mail::MailFolder::Archive);
+        let invoices = Folder::custom("kZ9", "Invoices");
+        let mut accounts = Accounts::default();
+        accounts.signed_in("ruston", Some("alex@proton.me"));
+        assert_eq!(accounts.folder(), Folder::INBOX);
+        accounts.set_folder(invoices.clone());
+        accounts.signed_in("ruston-2", Some("sam@proton.me"));
+        assert_eq!(accounts.folder(), Folder::INBOX);
+        accounts.set_folder(archive.clone());
+
+        assert!(accounts.open("ruston"));
+        assert_eq!(accounts.folder(), invoices);
+        // Signing in again, as the same address, keeps it.
+        accounts.signed_in("ruston", Some("ALEX@proton.me"));
+        accounts.signed_in("ruston", None);
+        assert_eq!(accounts.folder(), invoices);
+        // Another account there must not have this one's folder asked for.
+        accounts.signed_in("ruston", Some("kim@proton.me"));
+        assert_eq!(accounts.folder(), Folder::INBOX);
+        assert!(accounts.open("ruston-2"));
+        assert_eq!(accounts.folder(), archive);
+
+        // The Inbox is no folder of its own, and a folder older settings
+        // name for all goes only to an account that has none.
+        accounts.set_folder(Folder::INBOX);
+        assert_eq!(accounts.get("ruston-2").unwrap().folder, None);
+        accounts.adopt_folder(invoices.clone());
+        assert_eq!(accounts.folder(), invoices);
+        accounts.adopt_folder(archive);
+        assert_eq!(accounts.folder(), invoices);
     }
 
     #[test]

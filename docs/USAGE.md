@@ -33,8 +33,8 @@ reason that may pass, such as no network, Proton being unavailable, or locked
 password storage, the session stays saved: the sign-in screen shows why, with
 **Try again**, so you do not have to sign in again. Opening it also stops after
 two minutes. Signing out asks Proton to
-revoke that session and removes its local copy. If you were reading one of your
-own folders or labels, the next sign-in opens the Inbox instead. If you are writing a message,
+revoke that session and removes its local copy, with the folder you last read
+in it, so the next sign-in opens the Inbox. If you are writing a message,
 Ruston asks before discarding it. While a message is being sent, **Sign out**
 is unavailable until the send finishes.
 
@@ -52,7 +52,8 @@ Ruston Mail signs in to up to five Proton accounts, one open at a time. The
 address at the foot of the sidebar opens the accounts: choose another to switch
 to it, or **Add account** to sign in to one more. The others keep their
 sessions saved, as a restart does, and check no mail and send no notifications
-until you open them. Switching opens the other account's saved session; if it
+until you open them. Each opens in the folder you last read in it, unless
+**Starting up** in Settings names one for all. Switching opens the other account's saved session; if it
 has ended, you sign in to that account again, with its address filled in. The
 sign-in screen lists your other accounts, so you can open one instead, when
 adding an account or when one's session has ended, even as Ruston starts;
