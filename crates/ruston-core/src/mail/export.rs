@@ -9,9 +9,9 @@ use crate::mail::attachments::safe_attachment_name;
 use crate::model::MimeType;
 use crate::model::enums::resolve_folder;
 use crate::model::message::{Attachment, Message, Recipient};
+pub use crate::private_file::create_private;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
@@ -175,7 +175,7 @@ impl Client {
         let temp = out_dir.join(format!(".{}.tmp", export_filename(message_id)));
         // One left by an interrupted export is incomplete.
         let _ = std::fs::remove_file(&temp);
-        let mut file = BufWriter::new(create_export_file(&temp)?);
+        let mut file = BufWriter::new(create_private(&temp)?);
 
         let result = async {
             let mut eml = EmlWriter::new(&mut file, &full, message.header.as_deref())?;
@@ -276,121 +276,6 @@ fn export_filename(id: &str) -> String {
     }
     name.push_str(EXPORT_FILE_SUFFIX);
     name
-}
-
-fn create_export_file(path: &Path) -> Result<File> {
-    Ok(create_private(path)?)
-}
-
-/// Creates a new file at `path` for writing that only its owner can open,
-/// for decrypted mail: mode `0600` on Unix, and on Windows an access list
-/// for the owner, the system and administrators, as a user's profile
-/// folders have, that takes nothing from the folder it is in. Otherwise a
-/// file in a shared folder would let every user who can read there read it
-/// too. Fails if `path` exists.
-pub fn create_private(path: &Path) -> io::Result<File> {
-    #[cfg(windows)]
-    {
-        create_private_on_windows(path)
-    }
-    #[cfg(not(windows))]
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options.open(path)
-    }
-}
-
-/// Full access for the owner, the system and administrators, in a protected
-/// list that inherits nothing.
-#[cfg(windows)]
-const PRIVATE_FILE_ACCESS: &str = "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)";
-
-/// Creates the file with its access list already in place, so no other user
-/// can open it, and keep it open, before it is restricted.
-#[cfg(windows)]
-fn create_private_on_windows(path: &Path) -> io::Result<File> {
-    use std::os::windows::io::FromRawHandle;
-    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
-    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-    use windows_sys::Win32::Storage::FileSystem::{
-        CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
-    };
-
-    let name = verbatim(path)?;
-    let access: Vec<u16> = PRIVATE_FILE_ACCESS.encode_utf16().chain([0]).collect();
-    let mut descriptor = std::ptr::null_mut();
-    // SAFETY: `access` is NUL-terminated, and on success the descriptor is
-    // this function's to free with LocalFree.
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            access.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor,
-        bInheritHandle: 0,
-    };
-    // SAFETY: `name` is NUL-terminated and `attributes` points at the live
-    // descriptor. Sharing is std's, so the file can be renamed while open.
-    let handle = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            &attributes,
-            CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL,
-            std::ptr::null_mut(),
-        )
-    };
-    let created = if handle == INVALID_HANDLE_VALUE {
-        Err(io::Error::last_os_error())
-    } else {
-        // SAFETY: the handle was just opened, and nothing else owns it.
-        Ok(unsafe { File::from_raw_handle(handle) })
-    };
-    // SAFETY: the descriptor came from the conversion above, and the file
-    // holds its own copy.
-    unsafe { LocalFree(descriptor) };
-    created
-}
-
-/// `path` as CreateFileW takes it at any length: absolute and verbatim, the
-/// form std's own file functions use for long names.
-#[cfg(windows)]
-fn verbatim(path: &Path) -> io::Result<Vec<u16>> {
-    use std::os::windows::ffi::OsStrExt;
-    let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
-    let absolute: Vec<u16> = std::path::absolute(path)?
-        .as_os_str()
-        .encode_wide()
-        .collect();
-    let mut name = if absolute.starts_with(&wide(r"\\?\")) || absolute.starts_with(&wide(r"\\.\")) {
-        absolute
-    } else if let Some(share) = absolute.strip_prefix(wide(r"\\").as_slice()) {
-        [wide(r"\\?\UNC\").as_slice(), share].concat()
-    } else {
-        [wide(r"\\?\"), absolute].concat()
-    };
-    name.push(0);
-    Ok(name)
 }
 
 struct EmlWriter<W: Write> {

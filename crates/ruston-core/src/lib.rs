@@ -80,6 +80,7 @@ pub mod error;
 pub mod html;
 pub mod mail;
 pub mod model;
+mod private_file;
 pub mod session;
 pub mod transport;
 

@@ -1097,6 +1097,12 @@ instead of an unknown outcome.
   [export handler](../crates/ruston-cli/src/commands/export.rs) chooses the
   destination and reports the result, exiting with an error when a message was
   skipped; demo mode writes fictional sample mail.
+- [`private_file.rs`](../crates/ruston-core/src/private_file.rs) creates the
+  files that hold decrypted mail so only their owner can open them: mode `0600`
+  on Unix, and on Windows an access list for the owner, the system and
+  administrators, in place as the file is created, that inherits nothing from
+  its folder. The EML export writes with it, and `mail::export` re-exports it
+  for the CLI, which saves decrypted bodies with it.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints.
   Actions on several messages or conversations read the response Proton gives
   for each ID (`Code` 1001 with `Responses`), and fail with an API error that
