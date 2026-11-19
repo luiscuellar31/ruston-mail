@@ -34,6 +34,8 @@ pub fn escape_text(text: &str) -> String {
     out
 }
 
+pub mod rich;
+
 /// The same sanitizer serves every body, so it is built once.
 static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
     let mut builder = ammonia::Builder::new();

@@ -5,6 +5,7 @@ use chrono::Utc;
 use super::*;
 use crate::mail::ConversationDetail;
 use crate::ui::test_support::text_rect;
+use ruston_core::html::rich::ListMarker;
 
 #[test]
 fn the_reading_column_is_bounded_and_centred() {
@@ -1785,7 +1786,7 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
     let height = |depth: u8| {
         let item = RichBlock {
             kind: BlockKind::ListItem {
-                marker: "•".into(),
+                marker: ListMarker::Bullet,
                 depth,
                 spans: vec![RichSpan {
                     text: "Nested item".into(),

@@ -1,6 +1,5 @@
 mod auth;
 pub mod demo;
-mod html;
 mod model;
 mod outgoing;
 mod proton;

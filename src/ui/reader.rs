@@ -1390,8 +1390,10 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
                     Layout::right_to_left(Align::TOP),
                     |ui| {
                         ui.add(
-                            egui::Label::new(egui::RichText::new(marker).size(theme::BODY_SIZE))
-                                .selectable(true),
+                            egui::Label::new(
+                                egui::RichText::new(marker.label()).size(theme::BODY_SIZE),
+                            )
+                            .selectable(true),
                         );
                     },
                 );

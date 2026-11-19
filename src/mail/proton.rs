@@ -22,7 +22,7 @@ use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
     LoginRequest, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
-    MailboxError, MessageBody, OwnPlaces, PlaceLook, SummaryKind, html,
+    MailboxError, MessageBody, OwnPlaces, PlaceLook, SummaryKind,
 };
 use super::{INSPECTION_CONCURRENCY, MailAction};
 
@@ -1139,7 +1139,7 @@ fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
         reply_tos,
     } = message;
     let body = if ruston_core::html::is_html_mime(&mime_type) {
-        MessageBody::Rich(html::parse(&body))
+        MessageBody::Rich(ruston_core::html::rich::parse(&body))
     } else {
         MessageBody::PlainText(body)
     };

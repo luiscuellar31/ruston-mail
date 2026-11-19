@@ -531,9 +531,10 @@ so it shows and is read as usual; `Message::ContinueWriting`, or asking for
 another message, unfolds it. Nothing is marked while a draft covers the
 reader, as when a conversation arrives after the draft was unfolded again:
 once a message uncovers it, `App::update` marks the conversation opened behind
-the draft, if it is still the open one. The desktop
-adapter converts sanitized HTML into the native rich-body model in
-[`mail/html.rs`](../src/mail/html.rs). It appends visible text in runs instead
+the draft, if it is still the open one. Core's
+[`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) converts sanitized
+HTML into the rich-body model both apps draw, which the desktop adapter keeps
+as `MessageBody::Rich`. It appends visible text in runs instead
 of comparing styles and link targets for every character. Styled spans share
 each normalized target as `Arc<str>`, keeping the body safe to send between
 workers and the UI. When equal adjacent anchors merge, the stored span adopts
@@ -929,15 +930,18 @@ instead of an unknown outcome.
   reports what a command did to a list of IDs, naming the action after the
   command, and settings, emptied folders and written bodies have reports of
   their own. Its
-  [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) converts HTML
-  messages to readable Markdown-style text for the default read format, and
-  for every message `conversations read` shows. It
-  represents at most eight levels of quotes and lists and caps converted output
-  at 1 MiB, including a truncation notice. Output is accumulated directly in a
-  bounded buffer; staging text, span metadata, and link targets also have a byte
-  budget, so conversion can stop earlier when staging is full. The tokenizer
-  receives UTF-8 chunks and stops receiving input after truncation. List state
-  stores only represented levels and counts omitted levels for correct unwinding.
+  [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) writes the
+  rich body core reads from an HTML message as Markdown-style text, for the
+  default read format and for every message `conversations read` shows: each
+  word within its style's markers, and each line of a link within its
+  brackets. It represents at most eight levels of quotes and
+  lists and caps converted output at 1 MiB, including a truncation notice.
+  Output is accumulated directly in a bounded buffer, and core's
+  `rich::parse_within` keeps the body's text, span storage, link targets and
+  blocks within the same budget, so conversion stops earlier when that is full.
+  Its tokenizer receives UTF-8 chunks and stops receiving input after
+  truncation. List state stores only the eight levels kept and counts omitted
+  levels for correct unwinding.
   Link targets are shared across spans, and oversized destinations are rendered
   as plain labels. Visible text is appended in runs within the staging budget
   at UTF-8 boundaries. Merging spans and formatting link groups retain the
@@ -1205,9 +1209,9 @@ instead of an unknown outcome.
 | Desktop sign-in and prompts | [`src/app/auth.rs`](../src/app/auth.rs), [`src/ui/login.rs`](../src/ui/login.rs) | [`src/mail/auth.rs`](../src/mail/auth.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), core [`auth/`](../crates/ruston-core/src/auth/), [`session/`](../crates/ruston-core/src/session/) |
 | CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
 | Mailbox lists, search, and thread grouping | [`src/app/mailbox.rs`](../src/app/mailbox.rs), [`src/mail/threading.rs`](../src/mail/threading.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`api/conversations.rs`](../crates/ruston-core/src/api/conversations.rs) |
-| Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | [`src/mail/html.rs`](../src/mail/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
+| Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | Core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
 | Desktop email links and instance activation | [`src/mailto.rs`](../src/mailto.rs), [`src/launch.rs`](../src/launch.rs), [`src/app/mailto.rs`](../src/app/mailto.rs) | [`src/launch/macos.rs`](../src/launch/macos.rs), [`src/ui/mod.rs`](../src/ui/mod.rs), platform packaging |
-| CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
+| CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) and [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/recipients.rs`](../crates/ruston-core/src/mail/recipients.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |

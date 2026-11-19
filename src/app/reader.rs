@@ -185,6 +185,7 @@ mod tests {
     use crate::mail::{
         BlockKind, MailAddress, MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
     };
+    use ruston_core::html::rich::ListMarker;
 
     fn message(id: &str, time: i64) -> MailMessage {
         MailMessage {
@@ -244,7 +245,7 @@ mod tests {
                             spans: spans(format!("Title {index}")),
                         },
                         2 => BlockKind::ListItem {
-                            marker: "•".into(),
+                            marker: ListMarker::Bullet,
                             depth: 0,
                             spans: spans(format!("item {index}")),
                         },
@@ -257,6 +258,7 @@ mod tests {
                     quote_depth: (index % 3) as u8,
                 })
                 .collect(),
+            truncated: false,
         }
     }
 
@@ -308,6 +310,7 @@ mod tests {
                     quote_depth: 0,
                 })
                 .collect(),
+            truncated: false,
         };
         let reader = reader(vec![
             saying(

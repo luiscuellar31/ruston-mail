@@ -386,7 +386,7 @@ fn body_text(fixture: &Fixture, body: &str) -> String {
     if !fixture.html {
         return body.to_owned();
     }
-    super::html::parse(body).plain_text()
+    ruston_core::html::rich::parse(body).plain_text()
 }
 
 fn fixtures() -> Vec<Fixture> {
@@ -1122,7 +1122,7 @@ fn message(
         // An unread conversation's newest message is the one not read yet.
         unread: fixture.unread && newer == 0 && !from_demo_user,
         body: if fixture.html {
-            MessageBody::Rich(super::html::parse(&fixture.bodies[position]))
+            MessageBody::Rich(ruston_core::html::rich::parse(&fixture.bodies[position]))
         } else {
             MessageBody::PlainText(fixture.bodies[position].to_owned())
         },
