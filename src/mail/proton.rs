@@ -53,7 +53,6 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 /// Per-inspection deadline, including semaphore wait; timeouts keep Proton grouping.
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
-const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
 const MAX_LISTED_CORRESPONDENTS: usize = 3;
 
 #[derive(Clone)]
@@ -173,14 +172,15 @@ impl ListedAttachments {
 }
 
 impl ProtonMailService {
-    pub async fn resume() -> ResumeOutcome {
-        resume_within(Client::resume(PROFILE), SIGN_IN_TIMEOUT).await
+    /// Resumes the session saved under `profile`.
+    pub async fn resume(profile: String) -> ResumeOutcome {
+        resume_within(Client::resume(&profile), SIGN_IN_TIMEOUT).await
     }
 
-    /// Whether a saved session waits to be resumed, from its file alone,
-    /// so the answer comes at once.
-    pub fn has_saved_session() -> bool {
-        Client::has_saved_session(PROFILE)
+    /// Whether a session saved under `profile` waits to be resumed, from its
+    /// file alone, so the answer comes at once.
+    pub fn has_saved_session(profile: &str) -> bool {
+        Client::has_saved_session(profile)
     }
 
     /// Signs in, forwarding interactive prompts and always emitting `Finished`.
@@ -197,7 +197,7 @@ impl ProtonMailService {
             password: request.password,
             totp: request.totp,
             mailbox_password: request.mailbox_password,
-            profile: PROFILE.to_owned(),
+            profile: request.profile,
             base_url: None,
             app_version: None,
             user_agent: Some(user_agent()),

@@ -352,8 +352,11 @@ impl App {
         let task = if demo {
             app.open_mailbox(MailBackend::demo(), None, None)
         } else {
-            app.session_saved = ProtonMailService::has_saved_session();
-            Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
+            app.session_saved = ProtonMailService::has_saved_session(&app.session_profile());
+            Effects::perform(
+                ProtonMailService::resume(app.session_profile()),
+                Message::SessionChecked,
+            )
         };
 
         (app, task)
@@ -409,6 +412,11 @@ impl App {
             .checked_add(1)
             .expect("compose id exhausted");
         self.last_compose_id
+    }
+
+    /// The session profile the account signs in and resumes under.
+    fn session_profile(&self) -> String {
+        ruston_core::DEFAULT_SESSION_PROFILE.to_owned()
     }
 
     fn advance_session_epoch(&mut self) {

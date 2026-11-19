@@ -634,7 +634,13 @@ fn a_session_bound_to_another_address_asks_to_sign_in_again() {
             refresh: SecretString::from("refresh"),
         };
         session
-            .save(&paths, PROFILE, store, &tokens, &SecretString::from("skp"))
+            .save(
+                &paths,
+                ruston_core::DEFAULT_SESSION_PROFILE,
+                store,
+                &tokens,
+                &SecretString::from("skp"),
+            )
             .unwrap();
     };
     // The secret store keeps the first address; the file now names another.
@@ -642,7 +648,7 @@ fn a_session_bound_to_another_address_asks_to_sign_in_again() {
     save("https://mail.proton.me/api", &bound);
     save("https://example.test/api", &MemoryStore::new());
 
-    let Err(error) = Session::load(&paths, PROFILE, &bound) else {
+    let Err(error) = Session::load(&paths, ruston_core::DEFAULT_SESSION_PROFILE, &bound) else {
         panic!("a session bound to another address must not load");
     };
     std::fs::remove_dir_all(&folder).unwrap();

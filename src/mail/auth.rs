@@ -92,6 +92,8 @@ impl fmt::Display for AuthError {
 }
 
 pub struct LoginRequest {
+    /// The session profile the account signs in under.
+    pub(crate) profile: String,
     pub(crate) username: String,
     pub(crate) password: SecretString,
     pub(crate) totp: Option<SecretString>,
@@ -100,12 +102,14 @@ pub struct LoginRequest {
 
 impl LoginRequest {
     pub(crate) fn new(
+        profile: String,
         username: String,
         password: SecretString,
         totp: Option<SecretString>,
         mailbox_password: Option<SecretString>,
     ) -> Self {
         Self {
+            profile,
             username,
             password,
             totp,

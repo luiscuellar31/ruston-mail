@@ -166,6 +166,7 @@ impl App {
         }
 
         let request = LoginRequest::new(
+            self.session_profile(),
             self.login_form.username.trim().to_owned(),
             SecretString::from(self.login_form.password.as_str()),
             optional_trimmed_secret(&self.login_form.totp),
@@ -284,7 +285,10 @@ impl App {
         self.resume_may_retry = false;
         self.auth_error = None;
         self.auth_state = AuthState::CheckingSession;
-        Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
+        Effects::perform(
+            ProtonMailService::resume(self.session_profile()),
+            Message::SessionChecked,
+        )
     }
 
     pub(super) fn finish_sign_in(
