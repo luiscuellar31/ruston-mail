@@ -14,7 +14,7 @@ use ruston_core::mail::organize::folder_id_among;
 use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Error, Label, RecipientProtection, SearchOpts};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 /// How many rows a notch of the mouse wheel scrolls the reader or the list
@@ -59,13 +59,14 @@ impl Pane {
 
 /// Where the view last drew each pane, for the mouse to find what it
 /// points at: in the order of [`Pane::ALL`], the area inside its borders,
-/// empty for a pane not drawn, and the first row of its list it showed.
+/// empty for a pane not drawn, and the first row of its list, or of the
+/// reader's text, it showed.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Drawn([(Rect, usize); 3]);
 
 impl Drawn {
-    /// Notes that `pane` was drawn within `inner`, its list from its row
-    /// `first`.
+    /// Notes that `pane` was drawn within `inner`, its list or text from its
+    /// row `first`.
     pub(crate) fn note(&mut self, pane: Pane, inner: Rect, first: usize) {
         if let Some(at) = Pane::ALL.iter().position(|each| *each == pane) {
             self.0[at] = (inner, first);
@@ -73,15 +74,14 @@ impl Drawn {
     }
 
     /// The pane drawn at `column` and `row`, if any, with the row of its
-    /// list there; the reader has none.
-    fn at(&self, column: u16, row: u16) -> Option<(Pane, Option<usize>)> {
+    /// list, or of the reader's text, there.
+    fn at(&self, column: u16, row: u16) -> Option<(Pane, usize)> {
         let position = Position::new(column, row);
         let (pane, (inner, first)) = Pane::ALL
             .into_iter()
             .zip(self.0)
             .find(|(_, (inner, _))| inner.contains(position))?;
-        let listed = pane != Pane::Reader;
-        Some((pane, listed.then(|| first + usize::from(row - inner.y))))
+        Some((pane, first + usize::from(row - inner.y)))
     }
 }
 
@@ -210,6 +210,10 @@ pub(crate) struct App {
     /// The message at the reader's top when last drawn, which Enter folds
     /// or shows; the view sets it.
     pub(crate) in_view: Cell<Option<usize>>,
+    /// The row of the reader's text where each message of the open
+    /// conversation starts, folded into a line or not, as last drawn, for a
+    /// click to find the one it is on; the view sets it.
+    pub(crate) message_rows: RefCell<Vec<usize>>,
     /// Whether the reader shows quoted passages instead of folding them.
     pub(crate) show_quotes: bool,
     /// Whether the reader shows the messages already read instead of
@@ -290,10 +294,11 @@ pub(crate) enum Message {
     Top,
     Bottom,
     Open,
-    /// A click on `pane`, on the row of its list at `row`, if any.
+    /// A click on `pane`, on the row of its list, or of the reader's text,
+    /// at `row`.
     Click {
         pane: Pane,
-        row: Option<usize>,
+        row: usize,
     },
     /// The mouse wheel turned a notch `by`, down for 1 and up for -1, over
     /// the pane `over`, if any.
@@ -511,6 +516,7 @@ impl App {
             scroll: Cell::new(0),
             landing: Cell::new(None),
             in_view: Cell::new(None),
+            message_rows: RefCell::new(Vec::new()),
             show_quotes: false,
             show_read: false,
             toggled: Vec::new(),
@@ -1555,9 +1561,15 @@ impl App {
     /// Folds the message at the reader's top into one line, or shows it,
     /// keeping it there.
     fn toggle_message(&mut self) {
-        let Some(index) = self.in_view.get().filter(|_| self.reading.is_some()) else {
-            return;
-        };
+        if let Some(index) = self.in_view.get().filter(|_| self.reading.is_some()) {
+            self.toggle(index);
+        }
+    }
+
+    /// Folds the open conversation's message at `index` into one line, or
+    /// shows it, bringing it to the reader's top unless it starts in the
+    /// upper third already.
+    fn toggle(&mut self, index: usize) {
         match self.toggled.iter().position(|toggled| *toggled == index) {
             Some(at) => {
                 self.toggled.remove(at);
@@ -1707,20 +1719,28 @@ impl App {
         Vec::new()
     }
 
-    /// What a click on `pane` does, on the row `row` of its list if any:
+    /// What a click on `pane` does, on the row `row` of its list or text:
     /// the pane gets the keys and the row is selected, or opened when it
-    /// was selected already in the pane that had them.
-    fn click(&mut self, pane: Pane, row: Option<usize>) -> Vec<Effect> {
+    /// was selected already in the pane that had them; in the reader, a
+    /// message folded into a line there opens, as Enter opens the one at
+    /// its top.
+    fn click(&mut self, pane: Pane, row: usize) -> Vec<Effect> {
         let had_keys = self.focus == pane;
         self.focus = pane;
         let (selected, len) = match pane {
             Pane::Folders => (&mut self.selected_place, self.places.len()),
             Pane::Conversations => (&mut self.selected_conversation, self.conversations.len()),
-            Pane::Reader => return Vec::new(),
+            Pane::Reader => {
+                let on = self.message_rows.borrow().iter().position(|&at| at == row);
+                if let Some(index) = on.filter(|&index| self.folds(index)) {
+                    self.toggle(index);
+                }
+                return Vec::new();
+            }
         };
-        let Some(row) = row.filter(|row| *row < len) else {
+        if row >= len {
             return Vec::new();
-        };
+        }
         if had_keys && *selected == row {
             return self.open();
         }

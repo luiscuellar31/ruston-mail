@@ -780,7 +780,8 @@ instead of an unknown outcome.
   what only a terminal needs; after `g`, the next key names a folder to go to.
   A click or a turn of the wheel finds what it points at where the view last
   drew the panes: a click gives a pane the keys and selects a row of its
-  list, or opens it when it was selected there already, and the wheel moves
+  list, or opens it when it was selected there already, or opens a message
+  folded into a line in the reader, and the wheel moves
   the list under it a row, as Up and Down do, or scrolls the reader, or the
   list of keys over the panes. While a message is being written, a question
   waits or the command line is open, the mouse asks for nothing.

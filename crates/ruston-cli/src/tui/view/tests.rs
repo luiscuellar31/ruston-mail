@@ -606,6 +606,31 @@ fn a_click_selects_a_row_and_on_the_row_selected_opens_it() {
 }
 
 #[test]
+fn a_click_on_a_message_folded_into_a_line_opens_it() {
+    let messages = [
+        message("alex@example.test", 0, 0, "First thoughts"),
+        message("sam@example.test", 1, 0, "Second thoughts"),
+        message("alex@example.test", 2, 0, "The newest words"),
+    ];
+    let mut app = opened(&messages);
+    let screen = text(&drawn(200, 40, &app, &Theme::new(false)));
+    let row = |screen: &str, text: &str| {
+        let at = screen.lines().position(|line| line.contains(text));
+        u16::try_from(at.unwrap()).unwrap()
+    };
+    // A click on a message shown only gives the reader the keys.
+    app.focus = Pane::Folders;
+    assert!(mouse(&mut app, CLICK, 150, row(&screen, "The newest words")).is_empty());
+    assert_eq!(app.focus, Pane::Reader);
+    assert!(app.toggled.is_empty());
+
+    assert!(mouse(&mut app, CLICK, 150, row(&screen, "· Second thoughts")).is_empty());
+    let screen = text(&drawn(200, 40, &app, &Theme::new(false)));
+    assert!(screen.contains("Date:    2024-04-25 00:06"), "{screen}");
+    assert!(screen.contains("· First thoughts"), "{screen}");
+}
+
+#[test]
 fn the_wheel_scrolls_what_it_is_over_and_the_keys_over_the_panes() {
     let mut app = with_mail("alex@example.test", "Quarterly report");
     app.conversations.push(Conversation::default());

@@ -664,7 +664,7 @@ fn the_wheel_past_the_last_row_loads_the_next_page_and_moves_no_keys() {
         app.message_for(&click),
         Some(Message::Click {
             pane: Pane::Conversations,
-            row: Some(0)
+            row: 0
         })
     ));
     app.compose = Some(Compose::new(String::new()));

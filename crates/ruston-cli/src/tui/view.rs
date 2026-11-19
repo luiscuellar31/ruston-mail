@@ -782,10 +782,7 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                 area,
             )
         }
-        Pane::Reader => {
-            draw_reader(frame, app, block, area);
-            0
-        }
+        Pane::Reader => draw_reader(frame, app, block, area),
     };
     // For the mouse to find what it points at.
     let mut drawn = app.drawn.get();
@@ -820,19 +817,21 @@ fn draw_list<'a>(
 /// separators between, and the quoted passages of the rest in a line each,
 /// unless the state shows them, wrapped to the pane and scrolled as far as
 /// the state asks, within what there is. Since only the drawing knows how many
-/// rows the text wraps to, it tells the state how far it can scroll and which
-/// message is at the top, and brings there the one the state asks for.
-fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) {
+/// rows the text wraps to, it tells the state how far it can scroll, which
+/// message is at the top and where each starts, and brings there the one the
+/// state asks for. Returns the first row it shows.
+fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> usize {
     let inner = block.inner(area);
     let Some(reading) = &app.reading else {
         app.reader_bottom.set(0);
         app.in_view.set(None);
+        app.message_rows.borrow_mut().clear();
         let hint = Line::styled(
             "Enter on a conversation opens it here.",
             Style::new().add_modifier(Modifier::DIM),
         );
         frame.render_widget(Paragraph::new(hint).block(block), area);
-        return;
+        return 0;
     };
     let mut lines = vec![Line::styled(
         reading.subject.as_str(),
@@ -905,6 +904,7 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) {
     let at_top = starts.iter().rposition(|&(separator, _)| separator <= top);
     app.in_view
         .set(at_top.or((!starts.is_empty()).then_some(0)));
+    *app.message_rows.borrow_mut() = starts.iter().map(|&(_, own)| own).collect();
     let bottom = u16::try_from(bottom).unwrap_or(u16::MAX);
     app.reader_bottom.set(bottom);
     app.reader_rows.set(inner.height.max(1));
@@ -923,6 +923,7 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) {
             .block(block),
         area,
     );
+    top
 }
 
 /// Adds the lines `range` of `reading`, each quoted passage that starts
