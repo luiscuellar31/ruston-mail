@@ -151,7 +151,7 @@ fn the_first_action_outside_the_inbox_puts_the_conversation_back() {
             &mut state,
             input.clone(),
         );
-        let first = rounded_rects(&shapes, 7)[0].center();
+        let first = buttons(&shapes)[0].center();
 
         let (_, messages) = reader_frame(
             &context,
@@ -195,7 +195,7 @@ fn the_conversation_takes_actions_while_the_list_refreshes() {
         &mut state,
         input.clone(),
     );
-    let archive = rounded_rects(&shapes, 7)[0].center();
+    let archive = buttons(&shapes)[0].center();
 
     let (_, messages) = reader_frame(
         &context,
@@ -824,6 +824,21 @@ fn reader_frame(
     (shapes, messages)
 }
 
+/// The buttons drawn: rectangles with a widget's corners.
+fn buttons(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+    rounded_rects(shapes, theme::WIDGET_CORNER_RADIUS)
+}
+
+/// The cards drawn, such as a message's.
+fn cards(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+    rounded_rects(shapes, theme::CARD_CORNER_RADIUS)
+}
+
+/// The bars of a loading skeleton drawn; a checkbox drawn too would count.
+fn skeleton_bars(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+    rounded_rects(shapes, theme::SKELETON_CORNER_RADIUS)
+}
+
 fn rounded_rects(shapes: &[egui::epaint::ClippedShape], radius: u8) -> Vec<egui::Rect> {
     shapes
         .iter()
@@ -855,8 +870,8 @@ fn assert_reader_geometry(
     expanded: bool,
     scale: f32,
 ) {
-    let before = rounded_rects(loading, 10)[0];
-    let after = rounded_rects(loaded, 10)[0];
+    let before = cards(loading)[0];
+    let after = cards(loaded)[0];
     assert_same_pixel_position("card top", before.left_top(), after.left_top(), scale);
     assert_same_pixel_position("card right", before.right_top(), after.right_top(), scale);
     for label in [subject, &message_count_label(count as usize)] {
@@ -866,7 +881,7 @@ fn assert_reader_geometry(
         assert_same_pixel_position(label, before.right_bottom(), after.right_bottom(), scale);
     }
     let controls = |shapes: &[egui::epaint::ClippedShape], top: f32| {
-        rounded_rects(shapes, 7)
+        buttons(shapes)
             .into_iter()
             .filter(|rect| rect.bottom() < top)
             .collect::<Vec<_>>()
@@ -886,7 +901,7 @@ fn assert_reader_geometry(
     }
     // Each loaded text has a loading bar whose corner is where the text
     // goes, whatever order the bars are drawn in.
-    let bars = rounded_rects(loading, 4);
+    let bars = skeleton_bars(loading);
     let bar_at = |label: &str, corner: fn(&egui::Rect) -> egui::Pos2, point: egui::Pos2| {
         *bars
             .iter()
@@ -1069,8 +1084,8 @@ fn applied_labels_do_not_push_the_card_down_after_loading() {
         );
         assert_same_pixel_position(
             "card with applied labels",
-            rounded_rects(&loading, 10)[0].left_top(),
-            rounded_rects(&loaded, 10)[0].left_top(),
+            cards(&loading)[0].left_top(),
+            cards(&loaded)[0].left_top(),
             context.pixels_per_point(),
         );
     }
@@ -1099,7 +1114,7 @@ fn loading_controls_do_not_dispatch_actions_and_loaded_reply_still_works() {
         input.clone(),
     );
     let reply = text_rect(&shapes, "Reply").center();
-    let controls = rounded_rects(&shapes, 7);
+    let controls = buttons(&shapes);
     for position in [controls[0].center(), labels_button(&shapes).center(), reply] {
         let mut click = input.clone();
         click.events = vec![
