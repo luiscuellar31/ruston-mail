@@ -1240,6 +1240,10 @@ but revokes nothing: the session stays saved, and the other account's opens
 as at startup, its answer applied only while that account is still the one
 being opened. Adding one closes the mailbox the same way and signs in under
 the first free profile, which joins the list only once the sign-in succeeds.
+One the list has already is not added: by the address typed, before signing
+in, or by the primary address Proton names once signed in, when the session
+just made is signed out of as Sign out would; core clears a profile's saved
+session only while it is the one signed out of, so the account's own stays.
 The sign-in screen offers the other accounts, to open one instead of signing
 in, so an account whose session ended, even at startup, holds none of the
 others back. The root window asks before a change of account discards a

@@ -153,7 +153,7 @@ impl App {
             return Effects::none();
         }
         // The same account twice would keep two sessions of it.
-        if step == SignInStep::Credentials && self.adds_known_address() {
+        if step == SignInStep::Credentials && self.adds_known_address(&self.login_form.username) {
             self.auth_error = Some(AuthError::AccountAlreadyAdded);
             return Effects::none();
         }
@@ -378,6 +378,13 @@ impl App {
         email: Option<String>,
         account: Option<String>,
     ) -> Effects {
+        // Proton names the account signed in, however it was typed.
+        if email
+            .as_deref()
+            .is_some_and(|email| self.adds_known_address(email))
+        {
+            return self.sign_out_of_duplicate(backend);
+        }
         self.advance_session_epoch();
         self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
@@ -492,6 +499,39 @@ impl App {
         } else {
             Effects::none()
         }
+    }
+
+    /// Signs out of the session just made for an account added already, as
+    /// Sign out would: core clears a profile's saved session only while it
+    /// is that one, so the account's own session, under its own profile,
+    /// stays. Closing the window waits for it, as for any sign-out.
+    fn sign_out_of_duplicate(&mut self, backend: MailBackend) -> Effects {
+        self.login_form.clear_sensitive();
+        self.auth_error = None;
+        self.auth_state = AuthState::SigningOut;
+        let epoch = self.session_epoch;
+        let MailBackend::Proton(service) = backend else {
+            // A demo mailbox has no session to sign out of.
+            return self.finish_duplicate_logout(epoch, Ok(()));
+        };
+        Effects::perform(async move { service.logout().await }, move |result| {
+            Message::DuplicateLogoutFinished(epoch, result)
+        })
+    }
+
+    /// Back to the sign-in screen once the session just made for an account
+    /// added already is signed out of: it says so, or that the cleanup failed.
+    pub(super) fn finish_duplicate_logout(
+        &mut self,
+        epoch: super::SessionEpoch,
+        result: Result<(), AuthError>,
+    ) -> Effects {
+        if !self.is_current_session(epoch) || self.auth_state != AuthState::SigningOut {
+            return Effects::none();
+        }
+        self.auth_error = Some(result.err().unwrap_or(AuthError::AccountAlreadyAdded));
+        self.auth_state = AuthState::SignedOut;
+        Effects::none()
     }
 
     /// Returns to the login screen, dropping the session's state. Only a draft

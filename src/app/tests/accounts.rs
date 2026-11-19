@@ -230,5 +230,52 @@ fn an_account_added_already_is_not_added_again() {
     app.auth_state = AuthState::SignedOut;
     app.login_form.username = "alex@proton.me".into();
     app.login_form.password = "password".to_owned().into();
-    assert!(!app.adds_known_address());
+    assert!(!app.adds_known_address(&app.login_form.username));
+}
+
+#[test]
+fn an_account_added_again_by_another_name_is_found_once_signed_in() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    let _ = app.update(Message::AddAccount);
+    // Typed as its username, it is Proton that names the account.
+    app.login_form.username = "alex".into();
+    app.login_form.password = "password".to_owned().into();
+    assert_eq!(app.update(Message::Submit).units(), 1);
+    signed_in_as(&mut app, "Alex@proton.me", "user-1");
+
+    // Its new session is signed out of, the account added stays alone,
+    // and the sign-in screen offers it instead.
+    assert_eq!(app.auth_error, Some(AuthError::AccountAlreadyAdded));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert!(app.mailbox.is_none());
+    assert_eq!(app.accounts().all().len(), 1);
+    assert_eq!(app.accounts().active_profile(), PROFILE);
+    assert_eq!(app.session_profile(), "ruston-2");
+    assert_eq!(others(&app), [Some("alex@proton.me")]);
+    assert_eq!(app.username_mut().as_str(), "alex");
+}
+
+#[test]
+fn signing_out_of_an_account_added_again_waits_for_its_cleanup() {
+    let mut app = App::signed_in_as("user-1", "alex@proton.me");
+    let _ = app.update(Message::AddAccount);
+    app.auth_state = AuthState::SigningOut;
+    let epoch = app.session_epoch;
+
+    // One from a session since replaced changes nothing.
+    let _ = app.update(Message::DuplicateLogoutFinished(epoch + 1, Ok(())));
+    assert_eq!(app.auth_state, AuthState::SigningOut);
+    // A cleanup that failed says its credentials may remain.
+    let _ = app.update(Message::DuplicateLogoutFinished(
+        epoch,
+        Err(AuthError::LogoutUnavailable),
+    ));
+    assert_eq!(app.auth_state, AuthState::SignedOut);
+    assert_eq!(app.auth_error, Some(AuthError::LogoutUnavailable));
+    assert_eq!(app.accounts().all().len(), 1);
+    assert_eq!(app.session_profile(), "ruston-2");
+
+    app.auth_state = AuthState::SigningOut;
+    let _ = app.update(Message::DuplicateLogoutFinished(epoch, Ok(())));
+    assert_eq!(app.auth_error, Some(AuthError::AccountAlreadyAdded));
 }

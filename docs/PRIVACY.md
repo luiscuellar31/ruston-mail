@@ -269,7 +269,9 @@ Signing out of the shared profile affects both frontends.
 The desktop keeps each of its accounts, up to five, in a profile of its own:
 `ruston` for the first, then `ruston-2` to `ruston-5`. Switching to another
 account leaves the one left signed in, its session saved, without revoking it;
-an account that is not open sends Proton no requests.
+an account that is not open sends Proton no requests. Adding an account already
+in the list signs out of the session that sign-in made, as signing out does,
+and leaves the account's own session as it was.
 
 Ruston Mail keeps `settings.json` in its own platform config directory; a demo
 process keeps `settings-demo.json` beside it instead, so nothing changed while

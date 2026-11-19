@@ -94,6 +94,9 @@ pub enum Message {
     CopyAddresses(Vec<String>),
     Logout,
     LogoutFinished(SessionEpoch, Result<(), AuthError>),
+    /// What signing out of the session just made for an account added
+    /// already came to.
+    DuplicateLogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
     SelectConversation(String),
     RetryConversation,
@@ -730,6 +733,9 @@ impl App {
             }
             Message::Logout => return self.logout(),
             Message::LogoutFinished(epoch, result) => return self.finish_logout(epoch, result),
+            Message::DuplicateLogoutFinished(epoch, result) => {
+                return self.finish_duplicate_logout(epoch, result);
+            }
             Message::SelectFolder(folder) => return self.select_folder(folder),
             Message::SelectConversation(id) => {
                 // A conversation chosen while writing shows, with the draft

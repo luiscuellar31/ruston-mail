@@ -57,7 +57,9 @@ until you open them. Each opens in the folder you last read in it, unless
 has ended, you sign in to that account again, with its address filled in. The
 sign-in screen lists your other accounts, so you can open one instead, when
 adding an account or when one's session has ended, even as Ruston starts;
-adding one already in the list, by its address, says so instead. As
+adding one already in the list says so instead. Typed as its username or
+another of its addresses, it is found once signed in, and Ruston signs out of
+that new session at once, leaving the one in the list as it was. As
 when signing out, switching or adding asks before
 discarding a message you are writing, waits for changes still on their way to
 Proton, and is unavailable while a message is being sent. Signing out of an

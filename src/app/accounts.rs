@@ -50,17 +50,17 @@ impl App {
             .filter(move |account| idle && account.profile != signing_in)
     }
 
-    /// Whether an account being added names, as typed, the address of one
-    /// added already. Proton also takes a bare username, which is not
-    /// checked.
-    pub(super) fn adds_known_address(&self) -> bool {
-        let typed = self.login_form.username.trim();
+    /// Whether an account being added is, at `address`, one added already:
+    /// as typed, before signing in, or as Proton names it once signed in,
+    /// which also finds one typed as its username or another address.
+    pub(super) fn adds_known_address(&self, address: &str) -> bool {
+        let address = address.trim();
         self.adding_account.is_some()
             && self.settings.accounts.all().iter().any(|account| {
                 account
                     .address
                     .as_deref()
-                    .is_some_and(|address| address.eq_ignore_ascii_case(typed))
+                    .is_some_and(|known| known.eq_ignore_ascii_case(address))
             })
     }
 
