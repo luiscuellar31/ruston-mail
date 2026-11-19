@@ -1165,6 +1165,12 @@ fn message_named<'a>(messages: &'a [DemoMessage], reference: &str) -> Result<&'a
         .ok_or_else(|| Error::Other(format!("demo message not found for ref '{reference}'")))
 }
 
+/// What tells `message` from the demo's other messages: its ID without the
+/// `msg-demo-` all of them start with.
+fn demo_number(message: &DemoMessage) -> &str {
+    message.meta.id.trim_start_matches("msg-demo-")
+}
+
 /// The IDs of the messages `references` name, in their order, each found as
 /// [`message_named`] finds it: what an action on them reports, as the real
 /// commands report the IDs they resolve.
@@ -1425,8 +1431,10 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 }
                 Ok(())
             }
+            // Named after the message they answer, found as the others are.
             MessagesCmd::Reply { reference, .. } => {
-                let id = format!("msg-demo-reply-{reference}");
+                let original = message_named(&fixtures_messages, &reference)?;
+                let id = format!("msg-demo-reply-{}", demo_number(original));
                 if ctx.json {
                     render::sent(true, &id);
                 } else {
@@ -1435,7 +1443,8 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             MessagesCmd::Forward { reference, to, .. } => {
-                let id = format!("msg-demo-fwd-{reference}");
+                let original = message_named(&fixtures_messages, &reference)?;
+                let id = format!("msg-demo-fwd-{}", demo_number(original));
                 if ctx.json {
                     render::sent(true, &id);
                 } else {
@@ -1613,13 +1622,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 message,
                 include_inline: _,
             } => {
-                let msg = fixtures_messages
-                    .into_iter()
-                    .find(|m| m.meta.id == message || m.meta.id.contains(&message))
-                    .ok_or_else(|| {
-                        Error::Other(format!("demo message not found for ref '{message}'"))
-                    })?;
-
+                let msg = message_named(&fixtures_messages, &message)?;
                 render::attachments_list(ctx.json, &msg.attachments);
                 Ok(())
             }
@@ -1630,13 +1633,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 all: _,
                 include_inline: _,
             } => {
-                let msg = fixtures_messages
-                    .into_iter()
-                    .find(|m| m.meta.id == message || m.meta.id.contains(&message))
-                    .ok_or_else(|| {
-                        Error::Other(format!("demo message not found for ref '{message}'"))
-                    })?;
-
+                let msg = message_named(&fixtures_messages, &message)?;
                 let atts: Vec<&Attachment> = if let Some(att_id) = &attachment {
                     msg.attachments.iter().filter(|a| a.id == *att_id).collect()
                 } else {
