@@ -112,12 +112,22 @@ impl BoundedText {
 }
 
 /// A list item's marker, `-` or its number, written once, at the start of the
-/// item's first paragraph.
+/// item's first paragraph; the rest of the item lines up under that
+/// paragraph's text.
 enum ItemMarker {
     /// Not written yet: the item's next paragraph starts with it.
     Pending(String),
-    /// Written with an earlier paragraph of the item.
-    Written,
+    /// Written with an earlier paragraph of the item, in this many columns
+    /// with the space after it.
+    Written(usize),
+}
+
+/// A list shown: the number of an ordered list's next item, or `None` for a
+/// bulleted one, and the marker of the item it sits in, if any, which the
+/// text after it goes back to.
+struct OpenList {
+    next: Option<u32>,
+    within: Option<ItemMarker>,
 }
 
 /// One message's conversion: the text written so far, and what the elements
@@ -150,14 +160,13 @@ struct Builder {
     /// How many quotes are open; each, up to `MAX_RENDER_DEPTH`, puts a `> `
     /// before the lines.
     quote_depth: usize,
-    /// The lists shown, innermost last: the number of an ordered list's next
-    /// item, or `None` for a bulleted list.
-    lists: Vec<Option<u32>>,
+    /// The lists shown, innermost last.
+    lists: Vec<OpenList>,
     /// How many lists are open beyond the `MAX_RENDER_DEPTH` shown, so that
     /// their ends close them before any of `lists`.
     omitted_list_depth: usize,
-    /// The marker of the list item being read; the end of an item or of a
-    /// list clears it.
+    /// The marker of the list item being read; the end of an item clears it,
+    /// and the end of a list brings back the one of the item it sat in.
     item_marker: Option<ItemMarker>,
     /// How many `pre` elements are open.
     pre_depth: usize,
@@ -225,13 +234,14 @@ impl Builder {
                         .lists
                         .last_mut()
                         .filter(|_| self.omitted_list_depth == 0)
+                        .and_then(|list| list.next.as_mut())
                     {
-                        Some(Some(number)) => {
+                        Some(number) => {
                             let marker = format!("{number}.");
                             *number = number.saturating_add(1);
                             marker
                         }
-                        _ => "-".to_owned(),
+                        None => "-".to_owned(),
                     },
                 ));
             }
@@ -270,12 +280,12 @@ impl Builder {
             }
             "ul" | "ol" => {
                 self.flush();
-                if self.omitted_list_depth > 0 {
+                self.item_marker = if self.omitted_list_depth > 0 {
                     self.omitted_list_depth -= 1;
+                    None
                 } else {
-                    self.lists.pop();
-                }
-                self.item_marker = None;
+                    self.lists.pop().and_then(|list| list.within)
+                };
             }
             "li" => {
                 self.flush();
@@ -426,10 +436,31 @@ impl Builder {
         } else if let Some(marker) = self.item_marker.as_mut() {
             let depth = self.lists.len().saturating_sub(1).min(MAX_RENDER_DEPTH - 1);
             let indent = "  ".repeat(depth);
-            match std::mem::replace(marker, ItemMarker::Written) {
-                ItemMarker::Pending(marker) => (format!("{indent}{marker} {text}"), true),
-                ItemMarker::Written => (format!("{indent} {text}"), false),
+            let (first, width, starts_item) = match marker {
+                ItemMarker::Pending(first) => (format!("{indent}{first} "), first.len() + 1, true),
+                ItemMarker::Written(width) => (String::new(), *width, false),
+            };
+            *marker = ItemMarker::Written(width);
+            // Each line of the item starts under the text of its first,
+            // within the room the output has.
+            let under = format!("{indent}{}", " ".repeat(width));
+            let mut item = BoundedText::new(self.output.remaining());
+            for (index, line) in text.lines().enumerate() {
+                if index > 0 {
+                    item.push("\n");
+                }
+                item.push(if index == 0 && starts_item {
+                    &first
+                } else {
+                    &under
+                });
+                item.push(line);
+                if item.truncated {
+                    break;
+                }
             }
+            self.truncated |= item.truncated;
+            (item.text, starts_item)
         } else {
             (text, false)
         };
@@ -493,7 +524,11 @@ impl Builder {
 
     fn start_list(&mut self, number: Option<u32>) {
         if self.lists.len() < MAX_RENDER_DEPTH {
-            self.lists.push(number);
+            let within = self.item_marker.take();
+            self.lists.push(OpenList {
+                next: number,
+                within,
+            });
         } else {
             self.omitted_list_depth = self.omitted_list_depth.saturating_add(1);
         }
@@ -709,7 +744,7 @@ mod tests {
                 output
                     .lines()
                     .all(|line| line.chars().take_while(|c| *c == ' ').count()
-                        <= 2 * (MAX_RENDER_DEPTH - 1) + 1)
+                        <= 2 * (MAX_RENDER_DEPTH - 1) + 2)
             );
             assert!(output.len() <= sanitized.len() * 4);
             if let Some(previous_size) = previous_size {
@@ -865,22 +900,23 @@ mod tests {
     fn keeps_lists_and_line_breaks() {
         assert_eq!(
             to_markdown("<ul><li>First</li><li>Second<br>line</li></ul>"),
-            "- First\n- Second\nline"
+            "- First\n- Second\n  line"
         );
     }
 
     #[test]
     fn only_the_first_paragraph_of_a_list_item_carries_its_marker() {
+        // The others line up under its text, after a list within the item too.
         assert_eq!(
             to_markdown("<ul><li><p>One</p><p>more</p></li><li>Two</li></ul>"),
-            "- One\n\n more\n\n- Two"
+            "- One\n\n  more\n\n- Two"
         );
         assert_eq!(
             to_markdown(
                 "<ol><li><p>One</p><p>more</p><ul><li><p>a</p><p>b</p></li></ul>after</li>\
                  <li>Two</li></ol>"
             ),
-            "1. One\n\n more\n\n  - a\n\n   b\n\nafter\n\n2. Two"
+            "1. One\n\n   more\n\n  - a\n\n    b\n\n   after\n\n2. Two"
         );
     }
 
