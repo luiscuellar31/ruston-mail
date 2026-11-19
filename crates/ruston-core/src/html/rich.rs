@@ -12,7 +12,7 @@ use html5ever::tokenizer::{
     BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 
-use super::{BLOCK_ELEMENTS, HIDDEN_ELEMENTS, Skipping, VOID_ELEMENTS, hides};
+use super::{BLOCK_ELEMENTS, HIDDEN_ELEMENTS, Skipping, VOID_ELEMENTS, declarations, hides};
 
 /// The most lists kept open within one another. A deeper one reads as the
 /// deepest kept, so a hostile body cannot grow the stack without end.
@@ -20,6 +20,9 @@ pub const MAX_LIST_DEPTH: usize = 8;
 /// How much input the tokenizer reads at a time, so a body cut short is not
 /// read to its end.
 const INPUT_CHUNK_BYTES: usize = 8 * 1024;
+/// The most elements whose style is followed within one another; a deeper
+/// one reads as if it had none.
+const MAX_STYLE_DEPTH: usize = 64;
 /// What a block takes besides its text. Text always leaves room for one, so
 /// a body cut short still ends with the block it was reading.
 const BLOCK_SIZE: usize = std::mem::size_of::<RichBlock>();
@@ -101,6 +104,8 @@ pub struct RichBlock {
     /// Whether the sender hid all of it, as a newsletter's preview text is
     /// hidden; a reader may leave it out, or show it set apart.
     pub hidden: bool,
+    /// Whether the sender's style, or a `center` element, centers it.
+    pub centered: bool,
 }
 
 /// What a block is, with its content.
@@ -177,6 +182,21 @@ pub struct RichSpan {
     /// Whether the sender hid it, as a letter slipped into a word to fool a
     /// filter is hidden; a reader may leave it out, or show it set apart.
     pub hidden: bool,
+    /// What the sender's style made it, besides what its tags did.
+    pub styled: SenderStyle,
+}
+
+/// What the sender's style made a run, apart from what its tags did, so a
+/// reader can leave it out: newsletters set these with styles more often
+/// than with tags.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SenderStyle {
+    /// Bold.
+    pub strong: bool,
+    /// Italic.
+    pub emphasis: bool,
+    /// Struck through.
+    pub struck: bool,
 }
 
 /// The structure of a sanitized HTML body, however long it is.
@@ -224,6 +244,60 @@ impl TokenSink for Sink {
     }
 }
 
+/// An element whose style sets how the text within it reads, until it ends.
+struct StyleFrame {
+    name: String,
+    /// Elements of the same name opened within it and still open.
+    nested: usize,
+    strong: Option<bool>,
+    emphasis: Option<bool>,
+    /// A line through text goes through all of it, whatever lies within.
+    struck: bool,
+    centered: Option<bool>,
+}
+
+impl StyleFrame {
+    /// What `tag`'s style, or its being `center`, says of the text within
+    /// it, if anything.
+    fn of(name: &str, tag: &Tag) -> Option<Self> {
+        let mut frame = Self {
+            name: name.to_owned(),
+            nested: 0,
+            strong: None,
+            emphasis: None,
+            struck: false,
+            centered: (name == "center").then_some(true),
+        };
+        for (property, value) in declarations(tag) {
+            match property.as_str() {
+                "font-weight" => {
+                    frame.strong = match value.as_str() {
+                        "bold" | "bolder" => Some(true),
+                        "normal" | "lighter" => Some(false),
+                        number => number.parse::<u16>().ok().map(|weight| weight >= 600),
+                    };
+                }
+                "font-style" if value == "italic" || value.starts_with("oblique") => {
+                    frame.emphasis = Some(true);
+                }
+                "font-style" if value == "normal" => frame.emphasis = Some(false),
+                "text-decoration" | "text-decoration-line" => {
+                    frame.struck |= value.split_whitespace().any(|word| word == "line-through");
+                }
+                "text-align" => {
+                    frame.centered = Some(matches!(value.as_str(), "center" | "-webkit-center"));
+                }
+                _ => {}
+            }
+        }
+        let says = frame.strong.is_some()
+            || frame.emphasis.is_some()
+            || frame.struck
+            || frame.centered.is_some();
+        says.then_some(frame)
+    }
+}
+
 /// A list open around the text being read: the number of an ordered one's
 /// next item, and the marker of the item it sits in, which the text after it
 /// goes back to.
@@ -264,6 +338,9 @@ struct Builder {
     sender_hidden: Skipping,
     /// Whether the void element being read, as an image is, was hidden.
     void_hidden: bool,
+    /// The elements open whose style sets how text reads, innermost last, at
+    /// most [`MAX_STYLE_DEPTH`].
+    frames: Vec<StyleFrame>,
     /// The bytes of text, and of what holds it, the body may take.
     limit: usize,
     /// The bytes taken so far, within `limit`.
@@ -296,6 +373,7 @@ impl Builder {
             hidden: Skipping::default(),
             sender_hidden: Skipping::default(),
             void_hidden: false,
+            frames: Vec::new(),
             limit,
             used: 0,
             truncated: false,
@@ -341,6 +419,20 @@ impl Builder {
         }
         self.start_element(name, tag);
         self.void_hidden = false;
+        // Its style applies within it, after the block before it ended.
+        if VOID_ELEMENTS.contains(&name) {
+            return;
+        }
+        match StyleFrame::of(name, tag).filter(|_| self.frames.len() < MAX_STYLE_DEPTH) {
+            Some(frame) => self.frames.push(frame),
+            None => {
+                if let Some(top) = self.frames.last_mut()
+                    && top.name == name
+                {
+                    top.nested += 1;
+                }
+            }
+        }
     }
 
     fn start_element(&mut self, name: &str, tag: &Tag) {
@@ -394,8 +486,29 @@ impl Builder {
             return;
         }
         self.end_element(name);
-        // The element ends hidden, its last block included.
+        // The element ends hidden and styled, its last block included.
         self.sender_hidden.close(name);
+        if let Some(top) = self.frames.last_mut()
+            && top.name == name
+        {
+            if top.nested > 0 {
+                top.nested -= 1;
+            } else {
+                self.frames.pop();
+            }
+        }
+    }
+
+    /// What the sender's style makes the text read now.
+    fn sender_style(&self) -> SenderStyle {
+        let innermost = |says: fn(&StyleFrame) -> Option<bool>| {
+            self.frames.iter().rev().find_map(says).unwrap_or(false)
+        };
+        SenderStyle {
+            strong: innermost(|frame| frame.strong),
+            emphasis: innermost(|frame| frame.emphasis),
+            struck: self.frames.iter().any(|frame| frame.struck),
+        }
     }
 
     fn end_element(&mut self, name: &str) {
@@ -513,6 +626,7 @@ impl Builder {
             self.code > 0,
             self.struck > 0,
         );
+        let styled = self.sender_style();
         let continues = self.spans.last().is_some_and(|span| {
             span.strong == strong
                 && span.emphasis == emphasis
@@ -520,6 +634,7 @@ impl Builder {
                 && span.struck == struck
                 && span.link == self.link
                 && span.hidden == hidden
+                && span.styled == styled
         });
         // A new run costs its own storage as well as its text, so many tiny
         // style changes cannot grow the body past its limit.
@@ -546,6 +661,7 @@ impl Builder {
                 struck,
                 link: self.link.clone(),
                 hidden,
+                styled,
             }),
         }
     }
@@ -698,6 +814,12 @@ impl Builder {
             kind,
             quote_depth: u8::try_from(self.quote_depth).unwrap_or(u8::MAX),
             hidden,
+            centered: self
+                .frames
+                .iter()
+                .rev()
+                .find_map(|frame| frame.centered)
+                .unwrap_or(false),
         });
     }
 

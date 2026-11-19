@@ -181,6 +181,85 @@ fn text_the_sender_hid_is_read_and_set_apart() {
 }
 
 #[test]
+fn the_senders_style_sets_bold_italic_and_struck_text_apart_from_tags() {
+    let spans = spans(&crate::html::sanitize(
+        "<p><span style=\"font-weight:700\">a</span> <span style=\"font-style:oblique 10deg\">b</span> \
+         <span style=\"text-decoration: underline line-through\">c<a href='https://example.test/' \
+         style='text-decoration:none'>d</a></span> <b style=\"font-weight:normal\">e</b> \
+         <span style=\"font-weight:bold\">f<span style=\"font-weight:400\">g</span></span></p>",
+    ));
+    let styled = |word: &str| {
+        let span = spans.iter().find(|span| span.text.trim() == word).unwrap();
+        (span.strong, span.styled)
+    };
+    let style = |strong, emphasis, struck| SenderStyle {
+        strong,
+        emphasis,
+        struck,
+    };
+
+    assert_eq!(styled("a"), (false, style(true, false, false)));
+    assert_eq!(styled("b"), (false, style(false, true, false)));
+    // A line through text goes through a link within it too.
+    assert_eq!(styled("c"), (false, style(false, false, true)));
+    assert_eq!(styled("d"), (false, style(false, false, true)));
+    // The tag still counts; the style only takes back what it gave.
+    assert_eq!(styled("e"), (true, style(false, false, false)));
+    // The innermost style decides.
+    assert_eq!(styled("f"), (false, style(true, false, false)));
+    assert_eq!(styled("g"), (false, style(false, false, false)));
+}
+
+#[test]
+fn the_senders_style_or_a_center_element_centers_blocks() {
+    let body = parse(&crate::html::sanitize(
+        "<div style=\"text-align:center\"><p>a</p><div>b<div>c</div>d</div>\
+         <p style=\"text-align:left\">e</p></div><p>f</p><center>g</center>",
+    ));
+    let centered: Vec<(String, bool)> = body
+        .blocks
+        .iter()
+        .map(|block| {
+            let BlockKind::Paragraph(spans) = &block.kind else {
+                panic!("expected a paragraph");
+            };
+            (join(spans), block.centered)
+        })
+        .collect();
+    let line = |text: &str, centered: bool| (text.to_owned(), centered);
+    assert_eq!(
+        centered,
+        [
+            line("a", true),
+            line("b", true),
+            line("c", true),
+            line("d", true),
+            line("e", false),
+            line("f", false),
+            line("g", true),
+        ]
+    );
+}
+
+#[test]
+fn deep_styles_stop_being_followed_but_still_unwind() {
+    let html = format!(
+        "{}deep{}<p>after</p>",
+        "<span style='font-weight:bold'>".repeat(200),
+        "</span>".repeat(200)
+    );
+    let body = parse(&html);
+    let BlockKind::Paragraph(spans) = &body.blocks[0].kind else {
+        panic!("expected a paragraph");
+    };
+    assert!(spans[0].styled.strong);
+    let BlockKind::Paragraph(after) = &body.blocks[1].kind else {
+        panic!("expected a paragraph");
+    };
+    assert!(!after[0].styled.strong);
+}
+
+#[test]
 fn paragraphs_and_line_breaks() {
     let html = "<div><p>Hello <b>Alex</b>,</p><p>Line one<br>Line two</p></div>";
 
@@ -439,6 +518,7 @@ fn block(kind: BlockKind, quote_depth: u8) -> RichBlock {
         kind,
         quote_depth,
         hidden: false,
+        centered: false,
     }
 }
 

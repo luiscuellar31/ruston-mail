@@ -188,6 +188,9 @@ pub enum Message {
     SetShowQuotedText(bool),
     /// Shows text the sender hid, set apart, or leaves it out.
     SetShowHiddenText(bool),
+    /// Follows the sender's style for bold, italic, struck and centered
+    /// text, or only its tags.
+    SetSenderTextStyles(bool),
     /// Scales the whole interface.
     SetZoom(f32),
     /// Chooses the desktop color scheme, which stops following the system's.
@@ -1081,6 +1084,9 @@ impl App {
             }
             Message::SetShowHiddenText(on) => {
                 self.remember(|settings| settings.show_hidden_text = on);
+            }
+            Message::SetSenderTextStyles(on) => {
+                self.remember(|settings| settings.sender_text_styles = on);
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {

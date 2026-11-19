@@ -52,6 +52,11 @@ pub struct Settings {
     /// browser does. Off for settings saved before this choice existed.
     #[serde(default)]
     pub show_hidden_text: bool,
+    /// Make text bold, italic, struck through or centered where the sender's
+    /// style does, not only where its tags do. Settings saved before this
+    /// choice existed have it on.
+    #[serde(default = "enabled")]
+    pub sender_text_styles: bool,
     /// Whether a message is written out as HTML or as plain text.
     pub compose_format: BodyFormat,
     /// Where new messages, replies and forwards open.
@@ -117,6 +122,7 @@ impl Default for Settings {
             expand_all_messages: false,
             show_quoted_text: false,
             show_hidden_text: false,
+            sender_text_styles: true,
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
             check_recipient_protection: true,
@@ -203,12 +209,21 @@ pub enum Appearance {
     Light,
 }
 
-/// The subset of settings that controls initial reader expansion.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The subset of settings that controls how the reader shows a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
     pub expand_all_messages: bool,
     pub show_quoted_text: bool,
     pub show_hidden_text: bool,
+    pub sender_text_styles: bool,
+}
+
+/// What a reader shows before anything is changed in Settings.
+impl Default for Reading {
+    fn default() -> Self {
+        let defaults = Settings::default();
+        defaults.reading()
+    }
 }
 
 impl Settings {
@@ -226,6 +241,7 @@ impl Settings {
             expand_all_messages: self.expand_all_messages,
             show_quoted_text: self.show_quoted_text,
             show_hidden_text: self.show_hidden_text,
+            sender_text_styles: self.sender_text_styles,
         }
     }
 

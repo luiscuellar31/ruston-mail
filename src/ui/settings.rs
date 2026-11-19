@@ -132,6 +132,16 @@ fn page(
             ui,
             "Senders hide text such as a newsletter's preview line, or a letter slipped into a word to get past filters. Shown, it is grey.",
         );
+        ui.add_space(6.0);
+
+        ui.add(theme::Checkbox::new(
+            &mut settings.sender_text_styles,
+            "Use the sender's text styles",
+        ));
+        description(
+            ui,
+            "Bold, italic, struck-through and centered text that newsletters set with styles rather than tags. With this off, only the tags count.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Links and images", |ui| {
@@ -428,6 +438,9 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     }
     if draft.show_hidden_text != current.show_hidden_text {
         messages.push(Message::SetShowHiddenText(draft.show_hidden_text));
+    }
+    if draft.sender_text_styles != current.sender_text_styles {
+        messages.push(Message::SetSenderTextStyles(draft.sender_text_styles));
     }
     if draft.compose_placement != current.compose_placement {
         messages.push(Message::SetComposePlacement(draft.compose_placement));
@@ -937,8 +950,9 @@ mod tests {
         draft.accept_international_domains = true;
         draft.search_device_offline = true;
         draft.show_hidden_text = true;
+        draft.sender_text_styles = false;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 10);
+        assert_eq!(changes.len(), 11);
         assert!(
             changes
                 .iter()

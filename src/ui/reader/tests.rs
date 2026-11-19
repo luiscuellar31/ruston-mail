@@ -391,6 +391,58 @@ fn text_the_sender_hid_shows_only_when_asked_for_and_in_grey() {
 }
 
 #[test]
+fn the_senders_style_counts_unless_settings_leave_it_out() {
+    let styled = RichSpan {
+        text: "Sale".into(),
+        styled: ruston_core::html::rich::SenderStyle {
+            strong: true,
+            ..Default::default()
+        },
+        ..RichSpan::default()
+    };
+    let centered = RichBlock {
+        kind: BlockKind::Paragraph(vec![styled.clone()]),
+        quote_depth: 0,
+        hidden: false,
+        centered: true,
+    };
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Where the word is drawn, and whether in the bold ink.
+    let drawn = |reading: Reading| {
+        let mut strong = None;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(600.0);
+            strong = Some(ui.visuals().strong_text_color());
+            block(ui, &centered, reading, &mut Vec::new());
+        });
+        let found = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Sale" => Some((
+                    text.pos.x,
+                    Some(text.galley.job.sections[0].format.color) == strong,
+                )),
+                _ => None,
+            })
+            .expect("the word is drawn");
+        output.drop_without_applying_deltas();
+        found
+    };
+
+    let (left, bold) = drawn(Reading::default());
+    assert!(bold, "bold where the sender's style says so");
+    assert!(left > 200.0, "a short centered line is centered: {left}");
+    let (left, bold) = drawn(Reading {
+        sender_text_styles: false,
+        ..Reading::default()
+    });
+    assert!(!bold);
+    assert!(left < 50.0, "only the tags count: {left}");
+}
+
+#[test]
 fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     let span = RichSpan {
         text: "the agenda".into(),
@@ -1848,6 +1900,7 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
             },
             quote_depth: 0,
             hidden: false,
+            centered: false,
         };
         let context = egui::Context::default();
         let mut height = 0.0;

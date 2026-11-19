@@ -537,7 +537,14 @@ HTML into the rich-body model both apps draw, which the desktop adapter keeps
 as `MessageBody::Rich`. The sanitizer keeps, of styles, only `display` and
 `visibility`, and the `hidden` attribute, so `html::hides` can tell text the
 sender hid: the model keeps it, marked on its spans and blocks, and an
-element of the same name within the hidden one does not end it. The reader
+element of the same name within the hidden one does not end it. It also keeps
+`font-weight`, `font-style`, `text-decoration` and `text-align`: the parser
+follows them, and `center` elements, through a bounded stack of styled
+elements, as a browser lets them apply within, and records them on each run's
+`SenderStyle` and each block's `centered`, apart from what tags did. The
+reader counts them unless **Use the sender's text styles** is off
+(`Reading::sender_text_styles`), centering a line that fits on one; the CLI
+always writes them as Markdown markers. The reader
 leaves it out, or draws it in grey with **Show text the sender hid**
 (`Reading::show_hidden_text`); the CLI, plain text and the search index always
 leave it out. It appends visible text in runs instead

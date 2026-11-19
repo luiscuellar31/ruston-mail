@@ -43,10 +43,11 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         // Hidden elements go with their content, as in plain text; ammonia
         // already drops script and style that way.
         .add_clean_content_tags(HIDDEN_ELEMENTS)
-        // What hides text the sender hid stays, and no other style, so the
-        // readers can still tell it, and a quote in a reply hides it too.
+        // What hides text the sender hid stays, and what makes it bold,
+        // italic, struck or centered, and no other style: the readers can
+        // still tell them, and a quote in a reply keeps them too.
         .add_generic_attributes(&["hidden", "style"])
-        .filter_style_properties(HashSet::from(HIDING_PROPERTIES))
+        .filter_style_properties(HashSet::from(STYLE_PROPERTIES))
         // A link may lead to the web or to an address, and nowhere else. Every
         // output keeps this, EML exports and quoted replies included, not only
         // the readers that filter links themselves.
@@ -69,8 +70,35 @@ pub const HIDDEN_ELEMENTS: &[&str] = &[
 ];
 /// Where a link may lead: the web or an address.
 const LINK_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
-/// The style properties a sanitized body keeps: those that hide text.
-const HIDING_PROPERTIES: [&str; 2] = ["display", "visibility"];
+/// The style properties a sanitized body keeps: those that hide text, and
+/// those that make it bold, italic, struck through or centered.
+const STYLE_PROPERTIES: [&str; 7] = [
+    "display",
+    "visibility",
+    "font-weight",
+    "font-style",
+    "text-decoration",
+    "text-decoration-line",
+    "text-align",
+];
+
+/// The declarations of `tag`'s style, each property and value in lowercase,
+/// the value without `!important`, which changes nothing here; ammonia
+/// writes it `! important`.
+pub(crate) fn declarations(tag: &Tag) -> impl Iterator<Item = (String, String)> + '_ {
+    tag.attrs
+        .iter()
+        .filter(|attribute| &*attribute.name.local == "style")
+        .flat_map(|attribute| attribute.value.split(';'))
+        .filter_map(|declaration| {
+            let (property, value) = declaration.split_once(':')?;
+            let value = value.split('!').next().unwrap_or("").trim();
+            Some((
+                property.trim().to_ascii_lowercase(),
+                value.to_ascii_lowercase(),
+            ))
+        })
+}
 
 /// Whether the sender hid an element with what it holds: with the `hidden`
 /// attribute, or a style of `display: none` or `visibility: hidden`, as a
@@ -78,22 +106,10 @@ const HIDING_PROPERTIES: [&str; 2] = ["display", "visibility"];
 pub(crate) fn hides(tag: &Tag) -> bool {
     tag.attrs
         .iter()
-        .any(|attribute| match &*attribute.name.local {
-            "hidden" => true,
-            "style" => attribute.value.split(';').any(|declaration| {
-                let Some((property, value)) = declaration.split_once(':') else {
-                    return false;
-                };
-                // `!important` changes nothing here; ammonia writes it `! important`.
-                let value = value.split('!').next().unwrap_or("").trim();
-                let value = value.to_ascii_lowercase();
-                let value = value.as_str();
-                match property.trim().to_ascii_lowercase().as_str() {
-                    "display" => value == "none",
-                    "visibility" => matches!(value, "hidden" | "collapse"),
-                    _ => false,
-                }
-            }),
+        .any(|attribute| &*attribute.name.local == "hidden")
+        || declarations(tag).any(|(property, value)| match property.as_str() {
+            "display" => value == "none",
+            "visibility" => matches!(value.as_str(), "hidden" | "collapse"),
             _ => false,
         })
 }
@@ -681,13 +697,24 @@ mod tests {
     }
 
     #[test]
-    fn keeps_what_hides_text_and_no_other_style() {
+    fn keeps_what_hides_text_or_styles_it_and_no_other_style() {
         let clean = sanitize(
             "<p style=\"color:red; display:none; background:url(https://t.example/x)\" \
-             onclick=\"steal()\">a</p><span hidden title=\"t\">b</span>",
+             onclick=\"steal()\">a</p><span hidden title=\"t\">b</span>\
+             <div style=\"font-weight:700; font-style:italic; text-decoration:line-through; \
+             text-align:center; font-family:Comic Sans\">c</div>",
         );
-        assert!(clean.contains("display"), "{clean}");
-        assert!(clean.contains("hidden"), "{clean}");
+        for kept in [
+            "display",
+            "hidden",
+            "font-weight",
+            "font-style",
+            "line-through",
+            "text-align",
+        ] {
+            assert!(clean.contains(kept), "{kept} was lost: {clean}");
+        }
+        assert!(!clean.contains("font-family"), "{clean}");
         for gone in ["color", "background", "url(", "onclick", "steal"] {
             assert!(!clean.contains(gone), "{gone} survived: {clean}");
         }

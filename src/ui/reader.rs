@@ -1412,9 +1412,11 @@ fn quote_box(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
 
 fn block(ui: &mut egui::Ui, block: &RichBlock, reading: Reading, messages: &mut Vec<Message>) {
     match &block.kind {
-        BlockKind::Paragraph(spans) => rich_line(ui, spans, None, reading, messages),
+        BlockKind::Paragraph(spans) => {
+            rich_line(ui, spans, None, block.centered, reading, messages);
+        }
         BlockKind::Heading { level, spans } => {
-            rich_line(ui, spans, Some(*level), reading, messages);
+            rich_line(ui, spans, Some(*level), block.centered, reading, messages);
         }
         BlockKind::ListItem {
             marker,
@@ -1437,7 +1439,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, reading: Reading, messages: &mut 
                         );
                     },
                 );
-                ui.vertical(|ui| rich_line(ui, spans, None, reading, messages));
+                ui.vertical(|ui| rich_line(ui, spans, None, false, reading, messages));
             });
         }
         BlockKind::Preformatted(content) => {
@@ -1482,13 +1484,34 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, reading: Reading, messages: &mut 
     }
 }
 
+/// A line of text, wrapped. One the sender's style centers is centered when
+/// it fits on one line; a longer one reads better from the left.
 fn rich_line(
     ui: &mut egui::Ui,
     spans: &[RichSpan],
     heading: Option<u8>,
+    centered: bool,
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
+    if centered && reading.sender_text_styles {
+        let width: f32 = spans
+            .iter()
+            .filter(|span| !span.hidden || reading.show_hidden_text)
+            .map(|span| {
+                let job = span_layout(ui, span, heading, reading);
+                ui.painter().layout_job(job).size().x
+            })
+            .sum();
+        let room = ui.available_width();
+        if width <= room {
+            ui.horizontal(|ui| {
+                ui.add_space((room - width) / 2.0);
+                rich_spans(ui, spans, heading, reading, messages);
+            });
+            return;
+        }
+    }
     ui.horizontal_wrapped(|ui| rich_spans(ui, spans, heading, reading, messages));
 }
 
@@ -1504,7 +1527,7 @@ fn rich_spans(
         .iter()
         .filter(|span| !span.hidden || reading.show_hidden_text)
     {
-        let job = span_layout(ui, span, heading);
+        let job = span_layout(ui, span, heading, reading);
         if let Some(link) = &span.link {
             // Where it goes shows before a click, as a browser shows it, also
             // when Settings open links without asking.
@@ -1550,13 +1573,25 @@ fn link_menu(ui: &mut egui::Ui, link: &str, messages: &mut Vec<Message>) {
 }
 
 /// Builds span styling; `TextFormat` allows padded code backgrounds.
-fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>) -> LayoutJob {
+fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Reading) -> LayoutJob {
     let size = heading.map(heading_size).unwrap_or(theme::BODY_SIZE);
+    // What the sender's style makes a run counts as its tags do, unless
+    // Settings say to leave it out.
+    let styled = if reading.sender_text_styles {
+        span.styled
+    } else {
+        ruston_core::html::rich::SenderStyle::default()
+    };
+    let (strong, emphasis, struck) = (
+        span.strong || styled.strong,
+        span.emphasis || styled.emphasis,
+        span.struck || styled.struck,
+    );
     // egui's bundled faces have no bold, so weight reads as a brighter ink.
     // Text the sender hid, shown when asked for, is set apart in grey.
     let ink = if span.hidden {
         theme::colors(ui).muted
-    } else if span.strong || heading.is_some() {
+    } else if strong || heading.is_some() {
         ui.visuals().strong_text_color()
     } else {
         ui.visuals().text_color()
@@ -1575,14 +1610,14 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>) -> LayoutJob
         } else {
             ink
         },
-        italics: span.emphasis,
+        italics: emphasis,
         ..Default::default()
     };
     if span.code {
         format.background = theme::colors(ui).code_fill;
         format.expand_bg = CODE_PADDING;
     }
-    if span.struck {
+    if struck {
         let rule = if span.link.is_some() {
             ui.visuals().hyperlink_color
         } else {

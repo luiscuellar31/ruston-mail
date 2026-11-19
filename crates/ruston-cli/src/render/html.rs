@@ -231,10 +231,11 @@ fn markdown(spans: &[RichSpan]) -> String {
 fn styled(spans: &[RichSpan]) -> String {
     let mut out = String::new();
     for span in spans {
+        // What the sender's style makes a run counts as its tags do.
         let markers: Vec<&str> = [
-            (span.struck, "~~"),
-            (span.strong, "**"),
-            (span.emphasis, "*"),
+            (span.struck || span.styled.struck, "~~"),
+            (span.strong || span.styled.strong, "**"),
+            (span.emphasis || span.styled.emphasis, "*"),
             (span.code, "`"),
         ]
         .into_iter()
@@ -514,6 +515,18 @@ mod tests {
             "Sale\n\n[2 images not shown]"
         );
         assert_eq!(to_markdown("<img src='cid:only'>"), "[1 image not shown]");
+    }
+
+    #[test]
+    fn the_senders_style_reads_as_its_tags_would() {
+        assert_eq!(
+            to_markdown(
+                "<p style='text-align:center'><span style='font-weight:bold'>Sale</span> ends \
+                 <span style='text-decoration:line-through'>today</span>, \
+                 <span style='font-style:italic'>maybe</span></p>"
+            ),
+            "**Sale** ends ~~today~~, *maybe*"
+        );
     }
 
     #[test]

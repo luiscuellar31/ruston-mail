@@ -106,7 +106,9 @@ drawn with native UI elements. Sanitizing keeps only `http`, `https` and
 `mailto` links and drops relative ones, so EML exports and quoted replies
 carry no other kind. Of styles it keeps only what hides text, `display` and
 `visibility`, with the `hidden` attribute, so text a sender hid stays hidden
-in a quoted reply too. Scripts do not run, and remote images are never
+in a quoted reply too, and what makes text bold, italic, struck through or
+centered: `font-weight`, `font-style`, `text-decoration` and `text-align`.
+None of these can load anything. Scripts do not run, and remote images are never
 requested. This also blocks tracking pixels.
 
 The CLI's default text view converts HTML to readable Markdown-style text.

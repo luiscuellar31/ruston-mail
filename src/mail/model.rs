@@ -539,6 +539,7 @@ mod tests {
                 kind: BlockKind::Paragraph(spans("Hi")),
                 quote_depth: 0,
                 hidden: false,
+                centered: false,
             }],
             ..RichBody::default()
         });
