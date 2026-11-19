@@ -12,10 +12,10 @@ use html5ever::tokenizer::{
 
 /// Whether a MIME type describes HTML, including optional charset parameters.
 pub fn is_html_mime(mime_type: &str) -> bool {
-    mime_type
-        .split(';')
-        .next()
-        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("text/html"))
+    mime_type.split(';').next().is_some_and(|kind| {
+        kind.trim()
+            .eq_ignore_ascii_case(crate::model::MimeType::Html.as_str())
+    })
 }
 
 /// Escape untrusted text before inserting it into HTML element content.

@@ -6,6 +6,7 @@ use crate::api;
 use crate::api::messages::{ListQuery, is_last_page};
 use crate::error::{Error, Result};
 use crate::mail::attachments::safe_attachment_name;
+use crate::model::MimeType;
 use crate::model::enums::resolve_folder;
 use crate::model::message::{Attachment, Message, Recipient};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -427,10 +428,11 @@ impl<W: Write> EmlWriter<W> {
             )?;
         }
         let body_type = if crate::html::is_html_mime(&message.mime_type) {
-            "text/html"
+            MimeType::Html
         } else {
-            "text/plain"
-        };
+            MimeType::PlainText
+        }
+        .as_str();
         write!(
             out,
             "Content-Type: {body_type}; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"

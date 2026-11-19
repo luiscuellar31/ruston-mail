@@ -24,6 +24,9 @@ pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: usize = 49 * 1024 * 1024;
 /// Linux and macOS file systems 255 bytes; this leaves room for the number
 /// [`save_under_free_name`] adds to a copy, " (9999)" at most.
 const MAX_NAME_BYTES: usize = 240;
+/// The longest extension, dot included, that a shortened name keeps; one
+/// longer is not much of an extension.
+const MAX_KEPT_EXTENSION_BYTES: usize = 16;
 
 /// How many names a saved attachment tries: its own and 9,999 numbered ones.
 const FREE_NAME_ATTEMPTS: usize = 10_000;
@@ -80,7 +83,7 @@ fn shorten(name: &str) -> String {
         return name.to_owned();
     }
     let extension = match name.rfind('.') {
-        Some(dot) if dot > 0 && name.len() - dot <= 16 => &name[dot..],
+        Some(dot) if dot > 0 && name.len() - dot <= MAX_KEPT_EXTENSION_BYTES => &name[dot..],
         _ => "",
     };
     let stem = &name[..name.len() - extension.len()];

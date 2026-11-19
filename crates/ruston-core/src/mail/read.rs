@@ -5,9 +5,9 @@ use super::Client;
 use crate::api::{self, messages::ListQuery};
 use crate::crypto::{self, Verdict};
 use crate::error::{Error, Result};
-use crate::model::Conversation;
 use crate::model::enums::resolve_folder;
 use crate::model::message::{Attachment, Message, MessageMetadata, Recipient};
+use crate::model::{Conversation, MimeType};
 use crate::transport::Doer;
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 
@@ -17,6 +17,12 @@ const CONVERSATION_BODY_FETCH_CONCURRENCY: usize = 3;
 const SENDER_KEY_CONCURRENCY: usize = 3;
 /// How many messages a search finds when its options give no limit.
 const DEFAULT_SEARCH_LIMIT: u32 = 25;
+/// How many messages the search for a reference asks for: one is the
+/// answer, and more than one says the reference is ambiguous.
+const REFERENCE_SEARCH_LIMIT: u32 = 20;
+/// The shortest reference taken for a message ID, which also ends in `==`
+/// and has no space; anything else is words to search for.
+const MIN_MESSAGE_ID_LEN: usize = 60;
 
 /// A message opened to be read: its body decrypted, its signature checked.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -135,7 +141,7 @@ fn folder_page(folder: &str, page: u32, page_size: u32, unread: bool) -> ListQue
 }
 
 fn looks_like_id(reference: &str) -> bool {
-    reference.len() >= 60 && reference.ends_with("==") && !reference.contains(' ')
+    reference.len() >= MIN_MESSAGE_ID_LEN && reference.ends_with("==") && !reference.contains(' ')
 }
 
 /// What is read of a decrypted MIME body, and its type: every part of its HTML
@@ -147,7 +153,7 @@ fn extract_mime(raw: &[u8]) -> (String, String, Vec<Attachment>) {
     let Some(msg) = mail_parser::MessageParser::default().parse(raw) else {
         return (
             String::from_utf8_lossy(raw).into_owned(),
-            "text/plain".to_string(),
+            MimeType::PlainText.as_str().to_string(),
             Vec::new(),
         );
     };
@@ -156,17 +162,25 @@ fn extract_mime(raw: &[u8]) -> (String, String, Vec<Attachment>) {
         .filter_map(|part| msg.body_html(part))
         .collect();
     if !html.is_empty() {
-        return (html.join("\n"), "text/html".to_string(), attachments);
+        return (
+            html.join("\n"),
+            MimeType::Html.as_str().to_string(),
+            attachments,
+        );
     }
     let text: Vec<_> = (0..msg.text_body_count())
         .filter_map(|part| msg.body_text(part))
         .collect();
     if !text.is_empty() {
-        return (text.join("\n"), "text/plain".to_string(), attachments);
+        return (
+            text.join("\n"),
+            MimeType::PlainText.as_str().to_string(),
+            attachments,
+        );
     }
     (
         String::from_utf8_lossy(raw).into_owned(),
-        "text/plain".to_string(),
+        MimeType::PlainText.as_str().to_string(),
         attachments,
     )
 }
@@ -310,7 +324,7 @@ impl Client {
             .search_messages(&SearchOpts {
                 keyword: Some(reference.to_string()),
                 folder: Some("all".into()),
-                limit: Some(20),
+                limit: Some(REFERENCE_SEARCH_LIMIT),
                 ..Default::default()
             })
             .await?;
@@ -502,7 +516,7 @@ fn open_body(
         (body, mime_type)
     } else {
         let mime_type = if m.mime_type.is_empty() {
-            "text/plain".into()
+            MimeType::PlainText.as_str().into()
         } else {
             m.mime_type
         };
