@@ -120,9 +120,9 @@ impl Client {
         let mut last_total = None;
         let mut page = 0u32;
         while gone_through.len() < max {
-            let q = ListQuery::folder_page(label.clone(), page, page_size);
-            let (total, msgs) = api::messages::list_messages(self.http(), &q).await?;
-            for meta in &msgs {
+            let query = ListQuery::folder_page(label.clone(), page, page_size);
+            let (total, messages) = api::messages::list_messages(self.http(), &query).await?;
+            for meta in &messages {
                 if gone_through.len() == max {
                     break;
                 }
@@ -141,7 +141,7 @@ impl Client {
                 page = page.saturating_sub(shrunk.div_ceil(page_size));
                 continue;
             }
-            if msgs.is_empty() || is_last_page(msgs.len(), page_size) {
+            if messages.is_empty() || is_last_page(messages.len(), page_size) {
                 break;
             }
             page += 1;

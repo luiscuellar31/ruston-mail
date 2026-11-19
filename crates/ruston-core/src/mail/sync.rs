@@ -231,22 +231,24 @@ async fn backfill_cache<D: Doer>(
 ) -> Result<usize> {
     let label = resolve_folder(folder);
     let cache = pin_cursor(http, cache).await?;
-    let mut n = 0usize;
+    let mut cached = 0usize;
     for page in 0..max_pages {
-        let q = ListQuery::folder_page(label.clone(), page, page_size);
+        let query = ListQuery::folder_page(label.clone(), page, page_size);
         let cursor = page_cursor(cache.borrow())?;
-        let (_total, msgs) = api::messages::list_messages(http, &q).await?;
-        if msgs.is_empty() {
+        let (_total, messages) = api::messages::list_messages(http, &query).await?;
+        if messages.is_empty() {
             break;
         }
-        cache.borrow().store_metadata_page(Some(&cursor), &msgs)?;
-        n += msgs.len();
-        if is_last_page(msgs.len(), page_size) {
+        cache
+            .borrow()
+            .store_metadata_page(Some(&cursor), &messages)?;
+        cached += messages.len();
+        if is_last_page(messages.len(), page_size) {
             break;
         }
     }
-    tracing::info!(target: "ruston_core::sync", folder, cached = n, "cache_folder backfill");
-    Ok(n)
+    tracing::info!(target: "ruston_core::sync", folder, cached, "cache_folder backfill");
+    Ok(cached)
 }
 
 /// What the local index keeps of a message's body: an HTML body's text,
@@ -274,22 +276,22 @@ where
 {
     let label = resolve_folder(folder);
     let cache = pin_cursor(http, cache).await?;
-    let mut n = 0usize;
+    let mut indexed = 0usize;
     for page in 0..max_pages {
-        let q = ListQuery::folder_page(label.clone(), page, page_size);
+        let query = ListQuery::folder_page(label.clone(), page, page_size);
         // Keep the page cursor for every body, including failed reads.
         let cursor = page_cursor(cache.borrow())?;
-        let (_total, msgs) = api::messages::list_messages(http, &q).await?;
-        if msgs.is_empty() {
+        let (_total, messages) = api::messages::list_messages(http, &query).await?;
+        if messages.is_empty() {
             break;
         }
-        let listed = msgs.len();
+        let listed = messages.len();
         // Mail sent or received keeps its body, so one indexed before stays
         // and only its metadata is brought up to date; a draft may have been
         // edited, so it is read again.
         let mut kept = Vec::new();
         let mut to_read = Vec::with_capacity(listed);
-        for meta in msgs {
+        for meta in messages {
             if !is_draft(&meta) && cache.borrow().has_indexed_body(&meta.id)? {
                 kept.push(meta);
             } else {
@@ -298,7 +300,7 @@ where
         }
         if !kept.is_empty() {
             cache.borrow().store_metadata_page(Some(&cursor), &kept)?;
-            n += kept.len();
+            indexed += kept.len();
         }
         // A few bodies download at once, and are saved in listing order, so
         // a stop leaves exactly the messages before it saved.
@@ -313,7 +315,7 @@ where
                         &full.meta,
                         Some(&searchable_body(&full)),
                     )?;
-                    n += 1;
+                    indexed += 1;
                 }
                 // The message is gone or its body cannot be opened, so an
                 // older body must not stay searchable.
@@ -325,7 +327,7 @@ where
                 // Anything else says nothing about the body, and would most
                 // likely fail the next read too: keep what is indexed and stop.
                 Err(error) => {
-                    tracing::info!(target: "ruston_core::sync", folder, indexed = n, error = %error, "local search indexing stopped");
+                    tracing::info!(target: "ruston_core::sync", folder, indexed, error = %error, "local search indexing stopped");
                     return Err(error);
                 }
             }
@@ -334,8 +336,8 @@ where
             break;
         }
     }
-    tracing::info!(target: "ruston_core::sync", folder, indexed = n, "local search index built");
-    Ok(n)
+    tracing::info!(target: "ruston_core::sync", folder, indexed, "local search index built");
+    Ok(indexed)
 }
 
 /// Whether `meta` is a draft, whose body may still change: Proton marks the
@@ -394,8 +396,8 @@ fn cached_page(
     page_size: u32,
 ) -> Result<(u32, Vec<MessageMetadata>)> {
     let label = resolve_folder(folder);
-    let (all, unread_only) = cache.count(&label)?;
-    let total = if unread { unread_only } else { all };
+    let (all, unread_count) = cache.count(&label)?;
+    let total = if unread { unread_count } else { all };
     // A page past the end of what a u32 can address is past the cache too.
     let messages = cache.list(&label, unread, page_size, page.saturating_mul(page_size))?;
     Ok((u32::try_from(total).unwrap_or(u32::MAX), messages))
