@@ -1203,7 +1203,9 @@ fn header_detail(
     );
 }
 
-fn chevron_points(center: egui::Pos2, expanded: bool) -> [egui::Pos2; 3] {
+/// A chevron's three points, pointing down when `expanded`, else right:
+/// egui's bundled fonts have no glyph for one.
+pub(super) fn chevron_points(center: egui::Pos2, expanded: bool) -> [egui::Pos2; 3] {
     if expanded {
         [
             center + egui::vec2(-4.0, -2.0),

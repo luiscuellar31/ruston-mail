@@ -49,7 +49,8 @@ FIDO2 and WebAuthn security keys are not supported yet.
 ### Several accounts
 
 Ruston Mail signs in to up to five Proton accounts, one open at a time. The
-address at the foot of the sidebar opens the accounts: choose another to switch
+address at the foot of the sidebar, with a chevron after it, opens the
+accounts: choose another to switch
 to it, or **Add account** to sign in to one more. The others keep their
 sessions saved, as a restart does, and check no mail and send no notifications
 until you open them. Each opens in the folder you last read in it, unless

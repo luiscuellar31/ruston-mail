@@ -435,20 +435,24 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
 }
 
 /// The open account's address, which opens the accounts to switch to and a
-/// way to add another, up to [`MAX_ACCOUNTS`].
+/// way to add another, up to [`MAX_ACCOUNTS`]. A chevron after it says so.
 fn accounts_menu(
     ui: &mut egui::Ui,
     app: &App,
     label: egui::RichText,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    let button = egui::Button::new(label)
+    let chevron = egui::Atom::custom(
+        egui::Id::new(ACCOUNT_CHEVRON_ATOM_ID),
+        egui::Vec2::splat(ACCOUNT_CHEVRON_SIZE),
+    );
+    let button = egui::Button::new((label, chevron))
         .frame(false)
         .wrap_mode(egui::TextWrapMode::Truncate);
     // Leaving would hide whether a message being sent has left.
     let sending = app.compose().is_some_and(crate::app::Compose::in_flight);
     let accounts = app.accounts();
-    egui::containers::menu::MenuButton::from_button(button)
+    let response = egui::containers::menu::MenuButton::from_button(button)
         .ui(ui, |ui| {
             for account in accounts.all() {
                 let open = account.profile == accounts.active_profile();
@@ -477,7 +481,28 @@ fn accounts_menu(
                 ui.close();
             }
         })
-        .0
+        .0;
+    paint_menu_chevron(ui, &response);
+    response
+}
+
+/// Paints the chevron in the room the address leaves at the end of its
+/// button, which has no frame to pad it; brighter while pointed at or open.
+fn paint_menu_chevron(ui: &egui::Ui, response: &egui::Response) {
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(response));
+    let color = if open || response.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        theme::colors(ui).muted
+    };
+    let center = egui::pos2(
+        response.rect.right() - ACCOUNT_CHEVRON_SIZE / 2.0,
+        response.rect.center().y,
+    );
+    ui.painter().line(
+        reader::chevron_points(center, true).to_vec(),
+        Stroke::new(1.5, color),
+    );
 }
 
 /// A neutral button like the one under it; while Settings is open, the soft
@@ -499,6 +524,9 @@ fn settings_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
 
 const NEW_MESSAGE_LABEL_ID: &str = "new-message-label";
 const FOLDER_NAME_ATOM_ID: &str = "folder-name";
+const ACCOUNT_CHEVRON_ATOM_ID: &str = "account-chevron";
+/// The room the accounts menu's chevron takes after the address.
+const ACCOUNT_CHEVRON_SIZE: f32 = 12.0;
 
 fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
     let width = ui.available_width();

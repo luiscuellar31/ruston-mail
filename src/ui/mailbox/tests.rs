@@ -236,6 +236,21 @@ fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
     );
 }
 
+/// Whether a chevron is drawn on `text`'s line, right after it.
+fn chevron_after(shapes: &[egui::epaint::ClippedShape], text: egui::Rect) -> bool {
+    shapes.iter().any(|clipped| match &clipped.shape {
+        egui::Shape::Path(path) => {
+            path.points.len() == 3
+                && path.points.iter().all(|point| {
+                    point.x > text.right()
+                        && point.x < text.right() + 24.0
+                        && text.y_range().contains(point.y)
+                })
+        }
+        _ => false,
+    })
+}
+
 #[test]
 fn the_address_opens_the_accounts_to_switch_to_or_add() {
     let context = egui::Context::default();
@@ -271,6 +286,11 @@ fn the_address_opens_the_accounts_to_switch_to_or_add() {
     let (_, shapes) = frame(Vec::new());
     let open = visible_text_rect(&shapes, "sam@proton.me").expect("the open account");
     assert!(visible_text_rect(&shapes, "alex@proton.me").is_none());
+    // egui's fonts have no chevron glyph, so one is painted after it.
+    assert!(
+        chevron_after(&shapes, open),
+        "the address shows it opens a menu"
+    );
     let _ = frame(click(open.center()));
     let (_, shapes) = frame(Vec::new());
     assert!(visible_text_rect(&shapes, "Add account").is_some());
