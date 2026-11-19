@@ -318,12 +318,7 @@ fn a_long_link_scrolls_inside_its_prompt_and_leaves_the_buttons_in_view() {
         let open = output
             .shapes
             .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Text(text) if text.galley.text() == "Open" => {
-                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-                }
-                _ => None,
-            });
+            .find_map(|clipped| crate::ui::test_support::shape_text_rect(&clipped.shape, "Open"));
         output.drop_without_applying_deltas();
         (open, answer)
     };

@@ -56,12 +56,10 @@ fn the_sign_in_screen_offers_to_try_a_saved_session_again() {
         let button = output
             .shapes
             .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Text(text) if text.galley.text() == "Try again" => {
-                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()).center())
-                }
-                _ => None,
-            });
+            .find_map(|clipped| {
+                crate::ui::test_support::shape_text_rect(&clipped.shape, "Try again")
+            })
+            .map(|rect| rect.center());
         output.drop_without_applying_deltas();
         (button, messages)
     };

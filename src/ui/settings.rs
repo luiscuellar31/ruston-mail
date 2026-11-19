@@ -836,18 +836,6 @@ mod tests {
 
     #[test]
     fn unsaved_settings_actions_fit_at_large_zoom() {
-        fn find_text(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Rect> {
-            match shape {
-                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
-                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-                }
-                egui::epaint::Shape::Vec(shapes) => {
-                    shapes.iter().find_map(|shape| find_text(shape, label))
-                }
-                _ => None,
-            }
-        }
-
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(410.0, 240.0));
         let context = egui::Context::default();
         context
@@ -874,10 +862,9 @@ mod tests {
         let actions = ["Keep editing", "Discard changes", "Apply and continue"].map(|label| {
             (
                 label,
-                output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| find_text(&shape.shape, label)),
+                output.shapes.iter().find_map(|shape| {
+                    crate::ui::test_support::shape_text_rect(&shape.shape, label)
+                }),
             )
         });
         output.drop_without_applying_deltas();

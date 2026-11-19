@@ -1483,12 +1483,7 @@ fn a_right_click_on_a_row_offers_its_actions_without_opening_it() {
     let archive = shapes
         .iter()
         .rev()
-        .find_map(|clipped| match &clipped.shape {
-            egui::epaint::Shape::Text(text) if text.galley.text() == "Archive" => {
-                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-            }
-            _ => None,
-        })
+        .find_map(|clipped| crate::ui::test_support::shape_text_rect(&clipped.shape, "Archive"))
         .unwrap();
     let (asked, _) = frame(click(archive.center(), egui::PointerButton::Primary));
     assert!(
