@@ -506,7 +506,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   not stay behind as a zombie process. Both
   apps take that page from core's `HvChallenge::verification_url`, which keeps
   the host a challenge names only when it is one of Proton's own over https,
-  and ask `HvChallenge::offers_captcha` whether a CAPTCHA answers it.
+  and ask `HvChallenge::offers_captcha` whether a CAPTCHA answers it. Both have
+  the CAPTCHA solved on that page and retry with the challenge's own token once
+  the person confirms; the CLI's `--captcha-manual` opens the API's captcha
+  page instead and takes the token it hands back on a loopback listener.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches

@@ -19,14 +19,17 @@ Switching panes keeps the open conversation, draft, and list position.
 
 Enter your Proton username or email and password. Ruston Mail asks for a TOTP
 code, a separate mailbox password, or Proton's browser-based human verification
-when the account needs one. That verification is a CAPTCHA; if Proton asks for
-another kind, such as a code by email or text message, Ruston Mail says it does
-not support it yet. A mailbox password is asked for once the password
+when the account needs one. That verification is a CAPTCHA: Ruston Mail opens
+Proton's verification page in your browser, and once you solve it there you
+choose **I completed the verification**. If Proton asks for another kind, such
+as a code by email or text message, Ruston Mail says it does not support it
+yet. A mailbox password is asked for once the password
 and code are accepted, in the same sign-in, so you do not enter them again.
 Each step opens with the cursor in its first empty field, so you can type right
 away. A sign-in that waits more than two minutes
 for Proton stops and says it took too long; the time you spend solving the
-verification or finding a code does not count.
+verification or finding a code does not count. The command line signs in the
+same way; see [Signing in from the terminal](#signing-in-from-the-terminal).
 
 A saved session opens automatically on later runs. If it cannot open for a
 reason that may pass, such as no network, Proton being unavailable, or locked
@@ -552,6 +555,40 @@ sign-in tokens, the command first lets the new ones be saved, so you stay
 signed in, and says so if that takes a moment; a second Ctrl+C stops it at
 once.
 
+### Signing in from the terminal
+
+`ruston-cli login` signs in. The desktop and the command line share that
+session, so signing in to either is enough for both; another account takes a
+profile of its own (see [Several accounts](#several-accounts)). `login` asks
+for your username and password, and for a TOTP code or a separate mailbox
+password when the account needs them, without showing what you type. In
+scripts, give them as `PROTON_USER`, `PROTON_PASSWORD`, `PROTON_TOTP` and
+`PROTON_MAILBOX_PASSWORD` rather than as options, which other programs can
+read.
+
+Proton sometimes asks a sign-in to pass a CAPTCHA first. The default, and the
+recommended way, opens Proton's verification page in a Chrome, Chromium,
+Brave or Edge window of its own, with a throwaway profile removed afterwards,
+or in your default browser when none of them is installed: solve the CAPTCHA
+there, then press Enter in the terminal. `ruston-cli tui` signs in the same
+way when no session is saved.
+
+Other options, for when the default does not suit:
+
+- `--captcha-token TOKEN`, or `PROTON_HV_TOKEN`: a CAPTCHA token solved
+  beforehand, sent as it is, with no browser.
+- `--captcha-manual`: the way earlier versions used by default. The API's own
+  captcha page opens in your browser, and its token comes back to the
+  terminal through a snippet pasted into the browser console or a bookmarklet
+  saved once, as the terminal explains. Use it only if the default does not
+  work.
+- `--captcha-chrome`: what earlier versions needed for today's default. It is
+  still accepted and changes nothing.
+- `--client web`, `ios` or `android` signs in as that official Proton app,
+  and `--app-version` or `--user-agent` set one of its headers instead.
+  `--api-url` signs in to another API address: https, or http to this machine
+  for a local test server.
+
 ### Terminal interface
 
 `ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
@@ -767,17 +804,14 @@ When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached
 through a published PGP key get an HTML body as plain text.
 
-`login` asks for the account password, and for a TOTP code or a separate
-mailbox password when the account needs them, without showing what you type.
-Give them as `PROTON_PASSWORD`, `PROTON_TOTP` and `PROTON_MAILBOX_PASSWORD` in
-scripts rather than as options, which other programs can read; `PROTON_USER`
-gives the username. The options that shape a sign-in, such as `--api-url`,
-`--client` and `--captcha-chrome`, belong to `login` alone: `ruston-cli login
---help` lists them, and another command refuses them. Likewise,
-`messages send --eo-password` without a value asks twice for the password that
-protects the message. `messages send --send-at` reports the message as
-scheduled, with the time Proton sends it, since it has not left yet; its JSON
-carries that time as `scheduled_at`.
+The options that shape a sign-in, described in
+[Signing in from the terminal](#signing-in-from-the-terminal), belong to
+`login` alone: `ruston-cli login --help` lists them, and another command
+refuses them. `messages send --eo-password` without a value asks twice,
+without showing what you type, for the password that protects the message.
+`messages send --send-at` reports the message as scheduled, with the time
+Proton sends it, since it has not left yet; its JSON carries that time as
+`scheduled_at`.
 
 `drafts save` and `drafts edit` upload `--attach` files to the draft. If one
 cannot be uploaded, `drafts save` deletes the draft it made, while `drafts

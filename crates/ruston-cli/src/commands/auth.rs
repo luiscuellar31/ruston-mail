@@ -48,7 +48,7 @@ pub async fn login(ctx: &Ctx, args: LoginArgs) -> Result<()> {
             args.captcha_token,
             args.api_url
                 .unwrap_or_else(|| "https://mail.proton.me/api".to_string()),
-            args.captcha_chrome,
+            !args.captcha_manual,
         )),
     };
 

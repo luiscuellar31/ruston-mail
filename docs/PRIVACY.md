@@ -225,14 +225,16 @@ a separate mailbox password when they are needed and not given, and
 None of them then goes on the command line, where process listings and shell
 history would show it. Both apps open human verification only on Proton's own
 hosts: a challenge that names another host gets Proton's default page, since
-the page receives the challenge's token. While it waits for a CAPTCHA, the CLI listens on a loopback port and takes
-a token only with the random code the captcha page it opened carries at the end
-of its address, so no other web page can hand it one. The address's fragment
-never reaches Proton. A capture bookmarklet saved by an earlier version is
-refused and has to be saved again. With `--captcha-chrome`, the page opens in
-Chrome with a new throwaway profile: a folder the CLI creates itself in the
-temporary directory, under a random name and, on Unix, for this user alone, so
-another user cannot prepare it. It is removed when verification ends. `ruston-core` stores the access token, refresh
+the page receives the challenge's token. The CLI opens it in Chrome, Chromium,
+Brave or Edge with a new throwaway profile: a folder the CLI creates itself in
+the temporary directory, under a random name and, on Unix, for this user alone,
+so another user cannot prepare it. It is removed when verification ends; with
+none of those browsers, the page opens in the default browser, as the
+desktop's does. With `--captcha-manual`, the CLI instead listens on a loopback
+port while it waits for a CAPTCHA and takes a token only with the random code
+the captcha page it opened carries at the end of its address, so no other web
+page can hand it one. The address's fragment never reaches Proton. A capture
+bookmarklet saved by an earlier version is refused and has to be saved again. `ruston-core` stores the access token, refresh
 token, and key passphrase in the operating system's credential store:
 
 - Keychain on macOS.

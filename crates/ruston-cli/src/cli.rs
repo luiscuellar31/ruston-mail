@@ -108,11 +108,20 @@ pub struct LoginArgs {
     #[arg(long)]
     pub user_agent: Option<String>,
 
-    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window, or
-    /// Chromium, Brave or Edge (throwaway profile); press Enter once verified
-    /// and the window is closed.
+    /// Solve the CAPTCHA on the API's own captcha page instead, handing its
+    /// token back from the browser console or a saved bookmarklet: only for
+    /// when Proton's verification page, the default, does not work.
     #[arg(long)]
-    pub captcha_chrome: bool,
+    pub captcha_manual: bool,
+
+    /// Asked for Proton's verification page before it was the default; still
+    /// taken, so commands that name it keep working.
+    #[arg(
+        long = "captcha-chrome",
+        hide = true,
+        conflicts_with = "captcha_manual"
+    )]
+    _captcha_chrome: bool,
 }
 
 fn parse_profile(value: &str) -> std::result::Result<String, String> {
@@ -270,6 +279,11 @@ impl From<&Cli> for Ctx {
 pub enum Command {
     /// Log in to Proton Mail. The username and password come from
     /// `PROTON_USER` and `PROTON_PASSWORD`, or are asked for.
+    ///
+    /// When Proton asks for a CAPTCHA, its verification page opens in a
+    /// Chrome, Chromium, Brave or Edge window of its own, with a throwaway
+    /// profile, or in the default browser without one: solve it there, then
+    /// press Enter here.
     Login(LoginArgs),
     /// End the session at Proton and forget it on this device. A session that
     /// can no longer be resumed is forgotten all the same.
@@ -1049,6 +1063,7 @@ mod tests {
                 "whoami",
             ],
             &["ruston-cli", "logout", "--captcha-chrome"],
+            &["ruston-cli", "whoami", "--captcha-manual"],
         ] {
             assert!(Cli::try_parse_from(args).is_err(), "{args:?} was taken");
         }
@@ -1059,14 +1074,34 @@ mod tests {
             "https://mail.example/api",
             "--client",
             "web",
-            "--captcha-chrome",
+            "--captcha-manual",
         ])
         .cmd() else {
             panic!("not a login");
         };
         assert_eq!(login.api_url.as_deref(), Some("https://mail.example/api"));
         assert!(matches!(login.client, Some(ClientPreset::Web)));
-        assert!(login.captcha_chrome);
+        assert!(login.captcha_manual);
+    }
+
+    #[test]
+    fn a_captcha_is_solved_on_protons_verification_page_unless_asked_otherwise() {
+        let login = |args: &[&str]| match parse(args).cmd() {
+            Command::Login(login) => login,
+            _ => panic!("not a login"),
+        };
+        assert!(!login(&["ruston-cli", "login"]).captcha_manual);
+        // Asked for by name before it was the default, it is still taken.
+        assert!(!login(&["ruston-cli", "login", "--captcha-chrome"]).captcha_manual);
+        assert!(
+            Cli::try_parse_from([
+                "ruston-cli",
+                "login",
+                "--captcha-chrome",
+                "--captcha-manual"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

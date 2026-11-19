@@ -1,14 +1,21 @@
 //! The CAPTCHA Proton may ask a sign-in to pass, its human verification: how
 //! `login` gets a person to solve it.
 //!
-//! Proton's captcha page refuses to be framed by any site but
-//! `https://mail.proton.me` (its `frame-ancestors` policy), a rule that does
-//! not apply to it as a tab of its own, so it opens as one. Solved, the
-//! captcha posts a `pm_captcha` message with its token to `window.parent`,
-//! which for a page in its own tab is the page itself. A snippet run on that
-//! page, from the console or as a bookmarklet, listens for the message and
-//! takes the tab to a listener on this machine, token and all, so nothing has
-//! to be copied by hand.
+//! By default it follows Proton's external-browser flow, the one Proton
+//! Bridge's CLI and the desktop use: open `verify.proton.me` for the challenge
+//! in an isolated Chrome window, or the default browser without one; that
+//! page registers the solved captcha against the challenge itself, and once
+//! the user presses ENTER the request is retried with the original challenge
+//! token. Nothing is captured from the page.
+//!
+//! `--captcha-manual` opens the API's captcha page instead, which refuses to
+//! be framed by any site but `https://mail.proton.me` (its `frame-ancestors`
+//! policy), a rule that does not apply to it as a tab of its own, so it opens
+//! as one. Solved, the captcha posts a `pm_captcha` message with its token to
+//! `window.parent`, which for a page in its own tab is the page itself. A
+//! snippet run on that page, from the console or as a bookmarklet, listens
+//! for the message and takes the tab to a listener on this machine, token and
+//! all, so nothing has to be copied by hand.
 //!
 //! The page opens with `#ruston=<port>.<nonce>` at the end of its address; the
 //! fragment never reaches Proton. The console snippet carries the port and
@@ -20,12 +27,6 @@
 //! this, and one copied from the page can be given that way to a new
 //! `login`. A captcha's token goes to Proton as the captcha made it: only
 //! codes sent by email or SMS take a `<challenge>:` prefix.
-//!
-//! `--captcha-chrome` instead follows Proton's external-browser flow (the one
-//! Proton Bridge's CLI uses): open `verify.proton.me` for the challenge in an
-//! isolated Chrome window; that page registers the solved captcha against the
-//! challenge itself, and once the user presses ENTER the request is retried
-//! with the original challenge token. Nothing is captured from the page.
 
 use crate::terminal;
 use futures::FutureExt;
@@ -123,8 +124,8 @@ fn failed<E: std::fmt::Display>(doing: &'static str) -> impl FnOnce(E) -> Error 
     move |error| Error::Other(format!("{doing}: {error}"))
 }
 
-/// `--captcha-chrome`: open the verification page in an isolated Chrome window
-/// and wait (bounded) for the user to confirm completion with ENTER.
+/// The default: open the verification page in an isolated Chrome window and
+/// wait (bounded) for the user to confirm completion with ENTER.
 fn run_external_flow(url: &str) -> Result<()> {
     terminal::eprintln!("\n── Human verification (CAPTCHA) ──");
     let mut chrome = match launch_chrome(url) {
@@ -225,9 +226,9 @@ fn wait_for_confirmation(
     }
 }
 
-/// Opens the captcha page in the default browser, says how to hand the token
-/// back, and waits for it. `page` is the captcha page's address, without
-/// this sign-in's fragment.
+/// `--captcha-manual`: opens the captcha page in the default browser, says
+/// how to hand the token back, and waits for it. `page` is the captcha page's
+/// address, without this sign-in's fragment.
 fn run_manual_flow(page: &str) -> Result<String> {
     let (listener, port) = token_listener()?;
     let nonce = new_nonce()?;
