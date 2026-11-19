@@ -1027,9 +1027,9 @@ impl DemoSession {
     /// Proton would: a star labels it Starred, reading marks it and all its
     /// messages read wherever it is, and unread only where it is listed,
     /// with its newest message there when none was unread, a move takes it
-    /// out of the folders it was in, keeping its labels, Sent and Drafts,
-    /// and deleting it forever takes it away whole, as a move brings all of
-    /// it to Trash or Spam.
+    /// and its messages out of the folders they were in, keeping their
+    /// labels, Sent and Drafts, and deleting it forever takes it away whole,
+    /// as a move brings all of it to Trash or Spam.
     pub(crate) fn change(&self, id: &str, place: &str, change: &Change) {
         let mut conversations = self
             .conversations
@@ -1106,6 +1106,12 @@ impl DemoSession {
                 conversation.labels.retain(|l| !left.contains(&l.id));
                 let moved = whole(folder, conversation);
                 conversation.labels.push(moved);
+                // Its messages go with it, keeping theirs likewise.
+                let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
+                for message in messages.iter_mut().filter(|m| m.meta.conversation_id == id) {
+                    message.meta.label_ids.retain(|l| !left.contains(l));
+                    message.meta.label_ids.push(folder.clone());
+                }
             }
             Change::Label(label) => {
                 if !conversation.labels.iter().any(|l| &l.id == label) {
@@ -2139,6 +2145,34 @@ mod tests {
         assert!(listed(label_ids::TRASH).contains(&first.to_string()));
         assert!(listed(label_ids::SENT).contains(&first.to_string()));
         assert!(!listed(label_ids::INBOX).contains(&first.to_string()));
+    }
+
+    #[test]
+    fn a_session_moves_a_conversations_messages_with_it() {
+        let session = DemoSession::new();
+        // Alex's review, in the Inbox, starred and labelled Work, then the
+        // reply sent to it.
+        let id = "conv-demo-01";
+        session.change(
+            id,
+            label_ids::INBOX,
+            &Change::Move(label_ids::ARCHIVE.into()),
+        );
+        let (_, messages) = session.conversation(id).unwrap();
+        let places: Vec<Vec<String>> = messages
+            .iter()
+            .map(|message| match message {
+                ConversationMessage::Opened(full) => full.meta.label_ids.clone(),
+                ConversationMessage::Unreadable(unreadable) => unreadable.meta.label_ids.clone(),
+            })
+            .collect();
+        assert_eq!(
+            places,
+            [
+                vec![label_ids::STARRED, "label-demo-work", label_ids::ARCHIVE],
+                vec![label_ids::SENT, "label-demo-work", label_ids::ARCHIVE],
+            ]
+        );
     }
 
     #[test]
