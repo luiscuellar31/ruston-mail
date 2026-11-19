@@ -186,6 +186,8 @@ pub enum Message {
     SetExpandAllMessages(bool),
     /// Unfolds quoted passages, or leaves them behind their button.
     SetShowQuotedText(bool),
+    /// Shows text the sender hid, set apart, or leaves it out.
+    SetShowHiddenText(bool),
     /// Scales the whole interface.
     SetZoom(f32),
     /// Chooses the desktop color scheme, which stops following the system's.
@@ -1076,6 +1078,9 @@ impl App {
             }
             Message::SetShowQuotedText(on) => {
                 self.remember(|settings| settings.show_quoted_text = on);
+            }
+            Message::SetShowHiddenText(on) => {
+                self.remember(|settings| settings.show_hidden_text = on);
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {

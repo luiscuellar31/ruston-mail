@@ -104,7 +104,9 @@ account; a bare development executable does not request permission or notify.
 HTML messages do not run in a browser view. They are sanitized, parsed, and
 drawn with native UI elements. Sanitizing keeps only `http`, `https` and
 `mailto` links and drops relative ones, so EML exports and quoted replies
-carry no other kind. Scripts do not run, and remote images are never
+carry no other kind. Of styles it keeps only what hides text, `display` and
+`visibility`, with the `hidden` attribute, so text a sender hid stays hidden
+in a quoted reply too. Scripts do not run, and remote images are never
 requested. This also blocks tracking pixels.
 
 The CLI's default text view converts HTML to readable Markdown-style text.

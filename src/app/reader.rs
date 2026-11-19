@@ -256,6 +256,7 @@ mod tests {
                         _ => BlockKind::Rule,
                     },
                     quote_depth: (index % 3) as u8,
+                    hidden: false,
                 })
                 .collect(),
             truncated: false,
@@ -308,6 +309,7 @@ mod tests {
                         ..RichSpan::default()
                     }]),
                     quote_depth: 0,
+                    hidden: false,
                 })
                 .collect(),
             truncated: false,

@@ -12,7 +12,7 @@ use html5ever::tokenizer::{
     BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 
-use super::{BLOCK_ELEMENTS, HIDDEN_ELEMENTS, VOID_ELEMENTS};
+use super::{BLOCK_ELEMENTS, HIDDEN_ELEMENTS, Skipping, VOID_ELEMENTS, hides};
 
 /// The most lists kept open within one another. A deeper one reads as the
 /// deepest kept, so a hostile body cannot grow the stack without end.
@@ -47,33 +47,44 @@ impl RichBody {
 
     /// The lines of [`Self::plain_text`], each block worked out only once
     /// the lines before it are read, so taking the first few is cheap
-    /// however long the body is.
+    /// however long the body is. Text the sender hid is left out, as a
+    /// reader that hides it shows the body.
     pub fn plain_lines(&self) -> impl Iterator<Item = String> + '_ {
-        self.blocks.iter().flat_map(|block| {
-            let text = match &block.kind {
-                BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => join(spans),
-                BlockKind::ListItem {
-                    marker: ListMarker::Continuation,
-                    spans,
-                    ..
-                } => join(spans),
-                BlockKind::ListItem { marker, spans, .. } => {
-                    format!("{} {}", marker.label(), join(spans))
-                }
-                BlockKind::Preformatted(text) => text.clone(),
-                BlockKind::Image { description } => format!("[Image: {description}]"),
-                BlockKind::Rule => "---".to_owned(),
-            };
-            let quote = "> ".repeat(usize::from(block.quote_depth));
-            text.lines()
-                .map(|line| format!("{quote}{line}"))
-                .collect::<Vec<_>>()
-        })
+        self.blocks
+            .iter()
+            .filter(|block| !block.hidden)
+            .flat_map(|block| {
+                let text = match &block.kind {
+                    BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => join(spans),
+                    BlockKind::ListItem {
+                        marker: ListMarker::Continuation,
+                        spans,
+                        ..
+                    } => join(spans),
+                    BlockKind::ListItem { marker, spans, .. } => {
+                        format!("{} {}", marker.label(), join(spans))
+                    }
+                    BlockKind::Preformatted(text) => text.clone(),
+                    BlockKind::Image { description } => format!("[Image: {description}]"),
+                    BlockKind::Rule => "---".to_owned(),
+                };
+                let quote = "> ".repeat(usize::from(block.quote_depth));
+                text.lines()
+                    .map(|line| format!("{quote}{line}"))
+                    .collect::<Vec<_>>()
+            })
     }
 }
 
+/// The text of `spans` the sender did not hide; a space hidden text left at
+/// the end goes too.
 fn join(spans: &[RichSpan]) -> String {
-    spans.iter().map(|span| span.text.as_str()).collect()
+    let text: String = spans
+        .iter()
+        .filter(|span| !span.hidden)
+        .map(|span| span.text.as_str())
+        .collect();
+    text.trim_end().to_owned()
 }
 
 /// One block of a body, as a paragraph or a list item is.
@@ -83,6 +94,9 @@ pub struct RichBlock {
     pub kind: BlockKind,
     /// How deeply the block sits inside quotes.
     pub quote_depth: u8,
+    /// Whether the sender hid all of it, as a newsletter's preview text is
+    /// hidden; a reader may leave it out, or show it set apart.
+    pub hidden: bool,
 }
 
 /// What a block is, with its content.
@@ -156,6 +170,9 @@ pub struct RichSpan {
     /// Only absolute `http`, `https` and `mailto` links are kept.
     /// Styled runs of the same anchor share its normalized target.
     pub link: Option<Arc<str>>,
+    /// Whether the sender hid it, as a letter slipped into a word to fool a
+    /// filter is hidden; a reader may leave it out, or show it set apart.
+    pub hidden: bool,
 }
 
 /// The structure of a sanitized HTML body, however long it is.
@@ -237,8 +254,12 @@ struct Builder {
     quote_depth: usize,
     pre: u16,
     pre_text: String,
-    /// Element whose content is being skipped.
-    hidden: Option<String>,
+    /// Element whose content is never read, as `script`'s is.
+    hidden: Skipping,
+    /// Element the sender hid, whose content is read but marked hidden.
+    sender_hidden: Skipping,
+    /// Whether the void element being read, as an image is, was hidden.
+    void_hidden: bool,
     /// The bytes of text, and of what holds it, the body may take.
     limit: usize,
     /// The bytes taken so far, within `limit`.
@@ -266,7 +287,9 @@ impl Builder {
             quote_depth: 0,
             pre: 0,
             pre_text: String::new(),
-            hidden: None,
+            hidden: Skipping::default(),
+            sender_hidden: Skipping::default(),
+            void_hidden: false,
             limit,
             used: 0,
             truncated: false,
@@ -292,14 +315,28 @@ impl Builder {
     }
 
     fn start(&mut self, name: &str, tag: &Tag) {
-        if self.hidden.is_some() {
+        if self.hidden.active() {
+            self.hidden.open(tag);
             return;
         }
         if HIDDEN_ELEMENTS.contains(&name) {
-            self.hidden = Some(name.to_owned());
+            self.hidden.start(name);
             return;
         }
+        if self.sender_hidden.active() {
+            self.sender_hidden.open(tag);
+        } else if hides(tag) {
+            if VOID_ELEMENTS.contains(&name) {
+                self.void_hidden = true;
+            } else {
+                self.sender_hidden.start(name);
+            }
+        }
+        self.start_element(name, tag);
+        self.void_hidden = false;
+    }
 
+    fn start_element(&mut self, name: &str, tag: &Tag) {
         match name {
             "br" => self.line_break(),
             "hr" => {
@@ -345,13 +382,16 @@ impl Builder {
     }
 
     fn end(&mut self, name: &str) {
-        if let Some(hidden) = &self.hidden {
-            if hidden == name {
-                self.hidden = None;
-            }
+        if self.hidden.active() {
+            self.hidden.close(name);
             return;
         }
+        self.end_element(name);
+        // The element ends hidden, its last block included.
+        self.sender_hidden.close(name);
+    }
 
+    fn end_element(&mut self, name: &str) {
         match name {
             "br" => self.line_break(),
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
@@ -388,7 +428,7 @@ impl Builder {
     }
 
     fn text(&mut self, text: &str) {
-        if self.hidden.is_some() {
+        if self.hidden.active() {
             return;
         }
         if self.pre > 0 {
@@ -426,11 +466,26 @@ impl Builder {
     }
 
     /// Writes pending space with the preceding run's style; `flush` drops it.
+    /// A space after hidden text, beside one already shown before it, is
+    /// hidden with it, so leaving that text out leaves a single space.
     fn separate(&mut self) {
         if !self.space && self.wants_space() {
-            self.push_text(" ");
+            let beside_space = !self.marking()
+                && self.spans.last().is_some_and(|span| span.hidden)
+                && self
+                    .spans
+                    .iter()
+                    .rev()
+                    .find(|span| !span.hidden)
+                    .is_none_or(|span| span.text.ends_with(char::is_whitespace));
+            self.push_run(" ", self.marking() || beside_space);
             self.space = true;
         }
+    }
+
+    /// Whether what is read now is something the sender hid.
+    fn marking(&self) -> bool {
+        self.sender_hidden.active() || self.void_hidden
     }
 
     /// Whether a space may separate what comes next from the text so far.
@@ -441,6 +496,10 @@ impl Builder {
     }
 
     fn push_text(&mut self, text: &str) {
+        self.push_run(text, self.marking());
+    }
+
+    fn push_run(&mut self, text: &str, hidden: bool) {
         let (strong, emphasis, code, struck) = (
             self.strong > 0,
             self.emphasis > 0,
@@ -453,6 +512,7 @@ impl Builder {
                 && span.code == code
                 && span.struck == struck
                 && span.link == self.link
+                && span.hidden == hidden
         });
         // A new run costs its own storage as well as its text, so many tiny
         // style changes cannot grow the body past its limit.
@@ -478,6 +538,7 @@ impl Builder {
                 code,
                 struck,
                 link: self.link.clone(),
+                hidden,
             }),
         }
     }
@@ -573,6 +634,7 @@ impl Builder {
         }
 
         let spans = std::mem::take(&mut self.spans);
+        let hidden = spans.iter().all(|span| span.hidden);
         let kind = if let Some(level) = self.heading {
             BlockKind::Heading { level, spans }
         } else if let Some(marker) = self.item.take() {
@@ -586,7 +648,7 @@ impl Builder {
         } else {
             BlockKind::Paragraph(spans)
         };
-        self.push(kind);
+        self.push_block(kind, hidden);
     }
 
     fn end_pre(&mut self) {
@@ -606,7 +668,12 @@ impl Builder {
         }
     }
 
+    /// A block that is not text, hidden if the sender hid what it is in.
     fn push(&mut self, kind: BlockKind) {
+        self.push_block(kind, self.marking());
+    }
+
+    fn push_block(&mut self, kind: BlockKind, hidden: bool) {
         if self.limit.saturating_sub(self.used) < BLOCK_SIZE {
             self.truncated = true;
             return;
@@ -615,6 +682,7 @@ impl Builder {
         self.blocks.push(RichBlock {
             kind,
             quote_depth: u8::try_from(self.quote_depth).unwrap_or(u8::MAX),
+            hidden,
         });
     }
 

@@ -1305,12 +1305,12 @@ fn rich_body(
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
-    if body.blocks.is_empty() {
+    if !body.blocks.iter().any(|block| shown(block, reading)) {
         detail(ui, "This message has no text.");
         return;
     }
     if body.blocks.iter().all(|block| block.quote_depth > 0) {
-        blocks(ui, &body.blocks, 0, messages);
+        blocks(ui, &body.blocks, 0, reading, messages);
         return;
     }
 
@@ -1334,19 +1334,33 @@ fn rich_body(
                 messages.push(Message::ToggleQuoteExpanded(message_id.to_owned(), quote));
             }
             if expanded {
-                quote_box(ui, |ui| blocks(ui, &rest[..run], 1, messages));
+                quote_box(ui, |ui| blocks(ui, &rest[..run], 1, reading, messages));
             }
             quote += 1;
             rest = &rest[run..];
         } else {
-            block(ui, first, messages);
             rest = &rest[1..];
+            if !shown(first, reading) {
+                continue;
+            }
+            block(ui, first, reading, messages);
         }
         ui.add_space(8.0);
     }
 }
 
-fn blocks(ui: &mut egui::Ui, rich_blocks: &[RichBlock], depth: u8, messages: &mut Vec<Message>) {
+/// Whether a block shows: one the sender hid only when Settings ask for it.
+fn shown(block: &RichBlock, reading: Reading) -> bool {
+    !block.hidden || reading.show_hidden_text
+}
+
+fn blocks(
+    ui: &mut egui::Ui,
+    rich_blocks: &[RichBlock],
+    depth: u8,
+    reading: Reading,
+    messages: &mut Vec<Message>,
+) {
     let mut rest = rich_blocks;
     while let Some(first) = rest.first() {
         if first.quote_depth > depth && depth < MAX_QUOTE_DEPTH {
@@ -1354,11 +1368,18 @@ fn blocks(ui: &mut egui::Ui, rich_blocks: &[RichBlock], depth: u8, messages: &mu
                 .iter()
                 .take_while(|block| block.quote_depth > depth)
                 .count();
-            quote_box(ui, |ui| blocks(ui, &rest[..run], depth + 1, messages));
+            let quoted = &rest[..run];
             rest = &rest[run..];
+            if !quoted.iter().any(|block| shown(block, reading)) {
+                continue;
+            }
+            quote_box(ui, |ui| blocks(ui, quoted, depth + 1, reading, messages));
         } else {
-            block(ui, first, messages);
             rest = &rest[1..];
+            if !shown(first, reading) {
+                continue;
+            }
+            block(ui, first, reading, messages);
         }
         ui.add_space(8.0);
     }
@@ -1372,10 +1393,12 @@ fn quote_box(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         .show(ui, content);
 }
 
-fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
+fn block(ui: &mut egui::Ui, block: &RichBlock, reading: Reading, messages: &mut Vec<Message>) {
     match &block.kind {
-        BlockKind::Paragraph(spans) => rich_line(ui, spans, None, messages),
-        BlockKind::Heading { level, spans } => rich_line(ui, spans, Some(*level), messages),
+        BlockKind::Paragraph(spans) => rich_line(ui, spans, None, reading, messages),
+        BlockKind::Heading { level, spans } => {
+            rich_line(ui, spans, Some(*level), reading, messages);
+        }
         BlockKind::ListItem {
             marker,
             depth,
@@ -1397,7 +1420,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, messages: &mut Vec<Message>) {
                         );
                     },
                 );
-                ui.vertical(|ui| rich_line(ui, spans, None, messages));
+                ui.vertical(|ui| rich_line(ui, spans, None, reading, messages));
             });
         }
         BlockKind::Preformatted(content) => {
@@ -1446,19 +1469,24 @@ fn rich_line(
     ui: &mut egui::Ui,
     spans: &[RichSpan],
     heading: Option<u8>,
+    reading: Reading,
     messages: &mut Vec<Message>,
 ) {
-    ui.horizontal_wrapped(|ui| rich_spans(ui, spans, heading, messages));
+    ui.horizontal_wrapped(|ui| rich_spans(ui, spans, heading, reading, messages));
 }
 
 fn rich_spans(
     ui: &mut egui::Ui,
     spans: &[RichSpan],
     heading: Option<u8>,
+    reading: Reading,
     messages: &mut Vec<Message>,
 ) {
     ui.spacing_mut().item_spacing.x = 0.0;
-    for span in spans {
+    for span in spans
+        .iter()
+        .filter(|span| !span.hidden || reading.show_hidden_text)
+    {
         let job = span_layout(ui, span, heading);
         if let Some(link) = &span.link {
             // Where it goes shows before a click, as a browser shows it, also
@@ -1508,7 +1536,10 @@ fn link_menu(ui: &mut egui::Ui, link: &str, messages: &mut Vec<Message>) {
 fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>) -> LayoutJob {
     let size = heading.map(heading_size).unwrap_or(theme::BODY_SIZE);
     // egui's bundled faces have no bold, so weight reads as a brighter ink.
-    let ink = if span.strong || heading.is_some() {
+    // Text the sender hid, shown when asked for, is set apart in grey.
+    let ink = if span.hidden {
+        theme::colors(ui).muted
+    } else if span.strong || heading.is_some() {
         ui.visuals().strong_text_color()
     } else {
         ui.visuals().text_color()

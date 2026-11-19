@@ -43,6 +43,10 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         // Hidden elements go with their content, as in plain text; ammonia
         // already drops script and style that way.
         .add_clean_content_tags(HIDDEN_ELEMENTS)
+        // What hides text the sender hid stays, and no other style, so the
+        // readers can still tell it, and a quote in a reply hides it too.
+        .add_generic_attributes(&["hidden", "style"])
+        .filter_style_properties(HashSet::from(HIDING_PROPERTIES))
         // A link may lead to the web or to an address, and nowhere else. Every
         // output keeps this, EML exports and quoted replies included, not only
         // the readers that filter links themselves.
@@ -53,7 +57,8 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
 
 /// Remove active and hidden content while retaining safe HTML formatting.
 /// Image tags may remain; renderers decide whether to display or fetch them.
-/// Links keep only http, https and mailto URLs.
+/// Links keep only http, https and mailto URLs. What hides text the sender
+/// hid stays, for [`hides`] to tell.
 pub fn sanitize(html: &str) -> String {
     SANITIZER.clean(html).to_string()
 }
@@ -64,6 +69,77 @@ pub const HIDDEN_ELEMENTS: &[&str] = &[
 ];
 /// Where a link may lead: the web or an address.
 const LINK_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
+/// The style properties a sanitized body keeps: those that hide text.
+const HIDING_PROPERTIES: [&str; 2] = ["display", "visibility"];
+
+/// Whether the sender hid an element with what it holds: with the `hidden`
+/// attribute, or a style of `display: none` or `visibility: hidden`, as a
+/// newsletter's preview text is hidden, or a letter slipped into a word.
+pub(crate) fn hides(tag: &Tag) -> bool {
+    tag.attrs
+        .iter()
+        .any(|attribute| match &*attribute.name.local {
+            "hidden" => true,
+            "style" => attribute.value.split(';').any(|declaration| {
+                let Some((property, value)) = declaration.split_once(':') else {
+                    return false;
+                };
+                // `!important` changes nothing here; ammonia writes it `! important`.
+                let value = value.split('!').next().unwrap_or("").trim();
+                let value = value.to_ascii_lowercase();
+                let value = value.as_str();
+                match property.trim().to_ascii_lowercase().as_str() {
+                    "display" => value == "none",
+                    "visibility" => matches!(value, "hidden" | "collapse"),
+                    _ => false,
+                }
+            }),
+            _ => false,
+        })
+}
+
+/// An element whose content is left out, or set apart, until it ends: its
+/// name, and how many elements of that name opened within it are still
+/// open, so that the end of one of those does not end it.
+#[derive(Debug, Default)]
+pub(crate) struct Skipping(Option<(String, usize)>);
+
+impl Skipping {
+    /// Whether an element is being skipped.
+    pub(crate) fn active(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Skips the element `name` that starts now.
+    pub(crate) fn start(&mut self, name: &str) {
+        self.0 = Some((name.to_owned(), 0));
+    }
+
+    /// Notes `tag` starting within the element skipped. A void element has no
+    /// end to wait for.
+    pub(crate) fn open(&mut self, tag: &Tag) {
+        let name = &*tag.name;
+        if let Some((skipped, nested)) = &mut self.0
+            && skipped == name
+            && !VOID_ELEMENTS.contains(&name)
+        {
+            *nested += 1;
+        }
+    }
+
+    /// Notes the end of an element `name`; the skipped one's ends the skip.
+    pub(crate) fn close(&mut self, name: &str) {
+        if let Some((skipped, nested)) = &mut self.0
+            && skipped == name
+        {
+            if *nested == 0 {
+                self.0 = None;
+            } else {
+                *nested -= 1;
+            }
+        }
+    }
+}
 /// Elements that start and end a block of their own.
 pub const BLOCK_ELEMENTS: &[&str] = &[
     "address",
@@ -165,8 +241,8 @@ struct TextBuilder {
     block: String,
     /// Whether a space separates the next word from the last one.
     space: bool,
-    /// The hidden element being skipped.
-    hidden: Option<String>,
+    /// The hidden element being skipped, or the one the sender hid.
+    hidden: Skipping,
     /// How many `<blockquote>` elements are open.
     quote_depth: usize,
     /// Open lists: `None` for bullets, or the next number.
@@ -208,11 +284,15 @@ impl TextBuilder {
     }
 
     fn start(&mut self, name: &str, tag: &Tag) {
-        if self.hidden.is_some() {
+        if self.hidden.active() {
+            self.hidden.open(tag);
             return;
         }
-        if HIDDEN_ELEMENTS.contains(&name) {
-            self.hidden = Some(name.to_owned());
+        if HIDDEN_ELEMENTS.contains(&name) || hides(tag) {
+            // A hidden void element has nothing to skip but itself.
+            if !VOID_ELEMENTS.contains(&name) {
+                self.hidden.start(name);
+            }
             return;
         }
         match name {
@@ -257,10 +337,8 @@ impl TextBuilder {
     }
 
     fn end(&mut self, name: &str) {
-        if let Some(hidden) = &self.hidden {
-            if hidden == name {
-                self.hidden = None;
-            }
+        if self.hidden.active() {
+            self.hidden.close(name);
             return;
         }
         match name {
@@ -287,7 +365,7 @@ impl TextBuilder {
     }
 
     fn characters(&mut self, text: &str) {
-        if self.hidden.is_some() {
+        if self.hidden.active() {
             return;
         }
         if self.pre_depth > 0 {
@@ -403,7 +481,7 @@ impl TextBuilder {
         self.end_link();
         // A <pre> still open ends with the body, unless hidden content left
         // open swallows that end as well: flush then writes what it held.
-        if self.pre_depth > 0 && self.hidden.is_none() {
+        if self.pre_depth > 0 && !self.hidden.active() {
             self.close_pre();
         }
         self.flush();
@@ -600,6 +678,78 @@ mod tests {
         for text in ["shell", "torrent", "calendar", "relative"] {
             assert!(clean.contains(text), "{text} was lost: {clean}");
         }
+    }
+
+    #[test]
+    fn keeps_what_hides_text_and_no_other_style() {
+        let clean = sanitize(
+            "<p style=\"color:red; display:none; background:url(https://t.example/x)\" \
+             onclick=\"steal()\">a</p><span hidden title=\"t\">b</span>",
+        );
+        assert!(clean.contains("display"), "{clean}");
+        assert!(clean.contains("hidden"), "{clean}");
+        for gone in ["color", "background", "url(", "onclick", "steal"] {
+            assert!(!clean.contains(gone), "{gone} survived: {clean}");
+        }
+    }
+
+    #[test]
+    fn tells_text_the_sender_hid() {
+        let tag = |attributes: &str| {
+            let html = format!("<p {attributes}>");
+            let mut found = None;
+            let sink = TagSink(RefCell::new(&mut found));
+            let tokenizer = Tokenizer::new(sink, TokenizerOpts::default());
+            let input = BufferQueue::default();
+            input.push_back(StrTendril::from_slice(&html));
+            let _ = tokenizer.feed(&input);
+            tokenizer.end();
+            found.expect("a tag")
+        };
+        for hidden in [
+            "hidden",
+            "style='display:none'",
+            "style='DISPLAY : None !IMPORTANT'",
+            "style='display:none ! important'",
+            "style='color: red; visibility: hidden'",
+            "style='visibility:collapse'",
+        ] {
+            assert!(hides(&tag(hidden)), "{hidden}");
+        }
+        for shown in [
+            "style='display:block'",
+            "style='display:none-ish'",
+            "style='max-height:0; overflow:hidden'",
+            "style='visibility'",
+            "title='display:none'",
+        ] {
+            assert!(!hides(&tag(shown)), "{shown}");
+        }
+    }
+
+    /// Keeps the first tag a tokenizer reads.
+    struct TagSink<'a>(RefCell<&'a mut Option<Tag>>);
+
+    impl TokenSink for TagSink<'_> {
+        type Handle = ();
+
+        fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
+            if let Token::TagToken(tag) = token {
+                self.0.borrow_mut().get_or_insert(tag);
+            }
+            TokenSinkResult::Continue
+        }
+    }
+
+    #[test]
+    fn plain_text_leaves_out_what_the_sender_hid() {
+        assert_eq!(
+            to_text(
+                "<div style='display:none'>Preview<div>nested</div>still hidden</div>\
+                 <p>Pay<span style='display:none'>x</span>Pal<br hidden>here</p>"
+            ),
+            "PayPalhere"
+        );
     }
 
     #[test]

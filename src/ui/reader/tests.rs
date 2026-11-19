@@ -346,6 +346,51 @@ fn a_long_link_scrolls_inside_its_prompt_and_leaves_the_buttons_in_view() {
 }
 
 #[test]
+fn text_the_sender_hid_shows_only_when_asked_for_and_in_grey() {
+    let word = |text: &str, hidden: bool| RichSpan {
+        text: text.into(),
+        hidden,
+        ..RichSpan::default()
+    };
+    let spans = [word("Pay", false), word("x", true), word("Pal", false)];
+    let context = egui::Context::default();
+    theme::install(&context);
+    let drawn = |reading: Reading| {
+        let mut muted = None;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            muted = Some(theme::colors(ui).muted);
+            rich_spans(ui, &spans, None, reading, &mut Vec::new());
+        });
+        let texts: Vec<(String, bool)> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    Some(text.galley.job.sections[0].format.color) == muted,
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        texts
+    };
+    let text = |text: &str, grey: bool| (text.to_owned(), grey);
+
+    assert_eq!(
+        drawn(Reading::default()),
+        [text("Pay", false), text("Pal", false)]
+    );
+    assert_eq!(
+        drawn(Reading {
+            show_hidden_text: true,
+            ..Reading::default()
+        }),
+        [text("Pay", false), text("x", true), text("Pal", false)]
+    );
+}
+
+#[test]
 fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     let span = RichSpan {
         text: "the agenda".into(),
@@ -361,7 +406,15 @@ fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
                 events,
                 ..Default::default()
             },
-            |ui| rich_spans(ui, std::slice::from_ref(&span), None, &mut messages),
+            |ui| {
+                rich_spans(
+                    ui,
+                    std::slice::from_ref(&span),
+                    None,
+                    Reading::default(),
+                    &mut messages,
+                );
+            },
         );
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -1794,6 +1847,7 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
                 }],
             },
             quote_depth: 0,
+            hidden: false,
         };
         let context = egui::Context::default();
         let mut height = 0.0;
@@ -1809,7 +1863,7 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
                 |ui| {
                     ui.set_width(480.0);
                     let top = ui.cursor().top();
-                    block(ui, &item, &mut Vec::new());
+                    block(ui, &item, Reading::default(), &mut Vec::new());
                     height = ui.cursor().top() - top;
                 },
             )
@@ -2164,7 +2218,13 @@ fn a_link_shows_where_it_goes_while_the_pointer_rests_on_it() {
                 },
                 |ui| {
                     ui.set_width(420.0);
-                    rich_spans(ui, std::slice::from_ref(&span), None, &mut Vec::new());
+                    rich_spans(
+                        ui,
+                        std::slice::from_ref(&span),
+                        None,
+                        Reading::default(),
+                        &mut Vec::new(),
+                    );
                 },
             );
             texts = output

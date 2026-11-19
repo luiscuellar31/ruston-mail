@@ -48,6 +48,10 @@ pub struct Settings {
     pub expand_all_messages: bool,
     /// Unfold quoted passages instead of hiding them behind a button.
     pub show_quoted_text: bool,
+    /// Show text the sender hid, in grey, instead of leaving it out as a
+    /// browser does. Off for settings saved before this choice existed.
+    #[serde(default)]
+    pub show_hidden_text: bool,
     /// Whether a message is written out as HTML or as plain text.
     pub compose_format: BodyFormat,
     /// Where new messages, replies and forwards open.
@@ -112,6 +116,7 @@ impl Default for Settings {
             confirm_links: true,
             expand_all_messages: false,
             show_quoted_text: false,
+            show_hidden_text: false,
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
             check_recipient_protection: true,
@@ -203,6 +208,7 @@ pub enum Appearance {
 pub struct Reading {
     pub expand_all_messages: bool,
     pub show_quoted_text: bool,
+    pub show_hidden_text: bool,
 }
 
 impl Settings {
@@ -219,6 +225,7 @@ impl Settings {
         Reading {
             expand_all_messages: self.expand_all_messages,
             show_quoted_text: self.show_quoted_text,
+            show_hidden_text: self.show_hidden_text,
         }
     }
 

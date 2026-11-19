@@ -538,6 +538,7 @@ mod tests {
             blocks: vec![RichBlock {
                 kind: BlockKind::Paragraph(spans("Hi")),
                 quote_depth: 0,
+                hidden: false,
             }],
             truncated: false,
         });

@@ -179,7 +179,10 @@ quoted.
 
 HTML mail is converted to native text and layout. Headings, lists, links, basic
 formatting, and quotes remain, but scripts and remote content do not run. Remote
-images appear as their description when one is available.
+images appear as their description when one is available. Text the sender hid
+stays hidden, as in a browser: a newsletter's preview line, or a letter slipped
+into a word to get past filters. **Show text the sender hid** in Settings shows
+it, in grey; the command line always leaves it out.
 
 The reader can:
 
@@ -438,6 +441,7 @@ Settings control:
 
 - Whether opening mail marks it read.
 - Whether all messages and quoted text start unfolded.
+- Whether text the sender hid shows, in grey.
 - Whether links require confirmation.
 - Whether the composer opens in the reading pane or a new window.
 - Plain-text or HTML sending.

@@ -75,6 +75,10 @@ struct Writer {
 
 impl Writer {
     fn block(&mut self, block: &RichBlock) {
+        // What the sender hid stays hidden, as it would in a browser.
+        if block.hidden {
+            return;
+        }
         let (text, list_item) = match &block.kind {
             BlockKind::Paragraph(spans) => (markdown(spans), false),
             BlockKind::Heading { level, spans } => (
@@ -162,8 +166,9 @@ impl Writer {
 /// one link within its brackets, line by line, with the spaces around it left
 /// outside.
 fn markdown(spans: &[RichSpan]) -> String {
+    let shown: Vec<RichSpan> = spans.iter().filter(|span| !span.hidden).cloned().collect();
     let mut out = String::new();
-    let mut rest = spans;
+    let mut rest = &shown[..];
     while let Some(first) = rest.first() {
         let run = rest
             .iter()
@@ -201,6 +206,8 @@ fn markdown(spans: &[RichSpan]) -> String {
         }
         rest = &rest[run..];
     }
+    // Hidden text at the end may leave the space before it.
+    out.truncate(out.trim_end().len());
     out
 }
 
@@ -479,6 +486,17 @@ mod tests {
         assert_eq!(
             to_markdown("<p>Was <s>$20</s>, now <del>$18</del> <strike>$16</strike> $15</p>"),
             "Was ~~$20~~, now ~~$18~~ ~~$16~~ $15"
+        );
+    }
+
+    #[test]
+    fn text_the_sender_hid_is_left_out() {
+        assert_eq!(
+            to_markdown(
+                "<div style='display:none'>Preview text</div>\
+                 <p>Pay<span style='display:none'>x</span>Pal, <b>today</b> <span hidden>only</span></p>"
+            ),
+            "PayPal, **today**"
         );
     }
 

@@ -134,6 +134,53 @@ fn input_read_in_chunks_keeps_characters_entities_and_links_whole() {
 }
 
 #[test]
+fn text_the_sender_hid_is_read_and_set_apart() {
+    let body = parse(&crate::html::sanitize(
+        "<div style=\"display:none !important; max-height:0\">Preview text\
+         <div>nested</div>still hidden</div>\
+         <p>Pay<span style=\"display: none\">x</span>Pal and \
+         <span hidden>secret</span> one space <span style='visibility:hidden'>gone</span></p>\
+         <img style=\"display:none\" alt=\"Pixel\"><p>Shown</p>",
+    ));
+    let blocks: Vec<(String, bool)> = body
+        .blocks
+        .iter()
+        .map(|block| {
+            let text = match &block.kind {
+                BlockKind::Paragraph(spans) => spans.iter().map(|s| s.text.as_str()).collect(),
+                BlockKind::Image { description } => format!("img {description}"),
+                other => panic!("unexpected {other:?}"),
+            };
+            (text, block.hidden)
+        })
+        .collect();
+    let block = |text: &str, hidden: bool| (text.to_owned(), hidden);
+    assert_eq!(
+        blocks,
+        [
+            // An element of the same name within the hidden one ends first.
+            block("Preview text", true),
+            block("nested", true),
+            block("still hidden", true),
+            block("PayxPal and secret one space gone", false),
+            block("img Pixel", true),
+            block("Shown", false),
+        ]
+    );
+    // Left out, the hidden letter joins the word again, and one space stays.
+    assert_eq!(body.plain_text(), "PayPal and one space\nShown\n");
+    let BlockKind::Paragraph(spans) = &body.blocks[3].kind else {
+        panic!("expected a paragraph");
+    };
+    let hidden: Vec<&str> = spans
+        .iter()
+        .filter(|span| span.hidden)
+        .map(|span| span.text.as_str())
+        .collect();
+    assert_eq!(hidden, ["x", "secret ", "gone"]);
+}
+
+#[test]
 fn paragraphs_and_line_breaks() {
     let html = "<div><p>Hello <b>Alex</b>,</p><p>Line one<br>Line two</p></div>";
 
@@ -376,7 +423,11 @@ fn plain(text: &str) -> Vec<RichSpan> {
 }
 
 fn block(kind: BlockKind, quote_depth: u8) -> RichBlock {
-    RichBlock { kind, quote_depth }
+    RichBlock {
+        kind,
+        quote_depth,
+        hidden: false,
+    }
 }
 
 #[test]

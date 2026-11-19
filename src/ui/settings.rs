@@ -122,6 +122,16 @@ fn page(
             ui,
             "Quoted passages are the thread repeated under a reply, so they stay folded by default.",
         );
+        ui.add_space(6.0);
+
+        ui.add(theme::Checkbox::new(
+            &mut settings.show_hidden_text,
+            "Show text the sender hid",
+        ));
+        description(
+            ui,
+            "Senders hide text such as a newsletter's preview line, or a letter slipped into a word to get past filters. Shown, it is grey.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Links and images", |ui| {
@@ -415,6 +425,9 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     }
     if draft.show_quoted_text != current.show_quoted_text {
         messages.push(Message::SetShowQuotedText(draft.show_quoted_text));
+    }
+    if draft.show_hidden_text != current.show_hidden_text {
+        messages.push(Message::SetShowHiddenText(draft.show_hidden_text));
     }
     if draft.compose_placement != current.compose_placement {
         messages.push(Message::SetComposePlacement(draft.compose_placement));
@@ -923,8 +936,9 @@ mod tests {
         draft.check_recipient_protection = false;
         draft.accept_international_domains = true;
         draft.search_device_offline = true;
+        draft.show_hidden_text = true;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 9);
+        assert_eq!(changes.len(), 10);
         assert!(
             changes
                 .iter()

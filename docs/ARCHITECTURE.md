@@ -534,7 +534,13 @@ once a message uncovers it, `App::update` marks the conversation opened behind
 the draft, if it is still the open one. Core's
 [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) converts sanitized
 HTML into the rich-body model both apps draw, which the desktop adapter keeps
-as `MessageBody::Rich`. It appends visible text in runs instead
+as `MessageBody::Rich`. The sanitizer keeps, of styles, only `display` and
+`visibility`, and the `hidden` attribute, so `html::hides` can tell text the
+sender hid: the model keeps it, marked on its spans and blocks, and an
+element of the same name within the hidden one does not end it. The reader
+leaves it out, or draws it in grey with **Show text the sender hid**
+(`Reading::show_hidden_text`); the CLI, plain text and the search index always
+leave it out. It appends visible text in runs instead
 of comparing styles and link targets for every character. Styled spans share
 each normalized target as `Arc<str>`, keeping the body safe to send between
 workers and the UI. When equal adjacent anchors merge, the stored span adopts
