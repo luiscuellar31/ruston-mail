@@ -1305,8 +1305,16 @@ fn rich_body(
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
+    // Images are never loaded; those with no description would vanish
+    // without a word, and a message of nothing else would seem empty.
+    let images = body.undescribed_images;
+    if images > 0 {
+        detail(ui, &images_not_shown(images));
+    }
     if !body.blocks.iter().any(|block| shown(block, reading)) {
-        detail(ui, "This message has no text.");
+        if images == 0 {
+            detail(ui, "This message has no text.");
+        }
         return;
     }
     if body.blocks.iter().all(|block| block.quote_depth > 0) {
@@ -1346,6 +1354,15 @@ fn rich_body(
             block(ui, first, reading, messages);
         }
         ui.add_space(8.0);
+    }
+}
+
+/// How many images with no description the reader leaves unloaded.
+fn images_not_shown(count: usize) -> String {
+    if count == 1 {
+        "1 image not shown".to_owned()
+    } else {
+        format!("{count} images not shown")
     }
 }
 

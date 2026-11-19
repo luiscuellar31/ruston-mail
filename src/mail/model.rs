@@ -540,7 +540,7 @@ mod tests {
                 quote_depth: 0,
                 hidden: false,
             }],
-            truncated: false,
+            ..RichBody::default()
         });
 
         assert_eq!(MessageBody::PlainText("Hi".into()).plain_text(), "Hi");

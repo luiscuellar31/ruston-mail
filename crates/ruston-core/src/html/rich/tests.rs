@@ -290,6 +290,18 @@ fn images_keep_only_their_description() {
 }
 
 #[test]
+fn images_with_no_description_are_counted_but_pixels_and_hidden_ones_are_not() {
+    let body = parse(
+        "<p>Sale</p><img src='cid:banner'><img src='https://t.example/o.gif' width='1' height='1'>\
+         <img src='https://t.example/p.gif' style='width:0' height='0px'>\
+         <div style='display:none'><img src='cid:preview'></div>\
+         <img src='cid:logo' alt='Logo'><img src='cid:photo' width='600'>",
+    );
+    assert_eq!(body.undescribed_images, 2);
+    assert_eq!(body.plain_text(), "Sale\n[Image: Logo]\n");
+}
+
+#[test]
 fn tables_read_row_by_row() {
     let html = "<table><tr><td>Name</td><td>Value</td></tr>\
                 <tr><th>A</th><th>B</th></tr></table>";
@@ -463,7 +475,7 @@ fn plain_text_keeps_structure_one_block_per_line() {
                 2,
             ),
         ],
-        truncated: false,
+        ..RichBody::default()
     };
 
     assert_eq!(

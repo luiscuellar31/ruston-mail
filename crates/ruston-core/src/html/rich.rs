@@ -31,6 +31,10 @@ pub struct RichBody {
     pub blocks: Vec<RichBlock>,
     /// Whether the body was cut short to stay within the size asked for.
     pub truncated: bool,
+    /// Images with no description, which no block stands for. Tracking
+    /// pixels, one pixel wide or tall, and images the sender hid are not
+    /// counted: they were never meant to be seen.
+    pub undescribed_images: usize,
 }
 
 impl RichBody {
@@ -267,6 +271,8 @@ struct Builder {
     /// Whether something was left out to stay within `limit`; the rest of
     /// the body is then ignored.
     truncated: bool,
+    /// See [`RichBody::undescribed_images`].
+    undescribed_images: usize,
 }
 
 impl Builder {
@@ -293,6 +299,7 @@ impl Builder {
             limit,
             used: 0,
             truncated: false,
+            undescribed_images: 0,
         }
     }
 
@@ -579,13 +586,21 @@ impl Builder {
         }
     }
 
-    /// Images are not loaded; described ones become a placeholder and
-    /// decorative ones (no description, e.g. tracking pixels) are dropped.
+    /// Images are not loaded; described ones become a placeholder, and the
+    /// others are only counted.
     fn image(&mut self, tag: &Tag) {
         let Some(description) = attribute(tag, "alt")
             .map(str::trim)
             .filter(|alt| !alt.is_empty())
         else {
+            let pixel = ["width", "height"].into_iter().any(|side| {
+                attribute(tag, side)
+                    .and_then(|size| size.trim().trim_end_matches("px").parse::<u32>().ok())
+                    .is_some_and(|size| size <= 1)
+            });
+            if !pixel && !self.marking() {
+                self.undescribed_images = self.undescribed_images.saturating_add(1);
+            }
             return;
         };
         self.flush();
@@ -697,6 +712,7 @@ impl Builder {
         RichBody {
             blocks: self.blocks,
             truncated: self.truncated,
+            undescribed_images: self.undescribed_images,
         }
     }
 }

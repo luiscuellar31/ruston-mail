@@ -178,8 +178,11 @@ still opens, and you can still reply to it or forward it, without its text
 quoted.
 
 HTML mail is converted to native text and layout. Headings, lists, links, basic
-formatting, and quotes remain, but scripts and remote content do not run. Remote
-images appear as their description when one is available. Text the sender hid
+formatting, and quotes remain, but scripts and remote content do not run. Images
+are never loaded: one appears as its description when it has one, and a line at
+the top of the message says how many others are not shown, tracking pixels
+aside, so a newsletter made only of pictures does not look empty. The command
+line shows none and says how many at the end. Text the sender hid
 stays hidden, as in a browser: a newsletter's preview line, or a letter slipped
 into a word to get past filters. **Show text the sender hid** in Settings shows
 it, in grey; the command line always leaves it out.

@@ -21,6 +21,21 @@ pub(super) fn to_markdown(html: &str) -> String {
             break;
         }
     }
+    // The terminal shows no image, described or not, so it says how many.
+    let images = body.undescribed_images
+        + body
+            .blocks
+            .iter()
+            .filter(|block| !block.hidden && matches!(block.kind, BlockKind::Image { .. }))
+            .count();
+    if images > 0 && !writer.output.truncated {
+        let note = if images == 1 {
+            "[1 image not shown]".to_owned()
+        } else {
+            format!("[{images} images not shown]")
+        };
+        writer.push_block(&note, 0, false);
+    }
     let mut text = writer.output.text;
     if body.truncated || writer.output.truncated {
         text.push_str(TRUNCATION_NOTICE);
@@ -487,6 +502,18 @@ mod tests {
             to_markdown("<p>Was <s>$20</s>, now <del>$18</del> <strike>$16</strike> $15</p>"),
             "Was ~~$20~~, now ~~$18~~ ~~$16~~ $15"
         );
+    }
+
+    #[test]
+    fn images_say_how_many_are_not_shown_but_pixels_do_not_count() {
+        assert_eq!(
+            to_markdown(
+                "<p>Sale</p><img src='cid:banner'><img src='cid:logo' alt='Logo'>\
+                 <img src='https://t.example/o.gif' width='1' height='1'>"
+            ),
+            "Sale\n\n[2 images not shown]"
+        );
+        assert_eq!(to_markdown("<img src='cid:only'>"), "[1 image not shown]");
     }
 
     #[test]

@@ -259,7 +259,7 @@ mod tests {
                     hidden: false,
                 })
                 .collect(),
-            truncated: false,
+            ..RichBody::default()
         }
     }
 
@@ -312,7 +312,7 @@ mod tests {
                     hidden: false,
                 })
                 .collect(),
-            truncated: false,
+            ..RichBody::default()
         };
         let reader = reader(vec![
             saying(

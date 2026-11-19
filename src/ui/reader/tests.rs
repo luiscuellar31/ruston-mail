@@ -4,7 +4,7 @@ use chrono::Utc;
 
 use super::*;
 use crate::mail::ConversationDetail;
-use crate::ui::test_support::text_rect;
+use crate::ui::test_support::{text_rect, visible_text_rect};
 use ruston_core::html::rich::ListMarker;
 
 #[test]
@@ -2099,6 +2099,52 @@ fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
             }
         }
     }
+}
+
+#[test]
+fn a_message_of_images_says_how_many_are_not_shown_rather_than_that_it_has_no_text() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let drawn = |images: usize, text: &str| {
+        let mut message = header_message(Some("Alex Rivera"));
+        message.body = MessageBody::Rich(RichBody {
+            undescribed_images: images,
+            ..ruston_core::html::rich::parse(text)
+        });
+        let reader = ConversationReader::new(ConversationDetail {
+            id: "conversation".into(),
+            subject: None,
+            labels: Vec::new(),
+            messages: vec![message],
+        });
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(680.0);
+            message_card(
+                ui,
+                &reader.detail().messages[0],
+                reader.preview_at(0),
+                &reader,
+                AttachmentSaves {
+                    saving: None,
+                    failed: None,
+                },
+                Reading::default(),
+                &mut Vec::new(),
+            );
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        let shows = |text: &str| visible_text_rect(&shapes, text).is_some();
+        (
+            shows("This message has no text."),
+            shows("1 image not shown") || shows(&format!("{images} images not shown")),
+        )
+    };
+
+    // A newsletter of pictures alone is not an empty message.
+    assert_eq!(drawn(3, ""), (false, true));
+    assert_eq!(drawn(1, "<p>Sale</p>"), (false, true));
+    assert_eq!(drawn(0, ""), (true, false));
 }
 
 #[test]
