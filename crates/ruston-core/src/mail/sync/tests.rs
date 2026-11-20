@@ -617,24 +617,33 @@ async fn backfill_and_index_keep_paging_without_cursor_changes() {
             pages: vec![vec![cached_message("m1")], vec![cached_message("m2")]],
             gate: Semaphore::new(6),
         };
+        // Which of the two, for a failure to say.
+        let case = format!("cursor {cursor:?}");
         assert_eq!(
             backfill_cache(&http, &cache, "inbox", 3, 1).await.unwrap(),
-            2
+            2,
+            "{case}"
         );
-        assert_eq!(cache.count("0").unwrap(), (2, 0));
+        assert_eq!(cache.count("0").unwrap(), (2, 0), "{case}");
         assert_eq!(
             index_cache(&http, &cache, "inbox", 3, 1, |id| async move {
                 Ok(full_message(cached_message(&id)))
             })
             .await
             .unwrap(),
-            2
+            2,
+            "{case}"
         );
-        assert_eq!(cache.search("downloadedbody", 10).unwrap().len(), 2);
+        assert_eq!(
+            cache.search("downloadedbody", 10).unwrap().len(),
+            2,
+            "{case}"
+        );
         // A cache without a cursor gets one before its first listing.
         assert_eq!(
             cache.last_event_id().unwrap().as_deref(),
-            Some(cursor.unwrap_or("pinned"))
+            Some(cursor.unwrap_or("pinned")),
+            "{case}"
         );
     }
 }
