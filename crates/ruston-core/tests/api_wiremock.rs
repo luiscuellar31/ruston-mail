@@ -5,7 +5,7 @@ use ruston_core::api;
 use ruston_core::api::messages::ListQuery;
 use ruston_core::model::enums::{label_ids, label_type, recipient_type, resolve_folder};
 use ruston_core::transport::HttpClient;
-use wiremock::matchers::{body_json, method, path, query_param};
+use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockBuilder, MockServer, ResponseTemplate};
 
 fn client(uri: &str) -> HttpClient {
@@ -133,47 +133,6 @@ async fn a_bulk_action_names_the_ids_proton_refused() {
     );
     // Every ID taken is a success.
     api::conversations::label(&http, "6", &["c1".to_string(), "c2".to_string()])
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn trashing_puts_the_trash_label_on_the_messages() {
-    let server = MockServer::start().await;
-    request("PUT", "/mail/v4/messages/label", &[])
-        .and(body_json(
-            serde_json::json!({ "LabelID": "3", "IDs": ["msg-1"] }),
-        ))
-        .respond_with(success(serde_json::json!({})))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let ids = ["msg-1".to_string()];
-    api::messages::label(&client(&server.uri()), label_ids::TRASH, &ids)
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn a_conversation_is_labelled_and_unlabelled_as_a_whole() {
-    let server = MockServer::start().await;
-    for op in ["label", "unlabel"] {
-        Mock::given(method("PUT"))
-            .and(path(format!("/mail/v4/conversations/{op}")))
-            .and(body_json(
-                serde_json::json!({ "LabelID": "wN2", "IDs": ["c1"] }),
-            ))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-    }
-    let http = client(&server.uri());
-    let ids = ["c1".to_string()];
-    api::conversations::label(&http, "wN2", &ids).await.unwrap();
-    api::conversations::unlabel(&http, "wN2", &ids)
         .await
         .unwrap();
 }

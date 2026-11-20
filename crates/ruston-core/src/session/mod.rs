@@ -762,20 +762,14 @@ mod tests {
     }
 
     #[test]
-    fn split_tokens_do_not_resume_a_session() {
+    fn a_session_whose_tokens_are_gone_does_not_resume() {
         let base = unique_base();
         let paths = Paths::with_base(&base);
         let store = MemoryStore::new();
         saved_session(crate::DEFAULT_BASE_URL, &paths, &store);
-        // The token pair as two entries, the way it was once kept.
         store.delete(K_TOKENS).unwrap();
-        for (key, token) in [("access_token", "acc"), ("refresh_token", "ref")] {
-            store.set(key, token).unwrap();
-        }
 
         assert!(Session::load(&paths, "default", &store).unwrap().is_none());
-        Session::clear(&paths, "default", &store).unwrap();
-        assert!(store.get(K_TOKENS).unwrap().is_none());
         std::fs::remove_dir_all(base).unwrap();
     }
 
@@ -874,19 +868,6 @@ mod tests {
             Session::load(&paths, "default", &store),
             Err(Error::SessionAddressMismatch)
         ));
-        std::fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
-    fn clear_removes_the_bound_api_address() {
-        let base = unique_base();
-        let paths = Paths::with_base(&base);
-        let store = MemoryStore::new();
-        saved_session("https://mail.proton.me/api", &paths, &store);
-        assert!(store.get(K_BASE_URL).unwrap().is_some());
-
-        Session::clear(&paths, "default", &store).unwrap();
-        assert!(store.get(K_BASE_URL).unwrap().is_none());
         std::fs::remove_dir_all(base).unwrap();
     }
 

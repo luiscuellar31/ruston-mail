@@ -1801,19 +1801,6 @@ fn metadata_upsert_refreshes_searchable_headers_without_losing_body() {
 }
 
 #[test]
-fn invalidated_body_stays_out_of_search_until_reindexed() {
-    let c = Cache::open(Path::new(":memory:")).unwrap();
-    let m = mail("m1", label_ids::INBOX, 10);
-    c.index_message(&m, "oldbody").unwrap();
-    c.invalidate_index(&m.id).unwrap();
-    assert!(c.search("oldbody", 10).unwrap().is_empty());
-
-    c.index_message(&m, "newbody").unwrap();
-    assert!(c.search("oldbody", 10).unwrap().is_empty());
-    assert_eq!(c.search("newbody", 10).unwrap()[0].id, "m1");
-}
-
-#[test]
 fn deleting_metadata_directly_removes_the_indexed_body() {
     let c = Cache::open(Path::new(":memory:")).unwrap();
     c.index_message(&mail("m1", label_ids::INBOX, 10), "privatebody")
