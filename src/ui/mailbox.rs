@@ -424,7 +424,8 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
         let sending = app.compose().is_some_and(crate::app::Compose::in_flight);
         let mut logout = ui.add_enabled(
             !signing_out && !sending,
-            egui::Button::new(logout_label).min_size(egui::vec2(ui.available_width(), 32.0)),
+            egui::Button::new(logout_label)
+                .min_size(egui::vec2(ui.available_width(), ACCOUNT_BUTTON_HEIGHT)),
         );
         if sending {
             logout = logout.on_disabled_hover_text("Available once the message is sent");
@@ -509,18 +510,35 @@ fn paint_menu_chevron(ui: &egui::Ui, response: &egui::Response) {
 /// A neutral button like the one under it; while Settings is open, the soft
 /// violet of the open folder.
 fn settings_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
-    let width = ui.available_width();
-    let mut label = egui::RichText::new("Settings");
-    if selected {
-        label = label.color(theme::colors(ui).selected_folder_text);
-    }
-    let mut button = egui::Button::new(label).min_size(egui::vec2(width, 32.0));
-    if selected {
-        button = button
-            .fill(theme::colors(ui).accent_soft)
-            .stroke(Stroke::NONE);
-    }
+    let button = egui::Button::new(place_text(ui, "Settings", selected))
+        .min_size(egui::vec2(ui.available_width(), ACCOUNT_BUTTON_HEIGHT));
+    let button = chosen_place(ui, button, selected);
     ui.add(button)
+}
+
+/// The height Settings and the button under it share.
+const ACCOUNT_BUTTON_HEIGHT: f32 = 32.0;
+
+/// Words on a place of the sidebar, in the chosen place's color when it is
+/// the one open.
+fn place_text(ui: &egui::Ui, text: impl Into<String>, chosen: bool) -> egui::RichText {
+    let text = egui::RichText::new(text);
+    if chosen {
+        text.color(theme::colors(ui).selected_folder_text)
+    } else {
+        text
+    }
+}
+
+/// `button` with the soft violet of the place that is open, when it is.
+fn chosen_place<'a>(ui: &egui::Ui, button: egui::Button<'a>, chosen: bool) -> egui::Button<'a> {
+    if chosen {
+        button
+            .fill(theme::colors(ui).accent_soft)
+            .stroke(Stroke::NONE)
+    } else {
+        button
+    }
 }
 
 const NEW_MESSAGE_LABEL_ID: &str = "new-message-label";
@@ -564,12 +582,7 @@ fn folder_button(
         .counts()
         .and_then(|counts| counts.unread(&folder))
         .filter(|count| *count > 0);
-    let name = if selected {
-        egui::RichText::new(folder.name()).color(theme::colors(ui).selected_folder_text)
-    } else {
-        egui::RichText::new(folder.name())
-    }
-    .atom_id(egui::Id::new(FOLDER_NAME_ATOM_ID));
+    let name = place_text(ui, folder.name(), selected).atom_id(egui::Id::new(FOLDER_NAME_ATOM_ID));
     let mut button = egui::Button::new((theme::icon_atom(), name))
         .gap(ui.spacing().icon_spacing + 3.0)
         .wrap_mode(egui::TextWrapMode::Truncate)
@@ -578,18 +591,9 @@ fn folder_button(
         .frame(true)
         .frame_when_inactive(selected);
     if let Some(count) = unread {
-        let text = egui::RichText::new(count.to_string());
-        button = button.right_text(if selected {
-            text.color(theme::colors(ui).selected_folder_text)
-        } else {
-            text
-        });
+        button = button.right_text(place_text(ui, count.to_string(), selected));
     }
-    if selected {
-        button = button
-            .fill(theme::colors(ui).accent_soft)
-            .stroke(Stroke::NONE);
-    }
+    let button = chosen_place(ui, button, selected);
     let layout = ui
         .scope(|ui| {
             // egui's grey hover is brighter than the soft violet of the
