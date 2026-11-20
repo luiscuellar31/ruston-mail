@@ -91,18 +91,6 @@ impl Accounts {
         }
     }
 
-    /// Gives the open account `folder` as the last one read, when it has
-    /// none of its own: one that settings saved before each account kept
-    /// its own still name for all.
-    pub(crate) fn adopt_folder(&mut self, folder: Folder) {
-        let active = self.active.clone();
-        if let Some(account) = self.get_mut(&active)
-            && account.folder.is_none()
-        {
-            account.folder = (folder != Folder::INBOX).then_some(folder);
-        }
-    }
-
     /// The profile a new account signs in under: the first slot no account
     /// takes, none once there are [`MAX_ACCOUNTS`].
     pub fn free_profile(&self) -> Option<String> {
@@ -273,14 +261,9 @@ mod tests {
         assert!(accounts.open("ruston-2"));
         assert_eq!(accounts.folder(), archive);
 
-        // The Inbox is no folder of its own, and a folder older settings
-        // name for all goes only to an account that has none.
+        // The Inbox is no folder of its own.
         accounts.set_folder(Folder::INBOX);
         assert_eq!(accounts.get("ruston-2").unwrap().folder, None);
-        accounts.adopt_folder(invoices.clone());
-        assert_eq!(accounts.folder(), invoices);
-        accounts.adopt_folder(archive);
-        assert_eq!(accounts.folder(), invoices);
     }
 
     #[test]

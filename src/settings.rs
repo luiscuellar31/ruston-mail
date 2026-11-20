@@ -31,14 +31,9 @@ pub const MAX_ZOOM: f32 = 2.0;
 pub struct Settings {
     pub window: Window,
     pub panels: Panels,
-    /// Where versions before each account kept its own last folder read look
-    /// for it, one for all. They still need the field: on load, the folder it
-    /// names goes to the open account when that has none, and the Inbox is
-    /// left here. Each account's own, in [`Self::accounts`], is kept whatever
-    /// [`Self::start`] says, so going back to [`StartFolder::LastRead`] still
-    /// knows where that was.
-    folder: Folder,
-    /// Which folder a run opens in.
+    /// Which folder a run opens in. The last folder each account read, in
+    /// [`Self::accounts`], is kept whatever this says, so going back to
+    /// [`StartFolder::LastRead`] still knows where that was.
     pub start: StartFolder,
     /// Mark a conversation as read as soon as it is opened.
     pub mark_read_on_open: bool,
@@ -129,7 +124,6 @@ impl Default for Settings {
         Self {
             window: Window::default(),
             panels: Panels::default(),
-            folder: Folder::INBOX,
             start: StartFolder::LastRead,
             // Keep the initial reader choices predictable on a fresh install.
             mark_read_on_open: true,
@@ -387,10 +381,6 @@ fn read(path: &Path, file: SettingsFile) -> Settings {
     };
     let usable = found.is_some();
     let mut settings = found.unwrap_or_default().sanitized();
-    // Settings saved before each account kept its own name one folder for
-    // all, the open account's.
-    let folder = std::mem::replace(&mut settings.folder, Folder::INBOX);
-    settings.accounts.adopt_folder(folder);
     settings.file = (usable || fs::rename(path, unreadable(path)).is_ok()).then_some(file);
 
     settings
@@ -658,7 +648,9 @@ mod tests {
         let _ = fs::remove_dir_all(folder);
     }
 
-    /// What 0.7.1, the latest release, writes once every choice is changed.
+    /// What a version from before 0.8.0 wrote once every choice was changed:
+    /// without the fields added since, and with the one folder for every
+    /// account that is no longer read.
     const RELEASED: &str = r#"{
   "window": {
     "width": 1280.0,
@@ -705,12 +697,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_written_by_the_latest_release_still_load() {
+    fn settings_written_by_an_older_version_still_load() {
         let folder = empty_folder("released");
         let path = folder.join(FILE);
         fs::write(&path, RELEASED).unwrap();
 
-        let mut expected = Settings {
+        let expected = Settings {
             window: Window {
                 width: 1_280.0,
                 height: 800.0,
@@ -739,23 +731,16 @@ mod tests {
             // A field added since keeps its default.
             ..Settings::default()
         };
-        // Its one folder is the account's it was open for, the only one.
-        let invoices = Folder::custom("kZ9", "Invoices");
-        expected.accounts.set_folder(invoices.clone());
         let settings = read(&path, SettingsFile::Main);
         assert_eq!(settings, expected);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
 
-        // Written back, that release finds the Inbox, no account's folder,
-        // and reading it again moves nothing.
+        // Written back and read again, they are the same.
         let written = serde_json::to_string_pretty(&settings).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
-        assert_eq!(value["folder"], "Inbox");
         fs::write(&path, written).unwrap();
         let again = read(&path, SettingsFile::Main);
         assert_eq!(again, settings);
         assert_eq!(again.start_folder(), Folder::System(MailFolder::Archive));
-        assert_eq!(again.accounts.folder(), invoices);
         let _ = fs::remove_dir_all(folder);
     }
 
