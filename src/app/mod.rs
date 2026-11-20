@@ -61,7 +61,15 @@ pub struct AttachmentSaveRequest {
 
 struct AttachmentSave {
     request: AttachmentSaveRequest,
-    choosing_destination: bool,
+    stage: SaveStage,
+}
+
+/// How far a save has come: the person is still choosing where the file
+/// goes, or it is being fetched and written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveStage {
+    ChoosingDestination,
+    Downloading,
 }
 
 type SessionEpoch = u64;
@@ -536,7 +544,11 @@ impl App {
         self.failed_save = None;
         self.saving_attachment = Some(AttachmentSave {
             request: request.clone(),
-            choosing_destination: suggested_name.is_some(),
+            stage: if suggested_name.is_some() {
+                SaveStage::ChoosingDestination
+            } else {
+                SaveStage::Downloading
+            },
         });
         if let Some(name) = suggested_name {
             Effects::ui(UiEffect::PickAttachmentDestination {
@@ -553,23 +565,30 @@ impl App {
         request: AttachmentSaveRequest,
         destination: Option<PathBuf>,
     ) -> Effects {
-        if !self.is_current_session(request.session)
-            || !self
-                .saving_attachment
-                .as_ref()
-                .is_some_and(|save| save.request == request && save.choosing_destination)
-        {
+        let Some(save) = self.current_save(&request, SaveStage::ChoosingDestination) else {
             return Effects::none();
-        }
+        };
         let Some(path) = destination else {
             self.saving_attachment = None;
             return Effects::none();
         };
+        save.stage = SaveStage::Downloading;
+        self.download_attachment(request, Some(path))
+    }
+
+    /// The save under way, when it is `request`'s, belongs to this session
+    /// and has come as far as `stage`.
+    fn current_save(
+        &mut self,
+        request: &AttachmentSaveRequest,
+        stage: SaveStage,
+    ) -> Option<&mut AttachmentSave> {
+        if !self.is_current_session(request.session) {
+            return None;
+        }
         self.saving_attachment
             .as_mut()
-            .unwrap()
-            .choosing_destination = false;
-        self.download_attachment(request, Some(path))
+            .filter(|save| save.request == *request && save.stage == stage)
     }
 
     fn download_attachment(
@@ -1068,11 +1087,9 @@ impl App {
                 self.finish_inline_image(epoch, &attachment_id, picture);
             }
             Message::AttachmentSaved(request, outcome) => {
-                if !self.is_current_session(request.session)
-                    || !self
-                        .saving_attachment
-                        .as_ref()
-                        .is_some_and(|save| save.request == request && !save.choosing_destination)
+                if self
+                    .current_save(&request, SaveStage::Downloading)
+                    .is_none()
                 {
                     return Effects::none();
                 }
