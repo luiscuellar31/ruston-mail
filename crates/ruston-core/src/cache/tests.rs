@@ -107,14 +107,6 @@ fn reading_an_index_through_a_symlink_is_refused() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-#[test]
-fn cache_path_rejects_profile_with_parent_component() {
-    assert!(matches!(
-        Cache::default_path("../outside"),
-        Err(Error::Session(_))
-    ));
-}
-
 /// A message in `label` dated `time`, already read.
 fn mail(id: &str, label: &str, time: i64) -> MessageMetadata {
     MessageMetadata {

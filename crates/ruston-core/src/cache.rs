@@ -645,14 +645,6 @@ const COUNT_SQL: &str = "SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM message
      JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1";
 
 impl Cache {
-    /// Legacy cache path: `<cache_dir>/ruston-mail/<profile>.db`. Client
-    /// operations never open it, since its owner is unknown: they use a path
-    /// of each account's own under the same folder.
-    pub fn default_path(profile: &str) -> Result<PathBuf> {
-        validate_profile_name(profile)?;
-        Ok(cache_root()?.join(format!("{profile}.db")))
-    }
-
     pub(crate) fn default_account_path(profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
         validate_profile_name(profile)?;
         Self::account_path(&cache_root()?, profile, identity)
