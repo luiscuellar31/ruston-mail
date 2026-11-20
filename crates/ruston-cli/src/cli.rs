@@ -116,15 +116,6 @@ pub struct LoginArgs {
     /// when Proton's verification page, the default, does not work.
     #[arg(long)]
     pub captcha_manual: bool,
-
-    /// Asked for Proton's verification page before it was the default; still
-    /// taken, so commands that name it keep working.
-    #[arg(
-        long = "captcha-chrome",
-        hide = true,
-        conflicts_with = "captcha_manual"
-    )]
-    _captcha_chrome: bool,
 }
 
 fn parse_profile(value: &str) -> std::result::Result<String, String> {

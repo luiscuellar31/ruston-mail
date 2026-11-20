@@ -612,8 +612,6 @@ Other options, for when the default does not suit:
   terminal through a snippet pasted into the browser console or a bookmarklet
   saved once, as the terminal explains. Use it only if the default does not
   work.
-- `--captcha-chrome`: what earlier versions needed for today's default. It is
-  still accepted and changes nothing.
 - `--client web`, `ios` or `android` signs in as that official Proton app,
   and `--app-version` or `--user-agent` set one of its headers instead.
   `--api-url` signs in to another API address: https, or http to this machine

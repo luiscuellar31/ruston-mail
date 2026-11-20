@@ -60,7 +60,6 @@ fn sign_in_options_belong_to_login_alone() {
             "https://mail.example/api",
             "whoami",
         ],
-        &["ruston-cli", "logout", "--captcha-chrome"],
         &["ruston-cli", "whoami", "--captcha-manual"],
     ] {
         assert!(Cli::try_parse_from(args).is_err(), "{args:?} was taken");
@@ -89,17 +88,7 @@ fn a_captcha_is_solved_on_protons_verification_page_unless_asked_otherwise() {
         _ => panic!("not a login"),
     };
     assert!(!login(&["ruston-cli", "login"]).captcha_manual);
-    // Asked for by name before it was the default, it is still taken.
-    assert!(!login(&["ruston-cli", "login", "--captcha-chrome"]).captcha_manual);
-    assert!(
-        Cli::try_parse_from([
-            "ruston-cli",
-            "login",
-            "--captcha-chrome",
-            "--captcha-manual"
-        ])
-        .is_err()
-    );
+    assert!(login(&["ruston-cli", "login", "--captcha-manual"]).captcha_manual);
 }
 
 #[test]
