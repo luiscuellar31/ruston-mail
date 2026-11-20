@@ -1432,7 +1432,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if let Some(at) = args.send_at {
                     render::scheduled(ctx.json, id, at);
                 } else if ctx.json {
-                    render::sent(true, id);
+                    render::sent(ctx.json, id);
                 } else {
                     terminal::println!("Sent (id {id}) to {}", args.message.to.join(", "));
                 }
@@ -1443,7 +1443,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let original = message_named(&fixtures_messages, &reference)?;
                 let id = format!("msg-demo-reply-{}", demo_number(original));
                 if ctx.json {
-                    render::sent(true, &id);
+                    render::sent(ctx.json, &id);
                 } else {
                     terminal::println!("Reply sent (id {id})");
                 }
@@ -1453,7 +1453,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 let original = message_named(&fixtures_messages, &reference)?;
                 let id = format!("msg-demo-fwd-{}", demo_number(original));
                 if ctx.json {
-                    render::sent(true, &id);
+                    render::sent(ctx.json, &id);
                 } else {
                     terminal::println!("Forwarded to {} (id {id})", to.join(", "));
                 }
@@ -1785,7 +1785,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             SettingsCmd::Sign { value } => {
-                render::setting_changed(ctx.json, "sign", contacts::SIGN, value.as_bool());
+                render::setting_changed(ctx.json, "sign", contacts::SIGN, value.is_on());
                 Ok(())
             }
             SettingsCmd::AttachPublicKey { value } => {
@@ -1793,7 +1793,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     ctx.json,
                     "attach_public_key",
                     contacts::ATTACH_PUBLIC_KEY,
-                    value.as_bool(),
+                    value.is_on(),
                 );
                 Ok(())
             }

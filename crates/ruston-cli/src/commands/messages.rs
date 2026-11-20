@@ -357,7 +357,7 @@ impl Change {
                 client.move_messages(ids, &dest).await
             }
             Change::Trash => client.trash_messages(ids).await,
-            Change::Mark(state) => client.mark_messages_read(ids, state.as_bool()).await,
+            Change::Mark(state) => client.mark_messages_read(ids, state.is_read()).await,
             Change::Star => client.star_messages(ids, true).await,
             Change::Unstar => client.star_messages(ids, false).await,
             Change::Spam => client.report_spam(ids).await,

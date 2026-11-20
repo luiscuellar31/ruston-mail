@@ -545,7 +545,7 @@ pub enum ReadState {
 }
 
 impl ReadState {
-    pub fn as_bool(self) -> bool {
+    pub fn is_read(self) -> bool {
         matches!(self, ReadState::Read)
     }
 }
@@ -880,7 +880,7 @@ pub enum OnOff {
 }
 
 impl OnOff {
-    pub fn as_bool(self) -> bool {
+    pub fn is_on(self) -> bool {
         matches!(self, OnOff::On)
     }
 }

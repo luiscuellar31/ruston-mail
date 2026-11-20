@@ -102,7 +102,7 @@ impl Change {
             Change::Mark { state, folder } => {
                 let folder = client.folder_id(folder).await?;
                 client
-                    .mark_conversations_read(ids, state.as_bool(), &folder)
+                    .mark_conversations_read(ids, state.is_read(), &folder)
                     .await
             }
             Change::Star => client.star_conversations(ids, true).await,

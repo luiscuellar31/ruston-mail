@@ -15,8 +15,8 @@ use ruston_core::{
 use serde_json::json;
 
 /// Show each folder's and label's total and unread count.
-pub fn counts(json_mode: bool, counts: &[LabelCount]) {
-    if json_mode {
+pub fn counts(json: bool, counts: &[LabelCount]) {
+    if json {
         json_out(&json!({ "counts": counts }));
         return;
     }
@@ -36,8 +36,8 @@ fn label_name(id: &str) -> &str {
 
 /// Show a page of contacts, each with its addresses, and how many there are
 /// in all.
-pub fn contacts_list(json_mode: bool, total: u32, contacts: &[Contact]) {
-    if json_mode {
+pub fn contacts_list(json: bool, total: u32, contacts: &[Contact]) {
+    if json {
         json_out(&json!({ "total": total, "contacts": contacts }));
         return;
     }
@@ -49,8 +49,8 @@ pub fn contacts_list(json_mode: bool, total: u32, contacts: &[Contact]) {
 }
 
 /// Show the email addresses contacts hold, each with its contact's name.
-pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
-    if json_mode {
+pub fn contact_emails(json: bool, emails: &[ContactEmail]) {
+    if json {
         json_out(&json!({ "emails": emails }));
         return;
     }
@@ -61,8 +61,8 @@ pub fn contact_emails(json_mode: bool, emails: &[ContactEmail]) {
 }
 
 /// Show each address the account sends from, with its ID.
-pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
-    if json_mode {
+pub fn addresses_list(json: bool, addrs: &[AddressInfo]) {
+    if json {
         json_out(&json!({ "addresses": addrs }));
         return;
     }
@@ -73,8 +73,8 @@ pub fn addresses_list(json_mode: bool, addrs: &[AddressInfo]) {
 }
 
 /// Show the Sieve filters, each with whether it is enabled.
-pub fn filters_list(json_mode: bool, filters: &[Filter]) {
-    if json_mode {
+pub fn filters_list(json: bool, filters: &[Filter]) {
+    if json {
         let filters: Vec<_> = filters.iter().map(filter_json).collect();
         json_out(&json!({ "filters": filters }));
         return;
@@ -91,8 +91,8 @@ pub fn filters_list(json_mode: bool, filters: &[Filter]) {
 }
 
 /// Report the filter just created, by its name and ID.
-pub fn filter_created(json_mode: bool, f: &Filter) {
-    if json_mode {
+pub fn filter_created(json: bool, f: &Filter) {
+    if json {
         json_out(&filter_json(f));
     } else {
         terminal::println!("Filter created: {} ({})", f.name, f.id);

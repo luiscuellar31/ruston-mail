@@ -456,7 +456,7 @@ fn marking_names_the_state_before_the_messages() {
         else {
             panic!("not a mark");
         };
-        assert_eq!(state.as_bool(), read, "{typed}");
+        assert_eq!(state.is_read(), read, "{typed}");
         assert_eq!(references, ["id1", "id2"]);
     }
     // An ID where the state goes is refused, not taken for a message.
@@ -511,7 +511,7 @@ fn conversations_are_marked_in_all_mail_unless_a_folder_is_named() {
         else {
             panic!("not a mark");
         };
-        assert!(!state.as_bool());
+        assert!(!state.is_read());
         assert_eq!(folder, expected, "{args:?}");
         assert_eq!(ids, ["conv1"]);
     }
