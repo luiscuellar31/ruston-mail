@@ -353,6 +353,7 @@ pub enum Command {
         /// Output directory.
         #[arg(long)]
         out: PathBuf,
+        /// The most messages to export.
         #[arg(long, default_value_t = 100)]
         max: u32,
     },
@@ -361,6 +362,7 @@ pub enum Command {
     /// are tried again after a wait that doubles, up to 10 minutes; a refused
     /// session, or any other error, stops it.
     Watch {
+        /// Seconds between one look at Proton's events and the next.
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         interval: u64,
         /// Backfill this folder once, then update its local search index when mail changes.
@@ -374,8 +376,10 @@ pub enum Command {
         /// Trash and Spam; `all` includes them.
         #[arg(long, default_value = "almost-all")]
         folder: String,
+        /// The most pages of the folder to index.
         #[arg(long = "max-pages", default_value_t = 3)]
         max_pages: u32,
+        /// Messages in a page, up to 100.
         #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
@@ -384,6 +388,7 @@ pub enum Command {
     Search {
         /// The words to find; a message must have every one.
         query: String,
+        /// The most messages to show.
         #[arg(long, default_value_t = 25)]
         limit: u32,
     },
@@ -394,8 +399,10 @@ pub enum Command {
         /// pages of it.
         #[arg(long)]
         backfill: Option<String>,
+        /// The most pages of the `--backfill` folder to cache.
         #[arg(long = "max-pages", default_value_t = 4)]
         max_pages: u32,
+        /// Messages in a page, up to 100.
         #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
@@ -592,10 +599,13 @@ pub enum MessagesCmd {
         /// an ID.
         #[arg(long, default_value = "inbox")]
         folder: String,
+        /// The page to show, counting from 0.
         #[arg(long, default_value_t = 0)]
         page: u32,
+        /// Messages in a page, up to 100.
         #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
+        /// List only the unread messages.
         #[arg(long)]
         unread: bool,
         /// List what the local cache holds, offline, instead of asking Proton.
@@ -608,6 +618,7 @@ pub enum MessagesCmd {
     Read {
         /// The message: its ID, or words that find it and no other.
         reference: String,
+        /// How to show the body.
         #[arg(long, value_enum, default_value_t = ReadFormat::Text)]
         format: ReadFormat,
         /// Show the body alone, without the headers.
@@ -621,6 +632,7 @@ pub enum MessagesCmd {
     Send(SendArgs),
     /// Reply to a message.
     Reply {
+        /// The message to answer: its ID, or words that find it and no other.
         reference: String,
         /// Reply to everyone the message went to, not only its sender.
         #[arg(long)]
@@ -631,6 +643,7 @@ pub enum MessagesCmd {
         /// The reply's text; `-` reads it from standard input.
         #[arg(long)]
         body: String,
+        /// A file to attach; repeat the option for more.
         #[arg(long = "attach")]
         attach: Vec<PathBuf>,
         /// Send the reply without the original quoted under the body.
@@ -639,14 +652,18 @@ pub enum MessagesCmd {
     },
     /// Forward a message.
     Forward {
+        /// The message to forward: its ID, or words that find it and no other.
         reference: String,
+        /// An address to forward to; repeat the option for more.
         #[arg(long = "to", required = true)]
         to: Vec<String>,
         /// Sender address (defaults to the address the original message reached).
         #[arg(long)]
         from: Option<String>,
+        /// Text to put above the forwarded message; `-` reads it from standard input.
         #[arg(long)]
         body: String,
+        /// A file to attach; repeat the option for more.
         #[arg(long = "attach")]
         attach: Vec<PathBuf>,
         /// Forward without the original's text quoted under the body; its
@@ -659,23 +676,32 @@ pub enum MessagesCmd {
         leave_out: Vec<String>,
     },
     /// Call off a message scheduled to be sent later.
-    CancelSend { reference: String },
+    CancelSend {
+        /// The message: its ID, or words that find it and no other.
+        reference: String,
+    },
     /// Tell Proton messages are spam, which moves them to Spam.
     Spam {
+        /// The messages: for each, its ID, or words that find it and no other.
         #[arg(required = true)]
         references: Vec<String>,
     },
     /// Tell Proton messages are not spam, which moves them to the Inbox.
     Ham {
+        /// The messages: for each, its ID, or words that find it and no other.
         #[arg(required = true)]
         references: Vec<String>,
     },
     /// Leave the mailing list a message came from, by the list's one-click
     /// unsubscribe.
-    Unsubscribe { reference: String },
+    Unsubscribe {
+        /// The message: its ID, or words that find it and no other.
+        reference: String,
+    },
     /// Permanently delete every message in Trash or Spam. Asks first; outside
     /// a terminal `--yes` is required.
     Empty {
+        /// The folder to empty.
         #[arg(value_enum)]
         folder: EmptyFolder,
         /// Empty without asking.
@@ -684,6 +710,7 @@ pub enum MessagesCmd {
     },
     /// Put a label on messages, or take it off.
     Label {
+        /// Whether to put the label on (`add`) or take it off (`rm`).
         #[arg(value_enum)]
         action: LabelAction,
         /// The label, by its name, path or ID.
@@ -693,9 +720,13 @@ pub enum MessagesCmd {
         references: Vec<String>,
     },
     /// Send the read receipt a message asks for.
-    Receipt { reference: String },
+    Receipt {
+        /// The message: its ID, or words that find it and no other.
+        reference: String,
+    },
     /// Move messages to the folder `--dest` names.
     Move {
+        /// The messages: for each, its ID, or words that find it and no other.
         #[arg(required = true)]
         references: Vec<String>,
         /// A system folder, or one of your folders by its name, path or ID.
@@ -704,12 +735,14 @@ pub enum MessagesCmd {
     },
     /// Move messages to Trash.
     Trash {
+        /// The messages: for each, its ID, or words that find it and no other.
         #[arg(required = true)]
         references: Vec<String>,
     },
     /// Permanently delete messages. Lists them and asks first; outside a
     /// terminal `--yes` is required.
     Delete {
+        /// The messages: for each, its ID, or words that find it and no other.
         #[arg(required = true)]
         references: Vec<String>,
         /// Delete without asking.
@@ -718,17 +751,21 @@ pub enum MessagesCmd {
     },
     /// Mark messages read or unread.
     Mark {
+        /// The state to leave them in.
         state: ReadState,
+        /// The messages: for each, its ID, or words that find it and no other.
         #[arg(required = true)]
         references: Vec<String>,
     },
     /// Star messages.
     Star {
+        /// The messages: for each, its ID, or words that find it and no other.
         #[arg(required = true)]
         references: Vec<String>,
     },
     /// Unstar messages.
     Unstar {
+        /// The messages: for each, its ID, or words that find it and no other.
         #[arg(required = true)]
         references: Vec<String>,
     },
@@ -742,10 +779,13 @@ pub enum ConversationsCmd {
         /// labels by its name, path or ID.
         #[arg(long, default_value = "inbox")]
         folder: String,
+        /// The page to show, counting from 0.
         #[arg(long, default_value_t = 0)]
         page: u32,
+        /// Conversations in a page, up to 100.
         #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
+        /// List only the conversations with unread messages.
         #[arg(long)]
         unread: bool,
     },
@@ -758,6 +798,7 @@ pub enum ConversationsCmd {
     },
     /// Move conversations to the folder `--dest` names.
     Move {
+        /// Conversation IDs.
         #[arg(required = true)]
         ids: Vec<String>,
         /// A system folder, or one of your folders by its name, path or ID.
@@ -766,31 +807,37 @@ pub enum ConversationsCmd {
     },
     /// Move conversations to Trash.
     Trash {
+        /// Conversation IDs.
         #[arg(required = true)]
         ids: Vec<String>,
     },
     /// Mark conversations read or unread.
     Mark {
+        /// The state to leave them in.
         state: ReadState,
         /// Where to mark them: a folder or label, or `all` for all mail.
         #[arg(long, default_value = "all")]
         folder: String,
+        /// Conversation IDs.
         #[arg(required = true)]
         ids: Vec<String>,
     },
     /// Star conversations.
     Star {
+        /// Conversation IDs.
         #[arg(required = true)]
         ids: Vec<String>,
     },
     /// Unstar conversations.
     Unstar {
+        /// Conversation IDs.
         #[arg(required = true)]
         ids: Vec<String>,
     },
     /// Snooze conversations until a time: a Unix time with `--until`, or a
     /// duration from now with `--in`, such as `1h` or `2d`.
     Snooze {
+        /// Conversation IDs.
         #[arg(required = true)]
         ids: Vec<String>,
         /// Unix time in seconds, still to come.
@@ -808,6 +855,7 @@ pub enum ConversationsCmd {
     },
     /// Bring snoozed conversations back before their time.
     Unsnooze {
+        /// Conversation IDs.
         #[arg(required = true)]
         ids: Vec<String>,
     },
@@ -819,6 +867,7 @@ pub enum AttachmentsCmd {
     List {
         /// The message: its ID, or words that find it and no other.
         message: String,
+        /// List the images shown inside the message too.
         #[arg(long = "include-inline")]
         include_inline: bool,
     },
@@ -829,11 +878,13 @@ pub enum AttachmentsCmd {
         /// The attachment to save, by its ID; leave it out with `--all`.
         #[arg(required_unless_present = "all", conflicts_with = "all")]
         attachment: Option<String>,
+        /// The directory to save into; the current one unless given.
         #[arg(long = "output-dir")]
         output_dir: Option<PathBuf>,
         /// Save every attachment, inline images too with `--include-inline`.
         #[arg(long)]
         all: bool,
+        /// With `--all`, save the images shown inside the message too.
         #[arg(long = "include-inline")]
         include_inline: bool,
     },
@@ -843,8 +894,10 @@ pub enum AttachmentsCmd {
 pub enum DraftsCmd {
     /// List drafts.
     List {
+        /// The page to show, counting from 0.
         #[arg(long, default_value_t = 0)]
         page: u32,
+        /// Drafts in a page, up to 100.
         #[arg(long = "page-size", default_value_t = 25, value_parser = page_size())]
         page_size: u32,
     },
@@ -891,11 +944,13 @@ pub enum SettingsCmd {
     Get,
     /// Turn the signing of outgoing mail on or off.
     Sign {
+        /// `on` to sign, `off` not to.
         #[arg(value_enum)]
         value: OnOff,
     },
     /// Turn on or off whether outgoing mail carries your public key.
     AttachPublicKey {
+        /// `on` to attach it, `off` not to.
         #[arg(value_enum)]
         value: OnOff,
     },
@@ -908,9 +963,12 @@ pub enum AddressesCmd {
     /// Change the display name or signature of one of your addresses.
     #[command(group = clap::ArgGroup::new("change").required(true).multiple(true))]
     Update {
+        /// The address's ID, as `addresses list` shows it.
         id: String,
+        /// The name recipients see next to the address.
         #[arg(long = "display-name", group = "change")]
         display_name: Option<String>,
+        /// The signature for mail sent from the address.
         #[arg(long, group = "change")]
         signature: Option<String>,
     },
@@ -920,14 +978,17 @@ pub enum AddressesCmd {
 pub enum ContactsCmd {
     /// List contacts.
     List {
+        /// The page to show, counting from 0.
         #[arg(long, default_value_t = 0)]
         page: u32,
+        /// Contacts in a page, up to 100.
         #[arg(long = "page-size", default_value_t = 50, value_parser = page_size())]
         page_size: u32,
     },
     /// List the email addresses your contacts hold, or only those matching
     /// `--email`.
     Emails {
+        /// The address whose entries to list.
         #[arg(long)]
         email: Option<String>,
     },
@@ -940,6 +1001,7 @@ pub enum FiltersCmd {
     /// Create a filter named `--name` from a Sieve script; `--sieve -` reads
     /// the script from standard input.
     Create {
+        /// The filter's name.
         #[arg(long)]
         name: String,
         /// The Sieve script itself, or `-` to read it from standard input.
@@ -953,11 +1015,20 @@ pub enum FiltersCmd {
         sieve: String,
     },
     /// Delete a filter.
-    Delete { id: String },
+    Delete {
+        /// The filter's ID, as `filters list` shows it.
+        id: String,
+    },
     /// Enable a filter.
-    Enable { id: String },
+    Enable {
+        /// The filter's ID, as `filters list` shows it.
+        id: String,
+    },
     /// Disable a filter.
-    Disable { id: String },
+    Disable {
+        /// The filter's ID, as `filters list` shows it.
+        id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -970,29 +1041,37 @@ pub enum LabelsCmd {
     },
     /// Make a new label, or a folder with `--folder`.
     Create {
+        /// The name of the label or folder.
         #[arg(long)]
         name: String,
+        /// Its color, as `#RRGGBB`.
         #[arg(long, default_value = "#8080FF")]
         color: String,
         /// Make it a folder, not a label.
         #[arg(long)]
         folder: bool,
+        /// The ID of the folder to make it inside.
         #[arg(long)]
         parent: Option<String>,
     },
     /// Delete labels or folders, given by their IDs.
     Delete {
+        /// The IDs of the labels or folders.
         #[arg(required = true)]
         ids: Vec<String>,
     },
     /// Change the name, color or parent of a label or folder.
     #[command(group = clap::ArgGroup::new("change").required(true).multiple(true))]
     Update {
+        /// The ID of the label or folder.
         id: String,
+        /// A new name.
         #[arg(long, group = "change")]
         name: Option<String>,
+        /// A new color, as `#RRGGBB`.
         #[arg(long, group = "change")]
         color: Option<String>,
+        /// The ID of the folder to move it into.
         #[arg(long, group = "change")]
         parent: Option<String>,
     },
