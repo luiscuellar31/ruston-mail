@@ -5700,7 +5700,6 @@ dependencies = [
  "egui_extras",
  "futures",
  "getrandom 0.4.3",
- "html5ever",
  "image",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
