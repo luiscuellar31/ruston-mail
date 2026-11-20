@@ -844,7 +844,7 @@ fn the_open_keys_scroll_where_they_do_not_fit_and_open_again_at_their_top() {
 }
 
 #[test]
-fn o_lists_the_links_and_only_a_yes_opens_the_one_selected() {
+fn b_lists_the_links_and_only_a_yes_opens_the_one_selected() {
     let mut app = loaded();
     press(&mut app, KeyCode::Char('b'));
     assert_eq!(
