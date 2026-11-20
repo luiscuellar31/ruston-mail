@@ -111,12 +111,17 @@ pub struct Settings {
     /// there could be several have the first, `ruston`.
     #[serde(default)]
     pub accounts: Accounts,
-    /// Whether `load` read these settings, allowing them to be written back.
+    /// The file `load` read these settings from, where they are written back.
+    /// Settings built in memory have none, and are never written.
     #[serde(skip)]
-    stored: bool,
-    /// Whether these are the demo's settings, kept in a file of their own.
-    #[serde(skip)]
-    demo: bool,
+    file: Option<SettingsFile>,
+}
+
+/// Which file holds the settings: the demo keeps one of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsFile {
+    Main,
+    Demo,
 }
 
 impl Default for Settings {
@@ -147,8 +152,7 @@ impl Default for Settings {
             show_unread_badge: true,
             desktop_notifications: true,
             accounts: Accounts::default(),
-            stored: false,
-            demo: false,
+            file: None,
         }
     }
 }
@@ -273,10 +277,12 @@ impl Settings {
     /// Reads the settings, using defaults if the file is absent or invalid.
     /// The demo reads, and later writes, a file of its own.
     pub fn load(demo: bool) -> Self {
-        let mut settings = path(demo).map_or_else(Self::default, |path| read(&path));
-        settings.demo = demo;
-
-        settings
+        let file = if demo {
+            SettingsFile::Demo
+        } else {
+            SettingsFile::Main
+        };
+        path(file).map_or_else(Self::default, |path| read(&path, file))
     }
 
     /// Writes the settings, and says whether they are where they should be:
@@ -284,10 +290,7 @@ impl Settings {
     /// failure interrupts nothing: this is a convenience, and a read-only disk
     /// is not a reason to interrupt someone's mail.
     pub fn save(&self) -> bool {
-        if !self.stored {
-            return true;
-        }
-        let Some(path) = path(self.demo) else {
+        let Some(path) = self.file.and_then(path) else {
             return true;
         };
         let Ok(text) = serde_json::to_string_pretty(self) else {
@@ -304,7 +307,7 @@ impl Settings {
         settings
     }
 
-    /// Pins a system folder while keeping `stored` private.
+    /// Pins a system folder while keeping `file` private.
     #[cfg(test)]
     pub fn with_start(mut self, start: StartFolder) -> Self {
         self.start = start;
@@ -361,17 +364,20 @@ fn clamp_size(value: f32, minimum: f32, fallback: f32) -> f32 {
     }
 }
 
-fn path(demo: bool) -> Option<PathBuf> {
+fn path(file: SettingsFile) -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "Ruston Mail")?;
 
-    Some(dirs.config_dir().join(if demo { DEMO_FILE } else { FILE }))
+    Some(dirs.config_dir().join(match file {
+        SettingsFile::Main => FILE,
+        SettingsFile::Demo => DEMO_FILE,
+    }))
 }
 
-/// Reads the settings kept at `path`, to be written back there. A file that
-/// is there but cannot be used is first moved aside, to [`unreadable`], so
-/// the defaults written instead destroy nothing; one that cannot be moved is
-/// never written over.
-fn read(path: &Path) -> Settings {
+/// Reads the settings kept at `path`, which is where `file` is, to be written
+/// back there. A file that is there but cannot be used is first moved aside,
+/// to [`unreadable`], so the defaults written instead destroy nothing; one
+/// that cannot be moved is never written over.
+fn read(path: &Path, file: SettingsFile) -> Settings {
     let found = match fs::read(path) {
         Ok(bytes) => serde_json::from_slice::<Settings>(&bytes).ok(),
         // Even defaults are worth storing once the app is running: it is
@@ -385,7 +391,7 @@ fn read(path: &Path) -> Settings {
     // all, the open account's.
     let folder = std::mem::replace(&mut settings.folder, Folder::INBOX);
     settings.accounts.adopt_folder(folder);
-    settings.stored = usable || fs::rename(path, unreadable(path)).is_ok();
+    settings.file = (usable || fs::rename(path, unreadable(path)).is_ok()).then_some(file);
 
     settings
 }
@@ -614,35 +620,37 @@ mod tests {
 
     #[test]
     fn the_demo_keeps_settings_of_its_own() {
-        let file = |demo| path(demo).unwrap().file_name().unwrap().to_owned();
-        assert_eq!(file(false), FILE);
-        assert_eq!(file(true), DEMO_FILE);
-        assert_eq!(path(true).unwrap().parent(), path(false).unwrap().parent());
+        let name = |file| path(file).unwrap().file_name().unwrap().to_owned();
+        assert_eq!(name(SettingsFile::Main), FILE);
+        assert_eq!(name(SettingsFile::Demo), DEMO_FILE);
+        assert_eq!(
+            path(SettingsFile::Demo).unwrap().parent(),
+            path(SettingsFile::Main).unwrap().parent()
+        );
 
         // Loading only reads; what was loaded is written back to its own file.
         let demo = Settings::load(true);
-        assert!(demo.stored && demo.demo);
-        assert_eq!(file(demo.demo), DEMO_FILE);
-        assert!(!Settings::load(false).demo);
-        // Neither bookkeeping flag reaches the file.
+        assert_eq!(demo.file, Some(SettingsFile::Demo));
+        assert_eq!(Settings::load(false).file, Some(SettingsFile::Main));
+        // Which file they came from is bookkeeping, and never reaches it.
         let text = serde_json::to_string(&demo).unwrap();
-        assert!(!text.contains("demo") && !text.contains("stored"));
+        assert!(!text.contains("demo") && !text.contains("\"file\""));
     }
 
     #[test]
     fn only_loaded_settings_are_written_back() {
         // Settings built in memory, as every test does, must never reach the
         // config file someone actually uses.
-        assert!(!Settings::default().stored);
+        assert_eq!(Settings::default().file, None);
 
         let loaded = Settings {
-            stored: true,
+            file: Some(SettingsFile::Main),
             ..Settings::default()
         };
-        assert!(loaded.stored);
-        // The flag is bookkeeping, not content, so it never reaches the file.
+        // Where they came from is bookkeeping, not content, so it never
+        // reaches the file.
         let text = serde_json::to_string(&loaded).unwrap();
-        assert!(!text.contains("stored"));
+        assert!(!text.contains("\"file\""));
     }
 
     #[test]
@@ -737,14 +745,14 @@ mod tests {
             zoom: 1.25,
             show_unread_badge: false,
             desktop_notifications: false,
-            stored: true,
+            file: Some(SettingsFile::Main),
             // A field added since keeps its default.
             ..Settings::default()
         };
         // Its one folder is the account's it was open for, the only one.
         let invoices = Folder::custom("kZ9", "Invoices");
         expected.accounts.set_folder(invoices.clone());
-        let settings = read(&path);
+        let settings = read(&path, SettingsFile::Main);
         assert_eq!(settings, expected);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
 
@@ -754,7 +762,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(value["folder"], "Inbox");
         fs::write(&path, written).unwrap();
-        let again = read(&path);
+        let again = read(&path, SettingsFile::Main);
         assert_eq!(again, settings);
         assert_eq!(again.start_folder(), Folder::System(MailFolder::Archive));
         assert_eq!(again.accounts.folder(), invoices);
@@ -766,18 +774,18 @@ mod tests {
         let folder = empty_folder("damaged");
         let path = folder.join(FILE);
         let writable_defaults = Settings {
-            stored: true,
+            file: Some(SettingsFile::Main),
             ..Settings::default()
         };
         // A first run has nothing to keep.
-        assert_eq!(read(&path), writable_defaults);
+        assert_eq!(read(&path, SettingsFile::Main), writable_defaults);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
 
         // A hand edit that lost a comma.
         let damaged = RELEASED.replacen(',', "", 1);
         fs::write(&path, &damaged).unwrap();
 
-        assert_eq!(read(&path), writable_defaults);
+        assert_eq!(read(&path, SettingsFile::Main), writable_defaults);
         assert!(!path.exists());
         let kept = folder.join("settings.json.unreadable");
         assert_eq!(fs::read_to_string(kept).unwrap(), damaged);
@@ -798,9 +806,9 @@ mod tests {
         // Something already holds the name it would be kept under.
         fs::create_dir_all(folder.join("settings.json.unreadable").join("taken")).unwrap();
 
-        let settings = read(&path);
+        let settings = read(&path, SettingsFile::Main);
 
-        assert!(!settings.stored);
+        assert_eq!(settings.file, None);
         assert_eq!(settings, Settings::default());
         assert_eq!(fs::read(&path).unwrap(), b"{");
         let _ = fs::remove_dir_all(folder);
