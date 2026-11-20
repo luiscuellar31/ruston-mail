@@ -306,7 +306,7 @@ aes-gcm 0.10.3: Apache-2.0 OR MIT
 aes-kw 0.2.1: MIT OR Apache-2.0
 ahash 0.8.12: MIT OR Apache-2.0
 allocator-api2 0.2.21: MIT OR Apache-2.0
-ammonia 4.1.8: MIT OR Apache-2.0
+ammonia 4.1.9: MIT OR Apache-2.0
 anstream 1.0.0: MIT OR Apache-2.0
 anstyle 1.0.14: MIT OR Apache-2.0
 anstyle-parse 1.0.0: MIT OR Apache-2.0
@@ -1081,7 +1081,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
---- Published by: ammonia 4.1.8 ---
+--- Published by: ammonia 4.1.9 ---
 
 Copyright (c) 2015-2022 The ammonia Developers
 
