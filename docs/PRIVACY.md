@@ -246,8 +246,7 @@ none of those browsers, the page opens in the default browser, as the
 desktop's does. With `--captcha-manual`, the CLI instead listens on a loopback
 port while it waits for a CAPTCHA and takes a token only with the random code
 the captcha page it opened carries at the end of its address, so no other web
-page can hand it one. The address's fragment never reaches Proton. A capture
-bookmarklet saved by an earlier version is refused and has to be saved again. `ruston-core` stores the access token, refresh
+page can hand it one. The address's fragment never reaches Proton. `ruston-core` stores the access token, refresh
 token, and key passphrase in the operating system's credential store:
 
 - Keychain on macOS.

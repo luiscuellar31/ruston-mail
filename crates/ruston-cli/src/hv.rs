@@ -40,17 +40,12 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 const HV_TIMEOUT: Duration = Duration::from_secs(300);
-/// Preferred local port. The bookmarklet reads the port from the page's
-/// address; one saved by an earlier version still calls this port, where it
-/// is told to be replaced.
-const PREFERRED_PORT: u16 = 47821;
 /// Names the port and nonce in the captcha page's address fragment.
 const FRAGMENT_KEY: &str = "ruston";
 const VERIFIED_PAGE: &str =
     "<h2>✓ Verified</h2><p>You can close this tab and return to your terminal.</p>";
 const NOT_THIS_SIGN_IN_PAGE: &str = "<h2>Not from this sign-in</h2><p>This request did not \
-    come from the captcha page your terminal opened. If you clicked a bookmarklet saved by an \
-    earlier version, save the one your terminal shows now and click it on that page.</p>";
+    come from the captcha page your terminal opened.</p>";
 const NO_TOKEN_PAGE: &str =
     "<h2>No token received</h2><p>Your terminal is still waiting: solve the captcha again.</p>";
 
@@ -248,11 +243,10 @@ fn run_manual_flow(page: &str) -> Result<String> {
 }
 
 /// A listener on this machine for the captcha page to hand the token to, on
-/// the preferred port when that is free, and the port it took. It does not
-/// block, so the wait for the token keeps to its deadline.
+/// a port the system picks, and that port. It does not block, so the wait
+/// for the token keeps to its deadline.
 fn token_listener() -> Result<(TcpListener, u16)> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, PREFERRED_PORT))
-        .or_else(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map_err(failed("cannot start HV helper server"))?;
     let port = listener.local_addr().map_err(failed("hv addr"))?.port();
     listener
@@ -286,11 +280,7 @@ fn print_manual_instructions(
     );
     let _ = terminal::writeln!(
         output,
-        "      on the captcha page opened from here (no console, no \"allow pasting\")."
-    );
-    let _ = terminal::writeln!(
-        output,
-        "      One saved by an earlier version is refused; save this one instead:"
+        "      on the captcha page opened from here (no console, no \"allow pasting\"):"
     );
     let _ = terminal::writeln!(output, "      javascript:{bookmarklet}");
     let _ = terminal::writeln!(
@@ -816,7 +806,6 @@ mod tests {
 
         let bookmarklet = capture_snippet(None);
         assert!(bookmarklet.contains("location.hash.match(/ruston=(\\d+\\.[0-9a-f]+)/)"));
-        assert!(!bookmarklet.contains(&PREFERRED_PORT.to_string()));
         // A javascript: URL is percent-decoded before it runs.
         assert!(!bookmarklet.contains('%'));
     }
@@ -855,7 +844,7 @@ mod tests {
         assert_eq!(token.as_deref(), Some("raw:token abc"));
         assert_eq!(status, "HTTP/1.1 200 OK");
 
-        // Any other page, and a bookmarklet saved by an earlier version.
+        // A request without this sign-in's code, or with another.
         let forged = format!("/token?nonce={}&value=forged", "f".repeat(32));
         for target in ["/token?value=forged", forged.as_str()] {
             assert_eq!(
