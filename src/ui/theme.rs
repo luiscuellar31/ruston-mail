@@ -913,12 +913,26 @@ pub fn titlebar_inset(ctx: &egui::Context) -> f32 {
     if cfg!(target_os = "macos") && !ctx.input(|input| input.viewport().fullscreen.unwrap_or(false))
     {
         // Native metrics are in macOS points, before egui's application zoom.
-        ctx.data(|data| data.get_temp::<f32>(egui::Id::new("native-titlebar-height")))
-            .unwrap_or(28.0)
+        ctx.data(|data| data.get_temp::<f32>(native_titlebar_height_id()))
+            .unwrap_or(DEFAULT_TITLEBAR_HEIGHT)
             / ctx.zoom_factor()
     } else {
         0.0
     }
+}
+
+/// The room the traffic lights take until the window reports its own.
+const DEFAULT_TITLEBAR_HEIGHT: f32 = 28.0;
+
+fn native_titlebar_height_id() -> egui::Id {
+    egui::Id::new("native-titlebar-height")
+}
+
+/// Keeps the height the window reports for its traffic lights, in macOS
+/// points, for [`titlebar_inset`] to leave that much room.
+#[cfg(any(target_os = "macos", test))]
+pub fn set_native_titlebar_height(ctx: &egui::Context, height: f32) {
+    ctx.data_mut(|data| data.insert_temp(native_titlebar_height_id(), height));
 }
 
 pub fn panel_frame(fill: Color32) -> egui::Frame {

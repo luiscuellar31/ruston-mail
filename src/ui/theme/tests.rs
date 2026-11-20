@@ -705,10 +705,8 @@ fn skeleton_pulse_stays_between_its_theme_colors() {
 fn titlebar_inset_tracks_fullscreen_and_platform() {
     let context = egui::Context::default();
     if cfg!(target_os = "macos") {
-        assert_eq!(titlebar_inset(&context), 28.0);
-        context.data_mut(|data| {
-            data.insert_temp(egui::Id::new("native-titlebar-height"), 35.0_f32);
-        });
+        assert_eq!(titlebar_inset(&context), DEFAULT_TITLEBAR_HEIGHT);
+        set_native_titlebar_height(&context, 35.0);
         assert_eq!(titlebar_inset(&context), 35.0);
         context.set_zoom_factor(1.75);
         context
