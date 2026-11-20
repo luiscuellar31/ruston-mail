@@ -48,6 +48,16 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         // still tell them, and a quote in a reply keeps them too.
         .add_generic_attributes(&["hidden", "style"])
         .filter_style_properties(HashSet::from(STYLE_PROPERTIES))
+        // Older mail centers with `align`, which ammonia keeps on cells
+        // and rows only.
+        .add_tag_attributes("p", &["align"])
+        .add_tag_attributes("div", &["align"])
+        .add_tag_attributes("h1", &["align"])
+        .add_tag_attributes("h2", &["align"])
+        .add_tag_attributes("h3", &["align"])
+        .add_tag_attributes("h4", &["align"])
+        .add_tag_attributes("h5", &["align"])
+        .add_tag_attributes("h6", &["align"])
         // The background of a cell is what draws a link as a button.
         .add_tag_attributes("table", &["bgcolor"])
         .add_tag_attributes("td", &["bgcolor"])

@@ -180,7 +180,7 @@ quoted.
 HTML mail is converted to native text and layout. Headings, lists, links, basic
 formatting, and quotes remain, but scripts and remote content do not run. Bold,
 italic, struck-through and centered text count whether the sender marked them
-with tags or set them with styles, as newsletters often do; a short centered
+with tags, with `align`, or set them with styles, as newsletters often do; a short centered
 line is centered, a longer one starts at the left. A link the sender drew as a
 button, alone on a background of its own, is a button, and still asks where it
 goes first. **Use the sender's text styles** in Settings leaves the styles

@@ -253,6 +253,43 @@ fn the_senders_style_or_a_center_element_centers_blocks() {
 }
 
 #[test]
+fn the_align_attribute_centers_as_the_style_does() {
+    let body = parse(&crate::html::sanitize(
+        "<p align=\"center\">a</p><div align=\"CENTER\"><h2>b</h2></div>\
+         <table><tr><td align=\"center\">c</td></tr>\
+         <tr align=\"center\"><td>d</td></tr>\
+         <tr><td align=\"center\" style=\"text-align:left\">e</td></tr></table>\
+         <table align=\"center\"><tr><td>f</td></tr></table><p align=\"right\">g</p>",
+    ));
+    let centered: Vec<(String, bool)> = body
+        .blocks
+        .iter()
+        .map(|block| match &block.kind {
+            BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => {
+                (join(spans), block.centered)
+            }
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    let line = |text: &str, centered: bool| (text.to_owned(), centered);
+    assert_eq!(
+        centered,
+        [
+            line("a", true),
+            line("b", true),
+            // A cell centers its text, though the row ends after it does.
+            line("c", true),
+            line("d", true),
+            // The style has the last word.
+            line("e", false),
+            // A centered table is not centered text.
+            line("f", false),
+            line("g", false),
+        ]
+    );
+}
+
+#[test]
 fn deep_styles_stop_being_followed_but_still_unwind() {
     let html = format!(
         "{}deep{}<p>after</p>",

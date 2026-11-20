@@ -295,8 +295,9 @@ struct StyleFrame {
 }
 
 impl StyleFrame {
-    /// What `tag`'s style, or its being `center`, says of the text within
-    /// it, if anything.
+    /// What `tag`'s style, its `align` or its being `center` says of the
+    /// text within it, if anything. A table's `align` places the table, not
+    /// its text, and the style has the last word.
     fn of(name: &str, tag: &Tag) -> Option<Self> {
         let mut frame = Self {
             name: name.to_owned(),
@@ -304,7 +305,11 @@ impl StyleFrame {
             strong: None,
             emphasis: None,
             struck: false,
-            centered: (name == "center").then_some(true),
+            centered: (name == "center").then_some(true).or_else(|| {
+                attribute(tag, "align")
+                    .filter(|_| name != "table")
+                    .map(|align| align.trim().eq_ignore_ascii_case("center"))
+            }),
             background: attribute(tag, "bgcolor")
                 .is_some_and(|color| colors(&color.to_ascii_lowercase())),
             start: (0, 0),
@@ -494,6 +499,9 @@ struct Builder {
     /// The elements open whose style sets how text reads, innermost last, at
     /// most [`MAX_STYLE_DEPTH`].
     frames: Vec<StyleFrame>,
+    /// Whether the block being read is centered: what held when its text
+    /// began, since a cell's row ends after the cell does.
+    centered: bool,
     /// The tables open, innermost last, at most [`MAX_TABLE_DEPTH`].
     tables: Vec<OpenTable>,
     /// How many tables are open beyond those kept, so that their ends close
@@ -532,6 +540,7 @@ impl Builder {
             sender_hidden: Skipping::default(),
             void_hidden: false,
             frames: Vec::new(),
+            centered: false,
             tables: Vec::new(),
             omitted_tables: 0,
             limit,
@@ -934,6 +943,9 @@ impl Builder {
         let Some(text) = self.take(text, overhead) else {
             return;
         };
+        if self.spans.is_empty() {
+            self.centered = self.centers();
+        }
         let run = RichSpan {
             text: text.to_owned(),
             strong,
@@ -1090,7 +1102,7 @@ impl Builder {
         } else {
             BlockKind::Paragraph(spans)
         };
-        self.push_block(kind, hidden);
+        self.push_block(kind, hidden, self.centered);
     }
 
     fn end_pre(&mut self) {
@@ -1112,10 +1124,19 @@ impl Builder {
 
     /// A block that is not text, hidden if the sender hid what it is in.
     fn push(&mut self, kind: BlockKind) {
-        self.push_block(kind, self.marking());
+        self.push_block(kind, self.marking(), self.centers());
     }
 
-    fn push_block(&mut self, kind: BlockKind, hidden: bool) {
+    /// Whether the sender's style centers what is read now.
+    fn centers(&self) -> bool {
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|frame| frame.centered)
+            .unwrap_or(false)
+    }
+
+    fn push_block(&mut self, kind: BlockKind, hidden: bool, centered: bool) {
         if self.limit.saturating_sub(self.used) < BLOCK_SIZE {
             self.truncated = true;
             return;
@@ -1125,12 +1146,7 @@ impl Builder {
             kind,
             quote_depth: u8::try_from(self.quote_depth).unwrap_or(u8::MAX),
             hidden,
-            centered: self
-                .frames
-                .iter()
-                .rev()
-                .find_map(|frame| frame.centered)
-                .unwrap_or(false),
+            centered,
         });
     }
 

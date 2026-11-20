@@ -539,8 +539,8 @@ as `MessageBody::Rich`. The sanitizer keeps, of styles, only `display` and
 sender hid: the model keeps it, marked on its spans and blocks, and an
 element of the same name within the hidden one does not end it. It also keeps
 `font-weight`, `font-style`, `text-decoration` and `text-align`: the parser
-follows them, and `center` elements, through a bounded stack of styled
-elements, as a browser lets them apply within, and records them on each run's
+follows them, `center` elements and the `align` of a paragraph, a heading, a
+cell or a row, through a bounded stack of styled elements, as a browser lets them apply within, and records them on each run's
 `SenderStyle` and each block's `centered`, apart from what tags did. The
 reader counts them unless **Use the sender's text styles** is off
 (`Reading::sender_text_styles`), centering a line that fits on one; the CLI
