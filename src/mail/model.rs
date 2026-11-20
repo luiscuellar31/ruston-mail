@@ -48,10 +48,9 @@ impl MailFolder {
 
 /// What a place the account made is: somewhere mail lives, or a name mail
 /// carries while living somewhere else.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CustomKind {
     /// A folder: mail is in it, and moving a row elsewhere takes it out.
-    #[default]
     Folder,
     /// A label: mail keeps its folder and carries this name as well.
     Label,
