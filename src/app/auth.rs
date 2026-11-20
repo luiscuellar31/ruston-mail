@@ -152,6 +152,11 @@ impl App {
             self.auth_error = Some(AuthError::UsernameRequired);
             return Effects::none();
         }
+        // The same account twice would keep two sessions of it.
+        if step == SignInStep::Credentials && self.adds_known_address(&self.login_form.username) {
+            self.auth_error = Some(AuthError::AccountAlreadyAdded);
+            return Effects::none();
+        }
         if self.login_form.password.is_empty() {
             self.auth_error = Some(AuthError::PasswordRequired);
             return Effects::none();
@@ -166,6 +171,7 @@ impl App {
         }
 
         let request = LoginRequest::new(
+            self.session_profile(),
             self.login_form.username.trim().to_owned(),
             SecretString::from(self.login_form.password.as_str()),
             optional_trimmed_secret(&self.login_form.totp),
@@ -252,14 +258,25 @@ impl App {
         Effects::none()
     }
 
-    pub(super) fn finish_session_check(&mut self, outcome: ResumeOutcome) -> Effects {
-        // Only the check the startup screen waits for decides anything.
-        if self.auth_state != AuthState::CheckingSession {
+    pub(super) fn finish_session_check(
+        &mut self,
+        profile: &str,
+        outcome: ResumeOutcome,
+    ) -> Effects {
+        // Only the check the startup screen waits for decides anything, and
+        // only for the account being opened.
+        if self.auth_state != AuthState::CheckingSession || profile != self.session_profile() {
             return Effects::none();
         }
         match outcome {
             ResumeOutcome::Authenticated(service) => return self.set_authenticated(service),
-            ResumeOutcome::SignedOut => self.auth_state = AuthState::SignedOut,
+            ResumeOutcome::SignedOut => {
+                // Its session is gone: it signs in again, as the address it had.
+                if let Some(address) = self.open_account_address() {
+                    self.login_form.username = address;
+                }
+                self.auth_state = AuthState::SignedOut;
+            }
             ResumeOutcome::Failed(error) => {
                 self.resume_may_retry = error.may_pass();
                 self.auth_error = Some(error);
@@ -284,7 +301,10 @@ impl App {
         self.resume_may_retry = false;
         self.auth_error = None;
         self.auth_state = AuthState::CheckingSession;
-        Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
+        let profile = self.session_profile();
+        Effects::perform(ProtonMailService::resume(profile.clone()), move |outcome| {
+            Message::SessionChecked(profile, outcome)
+        })
     }
 
     pub(super) fn finish_sign_in(
@@ -358,6 +378,13 @@ impl App {
         email: Option<String>,
         account: Option<String>,
     ) -> Effects {
+        // Proton names the account signed in, however it was typed.
+        if email
+            .as_deref()
+            .is_some_and(|email| self.adds_known_address(email))
+        {
+            return self.sign_out_of_duplicate(backend);
+        }
         self.advance_session_epoch();
         self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
@@ -365,6 +392,12 @@ impl App {
         let page_size = backend.page_size();
         self.backend = Some(backend);
         self.account = account;
+        if !self.demo_process {
+            let (profile, address) = (self.session_profile(), email.clone());
+            self.remember(|settings| settings.accounts.signed_in(&profile, address.as_deref()));
+            // The account added is open now.
+            self.adding_account = None;
+        }
         self.auth_state = AuthState::Authenticated { email };
         let draft = self.restore_parked_draft();
 
@@ -441,27 +474,71 @@ impl App {
         &mut self,
         epoch: super::SessionEpoch,
         result: Result<(), AuthError>,
-    ) {
+    ) -> Effects {
         if !self.is_current_session(epoch) {
-            return;
+            return Effects::none();
         }
         // The session may have expired while signing out.
         if self.auth_state != AuthState::SigningOut {
-            return;
+            return Effects::none();
         }
 
+        // Forgotten on this device, the account leaves the list and the next
+        // one opens. A cleanup that failed may have left its session saved,
+        // so it stays, its sign-in screen saying why.
+        let forgotten = result.is_ok() && !self.demo_process;
         self.close_mailbox(result.err());
+        if !forgotten {
+            return Effects::none();
+        }
+        let others = self.settings.accounts.all().len() > 1;
+        let profile = self.settings.accounts.active_profile().to_owned();
+        self.remember(|settings| settings.accounts.remove(&profile));
+        if others {
+            self.open_saved_session()
+        } else {
+            Effects::none()
+        }
+    }
+
+    /// Signs out of the session just made for an account added already, as
+    /// Sign out would: core clears a profile's saved session only while it
+    /// is that one, so the account's own session, under its own profile,
+    /// stays. Closing the window waits for it, as for any sign-out.
+    fn sign_out_of_duplicate(&mut self, backend: MailBackend) -> Effects {
+        self.login_form.clear_sensitive();
+        self.auth_error = None;
+        self.auth_state = AuthState::SigningOut;
+        let epoch = self.session_epoch;
+        let MailBackend::Proton(service) = backend else {
+            // A demo mailbox has no session to sign out of.
+            return self.finish_duplicate_logout(epoch, Ok(()));
+        };
+        Effects::perform(async move { service.logout().await }, move |result| {
+            Message::DuplicateLogoutFinished(epoch, result)
+        })
+    }
+
+    /// Back to the sign-in screen once the session just made for an account
+    /// added already is signed out of: it says so, or that the cleanup failed.
+    pub(super) fn finish_duplicate_logout(
+        &mut self,
+        epoch: super::SessionEpoch,
+        result: Result<(), AuthError>,
+    ) -> Effects {
+        if !self.is_current_session(epoch) || self.auth_state != AuthState::SigningOut {
+            return Effects::none();
+        }
+        self.auth_error = Some(result.err().unwrap_or(AuthError::AccountAlreadyAdded));
+        self.auth_state = AuthState::SignedOut;
+        Effects::none()
     }
 
     /// Returns to the login screen, dropping the session's state. Only a draft
     /// whose session Proton ended stays, in memory, for its own account.
     pub(super) fn close_mailbox(&mut self, error: Option<AuthError>) {
-        // A folder the account made belongs to it: the next account must not
-        // see its name or have its ID asked for. Proton's own folders stay
-        // remembered, and the demo never changes what is remembered.
-        if self.settings.folder.custom_id().is_some() {
-            self.remember_folder(&Folder::INBOX);
-        }
+        // The folder last read stays with its account, for when it opens
+        // again; the next account opens its own.
         self.advance_session_epoch();
         self.backend = None;
         self.mailbox = None;
@@ -482,6 +559,7 @@ impl App {
         self.failed_save = None;
         self.notice = None;
         self.saving_attachment = None;
+        self.inline_images.clear();
         self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
         self.auth_error = error;

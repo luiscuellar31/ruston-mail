@@ -9,7 +9,7 @@ members = [
 default-members = ["."]
 
 [workspace.package]
-version = "0.9.1"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
@@ -44,7 +44,7 @@ chrono = "0.4"
 futures = "0.3"
 urlencoding = "2"
 rusqlite = { version = "0.41", features = ["bundled"] }
-ammonia = "4.1.7"
+ammonia = "4.1.9"
 html5ever = "0.39"
 url = "2"
 rpassword = "7"
@@ -83,7 +83,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
-html5ever = { workspace = true }
+# Decodes the pictures a message carries within it, and no other format.
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.36", default-features = false, features = ["image", "svg"] }
 ruston-core = { workspace = true }

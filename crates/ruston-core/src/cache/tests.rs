@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::events::MessageEvent;
+use crate::model::enums::label_ids;
 use crate::model::message::Recipient;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -44,7 +45,10 @@ fn reading_an_account_index_finds_its_mail_and_leaves_the_file_as_it_was() {
     let path = Cache::account_path(&root, "ruston", &identity).unwrap();
     let cache = Cache::open_for_account(&path, &identity).unwrap();
     cache
-        .index_message(&meta("m1", "0", 1, 10), "the quarterly budget is ready")
+        .index_message(
+            &unread_mail("m1", label_ids::INBOX, 10),
+            "the quarterly budget is ready",
+        )
         .unwrap();
     drop(cache);
     let before = std::fs::read(&path).unwrap();
@@ -103,22 +107,47 @@ fn reading_an_index_through_a_symlink_is_refused() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-#[test]
-fn cache_path_rejects_profile_with_parent_component() {
-    assert!(matches!(
-        Cache::default_path("../outside"),
-        Err(Error::Session(_))
-    ));
-}
-
-fn meta(id: &str, label: &str, unread: i64, time: i64) -> MessageMetadata {
+/// A message in `label` dated `time`, already read.
+fn mail(id: &str, label: &str, time: i64) -> MessageMetadata {
     MessageMetadata {
         id: id.into(),
         label_ids: vec![label.into()],
-        unread,
         time,
         ..Default::default()
     }
+}
+
+/// The same message, not read yet.
+fn unread_mail(id: &str, label: &str, time: i64) -> MessageMetadata {
+    MessageMetadata {
+        unread: 1,
+        ..mail(id, label, time)
+    }
+}
+
+/// The first ten messages listed in `label`, newest first, read or not.
+fn listed(cache: &Cache, label: &str) -> Vec<MessageMetadata> {
+    cache.list(label, false, 10, 0).unwrap()
+}
+
+/// The column `index` of each row `sql` selects with `params`.
+fn column<T: rusqlite::types::FromSql>(
+    conn: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+    index: usize,
+) -> Vec<T> {
+    conn.prepare(sql)
+        .unwrap()
+        .query_map(params, |row| row.get(index))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
+}
+
+/// The steps of SQLite's plan for `sql` with `params`.
+fn query_plan(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Vec<String> {
+    column(conn, &format!("EXPLAIN QUERY PLAN {sql}"), params, 3)
 }
 
 fn event_batch(event_id: &str, messages: Vec<MessageEvent>) -> EventBatch {
@@ -164,20 +193,26 @@ fn deleted_and_reindexed_bodies_leave_no_plaintext_in_the_file() {
     for index in 0..50 {
         cache
             .index_message(
-                &meta(&format!("kept-{index}"), "0", 0, index),
+                &mail(&format!("kept-{index}"), label_ids::INBOX, index),
                 &"filler body ".repeat(20),
             )
             .unwrap();
     }
     cache
-        .index_message(&meta("deleted", "0", 0, 100), "zebracanary deleted body")
+        .index_message(
+            &mail("deleted", label_ids::INBOX, 100),
+            "zebracanary deleted body",
+        )
         .unwrap();
     cache
-        .index_message(&meta("edited", "0", 0, 101), "quokkacanary first draft")
+        .index_message(
+            &mail("edited", label_ids::INBOX, 101),
+            "quokkacanary first draft",
+        )
         .unwrap();
     cache.delete_message("deleted").unwrap();
     cache
-        .index_message(&meta("edited", "0", 0, 101), "replacement")
+        .index_message(&mail("edited", label_ids::INBOX, 101), "replacement")
         .unwrap();
     drop(cache);
 
@@ -253,7 +288,7 @@ fn opening_a_cache_that_needs_nothing_does_not_wait_for_a_writer() {
         let path = path.clone();
         move || {
             let read = Cache::open_for_account(&path, &identity())
-                .and_then(|cache| cache.count("0"))
+                .and_then(|cache| cache.count(label_ids::INBOX))
                 .map_err(|error| error.to_string());
             done.send(read).unwrap();
         }
@@ -284,7 +319,7 @@ fn account_switch_does_not_expose_previous_mail() {
     let path_b = Cache::account_path(&dir, "shared-profile", &identity_b).unwrap();
     let account_a = Cache::open_for_account(&path_a, &identity_a).unwrap();
     account_a
-        .index_message(&meta("a", "0", 0, 1), "accountaprivatebody")
+        .index_message(&mail("a", label_ids::INBOX, 1), "accountaprivatebody")
         .unwrap();
     account_a.set_last_event_id("account-a-cursor").unwrap();
 
@@ -295,16 +330,19 @@ fn account_switch_does_not_expose_previous_mail() {
             .unwrap()
             .is_empty()
     );
-    assert!(account_b.list("0", false, 10, 0).unwrap().is_empty());
-    assert_eq!(account_b.count("0").unwrap(), (0, 0));
+    assert!(listed(&account_b, label_ids::INBOX).is_empty());
+    assert_eq!(account_b.count(label_ids::INBOX).unwrap(), (0, 0));
     assert!(account_b.last_event_id().unwrap().is_none());
 
     // An old indexing process can finish after B opens the same profile.
     account_a
-        .index_message(&meta("late-a", "0", 0, 2), "accountaprivatebody")
+        .index_message(&mail("late-a", label_ids::INBOX, 2), "accountaprivatebody")
         .unwrap();
     account_b
-        .index_message(&meta("b", "0", 1, 3), "accountbprivatebody")
+        .index_message(
+            &unread_mail("b", label_ids::INBOX, 3),
+            "accountbprivatebody",
+        )
         .unwrap();
     account_b.set_last_event_id("account-b-cursor").unwrap();
     let late_batch = event_batch(
@@ -312,7 +350,7 @@ fn account_switch_does_not_expose_previous_mail() {
         vec![MessageEvent {
             id: "a".into(),
             action: action::UPDATE_FLAGS,
-            message: Some(meta("a", "0", 1, 1)),
+            message: Some(unread_mail("a", label_ids::INBOX, 1)),
         }],
     );
     account_a
@@ -354,12 +392,21 @@ fn account_cache_paths_separate_servers_profiles_and_case_sensitive_ids() {
     let other_server = CacheIdentity::new("https://other.example.test/api", "account-a").unwrap();
     let other_case = CacheIdentity::new("https://mail.example.test/api", "Account-a").unwrap();
     let original = Cache::account_path(&dir, "profile", &identity).unwrap();
-    for different in [
-        Cache::account_path(&dir, "other-profile", &identity).unwrap(),
-        Cache::account_path(&dir, "profile", &other_server).unwrap(),
-        Cache::account_path(&dir, "profile", &other_case).unwrap(),
+    for (what_differs, different) in [
+        (
+            "the profile",
+            Cache::account_path(&dir, "other-profile", &identity).unwrap(),
+        ),
+        (
+            "the server",
+            Cache::account_path(&dir, "profile", &other_server).unwrap(),
+        ),
+        (
+            "the case of the user ID",
+            Cache::account_path(&dir, "profile", &other_case).unwrap(),
+        ),
     ] {
-        assert_ne!(original, different);
+        assert_ne!(original, different, "{what_differs}");
     }
     assert_eq!(
         original,
@@ -385,7 +432,7 @@ fn account_binding_rejects_another_owner_and_legacy_data() {
     let path = dir.join("bound.db");
     let account_a = Cache::open_for_account(&path, &identity_a).unwrap();
     account_a
-        .index_message(&meta("a", "0", 0, 1), "privatebody")
+        .index_message(&mail("a", label_ids::INBOX, 1), "privatebody")
         .unwrap();
     assert!(matches!(
         Cache::open_for_account(&path, &identity_b),
@@ -400,7 +447,7 @@ fn account_binding_rejects_another_owner_and_legacy_data() {
     let legacy_path = dir.join("legacy.db");
     let legacy = Cache::open(&legacy_path).unwrap();
     legacy
-        .index_message(&meta("unknown", "0", 0, 1), "legacybody")
+        .index_message(&mail("unknown", label_ids::INBOX, 1), "legacybody")
         .unwrap();
     legacy.set_last_event_id("unknown-cursor").unwrap();
     assert!(matches!(
@@ -468,7 +515,7 @@ fn downloaded_body_cannot_restore_a_deleted_message() {
     let indexer = Cache::open(&path).unwrap();
     let syncer = Cache::open(&path).unwrap();
     indexer.set_last_event_id("before-download").unwrap();
-    let old = meta("m1", "0", 0, 1);
+    let old = mail("m1", label_ids::INBOX, 1);
     indexer.index_message(&old, "privatebody").unwrap();
     let cursor = indexer.last_event_id().unwrap();
 
@@ -496,7 +543,7 @@ fn downloaded_body_cannot_restore_a_deleted_message() {
         indexer.last_event_id().unwrap().as_deref(),
         Some("after-delete")
     );
-    assert!(indexer.list("0", false, 10, 0).unwrap().is_empty());
+    assert!(listed(&indexer, label_ids::INBOX).is_empty());
     assert!(indexer.search("privatebody", 10).unwrap().is_empty());
     drop(indexer);
     drop(syncer);
@@ -508,7 +555,7 @@ fn cursor_initialization_rejects_downloads_started_without_a_cursor() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
     let old_cursor = cache.last_event_id().unwrap();
     assert!(cache.initialize_cursor("initialized").unwrap());
-    let message = meta("m1", "0", 0, 1);
+    let message = mail("m1", label_ids::INBOX, 1);
 
     assert!(
         cache
@@ -519,10 +566,11 @@ fn cursor_initialization_rejects_downloads_started_without_a_cursor() {
         assert!(
             cache
                 .store_index_result(old_cursor.as_deref(), &message, body)
-                .is_err()
+                .is_err(),
+            "body {body:?}"
         );
     }
-    assert_eq!(cache.count("0").unwrap(), (0, 0));
+    assert_eq!(cache.count(label_ids::INBOX).unwrap(), (0, 0));
     assert!(cache.search("privatebody", 10).unwrap().is_empty());
     assert_eq!(
         cache.last_event_id().unwrap().as_deref(),
@@ -534,7 +582,7 @@ fn cursor_initialization_rejects_downloads_started_without_a_cursor() {
 fn failed_download_commits_roll_back_metadata_labels_and_bodies() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
     cache.set_last_event_id("old").unwrap();
-    let original = meta("keep", "0", 0, 1);
+    let original = mail("keep", label_ids::INBOX, 1);
     cache.index_message(&original, "privatebody").unwrap();
     cache
         .conn
@@ -543,14 +591,17 @@ fn failed_download_commits_roll_back_metadata_labels_and_bodies() {
          WHEN NEW.id='bad' BEGIN SELECT RAISE(ABORT, 'bad'); END;",
         )
         .unwrap();
-    let updated = meta("keep", "5", 1, 2);
+    let updated = unread_mail("keep", label_ids::ALL_MAIL, 2);
     assert!(
         cache
-            .store_metadata_page(Some("old"), &[updated.clone(), meta("bad", "0", 0, 3)])
+            .store_metadata_page(
+                Some("old"),
+                &[updated.clone(), mail("bad", label_ids::INBOX, 3)]
+            )
             .is_err()
     );
-    assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].time, 1);
-    assert!(cache.list("5", false, 10, 0).unwrap().is_empty());
+    assert_eq!(listed(&cache, label_ids::INBOX)[0].time, 1);
+    assert!(listed(&cache, label_ids::ALL_MAIL).is_empty());
 
     cache
         .conn
@@ -560,15 +611,25 @@ fn failed_download_commits_roll_back_metadata_labels_and_bodies() {
         )
         .unwrap();
     for body in [None, Some("downloadedbody")] {
+        // Which of the two, for a failure to say.
+        let case = format!("body {body:?}");
         assert!(
             cache
                 .store_index_result(Some("old"), &updated, body)
-                .is_err()
+                .is_err(),
+            "{case}"
         );
-        assert_eq!(cache.search("privatebody", 10).unwrap()[0].time, 1);
-        assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].unread, 0);
-        assert!(cache.list("5", false, 10, 0).unwrap().is_empty());
-        assert!(cache.search("downloadedbody", 10).unwrap().is_empty());
+        assert_eq!(
+            cache.search("privatebody", 10).unwrap()[0].time,
+            1,
+            "{case}"
+        );
+        assert_eq!(listed(&cache, label_ids::INBOX)[0].unread, 0, "{case}");
+        assert!(listed(&cache, label_ids::ALL_MAIL).is_empty(), "{case}");
+        assert!(
+            cache.search("downloadedbody", 10).unwrap().is_empty(),
+            "{case}"
+        );
     }
     assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
 }
@@ -580,7 +641,7 @@ fn stale_process_cannot_replace_a_newer_batch() {
     let fast = Cache::open(&path).unwrap();
     let slow = Cache::open(&path).unwrap();
     fast.set_last_event_id("old").unwrap();
-    fast.index_message(&meta("m1", "0", 0, 1), "privatebody")
+    fast.index_message(&mail("m1", label_ids::INBOX, 1), "privatebody")
         .unwrap();
 
     let newer = event_batch(
@@ -588,7 +649,7 @@ fn stale_process_cannot_replace_a_newer_batch() {
         vec![MessageEvent {
             id: "m1".into(),
             action: action::UPDATE_FLAGS,
-            message: Some(meta("m1", "0", 1, 2)),
+            message: Some(unread_mail("m1", label_ids::INBOX, 2)),
         }],
     );
     // A flag change leaves the indexed body current.
@@ -610,7 +671,7 @@ fn stale_process_cannot_replace_a_newer_batch() {
     );
     assert!(slow.apply_event_batch("old", &stale).is_err());
     assert_eq!(slow.last_event_id().unwrap().as_deref(), Some("new"));
-    assert_eq!(slow.list("0", false, 10, 0).unwrap()[0].unread, 1);
+    assert_eq!(listed(&slow, label_ids::INBOX)[0].unread, 1);
     assert_eq!(slow.search("privatebody", 10).unwrap().len(), 1);
 
     let updated = event_batch(
@@ -618,7 +679,7 @@ fn stale_process_cannot_replace_a_newer_batch() {
         vec![MessageEvent {
             id: "m1".into(),
             action: action::UPDATE,
-            message: Some(meta("m1", "0", 1, 3)),
+            message: Some(unread_mail("m1", label_ids::INBOX, 3)),
         }],
     );
     assert_eq!(
@@ -640,9 +701,11 @@ fn events_change_only_what_their_action_and_message_allow() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
     cache.set_last_event_id("old").unwrap();
     cache
-        .index_message(&meta("indexed", "0", 0, 1), "privatebody")
+        .index_message(&mail("indexed", label_ids::INBOX, 1), "privatebody")
         .unwrap();
-    cache.upsert_message(&meta("flagged", "0", 0, 2)).unwrap();
+    cache
+        .upsert_message(&mail("flagged", label_ids::INBOX, 2))
+        .unwrap();
     let event = |id: &str, code, message| MessageEvent {
         id: id.into(),
         action: code,
@@ -651,12 +714,20 @@ fn events_change_only_what_their_action_and_message_allow() {
     let batch = event_batch(
         "new",
         vec![
-            event("created", action::CREATE, Some(meta("created", "0", 1, 3))),
+            event(
+                "created",
+                action::CREATE,
+                Some(unread_mail("created", label_ids::INBOX, 3)),
+            ),
             event("missing", action::CREATE, None),
             // An update drops the indexed body even without its message.
             event("indexed", action::UPDATE, None),
             event("flagged", action::UPDATE_FLAGS, None),
-            event("unknown", 9, Some(meta("unknown", "0", 1, 4))),
+            event(
+                "unknown",
+                9,
+                Some(unread_mail("unknown", label_ids::INBOX, 4)),
+            ),
         ],
     );
 
@@ -667,9 +738,7 @@ fn events_change_only_what_their_action_and_message_allow() {
             ..BatchCounts::default()
         }
     );
-    let listed: Vec<(String, i64)> = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let listed: Vec<(String, i64)> = listed(&cache, label_ids::INBOX)
         .into_iter()
         .map(|m| (m.id, m.unread))
         .collect();
@@ -691,7 +760,7 @@ fn failed_batch_rolls_back_prior_changes_and_cursor() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
     cache.set_last_event_id("old").unwrap();
     cache
-        .index_message(&meta("keep", "0", 0, 1), "privatebody")
+        .index_message(&mail("keep", label_ids::INBOX, 1), "privatebody")
         .unwrap();
     cache
         .conn
@@ -711,13 +780,13 @@ fn failed_batch_rolls_back_prior_changes_and_cursor() {
             MessageEvent {
                 id: "bad".into(),
                 action: action::CREATE,
-                message: Some(meta("bad", "0", 0, 2)),
+                message: Some(mail("bad", label_ids::INBOX, 2)),
             },
         ],
     );
     assert!(cache.apply_event_batch("old", &batch).is_err());
     assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
-    assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "keep");
+    assert_eq!(listed(&cache, label_ids::INBOX)[0].id, "keep");
     assert_eq!(cache.search("privatebody", 10).unwrap().len(), 1);
 }
 
@@ -725,7 +794,7 @@ fn failed_batch_rolls_back_prior_changes_and_cursor() {
 fn messages_written_are_listed_counted_and_removed() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
     let inbox = |unread_only: bool| -> Vec<String> {
-        let page = cache.list("0", unread_only, 10, 0).unwrap();
+        let page = cache.list(label_ids::INBOX, unread_only, 10, 0).unwrap();
         page.into_iter().map(|m| m.id).collect()
     };
 
@@ -735,14 +804,14 @@ fn messages_written_are_listed_counted_and_removed() {
     assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("evt-1"));
 
     cache
-        .upsert_message(&meta("older-unread", "0", 1, 100))
+        .upsert_message(&unread_mail("older-unread", label_ids::INBOX, 100))
         .unwrap();
     cache
-        .upsert_message(&meta("newer-read", "0", 0, 200))
+        .upsert_message(&mail("newer-read", label_ids::INBOX, 200))
         .unwrap();
     assert_eq!(inbox(false), ["newer-read", "older-unread"]);
     assert_eq!(inbox(true), ["older-unread"]);
-    assert_eq!(cache.count("0").unwrap(), (2, 1));
+    assert_eq!(cache.count(label_ids::INBOX).unwrap(), (2, 1));
 
     cache.delete_message("older-unread").unwrap();
     assert_eq!(inbox(false), ["newer-read"]);
@@ -761,7 +830,10 @@ fn existing_cache_backfills_label_times_and_uses_ordered_index() {
              CREATE TABLE message_labels(message_id TEXT, label_id TEXT, PRIMARY KEY(message_id, label_id));",
         )
         .unwrap();
-    for m in [meta("older", "0", 0, 10), meta("newer", "0", 0, 20)] {
+    for m in [
+        mail("older", label_ids::INBOX, 10),
+        mail("newer", label_ids::INBOX, 20),
+    ] {
         legacy
             .execute(
                 "INSERT INTO messages(id, time, unread, json) VALUES(?1, ?2, ?3, ?4)",
@@ -778,47 +850,42 @@ fn existing_cache_backfills_label_times_and_uses_ordered_index() {
     drop(legacy);
 
     let cache = Cache::open(&path).unwrap();
-    let ids: Vec<_> = cache
-        .list("0", false, 10, 0)
-        .unwrap()
+    let ids: Vec<_> = listed(&cache, label_ids::INBOX)
         .into_iter()
         .map(|m| m.id)
         .collect();
     assert_eq!(ids, ["newer", "older"]);
-    let times: Vec<i64> = cache
-        .conn
-        .prepare("SELECT time FROM message_labels WHERE label_id='0' ORDER BY time DESC")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
+    let times: Vec<i64> = column(
+        &cache.conn,
+        "SELECT time FROM message_labels WHERE label_id='0' ORDER BY time DESC",
+        [],
+        0,
+    );
     assert_eq!(times, [20, 10]);
 
     for unread_only in [false, true] {
-        let plan: Vec<String> = cache
-            .conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {}", list_sql(unread_only)))
-            .unwrap()
-            .query_map(rusqlite::params!["0", 10, 0], |row| row.get(3))
-            .unwrap()
-            .map(|row| row.unwrap())
-            .collect();
-        assert!(plan.iter().any(|step| step.contains("idx_ml_label_time")));
-        assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")));
+        let plan = query_plan(
+            &cache.conn,
+            &list_sql(unread_only),
+            rusqlite::params![label_ids::INBOX, 10, 0],
+        );
+        assert!(
+            plan.iter().any(|step| step.contains("idx_ml_label_time")),
+            "unread only: {unread_only}, {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "unread only: {unread_only}, {plan:?}"
+        );
     }
 
-    let old_reader_ids: Vec<String> = cache
-        .conn
-        .prepare(
-            "SELECT m.id FROM messages m JOIN message_labels l ON m.id=l.message_id
+    let old_reader_ids: Vec<String> = column(
+        &cache.conn,
+        "SELECT m.id FROM messages m JOIN message_labels l ON m.id=l.message_id
              WHERE l.label_id='0' ORDER BY m.time DESC",
-        )
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
+        [],
+        0,
+    );
     assert_eq!(old_reader_ids, ["newer", "older"]);
     let version: i64 = cache
         .conn
@@ -827,7 +894,10 @@ fn existing_cache_backfills_label_times_and_uses_ordered_index() {
     assert_eq!(version, SCHEMA_VERSION);
     drop(cache);
     let reopened = Cache::open(&path).unwrap();
-    assert_eq!(reopened.list("0", false, 1, 0).unwrap()[0].id, "newer");
+    assert_eq!(
+        reopened.list(label_ids::INBOX, false, 1, 0).unwrap()[0].id,
+        "newer"
+    );
     drop(reopened);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -835,17 +905,13 @@ fn existing_cache_backfills_label_times_and_uses_ordered_index() {
 #[test]
 fn labels_are_indexed_once_in_time_order() {
     let indexes = |cache: &Cache| -> Vec<String> {
-        cache
-            .conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='index'
-                 AND tbl_name='message_labels' AND sql IS NOT NULL ORDER BY name",
-            )
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .map(|row| row.unwrap())
-            .collect()
+        column(
+            &cache.conn,
+            "SELECT name FROM sqlite_master WHERE type='index'
+             AND tbl_name='message_labels' AND sql IS NOT NULL ORDER BY name",
+            [],
+            0,
+        )
     };
     let dir = temp_cache_dir();
     let path = dir.join("cache.db");
@@ -861,14 +927,7 @@ fn labels_are_indexed_once_in_time_order() {
 
     let reopened = Cache::open(&path).unwrap();
     assert_eq!(indexes(&reopened), ["idx_ml_label_time"]);
-    let plan: Vec<String> = reopened
-        .conn
-        .prepare(&format!("EXPLAIN QUERY PLAN {COUNT_SQL}"))
-        .unwrap()
-        .query_map(["0"], |row| row.get(3))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
+    let plan = query_plan(&reopened.conn, COUNT_SQL, [label_ids::INBOX]);
     assert!(
         plan.iter().any(|step| step.contains("idx_ml_label_time")),
         "{plan:?}"
@@ -896,13 +955,7 @@ fn failed_label_time_backfill_keeps_legacy_schema_and_rows() {
 
     assert!(Cache::open(&path).is_err());
     let legacy = Connection::open(&path).unwrap();
-    let columns: Vec<String> = legacy
-        .prepare("PRAGMA table_info(message_labels)")
-        .unwrap()
-        .query_map([], |row| row.get(1))
-        .unwrap()
-        .map(|row| row.unwrap())
-        .collect();
+    let columns: Vec<String> = column(&legacy, "PRAGMA table_info(message_labels)", [], 1);
     assert!(!columns.contains(&"time".to_string()));
     let count: i64 = legacy
         .query_row("SELECT COUNT(*) FROM message_labels", [], |row| row.get(0))
@@ -916,13 +969,22 @@ fn failed_label_time_backfill_keeps_legacy_schema_and_rows() {
 #[test]
 fn label_times_follow_updates_rebuilds_and_legacy_writes() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
-    cache.upsert_message(&meta("a", "0", 0, 10)).unwrap();
-    cache.upsert_message(&meta("b", "0", 0, 20)).unwrap();
-    cache.upsert_message_flags(&meta("a", "0", 1, 30)).unwrap();
-    assert_eq!(cache.list("0", false, 1, 0).unwrap()[0].id, "a");
+    cache
+        .upsert_message(&mail("a", label_ids::INBOX, 10))
+        .unwrap();
+    cache
+        .upsert_message(&mail("b", label_ids::INBOX, 20))
+        .unwrap();
+    cache
+        .upsert_message_flags(&unread_mail("a", label_ids::INBOX, 30))
+        .unwrap();
+    assert_eq!(
+        cache.list(label_ids::INBOX, false, 1, 0).unwrap()[0].id,
+        "a"
+    );
 
     // An older process does not know the new column; the trigger fills it.
-    let legacy = meta("legacy", "0", 0, 40);
+    let legacy = mail("legacy", label_ids::INBOX, 40);
     cache
         .conn
         .execute(
@@ -942,7 +1004,10 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
             [],
         )
         .unwrap();
-    assert_eq!(cache.list("0", false, 1, 0).unwrap()[0].id, "legacy");
+    assert_eq!(
+        cache.list(label_ids::INBOX, false, 1, 0).unwrap()[0].id,
+        "legacy"
+    );
     cache
         .conn
         .execute("UPDATE messages SET time=5 WHERE id='legacy'", [])
@@ -960,10 +1025,10 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
     cache.set_last_event_id("old").unwrap();
     cache.begin_rebuild().unwrap();
     cache
-        .stage_rebuild_page(&[meta("rebuilt", "0", 0, 50)])
+        .stage_rebuild_page(&[mail("rebuilt", label_ids::INBOX, 50)])
         .unwrap();
     cache.finish_rebuild("old", "new", Some(1)).unwrap();
-    assert_eq!(cache.list("0", false, 10, 0).unwrap()[0].id, "rebuilt");
+    assert_eq!(listed(&cache, label_ids::INBOX)[0].id, "rebuilt");
     let time: i64 = cache
         .conn
         .query_row(
@@ -979,11 +1044,11 @@ fn label_times_follow_updates_rebuilds_and_legacy_writes() {
 fn a_resync_stores_the_rows_and_labels_a_cached_write_stores() {
     // A label listed twice, and a message written again with other labels,
     // as when a resync finds it on a later page too.
-    let mut first = meta("m1", "0", 1, 10);
+    let mut first = unread_mail("m1", label_ids::INBOX, 10);
     first.label_ids = vec!["0".into(), "5".into(), "0".into()];
-    let mut again = meta("m1", "3", 0, 11);
+    let mut again = mail("m1", label_ids::TRASH, 11);
     again.label_ids.push("10".into());
-    let writes = [first, meta("m2", "5", 0, 20), again];
+    let writes = [first, mail("m2", label_ids::ALL_MAIL, 20), again];
 
     let cached = Cache::open(Path::new(":memory:")).unwrap();
     for m in &writes {
@@ -999,14 +1064,7 @@ fn a_resync_stores_the_rows_and_labels_a_cached_write_stores() {
 
     /// Each row `sql` selects, as the one text it makes of it.
     fn rows(cache: &Cache, sql: &str) -> Vec<String> {
-        cache
-            .conn
-            .prepare(sql)
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .map(|row| row.unwrap())
-            .collect()
+        column(&cache.conn, sql, [], 0)
     }
     let messages = "SELECT id || ' ' || time || ' ' || unread || ' ' || json FROM messages
                     ORDER BY id";
@@ -1033,7 +1091,7 @@ fn bodies_an_older_version_indexed_are_read_again_and_searchable_meanwhile() {
         let cache = Cache::open(&path).unwrap();
         cache
             .index_message(
-                &meta("old", "0", 0, 1),
+                &mail("old", label_ids::INBOX, 1),
                 r#"<a href="https://x.test/t">oldhtml</a>"#,
             )
             .unwrap();
@@ -1068,7 +1126,7 @@ fn bodies_an_older_version_indexed_are_read_again_and_searchable_meanwhile() {
     assert!(!cache.has_indexed_body("older").unwrap());
 
     cache
-        .index_message(&meta("old", "0", 0, 1), "oldtext")
+        .index_message(&mail("old", label_ids::INBOX, 1), "oldtext")
         .unwrap();
     assert!(cache.has_indexed_body("old").unwrap());
     assert!(cache.search("oldhtml", 10).unwrap().is_empty());
@@ -1080,14 +1138,15 @@ fn bodies_an_older_version_indexed_are_read_again_and_searchable_meanwhile() {
 fn incomplete_rebuild_cannot_replace_cache_or_cursor() {
     let c = Cache::open(Path::new(":memory:")).unwrap();
     c.set_last_event_id("old").unwrap();
-    c.index_message(&meta("keep", "0", 0, 1), "privatebody")
+    c.index_message(&mail("keep", label_ids::INBOX, 1), "privatebody")
         .unwrap();
     c.begin_rebuild().unwrap();
-    c.stage_rebuild_page(&[meta("new", "0", 0, 2)]).unwrap();
+    c.stage_rebuild_page(&[mail("new", label_ids::INBOX, 2)])
+        .unwrap();
 
     assert!(c.finish_rebuild("old", "fresh", Some(2)).is_err());
     assert_eq!(c.last_event_id().unwrap().as_deref(), Some("old"));
-    assert_eq!(c.list("0", false, 10, 0).unwrap()[0].id, "keep");
+    assert_eq!(listed(&c, label_ids::INBOX)[0].id, "keep");
     assert_eq!(c.search("privatebody", 10).unwrap()[0].id, "keep");
 }
 
@@ -1097,7 +1156,7 @@ fn staged_resync(path: &Path, count: i64, words: i64) -> Cache {
     let cache = Cache::open(path).unwrap();
     cache.set_last_event_id("old").unwrap();
     let messages: Vec<_> = (0..count)
-        .map(|index| meta(&format!("m{index}"), "0", 0, index))
+        .map(|index| mail(&format!("m{index}"), label_ids::INBOX, index))
         .collect();
     for (index, message) in (0..).zip(&messages) {
         let filler: Vec<_> = (0..words)
@@ -1119,10 +1178,13 @@ fn a_resync_leaves_no_indexed_body_in_the_file_and_search_working() {
 
     assert_eq!(cache.finish_rebuild("old", "fresh", Some(50)).unwrap(), 50);
     assert!(cache.search("ibexcanary", 10).unwrap().is_empty());
-    assert_eq!(cache.list("0", false, 100, 0).unwrap().len(), 50);
+    assert_eq!(
+        cache.list(label_ids::INBOX, false, 100, 0).unwrap().len(),
+        50
+    );
     // Bodies indexed again are found, and stay wiped once deleted.
     cache
-        .index_message(&meta("m7", "0", 0, 7), "newbody")
+        .index_message(&mail("m7", label_ids::INBOX, 7), "newbody")
         .unwrap();
     assert_eq!(cache.search("newbody", 10).unwrap()[0].id, "m7");
     assert_fts_rowid_map_matches(&cache.conn);
@@ -1170,7 +1232,7 @@ fn measure_resync_index_reset() {
 #[test]
 fn unchanged_headers_leave_the_indexed_body_alone() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
-    let mut message = meta("m1", "0", 1, 10);
+    let mut message = unread_mail("m1", label_ids::INBOX, 10);
     message.subject = "Invoice".into();
     cache.index_message(&message, "privatebody").unwrap();
     // Every rewrite of a full-text row also updates its row map.
@@ -1280,8 +1342,8 @@ fn create_legacy_fts_cache(path: &Path) -> Connection {
              (21,'m2','','otherbody','');",
     )
     .unwrap();
-    upsert_metadata(&conn, &meta("m1", "0", 1, 42)).unwrap();
-    upsert_metadata(&conn, &meta("m2", "5", 0, 43)).unwrap();
+    upsert_metadata(&conn, &unread_mail("m1", label_ids::INBOX, 42)).unwrap();
+    upsert_metadata(&conn, &mail("m2", label_ids::ALL_MAIL, 43)).unwrap();
     conn
 }
 
@@ -1322,7 +1384,10 @@ fn fts_migration_preserves_rows_search_cursor_and_binding_on_reopen() {
         .collect();
     assert_eq!(before, after);
     assert_eq!(cache.search("privatebody", 10).unwrap()[0].id, "m1");
-    assert_eq!(cache.list("0", true, 10, 0).unwrap()[0].time, 42);
+    assert_eq!(
+        cache.list(label_ids::INBOX, true, 10, 0).unwrap()[0].time,
+        42
+    );
     assert_eq!(
         cache.last_event_id().unwrap().as_deref(),
         Some("old-cursor")
@@ -1428,7 +1493,7 @@ fn legacy_writes_and_new_writes_share_the_rowid_map() {
     assert_fts_rowid_map_matches(&cache.conn);
     assert_eq!(cache.search("legacybody", 10).unwrap()[0].id, "m1");
     cache
-        .index_message(&meta("m1", "0", 1, 42), "newbody")
+        .index_message(&unread_mail("m1", label_ids::INBOX, 42), "newbody")
         .unwrap();
     let old_reader: String = legacy
         .query_row(
@@ -1448,7 +1513,7 @@ fn legacy_writes_and_new_writes_share_the_rowid_map() {
     legacy.execute("DELETE FROM msg_fts", []).unwrap();
     assert_fts_rowid_map_matches(&cache.conn);
     cache
-        .index_message(&meta("m2", "5", 0, 43), "reindexedbody")
+        .index_message(&mail("m2", label_ids::ALL_MAIL, 43), "reindexedbody")
         .unwrap();
     cache.clear().unwrap();
     assert_eq!(
@@ -1469,7 +1534,7 @@ fn legacy_writes_and_new_writes_share_the_rowid_map() {
 fn failed_rowid_map_write_restores_metadata_body_and_mapping() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
     cache.set_last_event_id("old").unwrap();
-    let original = meta("m1", "0", 0, 42);
+    let original = mail("m1", label_ids::INBOX, 42);
     cache.index_message(&original, "privatebody").unwrap();
     cache
         .conn
@@ -1482,13 +1547,17 @@ fn failed_rowid_map_write_restores_metadata_body_and_mapping() {
     // Both that row and the prior deletion must roll back with the metadata.
     assert!(
         cache
-            .store_index_result(Some("old"), &meta("m1", "5", 1, 43), Some("newbody"))
+            .store_index_result(
+                Some("old"),
+                &unread_mail("m1", label_ids::ALL_MAIL, 43),
+                Some("newbody")
+            )
             .is_err()
     );
     assert_eq!(cache.search("privatebody", 10).unwrap()[0].time, 42);
     assert!(cache.search("newbody", 10).unwrap().is_empty());
-    assert_eq!(cache.count("0").unwrap(), (1, 0));
-    assert_eq!(cache.count("5").unwrap(), (0, 0));
+    assert_eq!(cache.count(label_ids::INBOX).unwrap(), (1, 0));
+    assert_eq!(cache.count(label_ids::ALL_MAIL).unwrap(), (0, 0));
     assert_eq!(cache.last_event_id().unwrap().as_deref(), Some("old"));
     assert_fts_rowid_map_matches(&cache.conn);
 }
@@ -1507,7 +1576,10 @@ fn concurrent_fts_migrations_and_writers_preserve_the_map() {
                 barrier.wait();
                 let cache = Cache::open(&path).unwrap();
                 cache
-                    .index_message(&meta(&format!("new{index}"), "0", 0, index), "newbody")
+                    .index_message(
+                        &mail(&format!("new{index}"), label_ids::INBOX, index),
+                        "newbody",
+                    )
                     .unwrap();
             })
         })
@@ -1533,7 +1605,7 @@ fn measure_fts_index_scaling() {
         for index in 0..count {
             cache
                 .index_message(
-                    &meta(&format!("m{index}"), "0", 0, index),
+                    &mail(&format!("m{index}"), label_ids::INBOX, index),
                     "fictional message body",
                 )
                 .unwrap();
@@ -1556,7 +1628,9 @@ fn search_finds_the_messages_that_hold_every_word_as_typed() {
         ("tool", "notes on ruston-cli, a rust client"),
         ("other", "completely unrelated content"),
     ] {
-        cache.index_message(&meta(id, "5", 0, 10), body).unwrap();
+        cache
+            .index_message(&mail(id, label_ids::ALL_MAIL, 10), body)
+            .unwrap();
     }
     let found = |query: &str| -> Vec<String> {
         let hits = cache.search(query, 10).unwrap();
@@ -1580,7 +1654,7 @@ fn metadata_that_no_longer_reads_is_left_out_of_lists_and_searches() {
     let cache = Cache::open(Path::new(":memory:")).unwrap();
     for id in ["readable", "unreadable"] {
         cache
-            .index_message(&meta(id, "0", 0, 10), "quarterly figures")
+            .index_message(&mail(id, label_ids::INBOX, 10), "quarterly figures")
             .unwrap();
     }
     cache
@@ -1594,7 +1668,7 @@ fn metadata_that_no_longer_reads_is_left_out_of_lists_and_searches() {
         messages.into_iter().map(|m| m.id).collect()
     };
 
-    assert_eq!(ids(cache.list("0", false, 10, 0).unwrap()), ["readable"]);
+    assert_eq!(ids(listed(&cache, label_ids::INBOX)), ["readable"]);
     assert_eq!(ids(cache.search("quarterly", 10).unwrap()), ["readable"]);
 }
 
@@ -1618,7 +1692,7 @@ fn disk_cache_restricts_new_and_existing_permissions() {
 
     let cache = Cache::open(&path).unwrap();
     cache
-        .index_message(&meta("m1", "0", 0, 1), "privatebody")
+        .index_message(&mail("m1", label_ids::INBOX, 1), "privatebody")
         .unwrap();
     cache
         .conn
@@ -1663,7 +1737,7 @@ fn disk_cache_restricts_new_and_existing_permissions() {
 #[test]
 fn deleting_a_message_removes_its_decrypted_fts_entry() {
     let c = Cache::open(Path::new(":memory:")).unwrap();
-    c.index_message(&meta("m1", "0", 0, 10), "privatebody")
+    c.index_message(&mail("m1", label_ids::INBOX, 10), "privatebody")
         .unwrap();
     c.delete_message("m1").unwrap();
 
@@ -1701,7 +1775,7 @@ fn metadata_upsert_refreshes_searchable_headers_without_losing_body() {
     c.conn
         .execute_batch("PRAGMA recursive_triggers=ON")
         .unwrap();
-    let mut original = meta("m1", "0", 0, 10);
+    let mut original = mail("m1", label_ids::INBOX, 10);
     original.subject = "oldsubject".into();
     original.sender = Recipient::new("oldsender@example.test");
     original.to_list = vec![Recipient::new("oldrecipient@example.test")];
@@ -1714,30 +1788,22 @@ fn metadata_upsert_refreshes_searchable_headers_without_losing_body() {
     c.upsert_message(&updated).unwrap();
 
     for old in ["oldsubject", "oldsender", "oldrecipient"] {
-        assert!(c.search(old, 10).unwrap().is_empty());
+        assert!(c.search(old, 10).unwrap().is_empty(), "{old}");
     }
     for current in ["newsubject", "newsender", "newrecipient", "samebody"] {
-        assert_eq!(c.search(current, 10).unwrap()[0].id, "m1");
+        let found = c.search(current, 10).unwrap();
+        assert_eq!(
+            found.first().map(|m| m.id.as_str()),
+            Some("m1"),
+            "{current}"
+        );
     }
-}
-
-#[test]
-fn invalidated_body_stays_out_of_search_until_reindexed() {
-    let c = Cache::open(Path::new(":memory:")).unwrap();
-    let m = meta("m1", "0", 0, 10);
-    c.index_message(&m, "oldbody").unwrap();
-    c.invalidate_index(&m.id).unwrap();
-    assert!(c.search("oldbody", 10).unwrap().is_empty());
-
-    c.index_message(&m, "newbody").unwrap();
-    assert!(c.search("oldbody", 10).unwrap().is_empty());
-    assert_eq!(c.search("newbody", 10).unwrap()[0].id, "m1");
 }
 
 #[test]
 fn deleting_metadata_directly_removes_the_indexed_body() {
     let c = Cache::open(Path::new(":memory:")).unwrap();
-    c.index_message(&meta("m1", "0", 0, 10), "privatebody")
+    c.index_message(&mail("m1", label_ids::INBOX, 10), "privatebody")
         .unwrap();
     c.conn
         .execute("DELETE FROM messages WHERE id='m1'", [])

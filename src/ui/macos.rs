@@ -507,9 +507,7 @@ pub(super) fn update_window_chrome(context: &egui::Context, frame: &eframe::Fram
     };
     let height = metrics.traffic_lights_size.y;
     if height.is_finite() && height >= 0.0 {
-        context.data_mut(|data| {
-            data.insert_temp(egui::Id::new("native-titlebar-height"), height);
-        });
+        super::theme::set_native_titlebar_height(context, height);
     }
 }
 

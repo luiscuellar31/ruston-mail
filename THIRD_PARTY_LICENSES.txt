@@ -278,7 +278,7 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-Rust crates (558)
+Rust crates (561)
 =================
 
 accesskit 0.24.1: MIT OR Apache-2.0
@@ -306,7 +306,7 @@ aes-gcm 0.10.3: Apache-2.0 OR MIT
 aes-kw 0.2.1: MIT OR Apache-2.0
 ahash 0.8.12: MIT OR Apache-2.0
 allocator-api2 0.2.21: MIT OR Apache-2.0
-ammonia 4.1.8: MIT OR Apache-2.0
+ammonia 4.1.9: MIT OR Apache-2.0
 anstream 1.0.0: MIT OR Apache-2.0
 anstyle 1.0.14: MIT OR Apache-2.0
 anstyle-parse 1.0.0: MIT OR Apache-2.0
@@ -382,6 +382,7 @@ cmac 0.7.2: MIT OR Apache-2.0
 cmov 0.5.4: Apache-2.0 OR MIT
 codespan-reporting 0.13.1: Apache-2.0
 color 0.3.3: Apache-2.0 OR MIT
+color_quant 1.1.0: MIT
 colorchoice 1.0.5: MIT OR Apache-2.0
 compact_str 0.9.1: MIT
 compression-codecs 0.4.43: MIT OR Apache-2.0
@@ -499,6 +500,7 @@ getrandom 0.2.17: MIT OR Apache-2.0
 getrandom 0.3.4: MIT OR Apache-2.0
 getrandom 0.4.3: MIT OR Apache-2.0
 ghash 0.5.1: Apache-2.0 OR MIT
+gif 0.14.2: MIT OR Apache-2.0
 glifo 0.2.0: Apache-2.0 OR MIT
 glutin 0.32.3: Apache-2.0
 glutin-winit 0.5.0: MIT
@@ -543,6 +545,7 @@ idea 0.5.1: MIT OR Apache-2.0
 idna 1.1.0: MIT OR Apache-2.0
 idna_adapter 1.2.2: Apache-2.0 OR MIT
 image 0.25.10: MIT OR Apache-2.0
+image-webp 0.2.4: MIT OR Apache-2.0
 imagesize 0.13.0: MIT
 indexmap 2.14.2: Apache-2.0 OR MIT
 inout 0.1.4: MIT OR Apache-2.0
@@ -1078,7 +1081,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
---- Published by: ammonia 4.1.8 ---
+--- Published by: ammonia 4.1.9 ---
 
 Copyright (c) 2015-2022 The ammonia Developers
 
@@ -3166,6 +3169,30 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+--- Published by: color_quant 1.1.0 ---
+
+The MIT License (MIT)
+
+Copyright (c) 2016 PistonDevelopers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 --- Published by: compact_str 0.9.1 ---
 
 MIT License
@@ -4861,7 +4888,7 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
---- Published by: fdeflate 0.3.7, image 0.25.10 ---
+--- Published by: fdeflate 0.3.7, image 0.25.10, image-webp 0.2.4 ---
 
 MIT License
 
@@ -5492,6 +5519,30 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+--- Published by: gif 0.14.2 ---
+
+The MIT License (MIT)
+
+Copyright (c) 2015 nwin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 --- Published by: glifo 0.2.0 ---
 

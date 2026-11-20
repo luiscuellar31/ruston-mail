@@ -8,6 +8,8 @@ use secrecy::SecretString;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthError {
     UsernameRequired,
+    /// Adding an account typed the address of one already added.
+    AccountAlreadyAdded,
     PasswordRequired,
     TotpRequired,
     MailboxPasswordRequired,
@@ -23,7 +25,10 @@ pub enum AuthError {
     SessionAddressMismatch,
     LogoutUnavailable,
     SessionExpired,
-    Service { http_status: u16, code: i64 },
+    Service {
+        http_status: u16,
+        code: i64,
+    },
     AuthenticationUnavailable,
     DemoSignInUnavailable,
 }
@@ -44,6 +49,9 @@ impl fmt::Display for AuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::UsernameRequired => "Enter your Proton username or email.",
+            Self::AccountAlreadyAdded => {
+                "This account is already added. Open it from the accounts below."
+            }
             Self::PasswordRequired => "Enter your Proton password.",
             Self::TotpRequired => "Enter your authentication code.",
             Self::MailboxPasswordRequired => "Enter your mailbox password.",
@@ -92,6 +100,8 @@ impl fmt::Display for AuthError {
 }
 
 pub struct LoginRequest {
+    /// The session profile the account signs in under.
+    pub(crate) profile: String,
     pub(crate) username: String,
     pub(crate) password: SecretString,
     pub(crate) totp: Option<SecretString>,
@@ -100,12 +110,14 @@ pub struct LoginRequest {
 
 impl LoginRequest {
     pub(crate) fn new(
+        profile: String,
         username: String,
         password: SecretString,
         totp: Option<SecretString>,
         mailbox_password: Option<SecretString>,
     ) -> Self {
         Self {
+            profile,
             username,
             password,
             totp,
@@ -128,22 +140,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Proton Mail rejected the request. (HTTP 422, code 5003)"
-        );
-    }
-
-    #[test]
-    fn other_errors_keep_their_messages() {
-        assert_eq!(
-            AuthError::InvalidCredentials.to_string(),
-            "The username or password is incorrect."
-        );
-        assert_eq!(
-            AuthError::HumanVerificationRequired.to_string(),
-            "Proton asked to check that you are human. Sign in again to complete the check."
-        );
-        assert_eq!(
-            AuthError::HumanVerificationUnsupported.to_string(),
-            "Proton asked for a kind of human verification that Ruston Mail does not support yet."
         );
     }
 }

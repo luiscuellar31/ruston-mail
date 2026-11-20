@@ -544,33 +544,6 @@ fn cached_sender_keys_expire() {
     assert!(cache.entries.is_empty() && cache.recency.is_empty());
 }
 
-/// Both login entry points accept credentials wrapped as secrets.
-/// The futures are never polled, so nothing touches the network.
-#[test]
-fn login_entry_points_accept_secret_options() {
-    let opts = || LoginOptions {
-        username: "user@example.com".into(),
-        password: SecretString::from("not-a-real-password"),
-        totp: None,
-        mailbox_password: None,
-        profile: "test".into(),
-        base_url: None,
-        app_version: None,
-        user_agent: None,
-        hv: None,
-    };
-    let prompt: TotpPrompt = Arc::new(|| Box::pin(async { Ok(SecretString::from("000000")) }));
-    drop(Client::login(opts()));
-    drop(Client::login_with_totp_prompt(opts(), prompt.clone()));
-    let mailbox_password: MailboxPasswordPrompt =
-        Arc::new(|| Box::pin(async { Ok(SecretString::from("not-a-real-password")) }));
-    let prompts = LoginPrompts {
-        totp: Some(prompt),
-        mailbox_password: Some(mailbox_password),
-    };
-    drop(Client::login_with_prompts(opts(), prompts));
-}
-
 #[tokio::test]
 async fn a_separate_mailbox_password_is_asked_for_only_when_not_given() {
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -28,6 +28,15 @@ pub(super) enum Status {
 }
 
 impl Status {
+    /// The status stored as `value`, by the numbers the variants carry, so
+    /// they are written once; a value none carries is Off.
+    fn from_u8(value: u8) -> Self {
+        [Self::Ready, Self::Pending, Self::Denied, Self::Unavailable]
+            .into_iter()
+            .find(|status| *status as u8 == value)
+            .unwrap_or_default()
+    }
+
     pub(super) fn description(self) -> &'static str {
         match self {
             Self::Off => "Notifications are inactive until enabled for a signed-in account.",
@@ -48,10 +57,26 @@ impl Status {
     }
 }
 
+/// The status the window reads and the system's answers write, from
+/// whichever thread they arrive on. Only this type knows it is kept as the
+/// number its variant carries.
+#[derive(Clone, Default)]
+struct SharedStatus(Arc<AtomicU8>);
+
+impl SharedStatus {
+    fn get(&self) -> Status {
+        Status::from_u8(self.0.load(Ordering::Acquire))
+    }
+
+    fn set(&self, status: Status) {
+        self.0.store(status as u8, Ordering::Release);
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Notifications {
     enabled: Arc<AtomicBool>,
-    status: Arc<AtomicU8>,
+    status: SharedStatus,
     #[cfg(target_os = "linux")]
     shown: linux::Shown,
 }
@@ -65,13 +90,7 @@ impl Notifications {
         if !self.enabled.load(Ordering::Acquire) {
             return Status::Off;
         }
-        match self.status.load(Ordering::Acquire) {
-            1 => Status::Ready,
-            2 => Status::Pending,
-            3 => Status::Denied,
-            4 => Status::Unavailable,
-            _ => Status::Off,
-        }
+        self.status.get()
     }
 
     pub(super) fn set_enabled(&mut self, enabled: bool, context: &egui::Context) {
@@ -82,7 +101,7 @@ impl Notifications {
         // not become valid again when another account enables notifications.
         self.enabled.store(false, Ordering::Release);
         self.enabled = Arc::new(AtomicBool::new(enabled));
-        self.status = Arc::new(AtomicU8::new(Status::Off as u8));
+        self.status = SharedStatus::default();
         if !enabled {
             self.withdraw();
         }
@@ -91,7 +110,7 @@ impl Notifications {
             macos::request_permission(self.status.clone(), context.clone());
             #[cfg(not(target_os = "macos"))]
             {
-                self.status.store(Status::Ready as u8, Ordering::Release);
+                self.status.set(Status::Ready);
                 let _ = context;
             }
         }
@@ -190,7 +209,7 @@ impl Notifications {
                 })
                 .await
                 .unwrap_or(Status::Unavailable);
-                status.store(result as u8, Ordering::Release);
+                status.set(result);
                 context.request_repaint();
                 None
             });
@@ -226,6 +245,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_status_reads_back_as_it_was_stored() {
+        for status in [
+            Status::Off,
+            Status::Ready,
+            Status::Pending,
+            Status::Denied,
+            Status::Unavailable,
+        ] {
+            assert_eq!(Status::from_u8(status as u8), status);
+        }
+        assert_eq!(Status::from_u8(u8::MAX), Status::Off);
+    }
+
+    #[test]
     fn disabling_revokes_queued_work_even_after_reenabling() {
         let context = egui::Context::default();
         let mut notifications = Notifications::default();
@@ -236,7 +269,7 @@ mod tests {
         assert!(!previous.load(Ordering::Acquire));
         notifications.enabled.store(true, Ordering::Release);
         assert!(!previous.load(Ordering::Acquire));
-        old_status.store(Status::Denied as u8, Ordering::Release);
+        old_status.set(Status::Denied);
         assert_ne!(notifications.status(), Status::Denied);
     }
 

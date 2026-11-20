@@ -11,9 +11,6 @@ use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use zeroize::Zeroizing;
 
-/// Maximum combined plaintext returned by `download_all_attachments` (128 MiB).
-pub const MAX_BULK_ATTACHMENT_BYTES: usize = 128 * 1024 * 1024;
-
 /// The largest attachment that can be opened (49 MiB). proton-crypto stops
 /// reading a decrypted plaintext at proton-rpgp's default limit, 50 MiB, which
 /// for the usual encryption also counts the packet around the file (its name,
@@ -24,6 +21,9 @@ pub const MAX_ATTACHMENT_PLAINTEXT_BYTES: usize = 49 * 1024 * 1024;
 /// Linux and macOS file systems 255 bytes; this leaves room for the number
 /// [`save_under_free_name`] adds to a copy, " (9999)" at most.
 const MAX_NAME_BYTES: usize = 240;
+/// The longest extension, dot included, that a shortened name keeps; one
+/// longer is not much of an extension.
+const MAX_KEPT_EXTENSION_BYTES: usize = 16;
 
 /// How many names a saved attachment tries: its own and 9,999 numbered ones.
 const FREE_NAME_ATTEMPTS: usize = 10_000;
@@ -80,7 +80,7 @@ fn shorten(name: &str) -> String {
         return name.to_owned();
     }
     let extension = match name.rfind('.') {
-        Some(dot) if dot > 0 && name.len() - dot <= 16 => &name[dot..],
+        Some(dot) if dot > 0 && name.len() - dot <= MAX_KEPT_EXTENSION_BYTES => &name[dot..],
         _ => "",
     };
     let stem = &name[..name.len() - extension.len()];
@@ -455,30 +455,6 @@ impl Client {
             super::read::mime_attachment(&body, position).ok_or_else(not_found)
         })
         .await
-    }
-
-    /// Every attachment of a message, opened, inline ones only with
-    /// `include_inline`, when they come to 128 MiB at most in all.
-    /// Use `for_each_attachment` to process larger collections one at a time.
-    pub async fn download_all_attachments(
-        &self,
-        message_id: &str,
-        include_inline: bool,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
-        let mut out = Vec::new();
-        let mut total = 0usize;
-        self.for_each_attachment(message_id, include_inline, |name, bytes| {
-            if bytes.len() > MAX_BULK_ATTACHMENT_BYTES.saturating_sub(total) {
-                return Err(Error::AttachmentBatchTooLarge {
-                    limit: MAX_BULK_ATTACHMENT_BYTES,
-                });
-            }
-            total += bytes.len();
-            out.push((name, bytes));
-            Ok(())
-        })
-        .await?;
-        Ok(out)
     }
 }
 

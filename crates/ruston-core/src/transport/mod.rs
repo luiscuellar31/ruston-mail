@@ -269,11 +269,9 @@ impl AuthState {
     }
 }
 
-/// What is handed the new pair of tokens each time a refresh succeeds. It
-/// borrows them, so saving them needs no copy in the clear — use
-/// [`FallibleRefreshPersist`] when storage can fail.
-pub type RefreshPersist = Arc<dyn Fn(&Tokens) + Send + Sync>;
-/// A token-refresh callback whose persistence failure is returned to the request.
+/// What is handed the new pair of tokens each time a refresh succeeds, to
+/// save them. It borrows them, so saving needs no copy in the clear, and a
+/// failure to save is returned to the request.
 pub type FallibleRefreshPersist = Arc<dyn Fn(&Tokens) -> Result<()> + Send + Sync>;
 type RefreshLoad = Arc<dyn Fn() -> Result<(File, Option<Tokens>)> + Send + Sync>;
 /// Solves a human-verification challenge, giving the token to send the
@@ -394,13 +392,6 @@ impl HttpClient {
             refresh_unsaved: Arc::new(AtomicBool::new(false)),
             hv: None,
         }
-    }
-    /// Has each refresh hand its new pair of tokens to `cb`, to be saved.
-    pub fn set_refresh_persist(&mut self, cb: RefreshPersist) {
-        self.on_refresh = Some(Arc::new(move |tokens| {
-            cb(tokens);
-            Ok(())
-        }));
     }
     /// Register a callback whose persistence error aborts the triggering request.
     /// Rotated tokens remain available in memory when that callback fails.

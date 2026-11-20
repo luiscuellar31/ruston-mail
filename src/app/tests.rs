@@ -1,6 +1,7 @@
 //! End-to-end state-machine tests through `App::update`, a module for each
 //! part of the app. The fixtures here are those several modules share.
 
+mod accounts;
 mod actions;
 mod attachments;
 mod composer;
@@ -10,6 +11,7 @@ mod keyboard;
 mod links;
 mod mailto;
 mod notifications;
+mod pictures;
 mod reader;
 mod refresh;
 mod search;
@@ -24,9 +26,13 @@ use crate::settings::{ComposePlacement, Reading};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::mail::MailFolder;
-use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, sys};
+use crate::test_support::{OPENING_COUNTS, OPENING_PAGE, sys};
 
 const NOW: i64 = 1_789_000_000;
+
+/// The profile the first account signs in under, the only one unless a test
+/// adds more.
+const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
 
 /// What a refresh asks for: the open folder's page and its counts.
 const PAGE_AND_COUNTS: usize = 2;
@@ -64,6 +70,13 @@ fn pending_list_request(app: &App) -> RequestId {
     app.mailbox()
         .and_then(|mailbox| mailbox.status().request_in_flight())
         .expect("a list request in flight")
+}
+
+/// The counts request the open mailbox waits for.
+fn pending_counts_request(app: &App) -> RequestId {
+    app.mailbox()
+        .and_then(Mailbox::counts_request)
+        .expect("a counts request in flight")
 }
 
 fn pending_reader_request(app: &App) -> ReaderRequest {
@@ -113,9 +126,10 @@ fn press_command(app: &mut App, key: Key) {
 
 fn loaded_demo_app() -> App {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
     let counts = demo_service(&app).counts();
-    let _ = app.update(Message::CountsLoaded(OPENING_COUNTS, Ok(counts)));
+    let request = pending_counts_request(&app);
+    let _ = app.update(Message::CountsLoaded(request, Ok(counts)));
     app
 }
 

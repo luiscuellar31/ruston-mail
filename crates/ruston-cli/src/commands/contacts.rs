@@ -55,14 +55,14 @@ pub async fn settings(ctx: &Ctx, cmd: SettingsCmd) -> Result<()> {
             .await
             .map(|settings| render::json_out(&settings)),
         SettingsCmd::Sign { value } => {
-            let on = value.as_bool();
+            let on = value.is_on();
             client
                 .set_sign(on)
                 .await
                 .map(|()| render::setting_changed(ctx.json, "sign", SIGN, on))
         }
         SettingsCmd::AttachPublicKey { value } => {
-            let on = value.as_bool();
+            let on = value.is_on();
             client.set_attach_public_key(on).await.map(|()| {
                 render::setting_changed(ctx.json, "attach_public_key", ATTACH_PUBLIC_KEY, on)
             })

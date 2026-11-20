@@ -23,7 +23,10 @@ fn searching(settings: Settings, query: &str) -> (App, SearchRequest) {
     let (mut app, _) = App::boot(true, settings);
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
-    let _ = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
+    let _ = app.update(Message::ConversationsLoaded(
+        pending_list_request(&app),
+        page,
+    ));
     let _ = app.update(Message::SearchChanged(query.to_owned()));
     let _ = app.update(Message::SearchSubmitted);
     let request = SearchRequest {
@@ -45,7 +48,10 @@ fn a_search_submitted_while_the_folder_loads_starts_after_it() {
 
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
-    let effects = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
+    let effects = app.update(Message::ConversationsLoaded(
+        pending_list_request(&app),
+        page,
+    ));
     assert_eq!(effects.units(), 1, "the waiting search starts");
     assert!(app.mailbox().unwrap().loaded_count() > 0);
 
@@ -150,7 +156,10 @@ fn a_search_waiting_for_the_folder_is_dropped_when_the_query_changes() {
 
     let folder = app.mailbox().unwrap().folder();
     let page = demo_service(&app).list_conversations(folder, 0, demo::PAGE_SIZE, NOW);
-    let effects = app.update(Message::ConversationsLoaded(OPENING_PAGE, page));
+    let effects = app.update(Message::ConversationsLoaded(
+        pending_list_request(&app),
+        page,
+    ));
 
     assert_eq!(effects.units(), 0, "Enter was for another query");
     assert_eq!(app.mailbox().unwrap().shown_search_query(), None);

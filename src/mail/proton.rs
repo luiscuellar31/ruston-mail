@@ -22,7 +22,7 @@ use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
     LoginRequest, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
-    MailboxError, MessageBody, OwnPlaces, PlaceLook, SummaryKind, html,
+    MailboxError, MessageBody, OwnPlaces, PlaceLook, SummaryKind,
 };
 use super::{INSPECTION_CONCURRENCY, MailAction};
 
@@ -53,7 +53,6 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(90);
 /// Per-inspection deadline, including semaphore wait; timeouts keep Proton grouping.
 const INSPECTION_BUDGET: Duration = Duration::from_secs(15);
 
-const PROFILE: &str = ruston_core::DEFAULT_SESSION_PROFILE;
 const MAX_LISTED_CORRESPONDENTS: usize = 3;
 
 #[derive(Clone)]
@@ -141,13 +140,13 @@ pub struct ProtonMailService {
 struct ListedAttachments(Mutex<VecDeque<(MessageMetadata, Attachment)>>);
 
 impl ListedAttachments {
-    /// Keeps the attachments of a message just read, except the inline parts
-    /// of its body, which the reader does not offer.
+    /// Keeps the attachments of a message just read, the parts of its body
+    /// included, which the reader offers too.
     fn remember(&self, message: &FullMessage) {
         let Ok(mut listed) = self.0.lock() else {
             return;
         };
-        for attachment in message.attachments.iter().filter(|a| !a.is_inline()) {
+        for attachment in &message.attachments {
             listed.retain(|(_, known)| known.id != attachment.id);
             if listed.len() == LISTED_ATTACHMENTS {
                 listed.pop_front();
@@ -173,14 +172,15 @@ impl ListedAttachments {
 }
 
 impl ProtonMailService {
-    pub async fn resume() -> ResumeOutcome {
-        resume_within(Client::resume(PROFILE), SIGN_IN_TIMEOUT).await
+    /// Resumes the session saved under `profile`.
+    pub async fn resume(profile: String) -> ResumeOutcome {
+        resume_within(Client::resume(&profile), SIGN_IN_TIMEOUT).await
     }
 
-    /// Whether a saved session waits to be resumed, from its file alone,
-    /// so the answer comes at once.
-    pub fn has_saved_session() -> bool {
-        Client::has_saved_session(PROFILE)
+    /// Whether a session saved under `profile` waits to be resumed, from its
+    /// file alone, so the answer comes at once.
+    pub fn has_saved_session(profile: &str) -> bool {
+        Client::has_saved_session(profile)
     }
 
     /// Signs in, forwarding interactive prompts and always emitting `Finished`.
@@ -197,7 +197,7 @@ impl ProtonMailService {
             password: request.password,
             totp: request.totp,
             mailbox_password: request.mailbox_password,
-            profile: PROFILE.to_owned(),
+            profile: request.profile,
             base_url: None,
             app_version: None,
             user_agent: Some(user_agent()),
@@ -258,10 +258,11 @@ impl ProtonMailService {
 
     /// Reads metadata without downloading message bodies or resolving sender keys.
     pub async fn recent_inbox(&self, limit: u32) -> Result<Vec<IncomingMail>, MailboxError> {
+        let unread_only = false;
         let (_, messages) =
             timed(
                 self.client
-                    .list_messages(label_id(&Folder::INBOX), 0, limit, false),
+                    .list_messages(label_id(&Folder::INBOX), 0, limit, unread_only),
             )
             .await?;
         Ok(messages
@@ -287,10 +288,11 @@ impl ProtonMailService {
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
+        let unread_only = false;
         let (total, conversations) =
             timed(
                 self.client
-                    .list_conversations(label_id(folder), page, page_size, false),
+                    .list_conversations(label_id(folder), page, page_size, unread_only),
             )
             .await?;
 
@@ -587,16 +589,16 @@ impl ProtonMailService {
                     client.star_messages(&ids, starred).await
                 }
                 // Proton puts a conversation's label on every message in it.
-                (SummaryKind::Conversation, ActionCall::Label(label, true)) => {
+                (SummaryKind::Conversation, ActionCall::AddLabel(label)) => {
                     client.label_conversations(&ids, label).await
                 }
-                (SummaryKind::Conversation, ActionCall::Label(label, false)) => {
+                (SummaryKind::Conversation, ActionCall::RemoveLabel(label)) => {
                     client.unlabel_conversations(&ids, label).await
                 }
-                (SummaryKind::Message, ActionCall::Label(label, true)) => {
+                (SummaryKind::Message, ActionCall::AddLabel(label)) => {
                     client.apply_label(&ids, label).await
                 }
-                (SummaryKind::Message, ActionCall::Label(label, false)) => {
+                (SummaryKind::Message, ActionCall::RemoveLabel(label)) => {
                     client.remove_label(&ids, label).await
                 }
             }
@@ -937,8 +939,10 @@ enum ActionCall<'a> {
     Move(&'a str),
     MarkRead(bool),
     Star(bool),
-    /// Add or remove a label the account made, leaving the folder alone.
-    Label(&'a str, bool),
+    /// Put on a label the account made, leaving the folder alone.
+    AddLabel(&'a str),
+    /// Take a label the account made off, likewise.
+    RemoveLabel(&'a str),
 }
 
 fn action_call(action: &MailAction) -> ActionCall<'_> {
@@ -946,7 +950,8 @@ fn action_call(action: &MailAction) -> ActionCall<'_> {
         MailAction::MoveTo(folder) => ActionCall::Move(label_id(folder)),
         MailAction::SetUnread(unread) => ActionCall::MarkRead(!unread),
         MailAction::SetStarred(starred) => ActionCall::Star(*starred),
-        MailAction::SetLabel { label, on } => ActionCall::Label(label_id(label), *on),
+        MailAction::SetLabel { label, on: true } => ActionCall::AddLabel(label_id(label)),
+        MailAction::SetLabel { label, on: false } => ActionCall::RemoveLabel(label_id(label)),
     }
 }
 
@@ -1097,6 +1102,8 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
 
 fn mail_attachment(attachment: Attachment) -> MailAttachment {
     MailAttachment {
+        inline: attachment.is_inline(),
+        content_id: attachment.content_id().map(str::to_owned),
         id: attachment.id,
         name: attachment.name,
         size: attachment.size,
@@ -1133,19 +1140,16 @@ fn mail_message(message: FullMessage, own: &OwnAddresses) -> MailMessage {
         reply_tos,
     } = message;
     let body = if ruston_core::html::is_html_mime(&mime_type) {
-        MessageBody::Rich(html::parse(&body))
+        MessageBody::Rich(ruston_core::html::rich::parse(&body))
     } else {
         MessageBody::PlainText(body)
     };
 
     MailMessage {
-        // Inline parts are the body's own images, which Ruston Mail never
-        // loads; only real attachments belong in the reader.
-        attachments: attachments
-            .into_iter()
-            .filter(|attachment| !attachment.is_inline())
-            .map(mail_attachment)
-            .collect(),
+        // The parts of the body, such as a picture placed within its text,
+        // are offered too: Ruston Mail never shows them, and a forward
+        // carries them all the same.
+        attachments: attachments.into_iter().map(mail_attachment).collect(),
         body,
         verdict,
         ..message_without_body(meta, &reply_tos, own)

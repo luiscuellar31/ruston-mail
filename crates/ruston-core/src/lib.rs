@@ -80,6 +80,7 @@ pub mod error;
 pub mod html;
 pub mod mail;
 pub mod model;
+mod private_file;
 pub mod session;
 pub mod transport;
 
@@ -103,7 +104,7 @@ pub fn demo_requested(value: &str) -> bool {
 }
 
 /// Proton API address used unless a login selects another.
-pub(crate) const DEFAULT_BASE_URL: &str = "https://mail.proton.me/api";
+pub const DEFAULT_BASE_URL: &str = "https://mail.proton.me/api";
 
 pub use api::contacts::{Contact, ContactEmail};
 pub use api::events::LabelCount;

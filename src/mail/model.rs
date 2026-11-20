@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+
+pub use ruston_core::html::rich::{BlockKind, RichBlock, RichBody, RichSpan};
 
 /// Standard Proton Mail folders supported by Ruston's mailbox view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -47,10 +48,9 @@ impl MailFolder {
 
 /// What a place the account made is: somewhere mail lives, or a name mail
 /// carries while living somewhere else.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CustomKind {
     /// A folder: mail is in it, and moving a row elsewhere takes it out.
-    #[default]
     Folder,
     /// A label: mail keeps its folder and carries this name as well.
     Label,
@@ -246,92 +246,6 @@ impl MessageBody {
     }
 }
 
-/// The readable structure of an HTML body, in reading order.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RichBody {
-    pub blocks: Vec<RichBlock>,
-}
-
-impl RichBody {
-    /// The body as plain text, one block per line. Styles and links are
-    /// dropped; structure is kept with markers and quote prefixes.
-    pub fn plain_text(&self) -> String {
-        let mut out = String::new();
-        for line in self.plain_lines() {
-            out.push_str(&line);
-            out.push('\n');
-        }
-        out
-    }
-
-    /// The lines of [`Self::plain_text`], each block worked out only once
-    /// the lines before it are read, so taking the first few is cheap
-    /// however long the body is.
-    pub fn plain_lines(&self) -> impl Iterator<Item = String> + '_ {
-        self.blocks.iter().flat_map(|block| {
-            let text = match &block.kind {
-                BlockKind::Paragraph(spans) | BlockKind::Heading { spans, .. } => join(spans),
-                BlockKind::ListItem { marker, spans, .. } if marker.is_empty() => join(spans),
-                BlockKind::ListItem { marker, spans, .. } => format!("{marker} {}", join(spans)),
-                BlockKind::Preformatted(text) => text.clone(),
-                BlockKind::Image { description } => format!("[Image: {description}]"),
-                BlockKind::Rule => "---".to_owned(),
-            };
-            let quote = "> ".repeat(usize::from(block.quote_depth));
-            text.lines()
-                .map(|line| format!("{quote}{line}"))
-                .collect::<Vec<_>>()
-        })
-    }
-}
-
-fn join(spans: &[RichSpan]) -> String {
-    spans.iter().map(|span| span.text.as_str()).collect()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RichBlock {
-    pub kind: BlockKind,
-    /// How deeply the block sits inside quotes.
-    pub quote_depth: u8,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BlockKind {
-    Paragraph(Vec<RichSpan>),
-    Heading {
-        level: u8,
-        spans: Vec<RichSpan>,
-    },
-    /// A list item. `marker` is a bullet or number, and empty for further
-    /// paragraphs of the same item.
-    ListItem {
-        marker: String,
-        depth: u8,
-        spans: Vec<RichSpan>,
-    },
-    /// Text whose spacing matters, shown in a monospace font.
-    Preformatted(String),
-    /// An image that is not loaded; only its description is shown.
-    Image {
-        description: String,
-    },
-    Rule,
-}
-
-/// A run of text sharing one style.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RichSpan {
-    pub text: String,
-    pub strong: bool,
-    pub emphasis: bool,
-    pub code: bool,
-    pub struck: bool,
-    /// Only absolute `http`, `https` and `mailto` links are kept.
-    /// Styled runs of the same anchor share its normalized target.
-    pub link: Option<Arc<str>>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailMessage {
     pub id: String,
@@ -360,14 +274,18 @@ pub struct MailMessage {
     pub attachments: Vec<MailAttachment>,
 }
 
-/// A file on a message. Inline parts, which belong to the body rather than to
-/// the reader, are left out.
+/// A file on a message, or a part of its body, such as a picture some apps
+/// place within the text, which can be saved the same way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailAttachment {
     pub id: String,
     pub name: String,
     /// Size in bytes, as the server reports it.
     pub size: u64,
+    /// Whether it belongs within the body rather than beside it.
+    pub inline: bool,
+    /// The ID a body names it by, when it shows it as a picture.
+    pub content_id: Option<String>,
 }
 
 /// A conversation with its messages, as shown in the reader.
@@ -615,55 +533,16 @@ mod tests {
         }]
     }
 
-    fn block(kind: BlockKind, quote_depth: u8) -> RichBlock {
-        RichBlock { kind, quote_depth }
-    }
-
-    #[test]
-    fn plain_text_keeps_structure_one_block_per_line() {
-        let body = RichBody {
-            blocks: vec![
-                block(
-                    BlockKind::Heading {
-                        level: 1,
-                        spans: spans("Title"),
-                    },
-                    0,
-                ),
-                block(BlockKind::Paragraph(spans("Hello")), 0),
-                block(
-                    BlockKind::ListItem {
-                        marker: "•".to_owned(),
-                        depth: 1,
-                        spans: spans("One"),
-                    },
-                    0,
-                ),
-                block(
-                    BlockKind::Image {
-                        description: "Logo".to_owned(),
-                    },
-                    0,
-                ),
-                block(BlockKind::Rule, 0),
-                block(BlockKind::Paragraph(spans("Quoted")), 1),
-                block(
-                    BlockKind::Preformatted("let x = 1;\n  indented".to_owned()),
-                    2,
-                ),
-            ],
-        };
-
-        assert_eq!(
-            body.plain_text(),
-            "Title\nHello\n• One\n[Image: Logo]\n---\n> Quoted\n> > let x = 1;\n> >   indented\n"
-        );
-    }
-
     #[test]
     fn plain_text_covers_both_body_kinds() {
         let rich = MessageBody::Rich(RichBody {
-            blocks: vec![block(BlockKind::Paragraph(spans("Hi")), 0)],
+            blocks: vec![RichBlock {
+                kind: BlockKind::Paragraph(spans("Hi")),
+                quote_depth: 0,
+                hidden: false,
+                centered: false,
+            }],
+            ..RichBody::default()
         });
 
         assert_eq!(MessageBody::PlainText("Hi".into()).plain_text(), "Hi");

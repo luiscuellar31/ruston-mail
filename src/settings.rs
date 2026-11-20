@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::accounts::Accounts;
 use crate::mail::{BodyFormat, Domains, Folder, MailFolder};
 
 const FILE: &str = "settings.json";
@@ -30,10 +31,9 @@ pub const MAX_ZOOM: f32 = 2.0;
 pub struct Settings {
     pub window: Window,
     pub panels: Panels,
-    /// The last folder that was read. Kept whatever [`Self::start`] says, so
-    /// going back to [`StartFolder::LastRead`] still knows where that was.
-    pub folder: Folder,
-    /// Which folder a run opens in.
+    /// Which folder a run opens in. The last folder each account read, in
+    /// [`Self::accounts`], is kept whatever this says, so going back to
+    /// [`StartFolder::LastRead`] still knows where that was.
     pub start: StartFolder,
     /// Mark a conversation as read as soon as it is opened.
     pub mark_read_on_open: bool,
@@ -43,6 +43,25 @@ pub struct Settings {
     pub expand_all_messages: bool,
     /// Unfold quoted passages instead of hiding them behind a button.
     pub show_quoted_text: bool,
+    /// Show text the sender hid, in grey, instead of leaving it out as a
+    /// browser does. Off for settings saved before this choice existed.
+    #[serde(default)]
+    pub show_hidden_text: bool,
+    /// Make text bold, italic, struck through or centered where the sender's
+    /// style does, not only where its tags do. Settings saved before this
+    /// choice existed have it on.
+    #[serde(default = "enabled")]
+    pub sender_text_styles: bool,
+    /// Lay a table of data out in columns, as a receipt's lines are, rather
+    /// than as the lines of its rows. Settings saved before this choice
+    /// existed have it on.
+    #[serde(default = "enabled")]
+    pub data_tables: bool,
+    /// Show the pictures a message carries within it. They come with the
+    /// message, so nothing is fetched from the web, where pictures are never
+    /// loaded. Settings saved before this choice existed have it on.
+    #[serde(default = "enabled")]
+    pub show_inline_images: bool,
     /// Whether a message is written out as HTML or as plain text.
     pub compose_format: BodyFormat,
     /// Where new messages, replies and forwards open.
@@ -83,12 +102,21 @@ pub struct Settings {
     pub show_unread_badge: bool,
     /// Show desktop notification when new mail arrives in inbox.
     pub desktop_notifications: bool,
-    /// Whether `load` read these settings, allowing them to be written back.
+    /// The accounts signed in to, and the one open now. Settings saved before
+    /// there could be several have the first, `ruston`.
+    #[serde(default)]
+    pub accounts: Accounts,
+    /// The file `load` read these settings from, where they are written back.
+    /// Settings built in memory have none, and are never written.
     #[serde(skip)]
-    stored: bool,
-    /// Whether these are the demo's settings, kept in a file of their own.
-    #[serde(skip)]
-    demo: bool,
+    file: Option<SettingsFile>,
+}
+
+/// Which file holds the settings: the demo keeps one of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsFile {
+    Main,
+    Demo,
 }
 
 impl Default for Settings {
@@ -96,13 +124,16 @@ impl Default for Settings {
         Self {
             window: Window::default(),
             panels: Panels::default(),
-            folder: Folder::INBOX,
             start: StartFolder::LastRead,
             // Keep the initial reader choices predictable on a fresh install.
             mark_read_on_open: true,
             confirm_links: true,
             expand_all_messages: false,
             show_quoted_text: false,
+            show_hidden_text: false,
+            sender_text_styles: true,
+            data_tables: true,
+            show_inline_images: true,
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
             check_recipient_protection: true,
@@ -114,8 +145,8 @@ impl Default for Settings {
             zoom: 1.0,
             show_unread_badge: true,
             desktop_notifications: true,
-            stored: false,
-            demo: false,
+            accounts: Accounts::default(),
+            file: None,
         }
     }
 }
@@ -164,7 +195,7 @@ impl Default for Panels {
 /// Which folder opens. Only stable system folders can be pinned.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StartFolder {
-    /// Wherever the mailbox was left.
+    /// Wherever the open account's mailbox was left.
     #[default]
     LastRead,
     /// The same folder every time, whatever was read last.
@@ -188,18 +219,31 @@ pub enum Appearance {
     Light,
 }
 
-/// The subset of settings that controls initial reader expansion.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The subset of settings that controls how the reader shows a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
     pub expand_all_messages: bool,
     pub show_quoted_text: bool,
+    pub show_hidden_text: bool,
+    pub sender_text_styles: bool,
+    pub data_tables: bool,
+    pub show_inline_images: bool,
+}
+
+/// What a reader shows before anything is changed in Settings.
+impl Default for Reading {
+    fn default() -> Self {
+        let defaults = Settings::default();
+        defaults.reading()
+    }
 }
 
 impl Settings {
-    /// The folder to open, which is the one pinned here or the last one read.
+    /// The folder to open, which is the one pinned here or the last one the
+    /// open account read.
     pub fn start_folder(&self) -> Folder {
         match self.start {
-            StartFolder::LastRead => self.folder.clone(),
+            StartFolder::LastRead => self.accounts.folder(),
             StartFolder::Always(folder) => Folder::System(folder),
         }
     }
@@ -208,6 +252,10 @@ impl Settings {
         Reading {
             expand_all_messages: self.expand_all_messages,
             show_quoted_text: self.show_quoted_text,
+            show_hidden_text: self.show_hidden_text,
+            sender_text_styles: self.sender_text_styles,
+            data_tables: self.data_tables,
+            show_inline_images: self.show_inline_images,
         }
     }
 
@@ -223,10 +271,12 @@ impl Settings {
     /// Reads the settings, using defaults if the file is absent or invalid.
     /// The demo reads, and later writes, a file of its own.
     pub fn load(demo: bool) -> Self {
-        let mut settings = path(demo).map_or_else(Self::default, |path| read(&path));
-        settings.demo = demo;
-
-        settings
+        let file = if demo {
+            SettingsFile::Demo
+        } else {
+            SettingsFile::Main
+        };
+        path(file).map_or_else(Self::default, |path| read(&path, file))
     }
 
     /// Writes the settings, and says whether they are where they should be:
@@ -234,10 +284,7 @@ impl Settings {
     /// failure interrupts nothing: this is a convenience, and a read-only disk
     /// is not a reason to interrupt someone's mail.
     pub fn save(&self) -> bool {
-        if !self.stored {
-            return true;
-        }
-        let Some(path) = path(self.demo) else {
+        let Some(path) = self.file.and_then(path) else {
             return true;
         };
         let Ok(text) = serde_json::to_string_pretty(self) else {
@@ -249,13 +296,12 @@ impl Settings {
     /// In-memory settings that open a given folder without becoming writable.
     #[cfg(test)]
     pub fn opening(folder: Folder) -> Self {
-        Self {
-            folder,
-            ..Self::default()
-        }
+        let mut settings = Self::default();
+        settings.accounts.set_folder(folder);
+        settings
     }
 
-    /// Pins a system folder while keeping `stored` private.
+    /// Pins a system folder while keeping `file` private.
     #[cfg(test)]
     pub fn with_start(mut self, start: StartFolder) -> Self {
         self.start = start;
@@ -286,6 +332,7 @@ impl Settings {
             .window
             .position
             .filter(|position| position.iter().all(|coordinate| coordinate.is_finite()));
+        self.accounts = self.accounts.sanitized();
 
         self
     }
@@ -311,17 +358,20 @@ fn clamp_size(value: f32, minimum: f32, fallback: f32) -> f32 {
     }
 }
 
-fn path(demo: bool) -> Option<PathBuf> {
+fn path(file: SettingsFile) -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "Ruston Mail")?;
 
-    Some(dirs.config_dir().join(if demo { DEMO_FILE } else { FILE }))
+    Some(dirs.config_dir().join(match file {
+        SettingsFile::Main => FILE,
+        SettingsFile::Demo => DEMO_FILE,
+    }))
 }
 
-/// Reads the settings kept at `path`, to be written back there. A file that
-/// is there but cannot be used is first moved aside, to [`unreadable`], so
-/// the defaults written instead destroy nothing; one that cannot be moved is
-/// never written over.
-fn read(path: &Path) -> Settings {
+/// Reads the settings kept at `path`, which is where `file` is, to be written
+/// back there. A file that is there but cannot be used is first moved aside,
+/// to [`unreadable`], so the defaults written instead destroy nothing; one
+/// that cannot be moved is never written over.
+fn read(path: &Path, file: SettingsFile) -> Settings {
     let found = match fs::read(path) {
         Ok(bytes) => serde_json::from_slice::<Settings>(&bytes).ok(),
         // Even defaults are worth storing once the app is running: it is
@@ -331,7 +381,7 @@ fn read(path: &Path) -> Settings {
     };
     let usable = found.is_some();
     let mut settings = found.unwrap_or_default().sanitized();
-    settings.stored = usable || fs::rename(path, unreadable(path)).is_ok();
+    settings.file = (usable || fs::rename(path, unreadable(path)).is_ok()).then_some(file);
 
     settings
 }
@@ -390,18 +440,29 @@ mod tests {
 
     #[test]
     fn settings_survive_a_round_trip() {
-        let settings = Settings {
-            folder: Folder::System(crate::mail::MailFolder::Archive),
+        let mut settings = Settings {
             mark_read_on_open: false,
             check_recipient_protection: false,
             appearance: Appearance::Light,
             system_font: true,
             ..Settings::default()
         };
+        settings
+            .accounts
+            .set_folder(Folder::System(crate::mail::MailFolder::Archive));
 
         let text = serde_json::to_string(&settings).unwrap();
 
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), settings);
+    }
+
+    #[test]
+    fn older_settings_have_the_one_account_they_signed_in_to() {
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("accounts");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.accounts, Accounts::default());
+        assert_eq!(restored.accounts.active_profile(), "ruston");
     }
 
     #[test]
@@ -526,16 +587,6 @@ mod tests {
     }
 
     #[test]
-    fn reader_defaults_are_consistent() {
-        let defaults = Settings::default();
-
-        assert!(!defaults.expand_all_messages);
-        assert!(!defaults.show_quoted_text);
-        assert!(defaults.show_unread_badge);
-        assert_eq!(defaults.reading(), Reading::default());
-    }
-
-    #[test]
     fn incomplete_settings_are_invalid() {
         assert!(serde_json::from_str::<Settings>(r#"{"confirm_links": false}"#).is_err());
 
@@ -549,35 +600,37 @@ mod tests {
 
     #[test]
     fn the_demo_keeps_settings_of_its_own() {
-        let file = |demo| path(demo).unwrap().file_name().unwrap().to_owned();
-        assert_eq!(file(false), FILE);
-        assert_eq!(file(true), DEMO_FILE);
-        assert_eq!(path(true).unwrap().parent(), path(false).unwrap().parent());
+        let name = |file| path(file).unwrap().file_name().unwrap().to_owned();
+        assert_eq!(name(SettingsFile::Main), FILE);
+        assert_eq!(name(SettingsFile::Demo), DEMO_FILE);
+        assert_eq!(
+            path(SettingsFile::Demo).unwrap().parent(),
+            path(SettingsFile::Main).unwrap().parent()
+        );
 
         // Loading only reads; what was loaded is written back to its own file.
         let demo = Settings::load(true);
-        assert!(demo.stored && demo.demo);
-        assert_eq!(file(demo.demo), DEMO_FILE);
-        assert!(!Settings::load(false).demo);
-        // Neither bookkeeping flag reaches the file.
+        assert_eq!(demo.file, Some(SettingsFile::Demo));
+        assert_eq!(Settings::load(false).file, Some(SettingsFile::Main));
+        // Which file they came from is bookkeeping, and never reaches it.
         let text = serde_json::to_string(&demo).unwrap();
-        assert!(!text.contains("demo") && !text.contains("stored"));
+        assert!(!text.contains("demo") && !text.contains("\"file\""));
     }
 
     #[test]
     fn only_loaded_settings_are_written_back() {
         // Settings built in memory, as every test does, must never reach the
         // config file someone actually uses.
-        assert!(!Settings::default().stored);
+        assert_eq!(Settings::default().file, None);
 
         let loaded = Settings {
-            stored: true,
+            file: Some(SettingsFile::Main),
             ..Settings::default()
         };
-        assert!(loaded.stored);
-        // The flag is bookkeeping, not content, so it never reaches the file.
+        // Where they came from is bookkeeping, not content, so it never
+        // reaches the file.
         let text = serde_json::to_string(&loaded).unwrap();
-        assert!(!text.contains("stored"));
+        assert!(!text.contains("\"file\""));
     }
 
     #[test]
@@ -595,7 +648,9 @@ mod tests {
         let _ = fs::remove_dir_all(folder);
     }
 
-    /// What 0.7.1, the latest release, writes once every choice is changed.
+    /// What a version from before 0.8.0 wrote once every choice was changed:
+    /// without the fields added since, and with the one folder for every
+    /// account that is no longer read.
     const RELEASED: &str = r#"{
   "window": {
     "width": 1280.0,
@@ -642,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_written_by_the_latest_release_still_load() {
+    fn settings_written_by_an_older_version_still_load() {
         let folder = empty_folder("released");
         let path = folder.join(FILE);
         fs::write(&path, RELEASED).unwrap();
@@ -658,7 +713,6 @@ mod tests {
                 sidebar: 0.25,
                 conversations: 0.5,
             },
-            folder: Folder::custom("kZ9", "Invoices"),
             start: StartFolder::Always(MailFolder::Archive),
             mark_read_on_open: false,
             confirm_links: false,
@@ -673,12 +727,20 @@ mod tests {
             zoom: 1.25,
             show_unread_badge: false,
             desktop_notifications: false,
-            stored: true,
+            file: Some(SettingsFile::Main),
             // A field added since keeps its default.
             ..Settings::default()
         };
-        assert_eq!(read(&path), expected);
+        let settings = read(&path, SettingsFile::Main);
+        assert_eq!(settings, expected);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+
+        // Written back and read again, they are the same.
+        let written = serde_json::to_string_pretty(&settings).unwrap();
+        fs::write(&path, written).unwrap();
+        let again = read(&path, SettingsFile::Main);
+        assert_eq!(again, settings);
+        assert_eq!(again.start_folder(), Folder::System(MailFolder::Archive));
         let _ = fs::remove_dir_all(folder);
     }
 
@@ -687,18 +749,18 @@ mod tests {
         let folder = empty_folder("damaged");
         let path = folder.join(FILE);
         let writable_defaults = Settings {
-            stored: true,
+            file: Some(SettingsFile::Main),
             ..Settings::default()
         };
         // A first run has nothing to keep.
-        assert_eq!(read(&path), writable_defaults);
+        assert_eq!(read(&path, SettingsFile::Main), writable_defaults);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
 
         // A hand edit that lost a comma.
         let damaged = RELEASED.replacen(',', "", 1);
         fs::write(&path, &damaged).unwrap();
 
-        assert_eq!(read(&path), writable_defaults);
+        assert_eq!(read(&path, SettingsFile::Main), writable_defaults);
         assert!(!path.exists());
         let kept = folder.join("settings.json.unreadable");
         assert_eq!(fs::read_to_string(kept).unwrap(), damaged);
@@ -719,9 +781,9 @@ mod tests {
         // Something already holds the name it would be kept under.
         fs::create_dir_all(folder.join("settings.json.unreadable").join("taken")).unwrap();
 
-        let settings = read(&path);
+        let settings = read(&path, SettingsFile::Main);
 
-        assert!(!settings.stored);
+        assert_eq!(settings.file, None);
         assert_eq!(settings, Settings::default());
         assert_eq!(fs::read(&path).unwrap(), b"{");
         let _ = fs::remove_dir_all(folder);
@@ -730,10 +792,7 @@ mod tests {
     #[test]
     fn a_pinned_folder_wins_over_the_one_last_read() {
         let last_read = Folder::custom("kZ9", "Invoices");
-        let settings = Settings {
-            folder: last_read.clone(),
-            ..Settings::default()
-        };
+        let settings = Settings::opening(last_read.clone());
 
         // Left alone, a run returns to where it was.
         assert_eq!(settings.start, StartFolder::LastRead);
@@ -746,7 +805,7 @@ mod tests {
         assert_eq!(pinned.start_folder(), Folder::System(MailFolder::Archive),);
         // The last folder read is still kept, so going back to LastRead knows
         // where that was.
-        assert_eq!(pinned.folder, last_read);
+        assert_eq!(pinned.accounts.folder(), last_read);
     }
 
     #[test]

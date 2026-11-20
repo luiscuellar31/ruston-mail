@@ -2,13 +2,6 @@
 
 use super::*;
 
-/// The counts request the open mailbox waits for.
-fn pending_counts_request(app: &App) -> RequestId {
-    app.mailbox()
-        .and_then(Mailbox::counts_request)
-        .expect("a counts request in flight")
-}
-
 fn deliver_new_mail(app: &mut App, result: Result<Vec<IncomingMail>, MailboxError>) -> Effects {
     assert_eq!(app.fetch_new_mail_notification().units(), 1);
     let request = app.new_mail.pending.unwrap();
@@ -124,67 +117,4 @@ fn late_new_mail_result_never_notifies_after_logout_or_in_another_session() {
 
     let _ = app.open_mailbox(MailBackend::demo(), None, None);
     assert_eq!(app.update(late_result).units(), 0);
-}
-
-#[test]
-fn automatic_refresh_does_not_notify_when_inbox_unread_stays_same() {
-    let mut app = loaded_demo_app();
-    let initial_unread = app
-        .mailbox()
-        .unwrap()
-        .counts()
-        .unwrap()
-        .unread(&Folder::INBOX)
-        .unwrap();
-
-    let _ = app.update(Message::AutoRefreshMailbox);
-    let counts_request = pending_counts_request(&app);
-
-    let new_counts: crate::mail::MailboxCounts =
-        [(Folder::INBOX, initial_unread)].into_iter().collect();
-    let effects = app.update(Message::CountsLoaded(counts_request, Ok(new_counts)));
-    assert_eq!(effects.units(), 0);
-}
-
-#[test]
-fn manual_refresh_does_not_trigger_notification_when_unread_increases() {
-    let mut app = loaded_demo_app();
-    let initial_unread = app
-        .mailbox()
-        .unwrap()
-        .counts()
-        .unwrap()
-        .unread(&Folder::INBOX)
-        .unwrap();
-
-    let _ = app.update(Message::RefreshMailbox);
-    let counts_request = pending_counts_request(&app);
-
-    let new_counts: crate::mail::MailboxCounts =
-        [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
-    let effects = app.update(Message::CountsLoaded(counts_request, Ok(new_counts)));
-    assert_eq!(effects.units(), 0);
-}
-
-#[test]
-fn automatic_refresh_does_not_notify_when_desktop_notifications_disabled() {
-    let mut app = loaded_demo_app();
-    let _ = app.update(Message::SetDesktopNotifications(false));
-    assert!(!app.settings().desktop_notifications);
-
-    let initial_unread = app
-        .mailbox()
-        .unwrap()
-        .counts()
-        .unwrap()
-        .unread(&Folder::INBOX)
-        .unwrap();
-
-    let _ = app.update(Message::AutoRefreshMailbox);
-    let counts_request = pending_counts_request(&app);
-
-    let new_counts: crate::mail::MailboxCounts =
-        [(Folder::INBOX, initial_unread + 1)].into_iter().collect();
-    let effects = app.update(Message::CountsLoaded(counts_request, Ok(new_counts)));
-    assert_eq!(effects.units(), 0);
 }

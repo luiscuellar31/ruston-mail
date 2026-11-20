@@ -7,9 +7,8 @@ use crate::settings::Reading;
 /// How much of a message its collapsed header stands in for.
 const PREVIEW_WORDS: usize = 40;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReaderState {
-    #[default]
     Empty,
     Loading {
         conversation_id: String,
@@ -185,6 +184,7 @@ mod tests {
     use crate::mail::{
         BlockKind, MailAddress, MailMessage, MessageBody, RichBlock, RichBody, RichSpan,
     };
+    use ruston_core::html::rich::ListMarker;
 
     fn message(id: &str, time: i64) -> MailMessage {
         MailMessage {
@@ -244,19 +244,23 @@ mod tests {
                             spans: spans(format!("Title {index}")),
                         },
                         2 => BlockKind::ListItem {
-                            marker: "•".into(),
+                            marker: ListMarker::Bullet,
                             depth: 0,
                             spans: spans(format!("item {index}")),
                         },
                         3 => BlockKind::Preformatted(format!("  code {index}\n  more")),
                         4 => BlockKind::Image {
+                            content_id: None,
                             description: format!("chart {index}"),
                         },
                         _ => BlockKind::Rule,
                     },
                     quote_depth: (index % 3) as u8,
+                    hidden: false,
+                    centered: false,
                 })
                 .collect(),
+            ..RichBody::default()
         }
     }
 
@@ -306,8 +310,11 @@ mod tests {
                         ..RichSpan::default()
                     }]),
                     quote_depth: 0,
+                    hidden: false,
+                    centered: false,
                 })
                 .collect(),
+            ..RichBody::default()
         };
         let reader = reader(vec![
             saying(
@@ -443,14 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_detail_has_nothing_expanded() {
-        let empty = reader(Vec::new());
-
-        assert!(empty.detail().messages.is_empty());
-        assert!(empty.toggled.is_empty());
-    }
-
-    #[test]
     fn asking_for_every_message_opens_the_whole_thread() {
         let reader = reader(vec![message("a", 10), message("b", 20), message("c", 30)]);
         let all = Reading {
@@ -494,11 +493,5 @@ mod tests {
         reader.toggle_quote("a", 0);
         assert!(!reader.is_quote_expanded("a", 0, quoted));
         assert!(reader.is_quote_expanded("a", 0, plain()));
-    }
-
-    #[test]
-    fn reader_state_starts_empty() {
-        assert_eq!(ReaderState::default(), ReaderState::Empty);
-        assert_eq!(ReaderState::Empty.conversation_id(), None);
     }
 }

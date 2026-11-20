@@ -44,15 +44,8 @@ fn a_small_composer_keeps_actions_visible_and_fields_scrollable() {
                 .shapes
                 .iter()
                 .find_map(|clipped| {
-                    if let egui::epaint::Shape::Text(text) = &clipped.shape
-                        && text.galley.text() == label
-                    {
-                        return Some((
-                            egui::Rect::from_min_size(text.pos, text.galley.size()),
-                            clipped.clip_rect,
-                        ));
-                    }
-                    None
+                    crate::ui::test_support::shape_text_rect(&clipped.shape, label)
+                        .map(|rect| (rect, clipped.clip_rect))
                 })
                 .unwrap();
             assert!(
@@ -741,6 +734,8 @@ fn a_forward_lists_the_files_it_carries_and_each_can_be_left_out() {
         id: id.into(),
         name: name.into(),
         size: 2048,
+        inline: false,
+        content_id: None,
     };
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
     answer(

@@ -205,6 +205,7 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
                 mime_type: Some("application/pdf".to_string()),
                 disposition: Some("attachment".to_string()),
                 signature: None,
+                headers: Default::default(),
             }],
         },
         DemoMessage {
@@ -1027,9 +1028,9 @@ impl DemoSession {
     /// Proton would: a star labels it Starred, reading marks it and all its
     /// messages read wherever it is, and unread only where it is listed,
     /// with its newest message there when none was unread, a move takes it
-    /// out of the folders it was in, keeping its labels, Sent and Drafts,
-    /// and deleting it forever takes it away whole, as a move brings all of
-    /// it to Trash or Spam.
+    /// and its messages out of the folders they were in, keeping their
+    /// labels, Sent and Drafts, and deleting it forever takes it away whole,
+    /// as a move brings all of it to Trash or Spam.
     pub(crate) fn change(&self, id: &str, place: &str, change: &Change) {
         let mut conversations = self
             .conversations
@@ -1106,6 +1107,12 @@ impl DemoSession {
                 conversation.labels.retain(|l| !left.contains(&l.id));
                 let moved = whole(folder, conversation);
                 conversation.labels.push(moved);
+                // Its messages go with it, keeping theirs likewise.
+                let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
+                for message in messages.iter_mut().filter(|m| m.meta.conversation_id == id) {
+                    message.meta.label_ids.retain(|l| !left.contains(l));
+                    message.meta.label_ids.push(folder.clone());
+                }
             }
             Change::Label(label) => {
                 if !conversation.labels.iter().any(|l| &l.id == label) {
@@ -1163,6 +1170,12 @@ fn message_named<'a>(messages: &'a [DemoMessage], reference: &str) -> Result<&'a
                     .contains(&reference.to_lowercase())
         })
         .ok_or_else(|| Error::Other(format!("demo message not found for ref '{reference}'")))
+}
+
+/// What tells `message` from the demo's other messages: its ID without the
+/// `msg-demo-` all of them start with.
+fn demo_number(message: &DemoMessage) -> &str {
+    message.meta.id.trim_start_matches("msg-demo-")
 }
 
 /// The IDs of the messages `references` name, in their order, each found as
@@ -1419,25 +1432,28 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 if let Some(at) = args.send_at {
                     render::scheduled(ctx.json, id, at);
                 } else if ctx.json {
-                    render::sent(true, id);
+                    render::sent(ctx.json, id);
                 } else {
                     terminal::println!("Sent (id {id}) to {}", args.message.to.join(", "));
                 }
                 Ok(())
             }
+            // Named after the message they answer, found as the others are.
             MessagesCmd::Reply { reference, .. } => {
-                let id = format!("msg-demo-reply-{reference}");
+                let original = message_named(&fixtures_messages, &reference)?;
+                let id = format!("msg-demo-reply-{}", demo_number(original));
                 if ctx.json {
-                    render::sent(true, &id);
+                    render::sent(ctx.json, &id);
                 } else {
                     terminal::println!("Reply sent (id {id})");
                 }
                 Ok(())
             }
             MessagesCmd::Forward { reference, to, .. } => {
-                let id = format!("msg-demo-fwd-{reference}");
+                let original = message_named(&fixtures_messages, &reference)?;
+                let id = format!("msg-demo-fwd-{}", demo_number(original));
                 if ctx.json {
-                    render::sent(true, &id);
+                    render::sent(ctx.json, &id);
                 } else {
                     terminal::println!("Forwarded to {} (id {id})", to.join(", "));
                 }
@@ -1613,13 +1629,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 message,
                 include_inline: _,
             } => {
-                let msg = fixtures_messages
-                    .into_iter()
-                    .find(|m| m.meta.id == message || m.meta.id.contains(&message))
-                    .ok_or_else(|| {
-                        Error::Other(format!("demo message not found for ref '{message}'"))
-                    })?;
-
+                let msg = message_named(&fixtures_messages, &message)?;
                 render::attachments_list(ctx.json, &msg.attachments);
                 Ok(())
             }
@@ -1630,13 +1640,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 all: _,
                 include_inline: _,
             } => {
-                let msg = fixtures_messages
-                    .into_iter()
-                    .find(|m| m.meta.id == message || m.meta.id.contains(&message))
-                    .ok_or_else(|| {
-                        Error::Other(format!("demo message not found for ref '{message}'"))
-                    })?;
-
+                let msg = message_named(&fixtures_messages, &message)?;
                 let atts: Vec<&Attachment> = if let Some(att_id) = &attachment {
                     msg.attachments.iter().filter(|a| a.id == *att_id).collect()
                 } else {
@@ -1781,7 +1785,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                 Ok(())
             }
             SettingsCmd::Sign { value } => {
-                render::setting_changed(ctx.json, "sign", contacts::SIGN, value.as_bool());
+                render::setting_changed(ctx.json, "sign", contacts::SIGN, value.is_on());
                 Ok(())
             }
             SettingsCmd::AttachPublicKey { value } => {
@@ -1789,7 +1793,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
                     ctx.json,
                     "attach_public_key",
                     contacts::ATTACH_PUBLIC_KEY,
-                    value.as_bool(),
+                    value.is_on(),
                 );
                 Ok(())
             }
@@ -2142,6 +2146,34 @@ mod tests {
         assert!(listed(label_ids::TRASH).contains(&first.to_string()));
         assert!(listed(label_ids::SENT).contains(&first.to_string()));
         assert!(!listed(label_ids::INBOX).contains(&first.to_string()));
+    }
+
+    #[test]
+    fn a_session_moves_a_conversations_messages_with_it() {
+        let session = DemoSession::new();
+        // Alex's review, in the Inbox, starred and labelled Work, then the
+        // reply sent to it.
+        let id = "conv-demo-01";
+        session.change(
+            id,
+            label_ids::INBOX,
+            &Change::Move(label_ids::ARCHIVE.into()),
+        );
+        let (_, messages) = session.conversation(id).unwrap();
+        let places: Vec<Vec<String>> = messages
+            .iter()
+            .map(|message| match message {
+                ConversationMessage::Opened(full) => full.meta.label_ids.clone(),
+                ConversationMessage::Unreadable(unreadable) => unreadable.meta.label_ids.clone(),
+            })
+            .collect();
+        assert_eq!(
+            places,
+            [
+                vec![label_ids::STARRED, "label-demo-work", label_ids::ARCHIVE],
+                vec![label_ids::SENT, "label-demo-work", label_ids::ARCHIVE],
+            ]
+        );
     }
 
     #[test]

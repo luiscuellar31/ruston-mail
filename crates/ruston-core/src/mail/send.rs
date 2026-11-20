@@ -8,6 +8,7 @@ use crate::api;
 use crate::crypto::keys::{AddressKeys, KeyStore};
 use crate::crypto::{self, SessionKeyMaterial};
 use crate::error::{Error, Result};
+use crate::model::MimeType;
 use crate::model::enums::{message_action, message_flag, package_type};
 use crate::model::message::{Message, MessageMetadata, Recipient};
 use crate::transport::{Doer, Request};
@@ -363,7 +364,11 @@ pub struct SendOptions {
 impl SendOptions {
     /// The MIME type of the body as written.
     pub(super) fn body_mime_type(&self) -> &'static str {
-        if self.html { "text/html" } else { "text/plain" }
+        if self.html {
+            MimeType::Html.as_str()
+        } else {
+            MimeType::PlainText.as_str()
+        }
     }
 }
 
@@ -438,6 +443,13 @@ pub(super) struct AttachmentKey {
     /// Whether a detached signature of its bytes went up with it.
     signed: bool,
 }
+
+/// The `Signature` value of a package that goes in the clear: always 0,
+/// unlike an encrypted one's, which [`attachment_signatures`] gives.
+const CLEAR_SIGNATURE: u8 = 0;
+
+/// Whether Proton adds the recipients to the contacts as it sends: 0, no.
+const SAVE_RECIPIENTS_AS_CONTACTS: u8 = 0;
 
 /// The `Signature` value of an encrypted package: 1 when every attachment
 /// the message carries is signed, which has the recipient's app check those
@@ -552,7 +564,7 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
             Delivery::Clear => {
                 in_clear.insert(
                     email.to_owned(),
-                    json!({ "Type": package_type::CLEAR, "Signature": 0 }),
+                    json!({ "Type": package_type::CLEAR, "Signature": CLEAR_SIGNATURE }),
                 );
             }
         }
@@ -576,7 +588,7 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
         let body_kp = crypto::wrap_session_key_to_self(provider, addr, &text_body.session_key)?;
         packages.push(json!({
             "Addresses": Value::Object(pgp_inline),
-            "MIMEType": "text/plain",
+            "MIMEType": MimeType::PlainText.as_str(),
             "Type": package_type::PGP_INLINE,
             "Body": STANDARD.encode(&text_body.data_packet),
             "BodyKeyPacket": STANDARD.encode(&body_kp),
@@ -992,7 +1004,7 @@ impl Client {
         // 5. send.
         let mut send_request = json!({
             "ExpirationTime": Value::Null,
-            "AutoSaveContacts": 0,
+            "AutoSaveContacts": SAVE_RECIPIENTS_AS_CONTACTS,
             "Packages": packages,
         });
         if let Some(t) = opts.send_at {

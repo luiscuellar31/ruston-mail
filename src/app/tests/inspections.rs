@@ -46,7 +46,13 @@ fn inspection_candidates_do_not_spawn_an_unbounded_number_of_tasks() {
 fn stale_page_response_does_not_start_inspections() {
     let mut app = loaded_demo_app();
     let page = inspection_page(&app, 2);
-    let effects = app.update(Message::ConversationsLoaded(NEVER_ISSUED, Ok(page)));
+    // A refresh asks for the page, and opening another folder leaves that
+    // request behind.
+    let _ = app.update(Message::RefreshMailbox);
+    let stale = pending_list_request(&app);
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
+    assert_ne!(pending_list_request(&app), stale);
+    let effects = app.update(Message::ConversationsLoaded(stale, Ok(page)));
     assert_eq!(effects.units(), 0);
 }
 

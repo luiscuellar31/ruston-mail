@@ -4,7 +4,19 @@ use chrono::Utc;
 
 use super::*;
 use crate::mail::ConversationDetail;
-use crate::ui::test_support::text_rect;
+use crate::ui::test_support::{text_rect, visible_text_rect};
+use ruston_core::html::rich::ListMarker;
+
+/// A message with no pictures fetched, nor parts to fetch them from.
+fn no_pictures() -> Pictures<'static> {
+    static NONE: std::sync::LazyLock<HashMap<String, InlineImage>> =
+        std::sync::LazyLock::new(HashMap::new);
+    Pictures {
+        images: &NONE,
+        message_id: "",
+        attachments: &[],
+    }
+}
 
 #[test]
 fn the_reading_column_is_bounded_and_centred() {
@@ -151,7 +163,7 @@ fn the_first_action_outside_the_inbox_puts_the_conversation_back() {
             &mut state,
             input.clone(),
         );
-        let first = rounded_rects(&shapes, 7)[0].center();
+        let first = buttons(&shapes)[0].center();
 
         let (_, messages) = reader_frame(
             &context,
@@ -195,7 +207,7 @@ fn the_conversation_takes_actions_while_the_list_refreshes() {
         &mut state,
         input.clone(),
     );
-    let archive = rounded_rects(&shapes, 7)[0].center();
+    let archive = buttons(&shapes)[0].center();
 
     let (_, messages) = reader_frame(
         &context,
@@ -318,12 +330,7 @@ fn a_long_link_scrolls_inside_its_prompt_and_leaves_the_buttons_in_view() {
         let open = output
             .shapes
             .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Text(text) if text.galley.text() == "Open" => {
-                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-                }
-                _ => None,
-            });
+            .find_map(|clipped| crate::ui::test_support::shape_text_rect(&clipped.shape, "Open"));
         output.drop_without_applying_deltas();
         (open, answer)
     };
@@ -350,6 +357,222 @@ fn a_long_link_scrolls_inside_its_prompt_and_leaves_the_buttons_in_view() {
 }
 
 #[test]
+fn text_the_sender_hid_shows_only_when_asked_for_and_in_grey() {
+    let word = |text: &str, hidden: bool| RichSpan {
+        text: text.into(),
+        hidden,
+        ..RichSpan::default()
+    };
+    let spans = [word("Pay", false), word("x", true), word("Pal", false)];
+    let context = egui::Context::default();
+    theme::install(&context);
+    let drawn = |reading: Reading| {
+        let mut muted = None;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            muted = Some(theme::colors(ui).muted);
+            rich_spans(ui, &spans, None, reading, &mut Vec::new());
+        });
+        let texts: Vec<(String, bool)> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    Some(text.galley.job.sections[0].format.color) == muted,
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        texts
+    };
+    let text = |text: &str, grey: bool| (text.to_owned(), grey);
+
+    assert_eq!(
+        drawn(Reading::default()),
+        [text("Pay", false), text("Pal", false)]
+    );
+    assert_eq!(
+        drawn(Reading {
+            show_hidden_text: true,
+            ..Reading::default()
+        }),
+        [text("Pay", false), text("x", true), text("Pal", false)]
+    );
+}
+
+#[test]
+fn the_senders_style_counts_unless_settings_leave_it_out() {
+    let styled = RichSpan {
+        text: "Sale".into(),
+        styled: ruston_core::html::rich::SenderStyle {
+            strong: true,
+            ..Default::default()
+        },
+        ..RichSpan::default()
+    };
+    let centered = RichBlock {
+        kind: BlockKind::Paragraph(vec![styled.clone()]),
+        quote_depth: 0,
+        hidden: false,
+        centered: true,
+    };
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Where the word is drawn, and whether in the bold ink.
+    let drawn = |reading: Reading| {
+        let mut strong = None;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(600.0);
+            strong = Some(ui.visuals().strong_text_color());
+            block(ui, &centered, no_pictures(), reading, &mut Vec::new());
+        });
+        let found = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Sale" => Some((
+                    text.pos.x,
+                    Some(text.galley.job.sections[0].format.color) == strong,
+                )),
+                _ => None,
+            })
+            .expect("the word is drawn");
+        output.drop_without_applying_deltas();
+        found
+    };
+
+    let (left, bold) = drawn(Reading::default());
+    assert!(bold, "bold where the sender's style says so");
+    assert!(left > 200.0, "a short centered line is centered: {left}");
+    let (left, bold) = drawn(Reading {
+        sender_text_styles: false,
+        ..Reading::default()
+    });
+    assert!(!bold);
+    assert!(left < 50.0, "only the tags count: {left}");
+}
+
+#[test]
+fn a_table_of_data_lines_its_columns_up_unless_settings_read_it_as_lines() {
+    let body = ruston_core::html::rich::parse(
+        "<table><tr><th>Item</th><th>Price</th></tr>\
+         <tr><td>Coffee</td><td>$7.00</td></tr></table>",
+    );
+    let table = body.blocks[0].clone();
+    assert!(matches!(table.kind, BlockKind::Table(_)));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let drawn = |reading: Reading| {
+        let mut aligned = false;
+        // A grid settles its columns over a frame or two.
+        for _ in 0..3 {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(600.0);
+                block(ui, &table, no_pictures(), reading, &mut Vec::new());
+            });
+            // Where a word's first letter is: a label in a wrapping line
+            // starts at the line's left and moves its text along.
+            let left = |word: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| match &clipped.shape {
+                        egui::Shape::Text(text) if text.galley.text() == word => {
+                            let row = &text.galley.rows[0];
+                            Some(text.pos.x + row.pos.x + row.row.glyphs[0].pos.x)
+                        }
+                        _ => None,
+                    })
+                    .expect("the word is drawn")
+            };
+            aligned = (left("Price") - left("$7.00")).abs() < 1.0;
+            output.drop_without_applying_deltas();
+        }
+        aligned
+    };
+
+    assert!(
+        drawn(Reading::default()),
+        "the price sits under its heading"
+    );
+    assert!(!drawn(Reading {
+        data_tables: false,
+        ..Reading::default()
+    }));
+}
+
+#[test]
+fn a_link_the_sender_drew_as_a_button_is_one_and_still_asks_where_it_goes() {
+    let part = |text: &str, strong: bool| RichSpan {
+        text: text.into(),
+        strong,
+        link: Some("https://shop.example/".into()),
+        button: true,
+        ..RichSpan::default()
+    };
+    let spans = [part("Buy ", false), part("now", true)];
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |reading: Reading, events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| rich_spans(ui, &spans, None, reading, &mut messages),
+        );
+        let texts: Vec<(String, egui::Rect)> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        (texts, messages)
+    };
+
+    // One button holds the whole link, whatever styles its text has.
+    let (texts, _) = frame(Reading::default(), Vec::new());
+    let [(text, button)] = &texts[..] else {
+        panic!("expected one button: {texts:?}");
+    };
+    assert_eq!(text, "Buy now");
+    let press = |pressed| egui::Event::PointerButton {
+        pos: button.center(),
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    let _ = frame(
+        Reading::default(),
+        vec![egui::Event::PointerMoved(button.center()), press(true)],
+    );
+    let (_, messages) = frame(Reading::default(), vec![press(false)]);
+    assert!(
+        matches!(&messages[..], [Message::LinkClicked(link)] if link == "https://shop.example/"),
+        "a click goes through the prompt that says where it leads"
+    );
+
+    // Without the sender's styles it is the link it always was.
+    let (texts, _) = frame(
+        Reading {
+            sender_text_styles: false,
+            ..Reading::default()
+        },
+        Vec::new(),
+    );
+    let drawn: Vec<&str> = texts.iter().map(|(text, _)| text.as_str()).collect();
+    assert_eq!(drawn, ["Buy ", "now"]);
+}
+
+#[test]
 fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     let span = RichSpan {
         text: "the agenda".into(),
@@ -365,7 +588,15 @@ fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
                 events,
                 ..Default::default()
             },
-            |ui| rich_spans(ui, std::slice::from_ref(&span), None, &mut messages),
+            |ui| {
+                rich_spans(
+                    ui,
+                    std::slice::from_ref(&span),
+                    None,
+                    Reading::default(),
+                    &mut messages,
+                );
+            },
         );
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -829,6 +1060,21 @@ fn reader_frame(
     (shapes, messages)
 }
 
+/// The buttons drawn: rectangles with a widget's corners.
+fn buttons(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+    rounded_rects(shapes, theme::WIDGET_CORNER_RADIUS)
+}
+
+/// The cards drawn, such as a message's.
+fn cards(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+    rounded_rects(shapes, theme::CARD_CORNER_RADIUS)
+}
+
+/// The bars of a loading skeleton drawn; a checkbox drawn too would count.
+fn skeleton_bars(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Rect> {
+    rounded_rects(shapes, theme::SKELETON_CORNER_RADIUS)
+}
+
 fn rounded_rects(shapes: &[egui::epaint::ClippedShape], radius: u8) -> Vec<egui::Rect> {
     shapes
         .iter()
@@ -860,8 +1106,8 @@ fn assert_reader_geometry(
     expanded: bool,
     scale: f32,
 ) {
-    let before = rounded_rects(loading, 10)[0];
-    let after = rounded_rects(loaded, 10)[0];
+    let before = cards(loading)[0];
+    let after = cards(loaded)[0];
     assert_same_pixel_position("card top", before.left_top(), after.left_top(), scale);
     assert_same_pixel_position("card right", before.right_top(), after.right_top(), scale);
     for label in [subject, &message_count_label(count as usize)] {
@@ -871,7 +1117,7 @@ fn assert_reader_geometry(
         assert_same_pixel_position(label, before.right_bottom(), after.right_bottom(), scale);
     }
     let controls = |shapes: &[egui::epaint::ClippedShape], top: f32| {
-        rounded_rects(shapes, 7)
+        buttons(shapes)
             .into_iter()
             .filter(|rect| rect.bottom() < top)
             .collect::<Vec<_>>()
@@ -891,7 +1137,7 @@ fn assert_reader_geometry(
     }
     // Each loaded text has a loading bar whose corner is where the text
     // goes, whatever order the bars are drawn in.
-    let bars = rounded_rects(loading, 4);
+    let bars = skeleton_bars(loading);
     let bar_at = |label: &str, corner: fn(&egui::Rect) -> egui::Pos2, point: egui::Pos2| {
         *bars
             .iter()
@@ -1074,8 +1320,8 @@ fn applied_labels_do_not_push_the_card_down_after_loading() {
         );
         assert_same_pixel_position(
             "card with applied labels",
-            rounded_rects(&loading, 10)[0].left_top(),
-            rounded_rects(&loaded, 10)[0].left_top(),
+            cards(&loading)[0].left_top(),
+            cards(&loaded)[0].left_top(),
             context.pixels_per_point(),
         );
     }
@@ -1104,7 +1350,7 @@ fn loading_controls_do_not_dispatch_actions_and_loaded_reply_still_works() {
         input.clone(),
     );
     let reply = text_rect(&shapes, "Reply").center();
-    let controls = rounded_rects(&shapes, 7);
+    let controls = buttons(&shapes);
     for position in [controls[0].center(), labels_button(&shapes).center(), reply] {
         let mut click = input.clone();
         click.events = vec![
@@ -1775,7 +2021,7 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
     let height = |depth: u8| {
         let item = RichBlock {
             kind: BlockKind::ListItem {
-                marker: "•".into(),
+                marker: ListMarker::Bullet,
                 depth,
                 spans: vec![RichSpan {
                     text: "Nested item".into(),
@@ -1783,6 +2029,8 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
                 }],
             },
             quote_depth: 0,
+            hidden: false,
+            centered: false,
         };
         let context = egui::Context::default();
         let mut height = 0.0;
@@ -1798,7 +2046,13 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
                 |ui| {
                     ui.set_width(480.0);
                     let top = ui.cursor().top();
-                    block(ui, &item, &mut Vec::new());
+                    block(
+                        ui,
+                        &item,
+                        no_pictures(),
+                        Reading::default(),
+                        &mut Vec::new(),
+                    );
                     height = ui.cursor().top() - top;
                 },
             )
@@ -2037,6 +2291,53 @@ fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
 }
 
 #[test]
+fn a_message_of_images_says_how_many_are_not_shown_rather_than_that_it_has_no_text() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let drawn = |images: usize, text: &str| {
+        let mut message = header_message(Some("Alex Rivera"));
+        message.body = MessageBody::Rich(RichBody {
+            undescribed_images: images,
+            ..ruston_core::html::rich::parse(text)
+        });
+        let reader = ConversationReader::new(ConversationDetail {
+            id: "conversation".into(),
+            subject: None,
+            labels: Vec::new(),
+            messages: vec![message],
+        });
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(680.0);
+            message_card(
+                ui,
+                &reader.detail().messages[0],
+                reader.preview_at(0),
+                &reader,
+                AttachmentSaves {
+                    saving: None,
+                    failed: None,
+                    images: None,
+                },
+                Reading::default(),
+                &mut Vec::new(),
+            );
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        let shows = |text: &str| visible_text_rect(&shapes, text).is_some();
+        (
+            shows("This message has no text."),
+            shows("1 image not shown") || shows(&format!("{images} images not shown")),
+        )
+    };
+
+    // A newsletter of pictures alone is not an empty message.
+    assert_eq!(drawn(3, ""), (false, true));
+    assert_eq!(drawn(1, "<p>Sale</p>"), (false, true));
+    assert_eq!(drawn(0, ""), (true, false));
+}
+
+#[test]
 fn a_failed_save_is_told_beside_its_own_file() {
     let mut message = header_message(Some("Alex Rivera"));
     message.attachments = ["report.pdf", "photo.jpg"]
@@ -2045,6 +2346,8 @@ fn a_failed_save_is_told_beside_its_own_file() {
             id: name.into(),
             name: name.into(),
             size: 1_024,
+            inline: false,
+            content_id: None,
         })
         .collect();
     let reader = ConversationReader::new(ConversationDetail {
@@ -2058,6 +2361,7 @@ fn a_failed_save_is_told_beside_its_own_file() {
     let saves = AttachmentSaves {
         saving: None,
         failed: Some(("photo.jpg", crate::downloads::SaveError::Failed)),
+        images: None,
     };
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         ui.set_width(680.0);
@@ -2080,6 +2384,53 @@ fn a_failed_save_is_told_beside_its_own_file() {
         "the error belongs under its file: {photo:?} then {error:?}"
     );
     assert!(report.bottom() <= photo.top(), "not under the other file");
+    output.drop_without_applying_deltas();
+}
+
+#[test]
+fn the_parts_of_the_body_are_offered_after_the_files_attached() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.attachments = [("logo.png", true), ("report.pdf", false)]
+        .into_iter()
+        .map(|(name, inline)| MailAttachment {
+            id: name.into(),
+            name: name.into(),
+            size: 1_024,
+            inline,
+            content_id: None,
+        })
+        .collect();
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    let context = egui::Context::default();
+    theme::install(&context);
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        ui.set_width(680.0);
+        message_card(
+            ui,
+            &reader.detail().messages[0],
+            reader.preview_at(0),
+            &reader,
+            AttachmentSaves {
+                saving: None,
+                failed: None,
+                images: None,
+            },
+            Reading::default(),
+            &mut Vec::new(),
+        );
+    });
+
+    let report = text_rect(&output.shapes, "Attachment: report.pdf");
+    let logo = text_rect(&output.shapes, "In the message: logo.png");
+    assert!(
+        report.bottom() <= logo.top(),
+        "the files attached come first"
+    );
     output.drop_without_applying_deltas();
 }
 
@@ -2107,7 +2458,13 @@ fn a_link_shows_where_it_goes_while_the_pointer_rests_on_it() {
                 },
                 |ui| {
                     ui.set_width(420.0);
-                    rich_spans(ui, std::slice::from_ref(&span), None, &mut Vec::new());
+                    rich_spans(
+                        ui,
+                        std::slice::from_ref(&span),
+                        None,
+                        Reading::default(),
+                        &mut Vec::new(),
+                    );
                 },
             );
             texts = output
@@ -2140,4 +2497,241 @@ fn a_link_shows_where_it_goes_while_the_pointer_rests_on_it() {
         .unwrap();
     assert_eq!(shown.chars().count(), LINK_HOVER_CHARS + 1, "{shown}");
     assert!(shown.ends_with('…'));
+}
+
+/// A long newsletter of `paragraphs`, and the reader showing it.
+fn long_message(paragraphs: usize) -> ConversationReader {
+    let html: String = (0..paragraphs)
+        .map(|n| {
+            format!(
+                "<p>Paragraph {n} of a long newsletter with <b>bold words</b>, a \
+                 <a href='https://example.test/{n}'>link to read more</a> and enough plain \
+                 text after it to wrap onto a second line in the reading pane, as most \
+                 paragraphs of a newsletter do when they say anything at all.</p>"
+            )
+        })
+        .collect();
+    let mut message = header_message(Some("Alex Rivera"));
+    message.body = MessageBody::Rich(ruston_core::html::rich::parse(&html));
+    ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    })
+}
+
+/// One frame of `reader`'s message in a scrolling pane 700 points square,
+/// scrolled to `offset`: how long its content is, and what was drawn.
+fn long_message_frame(
+    context: &egui::Context,
+    reader: &ConversationReader,
+    offset: f32,
+) -> (f32, Vec<egui::epaint::ClippedShape>) {
+    let mut length = 0.0;
+    let output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(700.0, 700.0),
+            )),
+            ..Default::default()
+        },
+        |ui| {
+            length = egui::ScrollArea::vertical()
+                .vertical_scroll_offset(offset)
+                .show(ui, |ui| {
+                    message_card(
+                        ui,
+                        &reader.detail().messages[0],
+                        reader.preview_at(0),
+                        reader,
+                        AttachmentSaves {
+                            saving: None,
+                            failed: None,
+                            images: None,
+                        },
+                        Reading::default(),
+                        &mut Vec::new(),
+                    );
+                })
+                .content_size
+                .y;
+        },
+    );
+    let shapes = output.shapes.clone();
+    output.drop_without_applying_deltas();
+    (length, shapes)
+}
+
+#[test]
+fn a_long_message_keeps_its_length_while_only_what_is_near_is_laid_out() {
+    let reader = long_message(300);
+    let settled = |context: &egui::Context, offset: f32| {
+        let mut frame = (0.0, Vec::new());
+        // The scroll bar and the heights settle over a few frames.
+        for _ in 0..12 {
+            frame = long_message_frame(context, &reader, offset);
+        }
+        frame
+    };
+    let near = egui::Context::default();
+    theme::install(&near);
+    let (length, _) = settled(&near, 0.0);
+
+    // A screen reader has everything laid out: the length is the same.
+    let whole = egui::Context::default();
+    theme::install(&whole);
+    whole.enable_accesskit();
+    let (whole_length, _) = settled(&whole, 0.0);
+    assert!(
+        (length - whole_length).abs() < 1.0,
+        "{length} with only what is near, {whole_length} with all"
+    );
+
+    // What was out of sight is laid out when it comes into sight.
+    let (_, shapes) = settled(&near, length - 700.0);
+    let drawn = |paragraph: &str| {
+        shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::Shape::Text(text)
+            if text.galley.text().starts_with(paragraph)
+                && clipped.clip_rect.intersects(egui::Rect::from_min_size(
+                    text.pos,
+                    text.galley.size(),
+                )))
+        })
+    };
+    assert!(drawn("Paragraph 299 "), "the end shows at the end");
+    assert!(!drawn("Paragraph 0 "), "the start is far out of sight");
+}
+
+#[test]
+fn a_block_is_out_of_sight_more_than_a_screen_away() {
+    let clip = egui::Rect::from_min_max(egui::pos2(0.0, 1000.0), egui::pos2(700.0, 1700.0));
+    // In sight, and within a screen above or below it.
+    for top in [1200.0, 400.0, 2350.0] {
+        assert!(!out_of_sight(top, 60.0, clip), "{top}");
+    }
+    for top in [200.0, 2500.0] {
+        assert!(out_of_sight(top, 60.0, clip), "{top}");
+    }
+    // A tall block that reaches into the margin is laid out.
+    assert!(!out_of_sight(0.0, 400.0, clip));
+}
+
+#[test]
+#[ignore = "manual benchmark of drawing long messages, in release"]
+fn measure_reader_frames_for_long_messages() {
+    for paragraphs in [50, 500, 5000] {
+        let reader = long_message(paragraphs);
+        let context = egui::Context::default();
+        theme::install(&context);
+        for _ in 0..40 {
+            let _ = long_message_frame(&context, &reader, 0.0);
+        }
+        let frames = 30;
+        let start = std::time::Instant::now();
+        for frame in 0..frames {
+            let _ = long_message_frame(&context, &reader, frame as f32 * 3.0);
+        }
+        eprintln!(
+            "{paragraphs} paragraphs: {:.2} ms/frame",
+            start.elapsed().as_secs_f64() * 1000.0 / f64::from(frames)
+        );
+    }
+}
+
+#[test]
+fn a_picture_the_message_carries_is_asked_for_shown_and_let_go() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.body = MessageBody::Rich(ruston_core::html::rich::parse(
+        "<p>Hi</p><img src='cid:logo@example.com' alt='Logo'><img src='cid:gone'>",
+    ));
+    message.attachments = vec![MailAttachment {
+        id: "logo".into(),
+        name: "logo.png".into(),
+        size: 2_048,
+        inline: true,
+        content_id: Some("logo@example.com".into()),
+    }];
+    let message_id = message.id.clone();
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |images: &HashMap<String, InlineImage>, reading: Reading| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(680.0);
+            message_card(
+                ui,
+                &reader.detail().messages[0],
+                reader.preview_at(0),
+                &reader,
+                AttachmentSaves {
+                    images: Some(images),
+                    ..AttachmentSaves::default()
+                },
+                reading,
+                &mut messages,
+            );
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (messages, shapes)
+    };
+    let says = |shapes: &[egui::epaint::ClippedShape], text: &str| {
+        visible_text_rect(shapes, text).is_some()
+    };
+    let has_texture = || {
+        context
+            .tex_manager()
+            .read()
+            .allocated()
+            .any(|(_, texture)| texture.name == "message-picture-logo")
+    };
+
+    // The reader asks for the part the body names, and says it is coming;
+    // the one the message has no part for is one image not shown.
+    let none = HashMap::new();
+    let (messages, shapes) = frame(&none, Reading::default());
+    assert!(
+        matches!(&messages[..], [Message::LoadInlineImage(message, attachment)]
+            if *message == message_id && attachment == "logo"),
+        "{}",
+        messages.len()
+    );
+    assert!(says(&shapes, "Loading picture: Logo"));
+    assert!(says(&shapes, "1 image not shown"));
+
+    // Once it is here it is drawn, and nothing is asked for again.
+    let shown = HashMap::from([(
+        "logo".to_owned(),
+        InlineImage::Shown(std::sync::Arc::new(crate::pictures::Picture {
+            size: [2, 2],
+            rgba: vec![255; 16],
+        })),
+    )]);
+    let (messages, shapes) = frame(&shown, Reading::default());
+    assert!(messages.is_empty());
+    assert!(!says(&shapes, "Loading picture: Logo") && !says(&shapes, "Image not loaded: Logo"));
+    assert!(has_texture());
+
+    // With pictures off in Settings it is its description, as one on the web.
+    let (messages, shapes) = frame(
+        &none,
+        Reading {
+            show_inline_images: false,
+            ..Reading::default()
+        },
+    );
+    assert!(messages.is_empty());
+    assert!(says(&shapes, "Image not loaded: Logo"));
+    // The picture left with its conversation, and so does its texture.
+    let _ = frame(&none, Reading::default());
+    assert!(!has_texture());
 }

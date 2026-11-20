@@ -53,7 +53,8 @@ pub(crate) enum Command {
     Folder(String),
     /// Move the conversation acted on to the folder with this name.
     Move(String),
-    /// Search all mail for these words.
+    /// Search all mail for these words; the filters among them, `from:`,
+    /// `to:`, `after:`, `before:` and `in:`, narrow what it finds.
     Search(String),
     /// Search the local index for these words, without a connection; the
     /// filters among them narrow what it finds.

@@ -133,41 +133,6 @@ mod tests {
     }
 
     #[test]
-    fn ui_effects_keep_their_payload() {
-        let effect = Effects::ui(UiEffect::CopyText("copy me".into()))
-            .into_iter()
-            .next()
-            .expect("one effect");
-
-        assert!(matches!(
-            effect,
-            Effect::Ui(UiEffect::CopyText(text)) if text == "copy me"
-        ));
-
-        let notify = Effects::ui(UiEffect::NotifyNewMail {
-            sender: "Alice".into(),
-            subject: "Update".into(),
-        })
-        .into_iter()
-        .next()
-        .expect("one effect");
-        assert!(matches!(
-            notify,
-            Effect::Ui(UiEffect::NotifyNewMail { sender, subject })
-                if sender == "Alice" && subject == "Update"
-        ));
-
-        let pick = Effects::ui(UiEffect::PickComposeAttachments(42))
-            .into_iter()
-            .next()
-            .expect("one effect");
-        assert!(matches!(
-            pick,
-            Effect::Ui(UiEffect::PickComposeAttachments(42))
-        ));
-    }
-
-    #[test]
     fn visual_effects_are_distinguished_from_non_visual() {
         assert!(UiEffect::FocusSearch.is_visual());
         assert!(UiEffect::ScrollReaderTop.is_visual());

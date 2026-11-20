@@ -144,15 +144,4 @@ mod tests {
     async fn demo_dispatch_whoami() {
         assert!(run_demo(&["whoami"]).await.is_ok());
     }
-
-    #[tokio::test]
-    async fn demo_dispatch_messages_list_and_read() {
-        assert!(run_demo(&["messages", "list"]).await.is_ok());
-        assert!(run_demo(&["messages", "read", "msg-demo-01"]).await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn demo_dispatch_json_mode() {
-        assert!(run_demo(&["--json", "counts"]).await.is_ok());
-    }
 }

@@ -841,6 +841,7 @@ mod tests {
     fn signing_in_first_takes_what_login_takes_without_options() {
         let options = login_options().unwrap();
         assert_eq!(options.api_url, None);
-        assert!(!options.captcha_chrome);
+        // A CAPTCHA is solved on Proton's verification page, as by default.
+        assert!(!options.captcha_manual);
     }
 }

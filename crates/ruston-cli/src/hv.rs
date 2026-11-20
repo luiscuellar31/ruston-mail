@@ -1,14 +1,21 @@
 //! The CAPTCHA Proton may ask a sign-in to pass, its human verification: how
 //! `login` gets a person to solve it.
 //!
-//! Proton's captcha page refuses to be framed by any site but
-//! `https://mail.proton.me` (its `frame-ancestors` policy), a rule that does
-//! not apply to it as a tab of its own, so it opens as one. Solved, the
-//! captcha posts a `pm_captcha` message with its token to `window.parent`,
-//! which for a page in its own tab is the page itself. A snippet run on that
-//! page, from the console or as a bookmarklet, listens for the message and
-//! takes the tab to a listener on this machine, token and all, so nothing has
-//! to be copied by hand.
+//! By default it follows Proton's external-browser flow, the one Proton
+//! Bridge's CLI and the desktop use: open `verify.proton.me` for the challenge
+//! in an isolated Chrome window, or the default browser without one; that
+//! page registers the solved captcha against the challenge itself, and once
+//! the user presses ENTER the request is retried with the original challenge
+//! token. Nothing is captured from the page.
+//!
+//! `--captcha-manual` opens the API's captcha page instead, which refuses to
+//! be framed by any site but `https://mail.proton.me` (its `frame-ancestors`
+//! policy), a rule that does not apply to it as a tab of its own, so it opens
+//! as one. Solved, the captcha posts a `pm_captcha` message with its token to
+//! `window.parent`, which for a page in its own tab is the page itself. A
+//! snippet run on that page, from the console or as a bookmarklet, listens
+//! for the message and takes the tab to a listener on this machine, token and
+//! all, so nothing has to be copied by hand.
 //!
 //! The page opens with `#ruston=<port>.<nonce>` at the end of its address; the
 //! fragment never reaches Proton. The console snippet carries the port and
@@ -20,12 +27,6 @@
 //! this, and one copied from the page can be given that way to a new
 //! `login`. A captcha's token goes to Proton as the captcha made it: only
 //! codes sent by email or SMS take a `<challenge>:` prefix.
-//!
-//! `--captcha-chrome` instead follows Proton's external-browser flow (the one
-//! Proton Bridge's CLI uses): open `verify.proton.me` for the challenge in an
-//! isolated Chrome window; that page registers the solved captcha against the
-//! challenge itself, and once the user presses ENTER the request is retried
-//! with the original challenge token. Nothing is captured from the page.
 
 use crate::terminal;
 use futures::FutureExt;
@@ -39,17 +40,12 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 const HV_TIMEOUT: Duration = Duration::from_secs(300);
-/// Preferred local port. The bookmarklet reads the port from the page's
-/// address; one saved by an earlier version still calls this port, where it
-/// is told to be replaced.
-const PREFERRED_PORT: u16 = 47821;
 /// Names the port and nonce in the captcha page's address fragment.
 const FRAGMENT_KEY: &str = "ruston";
 const VERIFIED_PAGE: &str =
     "<h2>✓ Verified</h2><p>You can close this tab and return to your terminal.</p>";
 const NOT_THIS_SIGN_IN_PAGE: &str = "<h2>Not from this sign-in</h2><p>This request did not \
-    come from the captcha page your terminal opened. If you clicked a bookmarklet saved by an \
-    earlier version, save the one your terminal shows now and click it on that page.</p>";
+    come from the captcha page your terminal opened.</p>";
 const NO_TOKEN_PAGE: &str =
     "<h2>No token received</h2><p>Your terminal is still waiting: solve the captcha again.</p>";
 
@@ -123,8 +119,8 @@ fn failed<E: std::fmt::Display>(doing: &'static str) -> impl FnOnce(E) -> Error 
     move |error| Error::Other(format!("{doing}: {error}"))
 }
 
-/// `--captcha-chrome`: open the verification page in an isolated Chrome window
-/// and wait (bounded) for the user to confirm completion with ENTER.
+/// The default: open the verification page in an isolated Chrome window and
+/// wait (bounded) for the user to confirm completion with ENTER.
 fn run_external_flow(url: &str) -> Result<()> {
     terminal::eprintln!("\n── Human verification (CAPTCHA) ──");
     let mut chrome = match launch_chrome(url) {
@@ -225,9 +221,9 @@ fn wait_for_confirmation(
     }
 }
 
-/// Opens the captcha page in the default browser, says how to hand the token
-/// back, and waits for it. `page` is the captcha page's address, without
-/// this sign-in's fragment.
+/// `--captcha-manual`: opens the captcha page in the default browser, says
+/// how to hand the token back, and waits for it. `page` is the captcha page's
+/// address, without this sign-in's fragment.
 fn run_manual_flow(page: &str) -> Result<String> {
     let (listener, port) = token_listener()?;
     let nonce = new_nonce()?;
@@ -247,11 +243,10 @@ fn run_manual_flow(page: &str) -> Result<String> {
 }
 
 /// A listener on this machine for the captcha page to hand the token to, on
-/// the preferred port when that is free, and the port it took. It does not
-/// block, so the wait for the token keeps to its deadline.
+/// a port the system picks, and that port. It does not block, so the wait
+/// for the token keeps to its deadline.
 fn token_listener() -> Result<(TcpListener, u16)> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, PREFERRED_PORT))
-        .or_else(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map_err(failed("cannot start HV helper server"))?;
     let port = listener.local_addr().map_err(failed("hv addr"))?.port();
     listener
@@ -285,11 +280,7 @@ fn print_manual_instructions(
     );
     let _ = terminal::writeln!(
         output,
-        "      on the captcha page opened from here (no console, no \"allow pasting\")."
-    );
-    let _ = terminal::writeln!(
-        output,
-        "      One saved by an earlier version is refused; save this one instead:"
+        "      on the captcha page opened from here (no console, no \"allow pasting\"):"
     );
     let _ = terminal::writeln!(output, "      javascript:{bookmarklet}");
     let _ = terminal::writeln!(
@@ -723,7 +714,7 @@ mod tests {
             }
         }
         // The password is read straight from the environment by `login`.
-        assert!(crate::cli::SECRET_ENV_VARS.contains(&"PROTON_PASSWORD"));
+        assert!(crate::cli::SECRET_ENV_VARS.contains(&crate::cli::PASSWORD_ENV));
     }
 
     #[test]
@@ -815,7 +806,6 @@ mod tests {
 
         let bookmarklet = capture_snippet(None);
         assert!(bookmarklet.contains("location.hash.match(/ruston=(\\d+\\.[0-9a-f]+)/)"));
-        assert!(!bookmarklet.contains(&PREFERRED_PORT.to_string()));
         // A javascript: URL is percent-decoded before it runs.
         assert!(!bookmarklet.contains('%'));
     }
@@ -854,7 +844,7 @@ mod tests {
         assert_eq!(token.as_deref(), Some("raw:token abc"));
         assert_eq!(status, "HTTP/1.1 200 OK");
 
-        // Any other page, and a bookmarklet saved by an earlier version.
+        // A request without this sign-in's code, or with another.
         let forged = format!("/token?nonce={}&value=forged", "f".repeat(32));
         for target in ["/token?value=forged", forged.as_str()] {
             assert_eq!(

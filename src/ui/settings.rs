@@ -122,6 +122,36 @@ fn page(
             ui,
             "Quoted passages are the thread repeated under a reply, so they stay folded by default.",
         );
+        ui.add_space(6.0);
+
+        ui.add(theme::Checkbox::new(
+            &mut settings.show_hidden_text,
+            "Show text the sender hid",
+        ));
+        description(
+            ui,
+            "Senders hide text such as a newsletter's preview line, or a letter slipped into a word to get past filters. Shown, it is grey.",
+        );
+        ui.add_space(6.0);
+
+        ui.add(theme::Checkbox::new(
+            &mut settings.sender_text_styles,
+            "Use the sender's text styles",
+        ));
+        description(
+            ui,
+            "Bold, italic, struck-through and centered text, and links drawn as buttons, which newsletters set with styles rather than tags. With this off, only the tags count.",
+        );
+        ui.add_space(6.0);
+
+        ui.add(theme::Checkbox::new(
+            &mut settings.data_tables,
+            "Show tables of data in columns",
+        ));
+        description(
+            ui,
+            "Receipts, invoices and timetables keep their columns. Tables that only lay a newsletter out read as text either way.",
+        );
     });
     ui.add_space(14.0);
     section(ui, "Links and images", |ui| {
@@ -133,9 +163,15 @@ fn page(
             ui,
             "The prompt shows the real destination, which helps expose misleading links.",
         );
+        ui.add_space(6.0);
+
+        ui.add(theme::Checkbox::new(
+            &mut settings.show_inline_images,
+            "Show pictures a message carries within it",
+        ));
         description(
             ui,
-            "Images in mail are never downloaded. This protects your privacy from tracking pixels.",
+            "They come with the message, so nothing is fetched to show them. Pictures on the web are never downloaded, which protects your privacy from tracking pixels.",
         );
     });
     ui.add_space(14.0);
@@ -415,6 +451,18 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     }
     if draft.show_quoted_text != current.show_quoted_text {
         messages.push(Message::SetShowQuotedText(draft.show_quoted_text));
+    }
+    if draft.show_hidden_text != current.show_hidden_text {
+        messages.push(Message::SetShowHiddenText(draft.show_hidden_text));
+    }
+    if draft.sender_text_styles != current.sender_text_styles {
+        messages.push(Message::SetSenderTextStyles(draft.sender_text_styles));
+    }
+    if draft.data_tables != current.data_tables {
+        messages.push(Message::SetDataTables(draft.data_tables));
+    }
+    if draft.show_inline_images != current.show_inline_images {
+        messages.push(Message::SetShowInlineImages(draft.show_inline_images));
     }
     if draft.compose_placement != current.compose_placement {
         messages.push(Message::SetComposePlacement(draft.compose_placement));
@@ -836,18 +884,6 @@ mod tests {
 
     #[test]
     fn unsaved_settings_actions_fit_at_large_zoom() {
-        fn find_text(shape: &egui::epaint::Shape, label: &str) -> Option<egui::Rect> {
-            match shape {
-                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
-                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
-                }
-                egui::epaint::Shape::Vec(shapes) => {
-                    shapes.iter().find_map(|shape| find_text(shape, label))
-                }
-                _ => None,
-            }
-        }
-
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(410.0, 240.0));
         let context = egui::Context::default();
         context
@@ -874,10 +910,9 @@ mod tests {
         let actions = ["Keep editing", "Discard changes", "Apply and continue"].map(|label| {
             (
                 label,
-                output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| find_text(&shape.shape, label)),
+                output.shapes.iter().find_map(|shape| {
+                    crate::ui::test_support::shape_text_rect(&shape.shape, label)
+                }),
             )
         });
         output.drop_without_applying_deltas();
@@ -922,7 +957,9 @@ mod tests {
         let mut draft = current.clone();
         draft.window.width += 100.0;
         draft.panels.sidebar += 0.1;
-        draft.folder = crate::mail::Folder::System(MailFolder::Spam);
+        draft
+            .accounts
+            .set_folder(crate::mail::Folder::System(MailFolder::Spam));
         assert!(preference_changes(&current, &draft).is_empty());
 
         draft.confirm_links = false;
@@ -934,8 +971,12 @@ mod tests {
         draft.check_recipient_protection = false;
         draft.accept_international_domains = true;
         draft.search_device_offline = true;
+        draft.show_hidden_text = true;
+        draft.sender_text_styles = false;
+        draft.data_tables = false;
+        draft.show_inline_images = false;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 9);
+        assert_eq!(changes.len(), 13);
         assert!(
             changes
                 .iter()

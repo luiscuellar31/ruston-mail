@@ -324,12 +324,6 @@ impl Error {
     pub(crate) fn cache_changed(reason: &str) -> Self {
         Error::CacheChanged(reason.to_owned())
     }
-
-    /// Whether this is a cache error that may pass if the operation is tried
-    /// again later, because the cache changed while it ran.
-    pub fn is_retryable_cache_error(&self) -> bool {
-        matches!(self, Error::CacheChanged(_))
-    }
 }
 
 /// What this crate's operations return: their value, or the [`Error`] that
@@ -511,19 +505,13 @@ mod tests {
     }
 
     #[test]
-    fn only_a_cache_that_changed_under_an_operation_asks_to_be_tried_again() {
+    fn a_cache_that_changed_under_an_operation_reads_as_one_to_try_again() {
         let changed = Error::cache_changed("mailbox changed during resync");
         assert_eq!(
             changed.to_string(),
             "cache error: mailbox changed during resync; retry"
         );
-        assert!(changed.is_retryable_cache_error());
-        assert!(
-            !Error::Cache("database disk image is malformed".into()).is_retryable_cache_error()
-        );
-        // The kind of error says so, whatever its text says.
-        assert!(!Error::Cache("cursor moved; retry".into()).is_retryable_cache_error());
-        assert!(!Error::Session("sync cursor changed; retry".into()).is_retryable_cache_error());
+        assert!(matches!(changed, Error::CacheChanged(_)));
     }
 
     #[test]

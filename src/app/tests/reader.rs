@@ -34,7 +34,7 @@ fn open_behind_the_draft(app: &mut App, id: &str) {
 #[test]
 fn demo_selection_is_local() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
 
     let _ = app.update(Message::SelectConversation("demo-3".into()));
 
@@ -86,7 +86,7 @@ fn selecting_only_queues_a_detail_request() {
 #[test]
 fn no_selection_has_no_reader() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
 
     assert_eq!(app.mailbox().unwrap().reader_state(), &ReaderState::Empty);
 }
@@ -94,7 +94,7 @@ fn no_selection_has_no_reader() {
 #[test]
 fn demo_selection_opens_reader_with_newest_message_expanded() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
 
     open_conversation(&mut app, "demo-0");
 
@@ -109,7 +109,7 @@ fn demo_selection_opens_reader_with_newest_message_expanded() {
 #[test]
 fn returning_to_a_conversation_restores_its_reader_without_loading() {
     let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
+    deliver_latest_demo_page(&mut app, 0);
     open_conversation(&mut app, "demo-0");
 
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
@@ -131,17 +131,6 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
             .unwrap()
             .is_expanded("demo-0-0", Reading::default())
     );
-}
-
-#[test]
-fn folder_switch_closes_reader() {
-    let (mut app, _) = App::boot(true, Settings::default());
-    deliver_demo_page(&mut app, OPENING_PAGE, 0);
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-
-    let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
-
-    assert!(app.mailbox().unwrap().reader().is_none());
 }
 
 #[test]

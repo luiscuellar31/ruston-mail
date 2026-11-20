@@ -3,6 +3,7 @@ use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 
 use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
+use crate::accounts::MAX_ACCOUNTS;
 use crate::app::{
     App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message,
     Notice, compact_layout, panel_ratios, panel_widths,
@@ -282,6 +283,7 @@ fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mu
             saves: reader::AttachmentSaves {
                 saving: app.saving_attachment(),
                 failed: app.failed_save(),
+                images: Some(app.inline_images()),
             },
             reading: app.settings().reading(),
         };
@@ -391,20 +393,20 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
         _ => (None, false),
     };
     ui.vertical(|ui| {
-        let account_label = if app.is_demo() {
+        let account_label = if app.is_demo_process() {
             "demo@example.com"
         } else {
             email.unwrap_or("Proton Mail account")
         };
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(account_label)
-                    .size(12.0)
-                    .color(theme::colors(ui).muted),
-            )
-            .truncate(),
-        )
-        .on_hover_text(account_label);
+        let label = egui::RichText::new(account_label)
+            .size(12.0)
+            .color(theme::colors(ui).muted);
+        if app.is_demo_process() || signing_out {
+            ui.add(egui::Label::new(label).truncate())
+                .on_hover_text(account_label);
+        } else {
+            accounts_menu(ui, app, label, messages).on_hover_text(account_label);
+        }
         if let Some(error) = app.error_message() {
             ui.label(egui::RichText::new(error).color(theme::colors(ui).danger));
         }
@@ -422,7 +424,8 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
         let sending = app.compose().is_some_and(crate::app::Compose::in_flight);
         let mut logout = ui.add_enabled(
             !signing_out && !sending,
-            egui::Button::new(logout_label).min_size(egui::vec2(ui.available_width(), 32.0)),
+            egui::Button::new(logout_label)
+                .min_size(egui::vec2(ui.available_width(), ACCOUNT_BUTTON_HEIGHT)),
         );
         if sending {
             logout = logout.on_disabled_hover_text("Available once the message is sent");
@@ -433,25 +436,116 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
     });
 }
 
+/// The open account's address, which opens the accounts to switch to and a
+/// way to add another, up to [`MAX_ACCOUNTS`]. A chevron after it says so.
+fn accounts_menu(
+    ui: &mut egui::Ui,
+    app: &App,
+    label: egui::RichText,
+    messages: &mut Vec<Message>,
+) -> egui::Response {
+    let chevron = egui::Atom::custom(
+        egui::Id::new(ACCOUNT_CHEVRON_ATOM_ID),
+        egui::Vec2::splat(ACCOUNT_CHEVRON_SIZE),
+    );
+    let button = egui::Button::new((label, chevron))
+        .frame(false)
+        .wrap_mode(egui::TextWrapMode::Truncate);
+    // Leaving would hide whether a message being sent has left.
+    let sending = app.compose().is_some_and(crate::app::Compose::in_flight);
+    let accounts = app.accounts();
+    let response = egui::containers::menu::MenuButton::from_button(button)
+        .ui(ui, |ui| {
+            for account in accounts.all() {
+                let open = account.profile == accounts.active_profile();
+                let name = account.address.as_deref().unwrap_or("Proton Mail account");
+                // Where the command line finds the same session.
+                let item = ui
+                    .add_enabled(open || !sending, egui::Button::selectable(open, name))
+                    .on_hover_text(format!("ruston-cli --profile {}", account.profile));
+                if item.clicked() && !open {
+                    messages.push(Message::SwitchAccount(account.profile.clone()));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            let add = ui.add_enabled(
+                app.can_add_account() && !sending,
+                egui::Button::new("Add account"),
+            );
+            let add = if app.can_add_account() {
+                add
+            } else {
+                add.on_disabled_hover_text(format!("Up to {MAX_ACCOUNTS} accounts"))
+            };
+            if add.clicked() {
+                messages.push(Message::AddAccount);
+                ui.close();
+            }
+        })
+        .0;
+    paint_menu_chevron(ui, &response);
+    response
+}
+
+/// Paints the chevron in the room the address leaves at the end of its
+/// button, which has no frame to pad it; brighter while pointed at or open.
+fn paint_menu_chevron(ui: &egui::Ui, response: &egui::Response) {
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(response));
+    let color = if open || response.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        theme::colors(ui).muted
+    };
+    let center = egui::pos2(
+        response.rect.right() - ACCOUNT_CHEVRON_SIZE / 2.0,
+        response.rect.center().y,
+    );
+    ui.painter().line(
+        reader::chevron_points(center, true).to_vec(),
+        Stroke::new(1.5, color),
+    );
+}
+
 /// A neutral button like the one under it; while Settings is open, the soft
 /// violet of the open folder.
 fn settings_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
-    let width = ui.available_width();
-    let mut label = egui::RichText::new("Settings");
-    if selected {
-        label = label.color(theme::colors(ui).selected_folder_text);
-    }
-    let mut button = egui::Button::new(label).min_size(egui::vec2(width, 32.0));
-    if selected {
-        button = button
-            .fill(theme::colors(ui).accent_soft)
-            .stroke(Stroke::NONE);
-    }
+    let button = egui::Button::new(place_text(ui, "Settings", selected))
+        .min_size(egui::vec2(ui.available_width(), ACCOUNT_BUTTON_HEIGHT));
+    let button = chosen_place(ui, button, selected);
     ui.add(button)
+}
+
+/// The height Settings and the button under it share.
+const ACCOUNT_BUTTON_HEIGHT: f32 = 32.0;
+
+/// Words on a place of the sidebar, in the chosen place's color when it is
+/// the one open.
+fn place_text(ui: &egui::Ui, text: impl Into<String>, chosen: bool) -> egui::RichText {
+    let text = egui::RichText::new(text);
+    if chosen {
+        text.color(theme::colors(ui).selected_folder_text)
+    } else {
+        text
+    }
+}
+
+/// `button` with the soft violet of the place that is open, when it is.
+fn chosen_place<'a>(ui: &egui::Ui, button: egui::Button<'a>, chosen: bool) -> egui::Button<'a> {
+    if chosen {
+        button
+            .fill(theme::colors(ui).accent_soft)
+            .stroke(Stroke::NONE)
+    } else {
+        button
+    }
 }
 
 const NEW_MESSAGE_LABEL_ID: &str = "new-message-label";
 const FOLDER_NAME_ATOM_ID: &str = "folder-name";
+const ACCOUNT_CHEVRON_ATOM_ID: &str = "account-chevron";
+/// The room the accounts menu's chevron takes after the address.
+const ACCOUNT_CHEVRON_SIZE: f32 = 12.0;
 
 fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
     let width = ui.available_width();
@@ -488,12 +582,7 @@ fn folder_button(
         .counts()
         .and_then(|counts| counts.unread(&folder))
         .filter(|count| *count > 0);
-    let name = if selected {
-        egui::RichText::new(folder.name()).color(theme::colors(ui).selected_folder_text)
-    } else {
-        egui::RichText::new(folder.name())
-    }
-    .atom_id(egui::Id::new(FOLDER_NAME_ATOM_ID));
+    let name = place_text(ui, folder.name(), selected).atom_id(egui::Id::new(FOLDER_NAME_ATOM_ID));
     let mut button = egui::Button::new((theme::icon_atom(), name))
         .gap(ui.spacing().icon_spacing + 3.0)
         .wrap_mode(egui::TextWrapMode::Truncate)
@@ -502,18 +591,9 @@ fn folder_button(
         .frame(true)
         .frame_when_inactive(selected);
     if let Some(count) = unread {
-        let text = egui::RichText::new(count.to_string());
-        button = button.right_text(if selected {
-            text.color(theme::colors(ui).selected_folder_text)
-        } else {
-            text
-        });
+        button = button.right_text(place_text(ui, count.to_string(), selected));
     }
-    if selected {
-        button = button
-            .fill(theme::colors(ui).accent_soft)
-            .stroke(Stroke::NONE);
-    }
+    let button = chosen_place(ui, button, selected);
     let layout = ui
         .scope(|ui| {
             // egui's grey hover is brighter than the soft violet of the

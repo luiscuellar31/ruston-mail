@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-fn map<E: std::fmt::Display>(e: E) -> Error {
+/// Any failure in the cache, its database or its files, as an
+/// [`Error::Cache`] with its message.
+fn cache_error<E: std::fmt::Display>(e: E) -> Error {
     Error::Cache(e.to_string())
 }
 
@@ -19,14 +21,14 @@ fn map<E: std::fmt::Display>(e: E) -> Error {
 fn secure_cache_dir(dir: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::create_dir_all(dir).map_err(map)?;
-    let metadata = std::fs::symlink_metadata(dir).map_err(map)?;
+    std::fs::create_dir_all(dir).map_err(cache_error)?;
+    let metadata = std::fs::symlink_metadata(dir).map_err(cache_error)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(Error::Cache("cache directory must not be a symlink".into()));
     }
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(map)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(cache_error)?;
     if std::fs::symlink_metadata(dir)
-        .map_err(map)?
+        .map_err(cache_error)?
         .permissions()
         .mode()
         & 0o777
@@ -50,23 +52,26 @@ fn secure_cache_file(path: &Path) -> Result<()> {
     match options.open(path) {
         Ok(file) => file
             .set_permissions(Permissions::from_mode(0o600))
-            .map_err(map)?,
+            .map_err(cache_error)?,
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            let metadata = std::fs::symlink_metadata(path).map_err(map)?;
+            let metadata = std::fs::symlink_metadata(path).map_err(cache_error)?;
             if !metadata.is_file() || metadata.file_type().is_symlink() {
                 return Err(Error::Cache("cache database must be a regular file".into()));
             }
-            let file = OpenOptions::new().read(true).open(path).map_err(map)?;
-            let opened = file.metadata().map_err(map)?;
+            let file = OpenOptions::new()
+                .read(true)
+                .open(path)
+                .map_err(cache_error)?;
+            let opened = file.metadata().map_err(cache_error)?;
             if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
                 return Err(Error::Cache("cache database changed while opening".into()));
             }
             file.set_permissions(Permissions::from_mode(0o600))
-                .map_err(map)?;
+                .map_err(cache_error)?;
         }
-        Err(error) => return Err(map(error)),
+        Err(error) => return Err(cache_error(error)),
     }
-    let metadata = std::fs::symlink_metadata(path).map_err(map)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(cache_error)?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o777 != 0o600 {
         return Err(Error::Cache("cache database is not private".into()));
     }
@@ -83,7 +88,7 @@ fn private_parent(path: &Path) -> Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let dir = std::fs::symlink_metadata(parent).map_err(map)?;
+    let dir = std::fs::symlink_metadata(parent).map_err(cache_error)?;
     if !dir.is_dir() || dir.file_type().is_symlink() || dir.permissions().mode() & 0o777 != 0o700 {
         return Err(Error::Cache(format!(
             "cache directory {} must be private (mode 0700) and not a symlink",
@@ -151,11 +156,12 @@ fn write_metadata(conn: &Connection, sql: &MetadataSql, m: &MessageMetadata) -> 
         sql.upsert_message,
         rusqlite::params![m.id, m.time, m.unread, json],
     )
-    .map_err(map)?;
-    conn.execute(sql.clear_labels, [&m.id]).map_err(map)?;
+    .map_err(cache_error)?;
+    conn.execute(sql.clear_labels, [&m.id])
+        .map_err(cache_error)?;
     for label in &m.label_ids {
         conn.execute(sql.insert_label, rusqlite::params![m.id, label, m.time])
-            .map_err(map)?;
+            .map_err(cache_error)?;
     }
     Ok(())
 }
@@ -170,24 +176,25 @@ fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
         UPDATE_INDEX_SQL,
         rusqlite::params![m.id, m.subject, participants(m)],
     )
-    .map_err(map)?;
+    .map_err(cache_error)?;
     Ok(())
 }
 
 fn replace_index(conn: &Connection, m: &MessageMetadata, body: Option<&str>) -> Result<()> {
     upsert_metadata(conn, m)?;
-    conn.execute(DELETE_INDEX_SQL, [&m.id]).map_err(map)?;
+    conn.execute(DELETE_INDEX_SQL, [&m.id])
+        .map_err(cache_error)?;
     if let Some(body) = body {
         conn.execute(
             "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
             rusqlite::params![m.id, m.subject, body, participants(m)],
         )
-        .map_err(map)?;
+        .map_err(cache_error)?;
         conn.execute(
             "UPDATE msg_fts_rows SET as_text=1 WHERE message_id=?1",
             [&m.id],
         )
-        .map_err(map)?;
+        .map_err(cache_error)?;
     }
     Ok(())
 }
@@ -196,13 +203,13 @@ fn delete_message(conn: &Connection, id: &str) -> Result<()> {
     // The messages_delete_fts trigger removes the indexed body in this transaction.
     let deleted = conn
         .execute("DELETE FROM messages WHERE id=?1", [id])
-        .map_err(map)?;
+        .map_err(cache_error)?;
     if deleted == 0 {
         // A stray index row can still exist without cached metadata.
-        conn.execute(DELETE_INDEX_SQL, [id]).map_err(map)?;
+        conn.execute(DELETE_INDEX_SQL, [id]).map_err(cache_error)?;
     }
     conn.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
-        .map_err(map)?;
+        .map_err(cache_error)?;
     Ok(())
 }
 
@@ -223,7 +230,8 @@ fn apply_message_event(
         }
         (action::UPDATE, message) => {
             // Events carry metadata, not the decrypted body.
-            conn.execute(DELETE_INDEX_SQL, [&event.id]).map_err(map)?;
+            conn.execute(DELETE_INDEX_SQL, [&event.id])
+                .map_err(cache_error)?;
             if let Some(message) = message {
                 upsert_message(conn, message)?;
                 counts.updated += 1;
@@ -244,17 +252,18 @@ fn apply_message_event(
 fn ensure_label_time_index(conn: &Connection) -> Result<()> {
     // Serialize first-open migration across processes. A failed backfill leaves
     // the old schema and cache contents intact.
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    let tx =
+        Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(cache_error)?;
     let has_time = {
         let mut columns = tx
             .prepare("PRAGMA table_info(message_labels)")
-            .map_err(map)?;
+            .map_err(cache_error)?;
         let names = columns
             .query_map([], |row| row.get::<_, String>(1))
-            .map_err(map)?;
+            .map_err(cache_error)?;
         let mut has_time = false;
         for name in names {
-            has_time |= name.map_err(map)? == "time";
+            has_time |= name.map_err(cache_error)? == "time";
         }
         has_time
     };
@@ -264,7 +273,7 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
              UPDATE message_labels SET time=(
                  SELECT time FROM messages WHERE id=message_labels.message_id);",
         )
-        .map_err(map)?;
+        .map_err(cache_error)?;
     }
     // The time index starts with label_id, so it serves every lookup the old
     // label-only index did, which only cost writes and secure deletes.
@@ -285,8 +294,8 @@ fn ensure_label_time_index(conn: &Connection) -> Result<()> {
          ON message_labels(label_id, time DESC, message_id);
          DROP INDEX IF EXISTS idx_ml_label;",
     )
-    .map_err(map)?;
-    tx.commit().map_err(map)
+    .map_err(cache_error)?;
+    tx.commit().map_err(cache_error)
 }
 
 /// The full-text table's columns: the message ID, left out of the index, and
@@ -312,7 +321,7 @@ fn needs_migration(conn: &Connection) -> Result<bool> {
         [],
         |row| row.get(0),
     )
-    .map_err(map)
+    .map_err(cache_error)
 }
 
 /// Whether opening to write has to migrate the cache: [`needs_migration`]
@@ -330,7 +339,7 @@ fn has_as_text_column(conn: &Connection) -> Result<bool> {
         [],
         |row| row.get(0),
     )
-    .map_err(map)
+    .map_err(cache_error)
 }
 
 /// Marks which indexed bodies hold text alone, as this version indexes an
@@ -339,19 +348,20 @@ fn has_as_text_column(conn: &Connection) -> Result<bool> {
 /// both read 0, so `index` reads those bodies again, and until then they stay
 /// searchable. The schema version stays, so older versions keep opening it.
 fn ensure_as_text_column(conn: &Connection) -> Result<()> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    let tx =
+        Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(cache_error)?;
     if !has_as_text_column(&tx)? {
         tx.execute_batch("ALTER TABLE msg_fts_rows ADD COLUMN as_text INTEGER NOT NULL DEFAULT 0")
-            .map_err(map)?;
+            .map_err(cache_error)?;
     }
-    tx.commit().map_err(map)
+    tx.commit().map_err(cache_error)
 }
 
 /// The cache's schema version, refusing one newer than this version's.
 fn schema_version(conn: &Connection) -> Result<i64> {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(map)?;
+        .map_err(cache_error)?;
     if version > SCHEMA_VERSION {
         return Err(Error::Cache(format!(
             "cache was written by a newer version of Ruston Mail (schema {version}); update Ruston Mail to use it"
@@ -370,17 +380,18 @@ fn migrate(conn: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
          CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5({FTS_COLUMNS});",
     ))
-    .map_err(map)?;
+    .map_err(cache_error)?;
     ensure_label_time_index(conn)?;
     ensure_fts_rowid_index(conn)?;
     ensure_as_text_column(conn)?;
     ensure_fts_secure_delete(conn)?;
     // A newer version may have migrated it further meanwhile.
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    let tx =
+        Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(cache_error)?;
     schema_version(&tx)?;
     tx.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION}"))
-        .map_err(map)?;
-    tx.commit().map_err(map)
+        .map_err(cache_error)?;
+    tx.commit().map_err(cache_error)
 }
 
 /// FTS5 keeps a deleted body's words in its index until segments merge;
@@ -394,28 +405,29 @@ fn ensure_fts_secure_delete(conn: &Connection) -> Result<()> {
             |row| row.get(0),
         )
         .optional()
-        .map_err(map)?;
+        .map_err(cache_error)?;
     if enabled != Some(1) {
         conn.execute(
             "INSERT INTO msg_fts_index(msg_fts_index, rank) VALUES('secure-delete', 1)",
             [],
         )
-        .map_err(map)?;
+        .map_err(cache_error)?;
     }
     Ok(())
 }
 
 fn ensure_fts_rowid_index(conn: &Connection) -> Result<()> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(map)?;
+    let tx =
+        Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(cache_error)?;
     let kind: String = tx
         .query_row(
             "SELECT type FROM sqlite_schema WHERE name='msg_fts'",
             [],
             |row| row.get(0),
         )
-        .map_err(map)?;
+        .map_err(cache_error)?;
     if kind == "view" {
-        return tx.commit().map_err(map);
+        return tx.commit().map_err(cache_error);
     }
 
     // Preserve existing FTS data and rowids. FTS5 does not allow table triggers,
@@ -462,8 +474,8 @@ fn ensure_fts_rowid_index(conn: &Connection) -> Result<()> {
                  SELECT fts_rowid FROM msg_fts_rows WHERE message_id=OLD.id);
          END;",
     )
-    .map_err(map)?;
-    tx.commit().map_err(map)
+    .map_err(cache_error)?;
+    tx.commit().map_err(cache_error)
 }
 
 /// The `meta` key the sync cursor is kept under.
@@ -475,7 +487,7 @@ fn read_cursor(conn: &Connection) -> Result<Option<String>> {
         row.get(0)
     })
     .optional()
-    .map_err(map)
+    .map_err(cache_error)
 }
 
 /// Stores `cursor` as the sync cursor, in place of any other.
@@ -484,7 +496,7 @@ fn write_cursor(conn: &Connection, cursor: &str) -> Result<()> {
         "INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)",
         [CURSOR_KEY, cursor],
     )
-    .map_err(map)?;
+    .map_err(cache_error)?;
     Ok(())
 }
 
@@ -496,7 +508,7 @@ fn account_owner(conn: &Connection) -> Result<Option<String>> {
         |row| row.get(0),
     )
     .optional()
-    .map_err(map)
+    .map_err(cache_error)
 }
 
 /// Authenticated account identity, independent of session tokens and addresses.
@@ -594,7 +606,7 @@ fn read_metadata(
     let rows: Vec<String> = statement
         .query_map(params, |row| row.get(0))
         .and_then(|rows| rows.collect())
-        .map_err(map)?;
+        .map_err(cache_error)?;
     Ok(rows
         .iter()
         .filter_map(|json| serde_json::from_str(json).ok())
@@ -625,7 +637,7 @@ fn create_cache_dir(dir: &Path) -> Result<()> {
 /// to them.
 #[cfg(not(unix))]
 fn create_cache_dir(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(dir).map_err(map)
+    std::fs::create_dir_all(dir).map_err(cache_error)
 }
 
 /// A label's cached total and unread count, as `Cache::count` reads them.
@@ -633,14 +645,6 @@ const COUNT_SQL: &str = "SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM message
      JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1";
 
 impl Cache {
-    /// Legacy cache path: `<cache_dir>/ruston-mail/<profile>.db`. Client
-    /// operations never open it, since its owner is unknown: they use a path
-    /// of each account's own under the same folder.
-    pub fn default_path(profile: &str) -> Result<PathBuf> {
-        validate_profile_name(profile)?;
-        Ok(cache_root()?.join(format!("{profile}.db")))
-    }
-
     pub(crate) fn default_account_path(profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
         validate_profile_name(profile)?;
         Self::account_path(&cache_root()?, profile, identity)
@@ -687,7 +691,7 @@ impl Cache {
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(map(error)),
+            Err(error) => return Err(cache_error(error)),
         };
         if !metadata.is_file() {
             return Err(Error::Cache("cache database must be a regular file".into()));
@@ -699,13 +703,14 @@ impl Cache {
         let (sqlite_path, flags) = {
             private_parent(path)?;
             // As `open` does: NOFOLLOW refuses a symlink anywhere in the path.
-            let resolved = std::fs::canonicalize(path).map_err(map)?;
+            let resolved = std::fs::canonicalize(path).map_err(cache_error)?;
             (resolved, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW)
         };
         #[cfg(not(unix))]
         let sqlite_path = path.to_path_buf();
-        let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(map)?;
-        conn.busy_timeout(Duration::from_secs(30)).map_err(map)?;
+        let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(cache_error)?;
+        conn.busy_timeout(Duration::from_secs(30))
+            .map_err(cache_error)?;
         if needs_migration(&conn)? {
             return Err(Error::Cache(
                 "the local index needs `ruston-cli sync` or `ruston-cli index` to update it".into(),
@@ -728,8 +733,8 @@ impl Cache {
         if account_owner(&cache.conn)?.is_some_and(|owner| owner == expected) {
             return Ok(cache);
         }
-        let tx =
-            Transaction::new_unchecked(&cache.conn, TransactionBehavior::Immediate).map_err(map)?;
+        let tx = Transaction::new_unchecked(&cache.conn, TransactionBehavior::Immediate)
+            .map_err(cache_error)?;
         match account_owner(&tx)? {
             Some(owner) if owner == expected => {}
             Some(_) => return Err(Error::Cache("cache belongs to a different account".into())),
@@ -741,7 +746,7 @@ impl Cache {
                         [],
                         |row| row.get(0),
                     )
-                    .map_err(map)?;
+                    .map_err(cache_error)?;
                 if has_data {
                     return Err(Error::Cache(
                         "cache has data without a verified account identity; rebuild it".into(),
@@ -751,10 +756,10 @@ impl Cache {
                     "INSERT INTO meta(key, value) VALUES('account_identity_v1', ?1)",
                     [expected],
                 )
-                .map_err(map)?;
+                .map_err(cache_error)?;
             }
         }
-        tx.commit().map_err(map)?;
+        tx.commit().map_err(cache_error)?;
         Ok(cache)
     }
 
@@ -772,7 +777,7 @@ impl Cache {
             secure_cache_file(path)?;
             // SQLite's NOFOLLOW refuses a symlink anywhere in the path, so it
             // is given the path with every link resolved.
-            std::fs::canonicalize(path).map_err(map)?
+            std::fs::canonicalize(path).map_err(cache_error)?
         };
         #[cfg(not(unix))]
         let sqlite_path = path.to_path_buf();
@@ -780,12 +785,14 @@ impl Cache {
         let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         #[cfg(not(unix))]
         let flags = OpenFlags::default();
-        let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(map)?;
+        let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(cache_error)?;
         // Another CLI process may hold the write lock during sync or migration.
-        conn.busy_timeout(Duration::from_secs(30)).map_err(map)?;
+        conn.busy_timeout(Duration::from_secs(30))
+            .map_err(cache_error)?;
         // Deleted and replaced rows, decrypted bodies among them, are
         // overwritten instead of lingering in the file's free space.
-        conn.execute_batch("PRAGMA secure_delete=ON").map_err(map)?;
+        conn.execute_batch("PRAGMA secure_delete=ON")
+            .map_err(cache_error)?;
         // A cache that needs no migration opens without the write lock, so a
         // command that only reads never waits for another process's sync.
         if needs_migration_to_write(&conn)? {
@@ -809,7 +816,7 @@ impl Cache {
                 "INSERT OR IGNORE INTO meta(key, value) VALUES(?1, ?2)",
                 [CURSOR_KEY, id],
             )
-            .map_err(map)?
+            .map_err(cache_error)?
             == 1)
     }
 
@@ -824,8 +831,8 @@ impl Cache {
     ) -> Result<Transaction<'_>> {
         // Claim the SQLite write lock before checking; other processes cannot
         // advance the cursor between this check and the commit.
-        let tx =
-            Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(map)?;
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
+            .map_err(cache_error)?;
         if read_cursor(&tx)?.as_deref() != expected {
             return Err(Error::cache_changed(changed));
         }
@@ -840,7 +847,7 @@ impl Cache {
                 "SELECT EXISTS(SELECT 1 FROM msg_fts_rows WHERE message_id=?1 AND as_text=1)",
             )
             .and_then(|mut statement| statement.query_row([id], |row| row.get(0)))
-            .map_err(map)
+            .map_err(cache_error)
     }
 
     /// Commit a downloaded page only if sync has not changed since its request.
@@ -854,7 +861,7 @@ impl Cache {
         for m in messages {
             upsert_message(&tx, m)?;
         }
-        tx.commit().map_err(map)
+        tx.commit().map_err(cache_error)
     }
 
     /// Commit a downloaded body, or drop the body of a message that is gone
@@ -870,7 +877,7 @@ impl Cache {
         let tx = self
             .transaction_at_cursor(expected_cursor, "sync cursor changed during cache download")?;
         replace_index(&tx, m, body)?;
-        tx.commit().map_err(map)
+        tx.commit().map_err(cache_error)
     }
 
     /// Apply a server batch and its cursor only if the cursor we fetched from
@@ -889,7 +896,7 @@ impl Cache {
             apply_message_event(&tx, event, &mut counts)?;
         }
         write_cursor(&tx, &batch.event_id)?;
-        tx.commit().map_err(map)?;
+        tx.commit().map_err(cache_error)?;
         Ok(counts)
     }
 
@@ -902,7 +909,10 @@ impl Cache {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<MessageMetadata>> {
-        let mut statement = self.conn.prepare(&list_sql(unread_only)).map_err(map)?;
+        let mut statement = self
+            .conn
+            .prepare(&list_sql(unread_only))
+            .map_err(cache_error)?;
         read_metadata(&mut statement, rusqlite::params![label_id, limit, offset])
     }
 
@@ -913,7 +923,7 @@ impl Cache {
             .query_row(COUNT_SQL, [label_id], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
             })
-            .map_err(map)
+            .map_err(cache_error)
     }
 
     /// Start a full metadata rebuild without changing the visible cache.
@@ -927,16 +937,16 @@ impl Cache {
                  DELETE FROM resync_labels;
                  DELETE FROM resync_messages;",
             )
-            .map_err(map)
+            .map_err(cache_error)
     }
 
     /// Stage one API page; a failed page leaves the visible cache untouched.
     pub(crate) fn stage_rebuild_page(&self, messages: &[MessageMetadata]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        let tx = self.conn.unchecked_transaction().map_err(cache_error)?;
         for m in messages {
             write_metadata(&tx, &STAGED_SQL, m)?;
         }
-        tx.commit().map_err(map)
+        tx.commit().map_err(cache_error)
     }
 
     /// Replace metadata, labels, index, and cursor in one transaction, once
@@ -952,7 +962,7 @@ impl Cache {
             self.transaction_at_cursor(Some(previous_cursor), "sync cursor changed during resync")?;
         let staged: i64 = tx
             .query_row("SELECT COUNT(*) FROM resync_messages", [], |row| row.get(0))
-            .map_err(map)?;
+            .map_err(cache_error)?;
         if expected_total.is_some_and(|total| staged != i64::from(total)) {
             return Err(Error::cache_changed(
                 "incomplete mailbox listing during resync",
@@ -974,10 +984,10 @@ impl Cache {
              INSERT INTO message_labels(message_id, label_id, time)
              SELECT message_id, label_id, time FROM resync_labels;",
         ))
-        .map_err(map)?;
+        .map_err(cache_error)?;
         ensure_fts_secure_delete(&tx)?;
         write_cursor(&tx, new_cursor)?;
-        tx.commit().map_err(map)?;
+        tx.commit().map_err(cache_error)?;
         Ok(usize::try_from(staged).unwrap_or_default())
     }
 
@@ -988,7 +998,7 @@ impl Cache {
         let Some(expression) = match_expression(query) else {
             return Ok(Vec::new());
         };
-        let mut statement = self.conn.prepare(SEARCH_SQL).map_err(map)?;
+        let mut statement = self.conn.prepare(SEARCH_SQL).map_err(cache_error)?;
         read_metadata(&mut statement, rusqlite::params![expression, limit])
     }
 }
@@ -1007,53 +1017,55 @@ impl Cache {
     /// Insert or replace cached metadata and labels, keeping searchable headers
     /// current for a body that has already been indexed.
     pub(crate) fn upsert_message(&self, m: &MessageMetadata) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        let tx = self.conn.unchecked_transaction().map_err(cache_error)?;
         upsert_message(&tx, m)?;
-        tx.commit().map_err(map)?;
+        tx.commit().map_err(cache_error)?;
         Ok(())
     }
 
     /// Writes a message's flags and labels, leaving its indexed headers and
     /// body as they are.
     pub(crate) fn upsert_message_flags(&self, m: &MessageMetadata) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        let tx = self.conn.unchecked_transaction().map_err(cache_error)?;
         upsert_metadata(&tx, m)?;
-        tx.commit().map_err(map)?;
+        tx.commit().map_err(cache_error)?;
         Ok(())
     }
 
     /// Remove a message, its labels, and its active full-text index entry.
     pub(crate) fn delete_message(&self, id: &str) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        let tx = self.conn.unchecked_transaction().map_err(cache_error)?;
         delete_message(&tx, id)?;
-        tx.commit().map_err(map)?;
+        tx.commit().map_err(cache_error)?;
         Ok(())
     }
 
     /// Drops a message's indexed body, so a changed one is indexed again.
     pub(crate) fn invalidate_index(&self, id: &str) -> Result<()> {
-        self.conn.execute(DELETE_INDEX_SQL, [id]).map_err(map)?;
+        self.conn
+            .execute(DELETE_INDEX_SQL, [id])
+            .map_err(cache_error)?;
         Ok(())
     }
 
     /// Drop all cached messages and indexed bodies.
     pub(crate) fn clear(&self) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        let tx = self.conn.unchecked_transaction().map_err(cache_error)?;
         // Bulk resets do not need to materialize the compatibility view's bodies.
         tx.execute_batch(
             "DELETE FROM msg_fts_index; DELETE FROM msg_fts_rows;
              DELETE FROM message_labels; DELETE FROM messages;",
         )
-        .map_err(map)?;
-        tx.commit().map_err(map)?;
+        .map_err(cache_error)?;
+        tx.commit().map_err(cache_error)?;
         Ok(())
     }
 
     /// Adds a message's decrypted body to the local search index.
     pub(crate) fn index_message(&self, m: &MessageMetadata, body: &str) -> Result<()> {
-        let tx = self.conn.unchecked_transaction().map_err(map)?;
+        let tx = self.conn.unchecked_transaction().map_err(cache_error)?;
         replace_index(&tx, m, Some(body))?;
-        tx.commit().map_err(map)?;
+        tx.commit().map_err(cache_error)?;
         Ok(())
     }
 }

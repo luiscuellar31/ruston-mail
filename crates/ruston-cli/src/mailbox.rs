@@ -487,8 +487,8 @@ pub(crate) fn within((begin, end): (Option<i64>, Option<i64>), time: i64) -> boo
 }
 
 /// The places to list: the system folders, then the account's folders in
-/// the order of their paths, so each sits under its parent, then its labels
-/// as Proton orders them.
+/// the order of their paths, a level at a time, so each sits right under
+/// its parent, then its labels as Proton orders them.
 fn places(mut folders: Vec<Label>, labels: Vec<Label>, counts: &[LabelCount]) -> Vec<Place> {
     let unread = |id: &str| {
         counts
@@ -496,7 +496,9 @@ fn places(mut folders: Vec<Label>, labels: Vec<Label>, counts: &[LabelCount]) ->
             .find(|count| count.label_id == id)
             .map_or(0, |count| count.unread)
     };
-    folders.sort_by(|a, b| a.path.cmp(&b.path));
+    // By levels, not as text: "Taxes 2" sorts before "Taxes/2024" as text,
+    // and would come between "Taxes" and its child.
+    folders.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));
     let system = SYSTEM_FOLDERS.iter().map(|(id, name)| Place {
         id: (*id).to_owned(),
         name: (*name).to_owned(),
@@ -588,6 +590,32 @@ mod tests {
         assert_eq!(
             paths[7..],
             ["Taxes", "Taxes/2024", "Work", "Later", "Family"]
+        );
+    }
+
+    #[test]
+    fn a_folder_whose_name_sorts_before_a_slash_leaves_children_under_their_parent() {
+        let folders = vec![
+            label("f-taxes-old", "Taxes-old"),
+            label("f-taxes-2024", "Taxes/2024"),
+            label("f-taxes-two", "Taxes 2"),
+            label("f-taxes", "Taxes"),
+        ];
+
+        let places = places(folders, Vec::new(), &[]);
+        let folders: Vec<(&str, usize)> = places
+            .iter()
+            .filter(|place| place.kind == PlaceKind::Folder)
+            .map(|place| (place.path.as_str(), place.depth))
+            .collect();
+        assert_eq!(
+            folders,
+            [
+                ("Taxes", 0),
+                ("Taxes/2024", 1),
+                ("Taxes 2", 0),
+                ("Taxes-old", 0),
+            ]
         );
     }
 

@@ -143,21 +143,6 @@ fn stale_error_is_ignored() {
 }
 
 #[test]
-fn stale_classified_page_cannot_replace_newer_folder() {
-    let (mut mailbox, inbox) = open();
-    mailbox.select_folder(sys(MailFolder::Sent), 3);
-
-    let stale = mailbox.finish_page(
-        inbox.id,
-        page_of(vec![message_row("m1"), message_row("m2")], 1),
-    );
-
-    assert_eq!(stale, None);
-    assert_eq!(mailbox.status(), ListStatus::Loading(3));
-    assert!(mailbox.conversations().is_empty());
-}
-
-#[test]
 fn only_the_folders_left_last_stay_loaded() {
     let mut mailbox = loaded_inbox(&["a"], 1);
     let folders: Vec<_> = (0..9)

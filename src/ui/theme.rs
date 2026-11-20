@@ -31,6 +31,15 @@ const ICON_ATOM_ID: &str = "ruston-vector-icon";
 const FOCUS_RING_WIDTH: f32 = 2.0;
 const CHECKBOX_ATOM_ID: &str = "ruston-check-box";
 const CHECKBOX_RADIUS: u8 = 4;
+/// The corner radius of buttons, fields and the other widgets.
+pub(crate) const WIDGET_CORNER_RADIUS: u8 = 7;
+/// The corner radius of a card, such as a message's in the reader.
+pub(crate) const CARD_CORNER_RADIUS: u8 = 10;
+/// The corner radius of the bars a loading skeleton draws; a checkbox's is
+/// the same.
+pub(crate) const SKELETON_CORNER_RADIUS: u8 = 4;
+/// The corner radius of the ring around the widget the keys reach.
+const FOCUS_RING_RADIUS: u8 = 8;
 const CHECK_MARK_WIDTH: f32 = 1.6;
 const FIELD_MARGIN: egui::Margin = egui::Margin::symmetric(10, 7);
 
@@ -577,10 +586,11 @@ pub fn install(context: &egui::Context) {
         style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, colors.border);
         style.visuals.widgets.hovered.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
         style.visuals.widgets.active.bg_stroke = style.visuals.widgets.inactive.bg_stroke;
-        style.visuals.widgets.inactive.corner_radius = CornerRadius::same(7);
-        style.visuals.widgets.hovered.corner_radius = CornerRadius::same(7);
-        style.visuals.widgets.active.corner_radius = CornerRadius::same(7);
-        style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
+        let widget_corners = CornerRadius::same(WIDGET_CORNER_RADIUS);
+        style.visuals.widgets.inactive.corner_radius = widget_corners;
+        style.visuals.widgets.hovered.corner_radius = widget_corners;
+        style.visuals.widgets.active.corner_radius = widget_corners;
+        style.visuals.widgets.open.corner_radius = widget_corners;
         // egui's 9 pt is too small for the notices and details drawn with it.
         style.text_styles.insert(
             egui::TextStyle::Small,
@@ -732,7 +742,7 @@ pub fn paint_focus_ring(ctx: &egui::Context) {
         .with_clip_rect(widget.interact_rect.expand(FOCUS_RING_WIDTH));
     painter.rect_stroke(
         widget.rect,
-        CornerRadius::same(8),
+        CornerRadius::same(FOCUS_RING_RADIUS),
         Stroke::new(FOCUS_RING_WIDTH, colors_for(ctx.theme()).focus),
         egui::StrokeKind::Outside,
     );
@@ -782,7 +792,7 @@ pub fn spinner(ui: &mut egui::Ui) -> Response {
 }
 
 pub fn paint_skeleton(painter: &egui::Painter, rect: egui::Rect, fill: Color32) {
-    painter.rect_filled(rect, CornerRadius::same(4), fill);
+    painter.rect_filled(rect, CornerRadius::same(SKELETON_CORNER_RADIUS), fill);
 }
 
 fn skeleton_fill_at(time: f64, colors: Colors) -> Color32 {
@@ -903,12 +913,26 @@ pub fn titlebar_inset(ctx: &egui::Context) -> f32 {
     if cfg!(target_os = "macos") && !ctx.input(|input| input.viewport().fullscreen.unwrap_or(false))
     {
         // Native metrics are in macOS points, before egui's application zoom.
-        ctx.data(|data| data.get_temp::<f32>(egui::Id::new("native-titlebar-height")))
-            .unwrap_or(28.0)
+        ctx.data(|data| data.get_temp::<f32>(native_titlebar_height_id()))
+            .unwrap_or(DEFAULT_TITLEBAR_HEIGHT)
             / ctx.zoom_factor()
     } else {
         0.0
     }
+}
+
+/// The room the traffic lights take until the window reports its own.
+const DEFAULT_TITLEBAR_HEIGHT: f32 = 28.0;
+
+fn native_titlebar_height_id() -> egui::Id {
+    egui::Id::new("native-titlebar-height")
+}
+
+/// Keeps the height the window reports for its traffic lights, in macOS
+/// points, for [`titlebar_inset`] to leave that much room.
+#[cfg(any(target_os = "macos", test))]
+pub fn set_native_titlebar_height(ctx: &egui::Context, height: f32) {
+    ctx.data_mut(|data| data.insert_temp(native_titlebar_height_id(), height));
 }
 
 pub fn panel_frame(fill: Color32) -> egui::Frame {
@@ -938,7 +962,7 @@ pub fn card(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::new()
         .fill(colors.panel_raised)
         .stroke(Stroke::new(1.0, colors.border))
-        .corner_radius(CornerRadius::same(10))
+        .corner_radius(CornerRadius::same(CARD_CORNER_RADIUS))
         .inner_margin(14)
 }
 

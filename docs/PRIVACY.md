@@ -104,7 +104,20 @@ account; a bare development executable does not request permission or notify.
 HTML messages do not run in a browser view. They are sanitized, parsed, and
 drawn with native UI elements. Sanitizing keeps only `http`, `https` and
 `mailto` links and drops relative ones, so EML exports and quoted replies
-carry no other kind. Scripts do not run, and remote images are never
+carry no other kind. Of styles it keeps only what hides text, `display` and
+`visibility`, with the `hidden` attribute, so text a sender hid stays hidden
+in a quoted reply too, and what makes text bold, italic, struck through or
+centered: `font-weight`, `font-style`, `text-decoration` and `text-align`;
+and the color behind a link drawn as a button, `background-color` and a
+table's or a cell's `bgcolor`. None of these can load anything. An image keeps
+its address only when it is on the web or names a part of its own message
+(`cid:`). The desktop shows those parts, unless **Show pictures a message
+carries within it** is off: it downloads the part from Proton as it does an
+attachment you save, when the reader reaches the picture, and checks its
+signature the same way. Only PNG, JPEG, GIF and WebP are decoded, told by the
+file's own bytes, off the interface's thread; a file over 12 MiB or a picture
+over 40 megapixels is not, and a wide one is made smaller. Decoded pictures
+stay in memory, never on disk, and are dropped with the conversation. Scripts do not run, and remote images are never
 requested. This also blocks tracking pixels.
 
 The CLI's default text view converts HTML to readable Markdown-style text.
@@ -225,14 +238,15 @@ a separate mailbox password when they are needed and not given, and
 None of them then goes on the command line, where process listings and shell
 history would show it. Both apps open human verification only on Proton's own
 hosts: a challenge that names another host gets Proton's default page, since
-the page receives the challenge's token. While it waits for a CAPTCHA, the CLI listens on a loopback port and takes
-a token only with the random code the captcha page it opened carries at the end
-of its address, so no other web page can hand it one. The address's fragment
-never reaches Proton. A capture bookmarklet saved by an earlier version is
-refused and has to be saved again. With `--captcha-chrome`, the page opens in
-Chrome with a new throwaway profile: a folder the CLI creates itself in the
-temporary directory, under a random name and, on Unix, for this user alone, so
-another user cannot prepare it. It is removed when verification ends. `ruston-core` stores the access token, refresh
+the page receives the challenge's token. The CLI opens it in Chrome, Chromium,
+Brave or Edge with a new throwaway profile: a folder the CLI creates itself in
+the temporary directory, under a random name and, on Unix, for this user alone,
+so another user cannot prepare it. It is removed when verification ends; with
+none of those browsers, the page opens in the default browser, as the
+desktop's does. With `--captcha-manual`, the CLI instead listens on a loopback
+port while it waits for a CAPTCHA and takes a token only with the random code
+the captcha page it opened carries at the end of its address, so no other web
+page can hand it one. The address's fragment never reaches Proton. `ruston-core` stores the access token, refresh
 token, and key passphrase in the operating system's credential store:
 
 - Keychain on macOS.
@@ -266,14 +280,22 @@ earlier CLI `default` session is still accessible with
 `--profile default`. Profile names must be a single path component; empty names
 and names with path separators are rejected.
 Signing out of the shared profile affects both frontends.
+The desktop keeps each of its accounts, up to five, in a profile of its own:
+`ruston` for the first, then `ruston-2` to `ruston-5`. Switching to another
+account leaves the one left signed in, its session saved, without revoking it;
+an account that is not open sends Proton no requests. Adding an account already
+in the list signs out of the session that sign-in made, as signing out does,
+and leaves the account's own session as it was.
 
 Ruston Mail keeps `settings.json` in its own platform config directory; a demo
 process keeps `settings-demo.json` beside it instead, so nothing changed while
 trying the demo reaches a real account. It
-contains preferences, the last folder, the window's size and place on screen,
-whether it was maximized, and pane widths. When a
-session ends, a remembered folder or label you created is replaced by the
-Inbox, so its name never reaches the next account to sign in. It does not
+contains preferences, the window's size and place on screen, whether it was
+maximized, pane widths, and the accounts signed in to, up to five: each one's
+session profile, the address it signed in as, and the folder or label last
+read in it, which signing out of that account removes. A folder or label you
+created stays with its own account: another account signing in under the same
+profile opens its own Inbox, so that name never reaches it. It does not
 contain account passwords or session tokens. A missing, incomplete, or damaged
 settings file falls back to defaults. One that is there but cannot be read is
 first renamed with `.unreadable` added, such as `settings.json.unreadable`, so

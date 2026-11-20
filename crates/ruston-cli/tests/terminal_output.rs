@@ -119,6 +119,68 @@ fn calling_off_a_send_in_the_demo_reports_the_message_it_found() {
 }
 
 #[test]
+fn answers_and_attachments_in_the_demo_find_the_message_as_the_rest_do() {
+    // A reply or a forward is named after the message it found, not after
+    // the words typed, and words that find none are an error.
+    for (command, more, id) in [
+        ("reply", &["--body", "Thanks"][..], "msg-demo-reply-07"),
+        (
+            "forward",
+            &["--to", "sam@example.com", "--body", "See below"],
+            "msg-demo-fwd-07",
+        ),
+    ] {
+        let args = [
+            &["--demo", "--json", "messages", command, "garden fence"][..],
+            more,
+        ]
+        .concat();
+        let sent: serde_json::Value = serde_json::from_slice(&run_ok(&args).stdout).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({"status": "ok", "id": id, "demo": true}),
+            "{args:?}"
+        );
+        let unknown = run(&[
+            &["--demo", "messages", command, "nothing like it"][..],
+            more,
+        ]
+        .concat());
+        assert!(!unknown.status.success(), "{command}");
+        let error = String::from_utf8(unknown.stderr).unwrap();
+        assert!(error.contains("demo message not found"), "{error}");
+    }
+
+    // Attachments are found by words of the subject too.
+    let listed = run_ok(&[
+        "--demo",
+        "--json",
+        "attachments",
+        "list",
+        "translation workflow",
+    ]);
+    let listed = String::from_utf8(listed.stdout).unwrap();
+    assert!(listed.contains("att-demo-01"), "{listed}");
+    let folder =
+        std::env::temp_dir().join(format!("ruston-demo-attachments-{}", std::process::id()));
+    let folder_arg = folder.to_str().unwrap();
+    let saved = run_ok(&[
+        "--demo",
+        "attachments",
+        "download",
+        "translation workflow",
+        "--all",
+        "--output-dir",
+        folder_arg,
+    ]);
+    let saved = String::from_utf8(saved.stdout).unwrap();
+    std::fs::remove_dir_all(&folder).unwrap();
+    assert!(saved.contains(folder_arg), "{saved}");
+    let unknown = run(&["--demo", "attachments", "list", "nothing like it"]);
+    assert!(!unknown.status.success());
+}
+
+#[test]
 fn acting_on_messages_in_the_demo_reports_the_messages_it_found() {
     // As in the real commands, a reference can be search text, and each is
     // reported as the ID it found, in order.

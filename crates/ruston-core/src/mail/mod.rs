@@ -188,25 +188,11 @@ impl Client {
         Self::login_inner(opts, LoginPrompts::default()).await
     }
 
-    /// Like [`Client::login`], but calls `totp_prompt` for the code when the
-    /// account requires TOTP and `opts.totp` is `None`. The prompt runs after
-    /// any human verification (so the code is fresh) and never runs for
-    /// accounts without TOTP.
-    pub async fn login_with_totp_prompt(
-        opts: LoginOptions,
-        totp_prompt: TotpPrompt,
-    ) -> Result<Client> {
-        let prompts = LoginPrompts {
-            totp: Some(totp_prompt),
-            ..LoginPrompts::default()
-        };
-        Self::login_inner(opts, prompts).await
-    }
-
     /// Like [`Client::login`], asking through `prompts` for what the account
-    /// needs and `opts` does not carry: a TOTP code, as
-    /// [`Client::login_with_totp_prompt`] does, and a separate mailbox
-    /// password once the account password is accepted.
+    /// needs and `opts` does not carry: a TOTP code, asked for after any
+    /// human verification so that it is fresh, and never for an account
+    /// without TOTP; and a separate mailbox password once the account
+    /// password is accepted.
     pub async fn login_with_prompts(opts: LoginOptions, prompts: LoginPrompts) -> Result<Client> {
         Self::login_inner(opts, prompts).await
     }

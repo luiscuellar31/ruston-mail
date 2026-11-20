@@ -792,6 +792,7 @@ mod tests {
                 id: "a1".into(),
                 name: "plan.pdf".into(),
                 size: 24_576,
+                inline: false,
             }],
         }
     }

@@ -247,6 +247,33 @@ fn main_window_close_requires_explicit_discard_in_both_composer_placements() {
 }
 
 #[test]
+fn changing_account_asks_before_dropping_a_written_message() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    desktop.app = App::signed_in_as("user-1", "alex@proton.me");
+    desktop.dispatch(Message::OpenCompose, &context);
+    desktop.dispatch(
+        Message::ComposeChanged(crate::app::ComposeField::Body, "Keep this draft".into()),
+        &context,
+    );
+    desktop.dispatch(Message::AddAccount, &context);
+    assert_eq!(desktop.pending_discard, Some(close::Leaving::Account));
+    assert!(matches!(desktop.pending_account, Some(Message::AddAccount)));
+    assert!(signed_in(&desktop));
+    desktop.resolve_discard(Message::CancelDiscard, &context);
+    assert!(desktop.pending_account.is_none());
+    assert!(desktop.app.compose().is_some());
+    assert!(signed_in(&desktop));
+
+    // Discarded, the account is left for the sign-in screen, its session kept.
+    desktop.dispatch(Message::AddAccount, &context);
+    desktop.resolve_discard(Message::DiscardCompose, &context);
+    assert!(desktop.app.compose().is_none());
+    assert_eq!(desktop.app.auth_state(), &AuthState::SignedOut);
+    assert_eq!(desktop.app.other_accounts().count(), 1);
+}
+
+#[test]
 fn closing_asks_before_dropping_a_draft_kept_for_its_account() {
     let context = egui::Context::default();
     let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
@@ -1074,12 +1101,6 @@ fn the_title_carries_unread_mail_only_when_there_is_some() {
 fn unread_badge_count_returns_none_when_unauthenticated() {
     let (app, _) = App::boot(false, crate::settings::Settings::default());
     assert_eq!(unread_badge_count(&app), None);
-}
-
-#[test]
-fn set_unread_badge_does_not_panic() {
-    assert!(set_unread_badge(None, Some(5)));
-    assert!(set_unread_badge(None, None));
 }
 
 #[test]

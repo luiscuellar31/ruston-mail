@@ -1,3 +1,4 @@
+mod accounts;
 mod auth;
 mod compose;
 mod effect;
@@ -7,6 +8,7 @@ mod layout;
 mod mailbox;
 mod mailto;
 mod notifications;
+mod pictures;
 mod reader;
 
 use std::collections::HashMap;
@@ -45,6 +47,7 @@ pub use mailbox::{
     ActionRequest, DeviceIndex, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest,
     Step, UndoMove,
 };
+pub use pictures::InlineImage;
 pub use reader::{ConversationReader, ReaderState};
 
 /// Identifies one file operation across a destination dialog and download.
@@ -58,7 +61,15 @@ pub struct AttachmentSaveRequest {
 
 struct AttachmentSave {
     request: AttachmentSaveRequest,
-    choosing_destination: bool,
+    stage: SaveStage,
+}
+
+/// How far a save has come: the person is still choosing where the file
+/// goes, or it is being fetched and written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveStage {
+    ChoosingDestination,
+    Downloading,
 }
 
 type SessionEpoch = u64;
@@ -69,9 +80,14 @@ const PROTON_SIGNUP_URL: &str = "https://account.proton.me/mail/signup";
 pub enum Message {
     Submit,
     CancelChallenge,
-    SessionChecked(ResumeOutcome),
+    /// What resuming the session saved under the profile found.
+    SessionChecked(String, ResumeOutcome),
     /// Tries the saved session again after a failure that may pass.
     RetrySavedSession,
+    /// Opens the account whose session is saved under this profile.
+    SwitchAccount(String),
+    /// Leaves the open account for the sign-in screen, to add another.
+    AddAccount,
     SignInFinished(AuthAttempt, SignInOutcome),
     SignInPrompt(AuthAttempt, SignInPrompt),
     OpenVerificationPage,
@@ -88,6 +104,9 @@ pub enum Message {
     CopyAddresses(Vec<String>),
     Logout,
     LogoutFinished(SessionEpoch, Result<(), AuthError>),
+    /// What signing out of the session just made for an account added
+    /// already came to.
+    DuplicateLogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
     SelectConversation(String),
     RetryConversation,
@@ -160,6 +179,11 @@ pub enum Message {
     AttachmentDestinationChosen(AttachmentSaveRequest, Option<PathBuf>),
     /// Where an attachment landed, or why it did not.
     AttachmentSaved(AttachmentSaveRequest, Result<PathBuf, SaveError>),
+    /// The reader reached a picture the message carries: its message and
+    /// the attachment it is.
+    LoadInlineImage(String, String),
+    /// A picture arrived, decoded, or could not be shown.
+    InlineImageLoaded(SessionEpoch, String, Option<Arc<crate::pictures::Picture>>),
     /// Reveals a downloaded file in the system file manager.
     RevealAttachment(PathBuf),
     /// Shows or hides Settings beside the mailbox sidebar.
@@ -177,6 +201,16 @@ pub enum Message {
     SetExpandAllMessages(bool),
     /// Unfolds quoted passages, or leaves them behind their button.
     SetShowQuotedText(bool),
+    /// Shows text the sender hid, set apart, or leaves it out.
+    SetShowHiddenText(bool),
+    /// Follows the sender's style for bold, italic, struck and centered
+    /// text, or only its tags.
+    SetSenderTextStyles(bool),
+    /// Lays tables of data out in columns, or reads them as lines.
+    SetDataTables(bool),
+    /// Shows the pictures a message carries within it, or their
+    /// descriptions alone.
+    SetShowInlineImages(bool),
     /// Scales the whole interface.
     SetZoom(f32),
     /// Chooses the desktop color scheme, which stops following the system's.
@@ -269,6 +303,8 @@ pub struct App {
     /// no network, and is still saved; the sign-in screen offers to try it
     /// again.
     resume_may_retry: bool,
+    /// The profile a new account signs in under, while one is being added.
+    adding_account: Option<String>,
     /// Changes for every authentication attempt so queued results from an
     /// aborted task cannot affect its replacement.
     auth_attempt: AuthAttempt,
@@ -339,6 +375,8 @@ pub struct App {
     failed_save: Option<(String, SaveError)>,
     /// The attachment in flight, preventing duplicate downloads.
     saving_attachment: Option<AttachmentSave>,
+    /// The pictures of the open conversation, by attachment.
+    inline_images: HashMap<String, InlineImage>,
     new_mail: notifications::NewMail,
 }
 
@@ -352,8 +390,11 @@ impl App {
         let task = if demo {
             app.open_mailbox(MailBackend::demo(), None, None)
         } else {
-            app.session_saved = ProtonMailService::has_saved_session();
-            Effects::perform(ProtonMailService::resume(), Message::SessionChecked)
+            app.session_saved = ProtonMailService::has_saved_session(&app.session_profile());
+            let profile = app.session_profile();
+            Effects::perform(ProtonMailService::resume(profile.clone()), move |outcome| {
+                Message::SessionChecked(profile, outcome)
+            })
         };
 
         (app, task)
@@ -367,6 +408,7 @@ impl App {
             login_form: LoginForm::default(),
             auth_error: None,
             resume_may_retry: false,
+            adding_account: None,
             auth_attempt: 0,
             pending_prompt: None,
             pending_link: None,
@@ -399,6 +441,7 @@ impl App {
             notice: None,
             failed_save: None,
             saving_attachment: None,
+            inline_images: HashMap::new(),
             new_mail: notifications::NewMail::default(),
         }
     }
@@ -409,6 +452,14 @@ impl App {
             .checked_add(1)
             .expect("compose id exhausted");
         self.last_compose_id
+    }
+
+    /// The session profile the account signs in and resumes under: a new
+    /// account's while one is being added, otherwise the open account's.
+    fn session_profile(&self) -> String {
+        self.adding_account
+            .clone()
+            .unwrap_or_else(|| self.settings.accounts.active_profile().to_owned())
     }
 
     fn advance_session_epoch(&mut self) {
@@ -493,7 +544,11 @@ impl App {
         self.failed_save = None;
         self.saving_attachment = Some(AttachmentSave {
             request: request.clone(),
-            choosing_destination: suggested_name.is_some(),
+            stage: if suggested_name.is_some() {
+                SaveStage::ChoosingDestination
+            } else {
+                SaveStage::Downloading
+            },
         });
         if let Some(name) = suggested_name {
             Effects::ui(UiEffect::PickAttachmentDestination {
@@ -510,23 +565,30 @@ impl App {
         request: AttachmentSaveRequest,
         destination: Option<PathBuf>,
     ) -> Effects {
-        if !self.is_current_session(request.session)
-            || !self
-                .saving_attachment
-                .as_ref()
-                .is_some_and(|save| save.request == request && save.choosing_destination)
-        {
+        let Some(save) = self.current_save(&request, SaveStage::ChoosingDestination) else {
             return Effects::none();
-        }
+        };
         let Some(path) = destination else {
             self.saving_attachment = None;
             return Effects::none();
         };
+        save.stage = SaveStage::Downloading;
+        self.download_attachment(request, Some(path))
+    }
+
+    /// The save under way, when it is `request`'s, belongs to this session
+    /// and has come as far as `stage`.
+    fn current_save(
+        &mut self,
+        request: &AttachmentSaveRequest,
+        stage: SaveStage,
+    ) -> Option<&mut AttachmentSave> {
+        if !self.is_current_session(request.session) {
+            return None;
+        }
         self.saving_attachment
             .as_mut()
-            .unwrap()
-            .choosing_destination = false;
-        self.download_attachment(request, Some(path))
+            .filter(|save| save.request == *request && save.stage == stage)
     }
 
     fn download_attachment(
@@ -677,8 +739,12 @@ impl App {
         match message {
             Message::Submit => return self.sign_in(),
             Message::CancelChallenge => return self.cancel_sign_in(),
-            Message::SessionChecked(outcome) => return self.finish_session_check(outcome),
+            Message::SessionChecked(profile, outcome) => {
+                return self.finish_session_check(&profile, outcome);
+            }
             Message::RetrySavedSession => return self.retry_saved_session(),
+            Message::SwitchAccount(profile) => return self.switch_account(profile),
+            Message::AddAccount => return self.add_account(),
             Message::SignInFinished(attempt, outcome) => {
                 return self.finish_sign_in(attempt, outcome);
             }
@@ -705,7 +771,10 @@ impl App {
                 }
             }
             Message::Logout => return self.logout(),
-            Message::LogoutFinished(epoch, result) => self.finish_logout(epoch, result),
+            Message::LogoutFinished(epoch, result) => return self.finish_logout(epoch, result),
+            Message::DuplicateLogoutFinished(epoch, result) => {
+                return self.finish_duplicate_logout(epoch, result);
+            }
             Message::SelectFolder(folder) => return self.select_folder(folder),
             Message::SelectConversation(id) => {
                 // A conversation chosen while writing shows, with the draft
@@ -1011,12 +1080,16 @@ impl App {
             Message::AttachmentDestinationChosen(request, path) => {
                 return self.attachment_destination_chosen(request, path);
             }
+            Message::LoadInlineImage(message_id, attachment_id) => {
+                return self.load_inline_image(message_id, attachment_id);
+            }
+            Message::InlineImageLoaded(epoch, attachment_id, picture) => {
+                self.finish_inline_image(epoch, &attachment_id, picture);
+            }
             Message::AttachmentSaved(request, outcome) => {
-                if !self.is_current_session(request.session)
-                    || !self
-                        .saving_attachment
-                        .as_ref()
-                        .is_some_and(|save| save.request == request && !save.choosing_destination)
+                if self
+                    .current_save(&request, SaveStage::Downloading)
+                    .is_none()
                 {
                     return Effects::none();
                 }
@@ -1046,6 +1119,16 @@ impl App {
             }
             Message::SetShowQuotedText(on) => {
                 self.remember(|settings| settings.show_quoted_text = on);
+            }
+            Message::SetShowHiddenText(on) => {
+                self.remember(|settings| settings.show_hidden_text = on);
+            }
+            Message::SetSenderTextStyles(on) => {
+                self.remember(|settings| settings.sender_text_styles = on);
+            }
+            Message::SetDataTables(on) => self.remember(|settings| settings.data_tables = on),
+            Message::SetShowInlineImages(on) => {
+                self.remember(|settings| settings.show_inline_images = on);
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {
@@ -1524,6 +1607,10 @@ impl App {
         if request.is_none() && !selection_changed {
             return Effects::none();
         }
+        // The pictures shown belonged to the conversation left.
+        if selection_changed {
+            self.inline_images.clear();
+        }
 
         let content = match request {
             Some(request) => self.fetch_conversation(Some(request)),
@@ -1611,10 +1698,11 @@ impl App {
         Effects::none()
     }
 
-    /// Remembers the last real folder; demo navigation is process-local.
+    /// Remembers the last real folder, the open account's; demo navigation
+    /// is process-local.
     fn remember_folder(&mut self, folder: &Folder) {
         if !self.is_demo() {
-            self.remember(|settings| settings.folder = folder.clone());
+            self.remember(|settings| settings.accounts.set_folder(folder.clone()));
         }
     }
 

@@ -16,6 +16,8 @@ pub(super) enum Leaving {
     SignOut,
     /// Leaving the demo mailbox.
     Demo,
+    /// Leaving the open account for another, its session kept.
+    Account,
 }
 
 /// Asks whether to discard the written message in order to leave this way.
@@ -24,6 +26,7 @@ pub(super) fn confirm_discard(context: &egui::Context, leaving: Leaving) -> Opti
         Leaving::Window => ("Close Ruston Mail?", "Discard and close"),
         Leaving::SignOut => ("Sign out?", "Discard and sign out"),
         Leaving::Demo => ("Exit demo?", "Discard and exit"),
+        Leaving::Account => ("Change account?", "Discard and change"),
     };
     theme::confirmation(
         context,
@@ -96,6 +99,7 @@ pub(super) fn confirm_wait(
         Leaving::Window => ("closes", "Closing", "Keep open", "Close now"),
         Leaving::SignOut => ("signs out", "Signing out", "Stay signed in", "Sign out now"),
         Leaving::Demo => ("leaves the demo", "Leaving", "Stay", "Exit now"),
+        Leaving::Account => ("changes account", "Changing", "Stay", "Change now"),
     };
     let (heading, detail) = match holding {
         Holding::SigningOut => (

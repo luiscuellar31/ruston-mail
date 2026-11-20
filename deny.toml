@@ -32,6 +32,12 @@ ignore = [
     # Neither pgp 0.21 nor proton-crypto 0.14 has moved yet. Remove this once
     # proton-crypto brings crypto-bigint 0.7.6 or later.
     "RUSTSEC-2026-0387",
+    # chrono is marked unmaintained, and no release changes that. It reads
+    # and writes dates in the reader, the message list, the export and the
+    # search filters, 14 calls in core and the desktop; the advisory reports
+    # no flaw in it. Remove this once those move to jiff or time, which the
+    # advisory suggests.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
@@ -45,8 +51,6 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
-    "OpenSSL",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
     "bzip2-1.0.6",

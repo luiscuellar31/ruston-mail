@@ -123,31 +123,6 @@ pub async fn get_attachment<D: Doer>(d: &D, id: &str) -> Result<Vec<u8>> {
     Ok(resp.body)
 }
 
-/// Uploads an encrypted attachment to the draft `message_id`, and returns
-/// the ID Proton gives it.
-#[allow(clippy::too_many_arguments)]
-pub async fn upload_attachment<D: Doer>(
-    d: &D,
-    filename: &str,
-    message_id: &str,
-    content_id: &str,
-    mime_type: &str,
-    key_packets: &[u8],
-    data_packet: &[u8],
-    signature: &[u8],
-) -> Result<String> {
-    let request = upload_request(
-        filename,
-        message_id,
-        content_id,
-        mime_type,
-        key_packets,
-        data_packet,
-        signature,
-    )?;
-    upload_prepared(d, request).await
-}
-
 /// Builds the replayable upload on the send pipeline's blocking worker.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn upload_request(
@@ -220,8 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn attachment_upload_uses_transfer_deadline() {
-        let id = upload_attachment(
-            &CheckAttachmentLimit,
+        let request = upload_request(
             "file.txt",
             "message",
             "content",
@@ -230,8 +204,10 @@ mod tests {
             b"data",
             b"signature",
         )
-        .await
         .unwrap();
+        let id = upload_prepared(&CheckAttachmentLimit, request)
+            .await
+            .unwrap();
         assert_eq!(id, "uploaded");
     }
 

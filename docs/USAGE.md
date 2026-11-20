@@ -19,22 +19,25 @@ Switching panes keeps the open conversation, draft, and list position.
 
 Enter your Proton username or email and password. Ruston Mail asks for a TOTP
 code, a separate mailbox password, or Proton's browser-based human verification
-when the account needs one. That verification is a CAPTCHA; if Proton asks for
-another kind, such as a code by email or text message, Ruston Mail says it does
-not support it yet. A mailbox password is asked for once the password
+when the account needs one. That verification is a CAPTCHA: Ruston Mail opens
+Proton's verification page in your browser, and once you solve it there you
+choose **I completed the verification**. If Proton asks for another kind, such
+as a code by email or text message, Ruston Mail says it does not support it
+yet. A mailbox password is asked for once the password
 and code are accepted, in the same sign-in, so you do not enter them again.
 Each step opens with the cursor in its first empty field, so you can type right
 away. A sign-in that waits more than two minutes
 for Proton stops and says it took too long; the time you spend solving the
-verification or finding a code does not count.
+verification or finding a code does not count. The command line signs in the
+same way; see [Signing in from the terminal](#signing-in-from-the-terminal).
 
 A saved session opens automatically on later runs. If it cannot open for a
 reason that may pass, such as no network, Proton being unavailable, or locked
 password storage, the session stays saved: the sign-in screen shows why, with
 **Try again**, so you do not have to sign in again. Opening it also stops after
 two minutes. Signing out asks Proton to
-revoke that session and removes its local copy. If you were reading one of your
-own folders or labels, the next sign-in opens the Inbox instead. If you are writing a message,
+revoke that session and removes its local copy, with the folder you last read
+in it, so the next sign-in opens the Inbox. If you are writing a message,
 Ruston asks before discarding it. While a message is being sent, **Sign out**
 is unavailable until the send finishes.
 
@@ -45,6 +48,32 @@ Ruston asks first. A message that was being sent comes back asking you to check
 Sent before sending it again.
 
 FIDO2 and WebAuthn security keys are not supported yet.
+
+### Several accounts
+
+Ruston Mail signs in to up to five Proton accounts, one open at a time. The
+address at the foot of the sidebar, with a chevron after it, opens the
+accounts: choose another to switch
+to it, or **Add account** to sign in to one more. The others keep their
+sessions saved, as a restart does, and check no mail and send no notifications
+until you open them. Each opens in the folder you last read in it, unless
+**Starting up** in Settings names one for all. Switching opens the other account's saved session; if it
+has ended, you sign in to that account again, with its address filled in. The
+sign-in screen lists your other accounts, so you can open one instead, when
+adding an account or when one's session has ended, even as Ruston starts;
+adding one already in the list says so instead. Typed as its username or
+another of its addresses, it is found once signed in, and Ruston signs out of
+that new session at once, leaving the one in the list as it was. As
+when signing out, switching or adding asks before
+discarding a message you are writing, waits for changes still on their way to
+Proton, and is unavailable while a message is being sent. Signing out of an
+account removes it from the list and opens the next one, or the sign-in screen
+once none is left.
+
+The command line reaches the same sessions. Each account keeps its session in
+a profile, `ruston` or `ruston-2` to `ruston-5`, which the account menu shows
+when you point at an account: `ruston`, the command line's default, needs no
+`--profile`, and the others take `--profile ruston-2` and so on.
 
 ## Finding mail
 
@@ -149,8 +178,30 @@ still opens, and you can still reply to it or forward it, without its text
 quoted.
 
 HTML mail is converted to native text and layout. Headings, lists, links, basic
-formatting, and quotes remain, but scripts and remote content do not run. Remote
-images appear as their description when one is available.
+formatting, and quotes remain, but scripts and remote content do not run. Bold,
+italic, struck-through and centered text count whether the sender marked them
+with tags, with `align`, or set them with styles, as newsletters often do; a short centered
+line is centered, a longer one starts at the left. A link the sender drew as a
+button, alone on a background of its own, is a button, and still asks where it
+goes first. **Use the sender's text styles** in Settings leaves the styles
+out, keeping the tags. A table of data,
+such as a receipt's lines or a timetable, keeps its columns, scrolling sideways
+when it is wider than the reader; a table that only lays a newsletter out reads
+as text. **Show tables of data in columns** in Settings reads them all as text,
+a row to a line. The command line writes them as columns between pipes. A
+picture the message carries within it, such as a logo, a signature or a photo
+placed in the text, is shown where the sender put it, no wider than the
+reader: PNG, JPEG, WebP and GIF, a GIF as its first frame. It comes with the
+message, so nothing is fetched from the web to show it; **Show pictures a
+message carries within it** in Settings leaves them as their descriptions.
+Images on the web are never loaded: one appears as its description when it has
+one, and a line at the top of the message says how many others are not shown,
+tracking pixels aside, so a newsletter made only of pictures does not look
+empty. The command line shows none and says how many at the end. Text the
+sender hid
+stays hidden, as in a browser: a newsletter's preview line, or a letter slipped
+into a word to get past filters. **Show text the sender hid** in Settings shows
+it, in grey; the command line always leaves it out.
 
 The reader can:
 
@@ -242,6 +293,10 @@ the new name instead. Saved attachments are marked as downloaded from the
 internet, like a browser's downloads: on macOS, Gatekeeper checks a program
 before it opens, and on Windows, SmartScreen checks it before it runs and
 Office opens documents in Protected View.
+
+The parts of a message's body, such as a picture some mail apps place within
+the text, are listed after its files, as **In the message**. The reader does
+not show them within the text, but they save the same way.
 
 Choose **Save as…** to select another folder or filename in the native save
 dialog. Cancelling does not download or write the attachment. Choose a new
@@ -405,6 +460,10 @@ Settings control:
 
 - Whether opening mail marks it read.
 - Whether all messages and quoted text start unfolded.
+- Whether text the sender hid shows, in grey.
+- Whether the sender's text styles count, or only its tags.
+- Whether tables of data keep their columns.
+- Whether the pictures a message carries within it are shown.
 - Whether links require confirmation.
 - Whether the composer opens in the reading pane or a new window.
 - Plain-text or HTML sending.
@@ -526,6 +585,38 @@ sign-in tokens, the command first lets the new ones be saved, so you stay
 signed in, and says so if that takes a moment; a second Ctrl+C stops it at
 once.
 
+### Signing in from the terminal
+
+`ruston-cli login` signs in. The desktop and the command line share that
+session, so signing in to either is enough for both; another account takes a
+profile of its own (see [Several accounts](#several-accounts)). `login` asks
+for your username and password, and for a TOTP code or a separate mailbox
+password when the account needs them, without showing what you type. In
+scripts, give them as `PROTON_USER`, `PROTON_PASSWORD`, `PROTON_TOTP` and
+`PROTON_MAILBOX_PASSWORD` rather than as options, which other programs can
+read.
+
+Proton sometimes asks a sign-in to pass a CAPTCHA first. The default, and the
+recommended way, opens Proton's verification page in a Chrome, Chromium,
+Brave or Edge window of its own, with a throwaway profile removed afterwards,
+or in your default browser when none of them is installed: solve the CAPTCHA
+there, then press Enter in the terminal. `ruston-cli tui` signs in the same
+way when no session is saved.
+
+Other options, for when the default does not suit:
+
+- `--captcha-token TOKEN`, or `PROTON_HV_TOKEN`: a CAPTCHA token solved
+  beforehand, sent as it is, with no browser.
+- `--captcha-manual`: the way earlier versions used by default. The API's own
+  captcha page opens in your browser, and its token comes back to the
+  terminal through a snippet pasted into the browser console or a bookmarklet
+  saved once, as the terminal explains. Use it only if the default does not
+  work.
+- `--client web`, `ios` or `android` signs in as that official Proton app,
+  and `--app-version` or `--user-agent` set one of its headers instead.
+  `--api-url` signs in to another API address: https, or http to this machine
+  for a local test server.
+
 ### Terminal interface
 
 `ruston-cli tui`, or `ruston-cli` with no command in a terminal, opens a
@@ -562,8 +653,9 @@ conversations at first and loads 50 more each time you move down past its last. 
 goes to a folder, as in Proton: `i` the Inbox, `a` Archive, `e` Sent, `*`
 Starred, `d` Drafts, `t` Trash, `s` Spam and `m` All mail. A quoted passage of
 three lines or more, such as the message a reply answers, folds into one line
-unless the whole message is quoted; `z` shows or hides them, and says so when
-the open conversation has none to fold. As on the desktop, a message you have
+unless the whole message is quoted; `z` shows or hides them, keeping the line
+at the top of the reader where it is, and says so when the open conversation
+has none to fold. As on the desktop, a message you have
 read folds into one line, unless it is the newest: when it came, who sent it,
 with the address beside the name, its signature's verdict and its first
 words. The newest message and those not read yet stay open, and `e` shows
@@ -574,17 +666,19 @@ message starts in the top third of the reader already. Quoted lines show dimmed,
 long for the pane stays apart from new text on every row it wraps to. Links
 show as text with the address they open; `b` lists those of the open conversation, and
 one opens in your browser only once you answer `y` to the address it shows.
-Each message lists its attachments under its headers, and `v` lists those of
-the open conversation: Enter saves one, checking its signature as
+Each message lists its attachments under its headers, the parts of its body,
+such as a picture placed within its text, last, as *In the message*; `v` lists
+those of the open conversation: Enter saves one, checking its signature as
 `ruston-cli attachments download` does, into your Downloads folder, or the
 current folder when there is none, never over a file already there. Opening an
 unread conversation marks it read once it shows, as the desktop does, unless
 you start it with `ruston-cli tui --keep-unread`.
 
 The mouse works too. A click on a folder or a conversation selects it, and a
-click on the one selected in the pane that has the keys opens it; a click
-anywhere in a pane gives it the keys. The wheel scrolls the list or the reader
-under it, leaving the keys where they are, or the keys while `?` shows them.
+click on the one selected in the pane that has the keys opens it; a click on a
+message folded into a line opens it, and a click anywhere in a pane gives it
+the keys. The wheel scrolls the list or the reader under it, leaving the keys
+and the list's selection where they are, or the keys while `?` shows them.
 The mouse does nothing while you write a message, while a question waits for
 an answer or while the command line is open. As the interface takes the
 mouse, your terminal selects text only with a key held as you drag: Shift in
@@ -666,7 +760,7 @@ and goes as plain text; the demo puts what it sends in its Sent.
 | Enter, Right | Open the folder or conversation |
 | Enter, in the reader | Fold the message at its top, or open it |
 | Left | Go back a pane |
-| Click | Select a folder or conversation, or open the one selected |
+| Click | Select a folder or conversation, open the one selected, or open a folded message |
 | Mouse wheel | Scroll the list or the reader under it, or the keys |
 | PageUp, PageDown | Scroll the reader a page |
 | Home, End, Ctrl+Up, Ctrl+Down | Go to the top or the bottom |
@@ -739,17 +833,14 @@ When sending from a terminal, the CLI asks before treating a body that looks
 like HTML as HTML. For scripts, pass `--html` explicitly. Recipients reached
 through a published PGP key get an HTML body as plain text.
 
-`login` asks for the account password, and for a TOTP code or a separate
-mailbox password when the account needs them, without showing what you type.
-Give them as `PROTON_PASSWORD`, `PROTON_TOTP` and `PROTON_MAILBOX_PASSWORD` in
-scripts rather than as options, which other programs can read; `PROTON_USER`
-gives the username. The options that shape a sign-in, such as `--api-url`,
-`--client` and `--captcha-chrome`, belong to `login` alone: `ruston-cli login
---help` lists them, and another command refuses them. Likewise,
-`messages send --eo-password` without a value asks twice for the password that
-protects the message. `messages send --send-at` reports the message as
-scheduled, with the time Proton sends it, since it has not left yet; its JSON
-carries that time as `scheduled_at`.
+The options that shape a sign-in, described in
+[Signing in from the terminal](#signing-in-from-the-terminal), belong to
+`login` alone: `ruston-cli login --help` lists them, and another command
+refuses them. `messages send --eo-password` without a value asks twice,
+without showing what you type, for the password that protects the message.
+`messages send --send-at` reports the message as scheduled, with the time
+Proton sends it, since it has not left yet; its JSON carries that time as
+`scheduled_at`.
 
 `drafts save` and `drafts edit` upload `--attach` files to the draft. If one
 cannot be uploaded, `drafts save` deletes the draft it made, while `drafts

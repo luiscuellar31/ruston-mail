@@ -506,7 +506,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   not stay behind as a zombie process. Both
   apps take that page from core's `HvChallenge::verification_url`, which keeps
   the host a challenge names only when it is one of Proton's own over https,
-  and ask `HvChallenge::offers_captcha` whether a CAPTCHA answers it.
+  and ask `HvChallenge::offers_captcha` whether a CAPTCHA answers it. Both have
+  the CAPTCHA solved on that page and retry with the challenge's own token once
+  the person confirms; the CLI's `--captcha-manual` opens the API's captcha
+  page instead and takes the token it hands back on a loopback listener.
 
 For example, opening a conversation starts in
 [`ui/mailbox.rs`](../src/ui/mailbox.rs). The action reaches
@@ -528,16 +531,58 @@ so it shows and is read as usual; `Message::ContinueWriting`, or asking for
 another message, unfolds it. Nothing is marked while a draft covers the
 reader, as when a conversation arrives after the draft was unfolded again:
 once a message uncovers it, `App::update` marks the conversation opened behind
-the draft, if it is still the open one. The desktop
-adapter converts sanitized HTML into the native rich-body model in
-[`mail/html.rs`](../src/mail/html.rs). It appends visible text in runs instead
+the draft, if it is still the open one. Core's
+[`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) converts sanitized
+HTML into the rich-body model both apps draw, which the desktop adapter keeps
+as `MessageBody::Rich`. The sanitizer keeps, of styles, only `display` and
+`visibility`, and the `hidden` attribute, so `html::hides` can tell text the
+sender hid: the model keeps it, marked on its spans and blocks, and an
+element of the same name within the hidden one does not end it. It also keeps
+`font-weight`, `font-style`, `text-decoration` and `text-align`: the parser
+follows them, `center` elements and the `align` of a paragraph, a heading, a
+cell or a row, through a bounded stack of styled elements, as a browser lets them apply within, and records them on each run's
+`SenderStyle` and each block's `centered`, apart from what tags did. The
+reader counts them unless **Use the sender's text styles** is off
+(`Reading::sender_text_styles`), centering a line that fits on one; the CLI
+always writes them as Markdown markers. The same stack notes an element with a
+background of its own, `background-color` or a cell's `bgcolor`, white aside:
+when it ends having held nothing but one link of at most 60 characters, the
+link's runs are marked `button`, and the reader draws them as one button that
+still goes through the link prompt, under the same setting. A table is read as the paragraphs of
+its rows, as before, while its cells are kept apart; at its end, one that
+holds data replaces those paragraphs with a `BlockKind::Table`: no table within
+it, no image, list, heading or other block, no text outside a cell, cells of at
+most 120 characters, two rows and two columns or more, and rows of one width,
+counting `colspan`, unless a row of headings names the columns. The reader
+draws it as a grid that scrolls sideways, or as lines when **Show tables of
+data in columns** is off (`Reading::data_tables`); the CLI as columns between
+pipes, measured in terminal cells. An image that names a part of its own
+message (`cid:`, which the sanitizer keeps, as it keeps no other scheme but a
+link's) carries that part's `Content-ID`, which core reads from an
+attachment's headers. When the reader reaches one, it sends
+`Message::LoadInlineImage`; `App` ([`app/pictures.rs`](../src/app/pictures.rs))
+checks it is a part of the open conversation within the size limit, downloads
+it as it does an attachment to save, and decodes it on a blocking worker with
+[`pictures.rs`](../src/pictures.rs), which takes only PNG, JPEG, GIF and WebP,
+by the file's own bytes, refuses one too large before decoding it, and makes a
+wide one smaller. The pictures of the open conversation live in `App`, at most
+96 MiB decoded, and go with it; the reader keeps one texture for each and lets
+go of those `App` no longer has. The terminal shows none. The reader
+leaves it out, or draws it in grey with **Show text the sender hid**
+(`Reading::show_hidden_text`); the CLI, plain text and the search index always
+leave it out. It appends visible text in runs instead
 of comparing styles and link targets for every character. Styled spans share
 each normalized target as `Arc<str>`, keeping the body safe to send between
 workers and the UI. When equal adjacent anchors merge, the stored span adopts
 the current shared target so later runs compare the same allocation. The reader
 creates an owned URL string when dispatching a link click. It draws at most four
 levels of quotes and indents lists at most eight levels deep, as the CLI does;
-deeper content keeps the last indent, so text never leaves the column.
+deeper content keeps the last indent, so text never leaves the column. A long
+message costs what is near the screen, not all it holds: `block_in_sight`
+remembers the height each block took, with the width, scale and Settings it
+depended on, and a block more than a screen away only leaves that room. A
+screen reader, which reads what is out of sight too, and keyboard focus, which
+moves among links, have everything laid out as before.
 
 The adapter maps the entire core `FullMessage` into `MailMessage`, preserving
 the body's `Verdict` through both conversation and individual message reads.
@@ -780,16 +825,19 @@ instead of an unknown outcome.
   what only a terminal needs; after `g`, the next key names a folder to go to.
   A click or a turn of the wheel finds what it points at where the view last
   drew the panes: a click gives a pane the keys and selects a row of its
-  list, or opens it when it was selected there already, and the wheel moves
-  the list under it a row, as Up and Down do, or scrolls the reader, or the
-  list of keys over the panes. While a message is being written, a question
+  list, or opens it when it was selected there already, or opens a message
+  folded into a line in the reader, and the wheel scrolls the list under it,
+  which stays there until its selection moves, and past its last row loads
+  the next page as Down does, or scrolls the reader, or the list of keys
+  over the panes. While a message is being written, a question
   waits or the command line is open, the mouse asks for nothing.
   [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs) turns
   an opened conversation into the reader's lines, each message's headers,
   verdict and body as `conversations read` shows it, inside the task that
   loads it, since a large HTML body takes a while. It also notes where each
   body quotes another message, in lines that start with `>`, which the view
-  folds into a line each, as the desktop does, until `z` shows them; where
+  folds into a line each, as the desktop does, until `z` shows them, the view
+  bringing back to the reader's top the line of the text that was there; where
   each message's lines are, with a line that stands for it folded, saying
   when it came, its sender and verdict, and its first words: the view folds,
   until `e` shows them, those the desktop's rule folds, which opens only the
@@ -923,15 +971,18 @@ instead of an unknown outcome.
   reports what a command did to a list of IDs, naming the action after the
   command, and settings, emptied folders and written bodies have reports of
   their own. Its
-  [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) converts HTML
-  messages to readable Markdown-style text for the default read format, and
-  for every message `conversations read` shows. It
-  represents at most eight levels of quotes and lists and caps converted output
-  at 1 MiB, including a truncation notice. Output is accumulated directly in a
-  bounded buffer; staging text, span metadata, and link targets also have a byte
-  budget, so conversion can stop earlier when staging is full. The tokenizer
-  receives UTF-8 chunks and stops receiving input after truncation. List state
-  stores only represented levels and counts omitted levels for correct unwinding.
+  [`render/html.rs`](../crates/ruston-cli/src/render/html.rs) writes the
+  rich body core reads from an HTML message as Markdown-style text, for the
+  default read format and for every message `conversations read` shows: each
+  word within its style's markers, struck text included, and each line of a
+  link within its brackets. It represents at most eight levels of quotes and
+  lists and caps converted output at 1 MiB, including a truncation notice.
+  Output is accumulated directly in a bounded buffer, and core's
+  `rich::parse_within` keeps the body's text, span storage, link targets and
+  blocks within the same budget, so conversion stops earlier when that is full.
+  Its tokenizer receives UTF-8 chunks and stops receiving input after
+  truncation. List state stores only the eight levels kept and counts omitted
+  levels for correct unwinding.
   Link targets are shared across spans, and oversized destinations are rendered
   as plain labels. Visible text is appended in runs within the staging budget
   at UTF-8 boundaries. Merging spans and formatting link groups retain the
@@ -1094,6 +1145,12 @@ instead of an unknown outcome.
   [export handler](../crates/ruston-cli/src/commands/export.rs) chooses the
   destination and reports the result, exiting with an error when a message was
   skipped; demo mode writes fictional sample mail.
+- [`private_file.rs`](../crates/ruston-core/src/private_file.rs) creates the
+  files that hold decrypted mail so only their owner can open them: mode `0600`
+  on Unix, and on Windows an access list for the owner, the system and
+  administrators, in place as the file is created, that inherits nothing from
+  its folder. The EML export writes with it, and `mail::export` re-exports it
+  for the CLI, which saves decrypted bodies with it.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints.
   Actions on several messages or conversations read the response Proton gives
   for each ID (`Code` 1001 with `Responses`), and fail with an API error that
@@ -1193,9 +1250,9 @@ instead of an unknown outcome.
 | Desktop sign-in and prompts | [`src/app/auth.rs`](../src/app/auth.rs), [`src/ui/login.rs`](../src/ui/login.rs) | [`src/mail/auth.rs`](../src/mail/auth.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), core [`auth/`](../crates/ruston-core/src/auth/), [`session/`](../crates/ruston-core/src/session/) |
 | CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
 | Mailbox lists, search, and thread grouping | [`src/app/mailbox.rs`](../src/app/mailbox.rs), [`src/mail/threading.rs`](../src/mail/threading.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`api/conversations.rs`](../crates/ruston-core/src/api/conversations.rs) |
-| Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | [`src/mail/html.rs`](../src/mail/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
+| Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | Core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
 | Desktop email links and instance activation | [`src/mailto.rs`](../src/mailto.rs), [`src/launch.rs`](../src/launch.rs), [`src/app/mailto.rs`](../src/app/mailto.rs) | [`src/launch/macos.rs`](../src/launch/macos.rs), [`src/ui/mod.rs`](../src/ui/mod.rs), platform packaging |
-| CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
+| CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) and [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/recipients.rs`](../crates/ruston-core/src/mail/recipients.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
@@ -1216,6 +1273,30 @@ instead of an unknown outcome.
 Both frontends use the `ruston` session profile by default, so a login in one
 can be resumed by the other. The CLI accepts `--profile` for separate sessions;
 its former `default` session remains available with `--profile default`.
+The desktop's settings record its accounts, at most five
+([`src/accounts.rs`](../src/accounts.rs)): each one's profile, `ruston` for the
+first and the first free of `ruston-2` to `ruston-5` for the others, the
+address it last signed in as, the folder it last read, and which one is open; a
+damaged or hand-edited list keeps only those profiles, each once. Another
+address signing in under a profile is another account, which starts in its own
+Inbox. One account is open at a time
+([`src/app/accounts.rs`](../src/app/accounts.rs)). Switching closes the open
+mailbox as signing out does, dropping every piece of that session's state,
+but revokes nothing: the session stays saved, and the other account's opens
+as at startup, its answer applied only while that account is still the one
+being opened. Adding one closes the mailbox the same way and signs in under
+the first free profile, which joins the list only once the sign-in succeeds.
+One the list has already is not added: by the address typed, before signing
+in, or by the primary address Proton names once signed in, when the session
+just made is signed out of as Sign out would; core clears a profile's saved
+session only while it is the one signed out of, so the account's own stays.
+The sign-in screen offers the other accounts, to open one instead of signing
+in, so an account whose session ended, even at startup, holds none of the
+others back. The root window asks before a change of account discards a
+written message and holds it while changes are on their way to Proton, as it
+does for signing out. Signing out of an account, once this device has
+forgotten its session, removes it from the list and opens the next one; a
+cleanup that failed keeps it there, since its session may still be saved.
 Core validates profile names as single path components before resolving session
 and cache paths; the CLI applies the same validation while parsing `--profile`.
 Both use core session storage: non-secret metadata in a platform config
