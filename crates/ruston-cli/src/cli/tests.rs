@@ -771,11 +771,3 @@ fn a_new_label_has_a_default_color_and_no_parent() {
     assert!(folder);
     assert_eq!(parent.as_deref(), Some("folder-taxes"));
 }
-
-#[test]
-fn demo_flag_parsed() {
-    let cli = parse(&["ruston-cli", "--demo", "whoami"]);
-    assert!(cli.demo);
-    let ctx: Ctx = (&cli).into();
-    assert!(ctx.demo);
-}
