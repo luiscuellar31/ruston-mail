@@ -9,7 +9,6 @@ set -euo pipefail
 
 # Helper logging
 log()  { printf "\033[1;34m[INFO]\033[0m %s\n" "$*"; }
-warn() { printf "\033[1;33m[WARN]\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31m[FAIL]\033[0m %s\n" "$*" >&2; exit 1; }
 
 # Paths and coordinates
@@ -35,7 +34,7 @@ Options:
   --skip-build          Skip cargo build --release and package existing binaries
   --target <TRIPLE>     Specify target architecture triple (e.g. aarch64-apple-darwin)
   --binary <PATH>       Path to a pre-built ruston executable; ruston-cli is
-                        taken from the same directory
+                        taken from the same directory (implies --skip-build)
   --dist <PATH>         Custom output directory (default: dist/)
   -h, --help            Show this help message
 
@@ -99,24 +98,17 @@ export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-$MINIMUM_MACOS}"
 
 log "Packaging $APP_NAME v$VERSION ($ARCH, macOS $MACOSX_DEPLOYMENT_TARGET or later)"
 
-# 1. Build release binaries if requested
-BINARY_PATH="$CUSTOM_BINARY"
-if [[ -z "$BINARY_PATH" ]]; then
+# 1. Build release binaries, unless they are given or the build is skipped
+RELEASE_DIR="$REPO_ROOT/target/${TARGET_TRIPLE:+$TARGET_TRIPLE/}release"
+BINARY_PATH="${CUSTOM_BINARY:-$RELEASE_DIR/$EXECUTABLE}"
+if [[ -z "$CUSTOM_BINARY" && "$SKIP_BUILD" -eq 0 ]]; then
+    log "Building release binaries ($EXECUTABLE, $CLI_EXECUTABLE)..."
+    # --locked builds the audited dependency versions from Cargo.lock.
+    BUILD_ARGS=(--locked --release -p ruston-mail -p ruston-cli --bins)
     if [[ -n "$TARGET_TRIPLE" ]]; then
-        BINARY_PATH="$REPO_ROOT/target/$TARGET_TRIPLE/release/$EXECUTABLE"
-    else
-        BINARY_PATH="$REPO_ROOT/target/release/$EXECUTABLE"
+        BUILD_ARGS+=(--target "$TARGET_TRIPLE")
     fi
-
-    if [[ "$SKIP_BUILD" -eq 0 ]]; then
-        log "Building release binaries ($EXECUTABLE, $CLI_EXECUTABLE)..."
-        # --locked builds the audited dependency versions from Cargo.lock.
-        BUILD_ARGS=(--locked --release -p ruston-mail -p ruston-cli --bins)
-        if [[ -n "$TARGET_TRIPLE" ]]; then
-            BUILD_ARGS+=(--target "$TARGET_TRIPLE")
-        fi
-        (cd "$REPO_ROOT" && cargo build "${BUILD_ARGS[@]}")
-    fi
+    (cd "$REPO_ROOT" && cargo build "${BUILD_ARGS[@]}")
 fi
 CLI_PATH="$(dirname "$BINARY_PATH")/$CLI_EXECUTABLE"
 
@@ -129,23 +121,20 @@ mkdir -p "$DIST_DIR"
 ICNS_PATH="$ASSETS_DIR/ruston-mail.icns"
 if [[ ! -f "$ICNS_PATH" ]]; then
     PNG_SOURCE="$ASSETS_DIR/ruston-mail-1024.png"
-    [[ -f "$PNG_SOURCE" ]] || PNG_SOURCE="$ASSETS_DIR/icon-1024.png"
+    [[ -f "$PNG_SOURCE" ]] \
+        || die "Neither 'ruston-mail.icns' nor 'ruston-mail-1024.png' was found in $ASSETS_DIR"
 
-    if [[ -f "$PNG_SOURCE" ]]; then
-        log "Generating .icns from $(basename "$PNG_SOURCE")..."
-        iconset_temp="$(mktemp -d)"
-        iconset="$iconset_temp/ruston-mail.iconset"
-        mkdir -p "$iconset"
-        for size in 16 32 128 256 512; do
-            sips -z "$size" "$size" "$PNG_SOURCE" --out "$iconset/icon_${size}x${size}.png" >/dev/null
-            double=$((size * 2))
-            sips -z "$double" "$double" "$PNG_SOURCE" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
-        done
-        iconutil -c icns "$iconset" -o "$ICNS_PATH"
-        rm -rf "$iconset_temp"
-    else
-        die "Neither 'ruston-mail.icns' nor 'ruston-mail-1024.png' was found in $ASSETS_DIR"
-    fi
+    log "Generating .icns from $(basename "$PNG_SOURCE")..."
+    iconset_temp="$(mktemp -d)"
+    iconset="$iconset_temp/ruston-mail.iconset"
+    mkdir -p "$iconset"
+    for size in 16 32 128 256 512; do
+        sips -z "$size" "$size" "$PNG_SOURCE" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+        double=$((size * 2))
+        sips -z "$double" "$double" "$PNG_SOURCE" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$iconset" -o "$ICNS_PATH"
+    rm -rf "$iconset_temp"
 fi
 
 # 3. Assemble .app bundle
