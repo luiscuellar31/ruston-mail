@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 
 use block2::RcBlock;
@@ -12,7 +12,7 @@ use objc2_user_notifications::{
     UNNotificationRequest, UNNotificationSettings, UNNotificationSound, UNUserNotificationCenter,
 };
 
-use super::Status;
+use super::{SharedStatus, Status};
 
 /// Whether this is the packaged application, whose identity a notification
 /// center needs: `currentNotificationCenter` can raise an Objective-C
@@ -23,12 +23,12 @@ fn has_app_identity() -> bool {
         .is_some_and(|id| id.to_string() == crate::ui::identity::APP_ID)
 }
 
-pub(super) fn request_permission(status: Arc<AtomicU8>, context: egui::Context) {
+pub(super) fn request_permission(status: SharedStatus, context: egui::Context) {
     if !has_app_identity() {
-        status.store(Status::Unavailable as u8, Ordering::Release);
+        status.set(Status::Unavailable);
         return;
     }
-    status.store(Status::Pending as u8, Ordering::Release);
+    status.set(Status::Pending);
     let completion = RcBlock::new(move |granted: Bool, error: *mut NSError| {
         let result = if !error.is_null() {
             Status::Unavailable
@@ -37,7 +37,7 @@ pub(super) fn request_permission(status: Arc<AtomicU8>, context: egui::Context) 
         } else {
             Status::Denied
         };
-        status.store(result as u8, Ordering::Release);
+        status.set(result);
         context.request_repaint();
     });
     UNUserNotificationCenter::currentNotificationCenter()
@@ -51,7 +51,7 @@ pub(super) fn show(
     sender: &str,
     subject: &str,
     enabled: Arc<AtomicBool>,
-    status: Arc<AtomicU8>,
+    status: SharedStatus,
     context: egui::Context,
 ) {
     if !has_app_identity() {
@@ -71,11 +71,11 @@ pub(super) fn show(
         if authorization != UNAuthorizationStatus::Authorized
             && authorization != UNAuthorizationStatus::Provisional
         {
-            status.store(Status::Denied as u8, Ordering::Release);
+            status.set(Status::Denied);
             context.request_repaint();
             return;
         }
-        status.store(Status::Ready as u8, Ordering::Release);
+        status.set(Status::Ready);
         context.request_repaint();
         deliver(&sender, &subject, status.clone(), context.clone());
     });
@@ -90,7 +90,7 @@ pub(super) fn clear() {
     }
 }
 
-fn deliver(sender: &str, subject: &str, status: Arc<AtomicU8>, context: egui::Context) {
+fn deliver(sender: &str, subject: &str, status: SharedStatus, context: egui::Context) {
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(sender));
     content.setBody(&NSString::from_str(subject));
@@ -103,7 +103,7 @@ fn deliver(sender: &str, subject: &str, status: Arc<AtomicU8>, context: egui::Co
     );
     let completion = RcBlock::new(move |error: *mut NSError| {
         if !error.is_null() {
-            status.store(Status::Unavailable as u8, Ordering::Release);
+            status.set(Status::Unavailable);
             context.request_repaint();
         }
     });

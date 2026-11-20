@@ -57,10 +57,26 @@ impl Status {
     }
 }
 
+/// The status the window reads and the system's answers write, from
+/// whichever thread they arrive on. Only this type knows it is kept as the
+/// number its variant carries.
+#[derive(Clone, Default)]
+struct SharedStatus(Arc<AtomicU8>);
+
+impl SharedStatus {
+    fn get(&self) -> Status {
+        Status::from_u8(self.0.load(Ordering::Acquire))
+    }
+
+    fn set(&self, status: Status) {
+        self.0.store(status as u8, Ordering::Release);
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Notifications {
     enabled: Arc<AtomicBool>,
-    status: Arc<AtomicU8>,
+    status: SharedStatus,
     #[cfg(target_os = "linux")]
     shown: linux::Shown,
 }
@@ -74,7 +90,7 @@ impl Notifications {
         if !self.enabled.load(Ordering::Acquire) {
             return Status::Off;
         }
-        Status::from_u8(self.status.load(Ordering::Acquire))
+        self.status.get()
     }
 
     pub(super) fn set_enabled(&mut self, enabled: bool, context: &egui::Context) {
@@ -85,7 +101,7 @@ impl Notifications {
         // not become valid again when another account enables notifications.
         self.enabled.store(false, Ordering::Release);
         self.enabled = Arc::new(AtomicBool::new(enabled));
-        self.status = Arc::new(AtomicU8::new(Status::Off as u8));
+        self.status = SharedStatus::default();
         if !enabled {
             self.withdraw();
         }
@@ -94,7 +110,7 @@ impl Notifications {
             macos::request_permission(self.status.clone(), context.clone());
             #[cfg(not(target_os = "macos"))]
             {
-                self.status.store(Status::Ready as u8, Ordering::Release);
+                self.status.set(Status::Ready);
                 let _ = context;
             }
         }
@@ -193,7 +209,7 @@ impl Notifications {
                 })
                 .await
                 .unwrap_or(Status::Unavailable);
-                status.store(result as u8, Ordering::Release);
+                status.set(result);
                 context.request_repaint();
                 None
             });
@@ -253,7 +269,7 @@ mod tests {
         assert!(!previous.load(Ordering::Acquire));
         notifications.enabled.store(true, Ordering::Release);
         assert!(!previous.load(Ordering::Acquire));
-        old_status.store(Status::Denied as u8, Ordering::Release);
+        old_status.set(Status::Denied);
         assert_ne!(notifications.status(), Status::Denied);
     }
 
