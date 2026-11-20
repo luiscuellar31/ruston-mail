@@ -40,11 +40,7 @@ pub(crate) fn write_json<T: serde::Serialize + ?Sized>(value: &T) {
     if let Err(error) = serialize_json(&mut output, value) {
         // A failed write has already ended the command; only a value JSON
         // cannot represent gets here, possibly after part of it went out.
-        write_stderr(format_args!(
-            "error: cannot write output: {}\n",
-            SafeArgs(format_args!("{error}"))
-        ));
-        std::process::exit(exit_status::OTHER);
+        output_failed(&error);
     }
     let _ = output.write_all(b"\n");
 }
@@ -258,6 +254,12 @@ fn stdout_failed(error: io::Error) -> ! {
     if error.kind() == io::ErrorKind::BrokenPipe {
         std::process::exit(0);
     }
+    output_failed(&error)
+}
+
+/// Says on standard error that the output could not be written, and ends the
+/// command.
+fn output_failed(error: &dyn fmt::Display) -> ! {
     write_stderr(format_args!(
         "error: cannot write output: {}\n",
         SafeArgs(format_args!("{error}"))

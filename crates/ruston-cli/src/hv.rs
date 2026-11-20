@@ -724,7 +724,7 @@ mod tests {
             }
         }
         // The password is read straight from the environment by `login`.
-        assert!(crate::cli::SECRET_ENV_VARS.contains(&"PROTON_PASSWORD"));
+        assert!(crate::cli::SECRET_ENV_VARS.contains(&crate::cli::PASSWORD_ENV));
     }
 
     #[test]

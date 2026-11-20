@@ -1,6 +1,6 @@
 //! Signing in and out: `login`, `logout` and `whoami`.
 
-use crate::cli::{ClientPreset, Ctx, LoginArgs};
+use crate::cli::{ClientPreset, Ctx, LoginArgs, PASSWORD_ENV, USER_ENV};
 use crate::commands::prompt::prompt_line;
 use crate::render;
 use crate::terminal;
@@ -25,8 +25,8 @@ fn from_env_or_ask(
 }
 
 pub async fn login(ctx: &Ctx, args: LoginArgs) -> Result<()> {
-    let username = from_env_or_ask("PROTON_USER", || prompt_line("Proton username/email: "))?;
-    let password = from_env_or_ask("PROTON_PASSWORD", || {
+    let username = from_env_or_ask(USER_ENV, || prompt_line("Proton username/email: "))?;
+    let password = from_env_or_ask(PASSWORD_ENV, || {
         rpassword::prompt_password("Proton password: ")
     })?;
 
@@ -47,7 +47,7 @@ pub async fn login(ctx: &Ctx, args: LoginArgs) -> Result<()> {
         hv: Some(crate::hv::resolver(
             args.captcha_token,
             args.api_url
-                .unwrap_or_else(|| "https://mail.proton.me/api".to_string()),
+                .unwrap_or_else(|| ruston_core::DEFAULT_BASE_URL.to_string()),
             !args.captcha_manual,
         )),
     };

@@ -18,12 +18,15 @@ const EXIT_STATUS: &str = "Exit status:
 
 /// Environment variables that may carry sign-in secrets. Programs the CLI
 /// starts, such as a browser for human verification, never inherit them.
-pub(crate) const SECRET_ENV_VARS: [&str; 4] = [
-    "PROTON_PASSWORD",
-    "PROTON_MAILBOX_PASSWORD",
-    "PROTON_TOTP",
-    "PROTON_HV_TOKEN",
-];
+pub(crate) const SECRET_ENV_VARS: [&str; 4] =
+    [PASSWORD_ENV, MAILBOX_PASSWORD_ENV, TOTP_ENV, HV_TOKEN_ENV];
+
+/// The environment variables `login` takes what it would ask for from.
+pub(crate) const USER_ENV: &str = "PROTON_USER";
+pub(crate) const PASSWORD_ENV: &str = "PROTON_PASSWORD";
+const MAILBOX_PASSWORD_ENV: &str = "PROTON_MAILBOX_PASSWORD";
+const TOTP_ENV: &str = "PROTON_TOTP";
+const HV_TOKEN_ENV: &str = "PROTON_HV_TOKEN";
 
 /// Ruston Mail command-line client.
 #[derive(Debug, Parser)]
@@ -84,18 +87,18 @@ pub struct LoginArgs {
 
     // Secrets read from the environment: help names the variable, never its value.
     /// TOTP two-factor code (prompted for when required if omitted).
-    #[arg(long, env = "PROTON_TOTP", hide_env_values = true)]
+    #[arg(long, env = TOTP_ENV, hide_env_values = true)]
     pub totp: Option<String>,
 
     /// The mailbox password of an account that has a second password. On a
     /// terminal it is asked for, hidden, when the account needs one and it is
     /// not given.
-    #[arg(long, env = "PROTON_MAILBOX_PASSWORD", hide_env_values = true)]
+    #[arg(long, env = MAILBOX_PASSWORD_ENV, hide_env_values = true)]
     pub mailbox_password: Option<String>,
 
     /// A CAPTCHA token solved beforehand, sent as it is instead of opening a
     /// browser to solve one.
-    #[arg(long, env = "PROTON_HV_TOKEN", hide_env_values = true)]
+    #[arg(long, env = HV_TOKEN_ENV, hide_env_values = true)]
     pub captcha_token: Option<String>,
 
     /// Identify as this official Proton app, with the app-version header and
