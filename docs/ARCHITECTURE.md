@@ -556,7 +556,18 @@ most 120 characters, two rows and two columns or more, and rows of one width,
 counting `colspan`, unless a row of headings names the columns. The reader
 draws it as a grid that scrolls sideways, or as lines when **Show tables of
 data in columns** is off (`Reading::data_tables`); the CLI as columns between
-pipes, measured in terminal cells. The reader
+pipes, measured in terminal cells. An image that names a part of its own
+message (`cid:`, which the sanitizer keeps, as it keeps no other scheme but a
+link's) carries that part's `Content-ID`, which core reads from an
+attachment's headers. When the reader reaches one, it sends
+`Message::LoadInlineImage`; `App` ([`app/pictures.rs`](../src/app/pictures.rs))
+checks it is a part of the open conversation within the size limit, downloads
+it as it does an attachment to save, and decodes it on a blocking worker with
+[`pictures.rs`](../src/pictures.rs), which takes only PNG, JPEG, GIF and WebP,
+by the file's own bytes, refuses one too large before decoding it, and makes a
+wide one smaller. The pictures of the open conversation live in `App`, at most
+96 MiB decoded, and go with it; the reader keeps one texture for each and lets
+go of those `App` no longer has. The terminal shows none. The reader
 leaves it out, or draws it in grey with **Show text the sender hid**
 (`Reading::show_hidden_text`); the CLI, plain text and the search index always
 leave it out. It appends visible text in runs instead

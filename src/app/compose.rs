@@ -1363,6 +1363,7 @@ mod tests {
                 name: format!("{id}.pdf"),
                 size: 1,
                 inline: false,
+                content_id: None,
             })
             .to_vec();
         let mut forward = Compose {
@@ -1394,6 +1395,7 @@ mod tests {
             name: "invoice.pdf".into(),
             size: 2048,
             inline: false,
+            content_id: None,
         }];
 
         let forward = answering(AnswerKind::Forward, &message);

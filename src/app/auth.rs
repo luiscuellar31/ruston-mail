@@ -559,6 +559,7 @@ impl App {
         self.failed_save = None;
         self.notice = None;
         self.saving_attachment = None;
+        self.inline_images.clear();
         self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
         self.auth_error = error;

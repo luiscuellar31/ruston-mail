@@ -1103,6 +1103,7 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
 fn mail_attachment(attachment: Attachment) -> MailAttachment {
     MailAttachment {
         inline: attachment.is_inline(),
+        content_id: attachment.content_id().map(str::to_owned),
         id: attachment.id,
         name: attachment.name,
         size: attachment.size,

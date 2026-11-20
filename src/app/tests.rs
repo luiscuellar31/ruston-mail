@@ -11,6 +11,7 @@ mod keyboard;
 mod links;
 mod mailto;
 mod notifications;
+mod pictures;
 mod reader;
 mod refresh;
 mod search;

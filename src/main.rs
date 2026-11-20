@@ -11,6 +11,7 @@ mod launch;
 mod licenses;
 mod mail;
 mod mailto;
+mod pictures;
 mod runtime;
 mod settings;
 #[cfg(test)]

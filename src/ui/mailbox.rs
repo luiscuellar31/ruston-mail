@@ -283,6 +283,7 @@ fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mu
             saves: reader::AttachmentSaves {
                 saving: app.saving_attachment(),
                 failed: app.failed_save(),
+                images: Some(app.inline_images()),
             },
             reading: app.settings().reading(),
         };

@@ -8,6 +8,7 @@ mod layout;
 mod mailbox;
 mod mailto;
 mod notifications;
+mod pictures;
 mod reader;
 
 use std::collections::HashMap;
@@ -46,6 +47,7 @@ pub use mailbox::{
     ActionRequest, DeviceIndex, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest,
     Step, UndoMove,
 };
+pub use pictures::InlineImage;
 pub use reader::{ConversationReader, ReaderState};
 
 /// Identifies one file operation across a destination dialog and download.
@@ -169,6 +171,11 @@ pub enum Message {
     AttachmentDestinationChosen(AttachmentSaveRequest, Option<PathBuf>),
     /// Where an attachment landed, or why it did not.
     AttachmentSaved(AttachmentSaveRequest, Result<PathBuf, SaveError>),
+    /// The reader reached a picture the message carries: its message and
+    /// the attachment it is.
+    LoadInlineImage(String, String),
+    /// A picture arrived, decoded, or could not be shown.
+    InlineImageLoaded(SessionEpoch, String, Option<Arc<crate::pictures::Picture>>),
     /// Reveals a downloaded file in the system file manager.
     RevealAttachment(PathBuf),
     /// Shows or hides Settings beside the mailbox sidebar.
@@ -193,6 +200,9 @@ pub enum Message {
     SetSenderTextStyles(bool),
     /// Lays tables of data out in columns, or reads them as lines.
     SetDataTables(bool),
+    /// Shows the pictures a message carries within it, or their
+    /// descriptions alone.
+    SetShowInlineImages(bool),
     /// Scales the whole interface.
     SetZoom(f32),
     /// Chooses the desktop color scheme, which stops following the system's.
@@ -357,6 +367,8 @@ pub struct App {
     failed_save: Option<(String, SaveError)>,
     /// The attachment in flight, preventing duplicate downloads.
     saving_attachment: Option<AttachmentSave>,
+    /// The pictures of the open conversation, by attachment.
+    inline_images: HashMap<String, InlineImage>,
     new_mail: notifications::NewMail,
 }
 
@@ -421,6 +433,7 @@ impl App {
             notice: None,
             failed_save: None,
             saving_attachment: None,
+            inline_images: HashMap::new(),
             new_mail: notifications::NewMail::default(),
         }
     }
@@ -1048,6 +1061,12 @@ impl App {
             Message::AttachmentDestinationChosen(request, path) => {
                 return self.attachment_destination_chosen(request, path);
             }
+            Message::LoadInlineImage(message_id, attachment_id) => {
+                return self.load_inline_image(message_id, attachment_id);
+            }
+            Message::InlineImageLoaded(epoch, attachment_id, picture) => {
+                self.finish_inline_image(epoch, &attachment_id, picture);
+            }
             Message::AttachmentSaved(request, outcome) => {
                 if !self.is_current_session(request.session)
                     || !self
@@ -1091,6 +1110,9 @@ impl App {
                 self.remember(|settings| settings.sender_text_styles = on);
             }
             Message::SetDataTables(on) => self.remember(|settings| settings.data_tables = on),
+            Message::SetShowInlineImages(on) => {
+                self.remember(|settings| settings.show_inline_images = on);
+            }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {
                 self.remember(|settings| {
@@ -1567,6 +1589,10 @@ impl App {
         let selection_changed = mailbox.selected_conversation() != previous.as_deref();
         if request.is_none() && !selection_changed {
             return Effects::none();
+        }
+        // The pictures shown belonged to the conversation left.
+        if selection_changed {
+            self.inline_images.clear();
         }
 
         let content = match request {

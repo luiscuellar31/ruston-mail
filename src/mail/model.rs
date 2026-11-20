@@ -285,6 +285,8 @@ pub struct MailAttachment {
     pub size: u64,
     /// Whether it belongs within the body rather than beside it.
     pub inline: bool,
+    /// The ID a body names it by, when it shows it as a picture.
+    pub content_id: Option<String>,
 }
 
 /// A conversation with its messages, as shown in the reader.

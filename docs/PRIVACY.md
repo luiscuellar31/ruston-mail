@@ -109,7 +109,15 @@ carry no other kind. Of styles it keeps only what hides text, `display` and
 in a quoted reply too, and what makes text bold, italic, struck through or
 centered: `font-weight`, `font-style`, `text-decoration` and `text-align`;
 and the color behind a link drawn as a button, `background-color` and a
-table's or a cell's `bgcolor`. None of these can load anything. Scripts do not run, and remote images are never
+table's or a cell's `bgcolor`. None of these can load anything. An image keeps
+its address only when it is on the web or names a part of its own message
+(`cid:`). The desktop shows those parts, unless **Show pictures a message
+carries within it** is off: it downloads the part from Proton as it does an
+attachment you save, when the reader reaches the picture, and checks its
+signature the same way. Only PNG, JPEG, GIF and WebP are decoded, told by the
+file's own bytes, off the interface's thread; a file over 12 MiB or a picture
+over 40 megapixels is not, and a wide one is made smaller. Decoded pictures
+stay in memory, never on disk, and are dropped with the conversation. Scripts do not run, and remote images are never
 requested. This also blocks tracking pixels.
 
 The CLI's default text view converts HTML to readable Markdown-style text.

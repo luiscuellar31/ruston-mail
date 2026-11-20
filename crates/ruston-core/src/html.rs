@@ -65,7 +65,7 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         // A link may lead to the web or to an address, and nowhere else. Every
         // output keeps this, EML exports and quoted replies included, not only
         // the readers that filter links themselves.
-        .url_schemes(HashSet::from(LINK_SCHEMES))
+        .url_schemes(HashSet::from(URL_SCHEMES))
         .url_relative(ammonia::UrlRelative::Deny);
     builder
 });
@@ -84,6 +84,9 @@ pub const HIDDEN_ELEMENTS: &[&str] = &[
 ];
 /// Where a link may lead: the web or an address.
 const LINK_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
+/// The addresses a sanitized body keeps: where a link may lead, and `cid`,
+/// by which an image names a part of its own message. No link follows one.
+const URL_SCHEMES: [&str; 4] = ["http", "https", "mailto", "cid"];
 /// The style properties a sanitized body keeps: those that hide text, those
 /// that make it bold, italic, struck through or centered, and the background
 /// color that draws a link as a button. None of them can load anything.
@@ -798,6 +801,21 @@ mod tests {
             ),
             "PayPalhere"
         );
+    }
+
+    #[test]
+    fn keeps_the_address_of_an_image_within_the_message_and_follows_no_link_to_one() {
+        let clean = sanitize(
+            "<img src=\"cid:logo@example.com\"><a href=\"cid:logo@example.com\">part</a>\
+             <img src=\"data:image/png;base64,AAAA\"><img src=\"file:///etc/passwd\">",
+        );
+        assert!(clean.contains("src=\"cid:logo@example.com\""), "{clean}");
+        assert!(
+            !clean.contains("data:") && !clean.contains("file:"),
+            "{clean}"
+        );
+        // A link to a part leads nowhere a reader would follow.
+        assert_eq!(to_text(&clean), "part");
     }
 
     #[test]

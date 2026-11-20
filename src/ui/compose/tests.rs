@@ -735,6 +735,7 @@ fn a_forward_lists_the_files_it_carries_and_each_can_be_left_out() {
         name: name.into(),
         size: 2048,
         inline: false,
+        content_id: None,
     };
     let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
     answer(

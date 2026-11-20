@@ -251,6 +251,7 @@ mod tests {
                         },
                         3 => BlockKind::Preformatted(format!("  code {index}\n  more")),
                         4 => BlockKind::Image {
+                            content_id: None,
                             description: format!("chart {index}"),
                         },
                         _ => BlockKind::Rule,

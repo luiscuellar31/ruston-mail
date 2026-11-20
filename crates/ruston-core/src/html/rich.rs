@@ -81,7 +81,8 @@ impl RichBody {
                         format!("{} {}", marker.label(), join(spans))
                     }
                     BlockKind::Preformatted(text) => text.clone(),
-                    BlockKind::Image { description } => format!("[Image: {description}]"),
+                    BlockKind::Image { description, .. } if description.is_empty() => String::new(),
+                    BlockKind::Image { description, .. } => format!("[Image: {description}]"),
                     BlockKind::Rule => "---".to_owned(),
                     // A row to a line, its cells apart as words are.
                     BlockKind::Table(rows) => rows
@@ -150,10 +151,14 @@ pub enum BlockKind {
     },
     /// Text whose spacing matters, shown in a monospace font.
     Preformatted(String),
-    /// An image that is not loaded; only its description is shown.
+    /// An image. One on the web is never loaded, and only its description
+    /// shows; one that travels in the message may be shown.
     Image {
-        /// What the sender wrote to describe it.
+        /// What the sender wrote to describe it, if anything.
         description: String,
+        /// The part of the message it is, named as that part's
+        /// `Content-ID`, when it travels in the message.
+        content_id: Option<String>,
     },
     /// A line across, between two parts of the body.
     Rule,
@@ -1019,26 +1024,50 @@ impl Builder {
     /// Images are not loaded; described ones become a placeholder, and the
     /// others are only counted.
     fn image(&mut self, tag: &Tag) {
-        let Some(description) = attribute(tag, "alt")
+        let description = attribute(tag, "alt").map(str::trim).unwrap_or_default();
+        // A part of the message itself, which a reader may show.
+        let content_id = attribute(tag, "src")
             .map(str::trim)
-            .filter(|alt| !alt.is_empty())
-        else {
-            let pixel = ["width", "height"].into_iter().any(|side| {
-                attribute(tag, side)
-                    .and_then(|size| size.trim().trim_end_matches("px").parse::<u32>().ok())
-                    .is_some_and(|size| size <= 1)
-            });
+            .and_then(|source| {
+                let (scheme, id) = source.split_once(':')?;
+                scheme.eq_ignore_ascii_case("cid").then_some(id)
+            })
+            .filter(|id| !id.is_empty());
+        let pixel = ["width", "height"].into_iter().any(|side| {
+            attribute(tag, side)
+                .and_then(|size| size.trim().trim_end_matches("px").parse::<u32>().ok())
+                .is_some_and(|size| size <= 1)
+        });
+        if description.is_empty() && (content_id.is_none() || pixel) {
             if !pixel && !self.marking() {
                 self.undescribed_images = self.undescribed_images.saturating_add(1);
             }
             return;
-        };
+        }
         self.flush();
-        let Some(description) = self.take(description, 0) else {
+        let Some(description) = self.take_all(description) else {
             return;
         };
-        let description = description.to_owned();
-        self.push(BlockKind::Image { description });
+        let content_id = match content_id {
+            Some(id) => match self.take_all(id) {
+                Some(id) => Some(id),
+                None => return,
+            },
+            None => None,
+        };
+        self.push(BlockKind::Image {
+            description,
+            content_id,
+        });
+    }
+
+    /// `text`, if all of it fits in what is left of the limit.
+    fn take_all(&mut self, text: &str) -> Option<String> {
+        if text.is_empty() {
+            return Some(String::new());
+        }
+        let kept = self.take(text, 0)?;
+        (kept.len() == text.len()).then(|| kept.to_owned())
     }
 
     fn start_list(&mut self, next: Option<u32>) {

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{Local, TimeZone};
 use eframe::egui::text::LayoutJob;
@@ -6,7 +6,9 @@ use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
 
 use super::mailbox::{detail, folder_icon};
 use super::{UiState, theme};
-use crate::app::{AnswerKind, ConversationReader, Mailbox, Message, PendingLink, ReaderState};
+use crate::app::{
+    AnswerKind, ConversationReader, InlineImage, Mailbox, Message, PendingLink, ReaderState,
+};
 use crate::downloads::SaveError;
 use crate::mail::{
     BlockKind, ConversationSummary, CustomKind, Folder, MailAction, MailAddress, MailAttachment,
@@ -63,6 +65,9 @@ pub(super) struct AttachmentSaves<'a> {
     pub(super) saving: Option<&'a str>,
     /// The attachment whose last save failed, by ID, and why.
     pub(super) failed: Option<(&'a str, SaveError)>,
+    /// The pictures of the open conversation fetched so far, by attachment;
+    /// none before any is asked for.
+    pub(super) images: Option<&'a HashMap<String, InlineImage>>,
 }
 
 pub(super) fn show(
@@ -755,6 +760,15 @@ fn message_card(
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
+    static NONE: std::sync::LazyLock<HashMap<String, InlineImage>> =
+        std::sync::LazyLock::new(HashMap::new);
+    let images = saves.images.unwrap_or(&NONE);
+    let pictures = Pictures {
+        images,
+        message_id: &message.id,
+        attachments: &message.attachments,
+    };
+    forget_textures(ui, images);
     let expanded = reader.is_expanded(&message.id, reading);
     ui.push_id(&message.id, |ui| {
         theme::card(ui).show(ui, |ui| {
@@ -773,7 +787,7 @@ fn message_card(
                 reply_toolbar(ui, Some(&message.id), messages);
                 ui.separator();
                 theme::selectable_text(ui, |ui| {
-                    message_body(ui, message, reader, reading, messages);
+                    message_body(ui, message, reader, pictures, reading, messages);
                 });
             }
         });
@@ -1276,6 +1290,7 @@ fn message_body(
     ui: &mut egui::Ui,
     message: &MailMessage,
     reader: &ConversationReader,
+    pictures: Pictures<'_>,
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
@@ -1287,7 +1302,9 @@ fn message_body(
                     .wrap(),
             );
         }
-        MessageBody::Rich(body) => rich_body(ui, body, &message.id, reader, reading, messages),
+        MessageBody::Rich(body) => {
+            rich_body(ui, body, &message.id, reader, pictures, reading, messages);
+        }
         MessageBody::Unreadable => {
             ui.label(
                 egui::RichText::new(UNREADABLE_NOTICE)
@@ -1303,23 +1320,36 @@ fn rich_body(
     body: &RichBody,
     message_id: &str,
     reader: &ConversationReader,
+    pictures: Pictures<'_>,
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
-    // Images are never loaded; those with no description would vanish
-    // without a word, and a message of nothing else would seem empty.
-    let images = body.undescribed_images;
+    // Images on the web are never loaded; those with no description would
+    // vanish without a word, and a message of nothing else would seem empty.
+    // One the message carries counts too while it cannot be shown.
+    let images = body.undescribed_images
+        + body
+            .blocks
+            .iter()
+            .filter(|block| {
+                (!block.hidden || reading.show_hidden_text) && !shown(block, pictures, reading)
+            })
+            .count();
     if images > 0 {
         detail(ui, &images_not_shown(images));
     }
-    if !body.blocks.iter().any(|block| shown(block, reading)) {
+    if !body
+        .blocks
+        .iter()
+        .any(|block| shown(block, pictures, reading))
+    {
         if images == 0 {
             detail(ui, "This message has no text.");
         }
         return;
     }
     if body.blocks.iter().all(|block| block.quote_depth > 0) {
-        blocks(ui, &body.blocks, 0, reading, messages);
+        blocks(ui, &body.blocks, 0, pictures, reading, messages);
         return;
     }
 
@@ -1344,16 +1374,18 @@ fn rich_body(
                 messages.push(Message::ToggleQuoteExpanded(message_id.to_owned(), quote));
             }
             if expanded {
-                quote_box(ui, |ui| blocks(ui, &rest[..run], 1, reading, messages));
+                quote_box(ui, |ui| {
+                    blocks(ui, &rest[..run], 1, pictures, reading, messages);
+                });
             }
             quote += 1;
             rest = &rest[run..];
         } else {
             rest = &rest[1..];
-            if !shown(first, reading) {
+            if !shown(first, pictures, reading) {
                 continue;
             }
-            block_in_sight(ui, first, &sight, reading, messages);
+            block_in_sight(ui, first, &sight, pictures, reading, messages);
         }
         ui.add_space(8.0);
     }
@@ -1368,15 +1400,116 @@ fn images_not_shown(count: usize) -> String {
     }
 }
 
-/// Whether a block shows: one the sender hid only when Settings ask for it.
-fn shown(block: &RichBlock, reading: Reading) -> bool {
-    !block.hidden || reading.show_hidden_text
+/// Whether a block shows: one the sender hid only when Settings ask for it,
+/// and an image with no description only while its picture can be shown.
+fn shown(block: &RichBlock, pictures: Pictures<'_>, reading: Reading) -> bool {
+    if block.hidden && !reading.show_hidden_text {
+        return false;
+    }
+    match &block.kind {
+        BlockKind::Image {
+            description,
+            content_id,
+        } if description.is_empty() => !matches!(
+            pictures.find(content_id.as_deref(), reading),
+            Found::Nothing
+        ),
+        _ => true,
+    }
+}
+
+/// The pictures of the message being drawn: those of its conversation
+/// fetched so far, and the parts of the message a body may name.
+#[derive(Clone, Copy)]
+pub(super) struct Pictures<'a> {
+    images: &'a HashMap<String, InlineImage>,
+    message_id: &'a str,
+    attachments: &'a [MailAttachment],
+}
+
+/// What a body's image comes to.
+enum Found<'a> {
+    /// The picture, and the attachment it is.
+    Picture(&'a str, &'a std::sync::Arc<crate::pictures::Picture>),
+    /// It is on its way, or about to be asked for: the attachment to ask
+    /// for, if no one has.
+    Coming(Option<&'a str>),
+    /// Nothing to show but its description: it is on the web, Settings show
+    /// no pictures, the message carries no such part, or it was no picture.
+    Nothing,
+}
+
+impl<'a> Pictures<'a> {
+    fn find(self, content_id: Option<&str>, reading: Reading) -> Found<'a> {
+        let Some(part) = content_id
+            .filter(|_| reading.show_inline_images)
+            .and_then(|id| {
+                self.attachments
+                    .iter()
+                    .find(|file| file.content_id.as_deref() == Some(id))
+            })
+        else {
+            return Found::Nothing;
+        };
+        match self.images.get(&part.id) {
+            Some(InlineImage::Shown(picture)) => Found::Picture(&part.id, picture),
+            Some(InlineImage::Loading) => Found::Coming(None),
+            Some(InlineImage::Unavailable) => Found::Nothing,
+            None if part.size <= crate::pictures::MAX_BYTES => Found::Coming(Some(&part.id)),
+            None => Found::Nothing,
+        }
+    }
+}
+
+/// The textures of the pictures shown, by attachment, each with the picture
+/// it was made from.
+#[derive(Clone, Default)]
+struct Textures(HashMap<String, (usize, egui::TextureHandle)>);
+
+/// Lets go of the textures of pictures the app no longer keeps, as those of
+/// a conversation left.
+fn forget_textures(ui: &egui::Ui, images: &HashMap<String, InlineImage>) {
+    ui.data_mut(|data| {
+        data.get_temp_mut_or_default::<Textures>(egui::Id::NULL)
+            .0
+            .retain(|attachment, _| images.contains_key(attachment));
+    });
+}
+
+/// The texture of `picture`, made the first time it is drawn.
+fn texture(
+    ui: &egui::Ui,
+    attachment: &str,
+    picture: &std::sync::Arc<crate::pictures::Picture>,
+) -> egui::TextureHandle {
+    let made_from = std::sync::Arc::as_ptr(picture) as usize;
+    let kept = ui.data(|data| {
+        data.get_temp::<Textures>(egui::Id::NULL)
+            .and_then(|textures| textures.0.get(attachment).cloned())
+    });
+    if let Some((from, texture)) = kept
+        && from == made_from
+    {
+        return texture;
+    }
+    let texture = ui.ctx().load_texture(
+        format!("message-picture-{attachment}"),
+        egui::ColorImage::from_rgba_unmultiplied(picture.size, &picture.rgba),
+        egui::TextureOptions::LINEAR,
+    );
+    ui.data_mut(|data| {
+        data.get_temp_mut_or_default::<Textures>(egui::Id::NULL)
+            .0
+            .insert(attachment.to_owned(), (made_from, texture.clone()));
+    });
+    texture
 }
 
 fn blocks(
     ui: &mut egui::Ui,
     rich_blocks: &[RichBlock],
     depth: u8,
+    pictures: Pictures<'_>,
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
@@ -1390,16 +1523,18 @@ fn blocks(
                 .count();
             let quoted = &rest[..run];
             rest = &rest[run..];
-            if !quoted.iter().any(|block| shown(block, reading)) {
+            if !quoted.iter().any(|block| shown(block, pictures, reading)) {
                 continue;
             }
-            quote_box(ui, |ui| blocks(ui, quoted, depth + 1, reading, messages));
+            quote_box(ui, |ui| {
+                blocks(ui, quoted, depth + 1, pictures, reading, messages);
+            });
         } else {
             rest = &rest[1..];
-            if !shown(first, reading) {
+            if !shown(first, pictures, reading) {
                 continue;
             }
-            block_in_sight(ui, first, &sight, reading, messages);
+            block_in_sight(ui, first, &sight, pictures, reading, messages);
         }
         ui.add_space(8.0);
     }
@@ -1439,6 +1574,7 @@ impl Sight {
             reading.show_hidden_text,
             reading.sender_text_styles,
             reading.data_tables,
+            reading.show_inline_images,
         )
             .hash(&mut hasher);
         Self {
@@ -1462,6 +1598,7 @@ fn block_in_sight(
     ui: &mut egui::Ui,
     rich_block: &RichBlock,
     sight: &Sight,
+    pictures: Pictures<'_>,
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
@@ -1482,7 +1619,7 @@ fn block_in_sight(
         return;
     }
     let height = ui
-        .scope(|ui| block(ui, rich_block, reading, messages))
+        .scope(|ui| block(ui, rich_block, pictures, reading, messages))
         .response
         .rect
         .height();
@@ -1512,7 +1649,7 @@ fn text_stamp(block: &RichBlock) -> u64 {
         | BlockKind::Heading { spans, .. }
         | BlockKind::ListItem { spans, .. } => texts(spans),
         BlockKind::Preformatted(text) => (0, text.len()),
-        BlockKind::Image { description } => (0, description.len()),
+        BlockKind::Image { description, .. } => (0, description.len()),
         BlockKind::Rule => (0, 0),
         BlockKind::Table(rows) => (
             rows.len(),
@@ -1533,7 +1670,13 @@ fn quote_box(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         .show(ui, content);
 }
 
-fn block(ui: &mut egui::Ui, block: &RichBlock, reading: Reading, messages: &mut Vec<Message>) {
+fn block(
+    ui: &mut egui::Ui,
+    block: &RichBlock,
+    pictures: Pictures<'_>,
+    reading: Reading,
+    messages: &mut Vec<Message>,
+) {
     match &block.kind {
         BlockKind::Paragraph(spans) => {
             rich_line(ui, spans, None, block.centered, reading, messages);
@@ -1582,9 +1725,43 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, reading: Reading, messages: &mut 
                     );
                 });
         }
-        BlockKind::Image { description } => {
-            // Remote images are never fetched; the description stands in for
-            // one, as a placeholder rather than a footnote.
+        BlockKind::Image {
+            description,
+            content_id,
+        } => {
+            let note = match pictures.find(content_id.as_deref(), reading) {
+                // A picture the message carries, no wider than the pane.
+                Found::Picture(attachment, picture) => {
+                    let texture = texture(ui, attachment, picture);
+                    let size = texture.size_vec2();
+                    let width = size.x.min(ui.available_width());
+                    let shown = ui.add(
+                        egui::Image::new(&texture)
+                            .fit_to_exact_size(egui::vec2(width, size.y * width / size.x))
+                            .corner_radius(4),
+                    );
+                    if !description.is_empty() {
+                        shown.on_hover_text(description);
+                    }
+                    return;
+                }
+                Found::Coming(ask) => {
+                    if let Some(attachment) = ask {
+                        messages.push(Message::LoadInlineImage(
+                            pictures.message_id.to_owned(),
+                            attachment.to_owned(),
+                        ));
+                    }
+                    if description.is_empty() {
+                        "Loading picture…".to_owned()
+                    } else {
+                        format!("Loading picture: {description}")
+                    }
+                }
+                Found::Nothing => format!("Image not loaded: {description}"),
+            };
+            // An image on the web is never fetched; the description stands
+            // in for one, as a placeholder rather than a footnote.
             egui::Frame::new()
                 .stroke(Stroke::new(1.0, theme::colors(ui).border))
                 .corner_radius(6)
@@ -1592,7 +1769,7 @@ fn block(ui: &mut egui::Ui, block: &RichBlock, reading: Reading, messages: &mut 
                 .show(ui, |ui| {
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(format!("Image not loaded: {description}"))
+                            egui::RichText::new(note)
                                 .size(theme::BODY_SIZE - 2.0)
                                 .color(theme::colors(ui).muted),
                         )

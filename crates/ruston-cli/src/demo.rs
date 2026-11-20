@@ -205,6 +205,7 @@ fn fixtures() -> (Vec<DemoMessage>, Vec<Conversation>) {
                 mime_type: Some("application/pdf".to_string()),
                 disposition: Some("attachment".to_string()),
                 signature: None,
+                headers: Default::default(),
             }],
         },
         DemoMessage {

@@ -188,11 +188,17 @@ out, keeping the tags. A table of data,
 such as a receipt's lines or a timetable, keeps its columns, scrolling sideways
 when it is wider than the reader; a table that only lays a newsletter out reads
 as text. **Show tables of data in columns** in Settings reads them all as text,
-a row to a line. The command line writes them as columns between pipes. Images
-are never loaded: one appears as its description when it has one, and a line at
-the top of the message says how many others are not shown, tracking pixels
-aside, so a newsletter made only of pictures does not look empty. The command
-line shows none and says how many at the end. Text the sender hid
+a row to a line. The command line writes them as columns between pipes. A
+picture the message carries within it, such as a logo, a signature or a photo
+placed in the text, is shown where the sender put it, no wider than the
+reader: PNG, JPEG, WebP and GIF, a GIF as its first frame. It comes with the
+message, so nothing is fetched from the web to show it; **Show pictures a
+message carries within it** in Settings leaves them as their descriptions.
+Images on the web are never loaded: one appears as its description when it has
+one, and a line at the top of the message says how many others are not shown,
+tracking pixels aside, so a newsletter made only of pictures does not look
+empty. The command line shows none and says how many at the end. Text the
+sender hid
 stays hidden, as in a browser: a newsletter's preview line, or a letter slipped
 into a word to get past filters. **Show text the sender hid** in Settings shows
 it, in grey; the command line always leaves it out.
@@ -457,6 +463,7 @@ Settings control:
 - Whether text the sender hid shows, in grey.
 - Whether the sender's text styles count, or only its tags.
 - Whether tables of data keep their columns.
+- Whether the pictures a message carries within it are shown.
 - Whether links require confirmation.
 - Whether the composer opens in the reading pane or a new window.
 - Plain-text or HTML sending.

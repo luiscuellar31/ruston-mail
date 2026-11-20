@@ -16,7 +16,7 @@ fn outline(html: &str) -> Vec<String> {
                     spans,
                 } => format!("li{depth} {} {}", marker.label(), text(spans)),
                 BlockKind::Preformatted(content) => format!("pre {content}"),
-                BlockKind::Image { description } => format!("img {description}"),
+                BlockKind::Image { description, .. } => format!("img {description}"),
                 BlockKind::Rule => "hr".to_owned(),
                 BlockKind::Table(rows) => {
                     let rows: Vec<String> = rows
@@ -159,7 +159,7 @@ fn text_the_sender_hid_is_read_and_set_apart() {
         .map(|block| {
             let text = match &block.kind {
                 BlockKind::Paragraph(spans) => spans.iter().map(|s| s.text.as_str()).collect(),
-                BlockKind::Image { description } => format!("img {description}"),
+                BlockKind::Image { description, .. } => format!("img {description}"),
                 other => panic!("unexpected {other:?}"),
             };
             (text, block.hidden)
@@ -486,10 +486,10 @@ fn images_keep_only_their_description() {
 #[test]
 fn images_with_no_description_are_counted_but_pixels_and_hidden_ones_are_not() {
     let body = parse(
-        "<p>Sale</p><img src='cid:banner'><img src='https://t.example/o.gif' width='1' height='1'>\
+        "<p>Sale</p><img src='https://shop.example/banner.png'><img src='https://t.example/o.gif' width='1' height='1'>\
          <img src='https://t.example/p.gif' style='width:0' height='0px'>\
-         <div style='display:none'><img src='cid:preview'></div>\
-         <img src='cid:logo' alt='Logo'><img src='cid:photo' width='600'>",
+         <div style='display:none'><img src='https://shop.example/preview.png'></div>\
+         <img src='cid:logo' alt='Logo'><img src='https://shop.example/photo.jpg' width='600'>",
     );
     assert_eq!(body.undescribed_images, 2);
     assert_eq!(body.plain_text(), "Sale\n[Image: Logo]\n");
@@ -586,6 +586,38 @@ fn a_hidden_table_of_data_stays_hidden() {
     assert!(matches!(body.blocks[0].kind, BlockKind::Table(_)));
     assert!(body.blocks[0].hidden);
     assert_eq!(body.plain_text(), "shown\n");
+}
+
+#[test]
+fn an_image_that_travels_in_the_message_names_its_part() {
+    let body = parse(&crate::html::sanitize(
+        "<p>Hi</p><img src=\"cid:logo@example.com\" alt=\"Logo\"><img src=\"CID:photo\">\
+         <img src=\"https://t.example/p.png\"><img src=\"cid:pixel\" width=\"1\" height=\"1\">\
+         <div style=\"display:none\"><img src=\"cid:hidden\"></div>",
+    ));
+    let images: Vec<(&str, Option<&str>, bool)> = body
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::Image {
+                description,
+                content_id,
+            } => Some((description.as_str(), content_id.as_deref(), block.hidden)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        images,
+        [
+            ("Logo", Some("logo@example.com"), false),
+            // One with no description is kept too: a reader may show it.
+            ("", Some("photo"), false),
+            ("", Some("hidden"), true),
+        ]
+    );
+    // Only the one on the web is counted as never shown.
+    assert_eq!(body.undescribed_images, 1);
+    assert_eq!(body.plain_text(), "Hi\n[Image: Logo]\n");
 }
 
 #[test]
@@ -753,6 +785,7 @@ fn plain_text_keeps_structure_one_block_per_line() {
             block(
                 BlockKind::Image {
                     description: "Logo".to_owned(),
+                    content_id: None,
                 },
                 0,
             ),

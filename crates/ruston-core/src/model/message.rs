@@ -1,6 +1,8 @@
 //! Messages and their attachments as Proton's mail API describes them, in
 //! the PascalCase JSON it writes.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Someone a message is from or to.
@@ -60,6 +62,10 @@ pub struct Attachment {
     /// Proton may send an empty one for a file that is not.
     #[serde(default)]
     pub signature: Option<String>,
+    /// The headers of its MIME part, by name in lowercase, among them the
+    /// `content-id` a body names a picture within it by.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, serde_json::Value>,
 }
 
 impl Attachment {
@@ -67,6 +73,19 @@ impl Attachment {
     /// rather than offered for download.
     pub fn is_inline(&self) -> bool {
         self.disposition.as_deref() == Some("inline")
+    }
+
+    /// The ID a body names it by, as in `cid:logo@example.com`, without the
+    /// angle brackets its header wraps it in.
+    pub fn content_id(&self) -> Option<&str> {
+        let header = self.headers.get("content-id")?;
+        let id = header
+            .as_str()
+            .or_else(|| header.get(0).and_then(serde_json::Value::as_str))?
+            .trim();
+        let id = id.strip_prefix('<').unwrap_or(id);
+        let id = id.strip_suffix('>').unwrap_or(id);
+        (!id.is_empty()).then_some(id)
     }
 }
 
@@ -165,6 +184,32 @@ pub struct Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_attachment_tells_the_id_a_body_names_it_by() {
+        let attachment = |headers: &str| -> Attachment {
+            serde_json::from_str(&format!(r#"{{"ID":"a1","Headers":{headers}}}"#)).unwrap()
+        };
+        assert_eq!(
+            attachment(r#"{"content-disposition":"inline","content-id":"<logo@example.com>"}"#)
+                .content_id(),
+            Some("logo@example.com")
+        );
+        // Proton sends a header given twice as a list.
+        assert_eq!(
+            attachment(r#"{"content-id":["<photo>","<other>"]}"#).content_id(),
+            Some("photo")
+        );
+        assert_eq!(attachment(r#"{"content-id":"<>"}"#).content_id(), None);
+        assert_eq!(attachment("{}").content_id(), None);
+        assert_eq!(Attachment::default().content_id(), None);
+        // One with no headers is written as before.
+        assert!(
+            !serde_json::to_string(&Attachment::default())
+                .unwrap()
+                .contains("Headers")
+        );
+    }
     use crate::model::enums::message_flag;
 
     #[test]

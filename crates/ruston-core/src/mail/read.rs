@@ -203,6 +203,11 @@ fn mime_attachments(msg: &mail_parser::Message) -> Vec<Attachment> {
             disposition: part
                 .content_disposition()
                 .map(|disposition| disposition.ctype().to_ascii_lowercase()),
+            headers: part
+                .content_id()
+                .map(|id| ("content-id".to_owned(), id.into()))
+                .into_iter()
+                .collect(),
             ..Attachment::default()
         })
         .collect()

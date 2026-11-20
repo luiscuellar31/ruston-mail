@@ -62,6 +62,11 @@ pub struct Settings {
     /// existed have it on.
     #[serde(default = "enabled")]
     pub data_tables: bool,
+    /// Show the pictures a message carries within it. They come with the
+    /// message, so nothing is fetched from the web, where pictures are never
+    /// loaded. Settings saved before this choice existed have it on.
+    #[serde(default = "enabled")]
+    pub show_inline_images: bool,
     /// Whether a message is written out as HTML or as plain text.
     pub compose_format: BodyFormat,
     /// Where new messages, replies and forwards open.
@@ -129,6 +134,7 @@ impl Default for Settings {
             show_hidden_text: false,
             sender_text_styles: true,
             data_tables: true,
+            show_inline_images: true,
             compose_format: BodyFormat::PlainText,
             compose_placement: ComposePlacement::ReadingPane,
             check_recipient_protection: true,
@@ -223,6 +229,7 @@ pub struct Reading {
     pub show_hidden_text: bool,
     pub sender_text_styles: bool,
     pub data_tables: bool,
+    pub show_inline_images: bool,
 }
 
 /// What a reader shows before anything is changed in Settings.
@@ -250,6 +257,7 @@ impl Settings {
             show_hidden_text: self.show_hidden_text,
             sender_text_styles: self.sender_text_styles,
             data_tables: self.data_tables,
+            show_inline_images: self.show_inline_images,
         }
     }
 

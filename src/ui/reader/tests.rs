@@ -7,6 +7,17 @@ use crate::mail::ConversationDetail;
 use crate::ui::test_support::{text_rect, visible_text_rect};
 use ruston_core::html::rich::ListMarker;
 
+/// A message with no pictures fetched, nor parts to fetch them from.
+fn no_pictures() -> Pictures<'static> {
+    static NONE: std::sync::LazyLock<HashMap<String, InlineImage>> =
+        std::sync::LazyLock::new(HashMap::new);
+    Pictures {
+        images: &NONE,
+        message_id: "",
+        attachments: &[],
+    }
+}
+
 #[test]
 fn the_reading_column_is_bounded_and_centred() {
     // Narrower than a column: it gives way, and never asks for a gap it
@@ -414,7 +425,7 @@ fn the_senders_style_counts_unless_settings_leave_it_out() {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(600.0);
             strong = Some(ui.visuals().strong_text_color());
-            block(ui, &centered, reading, &mut Vec::new());
+            block(ui, &centered, no_pictures(), reading, &mut Vec::new());
         });
         let found = output
             .shapes
@@ -458,7 +469,7 @@ fn a_table_of_data_lines_its_columns_up_unless_settings_read_it_as_lines() {
         for _ in 0..3 {
             let output = context.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(600.0);
-                block(ui, &table, reading, &mut Vec::new());
+                block(ui, &table, no_pictures(), reading, &mut Vec::new());
             });
             // Where a word's first letter is: a label in a wrapping line
             // starts at the line's left and moves its text along.
@@ -2035,7 +2046,13 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
                 |ui| {
                     ui.set_width(480.0);
                     let top = ui.cursor().top();
-                    block(ui, &item, Reading::default(), &mut Vec::new());
+                    block(
+                        ui,
+                        &item,
+                        no_pictures(),
+                        Reading::default(),
+                        &mut Vec::new(),
+                    );
                     height = ui.cursor().top() - top;
                 },
             )
@@ -2299,6 +2316,7 @@ fn a_message_of_images_says_how_many_are_not_shown_rather_than_that_it_has_no_te
                 AttachmentSaves {
                     saving: None,
                     failed: None,
+                    images: None,
                 },
                 Reading::default(),
                 &mut Vec::new(),
@@ -2329,6 +2347,7 @@ fn a_failed_save_is_told_beside_its_own_file() {
             name: name.into(),
             size: 1_024,
             inline: false,
+            content_id: None,
         })
         .collect();
     let reader = ConversationReader::new(ConversationDetail {
@@ -2342,6 +2361,7 @@ fn a_failed_save_is_told_beside_its_own_file() {
     let saves = AttachmentSaves {
         saving: None,
         failed: Some(("photo.jpg", crate::downloads::SaveError::Failed)),
+        images: None,
     };
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         ui.set_width(680.0);
@@ -2377,6 +2397,7 @@ fn the_parts_of_the_body_are_offered_after_the_files_attached() {
             name: name.into(),
             size: 1_024,
             inline,
+            content_id: None,
         })
         .collect();
     let reader = ConversationReader::new(ConversationDetail {
@@ -2397,6 +2418,7 @@ fn the_parts_of_the_body_are_offered_after_the_files_attached() {
             AttachmentSaves {
                 saving: None,
                 failed: None,
+                images: None,
             },
             Reading::default(),
             &mut Vec::new(),
@@ -2527,6 +2549,7 @@ fn long_message_frame(
                         AttachmentSaves {
                             saving: None,
                             failed: None,
+                            images: None,
                         },
                         Reading::default(),
                         &mut Vec::new(),
@@ -2616,4 +2639,99 @@ fn measure_reader_frames_for_long_messages() {
             start.elapsed().as_secs_f64() * 1000.0 / f64::from(frames)
         );
     }
+}
+
+#[test]
+fn a_picture_the_message_carries_is_asked_for_shown_and_let_go() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.body = MessageBody::Rich(ruston_core::html::rich::parse(
+        "<p>Hi</p><img src='cid:logo@example.com' alt='Logo'><img src='cid:gone'>",
+    ));
+    message.attachments = vec![MailAttachment {
+        id: "logo".into(),
+        name: "logo.png".into(),
+        size: 2_048,
+        inline: true,
+        content_id: Some("logo@example.com".into()),
+    }];
+    let message_id = message.id.clone();
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |images: &HashMap<String, InlineImage>, reading: Reading| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(680.0);
+            message_card(
+                ui,
+                &reader.detail().messages[0],
+                reader.preview_at(0),
+                &reader,
+                AttachmentSaves {
+                    images: Some(images),
+                    ..AttachmentSaves::default()
+                },
+                reading,
+                &mut messages,
+            );
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (messages, shapes)
+    };
+    let says = |shapes: &[egui::epaint::ClippedShape], text: &str| {
+        visible_text_rect(shapes, text).is_some()
+    };
+    let has_texture = || {
+        context
+            .tex_manager()
+            .read()
+            .allocated()
+            .any(|(_, texture)| texture.name == "message-picture-logo")
+    };
+
+    // The reader asks for the part the body names, and says it is coming;
+    // the one the message has no part for is one image not shown.
+    let none = HashMap::new();
+    let (messages, shapes) = frame(&none, Reading::default());
+    assert!(
+        matches!(&messages[..], [Message::LoadInlineImage(message, attachment)]
+            if *message == message_id && attachment == "logo"),
+        "{}",
+        messages.len()
+    );
+    assert!(says(&shapes, "Loading picture: Logo"));
+    assert!(says(&shapes, "1 image not shown"));
+
+    // Once it is here it is drawn, and nothing is asked for again.
+    let shown = HashMap::from([(
+        "logo".to_owned(),
+        InlineImage::Shown(std::sync::Arc::new(crate::pictures::Picture {
+            size: [2, 2],
+            rgba: vec![255; 16],
+        })),
+    )]);
+    let (messages, shapes) = frame(&shown, Reading::default());
+    assert!(messages.is_empty());
+    assert!(!says(&shapes, "Loading picture: Logo") && !says(&shapes, "Image not loaded: Logo"));
+    assert!(has_texture());
+
+    // With pictures off in Settings it is its description, as one on the web.
+    let (messages, shapes) = frame(
+        &none,
+        Reading {
+            show_inline_images: false,
+            ..Reading::default()
+        },
+    );
+    assert!(messages.is_empty());
+    assert!(says(&shapes, "Image not loaded: Logo"));
+    // The picture left with its conversation, and so does its texture.
+    let _ = frame(&none, Reading::default());
+    assert!(!has_texture());
 }

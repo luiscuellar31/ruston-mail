@@ -163,9 +163,15 @@ fn page(
             ui,
             "The prompt shows the real destination, which helps expose misleading links.",
         );
+        ui.add_space(6.0);
+
+        ui.add(theme::Checkbox::new(
+            &mut settings.show_inline_images,
+            "Show pictures a message carries within it",
+        ));
         description(
             ui,
-            "Images in mail are never downloaded. This protects your privacy from tracking pixels.",
+            "They come with the message, so nothing is fetched to show them. Pictures on the web are never downloaded, which protects your privacy from tracking pixels.",
         );
     });
     ui.add_space(14.0);
@@ -454,6 +460,9 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     }
     if draft.data_tables != current.data_tables {
         messages.push(Message::SetDataTables(draft.data_tables));
+    }
+    if draft.show_inline_images != current.show_inline_images {
+        messages.push(Message::SetShowInlineImages(draft.show_inline_images));
     }
     if draft.compose_placement != current.compose_placement {
         messages.push(Message::SetComposePlacement(draft.compose_placement));
@@ -965,8 +974,9 @@ mod tests {
         draft.show_hidden_text = true;
         draft.sender_text_styles = false;
         draft.data_tables = false;
+        draft.show_inline_images = false;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 12);
+        assert_eq!(changes.len(), 13);
         assert!(
             changes
                 .iter()
