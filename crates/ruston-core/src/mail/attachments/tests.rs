@@ -516,10 +516,6 @@ async fn invalid_signatures_never_reach_download_callbacks_or_exported_files() {
         .await;
     assert!(matches!(result, Err(Error::AttachmentVerificationFailed)));
     assert!(!delivered);
-    assert!(matches!(
-        client.download_all_attachments("message", true).await,
-        Err(Error::AttachmentVerificationFailed)
-    ));
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

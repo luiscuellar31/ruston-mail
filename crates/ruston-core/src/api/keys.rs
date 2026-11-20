@@ -79,14 +79,6 @@ pub struct RecipientKeys {
     pub unverified: Vec<ApiPublicKey>,
 }
 
-impl RecipientKeys {
-    /// Whether the recipient's address is at Proton, as keys Proton vouches
-    /// for show.
-    pub fn is_internal(&self) -> bool {
-        !self.keys.is_empty()
-    }
-}
-
 /// The salts each user key's passphrase is derived with.
 pub async fn get_key_salts<D: Doer>(d: &D) -> Result<Vec<KeySalt>> {
     let SaltsResp { key_salts } = d.decode(Request::get("/core/v4/keys/salts")).await?;
@@ -169,7 +161,6 @@ mod tests {
     use crate::model::enums::key_flag::{
         EMAIL_NO_ENCRYPT, EMAIL_NO_SIGN, NOT_COMPROMISED, NOT_OBSOLETE,
     };
-    use crate::model::enums::recipient_type;
 
     /// The flags of a key mail may be encrypted to.
     const USABLE: u32 = NOT_COMPROMISED | NOT_OBSOLETE;
@@ -245,21 +236,5 @@ mod tests {
             picked(&[primary("unsigned", USABLE | EMAIL_NO_SIGN)]),
             Some("unsigned")
         );
-    }
-
-    #[test]
-    fn a_recipient_is_internal_when_proton_vouches_for_one_of_its_keys() {
-        let internal = RecipientKeys {
-            recipient_type: recipient_type::INTERNAL,
-            keys: vec![primary("vouched", USABLE)],
-            unverified: Vec::new(),
-        };
-        assert!(internal.is_internal());
-        let external = RecipientKeys {
-            recipient_type: recipient_type::EXTERNAL,
-            keys: Vec::new(),
-            unverified: vec![primary("found", USABLE)],
-        };
-        assert!(!external.is_internal());
     }
 }

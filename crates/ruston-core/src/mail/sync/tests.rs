@@ -365,7 +365,7 @@ async fn index_rejects_stale_listing_and_body_results() {
                 assert!(
                     index
                         .await
-                        .is_err_and(|error| error.is_retryable_cache_error()),
+                        .is_err_and(|error| matches!(error, Error::CacheChanged(_))),
                     "{case}"
                 );
                 assert_competing_event_preserved(&cache, event_action, &case);
@@ -406,7 +406,7 @@ async fn index_keeps_the_page_cursor_after_an_earlier_body_commits() {
     assert!(
         index
             .await
-            .is_err_and(|error| error.is_retryable_cache_error())
+            .is_err_and(|error| matches!(error, Error::CacheChanged(_)))
     );
     let remaining = listed(&cache, label_ids::INBOX);
     assert_eq!(remaining.len(), 1);
@@ -595,7 +595,7 @@ async fn backfill_rejects_stale_page_without_inserting_any_rows() {
         assert!(
             backfill
                 .await
-                .is_err_and(|error| error.is_retryable_cache_error()),
+                .is_err_and(|error| matches!(error, Error::CacheChanged(_))),
             "event action {event_action}"
         );
         assert_competing_event_preserved(
