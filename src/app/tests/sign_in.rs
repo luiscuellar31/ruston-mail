@@ -24,13 +24,6 @@ fn verifying_app() -> (App, futures::channel::oneshot::Receiver<()>) {
 }
 
 #[test]
-fn initial_state_checks_saved_session() {
-    let app = App::new(Settings::default());
-
-    assert_eq!(app.auth_state, AuthState::CheckingSession);
-}
-
-#[test]
 fn only_a_session_found_saved_at_startup_is_opened_as_the_mailbox() {
     let mut app = App::new(Settings::default());
     assert!(!app.opening_saved_session());

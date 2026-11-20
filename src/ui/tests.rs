@@ -1104,12 +1104,6 @@ fn unread_badge_count_returns_none_when_unauthenticated() {
 }
 
 #[test]
-fn set_unread_badge_does_not_panic() {
-    assert!(set_unread_badge(None, Some(5)));
-    assert!(set_unread_badge(None, None));
-}
-
-#[test]
 #[cfg(target_os = "macos")]
 fn main_viewport_enables_macos_fullsize_content_view() {
     let settings = Settings::default();

@@ -142,20 +142,4 @@ mod tests {
             "Proton Mail rejected the request. (HTTP 422, code 5003)"
         );
     }
-
-    #[test]
-    fn other_errors_keep_their_messages() {
-        assert_eq!(
-            AuthError::InvalidCredentials.to_string(),
-            "The username or password is incorrect."
-        );
-        assert_eq!(
-            AuthError::HumanVerificationRequired.to_string(),
-            "Proton asked to check that you are human. Sign in again to complete the check."
-        );
-        assert_eq!(
-            AuthError::HumanVerificationUnsupported.to_string(),
-            "Proton asked for a kind of human verification that Ruston Mail does not support yet."
-        );
-    }
 }

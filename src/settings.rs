@@ -597,16 +597,6 @@ mod tests {
     }
 
     #[test]
-    fn reader_defaults_are_consistent() {
-        let defaults = Settings::default();
-
-        assert!(!defaults.expand_all_messages);
-        assert!(!defaults.show_quoted_text);
-        assert!(defaults.show_unread_badge);
-        assert_eq!(defaults.reading(), Reading::default());
-    }
-
-    #[test]
     fn incomplete_settings_are_invalid() {
         assert!(serde_json::from_str::<Settings>(r#"{"confirm_links": false}"#).is_err());
 

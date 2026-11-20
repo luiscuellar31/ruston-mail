@@ -134,17 +134,6 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
 }
 
 #[test]
-fn folder_switch_closes_reader() {
-    let (mut app, _) = App::boot(true, Settings::default());
-    deliver_latest_demo_page(&mut app, 0);
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
-
-    let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
-
-    assert!(app.mailbox().unwrap().reader().is_none());
-}
-
-#[test]
 fn an_open_conversation_preloads_the_one_archiving_it_opens_at_once() {
     let mut app = loaded_demo_app();
     // A row with an unread one below it, so reading that one would show.

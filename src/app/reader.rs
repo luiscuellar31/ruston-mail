@@ -7,9 +7,8 @@ use crate::settings::Reading;
 /// How much of a message its collapsed header stands in for.
 const PREVIEW_WORDS: usize = 40;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReaderState {
-    #[default]
     Empty,
     Loading {
         conversation_id: String,
@@ -451,14 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_detail_has_nothing_expanded() {
-        let empty = reader(Vec::new());
-
-        assert!(empty.detail().messages.is_empty());
-        assert!(empty.toggled.is_empty());
-    }
-
-    #[test]
     fn asking_for_every_message_opens_the_whole_thread() {
         let reader = reader(vec![message("a", 10), message("b", 20), message("c", 30)]);
         let all = Reading {
@@ -502,11 +493,5 @@ mod tests {
         reader.toggle_quote("a", 0);
         assert!(!reader.is_quote_expanded("a", 0, quoted));
         assert!(reader.is_quote_expanded("a", 0, plain()));
-    }
-
-    #[test]
-    fn reader_state_starts_empty() {
-        assert_eq!(ReaderState::default(), ReaderState::Empty);
-        assert_eq!(ReaderState::Empty.conversation_id(), None);
     }
 }

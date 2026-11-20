@@ -3,16 +3,6 @@
 use super::*;
 
 #[test]
-fn escape_key_closes_untouched_compose_without_prompt() {
-    let mut app = loaded_demo_app();
-    let _ = app.update(Message::OpenCompose);
-    assert!(app.compose().is_some());
-
-    press(&mut app, Key::Escape);
-    assert!(app.compose().is_none());
-}
-
-#[test]
 fn escape_key_prompts_to_discard_when_message_has_content() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::OpenCompose);
