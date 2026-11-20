@@ -566,7 +566,12 @@ workers and the UI. When equal adjacent anchors merge, the stored span adopts
 the current shared target so later runs compare the same allocation. The reader
 creates an owned URL string when dispatching a link click. It draws at most four
 levels of quotes and indents lists at most eight levels deep, as the CLI does;
-deeper content keeps the last indent, so text never leaves the column.
+deeper content keeps the last indent, so text never leaves the column. A long
+message costs what is near the screen, not all it holds: `block_in_sight`
+remembers the height each block took, with the width, scale and Settings it
+depended on, and a block more than a screen away only leaves that room. A
+screen reader, which reads what is out of sight too, and keyboard focus, which
+moves among links, have everything laid out as before.
 
 The adapter maps the entire core `FullMessage` into `MailMessage`, preserving
 the body's `Verdict` through both conversation and individual message reads.

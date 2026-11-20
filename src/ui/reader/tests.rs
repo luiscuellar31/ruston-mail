@@ -2476,3 +2476,144 @@ fn a_link_shows_where_it_goes_while_the_pointer_rests_on_it() {
     assert_eq!(shown.chars().count(), LINK_HOVER_CHARS + 1, "{shown}");
     assert!(shown.ends_with('…'));
 }
+
+/// A long newsletter of `paragraphs`, and the reader showing it.
+fn long_message(paragraphs: usize) -> ConversationReader {
+    let html: String = (0..paragraphs)
+        .map(|n| {
+            format!(
+                "<p>Paragraph {n} of a long newsletter with <b>bold words</b>, a \
+                 <a href='https://example.test/{n}'>link to read more</a> and enough plain \
+                 text after it to wrap onto a second line in the reading pane, as most \
+                 paragraphs of a newsletter do when they say anything at all.</p>"
+            )
+        })
+        .collect();
+    let mut message = header_message(Some("Alex Rivera"));
+    message.body = MessageBody::Rich(ruston_core::html::rich::parse(&html));
+    ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    })
+}
+
+/// One frame of `reader`'s message in a scrolling pane 700 points square,
+/// scrolled to `offset`: how long its content is, and what was drawn.
+fn long_message_frame(
+    context: &egui::Context,
+    reader: &ConversationReader,
+    offset: f32,
+) -> (f32, Vec<egui::epaint::ClippedShape>) {
+    let mut length = 0.0;
+    let output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(700.0, 700.0),
+            )),
+            ..Default::default()
+        },
+        |ui| {
+            length = egui::ScrollArea::vertical()
+                .vertical_scroll_offset(offset)
+                .show(ui, |ui| {
+                    message_card(
+                        ui,
+                        &reader.detail().messages[0],
+                        reader.preview_at(0),
+                        reader,
+                        AttachmentSaves {
+                            saving: None,
+                            failed: None,
+                        },
+                        Reading::default(),
+                        &mut Vec::new(),
+                    );
+                })
+                .content_size
+                .y;
+        },
+    );
+    let shapes = output.shapes.clone();
+    output.drop_without_applying_deltas();
+    (length, shapes)
+}
+
+#[test]
+fn a_long_message_keeps_its_length_while_only_what_is_near_is_laid_out() {
+    let reader = long_message(300);
+    let settled = |context: &egui::Context, offset: f32| {
+        let mut frame = (0.0, Vec::new());
+        // The scroll bar and the heights settle over a few frames.
+        for _ in 0..12 {
+            frame = long_message_frame(context, &reader, offset);
+        }
+        frame
+    };
+    let near = egui::Context::default();
+    theme::install(&near);
+    let (length, _) = settled(&near, 0.0);
+
+    // A screen reader has everything laid out: the length is the same.
+    let whole = egui::Context::default();
+    theme::install(&whole);
+    whole.enable_accesskit();
+    let (whole_length, _) = settled(&whole, 0.0);
+    assert!(
+        (length - whole_length).abs() < 1.0,
+        "{length} with only what is near, {whole_length} with all"
+    );
+
+    // What was out of sight is laid out when it comes into sight.
+    let (_, shapes) = settled(&near, length - 700.0);
+    let drawn = |paragraph: &str| {
+        shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::Shape::Text(text)
+            if text.galley.text().starts_with(paragraph)
+                && clipped.clip_rect.intersects(egui::Rect::from_min_size(
+                    text.pos,
+                    text.galley.size(),
+                )))
+        })
+    };
+    assert!(drawn("Paragraph 299 "), "the end shows at the end");
+    assert!(!drawn("Paragraph 0 "), "the start is far out of sight");
+}
+
+#[test]
+fn a_block_is_out_of_sight_more_than_a_screen_away() {
+    let clip = egui::Rect::from_min_max(egui::pos2(0.0, 1000.0), egui::pos2(700.0, 1700.0));
+    // In sight, and within a screen above or below it.
+    for top in [1200.0, 400.0, 2350.0] {
+        assert!(!out_of_sight(top, 60.0, clip), "{top}");
+    }
+    for top in [200.0, 2500.0] {
+        assert!(out_of_sight(top, 60.0, clip), "{top}");
+    }
+    // A tall block that reaches into the margin is laid out.
+    assert!(!out_of_sight(0.0, 400.0, clip));
+}
+
+#[test]
+#[ignore = "manual benchmark of drawing long messages, in release"]
+fn measure_reader_frames_for_long_messages() {
+    for paragraphs in [50, 500, 5000] {
+        let reader = long_message(paragraphs);
+        let context = egui::Context::default();
+        theme::install(&context);
+        for _ in 0..40 {
+            let _ = long_message_frame(&context, &reader, 0.0);
+        }
+        let frames = 30;
+        let start = std::time::Instant::now();
+        for frame in 0..frames {
+            let _ = long_message_frame(&context, &reader, frame as f32 * 3.0);
+        }
+        eprintln!(
+            "{paragraphs} paragraphs: {:.2} ms/frame",
+            start.elapsed().as_secs_f64() * 1000.0 / f64::from(frames)
+        );
+    }
+}

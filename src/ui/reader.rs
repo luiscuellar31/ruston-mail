@@ -1323,6 +1323,7 @@ fn rich_body(
         return;
     }
 
+    let sight = Sight::new(ui, reading);
     let mut rest = &body.blocks[..];
     let mut quote = 0;
     while let Some(first) = rest.first() {
@@ -1352,7 +1353,7 @@ fn rich_body(
             if !shown(first, reading) {
                 continue;
             }
-            block(ui, first, reading, messages);
+            block_in_sight(ui, first, &sight, reading, messages);
         }
         ui.add_space(8.0);
     }
@@ -1379,6 +1380,7 @@ fn blocks(
     reading: Reading,
     messages: &mut Vec<Message>,
 ) {
+    let sight = Sight::new(ui, reading);
     let mut rest = rich_blocks;
     while let Some(first) = rest.first() {
         if first.quote_depth > depth && depth < MAX_QUOTE_DEPTH {
@@ -1397,10 +1399,130 @@ fn blocks(
             if !shown(first, reading) {
                 continue;
             }
-            block(ui, first, reading, messages);
+            block_in_sight(ui, first, &sight, reading, messages);
         }
         ui.add_space(8.0);
     }
+}
+
+/// The heights blocks took when last laid out, by where each block is kept,
+/// with what that height depended on. A long message costs what is in sight,
+/// not all it holds: a block far from sight only leaves its room.
+#[derive(Clone, Default)]
+struct BlockHeights(std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, (u64, f32)>>>);
+
+/// The most heights remembered; past it they are forgotten and measured again.
+const MAX_BLOCK_HEIGHTS: usize = 50_000;
+
+/// What deciding whether a block is in sight needs, the same for every block
+/// of a run: worked out once, not for each.
+struct Sight {
+    heights: BlockHeights,
+    /// Whether everything is laid out: for a screen reader, which reads what
+    /// is out of sight too, and while the keyboard moves among the links.
+    all: bool,
+    /// What a height depends on besides the block: the width it wraps in,
+    /// the scale, and the choices in Settings that change what shows.
+    stamp: u64,
+}
+
+impl Sight {
+    fn new(ui: &mut egui::Ui, reading: Reading) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ui.available_width().to_bits().hash(&mut hasher);
+        ui.pixels_per_point().to_bits().hash(&mut hasher);
+        ui.text_style_height(&egui::TextStyle::Body)
+            .to_bits()
+            .hash(&mut hasher);
+        (
+            reading.show_hidden_text,
+            reading.sender_text_styles,
+            reading.data_tables,
+        )
+            .hash(&mut hasher);
+        Self {
+            heights: ui.data_mut(|data| {
+                data.get_temp_mut_or_default::<BlockHeights>(egui::Id::NULL)
+                    .clone()
+            }),
+            all: ui.memory(|memory| memory.focused().is_some())
+                || ui
+                    .ctx()
+                    .accesskit_node_builder(ui.unique_id(), |_| ())
+                    .is_some(),
+            stamp: hasher.finish(),
+        }
+    }
+}
+
+/// Draws `block`, or leaves the room it took last time when it is more than
+/// a screen away.
+fn block_in_sight(
+    ui: &mut egui::Ui,
+    rich_block: &RichBlock,
+    sight: &Sight,
+    reading: Reading,
+    messages: &mut Vec<Message>,
+) {
+    let key = std::ptr::from_ref(rich_block) as usize;
+    let stamp = sight.stamp ^ text_stamp(rich_block);
+    if !sight.all
+        && let Some(height) = sight
+            .heights
+            .0
+            .lock()
+            .ok()
+            .and_then(|heights| heights.get(&key).copied())
+            .filter(|(stamped, _)| *stamped == stamp)
+            .map(|(_, height)| height)
+        && out_of_sight(ui.cursor().top(), height, ui.clip_rect())
+    {
+        ui.allocate_space(egui::vec2(ui.available_width(), height));
+        return;
+    }
+    let height = ui
+        .scope(|ui| block(ui, rich_block, reading, messages))
+        .response
+        .rect
+        .height();
+    if let Ok(mut heights) = sight.heights.0.lock() {
+        if heights.len() >= MAX_BLOCK_HEIGHTS {
+            heights.clear();
+        }
+        heights.insert(key, (stamp, height));
+    }
+}
+
+/// Whether a block `height` tall from `top` lies more than a screen above or
+/// below what `clip` shows.
+fn out_of_sight(top: f32, height: f32, clip: egui::Rect) -> bool {
+    let margin = clip.height();
+    top + height < clip.top() - margin || top > clip.bottom() + margin
+}
+
+/// How much text a block holds, in how many runs: enough to tell another
+/// block kept in the same place, at little cost.
+fn text_stamp(block: &RichBlock) -> u64 {
+    let texts = |spans: &[RichSpan]| -> (usize, usize) {
+        (spans.len(), spans.iter().map(|span| span.text.len()).sum())
+    };
+    let (runs, bytes) = match &block.kind {
+        BlockKind::Paragraph(spans)
+        | BlockKind::Heading { spans, .. }
+        | BlockKind::ListItem { spans, .. } => texts(spans),
+        BlockKind::Preformatted(text) => (0, text.len()),
+        BlockKind::Image { description } => (0, description.len()),
+        BlockKind::Rule => (0, 0),
+        BlockKind::Table(rows) => (
+            rows.len(),
+            rows.iter()
+                .flat_map(|row| &row.cells)
+                .map(|cell| texts(cell).1)
+                .sum(),
+        ),
+    };
+    (runs as u64).rotate_left(40) ^ bytes as u64
 }
 
 fn quote_box(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
