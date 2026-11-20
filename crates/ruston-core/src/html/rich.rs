@@ -26,6 +26,9 @@ const MAX_STYLE_DEPTH: usize = 64;
 /// The most tables kept open within one another; a deeper one reads as the
 /// paragraphs of its rows.
 const MAX_TABLE_DEPTH: usize = 32;
+/// The longest text a link drawn as a button may hold; a longer one is a
+/// passage on a colored ground.
+const MAX_BUTTON_CHARS: usize = 60;
 /// The longest a cell of a table of data may be. A longer one is a page laid
 /// out in columns, which reads better as paragraphs.
 const MAX_CELL_CHARS: usize = 120;
@@ -212,6 +215,9 @@ pub struct RichSpan {
     pub hidden: bool,
     /// What the sender's style made it, besides what its tags did.
     pub styled: SenderStyle,
+    /// Whether the sender drew its link as a button: alone, and not long, on
+    /// a background of its own.
+    pub button: bool,
 }
 
 /// What the sender's style made a run, apart from what its tags did, so a
@@ -282,6 +288,10 @@ struct StyleFrame {
     /// A line through text goes through all of it, whatever lies within.
     struck: bool,
     centered: Option<bool>,
+    /// Whether it has a background of its own, as a button does.
+    background: bool,
+    /// How many blocks, and runs of the block being read, came before it.
+    start: (usize, usize),
 }
 
 impl StyleFrame {
@@ -295,9 +305,13 @@ impl StyleFrame {
             emphasis: None,
             struck: false,
             centered: (name == "center").then_some(true),
+            background: attribute(tag, "bgcolor")
+                .is_some_and(|color| colors(&color.to_ascii_lowercase())),
+            start: (0, 0),
         };
         for (property, value) in declarations(tag) {
             match property.as_str() {
+                "background-color" => frame.background = colors(&value),
                 "font-weight" => {
                     frame.strong = match value.as_str() {
                         "bold" | "bolder" => Some(true),
@@ -321,9 +335,29 @@ impl StyleFrame {
         let says = frame.strong.is_some()
             || frame.emphasis.is_some()
             || frame.struck
-            || frame.centered.is_some();
+            || frame.centered.is_some()
+            || frame.background;
         says.then_some(frame)
     }
+}
+
+/// Whether a background of `color` shows on a page: white and the keywords
+/// that give none do not.
+fn colors(color: &str) -> bool {
+    let color: String = color.split_whitespace().collect();
+    !matches!(
+        color.as_str(),
+        "" | "transparent"
+            | "inherit"
+            | "initial"
+            | "unset"
+            | "none"
+            | "white"
+            | "#fff"
+            | "#ffffff"
+            | "rgb(255,255,255)"
+            | "rgba(0,0,0,0)"
+    )
 }
 
 /// A table being read: where its blocks start, as the paragraphs its rows
@@ -550,7 +584,10 @@ impl Builder {
             return;
         }
         match StyleFrame::of(name, tag).filter(|_| self.frames.len() < MAX_STYLE_DEPTH) {
-            Some(frame) => self.frames.push(frame),
+            Some(mut frame) => {
+                frame.start = (self.blocks.len(), self.spans.len());
+                self.frames.push(frame);
+            }
             None => {
                 if let Some(top) = self.frames.last_mut()
                     && top.name == name
@@ -672,8 +709,48 @@ impl Builder {
         {
             if top.nested > 0 {
                 top.nested -= 1;
+            } else if let Some(frame) = self.frames.pop()
+                && frame.background
+            {
+                self.mark_button(frame.start);
+            }
+        }
+    }
+
+    /// Marks as a button the link an element with a background of its own
+    /// held, when it held nothing else and not much: the blocks and runs
+    /// read since `start`, all text of one link.
+    fn mark_button(&mut self, (block, run): (usize, usize)) {
+        let flushed = self.blocks.len() > block;
+        let mut runs: Vec<&mut RichSpan> = Vec::new();
+        for (index, read) in self.blocks.iter_mut().enumerate().skip(block) {
+            let (BlockKind::Paragraph(spans)
+            | BlockKind::Heading { spans, .. }
+            | BlockKind::ListItem { spans, .. }) = &mut read.kind
+            else {
+                return;
+            };
+            let from = if index == block {
+                run.min(spans.len())
             } else {
-                self.frames.pop();
+                0
+            };
+            runs.extend(spans[from..].iter_mut());
+        }
+        let from = if flushed {
+            0
+        } else {
+            run.min(self.spans.len())
+        };
+        runs.extend(self.spans[from..].iter_mut());
+        runs.retain(|span| !span.hidden && !span.text.trim().is_empty());
+        let Some(link) = runs.first().and_then(|span| span.link.clone()) else {
+            return;
+        };
+        let length: usize = runs.iter().map(|span| span.text.chars().count()).sum();
+        if length <= MAX_BUTTON_CHARS && runs.iter().all(|span| span.link.as_ref() == Some(&link)) {
+            for span in runs {
+                span.button = true;
             }
         }
     }
@@ -845,6 +922,7 @@ impl Builder {
                 && span.link == self.link
                 && span.hidden == hidden
                 && span.styled == styled
+                && !span.button
         });
         // A new run costs its own storage as well as its text, so many tiny
         // style changes cannot grow the body past its limit.
@@ -865,6 +943,7 @@ impl Builder {
             link: self.link.clone(),
             hidden,
             styled,
+            button: false,
         };
         // A cell keeps its own copy, in case its table holds data; a line
         // break within it reads as a space there.
@@ -1080,6 +1159,7 @@ fn same_style(one: &RichSpan, other: &RichSpan) -> bool {
         && one.link == other.link
         && one.hidden == other.hidden
         && one.styled == other.styled
+        && one.button == other.button
 }
 
 /// Keeps the tokenizer from reading markup inside raw-text elements.

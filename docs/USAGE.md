@@ -181,8 +181,10 @@ HTML mail is converted to native text and layout. Headings, lists, links, basic
 formatting, and quotes remain, but scripts and remote content do not run. Bold,
 italic, struck-through and centered text count whether the sender marked them
 with tags or set them with styles, as newsletters often do; a short centered
-line is centered, a longer one starts at the left. **Use the sender's text
-styles** in Settings leaves the styles out, keeping the tags. A table of data,
+line is centered, a longer one starts at the left. A link the sender drew as a
+button, alone on a background of its own, is a button, and still asks where it
+goes first. **Use the sender's text styles** in Settings leaves the styles
+out, keeping the tags. A table of data,
 such as a receipt's lines or a timetable, keeps its columns, scrolling sideways
 when it is wider than the reader; a table that only lays a newsletter out reads
 as text. **Show tables of data in columns** in Settings reads them all as text,

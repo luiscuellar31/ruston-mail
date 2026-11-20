@@ -1550,14 +1550,26 @@ fn rich_line(
     messages: &mut Vec<Message>,
 ) {
     if centered && reading.sender_text_styles {
-        let width: f32 = spans
+        let shown: Vec<&RichSpan> = spans
             .iter()
             .filter(|span| !span.hidden || reading.show_hidden_text)
+            .collect();
+        let text: f32 = shown
+            .iter()
             .map(|span| {
                 let job = span_layout(ui, span, heading, reading);
                 ui.painter().layout_job(job).size().x
             })
             .sum();
+        // A button is as wide as its text and the room around it.
+        let buttons = shown
+            .iter()
+            .enumerate()
+            .filter(|(index, span)| {
+                span.button && !(*index > 0 && continues_button(shown[index - 1], span))
+            })
+            .count();
+        let width = text + 2.0 * ui.spacing().button_padding.x * buttons as f32;
         let room = ui.available_width();
         if width <= room {
             ui.horizontal(|ui| {
@@ -1578,12 +1590,35 @@ fn rich_spans(
     messages: &mut Vec<Message>,
 ) {
     ui.spacing_mut().item_spacing.x = 0.0;
-    for span in spans
+    let shown: Vec<&RichSpan> = spans
         .iter()
         .filter(|span| !span.hidden || reading.show_hidden_text)
-    {
-        let job = span_layout(ui, span, heading, reading);
-        if let Some(link) = &span.link {
+        .collect();
+    let mut rest = &shown[..];
+    while let Some((span, after)) = rest.split_first() {
+        rest = after;
+        let mut job = span_layout(ui, span, heading, reading);
+        if let Some(link) = &span.link
+            && span.button
+            && reading.sender_text_styles
+        {
+            // A link the sender drew as a button is one, whatever styles its
+            // text has, and still goes through the prompt that says where.
+            while let Some((next, after)) = rest.split_first()
+                && continues_button(span, next)
+            {
+                let more = span_layout(ui, next, heading, reading);
+                job.append(&more.text, 0.0, more.sections[0].format.clone());
+                rest = after;
+            }
+            let response = ui
+                .add(egui::Button::new(job))
+                .on_hover_text(link_hover_text(link));
+            if response.clicked() {
+                messages.push(Message::LinkClicked(link.to_string()));
+            }
+            response.context_menu(|ui| link_menu(ui, link, messages));
+        } else if let Some(link) = &span.link {
             // Where it goes shows before a click, as a browser shows it, also
             // when Settings open links without asking.
             let response = ui
@@ -1597,6 +1632,12 @@ fn rich_spans(
             ui.add(egui::Label::new(job).selectable(true).wrap());
         }
     }
+}
+
+/// Whether `next` is more of the button `span` starts: the same link, drawn
+/// as a button too.
+fn continues_button(span: &RichSpan, next: &RichSpan) -> bool {
+    next.button && next.link == span.link
 }
 
 /// The most of a link's address its tooltip shows. The host comes first, and

@@ -48,6 +48,10 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         // still tell them, and a quote in a reply keeps them too.
         .add_generic_attributes(&["hidden", "style"])
         .filter_style_properties(HashSet::from(STYLE_PROPERTIES))
+        // The background of a cell is what draws a link as a button.
+        .add_tag_attributes("table", &["bgcolor"])
+        .add_tag_attributes("td", &["bgcolor"])
+        .add_tag_attributes("th", &["bgcolor"])
         // A link may lead to the web or to an address, and nowhere else. Every
         // output keeps this, EML exports and quoted replies included, not only
         // the readers that filter links themselves.
@@ -70,9 +74,10 @@ pub const HIDDEN_ELEMENTS: &[&str] = &[
 ];
 /// Where a link may lead: the web or an address.
 const LINK_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
-/// The style properties a sanitized body keeps: those that hide text, and
-/// those that make it bold, italic, struck through or centered.
-const STYLE_PROPERTIES: [&str; 7] = [
+/// The style properties a sanitized body keeps: those that hide text, those
+/// that make it bold, italic, struck through or centered, and the background
+/// color that draws a link as a button. None of them can load anything.
+const STYLE_PROPERTIES: [&str; 8] = [
     "display",
     "visibility",
     "font-weight",
@@ -80,6 +85,7 @@ const STYLE_PROPERTIES: [&str; 7] = [
     "text-decoration",
     "text-decoration-line",
     "text-align",
+    "background-color",
 ];
 
 /// The declarations of `tag`'s style, each property and value in lowercase,
@@ -702,7 +708,9 @@ mod tests {
             "<p style=\"color:red; display:none; background:url(https://t.example/x)\" \
              onclick=\"steal()\">a</p><span hidden title=\"t\">b</span>\
              <div style=\"font-weight:700; font-style:italic; text-decoration:line-through; \
-             text-align:center; font-family:Comic Sans\">c</div>",
+             text-align:center; font-family:Comic Sans\">c</div>\
+             <table><tr><td bgcolor=\"#07f\" style=\"background-color:#07f; \
+             background-image:url(https://t.example/b.png)\">d</td></tr></table>",
         );
         for kept in [
             "display",
@@ -711,11 +719,14 @@ mod tests {
             "font-style",
             "line-through",
             "text-align",
+            "bgcolor",
+            "background-color",
         ] {
             assert!(clean.contains(kept), "{kept} was lost: {clean}");
         }
         assert!(!clean.contains("font-family"), "{clean}");
-        for gone in ["color", "background", "url(", "onclick", "steal"] {
+        assert!(!clean.contains("background-image"), "{clean}");
+        for gone in ["red", "url(", "onclick", "steal"] {
             assert!(!clean.contains(gone), "{gone} survived: {clean}");
         }
     }

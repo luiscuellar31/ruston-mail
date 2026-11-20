@@ -544,7 +544,11 @@ elements, as a browser lets them apply within, and records them on each run's
 `SenderStyle` and each block's `centered`, apart from what tags did. The
 reader counts them unless **Use the sender's text styles** is off
 (`Reading::sender_text_styles`), centering a line that fits on one; the CLI
-always writes them as Markdown markers. A table is read as the paragraphs of
+always writes them as Markdown markers. The same stack notes an element with a
+background of its own, `background-color` or a cell's `bgcolor`, white aside:
+when it ends having held nothing but one link of at most 60 characters, the
+link's runs are marked `button`, and the reader draws them as one button that
+still goes through the link prompt, under the same setting. A table is read as the paragraphs of
 its rows, as before, while its cells are kept apart; at its end, one that
 holds data replaces those paragraphs with a `BlockKind::Table`: no table within
 it, no image, list, heading or other block, no text outside a cell, cells of at

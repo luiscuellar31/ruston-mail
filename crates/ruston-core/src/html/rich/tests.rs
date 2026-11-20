@@ -270,6 +270,73 @@ fn deep_styles_stop_being_followed_but_still_unwind() {
     assert!(!after[0].styled.strong);
 }
 
+/// The text of each run of `html` the sender drew as a button.
+fn buttons(html: &str) -> Vec<String> {
+    parse(&crate::html::sanitize(html))
+        .blocks
+        .iter()
+        .flat_map(|block| match &block.kind {
+            BlockKind::Paragraph(spans) => spans.clone(),
+            _ => Vec::new(),
+        })
+        .filter(|span| span.button)
+        .map(|span| span.text)
+        .collect()
+}
+
+#[test]
+fn a_link_alone_on_a_background_of_its_own_is_a_button() {
+    // The link's own background.
+    assert_eq!(
+        buttons(
+            "<p>Hi <a href='https://shop.example/' style='background-color:#07f; \
+             color:#fff'>Shop now</a> or read on</p>"
+        ),
+        ["Shop now"]
+    );
+    // The cell's, with the link in more than one style.
+    assert_eq!(
+        buttons(
+            "<table><tr><td bgcolor='#0077FF'><a href='https://shop.example/'>Buy \
+             <b>now</b></a></td><td style='background-color: rgb(0, 0, 0)'>\
+             <p><a href='https://shop.example/later'>Later</a></p></td></tr></table>"
+        ),
+        ["Buy ", "now", "Later"]
+    );
+    // The table's around its one cell.
+    assert_eq!(
+        buttons(
+            "<table style='background-color:#00aeef'><tr><td>\
+             <a href='https://shop.example/'>Subscribe</a></td></tr></table>"
+        ),
+        ["Subscribe"]
+    );
+}
+
+#[test]
+fn text_on_a_colored_ground_is_not_a_button() {
+    let long = "word ".repeat(20);
+    for html in [
+        // A passage with a link in it.
+        "<div style='background-color:#eee'>Read <a href='https://x.example/'>more</a></div>"
+            .to_owned(),
+        // Two links.
+        "<td bgcolor='#eee'><a href='https://x.example/'>one</a> \
+         <a href='https://y.example/'>two</a></td>"
+            .to_owned(),
+        // No link, or one that leads nowhere it may.
+        "<p style='background-color:#eee'>Sale</p>".to_owned(),
+        "<a href='javascript:alert(1)' style='background-color:#eee'>Sale</a>".to_owned(),
+        // White, or no color at all.
+        "<a href='https://x.example/' style='background-color:#FFFFFF'>plain</a>".to_owned(),
+        "<a href='https://x.example/' style='background-color: transparent'>plain</a>".to_owned(),
+        // Too long to be a button.
+        format!("<a href='https://x.example/' style='background-color:#07f'>{long}</a>"),
+    ] {
+        assert_eq!(buttons(&html), Vec::<String>::new(), "{html}");
+    }
+}
+
 #[test]
 fn paragraphs_and_line_breaks() {
     let html = "<div><p>Hello <b>Alex</b>,</p><p>Line one<br>Line two</p></div>";

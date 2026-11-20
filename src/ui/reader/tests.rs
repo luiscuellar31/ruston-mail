@@ -492,6 +492,76 @@ fn a_table_of_data_lines_its_columns_up_unless_settings_read_it_as_lines() {
 }
 
 #[test]
+fn a_link_the_sender_drew_as_a_button_is_one_and_still_asks_where_it_goes() {
+    let part = |text: &str, strong: bool| RichSpan {
+        text: text.into(),
+        strong,
+        link: Some("https://shop.example/".into()),
+        button: true,
+        ..RichSpan::default()
+    };
+    let spans = [part("Buy ", false), part("now", true)];
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |reading: Reading, events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| rich_spans(ui, &spans, None, reading, &mut messages),
+        );
+        let texts: Vec<(String, egui::Rect)> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                )),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        (texts, messages)
+    };
+
+    // One button holds the whole link, whatever styles its text has.
+    let (texts, _) = frame(Reading::default(), Vec::new());
+    let [(text, button)] = &texts[..] else {
+        panic!("expected one button: {texts:?}");
+    };
+    assert_eq!(text, "Buy now");
+    let press = |pressed| egui::Event::PointerButton {
+        pos: button.center(),
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    let _ = frame(
+        Reading::default(),
+        vec![egui::Event::PointerMoved(button.center()), press(true)],
+    );
+    let (_, messages) = frame(Reading::default(), vec![press(false)]);
+    assert!(
+        matches!(&messages[..], [Message::LinkClicked(link)] if link == "https://shop.example/"),
+        "a click goes through the prompt that says where it leads"
+    );
+
+    // Without the sender's styles it is the link it always was.
+    let (texts, _) = frame(
+        Reading {
+            sender_text_styles: false,
+            ..Reading::default()
+        },
+        Vec::new(),
+    );
+    let drawn: Vec<&str> = texts.iter().map(|(text, _)| text.as_str()).collect();
+    assert_eq!(drawn, ["Buy ", "now"]);
+}
+
+#[test]
 fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     let span = RichSpan {
         text: "the agenda".into(),

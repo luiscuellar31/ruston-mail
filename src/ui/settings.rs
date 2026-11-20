@@ -140,7 +140,7 @@ fn page(
         ));
         description(
             ui,
-            "Bold, italic, struck-through and centered text that newsletters set with styles rather than tags. With this off, only the tags count.",
+            "Bold, italic, struck-through and centered text, and links drawn as buttons, which newsletters set with styles rather than tags. With this off, only the tags count.",
         );
         ui.add_space(6.0);
 
