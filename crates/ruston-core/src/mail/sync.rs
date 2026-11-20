@@ -487,24 +487,6 @@ impl Client {
         backfill_cache(self.http(), cache, folder, max_pages, page_size).await
     }
 
-    /// Up to `limit` of a folder's messages as the cache holds them, newest
-    /// first, without asking Proton: unread ones only when `unread` is set.
-    pub fn cached_messages(
-        &self,
-        folder: &str,
-        unread: bool,
-        limit: u32,
-    ) -> Result<Vec<MessageMetadata>> {
-        self.open_cache()?
-            .list(&resolve_folder(folder), unread, limit, 0)
-    }
-
-    /// How many of a folder's messages the cache holds, and how many of those
-    /// are unread.
-    pub fn cached_count(&self, folder: &str) -> Result<(i64, i64)> {
-        self.open_cache()?.count(&resolve_folder(folder))
-    }
-
     /// Builds the full-text index of a folder: lists it, `page_size` messages
     /// at a time and at most `max_pages` pages, and indexes each message with
     /// its decrypted body. A body indexed before is kept rather than
