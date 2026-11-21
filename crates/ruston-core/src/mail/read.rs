@@ -10,6 +10,7 @@ use crate::model::message::{Attachment, Message, MessageMetadata, Recipient};
 use crate::model::{Conversation, MimeType};
 use crate::transport::Doer;
 use futures::{Stream, StreamExt, TryStreamExt, stream};
+use jiff::civil::Date;
 
 /// Keep conversation reads responsive without flooding Proton or buffering many bodies.
 const CONVERSATION_BODY_FETCH_CONCURRENCY: usize = 3;
@@ -117,18 +118,18 @@ pub fn search_window(
     Ok((after.map(day_start), before.map(day_end)))
 }
 
-fn parse_date(s: &str) -> Result<chrono::NaiveDate> {
-    chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+fn parse_date(s: &str) -> Result<Date> {
+    Date::strptime("%Y-%m-%d", s.trim())
         .map_err(|_| Error::Other(format!("invalid date '{s}': expected YYYY-MM-DD")))
 }
 
 /// The first second of `day` in UTC.
-fn day_start(day: chrono::NaiveDate) -> i64 {
-    day.and_time(chrono::NaiveTime::MIN).and_utc().timestamp()
+fn day_start(day: Date) -> i64 {
+    day.duration_since(Date::constant(1970, 1, 1)).as_secs()
 }
 
 /// The last second of `day` in UTC: the API's `End` includes its timestamp.
-fn day_end(day: chrono::NaiveDate) -> i64 {
+fn day_end(day: Date) -> i64 {
     day_start(day) + 86_399
 }
 

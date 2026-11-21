@@ -1,6 +1,6 @@
-use chrono::{DateTime, Datelike, Local, TimeZone};
 use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
+use jiff::ZonedDateTime;
 
 use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
 use crate::accounts::MAX_ACCOUNTS;
@@ -1111,7 +1111,7 @@ fn conversation_list(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     let selected = mailbox.selected_conversation();
     let visible_count = mailbox.visible_count();
     let total = visible_count + usize::from(ends_with_load_more(mailbox));
@@ -1200,7 +1200,7 @@ fn list_row(
     mailbox: &Mailbox,
     conversation: &ConversationSummary,
     selected: bool,
-    now: &DateTime<Local>,
+    now: &ZonedDateTime,
     messages: &mut Vec<Message>,
 ) {
     let response = ui
@@ -1258,7 +1258,7 @@ fn conversation_row(
     ui: &mut egui::Ui,
     conversation: &ConversationSummary,
     selected: bool,
-    now: &DateTime<Local>,
+    now: &ZonedDateTime,
 ) -> egui::Response {
     let correspondents = conversation
         .correspondents
@@ -1525,25 +1525,25 @@ fn device_index_label(why: DeviceIndex) -> &'static str {
     }
 }
 
-fn format_time<Tz: TimeZone>(timestamp: i64, now: &DateTime<Tz>) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let Some(time) = now.timezone().timestamp_opt(timestamp, 0).single() else {
+/// When a row's mail came, as someone reading at `now` would say it, in the
+/// zone `now` is in. A time no date can hold shows nothing.
+fn format_time(timestamp: i64, now: &ZonedDateTime) -> String {
+    let Ok(time) = jiff::Timestamp::from_second(timestamp) else {
         return String::new();
     };
-    let today = now.date_naive();
-    if today.pred_opt() == Some(time.date_naive()) {
+    let time = time.to_zoned_datetime(now.time_zone().clone());
+    let today = now.date();
+    if today.yesterday().ok() == Some(time.date()) {
         return "Yesterday".to_owned();
     }
-    let format = if time.date_naive() == today {
+    let format = if time.date() == today {
         "%H:%M"
     } else if time.year() == now.year() {
         "%b %-d"
     } else {
         "%Y-%m-%d"
     };
-    time.format(format).to_string()
+    time.strftime(format).to_string()
 }
 
 #[cfg(test)]

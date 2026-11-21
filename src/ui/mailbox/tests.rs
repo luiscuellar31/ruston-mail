@@ -1,6 +1,7 @@
 //! Tests of the mailbox pane: folders, the conversation list, search and the undo notice.
 
-use chrono::Utc;
+use jiff::civil::date;
+use jiff::tz::TimeZone;
 
 use super::*;
 use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
@@ -1909,12 +1910,14 @@ fn search_scope_says_what_the_list_is_showing() {
 
 #[test]
 fn times_are_formatted_relative_to_now() {
-    let now = Utc.with_ymd_and_hms(2026, 9, 11, 18, 0, 0).unwrap();
-    let at = |y, m, d, h, min| {
-        Utc.with_ymd_and_hms(y, m, d, h, min, 0)
+    let utc = |y, m, d, h, min| {
+        date(y, m, d)
+            .at(h, min, 0, 0)
+            .to_zoned_datetime(TimeZone::UTC)
             .unwrap()
-            .timestamp()
     };
+    let now = utc(2026, 9, 11, 18, 0);
+    let at = |y, m, d, h, min| utc(y, m, d, h, min).timestamp().as_second();
     assert_eq!(format_time(at(2026, 9, 11, 9, 5), &now), "09:05");
     assert_eq!(format_time(at(2026, 9, 10, 23, 59), &now), "Yesterday");
     assert_eq!(format_time(at(2026, 9, 10, 0, 0), &now), "Yesterday");
@@ -1922,13 +1925,12 @@ fn times_are_formatted_relative_to_now() {
     assert_eq!(format_time(at(2026, 3, 2, 9, 5), &now), "Mar 2");
     assert_eq!(format_time(at(2025, 12, 31, 9, 5), &now), "2025-12-31");
     // Yesterday wins over last year's date on the first of January.
-    let new_year = Utc.with_ymd_and_hms(2027, 1, 1, 8, 0, 0).unwrap();
+    let new_year = utc(2027, 1, 1, 8, 0);
     assert_eq!(format_time(at(2026, 12, 31, 22, 0), &new_year), "Yesterday");
 
     // The day is the reader's own: late on the 10th in UTC is already the
     // 11th two hours to the east.
-    let east = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
-    let now_east = now.with_timezone(&east);
+    let now_east = now.with_time_zone(jiff::tz::offset(2).to_time_zone());
     assert_eq!(format_time(at(2026, 9, 10, 23, 30), &now_east), "01:30");
     assert_eq!(format_time(at(2026, 9, 9, 23, 30), &now_east), "Yesterday");
     // A time no date can hold shows nothing.
@@ -2143,7 +2145,7 @@ fn a_row_is_exactly_the_height_the_list_places_it_at() {
         has_attachments: true,
     };
     let context = egui::Context::default();
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     let mut height = 0.0;
     context
         .run_ui(egui::RawInput::default(), |ui| {
@@ -2160,9 +2162,9 @@ fn a_row_is_exactly_the_height_the_list_places_it_at() {
 #[test]
 fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
     let name = "A sender whose name runs on and on, well past the time";
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     // A full date, and the longest word the time column shows.
-    let yesterday = (now - chrono::Duration::days(1)).timestamp();
+    let yesterday = now.timestamp().as_second() - 86_400;
     for timestamp in [1_700_000_000, yesterday] {
         let mut conversation = pagination_row("A subject", timestamp);
         conversation.correspondents = Some(name.into());
@@ -2191,7 +2193,7 @@ fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
 
 #[test]
 fn unread_rows_are_brighter_than_rows_already_read() {
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     for appearance in [
         crate::settings::Appearance::Dark,
         crate::settings::Appearance::Light,
@@ -2274,7 +2276,7 @@ fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
     let context = egui::Context::default();
     theme::install(&context);
     context.enable_accesskit();
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     let render = |input| {
         let mut rect = egui::Rect::NOTHING;
         let output = context.run_ui(input, |ui| {
@@ -2340,7 +2342,7 @@ fn long_correspondents_cannot_widen_the_conversation_pane() {
         has_attachments: false,
     };
     let context = egui::Context::default();
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     let render = |input| {
         let mut result = (egui::Rect::NOTHING, false);
         context

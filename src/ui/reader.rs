@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use chrono::{Local, TimeZone};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
+use jiff::tz::TimeZone;
 
 use super::mailbox::{detail, folder_icon};
 use super::{UiState, theme};
@@ -935,7 +935,7 @@ fn message_header(
     let painter = ui.painter_at(rect);
     let time = message
         .time
-        .map(|time| format_message_time(time, &Local))
+        .map(|time| format_message_time(time, &TimeZone::system()))
         .unwrap_or_default();
     // The date keeps the width it needs, up to half the header, so in a
     // narrow reader it is shortened instead of drawn over the sender.
@@ -2094,13 +2094,15 @@ fn recipients_label(recipients: &[MailAddress]) -> String {
         .join(", ")
 }
 
-fn format_message_time<Tz: TimeZone>(timestamp: i64, zone: &Tz) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    zone.timestamp_opt(timestamp, 0)
-        .single()
-        .map(|time| time.format("%b %-d, %Y at %H:%M").to_string())
+/// The day and time a message came, in `zone`. A time no date can hold
+/// shows nothing.
+fn format_message_time(timestamp: i64, zone: &TimeZone) -> String {
+    jiff::Timestamp::from_second(timestamp)
+        .map(|time| {
+            time.to_zoned_datetime(zone.clone())
+                .strftime("%b %-d, %Y at %H:%M")
+                .to_string()
+        })
         .unwrap_or_default()
 }
 

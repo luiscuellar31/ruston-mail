@@ -295,9 +295,7 @@ impl<W: Write> EmlWriter<W> {
         write_address_header(&mut out, "Bcc", &message.meta.bcc_list)?;
         write_reply_to(&mut out, message)?;
         write_encoded_header(&mut out, "Subject", &message.meta.subject)?;
-        let date = chrono::DateTime::from_timestamp(message.meta.time, 0)
-            .unwrap_or(chrono::DateTime::UNIX_EPOCH);
-        write!(out, "Date: {}\r\n", date.to_rfc2822())?;
+        write!(out, "Date: {}\r\n", date_header(message.meta.time))?;
         write_thread_headers(
             &mut out,
             message.meta.external_id.as_deref(),
@@ -391,6 +389,16 @@ fn write_address_header<W: Write>(out: &mut W, field: &str, addresses: &[Recipie
 
 /// Reply-To, when it names someone besides the sender. An address that
 /// cannot be written safely is left out, not the message.
+/// The moment `time`, in Unix seconds, as an RFC 2822 date in UTC. A time no
+/// such date can hold is written as the epoch.
+fn date_header(time: i64) -> String {
+    jiff::Timestamp::from_second(time)
+        .and_then(|time| {
+            jiff::fmt::rfc2822::to_string(&time.to_zoned_datetime(jiff::tz::TimeZone::UTC))
+        })
+        .unwrap_or_else(|_| "Thu, 1 Jan 1970 00:00:00 +0000".to_owned())
+}
+
 fn write_reply_to<W: Write>(out: &mut W, message: &FullMessage) -> Result<()> {
     let reply_tos: Vec<Recipient> = message
         .reply_tos

@@ -48,14 +48,14 @@ async fn signatures_are_dated_and_checked_at_protons_time() {
     );
 
     let server = MockServer::start().await;
-    let proton_now = chrono::Utc::now() + chrono::Duration::hours(1);
+    let proton_now = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
     Mock::given(method("GET"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header(
                     "Date",
                     proton_now
-                        .format("%a, %d %b %Y %H:%M:%S GMT")
+                        .strftime("%a, %d %b %Y %H:%M:%S GMT")
                         .to_string()
                         .as_str(),
                 )

@@ -1,6 +1,6 @@
 //! Tests of the reader pane: its layout, controls and messages.
 
-use chrono::Utc;
+use jiff::civil::date;
 
 use super::*;
 use crate::mail::ConversationDetail;
@@ -888,23 +888,26 @@ fn address(name: Option<&str>, email: &str) -> MailAddress {
 
 #[test]
 fn message_times_are_complete() {
-    let timestamp = Utc
-        .with_ymd_and_hms(2026, 9, 11, 9, 42, 0)
-        .unwrap()
-        .timestamp();
+    let at = |d, h, min| {
+        date(2026, 9, d)
+            .at(h, min, 0, 0)
+            .to_zoned_datetime(TimeZone::UTC)
+            .unwrap()
+            .timestamp()
+            .as_second()
+    };
     assert_eq!(
-        format_message_time(timestamp, &Utc),
+        format_message_time(at(11, 9, 42), &TimeZone::UTC),
         "Sep 11, 2026 at 09:42"
     );
     // A day of one digit is written as one, in the reader's own zone.
-    let east = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
-    let late = Utc
-        .with_ymd_and_hms(2026, 9, 8, 23, 30, 0)
-        .unwrap()
-        .timestamp();
-    assert_eq!(format_message_time(late, &east), "Sep 9, 2026 at 01:30");
+    let east = jiff::tz::offset(2).to_time_zone();
+    assert_eq!(
+        format_message_time(at(8, 23, 30), &east),
+        "Sep 9, 2026 at 01:30"
+    );
     // A time no date can hold shows nothing.
-    assert_eq!(format_message_time(i64::MAX, &Utc), "");
+    assert_eq!(format_message_time(i64::MAX, &TimeZone::UTC), "");
 }
 
 #[test]
@@ -1159,7 +1162,10 @@ fn assert_reader_geometry(
     let sender = text_rect(loaded, "Alex Rivera");
     let sender_bar = bar_at("sender", egui::Rect::left_top, sender.left_top());
     assert!((sender_bar.height() - sender.height()).abs() * scale <= 0.5);
-    let date = text_rect(loaded, &format_message_time(1_791_327_600, &Local));
+    let date = text_rect(
+        loaded,
+        &format_message_time(1_791_327_600, &TimeZone::system()),
+    );
     bar_at("date", egui::Rect::right_top, date.right_top());
     if expanded {
         for label in ["alex@example.com", "To: team@example.org"] {
