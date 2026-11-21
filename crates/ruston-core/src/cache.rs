@@ -149,19 +149,36 @@ const STAGED_SQL: MetadataSql = MetadataSql {
     insert_label: "INSERT OR IGNORE INTO resync_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
 };
 
+/// The statements a connection keeps compiled: every one the cache runs for
+/// each message, in either pair of tables, and for each list, count and
+/// search, with room to spare.
+const KEPT_STATEMENTS: usize = 32;
+
+/// Runs `sql` with `params`, compiled the first time and kept with the
+/// connection. A resync, a backfill and a batch of events run the same few
+/// statements for every message, and compiling one costs more than running
+/// it.
+fn execute(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<usize> {
+    conn.prepare_cached(sql)
+        .and_then(|mut statement| statement.execute(params))
+        .map_err(cache_error)
+}
+
 /// Writes `m`'s row and labels with `sql`, replacing the labels it had.
 fn write_metadata(conn: &Connection, sql: &MetadataSql, m: &MessageMetadata) -> Result<()> {
     let json = serde_json::to_string(m)?;
-    conn.execute(
+    execute(
+        conn,
         sql.upsert_message,
         rusqlite::params![m.id, m.time, m.unread, json],
-    )
-    .map_err(cache_error)?;
-    conn.execute(sql.clear_labels, [&m.id])
-        .map_err(cache_error)?;
+    )?;
+    execute(conn, sql.clear_labels, [&m.id])?;
     for label in &m.label_ids {
-        conn.execute(sql.insert_label, rusqlite::params![m.id, label, m.time])
-            .map_err(cache_error)?;
+        execute(
+            conn,
+            sql.insert_label,
+            rusqlite::params![m.id, label, m.time],
+        )?;
     }
     Ok(())
 }
@@ -172,44 +189,40 @@ fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
 
 fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
     upsert_metadata(conn, m)?;
-    conn.execute(
+    execute(
+        conn,
         UPDATE_INDEX_SQL,
         rusqlite::params![m.id, m.subject, participants(m)],
-    )
-    .map_err(cache_error)?;
+    )?;
     Ok(())
 }
 
 fn replace_index(conn: &Connection, m: &MessageMetadata, body: Option<&str>) -> Result<()> {
     upsert_metadata(conn, m)?;
-    conn.execute(DELETE_INDEX_SQL, [&m.id])
-        .map_err(cache_error)?;
+    execute(conn, DELETE_INDEX_SQL, [&m.id])?;
     if let Some(body) = body {
-        conn.execute(
+        execute(
+            conn,
             "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
             rusqlite::params![m.id, m.subject, body, participants(m)],
-        )
-        .map_err(cache_error)?;
-        conn.execute(
+        )?;
+        execute(
+            conn,
             "UPDATE msg_fts_rows SET as_text=1 WHERE message_id=?1",
             [&m.id],
-        )
-        .map_err(cache_error)?;
+        )?;
     }
     Ok(())
 }
 
 fn delete_message(conn: &Connection, id: &str) -> Result<()> {
     // The messages_delete_fts trigger removes the indexed body in this transaction.
-    let deleted = conn
-        .execute("DELETE FROM messages WHERE id=?1", [id])
-        .map_err(cache_error)?;
+    let deleted = execute(conn, "DELETE FROM messages WHERE id=?1", [id])?;
     if deleted == 0 {
         // A stray index row can still exist without cached metadata.
-        conn.execute(DELETE_INDEX_SQL, [id]).map_err(cache_error)?;
+        execute(conn, DELETE_INDEX_SQL, [id])?;
     }
-    conn.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
-        .map_err(cache_error)?;
+    execute(conn, "DELETE FROM message_labels WHERE message_id=?1", [id])?;
     Ok(())
 }
 
@@ -644,6 +657,10 @@ fn create_cache_dir(dir: &Path) -> Result<()> {
 const COUNT_SQL: &str = "SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM messages m \
      JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1";
 
+/// How many messages a label holds in the cache, which its index answers
+/// without reading a message.
+const LABEL_COUNT_SQL: &str = "SELECT COUNT(*) FROM message_labels WHERE label_id=?1";
+
 impl Cache {
     pub(crate) fn default_account_path(profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
         validate_profile_name(profile)?;
@@ -711,6 +728,7 @@ impl Cache {
         let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(cache_error)?;
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(cache_error)?;
+        conn.set_prepared_statement_cache_capacity(KEPT_STATEMENTS);
         if needs_migration(&conn)? {
             return Err(Error::Cache(
                 "the local index needs `ruston-cli sync` or `ruston-cli index` to update it".into(),
@@ -789,6 +807,7 @@ impl Cache {
         // Another CLI process may hold the write lock during sync or migration.
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(cache_error)?;
+        conn.set_prepared_statement_cache_capacity(KEPT_STATEMENTS);
         // Deleted and replaced rows, decrypted bodies among them, are
         // overwritten instead of lingering in the file's free space.
         conn.execute_batch("PRAGMA secure_delete=ON")
@@ -911,7 +930,7 @@ impl Cache {
     ) -> Result<Vec<MessageMetadata>> {
         let mut statement = self
             .conn
-            .prepare(&list_sql(unread_only))
+            .prepare_cached(&list_sql(unread_only))
             .map_err(cache_error)?;
         read_metadata(&mut statement, rusqlite::params![label_id, limit, offset])
     }
@@ -920,9 +939,25 @@ impl Cache {
     /// unread.
     pub fn count(&self, label_id: &str) -> Result<(i64, i64)> {
         self.conn
-            .query_row(COUNT_SQL, [label_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            .prepare_cached(COUNT_SQL)
+            .and_then(|mut statement| {
+                statement.query_row([label_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
             })
+            .map_err(cache_error)
+    }
+
+    /// How many messages [`Self::list`] has to show of a label: all of them,
+    /// or the unread ones. All of them are counted on the label's index
+    /// alone; telling the unread means reading each message's row.
+    pub(crate) fn listed_count(&self, label_id: &str, unread_only: bool) -> Result<i64> {
+        if unread_only {
+            return Ok(self.count(label_id)?.1);
+        }
+        self.conn
+            .prepare_cached(LABEL_COUNT_SQL)
+            .and_then(|mut statement| statement.query_row([label_id], |row| row.get(0)))
             .map_err(cache_error)
     }
 
@@ -998,7 +1033,7 @@ impl Cache {
         let Some(expression) = match_expression(query) else {
             return Ok(Vec::new());
         };
-        let mut statement = self.conn.prepare(SEARCH_SQL).map_err(cache_error)?;
+        let mut statement = self.conn.prepare_cached(SEARCH_SQL).map_err(cache_error)?;
         read_metadata(&mut statement, rusqlite::params![expression, limit])
     }
 }

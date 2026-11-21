@@ -1815,3 +1815,35 @@ fn deleting_metadata_directly_removes_the_indexed_body() {
         .unwrap();
     assert_eq!(remaining, 0);
 }
+
+#[test]
+fn a_label_is_counted_on_its_index_and_agrees_with_the_full_count() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    for (id, label, unread) in [
+        ("a", label_ids::INBOX, true),
+        ("b", label_ids::INBOX, false),
+        ("c", label_ids::INBOX, true),
+        ("d", label_ids::ALL_MAIL, false),
+    ] {
+        let message = if unread {
+            unread_mail(id, label, 10)
+        } else {
+            mail(id, label, 10)
+        };
+        cache.upsert_message(&message).unwrap();
+    }
+    for label in [label_ids::INBOX, label_ids::ALL_MAIL, label_ids::TRASH] {
+        let (all, unread) = cache.count(label).unwrap();
+        assert_eq!(cache.listed_count(label, false).unwrap(), all, "{label}");
+        assert_eq!(cache.listed_count(label, true).unwrap(), unread, "{label}");
+    }
+    assert_eq!(cache.count(label_ids::INBOX).unwrap(), (3, 2));
+
+    // Counting every message of a label reads no message's row.
+    let plan = query_plan(&cache.conn, LABEL_COUNT_SQL, [label_ids::INBOX]);
+    assert!(
+        plan.iter()
+            .all(|step| step.contains("COVERING INDEX") && !step.contains("messages m")),
+        "{plan:?}"
+    );
+}

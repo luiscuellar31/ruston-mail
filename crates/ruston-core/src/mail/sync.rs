@@ -396,8 +396,7 @@ fn cached_page(
     page_size: u32,
 ) -> Result<(u32, Vec<MessageMetadata>)> {
     let label = resolve_folder(folder);
-    let (all, unread_count) = cache.count(&label)?;
-    let total = if unread { unread_count } else { all };
+    let total = cache.listed_count(&label, unread)?;
     // A page past the end of what a u32 can address is past the cache too.
     let messages = cache.list(&label, unread, page_size, page.saturating_mul(page_size))?;
     Ok((u32::try_from(total).unwrap_or(u32::MAX), messages))
