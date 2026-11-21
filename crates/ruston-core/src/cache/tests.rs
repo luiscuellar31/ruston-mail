@@ -156,7 +156,6 @@ fn event_batch(event_id: &str, messages: Vec<MessageEvent>) -> EventBatch {
         more: false,
         refresh: false,
         messages,
-        counts: Vec::new(),
     }
 }
 

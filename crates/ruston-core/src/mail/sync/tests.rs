@@ -283,7 +283,6 @@ fn apply_competing_event(cache: &Cache, event_action: u8) {
                     action: event_action,
                     message: (event_action != action::DELETE).then_some(updated.clone()),
                 }],
-                counts: Vec::new(),
             },
         )
         .unwrap();
