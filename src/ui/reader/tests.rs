@@ -2746,7 +2746,36 @@ fn a_picture_the_message_carries_is_asked_for_shown_and_let_go() {
     );
     assert!(messages.is_empty());
     assert!(says(&shapes, "Image not loaded: Logo"));
-    // The picture left with its conversation, and so does its texture.
-    let _ = frame(&none, Reading::default());
+    // The picture left with its conversation, and so does its texture, at
+    // the window's next frame.
+    forget_textures(&context, &none);
     assert!(!has_texture());
+}
+
+#[test]
+fn textures_go_with_the_pictures_the_app_no_longer_keeps() {
+    let context = egui::Context::default();
+    let texture = context.load_texture(
+        "message-picture-logo",
+        egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+        egui::TextureOptions::LINEAR,
+    );
+    context.data_mut(|data| {
+        data.get_temp_mut_or_default::<Textures>(egui::Id::NULL)
+            .0
+            .insert("logo".into(), (0, texture));
+    });
+    let kept = |context: &egui::Context| {
+        context.data(|data| {
+            data.get_temp::<Textures>(egui::Id::NULL)
+                .map_or(0, |all| all.0.len())
+        })
+    };
+
+    let images = HashMap::from([("logo".to_owned(), InlineImage::Loading)]);
+    forget_textures(&context, &images);
+    assert_eq!(kept(&context), 1);
+    // Nothing open, as after closing the reader or signing out.
+    forget_textures(&context, &HashMap::new());
+    assert_eq!(kept(&context), 0);
 }

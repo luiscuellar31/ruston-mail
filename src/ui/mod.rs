@@ -1140,6 +1140,7 @@ impl eframe::App for DesktopApp {
         let mut messages = Vec::new();
         let mut composer_zoom = None;
         let mut dropped = Vec::new();
+        reader::forget_textures(&context, self.app.inline_images());
         email_link_notice(ui, &self.app, &mut messages);
         if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
             self.settings_draft = None;

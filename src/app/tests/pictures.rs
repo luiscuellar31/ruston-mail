@@ -7,7 +7,12 @@ use crate::pictures::Picture;
 /// Opens the first demo conversation with a picture among its first
 /// message's parts, and says which message that is.
 fn open_with_a_picture(app: &mut App, size: u64) -> String {
-    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    open_one_with_a_picture(app, "demo-0", size)
+}
+
+/// The same for the demo conversation `conversation`.
+fn open_one_with_a_picture(app: &mut App, conversation: &str, size: u64) -> String {
+    let _ = app.update(Message::SelectConversation(conversation.into()));
     let request = pending_reader_request(app);
     let mut detail = demo_service(app)
         .conversation_detail(&request.conversation_id, NOW)
@@ -113,5 +118,37 @@ fn no_picture_is_fetched_when_settings_show_none_or_it_is_too_large() {
             .units(),
         0
     );
+    assert!(app.inline_images().is_empty());
+}
+
+#[test]
+fn pictures_go_when_the_reader_closes_the_folder_changes_or_they_are_turned_off() {
+    let show_one = |app: &mut App, conversation: &str| {
+        let message = open_one_with_a_picture(app, conversation, 2_048);
+        let _ = app.update(Message::LoadInlineImage(message, "logo".into()));
+        let epoch = app.session_epoch;
+        let _ = app.update(Message::InlineImageLoaded(
+            epoch,
+            "logo".into(),
+            Some(picture()),
+        ));
+        assert!(!app.inline_images().is_empty());
+    };
+    let mut app = loaded_demo_app();
+
+    // Decoded pictures are tens of megabytes: none stays behind a reader
+    // that shows nothing.
+    show_one(&mut app, "demo-0");
+    press(&mut app, Key::Escape);
+    assert!(app.mailbox().unwrap().selected_conversation().is_none());
+    assert!(app.inline_images().is_empty());
+
+    show_one(&mut app, "demo-1");
+    let _ = app.update(Message::SetShowInlineImages(false));
+    assert!(app.inline_images().is_empty());
+    let _ = app.update(Message::SetShowInlineImages(true));
+
+    show_one(&mut app, "demo-2");
+    let _ = app.update(Message::SelectFolder(sys(MailFolder::Sent)));
     assert!(app.inline_images().is_empty());
 }

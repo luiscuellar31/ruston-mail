@@ -737,9 +737,16 @@ impl App {
     /// Handles one message. One that uncovers the reader, as closing a draft
     /// in the reading pane does, shows what was opened behind the draft, which
     /// is then read.
+    ///
+    /// The pictures shown are the open conversation's: whatever closes it or
+    /// opens another, they go with it.
     pub fn update(&mut self, message: Message) -> Effects {
         let covered = self.draft_covers_reader();
+        let open = self.open_conversation();
         let effects = self.dispatch(message);
+        if self.open_conversation() != open {
+            self.forget_inline_images();
+        }
         if covered && !self.draft_covers_reader() {
             return Effects::batch([effects, self.mark_read_once_shown()]);
         }
@@ -1147,6 +1154,9 @@ impl App {
             Message::SetDataTables(on) => self.remember(|settings| settings.data_tables = on),
             Message::SetShowInlineImages(on) => {
                 self.remember(|settings| settings.show_inline_images = on);
+                if !on {
+                    self.forget_inline_images();
+                }
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
             Message::SetAppearance(appearance) => {
@@ -1625,11 +1635,6 @@ impl App {
         if request.is_none() && !selection_changed {
             return Effects::none();
         }
-        // The pictures shown belonged to the conversation left.
-        if selection_changed {
-            self.forget_inline_images();
-        }
-
         let content = match request {
             Some(request) => self.fetch_conversation(Some(request)),
             None => Effects::batch([self.mark_opened_read(), self.preload_successor()]),

@@ -140,6 +140,14 @@ impl App {
         )
     }
 
+    /// The conversation the reader has open, if any.
+    pub(super) fn open_conversation(&self) -> Option<String> {
+        self.mailbox
+            .as_ref()
+            .and_then(|mailbox| mailbox.selected_conversation())
+            .map(str::to_owned)
+    }
+
     /// Forgets the pictures of the conversation being left, and lets none of
     /// them still waiting for its turn start.
     pub(super) fn forget_inline_images(&mut self) {

@@ -768,7 +768,6 @@ fn message_card(
         message_id: &message.id,
         attachments: &message.attachments,
     };
-    forget_textures(ui, images);
     let expanded = reader.is_expanded(&message.id, reading);
     ui.push_id(&message.id, |ui| {
         theme::card(ui).show(ui, |ui| {
@@ -1467,9 +1466,11 @@ impl<'a> Pictures<'a> {
 struct Textures(HashMap<String, (usize, egui::TextureHandle)>);
 
 /// Lets go of the textures of pictures the app no longer keeps, as those of
-/// a conversation left.
-fn forget_textures(ui: &egui::Ui, images: &HashMap<String, InlineImage>) {
-    ui.data_mut(|data| {
+/// a conversation left. Called once a frame whatever the window shows: a
+/// reader with nothing open, Settings or the sign-in screen draw no message,
+/// and the pictures of the last one must not stay in the graphics card.
+pub(super) fn forget_textures(context: &egui::Context, images: &HashMap<String, InlineImage>) {
+    context.data_mut(|data| {
         data.get_temp_mut_or_default::<Textures>(egui::Id::NULL)
             .0
             .retain(|attachment, _| images.contains_key(attachment));
