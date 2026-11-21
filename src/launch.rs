@@ -26,7 +26,14 @@ use eframe::egui;
 
 use crate::mailto::{MAX_PENDING, MAX_URL_BYTES, Request};
 
-const TIMEOUT: Duration = Duration::from_secs(1);
+/// How long one connect, read or write of the exchange may take, and how
+/// long the instance listens to a launch once it has connected.
+const IO_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a launch that finds neither the lock free nor an instance to
+/// connect to keeps trying both.
+const TAKEOVER_DEADLINE: Duration = Duration::from_secs(3);
+/// The wait between two of those tries.
+const RETRY_PAUSE: Duration = Duration::from_millis(25);
 /// How long a connection may take to authenticate. Any local user can connect
 /// to a loopback port and the worker serves one connection at a time, so idle
 /// connections must not use up a later launch's retries.
@@ -35,7 +42,20 @@ const HEADER_TIMEOUT: Duration = Duration::from_millis(200);
 /// directory, so no other user can reach it.
 #[cfg(unix)]
 const SOCKET: &str = "socket";
+/// What a launch sends first, then the instance's token, to which the
+/// instance answers [`ACCEPTED`]. After that, for each link: its length as a
+/// big-endian `u32`, the link, and one byte back, [`ACCEPTED`] or
+/// [`REFUSED`]. Versions installed side by side talk to each other, so none
+/// of this can change.
 const MAGIC: &[u8; 4] = b"RM01";
+/// The length of the secret a launch reads from the endpoint record and must
+/// show to be heard.
+const TOKEN_LEN: usize = 32;
+type Token = [u8; TOKEN_LEN];
+/// The byte that says a handshake or a link was taken.
+const ACCEPTED: u8 = 1;
+/// The byte that says a link was not taken; the connection ends there.
+const REFUSED: u8 = 0;
 /// Forwarded in place of a mailto link over the size limit, which the
 /// receiving process would drop without an answer. Every version refuses to
 /// open a lone `%`, so the window still says the link was not opened.
@@ -149,7 +169,7 @@ impl Instance {
             port,
             waker,
         } = listen(folder)?;
-        let mut token = [0_u8; 32];
+        let mut token: Token = [0; TOKEN_LEN];
         getrandom::fill(&mut token).map_err(|error| io::Error::other(error.to_string()))?;
         let (events, receiver) = mpsc::sync_channel(MAX_PENDING);
         let sender = Sender {
@@ -355,7 +375,7 @@ fn listen_tcp() -> io::Result<Listening> {
         port: address.port(),
         waker: Waker {
             wake: Box::new(move || {
-                let _ = TcpStream::connect_timeout(&address, TIMEOUT);
+                let _ = TcpStream::connect_timeout(&address, IO_TIMEOUT);
             }),
             socket: None,
         },
@@ -381,7 +401,7 @@ fn open_channel(_folder: &Path, record: &EndpointRecord) -> io::Result<Box<dyn C
 fn open_tcp(port: u16) -> io::Result<Box<dyn Channel>> {
     Ok(Box::new(TcpStream::connect_timeout(
         &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
-        TIMEOUT,
+        IO_TIMEOUT,
     )?))
 }
 
@@ -438,13 +458,13 @@ fn private_file(path: &Path, truncate: bool) -> io::Result<File> {
 /// activation directory.
 struct EndpointRecord {
     port: u16,
-    token: [u8; 32],
+    token: Token,
     /// Lets a later launch hand this process the foreground on Windows.
     process: u32,
 }
 
 impl EndpointRecord {
-    const LEN: usize = 2 + 32 + 4;
+    const LEN: usize = 2 + TOKEN_LEN + 4;
 
     fn encode(&self) -> [u8; Self::LEN] {
         let mut bytes = [0_u8; Self::LEN];
@@ -515,7 +535,7 @@ enum Found {
 /// lock comes free and this launch takes over. Only discovery and connect are
 /// retried, never a request after bytes have been sent.
 fn find_primary(folder: &Path, endpoint: &Path) -> io::Result<Found> {
-    let deadline = Instant::now() + TIMEOUT * 3;
+    let deadline = Instant::now() + TAKEOVER_DEADLINE;
     loop {
         if let Some(lock) = claim(folder, endpoint)? {
             return Ok(Found::Lock(lock));
@@ -523,7 +543,7 @@ fn find_primary(folder: &Path, endpoint: &Path) -> io::Result<Found> {
         match connect(folder, endpoint) {
             Ok(stream) => return Ok(Found::Primary(stream)),
             Err(error) if Instant::now() >= deadline => return Err(error),
-            Err(_) => thread::sleep(Duration::from_millis(25)),
+            Err(_) => thread::sleep(RETRY_PAUSE),
         }
     }
 }
@@ -548,13 +568,13 @@ fn forward_to_primary(mut stream: Box<dyn Channel>, urls: Vec<Argument>) -> io::
 fn connect(folder: &Path, endpoint: &Path) -> io::Result<Box<dyn Channel>> {
     let record = EndpointRecord::read(endpoint)?;
     let mut stream = open_channel(folder, &record)?;
-    stream.set_read_timeout(Some(TIMEOUT))?;
-    stream.set_write_timeout(Some(TIMEOUT))?;
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IO_TIMEOUT))?;
     stream.write_all(MAGIC)?;
     stream.write_all(&record.token)?;
     let mut acknowledgement = [0];
     stream.read_exact(&mut acknowledgement)?;
-    if acknowledgement != [1] {
+    if acknowledgement != [ACCEPTED] {
         return Err(io::Error::other("activation handshake failed"));
     }
     #[cfg(target_os = "windows")]
@@ -574,7 +594,7 @@ fn forward(stream: &mut dyn Channel, url: &str) -> io::Result<()> {
     stream.write_all(url.as_bytes())?;
     let mut response = [0];
     stream.read_exact(&mut response)?;
-    if response == [1] {
+    if response == [ACCEPTED] {
         Ok(())
     } else {
         Err(io::Error::other(
@@ -583,12 +603,12 @@ fn forward(stream: &mut dyn Channel, url: &str) -> io::Result<()> {
     }
 }
 
-fn receive(stream: &mut dyn Channel, token: &[u8; 32], sender: &Sender) -> io::Result<()> {
-    let deadline = Instant::now() + TIMEOUT;
-    stream.set_write_timeout(Some(TIMEOUT))?;
+fn receive(stream: &mut dyn Channel, token: &Token, sender: &Sender) -> io::Result<()> {
+    let deadline = Instant::now() + IO_TIMEOUT;
+    stream.set_write_timeout(Some(IO_TIMEOUT))?;
     let header_deadline = Instant::now() + HEADER_TIMEOUT;
     let mut magic = [0_u8; 4];
-    let mut received = [0_u8; 32];
+    let mut received: Token = [0; TOKEN_LEN];
     read_until(stream, &mut magic, header_deadline)?;
     read_until(stream, &mut received, header_deadline)?;
     if &magic != MAGIC || !same_token(&received, token) {
@@ -597,7 +617,7 @@ fn receive(stream: &mut dyn Channel, token: &[u8; 32], sender: &Sender) -> io::R
             "invalid activation token",
         ));
     }
-    stream.write_all(&[1])?;
+    stream.write_all(&[ACCEPTED])?;
     // One connection forwards up to the bounded command-line request count.
     for _ in 0..MAX_PENDING {
         let mut length = [0_u8; 4];
@@ -622,7 +642,7 @@ fn receive(stream: &mut dyn Channel, token: &[u8; 32], sender: &Sender) -> io::R
             }
         };
         let accepted = event.is_some_and(|event| sender.send(event));
-        stream.write_all(&[u8::from(accepted)])?;
+        stream.write_all(&[if accepted { ACCEPTED } else { REFUSED }])?;
         if !accepted {
             break;
         }
@@ -632,7 +652,7 @@ fn receive(stream: &mut dyn Channel, token: &[u8; 32], sender: &Sender) -> io::R
 
 /// Compares every byte whatever the first difference, so the time a guess
 /// takes to be rejected does not say how much of it was right.
-fn same_token(received: &[u8; 32], token: &[u8; 32]) -> bool {
+fn same_token(received: &Token, token: &Token) -> bool {
     let mut difference = 0_u8;
     for (a, b) in received.iter().zip(token) {
         difference |= std::hint::black_box(a ^ b);

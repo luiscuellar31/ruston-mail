@@ -100,7 +100,7 @@ fn stale_record(folder: &Path) -> TcpListener {
     foreign.set_nonblocking(true).unwrap();
     EndpointRecord {
         port: foreign.local_addr().unwrap().port(),
-        token: [9; 32],
+        token: [9; TOKEN_LEN],
         process: 1,
     }
     .publish(&folder.join("endpoint"))
@@ -189,9 +189,9 @@ fn unauthenticated_and_oversized_requests_are_rejected_before_delivery() {
     let directory = Directory::new();
     let instance = primary(&directory.0, Vec::new());
     let mut bad = raw(&directory.0, &instance);
-    bad.set_read_timeout(Some(TIMEOUT)).unwrap();
+    bad.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
     bad.write_all(MAGIC).unwrap();
-    bad.write_all(&[0; 32]).unwrap();
+    bad.write_all(&[0; TOKEN_LEN]).unwrap();
     let mut reply = [0];
     assert!(bad.read_exact(&mut reply).is_err());
     assert!(instance.drain().is_empty());
@@ -288,19 +288,19 @@ fn a_slow_peer_cannot_keep_the_activation_worker_or_shutdown_busy_indefinitely()
     let directory = Directory::new();
     let instance = primary(&directory.0, Vec::new());
     let (mut stream, mut writer) = raw_pair(&directory.0, &instance);
-    stream.set_read_timeout(Some(TIMEOUT * 3)).unwrap();
+    stream.set_read_timeout(Some(IO_TIMEOUT * 3)).unwrap();
     let slow = thread::spawn(move || {
-        for byte in MAGIC.iter().copied().chain([0; 32]) {
+        for byte in MAGIC.iter().copied().chain([0; TOKEN_LEN]) {
             if writer.write_all(&[byte]).is_err() {
                 break;
             }
-            thread::sleep(TIMEOUT / 16);
+            thread::sleep(IO_TIMEOUT / 16);
         }
     });
     let start = Instant::now();
     assert!(stream.read_exact(&mut [0]).is_err());
     assert!(
-        start.elapsed() < TIMEOUT * 2,
+        start.elapsed() < IO_TIMEOUT * 2,
         "peer extended the total deadline"
     );
     slow.join().unwrap();
@@ -327,7 +327,7 @@ fn idle_connections_from_another_local_user_cannot_block_a_later_launch() {
 
 #[test]
 fn the_token_comparison_checks_every_byte() {
-    let token = [7_u8; 32];
+    let token = [7_u8; TOKEN_LEN];
     assert!(same_token(&token, &token));
     for position in [0, 15, 31] {
         let mut guess = token;
