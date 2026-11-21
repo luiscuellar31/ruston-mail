@@ -203,6 +203,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   defines the work requested by the state machine.
 - [`app/inspection.rs`](../src/app/inspection.rs) bounds best-effort conversation
   inspection to 50 distinct candidate IDs including at most four running tasks.
+  A conversation an inspection left as one is remembered as it was listed
+  then, with the folder's grouping, and is not asked about again while a
+  refresh lists it the same.
   Waiting IDs retain no backend or task; completion admits the next candidate.
   Only accepted page responses enqueue work, including already displayed splits;
   targets removed before admission are skipped. Folder changes, server search,

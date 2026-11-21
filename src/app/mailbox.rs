@@ -196,6 +196,9 @@ impl SplitConversation {
 struct ConversationGroups {
     splits: HashMap<String, SplitConversation>,
     parents: HashMap<String, String>,
+    /// The conversations an inspection left as one, as each was listed then.
+    /// Listed the same again, one has nothing new to be asked about.
+    kept_whole: HashMap<String, ConversationSummary>,
 }
 
 impl ConversationGroups {
@@ -809,6 +812,30 @@ impl Mailbox {
 
     pub(super) fn inspection_revision(&self) -> u64 {
         self.inspection_revision
+    }
+
+    /// Whether asking Proton about `id` could change how it is listed: it is
+    /// here, and not as it was when an inspection last left it as one.
+    pub(super) fn worth_inspecting(&self, id: &str) -> bool {
+        self.has_inspection_target(id)
+            && self
+                .groups
+                .kept_whole
+                .get(id)
+                .is_none_or(|then| self.row(id) != Some(then))
+    }
+
+    /// Remembers that an inspection left `id` as the one conversation it is
+    /// listed as now, and lets go of those no longer listed.
+    pub(super) fn keep_whole(&mut self, id: &str) {
+        let Some(row) = self.row(id).cloned() else {
+            return;
+        };
+        let listed = &self.row_ids;
+        self.groups
+            .kept_whole
+            .retain(|kept, _| listed.contains(kept));
+        self.groups.kept_whole.insert(id.to_owned(), row);
     }
 
     pub fn row_conversation<'a>(&'a self, row: &'a ConversationSummary) -> Option<&'a str> {

@@ -932,7 +932,13 @@ impl App {
                             mailbox.split_conversation(&folder, &conversation_id, split_rows);
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        if let Some(mailbox) = self.mailbox.as_mut()
+                            && mailbox.inspection_revision() == revision
+                        {
+                            mailbox.keep_whole(&conversation_id);
+                        }
+                    }
                     Err(error) => {
                         self.end_session_if_expired(Some(error));
                     }
@@ -1876,10 +1882,12 @@ impl App {
         if mailbox.shown_search_query().is_some() {
             return Effects::none();
         }
+        // The automatic refresh lists the same rows every minute: only those
+        // new or changed since they were last looked into are asked about.
         self.inspections.enqueue(
             candidates
                 .into_iter()
-                .filter(|id| mailbox.has_inspection_target(id)),
+                .filter(|id| mailbox.worth_inspecting(id)),
         );
         self.start_inspections()
     }
