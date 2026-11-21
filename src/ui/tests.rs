@@ -122,6 +122,32 @@ fn closing_again_while_changes_are_on_their_way_closes_at_once() {
 }
 
 #[test]
+fn mail_is_checked_by_a_clock_that_runs_while_the_window_is_hidden() {
+    // What eframe runs for a window minimized or covered draws no pass, and
+    // leaves egui's time where the last pass put it: a refresh timed by it
+    // never came due until the window showed again.
+    let context = egui::Context::default();
+    let shown = egui::RawInput {
+        time: Some(1.0),
+        ..Default::default()
+    };
+    context.run_ui(shown, |_| {}).drop_without_applying_deltas();
+    let hidden = egui::RawInput {
+        time: Some(500.0),
+        ..Default::default()
+    };
+    let _ = context.run_logic(&hidden, |context| {
+        assert_eq!(context.input(|input| input.time), 1.0);
+    });
+
+    // The window's own clock goes on.
+    let desktop = DesktopApp::with_context(&context, true, Settings::default());
+    let before = desktop.clock();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert!(desktop.clock() > before);
+}
+
+#[test]
 fn settled_settings_are_written_off_the_interface() {
     let context = egui::Context::default();
     let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
@@ -130,12 +156,10 @@ fn settled_settings_are_written_off_the_interface() {
 
     // The change settles, and the frame after the quiet time writes it.
     for time in [0.0, f64::from(SETTINGS_QUIET) + 0.1] {
-        let input = egui::RawInput {
-            time: Some(time),
-            ..Default::default()
-        };
         context
-            .run_ui(input, |ui| desktop.save_settled_settings(ui.ctx()))
+            .run_ui(egui::RawInput::default(), |ui| {
+                desktop.save_settled_settings(time, ui.ctx());
+            })
             .drop_without_applying_deltas();
     }
     // The write's result comes back through the runtime.
@@ -523,12 +547,15 @@ fn changing_folders_releases_a_superseded_poll_even_without_its_response() {
 
     let sent = Folder::System(crate::mail::MailFolder::Sent);
     desktop.dispatch(Message::SelectFolder(sent), &context);
-    // The old result need never arrive for the scheduler to recover.
-    assert!(desktop.auto_refresh.repaint_after(0.0, true).is_some());
+    // The old result need never arrive for the scheduler to recover. The
+    // folder change released it by the window's clock, so what follows is
+    // timed from there.
+    let now = desktop.clock();
+    assert!(desktop.auto_refresh.repaint_after(now, true).is_some());
     assert!(
         desktop
             .auto_refresh
-            .should_start(60.0, auto_refresh::FOREGROUND)
+            .should_start(now + 60.0, auto_refresh::FOREGROUND)
     );
 }
 

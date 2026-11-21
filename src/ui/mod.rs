@@ -151,6 +151,8 @@ struct DesktopApp {
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
+    /// When this window opened, which [`Self::clock`] counts from.
+    opened: std::time::Instant,
     /// Last window size dispatched, avoiding busy-loop repainting when window size is unchanged.
     last_window_size: Option<Window>,
     /// Waits for the requested window size before resetting egui's cached pane widths.
@@ -220,6 +222,7 @@ impl DesktopApp {
             deferred_leave: close::DeferredLeave::default(),
             settings_seen: 0,
             settings_seen_at: 0.0,
+            opened: std::time::Instant::now(),
             last_window_size: None,
             layout_reset_at: None,
             main_window: None,
@@ -338,7 +341,7 @@ impl DesktopApp {
             return;
         }
 
-        let now = context.input(|input| input.time);
+        let now = self.clock();
         let submitted_or_cancelled = matches!(&message, Message::Submit | Message::CancelChallenge);
         if matches!(&message, Message::RefreshMailbox) {
             self.auto_refresh.postpone(now);
@@ -903,8 +906,15 @@ impl DesktopApp {
             && context.input_for(compose::viewport_id(), |input| input.focused)
     }
 
-    fn refresh_automatically(&mut self, context: &egui::Context) {
-        let now = context.input(|input| input.time);
+    /// Seconds since this window opened, by the system's clock. egui's own
+    /// time stands still while the window is minimized or covered, when no
+    /// pass is drawn, and mail goes on being checked and settings written
+    /// then.
+    fn clock(&self) -> f64 {
+        self.opened.elapsed().as_secs_f64()
+    }
+
+    fn refresh_automatically(&mut self, now: f64, context: &egui::Context) {
         let focused = self.app_has_focus(context);
         let active = self.app.auth_state().is_authenticated()
             && self.app.mailbox().is_some()
@@ -952,9 +962,8 @@ impl DesktopApp {
     }
 
     /// Writes settled settings and schedules the frame that performs it.
-    fn save_settled_settings(&mut self, context: &egui::Context) {
+    fn save_settled_settings(&mut self, now: f64, context: &egui::Context) {
         let revision = self.app.settings_revision();
-        let now = context.input(|input| input.time);
         if revision != self.settings_seen {
             self.settings_seen = revision;
             self.settings_seen_at = now;
@@ -1108,8 +1117,9 @@ impl eframe::App for DesktopApp {
         self.zoom_shortcuts(context);
         self.keyboard_shortcuts(context);
         self.forget_finished_draft(context);
-        self.refresh_automatically(context);
-        self.save_settled_settings(context);
+        let now = self.clock();
+        self.refresh_automatically(now, context);
+        self.save_settled_settings(now, context);
         self.update_title(context);
         self.update_unread_badge();
     }
