@@ -385,6 +385,8 @@ pub struct App {
     saving_attachment: Option<AttachmentSave>,
     /// The pictures of the open conversation, by attachment.
     inline_images: HashMap<String, InlineImage>,
+    /// The turns those pictures take to be fetched.
+    picture_turns: pictures::Turns,
     new_mail: notifications::NewMail,
 }
 
@@ -450,6 +452,7 @@ impl App {
             failed_save: None,
             saving_attachment: None,
             inline_images: HashMap::new(),
+            picture_turns: pictures::Turns::default(),
             new_mail: notifications::NewMail::default(),
         }
     }
@@ -1624,7 +1627,7 @@ impl App {
         }
         // The pictures shown belonged to the conversation left.
         if selection_changed {
-            self.inline_images.clear();
+            self.forget_inline_images();
         }
 
         let content = match request {

@@ -568,7 +568,9 @@ checks it is a part of the open conversation within the size limit, downloads
 it as it does an attachment to save, and decodes it on a blocking worker with
 [`pictures.rs`](../src/pictures.rs), which takes only PNG, JPEG, GIF and WebP,
 by the file's own bytes, refuses one too large before decoding it, and makes a
-wide one smaller. The pictures of the open conversation live in `App`, at most
+wide one smaller. A message asks for all its pictures as it opens, so they take
+turns, two fetched and decoded at once, and none starts after the first that
+does not fit. The pictures of the open conversation live in `App`, at most
 96 MiB decoded, and go with it; the reader keeps one texture for each and lets
 go of those `App` no longer has. The terminal shows none. The reader
 leaves it out, or draws it in grey with **Show text the sender hid**
