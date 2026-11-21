@@ -914,10 +914,22 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         app.show_quotes,
     );
     // The rows the lines wrap to before each of them, and in all at the end.
+    // A line of the text as it was written wraps the same at every frame of
+    // this width, and is counted once.
     let mut row_of = vec![0];
-    for (_, line) in &lines {
-        let wrapped = Paragraph::new(line.clone()).wrap(Wrap { trim: false });
-        row_of.push(row_of[row_of.len() - 1] + wrapped.line_count(inner.width));
+    for (shows, line) in &lines {
+        let wrap = || {
+            Paragraph::new(line.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(inner.width)
+        };
+        let rows = match shows {
+            Some(at) if as_written(line, &reading.lines[*at]) => {
+                reading.wrapped.rows(*at, inner.width, wrap)
+            }
+            _ => wrap(),
+        };
+        row_of.push(row_of[row_of.len() - 1] + rows);
     }
     let starts: Vec<(usize, usize)> = starts
         .into_iter()
@@ -971,15 +983,26 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         };
         block = block.title_bottom(Line::styled(hint, dim));
     }
-    let lines: Vec<Line> = lines.into_iter().map(|(_, line)| line).collect();
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(
-        paragraph
-            .scroll((app.scroll.get().min(bottom), 0))
-            .block(block),
-        area,
-    );
+    // Only the lines that show are handed over: the widget wraps from the
+    // first line it is given down to the last row of the pane.
+    let after = row_of
+        .partition_point(|&row| row < top + height)
+        .min(lines.len());
+    let into = u16::try_from(top - row_of[line_at_top]).unwrap_or(u16::MAX);
+    let shown: Vec<Line> = lines
+        .drain(line_at_top..after.max(line_at_top))
+        .map(|(_, line)| line)
+        .collect();
+    let paragraph = Paragraph::new(shown).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph.scroll((into, 0)).block(block), area);
     top
+}
+
+/// Whether `line` is `text`, a line of the reading, as it is: not a fold
+/// that stands for it, nor a line cut to fit.
+fn as_written(line: &Line, text: &str) -> bool {
+    matches!(&line.spans[..], [span]
+        if std::ptr::eq(span.content.as_ptr(), text.as_ptr()) && span.content.len() == text.len())
 }
 
 /// Adds the lines `range` of `reading`, each quoted passage that starts

@@ -98,7 +98,50 @@ pub(crate) struct Reading {
     /// What an answer to it answers, when it has a message that is not a
     /// draft; boxed, as the reading travels in a message to the loop.
     pub(crate) answer: Option<Box<Answerable>>,
+    /// The rows its lines wrap to, kept by the pane that draws it.
+    pub(crate) wrapped: WrappedRows,
 }
+
+/// The rows each line of a reading wraps to at one width, counted the first
+/// time it is drawn and kept from one frame to the next: wrapping a whole
+/// conversation again at every key is what made a long one slow to move in.
+/// It is no part of what the conversation says, so it compares equal to any
+/// other and a copy starts without it.
+#[derive(Debug, Default)]
+pub(crate) struct WrappedRows(std::cell::RefCell<(u16, Vec<u32>)>);
+
+impl WrappedRows {
+    /// The rows line `at` takes `width` columns wide, counted with `wrap`
+    /// unless it was already.
+    pub(crate) fn rows(&self, at: usize, width: u16, wrap: impl FnOnce() -> usize) -> usize {
+        let mut kept = self.0.borrow_mut();
+        if kept.0 != width {
+            *kept = (width, Vec::new());
+        }
+        if kept.1.len() <= at {
+            kept.1.resize(at + 1, 0);
+        }
+        // Kept as one more than the rows, so that zero says not counted yet.
+        if kept.1[at] == 0 {
+            kept.1[at] = u32::try_from(wrap()).unwrap_or(u32::MAX - 1) + 1;
+        }
+        (kept.1[at] - 1) as usize
+    }
+}
+
+impl Clone for WrappedRows {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for WrappedRows {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for WrappedRows {}
 
 impl Reading {
     /// The reader's view of `conversation` and its `messages`, oldest first;
@@ -190,6 +233,7 @@ impl Reading {
             links,
             attachments,
             answer: answerable(messages, own).map(Box::new),
+            wrapped: WrappedRows::default(),
         }
     }
 

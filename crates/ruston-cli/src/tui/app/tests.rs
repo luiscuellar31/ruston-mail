@@ -157,6 +157,7 @@ fn reading(lines: usize) -> Reading {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     }
 }
 

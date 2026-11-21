@@ -251,6 +251,7 @@ fn the_reader_shows_the_open_conversation_and_scrolls_within_it() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     assert!(screen.contains("Plans for May"), "{screen}");
@@ -292,6 +293,7 @@ fn the_reader_names_the_labels_the_conversation_bears() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     assert!(!screen.contains("Labels:"), "{screen}");
@@ -321,6 +323,7 @@ fn the_reader_folds_quoted_passages_until_they_are_shown() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     for shown in [
@@ -356,6 +359,7 @@ fn z_keeps_the_line_at_the_readers_top_there() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     // Under the subject and a blank row, the folded passage takes a row.
     app.scroll.set(8);
@@ -755,6 +759,7 @@ fn the_wheel_scrolls_what_it_is_over_and_the_keys_over_the_panes() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let _ = drawn(120, 30, &app, &Theme::new(false));
     // The reader a few rows a notch, the keys staying with the folders and
@@ -800,6 +805,7 @@ fn long_reader_lines_wrap_to_the_pane() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let _ = drawn(120, 30, &app, &Theme::new(false));
     // 300 columns wrap into several rows of the 46-column pane.
@@ -820,6 +826,7 @@ fn a_quoted_line_stays_dim_on_every_row_it_wraps_to() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let buffer = drawn(120, 30, &app, &Theme::new(false));
     let screen = text(&buffer);
@@ -883,6 +890,7 @@ fn the_links_list_over_the_panes_and_ask_before_one_opens() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     app.picking_link = Some(LinkPick {
         selected: 1,
@@ -1264,6 +1272,7 @@ fn the_attachments_list_over_the_panes_with_their_sizes() {
         }],
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     app.picking_attachment = Some(0);
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
@@ -1471,4 +1480,45 @@ fn the_accent_is_ruston_mails_violet_as_near_as_the_terminal_shows_it() {
     assert_eq!(accent_among("", "xterm-256color"), Color::Indexed(99));
     assert_eq!(accent_among("", "screen-256color"), Color::Indexed(99));
     assert_eq!(accent_among("", "linux"), Color::Magenta);
+}
+
+#[test]
+fn a_long_conversation_is_wrapped_once_and_drawn_from_where_it_shows() {
+    let mut app = with_mail("alex@example.test", "Quarterly report");
+    // Lines that wrap to several rows each in the pane: half a megabyte.
+    let words = "word ".repeat(40);
+    app.reading = Some(Reading {
+        id: "long".into(),
+        subject: "A long thread".into(),
+        lines: (0..2_500).map(|n| format!("line {n} {words}")).collect(),
+        quotes: Vec::new(),
+        links: Vec::new(),
+        attachments: Vec::new(),
+        messages: Vec::new(),
+        answer: None,
+        wrapped: Default::default(),
+    });
+    let theme = Theme::new(false);
+    let first = text(&drawn(120, 30, &app, &theme));
+    assert!(first.contains("line 0 word"), "{first}");
+    // Every line takes as many rows, under the subject and its blank row.
+    let rows = usize::from(app.reader_bottom.get()) + usize::from(app.reader_rows.get());
+    let each = (rows - 2) / 2_500;
+    assert!(each > 1 && (rows - 2) % 2_500 == 0, "{rows}");
+    app.scroll.set(u16::try_from(2 + 1_000 * each).unwrap());
+    let started = std::time::Instant::now();
+    let mut screen = String::new();
+    for _ in 0..40 {
+        screen = text(&drawn(120, 30, &app, &theme));
+    }
+    assert!(screen.contains("line 1000 word"), "{screen}");
+    assert!(!screen.contains("line 999 word"), "{screen}");
+    assert!(screen.contains("line 1001 word"), "{screen}");
+    // Every key drew the whole conversation again, wrapped from its first
+    // line: forty frames of it took tens of seconds.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
 }
